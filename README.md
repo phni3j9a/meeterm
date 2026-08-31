@@ -39,10 +39,12 @@ Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME compos
 
 ## Project status
 
-Greenfield. The first engineering milestone is a native terminal vertical slice on Android before broader UI work.
+Greenfield. The first engineering milestone is a native terminal vertical slice on Android before broader UI work. See issue #1 for the active PoC scope.
 
 ## Design docs
 
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Development](docs/DEVELOPMENT.md)
+- [ADR 0001: native terminal first](docs/decisions/0001-native-terminal-first.md)
 - [Agent instructions](AGENTS.md)
