@@ -61,6 +61,7 @@ npx expo run:android --device
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Android PoC runbook](docs/POC_ANDROID.md)
+- [Issue #1 Android device validation](docs/evidence/issue-1-android-device.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [ADR 0001: native terminal first](docs/decisions/0001-native-terminal-first.md)
 - [Agent instructions](AGENTS.md)

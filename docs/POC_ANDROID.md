@@ -161,11 +161,11 @@ cargo clippy --locked --all-targets --manifest-path native/meeterm-core/Cargo.to
 
 ## 実機結果の記録
 
-`pass` と書く場合は、device log、screen recording、screenshot などの証跡を併記してください。下記の画像・録画は検証ホスト上で取得した実行証跡であり、アプリの source または fixture ではないためリポジトリには含めていません。
+`pass` と書く場合は、device log、screen recording、screenshot などの証跡を併記してください。下記の画像・録画は検証ホスト上で取得した実行証跡であり、アプリの source または fixture ではないためリポジトリには含めていません。検証した immutable code commit、sanitized log、artifact checksum、自動検証との対応は [Issue #1 Android device validation](evidence/issue-1-android-device.md) に固定しています。
 
 | Date | Commit | Device / Android | ABI | Build / renderer / font | Result | Evidence / notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| 2026-09-01 | Issue #1 implementation branch | Pixel 3 / Android 11 (API 30) | `arm64-v8a` | Expo Development Build / GLES 2.0 / M PLUS 1 Code | pass（制限あり） | portrait、landscape、compact viewport、IME preedit/commit の screenshot と 15.99 秒の screen recording を取得。native log: portrait `56x35`、keyboard `56x20`、landscape `106x17`、compact `56x28`、IME commit `nativeCount=1 byteCount=6`。emoji は単色表示。 |
+| 2026-09-01 | `2eb050c` | Pixel 3 / Android 11 (API 30) | `arm64-v8a` | Expo Development Build / GLES 2.0 / M PLUS 1 Code | pass（制限あり） | final code commit の clean CNG/build、portrait、keyboard resize、`きょう` native preeditを再確認。独立レビュー前の同一branch full runで landscape `106x17`、compact `56x28`、`今日` commit `nativeCount=1 byteCount=6` も確認。証跡の区別とchecksumは [validation record](evidence/issue-1-android-device.md) を参照。emoji は単色表示。 |
 
 ## 現時点の既知の制限
 
