@@ -127,12 +127,12 @@ jobs:
           cargo +"${RUST_VERSION}" install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked
 
       - name: Build Rust Android targets
+        working-directory: native/meeterm-core
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
         run: |
           cargo ndk -t arm64-v8a -t x86_64 -P 24 \
-            build --locked --release \
-            --manifest-path native/meeterm-core/Cargo.toml
+            build --locked --release
 
       - name: Generate Android project with Expo CNG
         run: npx expo prebuild --platform android --non-interactive --no-install

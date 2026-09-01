@@ -87,9 +87,9 @@ cargo fmt --check --manifest-path native/meeterm-core/Cargo.toml
 cargo test --locked --manifest-path native/meeterm-core/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path native/meeterm-core/Cargo.toml -- -D warnings
 
-cargo ndk -t arm64-v8a -t x86_64 -P 24 \
-  build --locked --release \
-  --manifest-path native/meeterm-core/Cargo.toml
+(cd native/meeterm-core && \
+  cargo ndk -t arm64-v8a -t x86_64 -P 24 \
+    build --locked --release)
 
 npx expo prebuild --platform android --non-interactive --no-install
 npx expo run:android --device
