@@ -1,0 +1,99 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.meeterm.terminal'
+version = '0.1.0'
+
+android {
+  namespace "dev.meeterm.terminal"
+  // Keep this local library on the same pinned SDK as the generated app. The
+  // Expo `:expo` aggregate still uses its own SDK fallback, so CI installs
+  // both the app build tools and that fallback (see docs/POC_ANDROID.md).
+  compileSdkVersion rootProject.ext.compileSdkVersion
+  buildToolsVersion rootProject.ext.buildToolsVersion
+  defaultConfig {
+    minSdkVersion rootProject.ext.minSdkVersion
+    targetSdkVersion rootProject.ext.targetSdkVersion
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+
+  sourceSets {
+    main {
+      // cargo-ndk writes one libmeeterm_core.so per Android ABI here. The
+      // directory is generated and is intentionally not committed.
+      jniLibs.srcDir(file("$buildDir/generated/meetermRustJniLibs"))
+    }
+  }
+}
+
+def rustProjectDir = file("../../../native/meeterm-core")
+def rustOutputDir = file("$buildDir/generated/meetermRustJniLibs")
+def requestedArchitectures = (providers.gradleProperty("reactNativeArchitectures").orNull
+  ?: "arm64-v8a,x86_64")
+  .split(",")
+  .collect { it.trim() }
+  .findAll { it }
+// The vertical slice ships Rust for the connected arm64 device and the
+// x86_64 emulator. Keep the selection derived from RN's property while
+// avoiding an accidental x86/armeabi-v7a build until those Rust targets are
+// explicitly enabled in CI.
+def configuredArchitectures = requestedArchitectures
+  .findAll { it in ["arm64-v8a", "x86_64"] }
+if (configuredArchitectures.empty) {
+  configuredArchitectures = ["arm64-v8a", "x86_64"]
+}
+def rustProfile = providers.gradleProperty("meetermRustProfile").orNull ?: "debug"
+def cargoNdkExecutable = providers.gradleProperty("cargoNdkExecutable").orNull ?: "cargo"
+
+tasks.register("buildRustAndroid", Exec) {
+  inputs.file(file("$rustProjectDir/Cargo.toml"))
+  inputs.file(file("$rustProjectDir/Cargo.lock"))
+  inputs.file(file("$rustProjectDir/rust-toolchain.toml"))
+  inputs.files(fileTree("$rustProjectDir/src"))
+  inputs.property("androidArchitectures", configuredArchitectures.join(","))
+  inputs.property("rustProfile", rustProfile)
+  outputs.dir(rustOutputDir)
+
+  doFirst {
+    def ndkHome = System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT")
+    if (!ndkHome) {
+      throw new GradleException(
+        "ANDROID_NDK_HOME must point to the pinned NDK before building meeterm-core"
+      )
+    }
+
+    // Accept either `cargo` (the cargo-ndk subcommand) or a direct
+    // cargo-ndk executable for hermetic CI wrappers.
+    def cargoPrefix = cargoNdkExecutable.endsWith("cargo-ndk")
+      ? [cargoNdkExecutable]
+      : [cargoNdkExecutable, "ndk"]
+    def targetArgs = configuredArchitectures.collectMany { ["-t", it] }
+    def cargoArgs = cargoPrefix + targetArgs + [
+      "--platform", "24",
+      "-o", rustOutputDir.absolutePath,
+      "build", "--locked"
+    ]
+    if (rustProfile == "release") {
+      cargoArgs += "--release"
+    }
+
+    project.delete(rustOutputDir)
+    commandLine(cargoArgs)
+    workingDir(rustProjectDir)
+    environment("ANDROID_NDK_HOME", ndkHome)
+  }
+}
+
+tasks.named("preBuild").configure {
+  dependsOn("buildRustAndroid")
+}
+
+dependencies {
+  testImplementation("junit:junit:4.13.2")
+}

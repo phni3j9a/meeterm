@@ -1,0 +1,15 @@
+[package]
+name = "meeterm-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Native terminal state core for meeterm's Android vertical slice"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+alacritty_terminal = "=0.26.0"
+jni = "=0.22.4"
