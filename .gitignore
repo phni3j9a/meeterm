@@ -1,0 +1,22 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+
+# Expo native build output
+/android/
+/ios/
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+modules/meeterm-terminal/android/.gradle/
+modules/meeterm-terminal/android/build/
+ios/Pods/
+ios/build/
+ios/Podfile.lock
+
+# Rust build output
+target/
