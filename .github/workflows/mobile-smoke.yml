@@ -185,9 +185,30 @@ jobs:
 
       - name: Record Metal availability
         run: |
-          swift -e 'import Metal; print(MTLCreateSystemDefaultDevice() == nil ? "unavailable" : "available")' \
-            > artifacts/ios-simulator-observability/metal-preflight.txt \
-            2>&1 || echo "preflight-error" > artifacts/ios-simulator-observability/metal-preflight.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          output_path = Path("artifacts/ios-simulator-observability/metal-preflight.txt")
+          try:
+              result = subprocess.run(
+                  [
+                      "swift",
+                      "-e",
+                      'import Metal; print(MTLCreateSystemDefaultDevice() == nil ? "unavailable" : "available")',
+                  ],
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+                  check=False,
+              )
+              output = result.stdout + result.stderr
+              if result.returncode != 0:
+                  output += f"preflight-exit={result.returncode}\n"
+          except subprocess.TimeoutExpired:
+              output = "preflight-timeout-after-30s\n"
+          output_path.write_text(output or "preflight-produced-no-output\n", encoding="utf-8")
+          PY
 
       - name: Generate iOS project with Expo CNG
         run: npx expo prebuild --platform ios --non-interactive --no-install
