@@ -19,8 +19,11 @@ collect_artifacts() {
       "${artifact_dir}/screenshot-unavailable.txt"
   fi
   adb logcat -d -v threadtime \
-    | grep -E 'Meeterm|MEETERM_SMOKE_|AndroidRuntime|FATAL EXCEPTION|dev\.meeterm\.app' \
+    | grep -E 'Meeterm|MEETERM_SMOKE_|AndroidRuntime|ActivityManager|WindowManager|SystemUI|ANR|dev\.meeterm\.app' \
     > "${artifact_dir}/logcat.txt"
+  adb shell dumpsys window windows \
+    | grep -E 'mCurrentFocus|mFocusedApp|Application Not Responding|dev\.meeterm\.app|com\.android\.systemui' \
+    > "${artifact_dir}/window.txt"
   adb shell dumpsys activity processes \
     | grep -A 16 -B 4 "${package_name}" \
     > "${artifact_dir}/process.txt"
@@ -38,6 +41,19 @@ trap collect_artifacts EXIT
 test -f "${apk_path}"
 adb wait-for-device
 adb logcat -c
+
+# sys.boot_completed can become true while System UI is still starting on a
+# fresh CI AVD. Give it a bounded readiness/settling window before app launch
+# so a transient platform ANR does not cover the visual observability capture.
+system_ui_deadline=$((SECONDS + 60))
+while (( SECONDS < system_ui_deadline )); do
+  if adb shell pidof -s com.android.systemui | grep -Eq '[0-9]'; then
+    break
+  fi
+  sleep 2
+done
+sleep 10
+
 adb install -r "${apk_path}"
 adb shell am force-stop "${package_name}"
 adb shell monkey -p "${package_name}" -c android.intent.category.LAUNCHER 1
