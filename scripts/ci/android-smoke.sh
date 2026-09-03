@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 readonly package_name="dev.meeterm.app"
 readonly artifact_dir="${GITHUB_WORKSPACE}/artifacts/android-emulator-observability"
-readonly apk_path="${GITHUB_WORKSPACE}/android/app/build/outputs/apk/release/app-release.apk"
+readonly apk_path="${artifact_dir}/app-release.apk"
 
 mkdir -p "${artifact_dir}"
 

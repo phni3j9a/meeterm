@@ -21,10 +21,6 @@ final class TerminalInputView: UITextView {
     fatalError("init(coder:) has not been implemented")
   }
 
-  override var inputAccessoryView: UIView? {
-    terminalAccessoryView
-  }
-
   override var keyCommands: [UIKeyCommand]? {
     let commands = [
       UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(sendEscape)),
@@ -99,6 +95,7 @@ final class TerminalInputView: UITextView {
     keyboardType = .default
     keyboardAppearance = .dark
     returnKeyType = .default
+    inputAccessoryView = terminalAccessoryView
     inputAssistantItem.leadingBarButtonGroups = []
     inputAssistantItem.trailingBarButtonGroups = []
   }

@@ -111,6 +111,42 @@ jobs:
             --no-daemon --stacktrace \
             2>&1 | tee ../artifacts/android-emulator-observability/gradle-build.log
 
+      - name: Preserve APK and reclaim build-only disk space
+        run: |
+          set -Eeuo pipefail
+          : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set}"
+          : "${ANDROID_HOME:?ANDROID_HOME must be set}"
+          readonly evidence_dir="${GITHUB_WORKSPACE}/artifacts/android-emulator-observability"
+          readonly ndk_dir="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
+          readonly cmake_dir="${ANDROID_HOME}/cmake/${ANDROID_CMAKE_VERSION}"
+
+          test -f "${GITHUB_WORKSPACE}/android/app/build/outputs/apk/release/app-release.apk"
+          cp \
+            "${GITHUB_WORKSPACE}/android/app/build/outputs/apk/release/app-release.apk" \
+            "${evidence_dir}/app-release.apk"
+          {
+            echo "before_cleanup"
+            df -h "${GITHUB_WORKSPACE}"
+            du -sh \
+              "${GITHUB_WORKSPACE}/android" \
+              "${GITHUB_WORKSPACE}/node_modules" \
+              "${GITHUB_WORKSPACE}/native/meeterm-core/target" \
+              "${ndk_dir}" \
+              "${cmake_dir}"
+          } > "${evidence_dir}/disk-space.txt"
+
+          rm -rf \
+            "${GITHUB_WORKSPACE}/android" \
+            "${GITHUB_WORKSPACE}/node_modules" \
+            "${GITHUB_WORKSPACE}/native/meeterm-core/target" \
+            "${ndk_dir}" \
+            "${cmake_dir}"
+
+          {
+            echo "after_cleanup"
+            df -h "${GITHUB_WORKSPACE}"
+          } >> "${evidence_dir}/disk-space.txt"
+
       - name: Enable KVM access
         run: |
           if [[ -e /dev/kvm ]]; then
