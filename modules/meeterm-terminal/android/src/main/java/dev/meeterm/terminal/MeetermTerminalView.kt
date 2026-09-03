@@ -56,6 +56,11 @@ class MeetermTerminalView(
   private var systemInsetLeft = 0
   private var systemInsetRight = 0
   private val editable = SpannableStringBuilder()
+  private val settledFrameRequest = Runnable {
+    if (attached && terminalHandle != 0L && windowVisibility == View.VISIBLE) {
+      surface.requestRender()
+    }
+  }
 
   private val inputSession = InputSession(
     sink = RustInputSink { terminalHandle },
@@ -126,6 +131,7 @@ class MeetermTerminalView(
       val surfaceHeight = bottom - top
       renderer.updateSurfaceSize(surfaceWidth, surfaceHeight)
       reconcileResize(surfaceWidth, surfaceHeight)
+      scheduleSettledFrame()
     }
 
     specialKeyRow = createSpecialKeyRow(context)
@@ -148,6 +154,7 @@ class MeetermTerminalView(
       emitReady()
       reconcileResize(surface.width, surface.height)
       surface.requestRender()
+      scheduleSettledFrame()
     }
   }
 
@@ -162,6 +169,7 @@ class MeetermTerminalView(
         emitReady()
         reconcileResize(surface.width, surface.height)
         surface.requestRender()
+        scheduleSettledFrame()
       }
     }
     surface.onResume()
@@ -170,6 +178,7 @@ class MeetermTerminalView(
   override fun onDetachedFromWindow() {
     Log.i(TAG, "detached")
     attached = false
+    removeCallbacks(settledFrameRequest)
     surface.onPause()
     renderer.attachTerminal(0L)
     releaseBinding()
@@ -182,7 +191,9 @@ class MeetermTerminalView(
     if (visibility == View.VISIBLE) {
       surface.onResume()
       surface.requestRender()
+      scheduleSettledFrame()
     } else {
+      removeCallbacks(settledFrameRequest)
       surface.onPause()
     }
   }
@@ -205,6 +216,11 @@ class MeetermTerminalView(
     val contentRight = max(contentLeft + renderer.cellWidthPx, width - systemInsetRight)
     surface.layout(contentLeft, 0, contentRight, desiredHeight)
     specialKeyRow.layout(contentLeft, desiredHeight, contentRight, desiredHeight + dp(48))
+  }
+
+  private fun scheduleSettledFrame() {
+    removeCallbacks(settledFrameRequest)
+    postDelayed(settledFrameRequest, 500)
   }
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
