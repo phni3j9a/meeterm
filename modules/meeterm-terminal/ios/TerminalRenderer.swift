@@ -21,13 +21,14 @@ vertex TerminalRasterData terminal_vertex(uint vertexId [[vertex_id]]) {
     float2(-1.0,  1.0),
     float2( 1.0,  1.0)
   };
-  // A Core Graphics bitmap starts at its lower-left logical row. Keep that
-  // orientation when sampling it into Metal's normalized texture space.
+  // Core Graphics rasterizes into bottom-up bitmap rows, while the fullscreen
+  // Metal quad's upper vertices must sample the first visible terminal row.
+  // Flip only the texture Y axis so glyphs remain upright on screen.
   constexpr float2 coordinates[] = {
-    float2(0.0, 0.0),
-    float2(1.0, 0.0),
     float2(0.0, 1.0),
-    float2(1.0, 1.0)
+    float2(1.0, 1.0),
+    float2(0.0, 0.0),
+    float2(1.0, 0.0)
   };
 
   TerminalRasterData output;

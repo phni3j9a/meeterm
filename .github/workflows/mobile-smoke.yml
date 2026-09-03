@@ -119,6 +119,9 @@ jobs:
           readonly evidence_dir="${GITHUB_WORKSPACE}/artifacts/android-emulator-observability"
           readonly ndk_dir="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
           readonly cmake_dir="${ANDROID_HOME}/cmake/${ANDROID_CMAKE_VERSION}"
+          readonly dotnet_dir="/usr/share/dotnet"
+          readonly ghc_dir="/opt/ghc"
+          readonly codeql_dir="/opt/hostedtoolcache/CodeQL"
 
           test -f "${GITHUB_WORKSPACE}/android/app/build/outputs/apk/release/app-release.apk"
           cp \
@@ -133,6 +136,11 @@ jobs:
               "${GITHUB_WORKSPACE}/native/meeterm-core/target" \
               "${ndk_dir}" \
               "${cmake_dir}"
+            for runner_tool_dir in "${dotnet_dir}" "${ghc_dir}" "${codeql_dir}"; do
+              if [[ -d "${runner_tool_dir}" ]]; then
+                sudo du -sh "${runner_tool_dir}"
+              fi
+            done
           } > "${evidence_dir}/disk-space.txt"
 
           rm -rf \
@@ -141,6 +149,15 @@ jobs:
             "${GITHUB_WORKSPACE}/native/meeterm-core/target" \
             "${ndk_dir}" \
             "${cmake_dir}"
+
+          # These preinstalled SDKs are unrelated to this ephemeral Android job.
+          # Removing only these exact paths leaves enough room for the API image
+          # and its writable AVD without weakening the native build checks above.
+          for runner_tool_dir in "${dotnet_dir}" "${ghc_dir}" "${codeql_dir}"; do
+            if [[ -d "${runner_tool_dir}" ]]; then
+              sudo rm -rf -- "${runner_tool_dir}"
+            fi
+          done
 
           {
             echo "after_cleanup"
