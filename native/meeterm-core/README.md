@@ -1,13 +1,12 @@
 # meeterm-core
 
-`meeterm-core` is the Rust-owned terminal state for the Issue #1 Android
-vertical slice. It intentionally contains no SSH, tmux, Tokio runtime, UniFFI,
-or React Native code. A small JNI boundary connects the Android native module
-directly to the Rust registry.
+`meeterm-core` is the Rust-owned terminal state for the native Android and iOS
+vertical slices. It intentionally contains no SSH, tmux, Tokio runtime,
+UniFFI, or React Native code. JNI connects Android to the registry, while the
+same narrow C ABI is linked as an iOS static library.
 
 `alacritty_terminal::Term` owns the VT state. The crate exposes the JNI API used
-by the Android module plus a small C ABI for focused native tests and future
-binding work; Rust tests use the safe API directly.
+by Android and the C ABI used by iOS; Rust tests use the safe API directly.
 The built-in demo is fed from Rust so terminal output does not travel through
 JavaScript.
 
@@ -83,10 +82,28 @@ The current snapshot color conversion uses the deterministic ANSI/xterm
 palette for named and indexed colors. A future renderer may use the same
 cell records directly, but this crate does not render pixels.
 
+## iOS static library
+
+The crate emits `libmeeterm_core.a` for all currently supported iOS slices:
+
+- `aarch64-apple-ios` for physical devices;
+- `aarch64-apple-ios-sim` for Apple Silicon simulators;
+- `x86_64-apple-ios` for Intel simulators.
+
+`modules/meeterm-terminal/MeetermTerminal.podspec` invokes
+`ios/build-rust.sh` as a CocoaPods build phase. The script derives the Rust
+target from Xcode's `PLATFORM_NAME` and `ARCHS`, uses the lockfile, and places
+the target-specific archive in `BUILT_PRODUCTS_DIR`. Rust targets are pinned
+in `rust-toolchain.toml`; Xcode and the matching iOS SDK are still required to
+link the archive.
+
 ## Checks
 
 ```sh
 cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
+cargo check --locked --target aarch64-apple-ios
+cargo check --locked --target aarch64-apple-ios-sim
+cargo check --locked --target x86_64-apple-ios
 ```

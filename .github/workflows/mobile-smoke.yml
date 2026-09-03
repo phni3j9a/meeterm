@@ -1,0 +1,237 @@
+name: Mobile smoke
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - ".github/workflows/mobile-smoke.yml"
+      - "App.tsx"
+      - "app.json"
+      - "assets/**"
+      - "babel.config.*"
+      - "index.ts"
+      - "metro.config.js"
+      - "package.json"
+      - "package-lock.json"
+      - "modules/**"
+      - "native/**"
+      - "scripts/ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22.22.2
+  NPM_VERSION: 10.9.7
+  RUST_VERSION: 1.96.0
+  CARGO_NDK_VERSION: 4.1.2
+  ANDROID_PLATFORM: android-36
+  ANDROID_BUILD_TOOLS: 36.0.0
+  ANDROID_FALLBACK_BUILD_TOOLS: 35.0.0
+  ANDROID_CMAKE_VERSION: 3.22.1
+  ANDROID_NDK_VERSION: 27.1.12297006
+
+jobs:
+  android-emulator:
+    name: Android emulator / native frame
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Initialize Android evidence directory
+        run: |
+          mkdir -p artifacts/android-emulator-observability
+          {
+            echo "runner=${RUNNER_NAME}"
+            echo "os=${RUNNER_OS}"
+            echo "arch=${RUNNER_ARCH}"
+            echo "commit=${GITHUB_SHA}"
+          } > artifacts/android-emulator-observability/metadata.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Pin npm and install JavaScript dependencies
+        run: |
+          npm install --global npm@"${NPM_VERSION}"
+          npm ci
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+
+      - name: Install pinned Android native toolchain
+        run: |
+          sdkmanager --sdk_root="${ANDROID_HOME}" --install \
+            "platform-tools" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "build-tools;${ANDROID_FALLBACK_BUILD_TOOLS}" \
+            "cmake;${ANDROID_CMAKE_VERSION}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Install pinned Rust toolchain and cargo-ndk
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup target add --toolchain "${RUST_VERSION}" x86_64-linux-android
+          cargo +"${RUST_VERSION}" install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked
+
+      - name: Generate Android project with Expo CNG
+        run: npx expo prebuild --platform android --non-interactive --no-install
+
+      - name: Assemble self-contained Android smoke app
+        working-directory: android
+        env:
+          NODE_ENV: production
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease \
+            -PreactNativeArchitectures=x86_64 \
+            -PmeetermRustProfile=release \
+            --no-daemon --stacktrace \
+            2>&1 | tee ../artifacts/android-emulator-observability/gradle-build.log
+
+      - name: Enable KVM access
+        run: |
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm
+          fi
+
+      - name: Boot emulator and verify the native terminal frame
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: scripts/ci/android-smoke.sh
+
+      - name: Record unavailable Android evidence
+        if: always()
+        run: scripts/ci/finalize-evidence.sh android-emulator-observability
+
+      - name: Upload Android observability artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: android-emulator-observability
+          path: artifacts/android-emulator-observability
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-simulator:
+    name: iOS Simulator / native frame
+    runs-on: macos-26-intel
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Initialize iOS evidence directory
+        run: |
+          mkdir -p artifacts/ios-simulator-observability
+          {
+            echo "runner=${RUNNER_NAME}"
+            echo "os=${RUNNER_OS}"
+            echo "arch=${RUNNER_ARCH}"
+            echo "commit=${GITHUB_SHA}"
+          } > artifacts/ios-simulator-observability/metadata.txt
+
+      - name: Select pinned Xcode
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version | tee artifacts/ios-simulator-observability/xcode-version.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Pin npm and install JavaScript dependencies
+        run: |
+          npm install --global npm@"${NPM_VERSION}"
+          npm ci
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup target add --toolchain "${RUST_VERSION}" x86_64-apple-ios
+
+      - name: Boot an available iPhone Simulator
+        run: scripts/ci/ios-select-simulator.sh
+
+      - name: Record Metal availability
+        run: |
+          swift -e 'import Metal; print(MTLCreateSystemDefaultDevice() == nil ? "unavailable" : "available")' \
+            > artifacts/ios-simulator-observability/metal-preflight.txt \
+            2>&1 || echo "preflight-error" > artifacts/ios-simulator-observability/metal-preflight.txt
+
+      - name: Generate iOS project with Expo CNG
+        run: npx expo prebuild --platform ios --non-interactive --no-install
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: pod install
+
+      - name: Build unsigned self-contained iOS smoke app
+        env:
+          NODE_ENV: production
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/meeterm.xcworkspace \
+            -scheme meeterm \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_UDID}" \
+            -derivedDataPath "${RUNNER_TEMP}/meeterm-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build \
+            2>&1 | tee artifacts/ios-simulator-observability/xcodebuild.log
+
+      - name: Install and verify the native terminal frame
+        run: scripts/ci/ios-smoke.sh
+
+      - name: Collect iOS Simulator observability
+        if: always()
+        run: scripts/ci/ios-collect-artifacts.sh
+
+      - name: Record unavailable iOS evidence
+        if: always()
+        run: scripts/ci/finalize-evidence.sh ios-simulator-observability
+
+      - name: Upload iOS observability artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ios-simulator-observability
+          path: artifacts/ios-simulator-observability
+          if-no-files-found: error
+          retention-days: 14

@@ -1,4 +1,10 @@
 [toolchain]
 channel = "1.96.0"
 profile = "minimal"
-targets = ["aarch64-linux-android", "x86_64-linux-android"]
+targets = [
+  "aarch64-apple-ios",
+  "aarch64-apple-ios-sim",
+  "aarch64-linux-android",
+  "x86_64-apple-ios",
+  "x86_64-linux-android",
+]

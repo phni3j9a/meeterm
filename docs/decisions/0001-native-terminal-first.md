@@ -1,4 +1,4 @@
-# ADR 0001: Prove the native terminal before SSH/tmux integration
+# ADR 0001: Prove native terminal foundations before SSH/tmux integration
 
 ## Status
 
@@ -12,25 +12,25 @@ Building SSH, tmux orchestration, navigation, and product UI first would allow a
 
 ## Decision
 
-The first implementation milestone will be an Android native-terminal vertical slice with local fixed byte input.
+The first implementation milestone will be a dual-platform native-terminal foundation with local fixed byte input. Shared Rust terminal semantics come first, followed by thin Android and iOS native adapters. GitHub-hosted Android emulator and iOS Simulator jobs are established early alongside the adapters.
 
 It will prove:
 
-- Expo Development Build integration;
-- React Native native-view mounting;
-- Rust-owned `alacritty_terminal::Term` state;
+- shared Rust-owned `alacritty_terminal::Term` semantics and native-only snapshots;
+- Expo Development Build integration and React Native native-view mounting on both platforms;
+- thin Android and iOS native adapters without a JavaScript terminal data path;
 - native GPU rendering;
 - Japanese/CJK font behavior;
 - native Japanese IME composition;
 - deterministic viewport resize behavior.
 
-SSH and tmux integration will follow only after this slice is demonstrated on a real Android device.
+The emulator/Simulator jobs machine-gate build, install, launch, native readiness, first native frame, and no crash. Every run uploads an observability bundle with available screenshots/logs or explicit unavailable diagnostics; screenshots are not existence or pixel-diff gates. SSH and tmux integration will follow only after both native adapters demonstrate that this foundation is viable. Physical-device GPU, font, and IME validation remains separate follow-up evidence.
 
 ## Consequences
 
 ### Positive
 
-- The riskiest architectural assumptions fail early if they are wrong.
+- The riskiest shared and platform-specific architectural assumptions fail early if they are wrong.
 - WebView/JS terminal fallbacks are not accidentally entrenched.
 - SSH/tmux layers can be built on a known terminal/input foundation.
 - Japanese input is validated before broad UI work.
@@ -38,11 +38,12 @@ SSH and tmux integration will follow only after this slice is demonstrated on a 
 ### Negative
 
 - The first milestone will not look like a complete SSH application.
+- Two native adapters and two hosted mobile jobs add build and dependency coordination before product UI.
 - Some throwaway local test plumbing is acceptable.
-- iOS remains unproven until the Android foundation is stable enough to port.
+- Emulator/Simulator evidence does not establish physical-device GPU, font, or IME parity.
 
 ## Guardrails
 
-Do not broaden this milestone to include product-complete navigation, SSH, tmux, server profiles, or general remote-management features.
+Do not broaden this milestone to include product-complete navigation, SSH, tmux, server profiles, or general remote-management features. Do not make an iOS screenshot from a static React Native placeholder count as native terminal verification.
 
 If the native renderer approach proves unsound, document the concrete failure and evaluate the smallest architecture change rather than silently replacing the terminal with xterm.js/WebView.

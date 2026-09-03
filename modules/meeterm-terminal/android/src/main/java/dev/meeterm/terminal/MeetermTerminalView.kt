@@ -303,6 +303,7 @@ class MeetermTerminalView(
   private fun emitReady() {
     if (!attached || terminalHandle == 0L) return
     Log.i(TAG, "ready terminalId=$terminalId handle=$terminalHandle")
+    Log.i(TAG, "MEETERM_SMOKE_NATIVE_READY")
     onNativeReady(
       mapOf(
         "terminalId" to terminalId,

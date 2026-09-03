@@ -59,6 +59,7 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   private var atlas: GlyphAtlas? = null
   private var latestMetrics = RendererMetrics(cellWidth, cellHeight, 0, 0)
   private var loggedSnapshot = false
+  private var loggedFirstFrame = false
 
   val cellWidthPx: Int
     get() = cellWidth
@@ -155,6 +156,11 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
 
     drawCursor(snapshot)
     drawPreedit(snapshot)
+
+    if (!loggedFirstFrame) {
+      Log.i(TAG, "MEETERM_SMOKE_FIRST_FRAME")
+      loggedFirstFrame = true
+    }
   }
 
   private fun drawGlyph(

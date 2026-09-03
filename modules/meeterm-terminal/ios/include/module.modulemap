@@ -1,0 +1,4 @@
+module MeetermCoreFFI [system] {
+  header "meeterm_core.h"
+  export *
+}
