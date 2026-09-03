@@ -1,8 +1,9 @@
-//! Rust-owned terminal state for the meeterm Android vertical slice.
+//! Rust-owned terminal state for meeterm's Android and iOS vertical slices.
 
 mod dimensions;
 mod ffi;
 mod input;
+#[cfg(target_os = "android")]
 mod jni;
 mod registry;
 mod snapshot;

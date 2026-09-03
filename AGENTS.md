@@ -100,6 +100,8 @@ One mobile native package and one shared native library/runtime/terminal registr
 
 Generated typed bindings are preferred for the low-frequency React Native ↔ Rust control plane. The native terminal view should bind to stable terminal IDs instead of owning the remote session lifetime.
 
+The terminal semantics, opaque IDs, registry ownership, input contract, and native-only snapshot format should be shared across Android and iOS. Android and iOS should remain thin adapters for their own view/surface lifecycle, font metrics, text-input protocol, renderer backend, and native build integration. Do not duplicate the Rust terminal state or create a platform-specific second source of truth merely to make one adapter convenient.
+
 ## Japanese and CJK are first-class
 
 Do not treat Japanese support as post-MVP polish.
@@ -150,18 +152,31 @@ Prefer the smallest implementation that proves the current milestone. Avoid spec
 
 ## Initial engineering sequence
 
-The first implementation milestone is the native terminal vertical slice on Android. Before broad UI or SSH/tmux features, prove:
+The first implementation milestone is a dual-platform native terminal foundation. Prove shared Rust terminal semantics first, keep Android and iOS as thin native adapters, and establish both GitHub-hosted mobile jobs early. An environment-only iOS check must not be reported as iOS terminal verification.
 
-1. Expo Development Build + custom native package.
-2. Native `TerminalView` mounted from React Native.
-3. Rust-owned `alacritty_terminal::Term`.
-4. Fixed ANSI/VT byte input.
-5. Native GPU rendering.
-6. Japanese/CJK/font behavior.
-7. Native Japanese IME composition and committed input.
-8. Deterministic resize behavior.
+Before broad UI or SSH/tmux features, prove:
 
-Only then add `russh`, tmux Control Mode, pane routing, reconnect/resync, and full product UI.
+1. Shared Rust-owned `alacritty_terminal::Term` semantics, deterministic resize, input encoding, and native-only snapshot fixtures.
+2. One native package contract in which both platform views bind stable terminal IDs and retain one shared registry/runtime.
+3. Expo Development Build/CNG generation for Android and iOS, with generated native directories remaining untracked.
+4. Thin Android and iOS native `TerminalView` adapters that keep terminal bytes, cells, render frames, and IME composition out of JavaScript.
+5. A real native GPU surface on each platform consuming the shared terminal snapshot. The iOS backend choice remains an evidence-driven implementation decision; see `docs/ARCHITECTURE.md`.
+6. Japanese/CJK/font behavior, native Japanese IME composition and committed input, and deterministic resize behavior on the applicable platform paths.
+7. GitHub-hosted Android emulator and iOS Simulator jobs that build, install, launch, signal native readiness and a first frame, and detect crashes while always uploading an observability bundle.
+
+Only after both adapters and their meaningful mobile smoke gates are in place should the project add `russh`, tmux Control Mode, pane routing, reconnect/resync, and full product UI.
+
+## CI and visual evidence boundary
+
+For both mobile jobs, the machine-gated acceptance boundary is: generated project/build succeeds, the app installs, the app launches, the expected native module is ready, a first native terminal frame is reported, and the process does not crash. These gates do not claim physical-device GPU, font fallback, rotation, or IME parity.
+
+Standard GitHub-hosted macOS runners do not guarantee Metal. The iOS job must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
+
+The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review.
+
+The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria.
+
+Treat updates to Expo/React Native, the Rust terminal stack, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, fonts, or the chosen iOS renderer backend as cross-platform native dependency changes. Regenerate CNG output on a fresh checkout and run both mobile jobs; do not patch ignored generated directories to accommodate a dependency update.
 
 ## Change policy
 

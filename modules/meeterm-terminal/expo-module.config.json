@@ -1,5 +1,10 @@
 {
-  "platforms": ["android"],
+  "platforms": ["android", "apple"],
+  "apple": {
+    "modules": ["MeetermTerminalModule"],
+    "podspecPath": "MeetermTerminal.podspec",
+    "swiftModuleName": "MeetermTerminal"
+  },
   "android": {
     "modules": ["dev.meeterm.terminal.MeetermTerminalModule"]
   }

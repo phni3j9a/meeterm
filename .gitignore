@@ -3,6 +3,7 @@ node_modules/
 dist/
 web-build/
 *.log
+/artifacts/
 
 # Expo native build output
 /android/

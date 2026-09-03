@@ -1,6 +1,6 @@
 # Android native terminal PoC
 
-この文書は Issue #1 の Android vertical slice を再現するための runbook 兼、実機検証記録です。新しい検証を行った場合は、実機の機種、OS、commit、renderer/font、結果を下の記録欄へ追記してください。
+この文書は、dual-platform native terminal foundation における Android 側の Issue #1 vertical slice を再現するための runbook 兼、実機検証記録です。新しい検証を行った場合は、実機の機種、OS、commit、renderer/font、結果を下の記録欄へ追記してください。iOS Simulator/実機の検証契約は [`CI_MOBILE.md`](CI_MOBILE.md) に分離します。
 
 PoC の範囲は Expo Development Build、native `TerminalView`、Rust 所有の `alacritty_terminal::Term`、固定 ANSI/VT bytes、native GPU renderer、native IME、決定的な resize です。SSH、tmux、server profile、remote backend、WebView terminal はこの段階の対象外です。
 
@@ -8,7 +8,7 @@ PoC の範囲は Expo Development Build、native `TerminalView`、Rust 所有の
 
 React Native/Expo の source of truth は root の TypeScript と app config、native module の source は `modules/meeterm-terminal/`、端末 core の source は `native/meeterm-core/` です。
 
-`npx expo prebuild` と `npx expo run:android` が生成する `android/` と `ios/` は Expo Continuous Native Generation (CNG) の生成物です。生成ディレクトリを手で修正して動作を合わせないでください。変更は app config、local module の config/plugin、Kotlin/C++/Rust source に戻します。生成ディレクトリを将来 commit する運用に変える場合は、別途 source-of-truth を明記してください。
+`npx expo prebuild` と `npx expo run:android` / `npx expo run:ios` が生成する `android/` と `ios/` は Expo Continuous Native Generation (CNG) の生成物です。生成ディレクトリは untracked のままにし、手で修正して動作を合わせないでください。変更は app config、local module の config/plugin、Kotlin/Swift/Objective-C/Rust source に戻します。生成ディレクトリを将来 commit する運用に変える場合は、別途 source-of-truth を明記してください。
 
 ## 固定する環境
 
@@ -25,6 +25,8 @@ React Native/Expo の source of truth は root の TypeScript と app config、n
 | Android NDK | 27.1.12297006 | `sdkmanager --list` |
 
 JDK は 17 を明示してください。JDK 21 などが PATH の先にある状態で「たまたま」ビルドを通した結果は再現条件にしません。
+
+この runbook の固定表は Android 開発環境を対象にします。macOS/Xcode/CocoaPods/iOS Simulator の runner と signing 境界は [`CI_MOBILE.md`](CI_MOBILE.md) の方針を使用します。
 
 まず、実際の SDK/JDK の絶対パスを環境に合わせて設定します。
 
@@ -99,9 +101,15 @@ npx expo run:android --device
 
 `expo run:android` は native project が存在しない場合に prebuild、Gradle build、install、Metro 起動を行います。問題の切り分けを容易にするため、上記では prebuild を先に明示しています。
 
+両 platform の runner 手順、artifact 命名、Codex による screenshot review、native dependency 更新時の再生成手順は [`CI_MOBILE.md`](CI_MOBILE.md) を参照してください。
+
 ## 自動検証と手動検証の境界
 
-CI で実行する自動検証は、Rust の byte/VT/registry/snapshot/input テスト、TypeScript 型検査、Expo config/doctor、Android target の Rust build、生成 Android project の Gradle assemble/unit test です。CI は実機 GPU、IME、フォント fallback、画面回転を合格にはできません。
+共有 CI で実行する下位検証は、Rust の byte/VT/registry/snapshot/input テスト、TypeScript 型検査、Expo config/doctor、各 native target の build です。Android emulator と iOS Simulator の mobile job の machine gate は、CNG 生成 project の build、install、launch、expected native module の readiness、最初の native terminal frame、crash がないことです。CI は実機 GPU、IME、フォント fallback、画面回転の parity を合格にはできません。
+
+成功・失敗に関係なく observability bundle を常に upload します。launch 到達後は screenshot と sanitized native log を格納し、それ以前の失敗や capture failure は偽画像ではなく unavailable 診断として残します。現段階では screenshot existence や pixel-difference を machine gate にしません。native UI を変更した場合、visual success を報告する前に Codex が Android emulator と iOS Simulator の両方の実 screenshot を download して表示確認します。artifact の存在、画像サイズ、process の終了コードだけでは visual review とみなしません。
+
+iOS Simulator は distribution signing を要求しない unsigned build/install 境界です。証明書、provisioning profile、Apple signing secret はこの job の前提にしません。iOS physical device と TestFlight は、後続の signed workflow と device-specific evidence で検証します。
 
 生成される local Expo module の Gradle project 名は `meeterm-terminal` です。native unit test が追加された場合は `android` directory で `:meeterm-terminal:testDebugUnitTest` を実行します。CI はこの task を検出して library test を先に実行し、存在する場合だけ `:app:testDebugUnitTest` も実行します。
 
@@ -169,7 +177,7 @@ cargo clippy --locked --all-targets --manifest-path native/meeterm-core/Cargo.to
 
 ## 現時点の既知の制限
 
-- Android-only の PoC であり、iOS は対象外です。
+- この文書は Android 側の PoC と実機記録です。iOS は同じ Rust terminal semantics に対する別の thin native adapter として、Simulator machine gate と後続の physical-device 検証で扱います。
 - SSH、tmux、connection lifecycle、server profile、remote/backend transport はまだありません。
 - committed input は現段階では検証のため local `Term` に loopback されます。remote shell への送信を意味しません。
 - renderer は GLES 2.0 の demand-driven redraw ですが、現段階では dirty region ではなく viewport 全体を描画します。性能最適化は未実施です。

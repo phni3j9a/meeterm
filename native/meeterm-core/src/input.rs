@@ -1,7 +1,7 @@
-//! Native input encoding. The Android view will call these functions after
-//! the platform IME has committed text or produced a special key event.
+//! Native input encoding. A platform view calls these functions after the OS
+//! IME has committed text or produced a special key event.
 
-/// Stable values used by the Kotlin/JNI boundary.
+/// Stable values used by the Kotlin/JNI and Swift/C boundaries.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpecialKey {

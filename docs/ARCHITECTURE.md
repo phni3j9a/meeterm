@@ -13,7 +13,7 @@ React Native / Expo
 │                               │
 ▼                               ▼
 Control bridge              Native Terminal View
-                            
+
 └──────────────┬────────────────┘
                ▼
         Rust native core
@@ -124,6 +124,17 @@ react-native-meeterm
 ```
 
 Do not split crates merely to match this diagram. Start with the smallest maintainable Rust structure and split only when responsibilities genuinely diverge.
+
+### Shared terminal core and platform adapters
+
+The Rust terminal semantics are the cross-platform boundary. The terminal registry, opaque terminal IDs, `alacritty_terminal::Term`, byte-oriented input contract, resize rules, and native-only terminal snapshot format should have one implementation and one source of truth.
+
+Each mobile platform then supplies a thin adapter:
+
+- Android owns the Expo/Kotlin view, JNI conversion, Android text-input protocol, font metrics, and its native surface/renderer integration.
+- iOS owns the Expo/Swift or Objective-C view, the Apple bridge to the Rust library, UIKit text-input protocol, font metrics, and its native surface/renderer integration.
+
+The adapters may use different graphics and text APIs, but they must preserve the same terminal ID lifetime, snapshot semantics, committed-input behavior, and resize contract. Do not create a second terminal registry or move terminal bytes/cells/render frames through JavaScript to make the adapters look identical.
 
 ## React Native ↔ Rust control bridge
 
@@ -325,6 +336,10 @@ Android: native view/surface → EGL → OpenGL ES
 iOS: native view/layer → ANGLE/OpenGL ES compatibility → Metal
 ```
 
+The iOS line is a current compatibility hypothesis, not a settled implementation choice. Direct Metal versus ANGLE/OpenGL ES compatibility remains unresolved until a small native prototype supplies evidence about snapshot throughput, text/CJK coverage, IME and lifecycle behavior, build/dependency cost, and maintainability. Record that tradeoff when choosing the backend; do not silently replace the native GPU path with a WebView or JavaScript renderer.
+
+The initial iOS vertical slice is that prototype and deliberately uses a direct `MTKView`/Metal backend. CoreText rasterizes the native snapshot into a full-frame texture, and Metal submits it on demand. This proves the shared Rust/C ABI, UIKit input, resize, and native GPU-surface boundaries without adding ANGLE before there is reusable OpenGL renderer code. It is not yet a final performance decision: full-frame CPU raster/upload, glyph-atlas work, damage tracking, and the possible value of a shared ANGLE path must be measured before the production renderer is selected.
+
 A proven open-source implementation such as Fressh may be used as a reference or fork basis for the difficult renderer/build glue, subject to license attribution and code review. meeterm should own the architecture boundary and be capable of maintaining the renderer it ships.
 
 Rendering should be demand-driven when practical. Terminal damage, cursor changes, scrolling, resize, and animations should schedule frames; an idle terminal should not require a permanent high-frequency render loop.
@@ -403,18 +418,27 @@ Secrets belong in platform secure storage. Do not introduce a local database as 
 
 ## Initial technical milestone
 
-Before broad product UI, prove the riskiest native path vertically on Android:
+Before broad product UI, prove a dual-platform native-terminal foundation while keeping the terminal data plane native:
 
-1. Expo Development Build launches with the custom native package.
-2. React Native mounts a native `TerminalView`.
-3. Rust owns an `alacritty_terminal::Term`.
-4. Fixed ANSI/VT bytes update the Term.
-5. The native renderer draws the Term on-device.
-6. Latin text, Japanese text, wide characters, combining marks, and representative emoji render acceptably.
-7. The software keyboard can perform Japanese IME composition and commit text through the native terminal input path.
-8. Resize behavior works for portrait/landscape and relevant foldable viewport changes.
+1. Shared Rust `alacritty_terminal::Term` semantics, fixed ANSI/VT fixtures, input encoding, snapshots, and deterministic resize behavior are covered below the renderer.
+2. Expo Development Builds mount one native `TerminalView` contract on both Android and iOS, with each view binding a stable terminal ID.
+3. The Android and iOS adapters each obtain and render a real Rust-owned terminal snapshot on a native GPU surface. The iOS graphics backend is selected from the evidence described above.
+4. Latin text, Japanese/CJK text, wide characters, combining marks, and representative emoji have an explicit validation path on each platform; known font limitations remain documented.
+5. Each platform's native text-input protocol keeps composition local and commits UTF-8 exactly once into the Rust input path.
+6. Portrait/landscape, keyboard, and relevant window-size changes produce deterministic terminal resize behavior where the platform permits the check.
+7. GitHub-hosted Android emulator and iOS Simulator jobs provide machine gates for build, install, launch, native readiness, first native frame, and no crash. Each job always uploads an observability bundle containing the available screenshot/log evidence or explicit capture-unavailable diagnostics; screenshots are not pixel-diff assertions.
 
-SSH and tmux should be added only after this native terminal vertical slice demonstrates that the renderer/input foundation is viable.
+SSH and tmux should be added only after both native adapters demonstrate that the shared renderer/input foundation is viable. A simulator/emulator smoke result does not replace physical-device GPU, font, or IME validation.
+
+## CI and mobile evidence
+
+The mobile CI contract is intentionally split between machine gates and human inspection. A job passes its machine portion only when the generated CNG project builds, the app installs, launches, reports the expected native module as ready, reports a first native terminal frame, and does not crash. The job always uploads its evidence bundle; a failure before capture is represented by an unavailable diagnostic, not a fake screenshot.
+
+On a standard hosted macOS runner, Metal availability is recorded rather than assumed. If Metal is unavailable, the iOS Simulator may render the same Rust snapshot and CoreText raster through an explicitly marked native CoreGraphics fallback. That validates the non-JavaScript terminal path and yields reviewable CI evidence, but it does not satisfy the outstanding iOS Metal execution check. A physical device or GPU-capable runner must supply that evidence later.
+
+There is no pixel-difference gate at this stage. For a native UI change, visual success is reported only after Codex downloads and actually views both the Android emulator screenshot and the iOS Simulator screenshot. Artifact existence, screenshot dimensions, or a successful process exit is not visual review. See [`docs/CI_MOBILE.md`](CI_MOBILE.md) for the runner, signing, CNG, and staged-job guide.
+
+iOS Simulator builds are unsigned simulator validation and must not require distribution certificates, provisioning profiles, or Apple secrets. Physical iOS devices and TestFlight are later signed workflows with separate credentials and acceptance criteria.
 
 ## Architectural non-goals
 
