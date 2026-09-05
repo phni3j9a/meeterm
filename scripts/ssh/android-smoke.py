@@ -117,6 +117,7 @@ class AndroidDevice:
         try:
             result = subprocess.run(
                 command,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout,
@@ -142,7 +143,7 @@ class AndroidDevice:
 
     def dump_ui(self) -> list[Node]:
         output = self.run(
-            ("shell", "uiautomator", "dump", "/dev/tty"),
+            ("shell", "-tt", "uiautomator", "dump", "/dev/tty"),
             "uiautomator",
             timeout=10.0,
         )
@@ -264,6 +265,7 @@ def resolve_serial(adb_path: str, requested: str | None) -> str:
     try:
         result = subprocess.run(
             [adb_path, "devices"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=10.0,
