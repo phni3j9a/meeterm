@@ -1,14 +1,15 @@
 # meeterm-core
 
 `meeterm-core` is the Rust-owned terminal state for the native Android and iOS
-vertical slices. It intentionally contains no SSH, tmux, Tokio runtime,
-UniFFI, or React Native code. JNI connects Android to the registry, while the
-same narrow C ABI is linked as an iOS static library.
+vertical slices. It includes a `russh` SSH connection/session layer and one
+process-wide Tokio runtime. It contains no tmux or React Native code. JNI
+connects Android to the registry, while the same C ABI is linked as an iOS
+static library.
 
 `alacritty_terminal::Term` owns the VT state. The crate exposes the JNI API used
 by Android and the C ABI used by iOS; Rust tests use the safe API directly.
-The built-in demo is fed from Rust so terminal output does not travel through
-JavaScript.
+The built-in demo and remote SSH output are fed from Rust, so terminal output
+does not travel through JavaScript.
 
 ## Native API
 
@@ -32,15 +33,38 @@ start at `1`. The initial ABI accepts 2..4096 columns and 1..4096 rows; zero
 and oversized dimensions are rejected before allocating a `Term`.
 
 `meeterm_commit_utf8` validates UTF-8, records one native commit, and returns
-the resulting commit count. In this milestone the bytes are deliberately
-looped back into the same `Term` so the native IME path can be tested without
-a remote process. An empty or invalid input is not counted. The commit count
+the resulting commit count. Before connecting, bytes loop back into the demo
+`Term`. Starting SSH clears the demo and disables loopback; accepted input is
+queued to the remote PTY. Input before readiness or after close is rejected.
+An empty, invalid, or rejected input is not counted. The commit count
 is not part of the snapshot and is exposed only through the native API/test
 surface.
 
 `meeterm_send_special_key` accepts the enum values in `src/input.rs` and
 encodes them explicitly as terminal bytes. It returns the encoded byte count;
-negative values indicate an invalid ID or key.
+negative values indicate rejection. Arrow encoding respects application cursor
+mode. Terminal-generated responses use the same native outbound path.
+
+## SSH control and rendering
+
+`meeterm_connect`, `meeterm_disconnect`, `meeterm_connection_snapshot`,
+`meeterm_respond_host_key`, and `meeterm_forget_host_key` expose the small control
+surface. The C header in `modules/meeterm-terminal/ios/include/meeterm_core.h`
+defines the exact ABI; connection snapshots carry fixed-size UTF-8 fields with
+explicit lengths. They contain lifecycle state and host identity, never
+terminal output or authentication material.
+
+Keys and optional passphrases are passed transiently. Rust owns host-key trust
+decisions and the app-private trust file supplied by each platform. Unknown
+keys require explicit acceptance; changed or unreadable trust state fails
+closed. See [SSH validation](../../docs/SSH.md) for the real OpenSSH tests and
+current authentication/lifecycle limits.
+
+`meeterm_terminal_revision` lets attached native views detect output changes
+without transferring snapshots to JavaScript. Native views check revisions
+approximately every 33 ms while visible and request a frame only on change;
+this polling compromise is not a permanent high-frequency render loop. Hidden
+views stop polling without destroying the SSH session or terminal ID.
 
 ## Snapshot format
 

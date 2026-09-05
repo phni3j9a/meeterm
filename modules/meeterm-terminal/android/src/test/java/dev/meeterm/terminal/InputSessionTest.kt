@@ -10,12 +10,14 @@ class InputSessionTest {
     val commits = mutableListOf<ByteArray>()
     val specials = mutableListOf<TerminalSpecialKey>()
 
-    override fun commitUtf8(bytes: ByteArray) {
+    override fun commitUtf8(bytes: ByteArray): Boolean {
       commits += bytes
+      return true
     }
 
-    override fun sendSpecial(key: TerminalSpecialKey) {
+    override fun sendSpecial(key: TerminalSpecialKey): Boolean {
       specials += key
+      return true
     }
   }
 

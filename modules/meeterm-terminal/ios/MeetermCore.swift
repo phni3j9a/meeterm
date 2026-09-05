@@ -12,6 +12,52 @@ enum TerminalSpecialKey: UInt32 {
   case right = 7
 }
 
+enum MeetermConnectionPhase: UInt32 {
+  case disconnected = 0
+  case connecting = 1
+  case hostKeyPending = 2
+  case authenticating = 3
+  case openingPty = 4
+  case ready = 5
+  case closing = 6
+  case failed = 7
+
+  var jsValue: String {
+    switch self {
+    case .disconnected: return "Disconnected"
+    case .connecting: return "Connecting"
+    case .hostKeyPending: return "HostKeyPending"
+    case .authenticating: return "Authenticating"
+    case .openingPty: return "OpeningPty"
+    case .ready: return "Ready"
+    case .closing: return "Closing"
+    case .failed: return "Failed"
+    }
+  }
+}
+
+struct MeetermConnectionSnapshot {
+  let state: MeetermConnectionPhase
+  let host: String
+  let port: Int
+  let fingerprint: String
+  let algorithm: String
+  let knownFingerprint: String
+  let errorCode: String
+  let errorMessage: String
+
+  static let disconnected = MeetermConnectionSnapshot(
+    state: .disconnected,
+    host: "",
+    port: 0,
+    fingerprint: "",
+    algorithm: "",
+    knownFingerprint: "",
+    errorCode: "",
+    errorMessage: ""
+  )
+}
+
 /// Thin, native-only access to the Rust C ABI. No snapshot or input bytes are
 /// exposed through the Expo module/JavaScript boundary.
 enum MeetermCore {
@@ -23,6 +69,137 @@ enum MeetermCore {
       return 0
     }
     return meeterm_create_terminal(columns, rows)
+  }
+
+  /// Submit a native SSH request. The key and passphrase are copied only for
+  /// this call; this adapter never writes either value to disk or logs it.
+  static func connect(
+    terminalId: UInt64,
+    host: String,
+    port: Int,
+    username: String,
+    privateKey: String,
+    passphrase: String,
+    knownHostsPath: String
+  ) -> Int32 {
+    guard let port = UInt16(exactly: port) else {
+      return -1
+    }
+    return withUTF8(host) { hostPointer, hostLength in
+      withUTF8(username) { usernamePointer, usernameLength in
+        withUTF8(privateKey) { keyPointer, keyLength in
+          withUTF8(passphrase) { passphrasePointer, passphraseLength in
+            withUTF8(knownHostsPath) { pathPointer, pathLength in
+              meeterm_connect(
+                terminalId,
+                hostPointer,
+                hostLength,
+                port,
+                usernamePointer,
+                usernameLength,
+                keyPointer,
+                keyLength,
+                passphrasePointer,
+                passphraseLength,
+                pathPointer,
+                pathLength
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+
+  static func disconnect(terminalId: UInt64) -> Int32 {
+    meeterm_disconnect(terminalId)
+  }
+
+  static func connectionSnapshot(terminalId: UInt64) -> MeetermConnectionSnapshot? {
+    guard terminalId != 0 else {
+      return nil
+    }
+
+    guard meeterm_connection_snapshot_size() == MemoryLayout<meeterm_ssh_connection_state_t>.size else {
+      return nil
+    }
+
+    var native = meeterm_ssh_connection_state_t()
+    let result = withUnsafeMutablePointer(to: &native) { pointer in
+      meeterm_connection_snapshot(terminalId, pointer)
+    }
+    guard result == 0 else {
+      return nil
+    }
+
+    guard let phase = MeetermConnectionPhase(rawValue: native.state),
+          native.host_len <= 256,
+          native.fingerprint_len <= 128,
+          native.algorithm_len <= 64,
+          native.known_fingerprint_len <= 128,
+          native.error_code_len <= 64,
+          native.error_message_len <= 256 else {
+      return nil
+    }
+    let host = decode(native.host, length: native.host_len)
+    let fingerprint = decode(native.fingerprint, length: native.fingerprint_len)
+    let algorithm = decode(native.algorithm, length: native.algorithm_len)
+    let knownFingerprint = decode(
+      native.known_fingerprint,
+      length: native.known_fingerprint_len
+    )
+    let errorCode = decode(native.error_code, length: native.error_code_len)
+    let errorMessage = decode(
+      native.error_message,
+      length: native.error_message_len
+    )
+
+    return MeetermConnectionSnapshot(
+      state: phase,
+      host: sanitize(host, maxLength: 256),
+      port: Int(native.port),
+      fingerprint: sanitize(fingerprint, maxLength: 128),
+      algorithm: sanitize(algorithm, maxLength: 64),
+      knownFingerprint: sanitize(knownFingerprint, maxLength: 128),
+      errorCode: sanitizeErrorCode(errorCode),
+      errorMessage: sanitize(errorMessage, maxLength: 256)
+    )
+  }
+
+  static func respondToHostKey(
+    terminalId: UInt64,
+    fingerprint: String,
+    accept: Bool
+  ) -> Int32 {
+    withUTF8(fingerprint) { pointer, length in
+      meeterm_respond_host_key(
+        terminalId,
+        pointer,
+        length,
+        accept ? UInt8(1) : UInt8(0)
+      )
+    }
+  }
+
+  static func forgetHostKey(host: String, port: Int, knownHostsPath: String) -> Int32 {
+    guard let port = UInt16(exactly: port) else {
+      return -1
+    }
+    return withUTF8(host) { hostPointer, hostLength in
+      withUTF8(knownHostsPath) { pathPointer, pathLength in
+        meeterm_forget_host_key(
+          hostPointer,
+          hostLength,
+          port,
+          pathPointer,
+          pathLength
+        )
+      }
+    }
+  }
+
+  static func terminalRevision(terminalId: UInt64) -> UInt64 {
+    meeterm_terminal_revision(terminalId)
   }
 
   static func snapshot(terminalId: UInt64) -> Data? {
@@ -94,5 +271,44 @@ enum MeetermCore {
   @discardableResult
   static func destroy(terminalId: UInt64) -> Bool {
     terminalId != 0 && meeterm_destroy_terminal(terminalId) == 1
+  }
+
+  private static func withUTF8(
+    _ value: String,
+    _ body: (UnsafePointer<UInt8>?, Int) -> Int32
+  ) -> Int32 {
+    let data = Data(value.utf8)
+    return data.withUnsafeBytes { buffer in
+      let bytes = buffer.bindMemory(to: UInt8.self)
+      return body(bytes.baseAddress, bytes.count)
+    }
+  }
+
+  private static func decode<T>(_ value: T, length: UInt16) -> String {
+    withUnsafeBytes(of: value) { buffer in
+      let count = min(Int(length), buffer.count)
+      return String(decoding: buffer.prefix(count), as: UTF8.self)
+    }
+  }
+
+  private static func sanitize(_ value: String, maxLength: Int) -> String {
+    value
+      .unicodeScalars
+      .filter { !CharacterSet.controlCharacters.contains($0) }
+      .prefix(maxLength)
+      .reduce(into: "") { result, scalar in result.unicodeScalars.append(scalar) }
+  }
+
+  private static func sanitizeErrorCode(_ value: String) -> String {
+    let code = sanitize(value, maxLength: 64)
+    guard !code.isEmpty,
+          code.unicodeScalars.allSatisfy({ scalar in
+            scalar.value >= 0x61 && scalar.value <= 0x7A ||
+            scalar.value >= 0x30 && scalar.value <= 0x39 ||
+            scalar.value == 0x5F
+          }) else {
+      return code.isEmpty ? "" : "native_error"
+    }
+    return code
   }
 }

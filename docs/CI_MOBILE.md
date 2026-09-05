@@ -41,7 +41,21 @@ Both runtime jobs use the same acceptance boundary:
 
 Readiness and first-frame signals must come from the native module/view or a sanitized native log, not from OCR, a fixed sleep, or the existence of a screenshot. The Android module already has native event/readiness and metrics concepts; the iOS adapter should expose the same low-frequency contract without moving terminal bytes, cells, render frames, or IME composition through JavaScript.
 
-The jobs may exercise fixed local demo bytes while SSH/tmux are not implemented. They must still use the shared Rust terminal state and the native snapshot/render path. A static React Native label, WebView terminal, or screenshot fixture is not an acceptable substitute.
+The foundation gates exercise fixed local demo bytes through the shared Rust
+terminal state and native snapshot/render path. A static React Native label,
+WebView terminal, or screenshot fixture is not an acceptable substitute.
+
+For issue #3, Android additionally runs the disposable OpenSSH fixture and
+drives the connection form through `adb`. The script verifies the displayed
+host fingerprint before explicitly trusting it, waits for the Rust-backed
+connection state, and sends native terminal input that writes a marker inside
+the fixture's temporary directory. This verifies the real SSH input path
+without adding a production test endpoint or passing terminal streams through
+JavaScript. The remote-shell screenshot is separate from the foundation
+screenshot and is for human inspection; neither screenshot is a pixel gate.
+The iOS job validates compilation and runtime integration of the same Rust SSH
+core and native adapters; its current smoke interaction uses the local demo.
+See [`SSH.md`](SSH.md) for credentials, commands, and the remaining limits.
 
 ## Artifacts and visual review
 

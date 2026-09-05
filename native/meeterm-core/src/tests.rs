@@ -1,10 +1,11 @@
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
+use tokio::sync::{mpsc, watch};
 
 use crate::ffi::{
     meeterm_commit_utf8, meeterm_create_terminal, meeterm_destroy_terminal,
     meeterm_input_commit_count, meeterm_resize_terminal, meeterm_send_special_key,
-    meeterm_snapshot, meeterm_snapshot_size,
+    meeterm_snapshot, meeterm_snapshot_size, meeterm_terminal_revision,
 };
 use crate::input::{SpecialKey, encode_special_key};
 use crate::registry::{create_terminal, destroy_terminal, with_terminal_for_test};
@@ -139,6 +140,107 @@ fn commit_utf8_is_counted_once_and_looped_back_natively() {
 }
 
 #[test]
+fn remote_terminal_rejects_input_until_ready_and_keeps_local_echo_disabled() {
+    let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
+    terminal.begin_remote(41).expect("remote mode");
+
+    assert_eq!(
+        terminal.commit_utf8(b"before-ready"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(terminal.input_commit_count(), 0);
+    assert!(terminal.input_log().is_empty());
+    let before_ready = terminal.snapshot().expect("remote snapshot");
+
+    let (input_sender, mut input_receiver) = mpsc::channel(2);
+    let (resize_sender, _resize_receiver) = watch::channel((24, 4));
+    terminal
+        .attach_transport(41, input_sender, resize_sender)
+        .expect("matching transport generation");
+    terminal.mark_transport_ready(41);
+    assert_eq!(terminal.commit_utf8(b"ready"), Ok(1));
+    assert_eq!(input_receiver.try_recv().expect("queued input"), b"ready");
+    assert_eq!(terminal.input_log(), b"ready");
+    assert_eq!(
+        terminal.snapshot().expect("remote snapshot").as_bytes(),
+        before_ready.as_bytes()
+    );
+}
+
+#[test]
+fn remote_input_queue_is_bounded_and_resize_is_latest_value() {
+    let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
+    terminal.begin_remote(42).expect("remote mode");
+    let (input_sender, mut input_receiver) = mpsc::channel(1);
+    let (resize_sender, mut resize_receiver) = watch::channel((24, 4));
+    terminal
+        .attach_transport(42, input_sender, resize_sender)
+        .expect("matching transport generation");
+    terminal.mark_transport_ready(42);
+
+    assert_eq!(terminal.send_bytes(b"one"), Ok(3));
+    assert_eq!(
+        terminal.send_bytes(b"two"),
+        Err(TerminalError::InputQueueFull)
+    );
+    assert_eq!(
+        input_receiver.try_recv().expect("first queued input"),
+        b"one"
+    );
+
+    terminal.resize(80, 25).expect("first resize");
+    terminal.resize(100, 30).expect("latest resize");
+    assert!(resize_receiver.has_changed().expect("resize sender alive"));
+    assert_eq!(*resize_receiver.borrow_and_update(), (100, 30));
+    assert!(!resize_receiver.has_changed().expect("resize sender alive"));
+}
+
+#[test]
+fn terminal_replies_share_bounded_transport_and_overload_is_observable() {
+    let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
+    terminal.begin_remote(43).expect("remote mode");
+    let (input_sender, mut input_receiver) = mpsc::channel(1);
+    let (resize_sender, _resize_receiver) = watch::channel((24, 4));
+    terminal
+        .attach_transport(43, input_sender, resize_sender)
+        .expect("matching transport generation");
+    terminal.mark_transport_ready(43);
+
+    assert!(terminal.feed_remote(43, b"\x1b[6n"));
+    assert_eq!(input_receiver.try_recv().expect("DSR reply"), b"\x1b[1;1R");
+
+    // Fill the same bounded queue with ordinary input.  A terminal-generated
+    // reply now becomes observable as overload rather than being silently
+    // discarded while the terminal mutex is held.
+    assert_eq!(terminal.send_bytes(b"queued"), Ok(6));
+    assert!(!terminal.feed_remote(43, b"\x1b[6n"));
+    assert!(terminal.transport_overloaded());
+}
+
+#[test]
+fn stale_transport_generation_cannot_attach_or_feed_new_terminal_state() {
+    let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
+    terminal.begin_remote(44).expect("remote mode");
+    let (input_sender, _input_receiver) = mpsc::channel(1);
+    let (resize_sender, _resize_receiver) = watch::channel((24, 4));
+
+    assert_eq!(
+        terminal.attach_transport(43, input_sender, resize_sender),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(!terminal.mark_transport_ready(43));
+    assert!(!terminal.feed_remote(43, b"stale output"));
+}
+
+#[test]
+fn application_cursor_mode_is_encoded_by_rust_terminal_state() {
+    let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
+    terminal.feed(b"\x1b[?1h");
+    assert_eq!(terminal.send_special_key(SpecialKey::Up), Ok(3));
+    assert!(terminal.input_log().ends_with(b"\x1bOA"));
+}
+
+#[test]
 fn registry_uses_nonzero_opaque_ids_and_destroy_is_explicit() {
     let first = create_terminal(12, 3).expect("first terminal");
     let second = create_terminal(12, 3).expect("second terminal");
@@ -155,6 +257,7 @@ fn c_abi_snapshot_and_input_round_trip_stays_native() {
     let id = meeterm_create_terminal(20, 4);
     assert_ne!(id, 0);
 
+    let initial_revision = meeterm_terminal_revision(id);
     let required = meeterm_snapshot_size(id);
     assert!(required > SNAPSHOT_HEADER_SIZE);
     let mut bytes = vec![0_u8; required];
@@ -170,9 +273,12 @@ fn c_abi_snapshot_and_input_round_trip_stays_native() {
         unsafe { meeterm_commit_utf8(id, committed.as_ptr(), committed.len()) },
         1
     );
+    let committed_revision = meeterm_terminal_revision(id);
+    assert!(committed_revision > initial_revision);
     assert_eq!(meeterm_input_commit_count(id), 1);
     assert_eq!(meeterm_send_special_key(id, SpecialKey::Enter as u32), 1);
     assert_eq!(meeterm_resize_terminal(id, 30, 5), 0);
+    assert!(meeterm_terminal_revision(id) > committed_revision);
     assert_eq!(meeterm_destroy_terminal(id), 1);
     assert_eq!(meeterm_destroy_terminal(id), 0);
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::input::SpecialKey;
 use crate::snapshot::Snapshot;
-use crate::terminal::{Terminal, TerminalError};
+use crate::terminal::{InputSender, ResizeSender, Terminal, TerminalError};
 
 pub type TerminalId = u64;
 pub type SharedTerminal = Arc<Mutex<Terminal>>;
@@ -33,10 +33,14 @@ pub fn create_terminal(columns: u16, rows: u16) -> Result<TerminalId, TerminalEr
 }
 
 pub fn destroy_terminal(id: TerminalId) -> bool {
-    registry()
+    let removed = registry()
         .lock()
         .map(|mut terminals| terminals.remove(&id).is_some())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if removed {
+        crate::ssh::terminal_destroyed(id);
+    }
+    removed
 }
 
 pub fn terminal_count() -> usize {
@@ -50,6 +54,78 @@ pub fn snapshot(id: TerminalId) -> Result<Snapshot, TerminalError> {
     with_terminal(id, |terminal| terminal.snapshot())
 }
 
+pub(crate) fn shared_terminal(id: TerminalId) -> Result<SharedTerminal, TerminalError> {
+    let terminals = registry()
+        .lock()
+        .map_err(|_| TerminalError::RegistryPoisoned)?;
+    terminals
+        .get(&id)
+        .cloned()
+        .ok_or(TerminalError::UnknownTerminal)
+}
+
+pub(crate) fn begin_remote(id: TerminalId, generation: u64) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| terminal.begin_remote(generation))
+}
+
+pub(crate) fn attach_transport(
+    id: TerminalId,
+    generation: u64,
+    input: InputSender,
+    resize: ResizeSender,
+) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.attach_transport(generation, input, resize)
+    })
+}
+
+pub(crate) fn detach_transport(id: TerminalId, generation: u64) {
+    let Ok(terminal) = shared_terminal(id) else {
+        return;
+    };
+    if let Ok(mut terminal) = terminal.lock() {
+        terminal.detach_transport(generation);
+    }
+}
+
+pub(crate) fn mark_transport_ready(id: TerminalId, generation: u64) -> bool {
+    let Ok(terminal) = shared_terminal(id) else {
+        return false;
+    };
+    terminal
+        .lock()
+        .map(|mut terminal| terminal.mark_transport_ready(generation))
+        .unwrap_or(false)
+}
+
+pub(crate) fn feed_remote(id: TerminalId, generation: u64, bytes: &[u8]) -> bool {
+    let Ok(terminal) = shared_terminal(id) else {
+        return false;
+    };
+    terminal
+        .lock()
+        .map(|mut terminal| terminal.feed_remote(generation, bytes))
+        .unwrap_or(false)
+}
+
+pub(crate) fn transport_overloaded(id: TerminalId) -> bool {
+    let Ok(terminal) = shared_terminal(id) else {
+        return false;
+    };
+    terminal
+        .lock()
+        .map(|terminal| terminal.transport_overloaded())
+        .unwrap_or(false)
+}
+
+pub(crate) fn terminal_revision(id: TerminalId) -> Result<u64, TerminalError> {
+    with_terminal(id, |terminal| Ok(terminal.content_revision()))
+}
+
+pub(crate) fn terminal_dimensions(id: TerminalId) -> Result<(u16, u16), TerminalError> {
+    with_terminal(id, |terminal| Ok(terminal.dimensions()))
+}
+
 pub fn resize_terminal(id: TerminalId, columns: u16, rows: u16) -> Result<(), TerminalError> {
     with_terminal(id, |terminal| terminal.resize(columns, rows))
 }
@@ -59,7 +135,11 @@ pub fn commit_utf8(id: TerminalId, bytes: &[u8]) -> Result<u64, TerminalError> {
 }
 
 pub fn send_special_key(id: TerminalId, key: SpecialKey) -> Result<usize, TerminalError> {
-    with_terminal(id, |terminal| Ok(terminal.send_special_key(key)))
+    with_terminal(id, |terminal| terminal.send_special_key(key))
+}
+
+pub(crate) fn send_bytes(id: TerminalId, bytes: &[u8]) -> Result<usize, TerminalError> {
+    with_terminal(id, |terminal| terminal.send_bytes(bytes))
 }
 
 pub fn input_commit_count(id: TerminalId) -> Result<u64, TerminalError> {

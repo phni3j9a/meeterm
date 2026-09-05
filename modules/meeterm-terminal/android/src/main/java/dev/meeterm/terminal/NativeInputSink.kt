@@ -8,9 +8,11 @@ package dev.meeterm.terminal
  * forwards bytes directly to the Rust terminal; it never goes through JS.
  */
 internal interface NativeInputSink {
-  fun commitUtf8(bytes: ByteArray)
+  /** Returns false when Rust rejected the input because transport is closed. */
+  fun commitUtf8(bytes: ByteArray): Boolean
 
-  fun sendSpecial(key: TerminalSpecialKey)
+  /** Returns false when Rust rejected the input because transport is closed. */
+  fun sendSpecial(key: TerminalSpecialKey): Boolean
 }
 
 internal enum class TerminalSpecialKey(val nativeCode: Int) {

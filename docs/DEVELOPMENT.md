@@ -2,7 +2,7 @@
 
 ## Current phase
 
-meeterm is in the architecture-validation phase. The first goal is not to build the full application. It is to prove a shared Rust terminal foundation with the smallest meaningful Android and iOS native adapters, while bringing both GitHub-hosted mobile jobs online early.
+meeterm is in the architecture-validation phase. The Android/iOS native terminal foundation and hosted smoke jobs are in place. Issue #3 extends the shared Rust core with a direct SSH PTY shell, explicit host-key trust, and public-key authentication. The [SSH runbook](SSH.md) records this slice's validation and limitations. The first-milestone contract below is retained as the foundation and regression boundary; its deliberate omissions describe that earlier milestone.
 
 Read, in order:
 

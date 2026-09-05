@@ -2,6 +2,8 @@
 
 この文書は、dual-platform native terminal foundation における Android 側の Issue #1 vertical slice を再現するための runbook 兼、実機検証記録です。新しい検証を行った場合は、実機の機種、OS、commit、renderer/font、結果を下の記録欄へ追記してください。iOS Simulator/実機の検証契約は [`CI_MOBILE.md`](CI_MOBILE.md) に分離します。
 
+Issue #3 で追加する SSH 接続と、その実サーバー・実機検証は [`SSH.md`](SSH.md) を参照してください。以下の「SSH 未実装」「入力 loopback」と実機結果は、Issue #1 時点の履歴です。現在のアプリは接続前の demo と SSH 接続後の native remote input を区別します。
+
 PoC の範囲は Expo Development Build、native `TerminalView`、Rust 所有の `alacritty_terminal::Term`、固定 ANSI/VT bytes、native GPU renderer、native IME、決定的な resize です。SSH、tmux、server profile、remote backend、WebView terminal はこの段階の対象外です。
 
 ## Source of truth と CNG

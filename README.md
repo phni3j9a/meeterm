@@ -39,9 +39,9 @@ Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME compos
 
 ## Project status
 
-Greenfield. The first engineering milestone is a native terminal vertical slice on Android before broader UI work. The repository now contains the initial Expo scaffold, a custom Android `TerminalView`, a Rust-owned `alacritty_terminal::Term`, and a native GLES renderer. The Development Build vertical slice has been exercised on a physical Pixel 3 running Android 11, including CJK/combining text, native Japanese IME composition/commit, rotation, keyboard resize, and compact-window resize.
+The shared Rust terminal foundation has Android and iOS native adapters, with GLES on Android and Metal on iOS. Hosted iOS Simulators without Metal use an explicitly identified native CoreGraphics fallback. Both platforms have build/install/launch/first-frame smoke jobs. The original Android foundation was also exercised on a physical Pixel 3, including Japanese IME composition/commit and resize; that historical device evidence remains separate from later SSH validation.
 
-The milestone deliberately has no SSH, tmux, server profiles, or remote backend. Committed input is currently looped back into the local Rust terminal only for native IME testing. See the [Android PoC runbook](docs/POC_ANDROID.md) for pinned prerequisites, reproducible commands, automated checks, and the manual device checklist.
+The SSH slice adds a Rust-owned `russh` connection, explicit persisted host-key trust, public-key authentication, and an interactive remote PTY. Use **Connect** to enter a host, username, OpenSSH private key, and optional passphrase. Credentials are transient; only approved host identities are saved. Input, output, and resize stay in the native terminal path. The fixed demo runs before connecting. tmux, server profiles, and automatic reconnect remain future work. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
 
 ## Quick start
 
@@ -60,6 +60,8 @@ npx expo run:android --device
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
+- [SSH validation and limitations](docs/SSH.md)
+- [Mobile CI guide](docs/CI_MOBILE.md)
 - [Android PoC runbook](docs/POC_ANDROID.md)
 - [Issue #1 Android device validation](docs/evidence/issue-1-android-device.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
