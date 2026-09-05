@@ -29,6 +29,9 @@ collect_artifacts() {
   adb shell dumpsys window windows \
     | grep -E 'mCurrentFocus|mFocusedApp|Application Not Responding|dev\.meeterm\.app|com\.android\.systemui' \
     > "${artifact_dir}/window.txt"
+  adb shell dumpsys activity activities \
+    | grep -E 'mResumedActivity|topResumedActivity|dev\.meeterm\.app' \
+    > "${artifact_dir}/activity.txt"
   adb shell dumpsys activity processes \
     | grep -A 16 -B 4 "${package_name}" \
     > "${artifact_dir}/process.txt"
@@ -68,7 +71,7 @@ app_anr_window_present() {
 }
 
 app_is_foreground() {
-  local window_output current_focus focused_app
+  local window_output current_focus focused_app activity_output resumed_activity
   window_output="$(adb shell dumpsys window windows 2>/dev/null)" || return 1
   current_focus="$(grep -F 'mCurrentFocus' <<<"${window_output}" || true)"
   if [[ -n "${current_focus}" ]]; then
@@ -76,7 +79,19 @@ app_is_foreground() {
     return
   fi
   focused_app="$(grep -F 'mFocusedApp' <<<"${window_output}" || true)"
-  [[ -n "${focused_app}" ]] && grep -Fq "${package_name}/" <<<"${focused_app}"
+  if [[ -n "${focused_app}" ]]; then
+    grep -Fq "${package_name}/" <<<"${focused_app}"
+    return
+  fi
+
+  # Android API 36 can omit mCurrentFocus/mFocusedApp from the `windows`
+  # subcommand even while the activity is visibly resumed. Keep the stronger
+  # window-focus checks when they are available, then fall back to Activity
+  # Manager's live resumed-activity state rather than treating a missing dump
+  # field as an app failure.
+  activity_output="$(adb shell dumpsys activity activities 2>/dev/null)" || return 1
+  resumed_activity="$(grep -E 'mResumedActivity|topResumedActivity' <<<"${activity_output}" || true)"
+  [[ -n "${resumed_activity}" ]] && grep -Fq "${package_name}/" <<<"${resumed_activity}"
 }
 
 start_meeterm() {
