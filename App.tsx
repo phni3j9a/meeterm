@@ -5,7 +5,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -14,6 +13,10 @@ import {
   View,
   useColorScheme,
 } from 'react-native';
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+} from 'react-native-safe-area-context';
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import type {
@@ -22,8 +25,6 @@ import type {
 } from './modules/meeterm-terminal';
 
 const TERMINAL_ID = 'poc-main';
-const ANDROID_STATUS_BAR_INSET =
-  Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0;
 
 const INITIAL_CONNECTION_STATE: SshConnectionState = {
   state: 'Disconnected',
@@ -271,15 +272,14 @@ function ConnectionModal({ visible, onClose, onSubmit }: ConnectionModalProps) {
       presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'}
       visible={visible}
     >
-      <SafeAreaView
-        style={[styles.modalRoot, layoutStyles.androidStatusBarInset]}
-      >
-        <StatusBar
-          backgroundColor={colors.background}
-          barStyle={colorScheme === 'light' ? 'dark-content' : 'light-content'}
-          hidden={false}
-        />
-        <View style={layoutStyles.modalKeyboardView}>
+      <SafeAreaProvider>
+        <SafeAreaView edges={['top']} style={styles.modalRoot}>
+          <StatusBar
+            backgroundColor={colors.background}
+            barStyle={colorScheme === 'light' ? 'dark-content' : 'light-content'}
+            hidden={false}
+          />
+          <View style={layoutStyles.modalKeyboardView}>
           <View style={[layoutStyles.modalHeader, styles.modalHeader]}>
             <Pressable
               accessibilityRole="button"
@@ -498,8 +498,9 @@ function ConnectionModal({ visible, onClose, onSubmit }: ConnectionModalProps) {
               </View>
             </View>
           </ScrollView>
-        </View>
-      </SafeAreaView>
+          </View>
+        </SafeAreaView>
+      </SafeAreaProvider>
     </Modal>
   );
 }
@@ -738,15 +739,14 @@ export default function App() {
   const hostKeyWasRemoved = Boolean(changeId && removedHostKeyId === changeId);
 
   return (
-    <SafeAreaView
-      style={[appStyles.container, layoutStyles.androidStatusBarInset]}
-    >
-      <StatusBar
-        backgroundColor={CHROME_COLORS.background}
-        barStyle="light-content"
-        hidden={false}
-      />
-      <View style={appStyles.toolbar}>
+    <SafeAreaProvider>
+      <SafeAreaView edges={['top']} style={appStyles.container}>
+        <StatusBar
+          backgroundColor={CHROME_COLORS.background}
+          barStyle="light-content"
+          hidden={false}
+        />
+        <View style={appStyles.toolbar}>
         <View style={appStyles.statusBlock}>
           <View
             style={[
@@ -789,10 +789,10 @@ export default function App() {
             {isClosing ? 'Closing…' : isActive ? 'Disconnect' : 'Connect'}
           </Text>
         </Pressable>
-      </View>
+        </View>
 
-      {connection.state === 'Failed' || controlMessage ? (
-        <View
+        {connection.state === 'Failed' || controlMessage ? (
+          <View
           accessibilityLiveRegion="polite"
           style={[
             appStyles.connectionNotice,
@@ -827,17 +827,18 @@ export default function App() {
           {controlMessage ? (
             <Text style={appStyles.connectionNoticeBody}>{controlMessage}</Text>
           ) : null}
-        </View>
-      ) : null}
+          </View>
+        ) : null}
 
-      <TerminalView terminalId={TERMINAL_ID} style={appStyles.terminal} />
+        <TerminalView terminalId={TERMINAL_ID} style={appStyles.terminal} />
 
-      <ConnectionModal
-        onClose={() => setConnectionModalVisible(false)}
-        onSubmit={startConnection}
-        visible={connectionModalVisible}
-      />
-    </SafeAreaView>
+        <ConnectionModal
+          onClose={() => setConnectionModalVisible(false)}
+          onSubmit={startConnection}
+          visible={connectionModalVisible}
+        />
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -973,9 +974,6 @@ const appStyles = StyleSheet.create({
 });
 
 const layoutStyles = StyleSheet.create({
-  androidStatusBarInset: {
-    paddingTop: ANDROID_STATUS_BAR_INSET,
-  },
   modalKeyboardView: {
     flex: 1,
   },

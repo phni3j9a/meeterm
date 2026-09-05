@@ -20,6 +20,13 @@
 | `zeroize` | `=1.9.0`（`native/meeterm-core/Cargo.lock`） | Apache-2.0 OR MIT。[crate metadata](https://crates.io/crates/zeroize/1.9.0) と [upstream source / licenses](https://github.com/RustCrypto/utils/tree/master/zeroize) を参照。認証用の一時文字列を消去するために利用する。 |
 | `ring` と SSH の transitive dependencies | lockfile で解決された version | `russh` の `ring` feature を使用。各 crate に含まれる license と copyright notice を保持する。`ring` は Rust / C / assembly ごとに由来が異なるため [upstream license](https://github.com/briansmith/ring/blob/main/LICENSE) の全条件を参照する。 |
 
+## UI layout
+
+UI の safe-area inset には `react-native-safe-area-context` `5.7.0`
+（`package-lock.json`）を利用します。MIT license。
+[upstream source / license](https://github.com/AppAndFlow/react-native-safe-area-context)
+を参照してください。
+
 ## Bundled fonts
 
 | Component | Source / status | License and notice |

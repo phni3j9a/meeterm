@@ -155,6 +155,8 @@ class AndroidDevice:
             f"{stage}_foreground",
             timeout=10.0,
         ).decode("utf-8", errors="replace")
+        if f"Application Not Responding: {PACKAGE}" in output:
+            raise SmokeFailure(stage, "app_anr_window")
         current_focus_lines = [
             line for line in output.splitlines() if "mCurrentFocus" in line
         ]
@@ -340,7 +342,11 @@ def find_node(
         left, top, right, bottom = node.bounds
         if right <= left or bottom <= top:
             continue
-        if text is not None and node.text != text:
+        if (
+            text is not None
+            and node.text != text
+            and node.content_description != text
+        ):
             continue
         if content_description is not None and node.content_description != content_description:
             continue
@@ -356,7 +362,10 @@ def find_node_casefold(nodes: list[Node], text: str) -> Node | None:
         left, top, right, bottom = node.bounds
         if right <= left or bottom <= top:
             continue
-        if node.text.casefold() == target:
+        if (
+            node.text.casefold() == target
+            or node.content_description.casefold() == target
+        ):
             return node
     return None
 
@@ -471,9 +480,10 @@ def fill_multiline_key(device: AndroidDevice, key: str) -> None:
 def host_fingerprint_from_nodes(nodes: list[Node]) -> str | None:
     pattern = re.compile(r"SHA256:[A-Za-z0-9+/]+={0,2}")
     for node in nodes:
-        match = pattern.search(node.text)
-        if match:
-            return match.group(0)
+        for value in (node.text, node.content_description):
+            match = pattern.search(value)
+            if match:
+                return match.group(0)
     return None
 
 
@@ -624,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
         stage = "launch"
         device.run(("shell", "am", "force-stop", PACKAGE), stage, timeout=10.0)
         device.run(
-            ("shell", "monkey", "-p", PACKAGE, "-c", "android.intent.category.LAUNCHER", "1"),
+            ("shell", "am", "start", "-W", "-n", f"{PACKAGE}/.MainActivity"),
             stage,
             timeout=15.0,
         )
@@ -715,8 +725,11 @@ def main(argv: list[str] | None = None) -> int:
 
         stage = "screenshot"
         output_path = args.artifact_dir / "ssh-terminal.png"
+        # The native SSH interaction must still belong to the meeterm activity;
+        # screenshot collection alone is best effort and must not hide an ANR
+        # or a system dialog that covered the terminal.
+        device.assert_foreground(stage)
         try:
-            device.assert_foreground(stage)
             device.screenshot(output_path)
         except SmokeFailure as error:
             # A screenshot is observability evidence and must never turn a
