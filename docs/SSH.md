@@ -177,6 +177,15 @@ The old exact-label lookup never matched it. The driver now accepts only the
 known label/value forms, with regression coverage; secret masking and host-key
 verification remain enabled.
 
+The driver also requires keyboard focus before entering the key and verifies
+short input batches and line breaks against the editor in memory. It retries
+accessibility hierarchy acquisition at most three times without replaying
+input. Missing/invalid hierarchy and known UIAutomator idle/root failures are
+reported as fixed diagnostic identifiers; neither raw XML nor key readback is
+written to logs or artifacts. Identical native metadata snapshots retain their
+React state references, avoiding needless accessibility property updates from
+the one-second metadata poll.
+
 `ssh-validation.txt` records sanitized stages, while `ssh-terminal.png` and
 `ssh-logcat.txt` provide observability. The foundation's `terminal.png` remains
 separate. Screenshot capture is not a machine acceptance gate, and unavailable
