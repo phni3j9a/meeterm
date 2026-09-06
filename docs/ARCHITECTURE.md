@@ -205,6 +205,28 @@ Security requirements:
 
 SSH is transport, not durable application state.
 
+### Issue #3: direct SSH shell slice
+
+Before adding tmux, the SSH slice opens one interactive `xterm-256color` PTY
+and shell for an existing Rust terminal ID. `russh` feeds channel data directly
+into the shared `Term`; native committed input and terminal-generated replies
+return through the same channel. Native viewport changes update the remote PTY.
+The fixed local demo remains available before connecting, and its input loopback
+is disabled when that terminal enters the SSH path.
+
+The initial authentication path is an OpenSSH private key with an optional
+passphrase. Credentials are supplied transiently and are not saved. Host-key
+trust is separate: Rust persists explicitly accepted host identities in an
+app-private file supplied by the platform adapter, and a changed identity fails
+closed. This slice has explicit connect/disconnect ownership, with no automatic
+reconnect or tmux session behavior.
+
+The small control surface extends the existing native package and C/JNI bridge
+with typed commands and connection-state fields. Generated bindings remain the
+preferred direction as the control surface grows. This step does not introduce
+another native library, Tokio runtime, or platform-specific SSH implementation.
+See [`SSH.md`](SSH.md) for the real OpenSSH fixture, validation, and limitations.
+
 ## tmux model
 
 meeterm uses the user's ordinary tmux server and the canonical session name `meeterm`.

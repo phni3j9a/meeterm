@@ -1,6 +1,6 @@
 # Third-party notices
 
-このファイルは Issue #1 の PoC で利用・参照する third-party provenance の inventory です。各 upstream の license text、copyright、改変条件が優先されます。ここで「依存」と記載していない feasibility reference は、実行時依存でも source copy でもありません。
+このファイルは native terminal と SSH slice で利用・参照する third-party provenance の inventory です。各 upstream の license text、copyright、改変条件が優先されます。ここで「依存」と記載していない feasibility reference は、実行時依存でも source copy でもありません。
 
 ## Native terminal
 
@@ -10,6 +10,22 @@
 | `vte` および Cargo の transitive dependencies | lockfile で解決された version | 各 crate の upstream license と notice を保持する。`Cargo.lock` を version provenance とし、リリース前に license inventory を更新する。 |
 
 `native/meeterm-core` は上記 crate を実行時に利用します。Alacritty の license notice を meeterm の source や配布物から削除しないでください。
+
+## SSH transport
+
+| Component | Version / source | License and notice |
+| --- | --- | --- |
+| `russh` | `=0.63.2`（`native/meeterm-core/Cargo.lock`） | Apache-2.0。[crate metadata](https://crates.io/crates/russh/0.63.2) と [upstream source / license](https://github.com/warp-tech/russh) を参照。source の vendoring やコピーは行わず、Cargo dependency として利用する。 |
+| `tokio` | `1.53.1`（lockfile） | MIT。[crate metadata](https://crates.io/crates/tokio/1.53.1) と [upstream license](https://github.com/tokio-rs/tokio/blob/master/LICENSE) を参照。単一の Rust runtime として利用する。 |
+| `zeroize` | `=1.9.0`（`native/meeterm-core/Cargo.lock`） | Apache-2.0 OR MIT。[crate metadata](https://crates.io/crates/zeroize/1.9.0) と [upstream source / licenses](https://github.com/RustCrypto/utils/tree/master/zeroize) を参照。認証用の一時文字列を消去するために利用する。 |
+| `ring` と SSH の transitive dependencies | lockfile で解決された version | `russh` の `ring` feature を使用。各 crate に含まれる license と copyright notice を保持する。`ring` は Rust / C / assembly ごとに由来が異なるため [upstream license](https://github.com/briansmith/ring/blob/main/LICENSE) の全条件を参照する。 |
+
+## UI layout
+
+UI の safe-area inset には `react-native-safe-area-context` `5.7.0`
+（`package-lock.json`）を利用します。MIT license。
+[upstream source / license](https://github.com/AppAndFlow/react-native-safe-area-context)
+を参照してください。
 
 ## Bundled fonts
 

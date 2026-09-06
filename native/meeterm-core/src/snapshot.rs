@@ -1,3 +1,4 @@
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Term, point_to_viewport};
@@ -17,9 +18,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub(crate) fn from_term(
-        term: &Term<alacritty_terminal::event::VoidListener>,
-    ) -> Result<Self, TerminalError> {
+    pub(crate) fn from_term<T: EventListener>(term: &Term<T>) -> Result<Self, TerminalError> {
         let mut content = term.renderable_content();
         let display_offset = content.display_offset;
         let cursor = point_to_viewport(display_offset, content.cursor.point)

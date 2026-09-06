@@ -28,7 +28,7 @@ internal class InputSession(
     val committed = text?.toString().orEmpty()
     clearPreedit()
     if (committed.isNotEmpty()) {
-      sink.commitUtf8(committed.toByteArray(StandardCharsets.UTF_8))
+      return sink.commitUtf8(committed.toByteArray(StandardCharsets.UTF_8))
     }
     return true
   }
@@ -37,7 +37,7 @@ internal class InputSession(
     val committed = preedit
     clearPreedit()
     if (committed.isNotEmpty()) {
-      sink.commitUtf8(committed.toByteArray(StandardCharsets.UTF_8))
+      return sink.commitUtf8(committed.toByteArray(StandardCharsets.UTF_8))
     }
     return true
   }
@@ -54,19 +54,19 @@ internal class InputSession(
       return before > 0 || after > 0
     }
 
+    var accepted = true
     repeat(before) {
-      sink.sendSpecial(TerminalSpecialKey.Backspace)
+      accepted = sink.sendSpecial(TerminalSpecialKey.Backspace) && accepted
     }
     // There is no separate forward-delete key in the Issue #1 ABI. A native
     // IME normally reports deletion before the cursor; consume the after
     // count as handled without inventing a transport byte.
-    return before > 0 || after > 0
+    return (before > 0 || after > 0) && accepted
   }
 
   fun sendSpecial(key: TerminalSpecialKey): Boolean {
     clearPreedit()
-    sink.sendSpecial(key)
-    return true
+    return sink.sendSpecial(key)
   }
 
   /** Consume key-up events without emitting their terminal bytes twice. */

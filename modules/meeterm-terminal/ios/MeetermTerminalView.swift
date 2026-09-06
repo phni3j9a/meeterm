@@ -19,6 +19,8 @@ final class MeetermTerminalView: ExpoView {
   private var keyboardOcclusion: CGFloat = 0
   private var lastColumns = 0
   private var lastRows = 0
+  private var lastTerminalRevision: UInt64 = .max
+  private var revisionTimer: Timer?
 
   required init(appContext: AppContext? = nil) {
     let selectedView: UIView
@@ -106,9 +108,22 @@ final class MeetermTerminalView: ExpoView {
       name: UIResponder.keyboardWillHideNotification,
       object: nil
     )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(applicationDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(applicationWillResignActive),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
   }
 
   deinit {
+    stopRevisionPolling()
     NotificationCenter.default.removeObserver(self)
   }
 
@@ -132,6 +147,7 @@ final class MeetermTerminalView: ExpoView {
     }
 
     renderer.attachTerminal(terminalHandle)
+    lastTerminalRevision = MeetermCore.terminalRevision(terminalId: terminalHandle)
     NSLog("MEETERM_SMOKE_NATIVE_READY")
     onNativeReady([
       "terminalId": terminalId,
@@ -149,9 +165,58 @@ final class MeetermTerminalView: ExpoView {
       }
       setNeedsLayout()
       renderer.requestFrame()
+      if isNativeViewVisible {
+        startRevisionPolling()
+      } else {
+        stopRevisionPolling()
+      }
     } else {
+      stopRevisionPolling()
       terminalInputView.resignFirstResponder()
     }
+  }
+
+  private func startRevisionPolling() {
+    stopRevisionPolling()
+    guard isNativeViewVisible, terminalHandle != 0 else {
+      return
+    }
+    revisionTimer = Timer(timeInterval: 0.033, repeats: true) { [weak self] _ in
+      self?.pollTerminalRevision()
+    }
+    if let revisionTimer {
+      RunLoop.main.add(revisionTimer, forMode: .common)
+    }
+  }
+
+  private func stopRevisionPolling() {
+    revisionTimer?.invalidate()
+    revisionTimer = nil
+  }
+
+  private func pollTerminalRevision() {
+    guard isNativeViewVisible, terminalHandle != 0 else {
+      stopRevisionPolling()
+      return
+    }
+    let revision = MeetermCore.terminalRevision(terminalId: terminalHandle)
+    if revision != lastTerminalRevision {
+      lastTerminalRevision = revision
+      // The renderer pulls a snapshot only after this native revision check.
+      // No terminal bytes or cells cross the JavaScript boundary.
+      renderer.requestFrame()
+    }
+  }
+
+  private var isNativeViewVisible: Bool {
+    guard window != nil, !isHidden, alpha > 0, window?.isHidden == false else {
+      return false
+    }
+    if let activationState = window?.windowScene?.activationState,
+       activationState == .background || activationState == .unattached {
+      return false
+    }
+    return true
   }
 
   override func layoutSubviews() {
@@ -211,6 +276,22 @@ final class MeetermTerminalView: ExpoView {
     setNeedsLayout()
   }
 
+  @objc private func applicationDidBecomeActive() {
+    guard window != nil else {
+      return
+    }
+    renderer.requestFrame()
+    // Scene activation is updated alongside this notification. Starting on
+    // the next main-queue turn avoids treating the transition as background.
+    DispatchQueue.main.async { [weak self] in
+      self?.startRevisionPolling()
+    }
+  }
+
+  @objc private func applicationWillResignActive() {
+    stopRevisionPolling()
+  }
+
   private func reconcileResize(for size: CGSize) {
     guard terminalHandle != 0, size.width > 0, size.height > 0 else {
       return
@@ -248,15 +329,17 @@ final class MeetermTerminalView: ExpoView {
     guard terminalHandle != 0 else {
       return
     }
-    MeetermCore.commit(terminalId: terminalHandle, text: text)
-    renderer.requestFrame()
+    if MeetermCore.commit(terminalId: terminalHandle, text: text) > 0 {
+      renderer.requestFrame()
+    }
   }
 
   private func send(_ key: TerminalSpecialKey) {
     guard terminalHandle != 0 else {
       return
     }
-    MeetermCore.send(terminalId: terminalHandle, key: key)
-    renderer.requestFrame()
+    if MeetermCore.send(terminalId: terminalHandle, key: key) {
+      renderer.requestFrame()
+    }
   }
 }

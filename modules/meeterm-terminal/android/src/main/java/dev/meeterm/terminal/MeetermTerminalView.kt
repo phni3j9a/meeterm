@@ -41,6 +41,7 @@ class MeetermTerminalView(
     const val DEFAULT_TERMINAL_ID = "poc-main"
     const val DEFAULT_COLUMNS = 80
     const val DEFAULT_ROWS = 24
+    const val REVISION_POLL_INTERVAL_MS = 33L
   }
 
   private val surface: GLSurfaceView = GLSurfaceView(context)
@@ -55,10 +56,30 @@ class MeetermTerminalView(
   private var occludedInsetBottom = 0
   private var systemInsetLeft = 0
   private var systemInsetRight = 0
+  private var lastTerminalRevision = -1L
   private val editable = SpannableStringBuilder()
+  // Keep one post-resize draw after EGL settles. This is separate from the
+  // revision poll: it repairs a surface timing race even when terminal
+  // content did not change.
   private val settledFrameRequest = Runnable {
     if (attached && terminalHandle != 0L && windowVisibility == View.VISIBLE) {
       surface.requestRender()
+    }
+  }
+  private val revisionPoll = object : Runnable {
+    override fun run() {
+      if (!attached || terminalHandle == 0L || windowVisibility != View.VISIBLE) {
+        return
+      }
+
+      val revision = MeetermNative.terminalRevision(terminalHandle)
+      if (revision != lastTerminalRevision) {
+        lastTerminalRevision = revision
+        // Snapshot bytes are pulled by the renderer only after this native
+        // revision check reports a change. JavaScript never participates.
+        surface.requestRender()
+      }
+      postDelayed(this, REVISION_POLL_INTERVAL_MS)
     }
   }
 
@@ -131,6 +152,9 @@ class MeetermTerminalView(
       val surfaceHeight = bottom - top
       renderer.updateSurfaceSize(surfaceWidth, surfaceHeight)
       reconcileResize(surfaceWidth, surfaceHeight)
+      if (attached && windowVisibility == View.VISIBLE) {
+        surface.requestRender()
+      }
       scheduleSettledFrame()
     }
 
@@ -150,10 +174,12 @@ class MeetermTerminalView(
     terminalHandle = TerminalRegistry.acquire(nextId, DEFAULT_COLUMNS, DEFAULT_ROWS)
     Log.i(TAG, "bound terminalId=$terminalId handle=$terminalHandle")
     renderer.attachTerminal(terminalHandle)
+    lastTerminalRevision = MeetermNative.terminalRevision(terminalHandle)
     post {
       emitReady()
       reconcileResize(surface.width, surface.height)
       surface.requestRender()
+      startRevisionPolling()
       scheduleSettledFrame()
     }
   }
@@ -169,6 +195,7 @@ class MeetermTerminalView(
         emitReady()
         reconcileResize(surface.width, surface.height)
         surface.requestRender()
+        startRevisionPolling()
         scheduleSettledFrame()
       }
     }
@@ -178,6 +205,7 @@ class MeetermTerminalView(
   override fun onDetachedFromWindow() {
     Log.i(TAG, "detached")
     attached = false
+    stopRevisionPolling()
     removeCallbacks(settledFrameRequest)
     surface.onPause()
     renderer.attachTerminal(0L)
@@ -191,8 +219,10 @@ class MeetermTerminalView(
     if (visibility == View.VISIBLE) {
       surface.onResume()
       surface.requestRender()
+      startRevisionPolling()
       scheduleSettledFrame()
     } else {
+      stopRevisionPolling()
       removeCallbacks(settledFrameRequest)
       surface.onPause()
     }
@@ -218,9 +248,22 @@ class MeetermTerminalView(
     specialKeyRow.layout(contentLeft, desiredHeight, contentRight, desiredHeight + dp(48))
   }
 
+  private fun startRevisionPolling() {
+    removeCallbacks(revisionPoll)
+    if (attached && terminalHandle != 0L && windowVisibility == View.VISIBLE) {
+      postDelayed(revisionPoll, REVISION_POLL_INTERVAL_MS)
+    }
+  }
+
+  private fun stopRevisionPolling() {
+    removeCallbacks(revisionPoll)
+  }
+
   private fun scheduleSettledFrame() {
     removeCallbacks(settledFrameRequest)
-    postDelayed(settledFrameRequest, 500)
+    if (attached && terminalHandle != 0L && windowVisibility == View.VISIBLE) {
+      postDelayed(settledFrameRequest, 500L)
+    }
   }
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -266,13 +309,13 @@ class MeetermTerminalView(
       override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val editorResult = super.commitText(text ?: "", newCursorPosition)
         val result = inputSession.commitText(text)
-        surface.requestRender()
+        if (result) surface.requestRender()
         return editorResult && result
       }
 
       override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
         val result = inputSession.deleteSurroundingText(beforeLength, afterLength)
-        surface.requestRender()
+        if (result) surface.requestRender()
         return result
       }
 
@@ -291,7 +334,7 @@ class MeetermTerminalView(
       override fun finishComposingText(): Boolean {
         val editorResult = super.finishComposingText()
         val result = inputSession.finishComposingText()
-        surface.requestRender()
+        if (result) surface.requestRender()
         return editorResult && result
       }
     }
@@ -375,8 +418,7 @@ class MeetermTerminalView(
         contentDescription = label
         setOnClickListener {
           requestFocusFromTouch()
-          inputSession.sendSpecial(key)
-          surface.requestRender()
+          if (inputSession.sendSpecial(key)) surface.requestRender()
         }
       }
       row.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
@@ -394,6 +436,7 @@ class MeetermTerminalView(
     if (terminalHandle == 0L) return
     TerminalRegistry.release(terminalId, terminalHandle)
     terminalHandle = 0L
+    lastTerminalRevision = -1L
     lastColumns = 0
     lastRows = 0
   }

@@ -10,6 +10,25 @@ final class TerminalRegistry {
     lock.lock()
     defer { lock.unlock() }
 
+    return ensureLocked(terminalId: terminalId, columns: columns, rows: rows)
+  }
+
+  /// Resolve a stable terminal handle for control-plane calls that can arrive
+  /// before a TerminalView has attached. This does not make view lifecycle the
+  /// owner of the Rust terminal and therefore does not disconnect on unmount.
+  static func ensure(terminalId: String, columns: Int, rows: Int) -> UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    return ensureLocked(terminalId: terminalId, columns: columns, rows: rows)
+  }
+
+  static func handle(for terminalId: String) -> UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    return handles[terminalId] ?? 0
+  }
+
+  private static func ensureLocked(terminalId: String, columns: Int, rows: Int) -> UInt64 {
     if let existing = handles[terminalId] {
       return existing
     }
