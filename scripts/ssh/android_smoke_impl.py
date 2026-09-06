@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import stat
 import shutil
 import subprocess
 import sys
@@ -584,8 +585,12 @@ def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
         socket_path.parent.chmod(0o700)
     except OSError as error:
         raise SmokeFailure(stage, "socket_directory_unavailable") from error
-    if socket_path.exists() or socket_path.is_symlink():
-        raise SmokeFailure(stage, "socket_path_in_use")
+    if socket_path.is_symlink():
+        raise SmokeFailure(stage, "socket_path_invalid")
+    if socket_path.exists():
+        metadata = socket_path.stat()
+        if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise SmokeFailure(stage, "socket_path_invalid")
 
     existing = run_tmux_command(
         socket_path,
@@ -593,7 +598,9 @@ def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
         stage,
         allow_failure=True,
     )
-    if existing.returncode == 0:
+    # fixture.py starts an empty -D server with /dev/null configuration. The
+    # validated private socket may already exist, but no session may exist.
+    if existing.returncode == 0 and existing.stdout.strip():
         raise SmokeFailure(stage, "session_already_exists")
 
     run_tmux_command(
@@ -1077,6 +1084,7 @@ def host_fingerprint_from_nodes(nodes: list[Node]) -> str | None:
 def trust_host(device: AndroidDevice, expected_fingerprint: str) -> None:
     title_deadline = time.monotonic() + DEFAULT_UI_TIMEOUT
     actual_fingerprint: str | None = None
+    last_observation = "fingerprint_unavailable"
     while time.monotonic() < title_deadline:
         try:
             nodes = device.dump_ui()
@@ -1099,12 +1107,25 @@ def trust_host(device: AndroidDevice, expected_fingerprint: str) -> None:
         for message, reason in known_errors.items():
             if find_node(nodes, text=message) is not None:
                 raise SmokeFailure("host_key_prompt", reason)
-        title = find_node(nodes, text="Trust this SSH host?")
+        for label, observation in (
+            ("Connection status is temporarily unavailable.", "state_poll_unavailable"),
+            ("Connecting…", "still_connecting"),
+            ("Verify host key", "host_pending_without_dialog"),
+            ("Connected", "connected_without_driver_approval"),
+        ):
+            if find_node(nodes, text=label) is not None:
+                last_observation = observation
+        if find_node_with_content_descriptions(nodes, PRIVATE_KEY_ACCESSIBILITY_LABELS) is not None:
+            last_observation = "form_still_open"
+        title = find_node(nodes, text="Trust this SSH host?") or find_node(
+            nodes, content_description="Trust this SSH host?"
+        )
         if title is None:
             time.sleep(0.2)
             continue
         actual_fingerprint = host_fingerprint_from_nodes(nodes)
         if actual_fingerprint is None:
+            last_observation = "dialog_fingerprint_unavailable"
             time.sleep(0.2)
             continue
         if actual_fingerprint != expected_fingerprint:
@@ -1116,7 +1137,7 @@ def trust_host(device: AndroidDevice, expected_fingerprint: str) -> None:
         tap_node(device, trust_button, "host_key_prompt")
         return
     if actual_fingerprint is None:
-        raise SmokeFailure("host_key_prompt", "fingerprint_unavailable")
+        raise SmokeFailure("host_key_prompt", last_observation)
     raise SmokeFailure("host_key_prompt", "trust_button_unavailable")
 
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -19,6 +21,37 @@ import android_smoke_impl as smoke
 
 
 class UiDriverTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is needed for fixture preparation")
+    def test_empty_owned_server_is_accepted_but_existing_sessions_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-test-") as root:
+            socket_path = Path(root) / "tmux" / f"tmux-{os.getuid()}" / "default"
+            socket_path.parent.mkdir(mode=0o700, parents=True)
+            process = subprocess.Popen(
+                ["tmux", "-D", "-f", "/dev/null", "-S", str(socket_path)],
+                env=smoke._tmux_environment(socket_path),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not socket_path.exists() and time.monotonic() < deadline:
+                    self.assertIsNone(process.poll())
+                    time.sleep(0.01)
+                self.assertTrue(socket_path.exists())
+                panes = smoke.prepare_tmux_fixture(socket_path)
+                self.assertEqual(len(panes), 2)
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.prepare_tmux_fixture(socket_path)
+                self.assertEqual(error.exception.reason, "session_already_exists")
+                self.assertEqual(smoke.list_tmux_panes(socket_path, "test"), panes)
+            finally:
+                subprocess.run(["tmux", "-S", str(socket_path), "kill-server"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
     class _ScrollingDevice:
         def __init__(self, pages: list[list[smoke.Node]]) -> None:
             self.pages = pages
