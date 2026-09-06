@@ -38,6 +38,22 @@ const INITIAL_CONNECTION_STATE: SshConnectionState = {
   errorMessage: '',
 };
 
+function sameConnection(a: SshConnectionState, b: SshConnectionState): boolean {
+  return a.state === b.state && a.host === b.host && a.port === b.port
+    && a.fingerprint === b.fingerprint && a.algorithm === b.algorithm
+    && a.knownFingerprint === b.knownFingerprint
+    && a.errorCode === b.errorCode && a.errorMessage === b.errorMessage;
+}
+
+function samePanes(a: TmuxPane[], b: TmuxPane[]): boolean {
+  return a.length === b.length && a.every((pane, index) => {
+    const other = b[index];
+    return pane.windowId === other.windowId && pane.paneId === other.paneId
+      && pane.terminalId === other.terminalId && pane.windowName === other.windowName
+      && pane.selected === other.selected;
+  });
+}
+
 const LIGHT_COLORS = {
   background: '#f2f2f7',
   surface: '#ffffff',
@@ -579,9 +595,14 @@ export default function App() {
         const next = await MeetermTerminal.getConnectionState(TERMINAL_ID);
         const session = await MeetermTerminal.getSessionState(TERMINAL_ID);
         if (mounted) {
-          if (version === selectionVersion.current) setConnection(next);
+          // Native snapshots are fresh objects even when nothing changed.
+          // Retain equal state so polling does not reapply accessibility props
+          // every second while the user is reading or entering credentials.
+          if (version === selectionVersion.current) {
+            setConnection((current) => sameConnection(current, next) ? current : next);
+          }
           if (version === selectionVersion.current && !commandPending.current) {
-            setPanes(session.panes);
+            setPanes((current) => samePanes(current, session.panes) ? current : session.panes);
           }
         }
       } catch {
