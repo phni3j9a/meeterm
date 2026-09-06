@@ -33,6 +33,7 @@ from typing import Sequence
 HOST = "127.0.0.1"
 SSHD = "/usr/sbin/sshd"
 READY_TIMEOUT_SECONDS = 10.0
+TMUX = "tmux"
 
 
 class FixtureError(RuntimeError):
@@ -129,12 +130,27 @@ class Fixture:
         self.client_key = root / "client_ed25519"
         self.encrypted_client_key = root / "client_ed25519_encrypted"
         self.host_key = root / "host_ed25519"
+        # A second, unused host key lets the integration test model a changed
+        # server identity against the live fixture endpoint without rotating
+        # the key used by the running sshd.
+        self.alternate_host_key = root / "alternate_host_ed25519"
         self.authorized_keys = root / "authorized_keys"
         self.trust_store = root / "known_hosts"
         self.config = root / "sshd_config"
         self.pid_file = root / "sshd.pid"
+        # tmux uses $TMUX_TMPDIR/default as its ordinary socket path.  Keep
+        # that directory inside this fixture so every remote shell and every
+        # local helper wrapped by the fixture sees an isolated default server.
+        # The product itself still uses ordinary tmux; this is only test
+        # isolation, and cleanup below addresses this exact socket.
+        self.tmux_tmpdir = root / "tmux"
+        # tmux appends tmux-$UID below TMUX_TMPDIR before creating its
+        # default socket. Keep the fully resolved path so cleanup never has
+        # to ask tmux for (or guess at) the caller's ordinary socket.
+        self.tmux_socket = self.tmux_tmpdir / f"tmux-{os.getuid()}" / "default"
         self.encrypted_passphrase = secrets.token_urlsafe(32)
         self.process: subprocess.Popen[str] | None = None
+        self.tmux_process: subprocess.Popen[str] | None = None
         self.env_file: Path | None = None
 
     def prepare(self) -> None:
@@ -142,11 +158,16 @@ class Fixture:
             raise FixtureError("run the fixture as an unprivileged account; sudo is not required")
         if not Path(SSHD).is_file() or not os.access(SSHD, os.X_OK):
             raise FixtureError(f"OpenSSH server not found at {SSHD}")
+        if shutil.which(TMUX) is None:
+            raise FixtureError("tmux is required for the OpenSSH fixture")
 
         self.root.chmod(0o700)
+        self.tmux_tmpdir.mkdir(mode=0o700)
+        self.tmux_tmpdir.chmod(0o700)
         _generate_ed25519_key(self.client_key, "")
         _generate_ed25519_key(self.encrypted_client_key, self.encrypted_passphrase)
         _generate_ed25519_key(self.host_key, "")
+        _generate_ed25519_key(self.alternate_host_key, "")
 
         public_keys = [
             self.client_key.with_name(f"{self.client_key.name}.pub").read_text(
@@ -174,6 +195,11 @@ class Fixture:
                     f"PidFile {self.pid_file}",
                     f"AuthorizedKeysFile {self.authorized_keys}",
                     f"AllowUsers {self.user}",
+                    # OpenSSH SetEnv applies to every session created by this
+                    # fixture, including commands run through the ordinary
+                    # desktop ssh/tmux smoke.  It does not alter the user's
+                    # account environment or any system sshd configuration.
+                    f"SetEnv TMUX_TMPDIR={self.tmux_tmpdir}",
                     "PubkeyAuthentication yes",
                     "AuthenticationMethods publickey",
                     "PasswordAuthentication no",
@@ -201,6 +227,24 @@ class Fixture:
         _run_quietly([SSHD, "-t", "-f", str(self.config)])
 
     def start(self) -> None:
+        # Start an empty private server without loading ~/.tmux.conf. -D
+        # keeps the empty server alive; the application still creates the
+        # managed session itself through its ordinary production command.
+        self.tmux_socket.parent.mkdir(mode=0o700, exist_ok=True)
+        tmux_environment = dict(os.environ)
+        tmux_environment.pop("TMUX", None)
+        tmux_environment.pop("TMUX_PANE", None)
+        tmux_environment["TMUX_TMPDIR"] = str(self.tmux_tmpdir)
+        self.tmux_process = subprocess.Popen(
+            [TMUX, "-D", "-f", "/dev/null", "-S", str(self.tmux_socket)],
+            env=tmux_environment, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+        )
+        deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+        while not self.tmux_socket.exists():
+            if self.tmux_process.poll() is not None or time.monotonic() >= deadline:
+                raise FixtureError("isolated tmux fixture did not start")
+            time.sleep(0.05)
         try:
             self.process = subprocess.Popen(
                 [SSHD, "-D", "-e", "-f", str(self.config)],
@@ -235,6 +279,9 @@ class Fixture:
 
     def environment(self) -> dict[str, str]:
         host_public_key = self.host_key.with_name(f"{self.host_key.name}.pub")
+        alternate_host_public_key = self.alternate_host_key.with_name(
+            f"{self.alternate_host_key.name}.pub"
+        )
         fingerprint = _fingerprint(host_public_key)
         return {
             # These names are the small contract consumed by the Rust
@@ -251,6 +298,13 @@ class Fixture:
             "MEETERM_SSH_KNOWN_HOSTS_FILE": str(self.trust_store),
             "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE": str(self.client_key),
             "MEETERM_SSH_HOST_KEY_FILE": str(host_public_key),
+            "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE": str(alternate_host_public_key),
+            # These are useful to shell-level integration checks and make the
+            # isolation contract explicit.  The SSH server receives the same
+            # path through SetEnv above.
+            "MEETERM_TMUX_TMPDIR": str(self.tmux_tmpdir),
+            "MEETERM_TMUX_SOCKET": str(self.tmux_socket),
+            "TMUX_TMPDIR": str(self.tmux_tmpdir),
         }
 
     def write_env_file(self, path: Path) -> None:
@@ -259,10 +313,14 @@ class Fixture:
         except OSError as error:
             raise FixtureError(f"could not create environment-file directory: {path.parent}") from error
 
-        lines = [
+        # A developer may invoke the persistent fixture from inside an
+        # existing tmux client. Clear its routing variables before any
+        # wrapped local CLI command can accidentally address that server.
+        lines = ["unset TMUX TMUX_PANE"]
+        lines.extend(
             f"export {name}={shlex.quote(value)}"
             for name, value in sorted(self.environment().items())
-        ]
+        )
         contents = "\n".join(lines) + "\n"
         descriptor: int | None = None
         created = False
@@ -301,6 +359,34 @@ class Fixture:
         self.env_file = path
 
     def stop(self) -> None:
+        # A tmux server outlives the sshd process that created it.  Kill only
+        # this fixture's absolute socket before TemporaryDirectory removes
+        # the socket directory; never invoke the default client without -S,
+        # because that could reach the developer's ordinary tmux server.
+        tmux = shutil.which(TMUX)
+        if tmux is not None:
+            try:
+                subprocess.run(
+                    [tmux, "-S", str(self.tmux_socket), "kill-server"],
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                # The fixture is already on its cleanup path.  A missing
+                # socket or an exited server is harmless; the enclosing
+                # temporary directory remains the ownership boundary.
+                pass
+        tmux_process = self.tmux_process
+        self.tmux_process = None
+        if tmux_process is not None:
+            try:
+                tmux_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                tmux_process.kill()
+                tmux_process.wait()
         process = self.process
         self.process = None
         if process is not None and process.poll() is None:
@@ -319,7 +405,15 @@ class Fixture:
 
 
 def _run_child(command: Sequence[str], environment: dict[str, str]) -> int:
-    child = subprocess.Popen(list(command), env={**os.environ, **environment})
+    child_environment = {**os.environ, **environment}
+    # If the fixture wrapper is launched from inside the developer's tmux
+    # client, TMUX would override TMUX_TMPDIR for local test commands. The
+    # remote sshd never receives this variable because it is not forwarded,
+    # while the wrapped Rust/CLI test process must start with a clean client
+    # context as well.
+    child_environment.pop("TMUX", None)
+    child_environment.pop("TMUX_PANE", None)
+    child = subprocess.Popen(list(command), env=child_environment)
     interrupted = threading.Event()
 
     def forward_signal(signum: int, _frame: object) -> None:

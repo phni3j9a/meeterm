@@ -46,6 +46,33 @@ public final class MeetermTerminalModule: Module {
       return Self.expoRecord(snapshot)
     }
 
+    AsyncFunction("reconnect") { (terminalId: String) throws in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.reconnect(terminalId: handle) == 0 else {
+        throw Self.error("The reconnect request could not be started.")
+      }
+    }
+
+    AsyncFunction("selectPane") { (terminalId: String, paneId: String) throws in
+      guard paneId.first == "%", !paneId.dropFirst().isEmpty,
+            paneId.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
+            let pane = UInt64(paneId.dropFirst()) else {
+        throw Self.error("The pane ID is invalid.")
+      }
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.selectPane(terminalId: handle, paneId: pane) == 0 else {
+        throw Self.error("The terminal could not be selected.")
+      }
+    }
+
+    AsyncFunction("getSessionState") { (terminalId: String) throws -> [String: Any] in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard let panes = MeetermCore.sessionPanes(terminalId: handle) else {
+        throw Self.error("Native session state is unavailable.")
+      }
+      return ["panes": panes]
+    }
+
     AsyncFunction("respondToHostKey") {
       (terminalId: String, fingerprint: String, accept: Bool) throws in
       let normalizedId = try Self.normalizeTerminalId(terminalId)

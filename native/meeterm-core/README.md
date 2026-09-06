@@ -2,7 +2,8 @@
 
 `meeterm-core` is the Rust-owned terminal state for the native Android and iOS
 vertical slices. It includes a `russh` SSH connection/session layer and one
-process-wide Tokio runtime. It contains no tmux or React Native code. JNI
+process-wide Tokio runtime. Its byte-oriented tmux Control Mode decoder routes
+each remote pane to its own Rust terminal. It contains no React Native code. JNI
 connects Android to the registry, while the same C ABI is linked as an iOS
 static library.
 
@@ -35,7 +36,7 @@ and oversized dimensions are rejected before allocating a `Term`.
 `meeterm_commit_utf8` validates UTF-8, records one native commit, and returns
 the resulting commit count. Before connecting, bytes loop back into the demo
 `Term`. Starting SSH clears the demo and disables loopback; accepted input is
-queued to the remote PTY. Input before readiness or after close is rejected.
+encoded as tmux hexadecimal input targeting that pane. Input before readiness or after close is rejected.
 An empty, invalid, or rejected input is not counted. The commit count
 is not part of the snapshot and is exposed only through the native API/test
 surface.
@@ -47,14 +48,16 @@ mode. Terminal-generated responses use the same native outbound path.
 
 ## SSH control and rendering
 
-`meeterm_connect`, `meeterm_disconnect`, `meeterm_connection_snapshot`,
+`meeterm_connect`, `meeterm_disconnect`, `meeterm_reconnect`,
+`meeterm_select_pane`, `meeterm_session_panes`, `meeterm_connection_snapshot`,
 `meeterm_respond_host_key`, and `meeterm_forget_host_key` expose the small control
 surface. The C header in `modules/meeterm-terminal/ios/include/meeterm_core.h`
 defines the exact ABI; connection snapshots carry fixed-size UTF-8 fields with
 explicit lengths. They contain lifecycle state and host identity, never
 terminal output or authentication material.
 
-Keys and optional passphrases are passed transiently. Rust owns host-key trust
+Keys and optional passphrases are passed transiently. The parsed key remains
+in Rust process memory for an explicit reconnect and is not persisted. Rust owns host-key trust
 decisions and the app-private trust file supplied by each platform. Unknown
 keys require explicit acceptance; changed or unreadable trust state fails
 closed. See [SSH validation](../../docs/SSH.md) for the real OpenSSH tests and

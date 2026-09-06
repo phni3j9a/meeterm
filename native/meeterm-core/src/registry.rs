@@ -68,13 +68,16 @@ pub(crate) fn begin_remote(id: TerminalId, generation: u64) -> Result<(), Termin
     with_terminal(id, |terminal| terminal.begin_remote(generation))
 }
 
-pub(crate) fn attach_transport(
+pub(crate) fn prepare_pane_transport(
     id: TerminalId,
     generation: u64,
+    size: (u16, u16),
     input: InputSender,
     resize: ResizeSender,
 ) -> Result<(), TerminalError> {
     with_terminal(id, |terminal| {
+        terminal.begin_remote(generation)?;
+        terminal.resize_from_remote(size.0, size.1)?;
         terminal.attach_transport(generation, input, resize)
     })
 }
@@ -108,16 +111,6 @@ pub(crate) fn feed_remote(id: TerminalId, generation: u64, bytes: &[u8]) -> bool
         .unwrap_or(false)
 }
 
-pub(crate) fn transport_overloaded(id: TerminalId) -> bool {
-    let Ok(terminal) = shared_terminal(id) else {
-        return false;
-    };
-    terminal
-        .lock()
-        .map(|terminal| terminal.transport_overloaded())
-        .unwrap_or(false)
-}
-
 pub(crate) fn terminal_revision(id: TerminalId) -> Result<u64, TerminalError> {
     with_terminal(id, |terminal| Ok(terminal.content_revision()))
 }
@@ -128,6 +121,18 @@ pub(crate) fn terminal_dimensions(id: TerminalId) -> Result<(u16, u16), Terminal
 
 pub fn resize_terminal(id: TerminalId, columns: u16, rows: u16) -> Result<(), TerminalError> {
     with_terminal(id, |terminal| terminal.resize(columns, rows))
+}
+
+pub(crate) fn restore_screen(
+    id: TerminalId,
+    generation: u64,
+    columns: u16,
+    rows: u16,
+    bytes: &[u8],
+) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.restore_screen(generation, columns, rows, bytes)
+    })
 }
 
 pub fn commit_utf8(id: TerminalId, bytes: &[u8]) -> Result<u64, TerminalError> {

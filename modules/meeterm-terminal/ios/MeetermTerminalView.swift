@@ -134,6 +134,8 @@ final class MeetermTerminalView: ExpoView {
       return
     }
 
+    terminalInputView.cancelCompositionForBinding()
+    renderer.attachTerminal(0)
     terminalId = nextId
     lastColumns = 0
     lastRows = 0
@@ -143,6 +145,7 @@ final class MeetermTerminalView: ExpoView {
       rows: Self.defaultRows
     )
     guard terminalHandle != 0 else {
+      renderer.requestFrame()
       return
     }
 

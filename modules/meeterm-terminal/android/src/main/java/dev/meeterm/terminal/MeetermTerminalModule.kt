@@ -41,6 +41,35 @@ class MeetermTerminalModule : Module() {
       connectionState(handle)
     }
 
+    AsyncFunction("reconnect") { terminalId: String ->
+      val handle = ensureHandle(normalizeTerminalId(terminalId))
+      check(MeetermNative.sshReconnect(handle) == 0) { "The reconnect request could not be started." }
+    }
+
+    AsyncFunction("selectPane") { terminalId: String, paneId: String ->
+      require(paneId.matches(Regex("%[0-9]+"))) { "The pane ID is invalid." }
+      val pane = paneId.drop(1).toLongOrNull()
+        ?: throw IllegalArgumentException("The pane ID is invalid.")
+      val handle = ensureHandle(normalizeTerminalId(terminalId))
+      check(MeetermNative.tmuxSelectPane(handle, pane) == 0) { "The terminal could not be selected." }
+    }
+
+    AsyncFunction("getSessionState") { terminalId: String ->
+      val handle = ensureHandle(normalizeTerminalId(terminalId))
+      val fields = MeetermNative.tmuxSessionState(handle)
+        ?: throw IllegalStateException("Native session state is unavailable.")
+      check(fields.size % 5 == 0) { "Native session state is unavailable." }
+      mapOf("panes" to fields.toList().chunked(5).map { pane ->
+        mapOf(
+          "windowId" to "@${pane[0]}",
+          "paneId" to "%${pane[1]}",
+          "terminalId" to "native:${pane[2]}",
+          "windowName" to sanitize(pane[3], 256),
+          "selected" to (pane[4] == "1"),
+        )
+      })
+    }
+
     AsyncFunction("respondToHostKey") {
         terminalId: String,
         fingerprint: String,
@@ -104,7 +133,7 @@ class MeetermTerminalModule : Module() {
     }
 
     val stateCode = fields[0].toIntOrNull()
-      ?.takeIf { it in STATE_DISCONNECTED..STATE_FAILED }
+      ?.takeIf { it in STATE_DISCONNECTED..STATE_RECONNECTING }
       ?: throw IllegalStateException("Native connection state is unavailable.")
     val state = stateName(stateCode)
     val port = fields[2].toIntOrNull()
@@ -161,7 +190,7 @@ class MeetermTerminalModule : Module() {
     const val DEFAULT_ROWS = 24
     const val STATE_FIELD_COUNT = 8
     const val STATE_DISCONNECTED = 0
-    const val STATE_FAILED = 7
+    const val STATE_RECONNECTING = 10
 
     fun normalizeTerminalId(value: String): String {
       val normalized = value.trim()
@@ -185,6 +214,9 @@ class MeetermTerminalModule : Module() {
       4 -> "OpeningPty"
       5 -> "Ready"
       6 -> "Closing"
+      8 -> "AttachingTmux"
+      9 -> "Synchronizing"
+      10 -> "Reconnecting"
       else -> "Failed"
     }
 

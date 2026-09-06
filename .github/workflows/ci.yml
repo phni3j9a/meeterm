@@ -65,6 +65,12 @@ jobs:
             --component rustfmt,clippy --no-self-update
           rustup default "${RUST_VERSION}"
 
+      - name: Check SSH smoke driver regressions
+        run: |
+          python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
+          command -v tmux
+          tmux -V
+
       - name: Format check
         working-directory: native/meeterm-core
         run: cargo fmt --check

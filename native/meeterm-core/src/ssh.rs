@@ -4,6 +4,8 @@
 //! remain in the registry and are exchanged with russh through bounded native
 //! queues; callers poll the fixed connection snapshot and terminal revision.
 
+mod control;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -26,6 +28,7 @@ use zeroize::Zeroize;
 
 use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
+use crate::tmux::{self, PaneSnapshot, SessionSnapshot, WindowSnapshot};
 
 /// Maximum number of bytes used by each fixed-size string in the C snapshot.
 pub const HOST_CAPACITY: usize = 256;
@@ -46,6 +49,9 @@ pub enum ConnectionState {
     Ready = 5,
     Closing = 6,
     Failed = 7,
+    AttachingTmux = 8,
+    Synchronizing = 9,
+    Reconnecting = 10,
 }
 
 /// A fixed-layout snapshot for C, Swift, Kotlin, and other native callers.
@@ -138,6 +144,7 @@ pub enum ConnectionError {
     Internal,
     HostKeyResponse,
     TrustStore,
+    ReconnectUnavailable,
 }
 
 impl ConnectionError {
@@ -149,6 +156,7 @@ impl ConnectionError {
             Self::Internal => -4,
             Self::HostKeyResponse => -5,
             Self::TrustStore => -6,
+            Self::ReconnectUnavailable => -7,
         }
     }
 
@@ -160,6 +168,7 @@ impl ConnectionError {
             Self::Internal => "internal_error",
             Self::HostKeyResponse => "host_key_response",
             Self::TrustStore => "trust_store",
+            Self::ReconnectUnavailable => "reconnect_unavailable",
         }
     }
 }
@@ -173,11 +182,69 @@ impl fmt::Display for ConnectionError {
             Self::Internal => "native connection state is unavailable",
             Self::HostKeyResponse => "host-key response is stale or unexpected",
             Self::TrustStore => "host-key trust storage is unavailable",
+            Self::ReconnectUnavailable => "no in-memory credentials are available for reconnect",
         })
     }
 }
 
 impl std::error::Error for ConnectionError {}
+
+/// Credentials retained only for an in-process reconnect.  The private key
+/// is parsed before it reaches this structure; no PEM or passphrase survives
+/// the initial connect call.  This state is deliberately process-local and is
+/// removed when the owner terminal is destroyed.
+#[derive(Clone)]
+struct ConnectionProfile {
+    host: String,
+    port: u16,
+    username: String,
+    known_hosts_path: PathBuf,
+    key: Arc<keys::PrivateKey>,
+}
+
+impl ConnectionProfile {
+    fn endpoint_matches(&self, options: &ConnectOptions) -> bool {
+        self.host == options.host
+            && self.port == options.port
+            && self.username == options.username
+            && self.known_hosts_path == options.known_hosts_path
+    }
+}
+
+/// Durable in-process metadata associated with one owner terminal.  The
+/// actual durable workspace remains tmux; this map only retains native IDs so
+/// reconnecting the same owner can bind the same pane IDs back to the same
+/// native terminal objects.
+#[derive(Default)]
+struct SessionState {
+    viewport: Option<(u16, u16)>,
+    generation: u64,
+    snapshot: SessionSnapshot,
+    pane_terminals: HashMap<u64, TerminalId>,
+    profile: Option<ConnectionProfile>,
+    selected_pane: Option<u64>,
+    /// True only when meeterm has zoomed the current window.  A desktop user's
+    /// pre-existing zoom is observed but never claimed for cleanup.
+    meeterm_zoomed: bool,
+    meeterm_zoomed_pane: Option<u64>,
+}
+
+static SESSION_STATES: OnceLock<Mutex<HashMap<TerminalId, Arc<Mutex<SessionState>>>>> =
+    OnceLock::new();
+
+fn session_states() -> &'static Mutex<HashMap<TerminalId, Arc<Mutex<SessionState>>>> {
+    SESSION_STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn session_state(owner: TerminalId) -> Arc<Mutex<SessionState>> {
+    let mut states = session_states()
+        .lock()
+        .expect("session state registry lock should not be poisoned");
+    states
+        .entry(owner)
+        .or_insert_with(|| Arc::new(Mutex::new(SessionState::default())))
+        .clone()
+}
 
 struct PendingHostKey {
     fingerprint: String,
@@ -269,7 +336,9 @@ struct ConnectionShared {
     host: String,
     port: u16,
     known_hosts_path: PathBuf,
+    session: Arc<Mutex<SessionState>>,
     info: Mutex<ConnectionInfo>,
+    commands: Mutex<Option<mpsc::Sender<ControlCommand>>>,
     cancelled: AtomicBool,
     cancel_notify: Arc<Notify>,
 }
@@ -288,7 +357,9 @@ impl ConnectionShared {
             host: host.clone(),
             port,
             known_hosts_path,
+            session: session_state(terminal_id),
             info: Mutex::new(ConnectionInfo::new(host, port)),
+            commands: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             cancel_notify: Arc::new(Notify::new()),
         }
@@ -299,6 +370,10 @@ impl ConnectionShared {
     }
 
     fn cancel(&self) {
+        self.cancel_with_state();
+    }
+
+    fn cancel_with_state(&self) {
         // State setters take this same lock before checking cancellation. By
         // setting the flag while holding it, no delayed trust/auth callback
         // can write a nonterminal state after cancellation has committed.
@@ -310,6 +385,34 @@ impl ConnectionShared {
             self.cancelled.store(true, Ordering::Release);
         }
         self.cancel_notify.notify_waiters();
+    }
+
+    fn set_profile(&self, profile: ConnectionProfile) {
+        if let Ok(mut session) = self.session.lock()
+            && session.generation == self.generation
+            && !self.is_cancelled()
+        {
+            session.profile = Some(profile);
+        }
+    }
+
+    fn set_commands(&self, sender: mpsc::Sender<ControlCommand>) {
+        if let Ok(mut commands) = self.commands.lock() {
+            *commands = Some(sender);
+        }
+    }
+
+    fn clear_commands(&self) {
+        if let Ok(mut commands) = self.commands.lock() {
+            *commands = None;
+        }
+    }
+
+    fn command_sender(&self) -> Option<mpsc::Sender<ControlCommand>> {
+        self.commands
+            .lock()
+            .ok()
+            .and_then(|commands| commands.clone())
     }
 
     async fn cancelled(&self) {
@@ -427,6 +530,10 @@ impl ConnectionShared {
     }
 }
 
+enum ControlCommand {
+    SelectPane { window_id: u64, pane_id: u64 },
+}
+
 struct ConnectionEntry {
     shared: Arc<ConnectionShared>,
     abort: tokio::task::AbortHandle,
@@ -460,8 +567,127 @@ pub fn connect_terminal(
 ) -> Result<(), ConnectionError> {
     let options = options.validate()?;
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    start_connection(terminal_id, ConnectionStart::Options(options), false)
+}
+
+/// Reconnect using the parsed private key retained by this process after a
+/// successful (or partially established) connection.  Secrets are never
+/// reconstructed into a PEM string and are never persisted by the core.
+pub fn reconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let profile = session_state(terminal_id)
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .profile
+        .clone()
+        .ok_or(ConnectionError::ReconnectUnavailable)?;
+    start_connection(terminal_id, ConnectionStart::Profile(profile), true)
+}
+
+/// Select a pane by its stable tmux numeric ID. The desired selection is kept
+/// while disconnected so the next reconnect restores the same mobile tab.
+pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let sender = current_connection(terminal_id)
+        .ok()
+        .and_then(|shared| shared.command_sender());
+    let state = session_state(terminal_id);
+    let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    let pane = state
+        .snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == pane_id)
+        .cloned()
+        .ok_or(ConnectionError::InvalidArgument)?;
+    if let Some(sender) = sender {
+        sender
+            .try_send(ControlCommand::SelectPane {
+                window_id: pane.window_id,
+                pane_id,
+            })
+            .map_err(|_| ConnectionError::Internal)?;
+    }
+    state.selected_pane = Some(pane_id);
+    mark_selected(&mut state.snapshot, pane_id);
+    Ok(())
+}
+
+/// Return the latest coherent tmux topology known to the native core.
+pub fn session_snapshot(terminal_id: TerminalId) -> Result<SessionSnapshot, ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    session_state(terminal_id)
+        .lock()
+        .map(|state| state.snapshot.clone())
+        .map_err(|_| ConnectionError::Internal)
+}
+
+fn prepare_session_endpoint(
+    terminal_id: TerminalId,
+    options: &ConnectOptions,
+) -> Result<Vec<TerminalId>, ConnectionError> {
+    let state = session_state(terminal_id);
+    let stale = {
+        let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+        state
+            .profile
+            .as_ref()
+            .is_some_and(|profile| !profile.endpoint_matches(options))
+    };
+    if !stale {
+        return Ok(Vec::new());
+    }
+    let stale_terminals = {
+        let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+        let stale_terminals = state
+            .pane_terminals
+            .drain()
+            .filter_map(|(_, id)| (id != terminal_id).then_some(id))
+            .collect::<Vec<_>>();
+        state.generation = 0;
+        state.snapshot = SessionSnapshot::default();
+        state.profile = None;
+        state.selected_pane = None;
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_pane = None;
+        stale_terminals
+    };
+    Ok(stale_terminals)
+}
+
+enum ConnectionStart {
+    Options(ConnectOptions),
+    Profile(ConnectionProfile),
+}
+
+impl ConnectionStart {
+    fn endpoint(&self) -> (&str, u16, &str, &Path) {
+        match self {
+            Self::Options(options) => (
+                &options.host,
+                options.port,
+                &options.username,
+                &options.known_hosts_path,
+            ),
+            Self::Profile(profile) => (
+                &profile.host,
+                profile.port,
+                &profile.username,
+                &profile.known_hosts_path,
+            ),
+        }
+    }
+}
+
+fn start_connection(
+    terminal_id: TerminalId,
+    start: ConnectionStart,
+    reconnecting: bool,
+) -> Result<(), ConnectionError> {
     let runtime = runtime()?;
     let generation = next_generation();
+
+    let (host, port, _username, known_hosts_path) = start.endpoint();
 
     let mut entries = connections()
         .lock()
@@ -473,17 +699,31 @@ pub fn connect_terminal(
         old.abort.abort();
     }
 
+    let stale_terminals = match &start {
+        ConnectionStart::Options(options) => prepare_session_endpoint(terminal_id, options)?,
+        ConnectionStart::Profile(_) => Vec::new(),
+    };
     registry::begin_remote(terminal_id, generation).map_err(map_terminal_error)?;
     let shared = Arc::new(ConnectionShared::new(
         terminal_id,
         generation,
-        options.host.clone(),
-        options.port,
-        options.known_hosts_path.clone(),
+        host.to_owned(),
+        port,
+        known_hosts_path.to_owned(),
     ));
+    shared
+        .session
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .generation = generation;
+    if reconnecting {
+        shared.set_state(ConnectionState::Reconnecting);
+    }
+    let (command_sender, command_receiver) = mpsc::channel(32);
+    shared.set_commands(command_sender);
     let task_shared = Arc::clone(&shared);
     let join = runtime.spawn(async move {
-        run_connection(task_shared, options).await;
+        run_connection(task_shared, start, command_receiver).await;
     });
     entries.insert(
         terminal_id,
@@ -492,6 +732,10 @@ pub fn connect_terminal(
             abort: join.abort_handle(),
         },
     );
+    drop(entries);
+    for id in stale_terminals {
+        registry::destroy_terminal(id);
+    }
     Ok(())
 }
 
@@ -500,20 +744,23 @@ pub fn connect_terminal(
 pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
     let shared = {
-        let mut entries = connections()
+        let entries = connections()
             .lock()
             .map_err(|_| ConnectionError::Internal)?;
-        cancel_entry_locked(&mut entries, terminal_id)
+        let Some(entry) = entries.get(&terminal_id) else {
+            return Ok(());
+        };
+        entry.shared.mark_closing();
+        entry.shared.cancel();
+        Arc::clone(&entry.shared)
     };
 
-    let Some(shared) = shared else {
-        return Ok(());
-    };
-    registry::detach_transport(terminal_id, shared.generation);
+    detach_all(&shared);
     shared.mark_disconnected();
     Ok(())
 }
 
+#[cfg(test)]
 fn cancel_entry_locked(
     entries: &mut HashMap<TerminalId, ConnectionEntry>,
     terminal_id: TerminalId,
@@ -533,16 +780,31 @@ fn cancel_entry_locked(
 /// explicitly destroyed.  View unmounts do not call this path; they retain the
 /// stable terminal ID and its connection.
 pub(crate) fn terminal_destroyed(terminal_id: TerminalId) {
-    let Some(entry) = connections()
+    if let Some(entry) = connections()
         .lock()
         .ok()
         .and_then(|mut entries| entries.remove(&terminal_id))
-    else {
-        return;
-    };
-    entry.shared.mark_closing();
-    entry.shared.cancel();
-    entry.abort.abort();
+    {
+        entry.shared.mark_closing();
+        entry.shared.cancel();
+        entry.abort.abort();
+    }
+    let stale_terminals = session_states()
+        .lock()
+        .ok()
+        .and_then(|mut states| states.remove(&terminal_id))
+        .and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .map(|state| state.pane_terminals.values().copied().collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    for id in stale_terminals {
+        if id != terminal_id {
+            registry::destroy_terminal(id);
+        }
+    }
 }
 
 /// Return a state snapshot.  A known terminal with no active SSH entry is
@@ -627,6 +889,19 @@ fn next_generation() -> u64 {
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
         if generation != 0 {
             return generation;
+        }
+    }
+}
+
+fn mark_selected(snapshot: &mut SessionSnapshot, pane_id: u64) {
+    snapshot.selected_pane = Some(pane_id);
+    for pane in &mut snapshot.panes {
+        pane.selected = pane.pane_id == pane_id;
+    }
+    for window in &mut snapshot.windows {
+        window.selected = window.panes.iter().any(|pane| pane.pane_id == pane_id);
+        for pane in &mut window.panes {
+            pane.selected = pane.pane_id == pane_id;
         }
     }
 }
@@ -761,9 +1036,10 @@ enum FlowFailure {
     Network,
     Authentication,
     Channel,
-    Pty,
     Transport,
     RemoteClosed,
+    Tmux,
+    TmuxProtocol,
     Stale,
 }
 
@@ -774,9 +1050,16 @@ impl FlowFailure {
             Self::Network => ("network", "The SSH connection could not be established."),
             Self::Authentication => ("auth_failed", "Public-key authentication failed."),
             Self::Channel => ("channel", "The SSH session channel could not be opened."),
-            Self::Pty => ("pty_failed", "The remote pseudo-terminal request failed."),
             Self::Transport => ("transport", "The SSH terminal transport stopped."),
             Self::RemoteClosed => ("remote_closed", "The remote terminal closed the session."),
+            Self::Tmux => (
+                "tmux_failed",
+                "The managed tmux session could not be opened.",
+            ),
+            Self::TmuxProtocol => (
+                "tmux_protocol",
+                "The tmux Control Mode stream was malformed.",
+            ),
             Self::Stale => ("stale_connection", "The SSH connection was replaced."),
         }
     }
@@ -1071,32 +1354,19 @@ async fn wait_channel_message(
     }
 }
 
-async fn wait_request_reply(
-    shared: &ConnectionShared,
-    reader: &mut russh::ChannelReadHalf,
-) -> Result<(), FlowFailure> {
-    loop {
-        match await_channel_message(shared, reader).await? {
-            Some(ChannelMsg::Success) => return Ok(()),
-            Some(ChannelMsg::Failure) | Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                return Err(FlowFailure::Pty);
-            }
-            Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                if !registry::feed_remote(shared.terminal_id, shared.generation, &data) {
-                    if registry::transport_overloaded(shared.terminal_id) {
-                        return Err(FlowFailure::Transport);
-                    }
-                    return Err(FlowFailure::Stale);
-                }
-            }
-            Some(_) => {}
-        }
-    }
-}
-
-async fn run_connection(shared: Arc<ConnectionShared>, options: ConnectOptions) {
-    let result = run_connection_flow(Arc::clone(&shared), options).await;
-    registry::detach_transport(shared.terminal_id, shared.generation);
+/// Run one tmux Control Mode client. The SSH channel deliberately has no PTY:
+/// Control Mode is a line protocol and `%output` carries the remote panes'
+/// byte stream. This is `-C`, rather than `-CC`; `-CC` additionally disables
+/// tmux's client-side echo behavior for an embedded terminal and is not needed
+/// when the command is executed over a non-PTY SSH channel.
+async fn run_connection(
+    shared: Arc<ConnectionShared>,
+    start: ConnectionStart,
+    commands: mpsc::Receiver<ControlCommand>,
+) {
+    let result = run_connection_flow(Arc::clone(&shared), start, commands).await;
+    shared.clear_commands();
+    detach_all(&shared);
     if shared.is_cancelled() {
         return;
     }
@@ -1111,23 +1381,36 @@ async fn run_connection(shared: Arc<ConnectionShared>, options: ConnectOptions) 
 
 async fn run_connection_flow(
     shared: Arc<ConnectionShared>,
-    options: ConnectOptions,
+    start: ConnectionStart,
+    commands: mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
-    let ConnectOptions {
-        host,
-        port,
-        username,
-        mut private_key,
-        mut passphrase,
-        known_hosts_path: _,
-    } = options;
-    let decoded_key = keys::decode_secret_key(&private_key, passphrase.as_deref());
-    // Clear the caller-provided PEM and passphrase before the first await, so
-    // the long-lived interactive task retains only the parsed key and the
-    // non-secret username/endpoint values.
-    private_key.zeroize();
-    passphrase.zeroize();
-    let key = decoded_key.map_err(|_| FlowFailure::KeyFile)?;
+    let profile = match start {
+        ConnectionStart::Profile(profile) => profile,
+        ConnectionStart::Options(ConnectOptions {
+            host,
+            port,
+            username,
+            mut private_key,
+            mut passphrase,
+            known_hosts_path,
+        }) => {
+            let decoded_key = keys::decode_secret_key(&private_key, passphrase.as_deref());
+            // Clear the caller-provided PEM and passphrase before the first
+            // await. The reconnect profile retains only the parsed key.
+            private_key.zeroize();
+            passphrase.zeroize();
+            let key = decoded_key.map_err(|_| FlowFailure::KeyFile)?;
+            let profile = ConnectionProfile {
+                host,
+                port,
+                username,
+                known_hosts_path,
+                key: Arc::new(key),
+            };
+            shared.set_profile(profile.clone());
+            profile
+        }
+    };
     if shared.is_cancelled() {
         return Err(FlowFailure::Stale);
     }
@@ -1140,7 +1423,7 @@ async fn run_connection_flow(
     };
     let socket = await_stage(
         &shared,
-        tokio::net::TcpStream::connect((host.as_str(), port)),
+        tokio::net::TcpStream::connect((profile.host.as_str(), profile.port)),
         SSH_CONNECT_TIMEOUT,
         FlowFailure::Network,
     )
@@ -1181,7 +1464,7 @@ async fn run_connection_flow(
     let _connect_guard = guard;
     control.clear_deadline();
 
-    let result = run_authenticated_session(&shared, &username, key, &mut session).await;
+    let result = run_tmux_authenticated_session(&shared, &profile, &mut session, commands).await;
     // Dropping a russh Handle does not synchronously stop its event loop.  A
     // bounded disconnect gives normal failures and explicit cancellation a
     // chance to close the owned session before this task exits.
@@ -1194,14 +1477,14 @@ async fn run_connection_flow(
     result
 }
 
-async fn run_authenticated_session(
+async fn run_tmux_authenticated_session(
     shared: &Arc<ConnectionShared>,
-    username: &str,
-    key: russh::keys::PrivateKey,
+    profile: &ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
+    commands: mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::Authenticating);
-    let hash_alg = if key.algorithm().is_rsa() {
+    let hash_alg = if profile.key.algorithm().is_rsa() {
         await_stage(
             shared,
             session.best_supported_rsa_hash(),
@@ -1216,8 +1499,8 @@ async fn run_authenticated_session(
     let authentication = await_stage(
         shared,
         session.authenticate_publickey(
-            username.to_owned(),
-            PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+            profile.username.to_owned(),
+            PrivateKeyWithHashAlg::new(Arc::clone(&profile.key), hash_alg),
         ),
         SSH_STAGE_TIMEOUT,
         FlowFailure::Authentication,
@@ -1230,137 +1513,16 @@ async fn run_authenticated_session(
         return Err(FlowFailure::Stale);
     }
 
-    shared.set_state(ConnectionState::OpeningPty);
-    let channel = await_stage(
-        shared,
-        session.channel_open_session(),
-        SSH_STAGE_TIMEOUT,
-        FlowFailure::Channel,
-    )
-    .await?;
-    let (columns, rows) =
-        registry::terminal_dimensions(shared.terminal_id).map_err(|_| FlowFailure::Stale)?;
-    let (mut reader, writer) = channel.split();
-    let (input_sender, mut input_receiver) = mpsc::channel(INPUT_QUEUE_CAPACITY);
-    let (resize_sender, mut resize_receiver) = watch::channel((columns, rows));
-    registry::attach_transport(
-        shared.terminal_id,
-        shared.generation,
-        input_sender,
-        resize_sender.clone(),
-    )
-    .map_err(|_| FlowFailure::Stale)?;
+    control::run(shared, session, commands).await
+}
 
-    // Bind before the requests so terminal-generated DA/DSR replies during
-    // shell startup still reach the remote side.  User input remains rejected
-    // until both request replies have been accepted below.
-    await_stage(
-        shared,
-        writer.request_pty(
-            true,
-            "xterm-256color",
-            u32::from(columns),
-            u32::from(rows),
-            0,
-            0,
-            &[],
-        ),
-        SSH_STAGE_TIMEOUT,
-        FlowFailure::Pty,
-    )
-    .await?;
-    wait_request_reply(shared, &mut reader).await?;
-    await_stage(
-        shared,
-        writer.request_shell(true),
-        SSH_STAGE_TIMEOUT,
-        FlowFailure::Pty,
-    )
-    .await?;
-    wait_request_reply(shared, &mut reader).await?;
-
-    // A resize can race the PTY request.  Re-read after binding the transport
-    // and use the watch channel's latest-value semantics to repair that race.
-    if let Ok(latest) = registry::terminal_dimensions(shared.terminal_id)
-        && latest != (columns, rows)
-    {
-        let _ = resize_sender.send(latest);
-    }
-    if !registry::mark_transport_ready(shared.terminal_id, shared.generation) {
-        return Err(FlowFailure::Stale);
-    }
-    shared.set_state(ConnectionState::Ready);
-
-    let mut saw_exit_status = false;
-    let mut saw_eof = false;
-    loop {
-        tokio::select! {
-            _ = shared.cancelled() => return Err(FlowFailure::Stale),
-            input = input_receiver.recv() => {
-                let Some(input) = input else {
-                    return Err(FlowFailure::Transport);
-                };
-                await_stage(
-                    shared,
-                    writer.data_bytes(input),
-                    SSH_STAGE_TIMEOUT,
-                    FlowFailure::Transport,
-                )
-                .await?;
-            }
-            resize = resize_receiver.changed() => {
-                resize.map_err(|_| FlowFailure::Transport)?;
-                let (columns, rows) = *resize_receiver.borrow_and_update();
-                await_stage(
-                    shared,
-                    writer.window_change(u32::from(columns), u32::from(rows), 0, 0),
-                    SSH_STAGE_TIMEOUT,
-                    FlowFailure::Transport,
-                )
-                .await?;
-            }
-            message = async {
-                if saw_eof {
-                    // EOF is the remote side's half-close.  Give russh a
-                    // bounded window to deliver ExitStatus/Close, then treat
-                    // an idle post-EOF channel as an orderly shell exit.
-                    await_channel_message(shared, &mut reader).await
-                } else {
-                    wait_channel_message(shared, &mut reader).await
-                }
-            } => {
-                let message = match message {
-                    Ok(message) => message,
-                    Err(FlowFailure::Transport) if saw_eof => return Ok(()),
-                    Err(failure) => return Err(failure),
-                };
-                match message {
-                    Some(ChannelMsg::Data { data })
-                    | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                        if !registry::feed_remote(shared.terminal_id, shared.generation, &data) {
-                            if registry::transport_overloaded(shared.terminal_id) {
-                                return Err(FlowFailure::Transport);
-                            }
-                            return Err(FlowFailure::Stale);
-                        }
-                    }
-                    Some(ChannelMsg::ExitStatus { .. }) => {
-                        saw_exit_status = true;
-                    }
-                    Some(ChannelMsg::Eof) => {
-                        saw_eof = true;
-                    }
-                    Some(ChannelMsg::Close) | None => {
-                        if saw_exit_status || saw_eof {
-                            return Ok(());
-                        }
-                        return Err(FlowFailure::RemoteClosed);
-                    }
-                    Some(_) => {}
-                }
-            }
+fn detach_all(shared: &ConnectionShared) {
+    if let Ok(state) = shared.session.lock() {
+        for id in state.pane_terminals.values() {
+            registry::detach_transport(*id, shared.generation);
         }
     }
+    registry::detach_transport(shared.terminal_id, shared.generation);
 }
 
 fn canonical_host(host: &str) -> Result<String, ConnectionError> {

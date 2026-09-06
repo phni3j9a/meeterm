@@ -1,56 +1,99 @@
-# SSH validation
+# SSH and durable tmux sessions
 
-Issue #3 uses an ordinary OpenSSH server as the remote end of the vertical
-slice. `scripts/ssh/fixture.py` starts a disposable `sshd` process as the
-current unprivileged account. It creates an Ed25519 host key, an encrypted
-Ed25519 client key, an unencrypted client-key counterpart, `authorized_keys`,
-the server configuration, and an empty known-hosts file below one private
-temporary directory. The server listens only on `127.0.0.1` and on a kernel
-assigned port above 1024.
+The native connection attaches to or creates the session named `meeterm` on the
+remote user's ordinary tmux server. Workspaces are tmux windows and terminals
+are panes. A desktop user can continue with `tmux attach -t meeterm`.
 
-The fixture does not touch `/etc/ssh`, the system sshd service, `~/.ssh`, or a
-user's SSH configuration. It does not need `sudo`. The fixture is deliberately
-an SSH shell fixture: it does not create tmux state, test tmux Control Mode, or
-provide reconnect behavior.
+## Using the session loop
 
-## Prerequisites
+1. Open **Connect**, enter the SSH endpoint, username, OpenSSH private key, and
+   optional passphrase, and submit the form.
+2. Verify the displayed SHA-256 host-key fingerprint through a trusted channel
+   before choosing **Trust and connect**. A changed trusted key fails closed.
+3. After **Connected**, select a workspace and its terminal tabs. Existing
+   windows and panes can be created or changed with ordinary remote tmux
+   commands; the native core discovers the topology.
+4. **Disconnect** closes the mobile connection while the remote session and
+   its processes continue running. **Reconnect** resumes that workspace.
+5. After a transport failure, use **Reconnect**. After the app process exits,
+   enter the connection details and key again with **Connect**; the remote
+   tmux session is still the source of truth.
 
-The host running the fixture must have:
+The parsed private key is retained only in Rust process memory for explicit
+reconnect. The form clears private-key and passphrase text on submission or
+cancellation. Credentials are not saved to disk. Approved host identities are
+stored separately in app-private storage and checked again during reconnect.
+Password, keyboard-interactive, SSH-agent, server profiles, and saving keys in
+platform secure storage remain outside this slice.
 
-- `/usr/sbin/sshd` from OpenSSH server;
-- `ssh` and `ssh-keygen` from the OpenSSH client;
-- Python 3.10 or newer.
+## Native data and lifecycle boundary
 
-The fixture refuses to run as root. A missing `/usr/sbin/sshd` is an environment
-setup issue; install it through the host's normal package management outside
-this runbook rather than changing the repository or the system SSH service.
+SSH opens an exec channel for `tmux -C -u new-session -A -s meeterm`. It does not
+allocate an outer SSH PTY. `-CC` attempts to configure terminal attributes and
+fails without a terminal on tmux 3.4; `-C` supplies the same Control Mode
+protocol over pipes. See the measured explanation in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#tmux-control-mode).
 
-## Rust integration runner
+Rust parses protocol framing and octal escaping as bytes. Each `%output` pane
+ID routes to one Rust-owned terminal. Native input is encoded for an explicit
+numeric tmux pane target, and native view dimensions feed the Rust controller.
+Terminal bytes, cells, frames, and IME composition never pass through JavaScript.
 
-Command mode keeps the server alive for exactly one downstream command. The
-child inherits the current environment plus the following temporary values:
+The small control API exposes connection state, topology, pane selection, and
+reconnect through the existing native package and C/JNI ABI. A
+`native:<terminal-id>` view identity borrows a handle from the shared Rust
+registry. Platform adapters do not create a second copy of pane state. Removing
+a view leaves the remote pane running; removing a remote pane invalidates its
+borrowed local handle safely.
 
-| Variable | Meaning |
-| --- | --- |
-| `MEETERM_SSH_HOST` | `127.0.0.1` |
-| `MEETERM_SSH_PORT` | Ephemeral high loopback port |
-| `MEETERM_SSH_USERNAME` | Current unprivileged account |
-| `MEETERM_SSH_PRIVATE_KEY_FILE` | Encrypted Ed25519 private-key path |
-| `MEETERM_SSH_PASSPHRASE` | Passphrase for that encrypted key |
-| `MEETERM_SSH_FINGERPRINT` | SHA-256 fingerprint of the fixture host key |
-| `MEETERM_SSH_KNOWN_HOSTS_FILE` | Empty mode-0600 trust-store path |
-| `MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE` | Unencrypted Ed25519 key for unattended OpenSSH CLI checks |
-| `MEETERM_SSH_HOST_KEY_FILE` | Fixture host public-key path |
+Reconnect is explicitly requested, not a React timer or an unbounded background
+retry. React polls only low-frequency state. Native reconstruction after a
+connection gap must obtain the current remote screen and topology before
+accepting terminal input again. Local display contents alone are not proof of
+remote reconnection.
 
-The key and passphrase values are transient test credentials. The script never
-prints private key material, the passphrase, or helper command arguments. The
-temporary directory is removed after the command exits, including the normal
-failure and interrupt paths. A `SIGKILL` or host crash cannot run cleanup, so a
-runner should use its ordinary temporary-directory cleanup policy for that
-exceptional case.
+The selected pane is temporarily zoomed with tmux's own zoom operation; its
+underlying split layout is retained. Recovery uses an allocated pair of
+session-scoped `client-detached` / `client-session-changed` hooks so that a
+lost mobile transport or desktop handoff can undo the mobile zoom. Existing
+user hook entries are preserved. The pair removes itself on recovery; no
+global hook or configuration file is installed.
 
-Invoke the Rust integration target supplied by the shared-core implementation
-through the wrapper, for example:
+Screen reconstruction captures the current pane with ANSI attributes and
+restores its dimensions, cursor, active alternate screen, and exposed input
+modes. This is not a serialization of a running application's entire terminal
+parser state. In particular, saved primary-screen contents, scroll margins,
+and partially emitted escape sequences are not reconstructed. tmux 3.4 does
+not expose bracketed-paste mode in its format metadata; the capture defaults
+that mode off until the application emits it again. A static alternate-screen
+recovery test is useful evidence, but arbitrary full-screen TUI process-death
+recovery still needs application-specific validation and may require a redraw.
+
+## Disposable fixture
+
+`scripts/ssh/fixture.py` starts a temporary OpenSSH server as the current
+unprivileged account, listening only on `127.0.0.1` at an ephemeral high port.
+It creates disposable host keys, encrypted and unencrypted Ed25519 client keys,
+authorized keys, server configuration, and a private trust store under one
+mode-0700 temporary directory. It does not change `/etc/ssh`, the system sshd,
+`~/.ssh`, or the user's SSH configuration, and needs no sudo.
+
+The fixture also owns an isolated tmux default socket. `sshd` supplies a private
+`TMUX_TMPDIR` to its remote commands, and wrapped local test commands receive
+the same environment with inherited `TMUX` and `TMUX_PANE` removed. Cleanup
+addresses only the fixture's absolute `tmux-<uid>/default` socket. This is test
+isolation: the application command has no `-L` or `-S` and uses an ordinary
+server on a real host.
+
+An empty foreground `tmux -D -f /dev/null` server is started by the fixture so
+tests do not load the developer's tmux configuration, key bindings, or hooks.
+No managed session exists initially: the native connection creates `meeterm`.
+
+Prerequisites are Python 3.10+, `/usr/sbin/sshd`, `ssh`, `ssh-keygen`, and `tmux`.
+The fixture refuses to run as root. Missing prerequisites are environment setup
+issues; the script does not install system packages or reconfigure services.
+
+Run the native integration target:
 
 ```sh
 python3 scripts/ssh/fixture.py -- \
@@ -58,65 +101,26 @@ python3 scripts/ssh/fixture.py -- \
   --test openssh -- --ignored --nocapture
 ```
 
-The `openssh` Rust test reads the fixture environment, connects with the
-encrypted key, performs an explicit host-key decision, and opens an interactive
-PTY. It checks ANSI attributes, `ls`, Japanese committed input and output,
-two `stty size` values, normal shell exit, pinned-key reconnect, 32 seconds of
-idle time, explicit disconnect, and rejection of input after disconnect. It
-uses the shared Rust API and native C input/snapshot contracts without a
-developer's SSH agent or persistent credentials.
-
-## OpenSSH CLI smoke
-
-The unencrypted sibling key exists only to make a noninteractive OpenSSH
-command possible without putting the encrypted passphrase in a process prompt.
-This command exercises real public-key authentication, host-key TOFU into the
-fixture's isolated trust file, an allocated PTY, ANSI bytes, UTF-8 text, and a
-remote `stty` query:
+Run the deterministic driver regressions:
 
 ```sh
-python3 scripts/ssh/fixture.py -- sh -c '
-  set -eu
-  export TERM=xterm-256color
-  ssh -tt -p "$MEETERM_SSH_PORT" \
-    -F /dev/null \
-    -i "$MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE" \
-    -o IdentitiesOnly=yes \
-    -o BatchMode=yes \
-    -o GlobalKnownHostsFile=/dev/null \
-    -o UserKnownHostsFile="$MEETERM_SSH_KNOWN_HOSTS_FILE" \
-    -o StrictHostKeyChecking=accept-new \
-    -o ConnectTimeout=5 \
-    "$MEETERM_SSH_USERNAME@$MEETERM_SSH_HOST" \
-    '\''stty rows 24 cols 80; printf "MEETERM_FIXTURE_READY\\n"; printf "\\033[31mRED\\033[0m\\n"; printf "日本語\\n"; stty size'\''
-'
+python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
 ```
 
-`accept-new` is intentionally limited to this disposable fixture command. The
-application's first connection must show `MEETERM_SSH_FINGERPRINT` to the user
-and require an explicit trust decision. Once approved, it persists the
-fingerprint/host identity in its local trust state. A later connection with a
-different host key at the same host and port must fail closed; it must not
-silently replace the stored identity. Preserve the trust file while rotating
-the server host key (or point the client at an alternate server with the same
-logical endpoint) to exercise this changed-key rejection.
+The Rust integration target exercises the real SSH/tmux/native-terminal path.
+Assertions cover explicit trust and encrypted-key authentication, pane-specific
+output and input, remote dimensions, topology changes, disconnect and resume,
+and rejection of input while disconnected. Recovery assertions use remote
+process state and native snapshots, not just the presence of a connection flag.
+The four-pane test also covers ordinary desktop attach/detach, preservation of
+preexisting indexed user hooks, remote pane removal and borrowed-handle
+invalidation, alternate-screen capture, and post-reconnect no-wrap output at
+the right margin. It checks wrong-passphrase and changed-host-key rejection.
+A fixture passing does not establish physical-device parity.
 
-The encrypted key can be checked without printing its secret or using an SSH
-agent:
+## Mobile fixture
 
-```sh
-python3 scripts/ssh/fixture.py -- sh -c '
-  set -eu
-  ssh-keygen -y -P "$MEETERM_SSH_PASSPHRASE" \
-    -f "$MEETERM_SSH_PRIVATE_KEY_FILE" >/dev/null
-'
-```
-
-## Persistent fixture for a mobile run
-
-Persistent mode writes a mode-0600 shell environment file and keeps `sshd`
-alive until `SIGINT` or `SIGTERM`. The file contains the encrypted-key
-passphrase, so do not print it or upload it as an artifact.
+To keep the fixture running for manual use, create a fresh environment file:
 
 ```sh
 fixture_env="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/meeterm-ssh.env"
@@ -128,51 +132,29 @@ while ! test -s "$fixture_env"; do
   kill -0 "$fixture_pid" 2>/dev/null || exit 1
   sleep 0.1
 done
-set -a
 . "$fixture_env"
-set +a
 ```
 
-For an Android device connected over USB, set `MEETERM_ANDROID_DEVICE` to its
-serial from `adb devices -l`, forward the fixture port, and keep the app's test
-endpoint at `127.0.0.1`:
+The environment file contains transient test credentials. Do not print or upload
+it, the key files, or an unsanitized authentication form. The fixture refuses to
+overwrite an existing environment file and removes its own file during cleanup.
+SIGKILL or host failure cannot execute cleanup; these exceptional cases require
+ordinary temporary-directory cleanup by the owner.
+
+For an attached Android device, forward the fixture's loopback port:
 
 ```sh
 adb -s "$MEETERM_ANDROID_DEVICE" reverse tcp:"$MEETERM_SSH_PORT" tcp:"$MEETERM_SSH_PORT"
 ```
 
-Open **Connect** in the app and supply the fixture host, port, username,
-private OpenSSH key contents, and passphrase. Authentication inputs cross the
-low-frequency control plane once; the form clears them on submission or
-cancellation. The app does not persist credentials. Saving credentials in
-platform secure storage is a follow-up; host-key trust is already persisted
-separately in app-private storage. Do not copy fixture keys into the repository
-or upload them with observability artifacts. On iOS Simulator, use the local
-loopback endpoint and the same explicit host-key prompt; simulator success does
-not establish physical-device network parity.
+Enter the fixture values in **Connect**. iOS Simulator can use the host's
+loopback endpoint directly. Host fingerprints still require explicit approval.
+The environment exposes `MEETERM_SSH_PRIVATE_KEY_FILE` and
+`MEETERM_SSH_PASSPHRASE` for encrypted-key tests, and
+`MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE` for unattended Android UI input. It
+also supplies `MEETERM_TMUX_SOCKET` for narrowly scoped test inspection.
 
-## Validation boundary
-
-The implementation was exercised on Ubuntu 24.04 on 2026-09-05 using the
-disposable local OpenSSH server and Rust 1.96.0. The real-server integration
-test passed with encrypted Ed25519 authentication, explicit trust followed by
-pinned reconnect, interactive shell output, ANSI cell attributes, Japanese
-committed input and output, two remote PTY sizes, normal shell exit, a 32-second
-idle interval, and explicit disconnect. The final local checks passed 23 Rust
-unit tests, format/clippy, TypeScript, all 21 Expo Doctor checks, and the fresh
-Android CNG debug build with 10 native tests. These local results establish the
-shared-core and Android build boundaries; hosted device execution and images
-are recorded separately in the pull request's Mobile smoke run.
-
-Current limits are deliberate: authentication uses OpenSSH private keys only;
-password, keyboard-interactive, SSH-agent, and saved credentials are deferred.
-There is no automatic reconnect, process-death recovery, tmux integration, or
-promise of background transport survival. View unmounts retain the terminal
-and session while the process is alive. Real Japanese IME composition on a
-physical remote-shell session and physical iOS Metal rendering require separate
-device validation; the automated Android UI input uses injected key events.
-
-The Android emulator job runs the same fixture through the connection form:
+The self-contained installed Android app is exercised through its actual UI:
 
 ```sh
 python3 scripts/ssh/fixture.py -- \
@@ -180,31 +162,37 @@ python3 scripts/ssh/fixture.py -- \
   --artifact-dir artifacts/android-emulator-observability
 ```
 
-The app must already be installed as a self-contained build. The script starts
-the app, supplies the disposable unencrypted key, compares the trust prompt
-with the fixture fingerprint, and enters commands through Android's native
-input path. It checks a unique one-line marker on the real server to detect
-missing or duplicated command execution. It then displays ANSI, Japanese,
-`stty size`, and `ls` output for visual inspection. The encrypted-key path is
-covered by the Rust integration test. No real credentials or production test
-entry point are needed. Use `--serial` or `ANDROID_SERIAL` when multiple devices
-are attached; reserve that device for the test while it runs.
+The driver verifies the displayed fingerprint, submits the disposable key,
+waits for the native session, discovers the workspace/pane identity, and sends
+input through Android's native terminal. A one-line server marker detects
+missing or duplicate execution. After disconnect/reconnect, the driver checks
+the same pane and a retained shell variable, then sends another native command.
+ANSI, Japanese, and terminal dimensions are shown for visual inspection.
 
-`ssh-validation.txt` records the sanitized machine result. `ssh-terminal.png`
-and `ssh-logcat.txt` are observability artifacts; a capture failure produces an
-explicit unavailable diagnostic and does not become a screenshot gate. The
-foundation's `terminal.png` is preserved separately.
+The prior `private_key_input (ui_timeout)` was a deterministic driver mismatch:
+React Native Android joins `accessibilityLabel` and `accessibilityValue.text`
+with `, `. The hidden key editor is therefore named
+`Private OpenSSH key, Empty` or `Private OpenSSH key, Private key entered`.
+The old exact-label lookup never matched it. The driver now accepts only the
+known label/value forms, with regression coverage; secret masking and host-key
+verification remain enabled.
 
-This fixture proves that the shared Rust SSH layer can authenticate to a real
-OpenSSH server and exchange an interactive shell's raw PTY bytes. It is useful
-for Rust integration tests and controlled native/mobile smoke runs. It does
-not prove tmux session durability, `tmux -CC`, pane routing, reconnect or
-resynchronization, full-screen TUI behavior, physical-device GPU/font/IME
-parity, or production credential storage. Those checks belong to later slices
-or to separately recorded device validation.
+The driver also requires keyboard focus before entering the key and verifies
+short input batches and line breaks against the editor in memory. It retries
+accessibility hierarchy acquisition at most three times without replaying
+input. Missing/invalid hierarchy and known UIAutomator idle/root failures are
+reported as fixed diagnostic identifiers; neither raw XML nor key readback is
+written to logs or artifacts. Identical native metadata snapshots retain their
+React state references, avoiding needless accessibility property updates from
+the one-second metadata poll.
 
-CI may use this fixture because all credentials and host keys are generated at
-runtime and discarded. CI must not contain real user SSH credentials, private
-keys, passphrases, or a persistent known-hosts file. The mobile job remains a
-separate build/install/runtime gate; this fixture does not make an uploaded
-screenshot evidence of interactive mobile success.
+`ssh-validation.txt` records sanitized stages, while `ssh-terminal.png` and
+`ssh-logcat.txt` provide observability. The foundation's `terminal.png` remains
+separate. Screenshot capture is not a machine acceptance gate, and unavailable
+captures are reported explicitly. See [`CI_MOBILE.md`](CI_MOBILE.md).
+
+The iOS hosted smoke validates the shared library, native adapter, module
+readiness, and first frame using the local demo. It does not claim an interactive
+iOS SSH flow. A CoreGraphics fallback frame is explicitly different from Metal
+execution. Physical-device GPU, Japanese IME, background network behavior, and
+font parity still need their own device evidence.

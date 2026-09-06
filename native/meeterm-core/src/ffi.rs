@@ -229,6 +229,89 @@ pub extern "C" fn meeterm_disconnect(id: u64) -> i32 {
         .unwrap_or_else(connection_error_code)
 }
 
+/// Retry the Rust-owned connection using process-local credentials.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_reconnect(id: u64) -> i32 {
+    crate::ssh::reconnect_terminal(id)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Select an existing tmux pane using its numeric runtime identity.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_select_pane(id: u64, pane_id: u64) -> i32 {
+    crate::ssh::select_pane(id, pane_id)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Resolve a borrowed native handle without allocating a terminal.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_terminal_exists(id: u64) -> u8 {
+    u8::from(registry::shared_terminal(id).is_ok())
+}
+
+/// Fixed-layout control-plane record. This contains no terminal output.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TmuxPaneRecord {
+    pub window_id: u64,
+    pub pane_id: u64,
+    pub terminal_id: u64,
+    pub window_name_len: u16,
+    pub selected: u8,
+    pub reserved: [u8; 5],
+    pub window_name: [u8; 256],
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_pane_record_size() -> usize {
+    std::mem::size_of::<TmuxPaneRecord>()
+}
+
+/// Copy one coherent topology snapshot, or return the required record count.
+/// Returns `usize::MAX` on an unavailable session. No partial copy is made.
+///
+/// # Safety
+/// A non-null `out` must be aligned and writable for `capacity` records.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_session_panes(
+    id: u64,
+    out: *mut TmuxPaneRecord,
+    capacity: usize,
+) -> usize {
+    let session = match crate::ssh::session_snapshot(id) {
+        Ok(session) => session,
+        Err(_) => return usize::MAX,
+    };
+    let count = session.panes.len();
+    if out.is_null() || capacity < count {
+        return count;
+    }
+    for (index, pane) in session.panes.iter().enumerate() {
+        let mut record = TmuxPaneRecord {
+            window_id: pane.window_id,
+            pane_id: pane.pane_id,
+            terminal_id: pane.terminal_id,
+            window_name_len: 0,
+            selected: u8::from(pane.selected),
+            reserved: [0; 5],
+            window_name: [0; 256],
+        };
+        let mut length = pane.window_name.len().min(record.window_name.len());
+        while !pane.window_name.is_char_boundary(length) {
+            length -= 1;
+        }
+        record.window_name[..length].copy_from_slice(&pane.window_name.as_bytes()[..length]);
+        record.window_name_len = length as u16;
+        // The caller provides space for all records; padding is explicit.
+        unsafe {
+            out.add(index).write(record);
+        }
+    }
+    count
+}
+
 /// Return the fixed C snapshot size.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_connection_snapshot_size() -> usize {
@@ -310,4 +393,33 @@ pub unsafe extern "C" fn meeterm_forget_host_key(
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_terminal_revision(id: u64) -> u64 {
     terminal_revision(id).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod session_abi_tests {
+    use super::*;
+
+    #[test]
+    fn pane_record_matches_c_header_layout() {
+        assert_eq!(std::mem::size_of::<TmuxPaneRecord>(), 288);
+        assert_eq!(std::mem::offset_of!(TmuxPaneRecord, window_name_len), 24);
+        assert_eq!(std::mem::offset_of!(TmuxPaneRecord, selected), 26);
+        assert_eq!(std::mem::offset_of!(TmuxPaneRecord, window_name), 32);
+    }
+
+    #[test]
+    fn borrowed_handle_and_empty_session_do_not_allocate_panes() {
+        let id = meeterm_create_terminal(80, 24);
+        assert_eq!(meeterm_terminal_exists(id), 1);
+        assert_eq!(
+            unsafe { meeterm_session_panes(id, std::ptr::null_mut(), 0) },
+            0
+        );
+        assert_eq!(meeterm_destroy_terminal(id), 1);
+        assert_eq!(meeterm_terminal_exists(id), 0);
+        assert_eq!(
+            unsafe { meeterm_session_panes(id, std::ptr::null_mut(), 0) },
+            usize::MAX
+        );
+    }
 }

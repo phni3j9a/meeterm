@@ -107,6 +107,16 @@ final class TerminalInputView: UITextView {
     return text(in: range) ?? ""
   }
 
+  /// Cancel local preedit before borrowing a different native terminal.
+  func cancelCompositionForBinding() {
+    super.unmarkText()
+    resetBackingStore()
+    onPreeditChanged?("")
+    // End the old UIKit input session before its callbacks can target a new
+    // pane. The newly selected terminal can be focused with a native tap.
+    resignFirstResponder()
+  }
+
   private func resetBackingStore() {
     text = ""
     selectedRange = NSRange(location: 0, length: 0)

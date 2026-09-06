@@ -21,6 +21,9 @@ enum MeetermConnectionPhase: UInt32 {
   case ready = 5
   case closing = 6
   case failed = 7
+  case attachingTmux = 8
+  case synchronizing = 9
+  case reconnecting = 10
 
   var jsValue: String {
     switch self {
@@ -32,6 +35,9 @@ enum MeetermConnectionPhase: UInt32 {
     case .ready: return "Ready"
     case .closing: return "Closing"
     case .failed: return "Failed"
+    case .attachingTmux: return "AttachingTmux"
+    case .synchronizing: return "Synchronizing"
+    case .reconnecting: return "Reconnecting"
     }
   }
 }
@@ -113,6 +119,43 @@ enum MeetermCore {
 
   static func disconnect(terminalId: UInt64) -> Int32 {
     meeterm_disconnect(terminalId)
+  }
+
+  static func reconnect(terminalId: UInt64) -> Int32 {
+    meeterm_reconnect(terminalId)
+  }
+
+  static func selectPane(terminalId: UInt64, paneId: UInt64) -> Int32 {
+    meeterm_select_pane(terminalId, paneId)
+  }
+
+  static func terminalExists(terminalId: UInt64) -> Bool {
+    meeterm_terminal_exists(terminalId) == 1
+  }
+
+  static func sessionPanes(terminalId: UInt64) -> [[String: Any]]? {
+    guard meeterm_pane_record_size() == MemoryLayout<meeterm_tmux_pane_t>.stride else { return nil }
+    var capacity = meeterm_session_panes(terminalId, nil, 0)
+    for _ in 0..<3 {
+      guard capacity >= 0, capacity <= 4096 else { return nil }
+      if capacity == 0 { return [] }
+      var panes = Array(repeating: meeterm_tmux_pane_t(), count: capacity)
+      let copied = panes.withUnsafeMutableBufferPointer { buffer in
+        meeterm_session_panes(terminalId, buffer.baseAddress, buffer.count)
+      }
+      guard copied >= 0, copied <= 4096 else { return nil }
+      if copied > capacity { capacity = copied; continue }
+      return panes.prefix(copied).map { pane in
+        [
+          "windowId": "@\(pane.window_id)",
+          "paneId": "%\(pane.pane_id)",
+          "terminalId": "native:\(pane.terminal_id)",
+          "windowName": sanitize(decode(pane.window_name, length: pane.window_name_len), maxLength: 256),
+          "selected": pane.selected == 1
+        ]
+      }
+    }
+    return nil
   }
 
   static func connectionSnapshot(terminalId: UInt64) -> MeetermConnectionSnapshot? {

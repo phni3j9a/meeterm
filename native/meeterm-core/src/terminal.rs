@@ -225,6 +225,18 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, columns: u16, rows: u16) -> Result<(), TerminalError> {
+        self.resize_inner(columns, rows, true)
+    }
+
+    pub(crate) fn resize_from_remote(
+        &mut self,
+        columns: u16,
+        rows: u16,
+    ) -> Result<(), TerminalError> {
+        self.resize_inner(columns, rows, false)
+    }
+
+    fn resize_inner(&mut self, columns: u16, rows: u16, notify: bool) -> Result<(), TerminalError> {
         validate_dimensions(columns, rows)?;
         let changed = self.term.columns() != usize::from(columns)
             || self.term.screen_lines() != usize::from(rows);
@@ -236,7 +248,7 @@ impl Terminal {
             self.content_revision = self.content_revision.saturating_add(1);
         }
 
-        if self.remote_mode {
+        if self.remote_mode && notify {
             let resize_sender = self
                 .outbound
                 .lock()
@@ -255,6 +267,14 @@ impl Terminal {
     /// drops the built-in demo and scrollback, while `remote_mode` remains set
     /// for the lifetime of this terminal even if connection setup fails.
     pub(crate) fn begin_remote(&mut self, generation: u64) -> Result<(), TerminalError> {
+        // A cancelled actor may still finish a synchronous registry operation
+        // while its replacement starts. Never let it reset the newer terminal.
+        if self
+            .remote_generation
+            .is_some_and(|current| generation < current)
+        {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
         let columns =
             u16::try_from(self.term.columns()).map_err(|_| TerminalError::InvalidDimensions)?;
         let rows = u16::try_from(self.term.screen_lines())
@@ -310,6 +330,33 @@ impl Terminal {
         Ok(())
     }
 
+    pub(crate) fn restore_screen(
+        &mut self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+        bytes: &[u8],
+    ) -> Result<(), TerminalError> {
+        if self.remote_generation != Some(generation) {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        let binding = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?
+            .clone();
+        let commits = self.input_commit_count;
+        self.begin_remote(generation)?;
+        self.resize_from_remote(columns, rows)?;
+        self.feed(bytes);
+        self.input_commit_count = commits;
+        *self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
+        Ok(())
+    }
+
     pub(crate) fn detach_transport(&mut self, generation: u64) {
         if self.remote_generation != Some(generation) {
             return;
@@ -342,6 +389,7 @@ impl Terminal {
         !self.transport_overloaded.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
     pub(crate) fn transport_overloaded(&self) -> bool {
         self.transport_overloaded.load(Ordering::Acquire)
     }

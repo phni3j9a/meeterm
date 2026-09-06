@@ -131,27 +131,34 @@ final class TerminalRenderer: NSObject, MTKViewDelegate, TerminalFrameRendering 
 
   func draw(in view: MTKView) {
     autoreleasepool {
-      guard terminalHandle != 0,
-            let snapshotData = MeetermCore.snapshot(terminalId: terminalHandle),
-            let snapshot = TerminalSnapshotParser.parse(snapshotData),
-            let drawable = view.currentDrawable,
+      guard let drawable = view.currentDrawable,
             let renderPass = view.currentRenderPassDescriptor,
-            let texture = makeTexture(for: snapshot, in: view),
-            let commandBuffer = commandQueue.makeCommandBuffer(),
-            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
+            let commandBuffer = commandQueue.makeCommandBuffer() else {
+        return
+      }
+      renderPass.colorAttachments[0].loadAction = .clear
+      renderPass.colorAttachments[0].clearColor = view.clearColor
+      guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
         return
       }
 
       commandBuffer.label = "meeterm terminal frame"
       encoder.label = "meeterm terminal frame encoder"
-      encoder.setRenderPipelineState(pipeline)
-      encoder.setFragmentTexture(texture, index: 0)
-      encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+      var renderedTerminal = false
+      if terminalHandle != 0,
+         let snapshotData = MeetermCore.snapshot(terminalId: terminalHandle),
+         let snapshot = TerminalSnapshotParser.parse(snapshotData),
+         let texture = makeTexture(for: snapshot, in: view) {
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(texture, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        renderedTerminal = true
+      }
       encoder.endEncoding()
       commandBuffer.present(drawable)
       commandBuffer.commit()
 
-      if !emittedFirstFrameMarker {
+      if renderedTerminal && !emittedFirstFrameMarker {
         emittedFirstFrameMarker = true
         NSLog("MEETERM_SMOKE_FIRST_FRAME_METAL")
       }
@@ -246,6 +253,9 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
 
   override func draw(_ rect: CGRect) {
     autoreleasepool {
+      guard let context = UIGraphicsGetCurrentContext() else { return }
+      context.setFillColor(UIColor(red: 9.0 / 255, green: 11.0 / 255, blue: 15.0 / 255, alpha: 1).cgColor)
+      context.fill(bounds)
       let scale = max(1, window?.screen.scale ?? contentScaleFactor)
       let width = Int((bounds.width * scale).rounded(.up))
       let height = Int((bounds.height * scale).rounded(.up))
@@ -265,8 +275,7 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
               pixels: pixels,
               width: width,
               height: height
-            ),
-            let context = UIGraphicsGetCurrentContext() else {
+            ) else {
         return
       }
 
