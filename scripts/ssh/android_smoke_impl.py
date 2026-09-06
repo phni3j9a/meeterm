@@ -192,12 +192,22 @@ class AndroidDevice:
             raise SmokeFailure(stage, "app_not_running")
 
     def dump_ui(self) -> list[Node]:
-        output = self.run(
-            ("shell", "-tt", "uiautomator", "dump", "/dev/tty"),
-            "uiautomator",
-            timeout=10.0,
-        )
-        return parse_ui_dump(output)
+        # The accessibility service can temporarily return no hierarchy while
+        # the keyboard/layout is changing. Retry acquisition only; never
+        # replay input or persist the potentially credential-bearing output.
+        for attempt in range(3):
+            try:
+                output = self.run(
+                    ("shell", "-tt", "uiautomator", "dump", "/dev/tty"),
+                    "uiautomator",
+                    timeout=10.0,
+                )
+                return parse_ui_dump(output)
+            except SmokeFailure:
+                if attempt == 2:
+                    raise
+                time.sleep(0.5)
+        raise AssertionError("unreachable")
 
     def assert_foreground(self, stage: str) -> None:
         output = self.run(
@@ -1060,13 +1070,15 @@ def fill_multiline_key(device: AndroidDevice, key: str) -> None:
     # A partially visible multiline editor can have its center underneath
     # the IME or outside the ScrollView. Tap its visible top and require
     # keyboard focus before sending any credential bytes.
-    for _ in range(3):
+    for attempt in range(4):
         nodes = device.dump_ui()
         editor = find_node_with_content_descriptions(
             nodes, PRIVATE_KEY_ACCESSIBILITY_LABELS, class_fragment="EditText"
         )
         if editor is not None and editor.focused:
             break
+        if attempt == 3:
+            raise SmokeFailure("private_key_input", "editor_not_focused")
         if editor is None:
             raise SmokeFailure("private_key_input", "editor_unavailable")
         left, top, right, bottom = editor.bounds
@@ -1078,8 +1090,6 @@ def fill_multiline_key(device: AndroidDevice, key: str) -> None:
             raise SmokeFailure("private_key_input", "editor_not_visible")
         device.input_tap((left + right) // 2, top + min(24, (bottom - top) // 2), "private_key_input")
         time.sleep(0.2)
-    else:
-        raise SmokeFailure("private_key_input", "editor_not_focused")
 
     expected = ""
     for index, line in enumerate(lines):
@@ -1376,8 +1386,11 @@ def main(argv: list[str] | None = None) -> int:
         completed.append("connect_form_open")
 
         fill_field(device, "Host", host, "host_input", scroll=False)
+        completed.append("host_filled")
         fill_field(device, "Port", str(port), "port_input", scroll=False, clear_count=2)
+        completed.append("port_filled")
         fill_field(device, "Username", username, "username_input")
+        completed.append("username_filled")
         # Finish the short fields with the IME hidden.  The key editor is
         # below the fold; this prevents keyboard inset changes during scroll.
         # One BACK is safe here because the username editor was just tapped

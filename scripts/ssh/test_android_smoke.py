@@ -21,6 +21,34 @@ import android_smoke_impl as smoke
 
 
 class UiDriverTests(unittest.TestCase):
+    def test_ui_dump_retries_transient_missing_hierarchy(self) -> None:
+        device = smoke.AndroidDevice("test", "adb")
+        with mock.patch.object(device, "run", side_effect=[
+            b"ERROR: could not get idle state.",
+            b'<hierarchy><node bounds="[0,0][100,100]" text="public-probe" /></hierarchy>',
+        ]) as run, mock.patch.object(smoke.time, "sleep"):
+            self.assertEqual(device.dump_ui()[0].text, "public-probe")
+        self.assertEqual(run.call_count, 2)
+
+    def test_ui_dump_persistent_failure_remains_a_failure(self) -> None:
+        device = smoke.AndroidDevice("test", "adb")
+        with mock.patch.object(device, "run", return_value=b"no hierarchy") as run, mock.patch.object(smoke.time, "sleep"):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.dump_ui()
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(error.exception.reason, "xml_unavailable")
+
+    def test_key_input_checks_focus_after_the_last_retry(self) -> None:
+        device = mock.Mock()
+        unfocused = smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100))
+        focused = smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100), focused=True)
+        entered = smoke.Node("public-probe", "Private OpenSSH key, Private key entered", "android.widget.EditText", (0, 0, 100, 100), focused=True)
+        device.dump_ui.side_effect = [[unfocused]] * 4 + [[focused], [entered]]
+        with mock.patch.object(smoke.time, "sleep"):
+            smoke.fill_multiline_key(device, "public-probe")
+        self.assertEqual(device.input_tap.call_count, 3)
+        device.input_text.assert_called_once_with("public-probe", "private_key_input")
+
     def test_key_readback_waits_for_the_focused_editor_update(self) -> None:
         device = mock.Mock()
         device.dump_ui.side_effect = [
