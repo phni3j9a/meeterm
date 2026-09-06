@@ -49,6 +49,7 @@ class MeetermTerminalView(
   private val renderer = TerminalRenderer(context)
   private lateinit var specialKeyRow: LinearLayout
   private var terminalId: String = DEFAULT_TERMINAL_ID
+  private var inputGeneration = 0L
   @Volatile private var terminalHandle: Long = 0L
   private var lastColumns = 0
   private var lastRows = 0
@@ -174,6 +175,7 @@ class MeetermTerminalView(
     terminalHandle = TerminalRegistry.acquire(nextId, DEFAULT_COLUMNS, DEFAULT_ROWS)
     Log.i(TAG, "bound terminalId=$terminalId handle=$terminalHandle")
     renderer.attachTerminal(terminalHandle)
+    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.restartInput(this)
     lastTerminalRevision = MeetermNative.terminalRevision(terminalHandle)
     post {
       emitReady()
@@ -296,10 +298,12 @@ class MeetermTerminalView(
     outAttrs.initialSelStart = 0
     outAttrs.initialSelEnd = 0
 
+    val generation = inputGeneration
     return object : BaseInputConnection(this@MeetermTerminalView, true) {
       override fun getEditable(): Editable = this@MeetermTerminalView.editable
 
       override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        if (generation != inputGeneration) return false
         val result = super.setComposingText(text ?: "", newCursorPosition)
         inputSession.setComposingText(text)
         surface.requestRender()
@@ -307,6 +311,7 @@ class MeetermTerminalView(
       }
 
       override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        if (generation != inputGeneration) return false
         val editorResult = super.commitText(text ?: "", newCursorPosition)
         val result = inputSession.commitText(text)
         if (result) surface.requestRender()
@@ -314,6 +319,7 @@ class MeetermTerminalView(
       }
 
       override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+        if (generation != inputGeneration) return false
         val result = inputSession.deleteSurroundingText(beforeLength, afterLength)
         if (result) surface.requestRender()
         return result
@@ -324,6 +330,7 @@ class MeetermTerminalView(
       }
 
       override fun sendKeyEvent(event: KeyEvent): Boolean {
+        if (generation != inputGeneration) return false
         val result = inputSession.handleKeyEvent(event.action, event.keyCode, event.unicodeChar)
         if (result && event.action != KeyEvent.ACTION_UP) surface.requestRender()
         return result
@@ -332,6 +339,7 @@ class MeetermTerminalView(
       override fun setComposingRegion(start: Int, end: Int): Boolean = true
 
       override fun finishComposingText(): Boolean {
+        if (generation != inputGeneration) return false
         val editorResult = super.finishComposingText()
         val result = inputSession.finishComposingText()
         if (result) surface.requestRender()
@@ -433,6 +441,9 @@ class MeetermTerminalView(
     (value * resources.displayMetrics.density).toInt().coerceAtLeast(value)
 
   private fun releaseBinding() {
+    inputGeneration += 1
+    inputSession.setComposingText("")
+    editable.clear()
     if (terminalHandle == 0L) return
     TerminalRegistry.release(terminalId, terminalHandle)
     terminalHandle = 0L

@@ -39,3 +39,6 @@ ios/Podfile.lock
 
 # Rust build output
 target/
+
+# Python fixture/test bytecode
+__pycache__/

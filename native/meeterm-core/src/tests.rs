@@ -221,6 +221,10 @@ fn terminal_replies_share_bounded_transport_and_overload_is_observable() {
 fn stale_transport_generation_cannot_attach_or_feed_new_terminal_state() {
     let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
     terminal.begin_remote(44).expect("remote mode");
+    assert!(
+        terminal.begin_remote(43).is_err(),
+        "a cancelled actor cannot reset its replacement"
+    );
     let (input_sender, _input_receiver) = mpsc::channel(1);
     let (resize_sender, _resize_receiver) = watch::channel((24, 4));
 

@@ -4,9 +4,8 @@ import type {
 } from 'react-native';
 
 /**
- * The first SSH slice deliberately accepts only an OpenSSH private key. The
- * key and passphrase are consumed by native code for one connection request;
- * they are never stored by this module.
+ * Authentication uses an OpenSSH private key. Rust retains the parsed key in
+ * process memory for reconnect; credentials are never persisted by this module.
  */
 export type SshConnectOptions = {
   host: string;
@@ -22,6 +21,9 @@ export type SshConnectionPhase =
   | 'HostKeyPending'
   | 'Authenticating'
   | 'OpeningPty'
+  | 'AttachingTmux'
+  | 'Synchronizing'
+  | 'Reconnecting'
   | 'Ready'
   | 'Closing'
   | 'Failed';
@@ -36,6 +38,19 @@ export type SshConnectionState = {
   knownFingerprint: string;
   errorCode: string;
   errorMessage: string;
+};
+
+/** Remote identities and labels only. Screen contents never cross this API. */
+export type TmuxPane = {
+  windowId: string;
+  paneId: string;
+  terminalId: string;
+  windowName: string;
+  selected: boolean;
+};
+
+export type TmuxSessionState = {
+  panes: TmuxPane[];
 };
 
 export type NativeReadyEvent = {

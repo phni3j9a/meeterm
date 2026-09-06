@@ -25,10 +25,13 @@ final class TerminalRegistry {
   static func handle(for terminalId: String) -> UInt64 {
     lock.lock()
     defer { lock.unlock() }
+    if terminalId.hasPrefix("native:") { return nativeHandle(terminalId) }
     return handles[terminalId] ?? 0
   }
 
   private static func ensureLocked(terminalId: String, columns: Int, rows: Int) -> UInt64 {
+    // Rust owns pane handles and their lifetime; a view only borrows them.
+    if terminalId.hasPrefix("native:") { return nativeHandle(terminalId) }
     if let existing = handles[terminalId] {
       return existing
     }
@@ -38,6 +41,12 @@ final class TerminalRegistry {
       return 0
     }
     handles[terminalId] = handle
+    return handle
+  }
+
+  private static func nativeHandle(_ terminalId: String) -> UInt64 {
+    guard let handle = UInt64(terminalId.dropFirst("native:".count)),
+          handle != 0, MeetermCore.terminalExists(terminalId: handle) else { return 0 }
     return handle
   }
 

@@ -45,15 +45,17 @@ The foundation gates exercise fixed local demo bytes through the shared Rust
 terminal state and native snapshot/render path. A static React Native label,
 WebView terminal, or screenshot fixture is not an acceptable substitute.
 
-For issue #3, Android additionally runs the disposable OpenSSH fixture and
+Android additionally runs the disposable OpenSSH/tmux fixture and
 drives the connection form through `adb`. The script verifies the displayed
 host fingerprint before explicitly trusting it, waits for the Rust-backed
 connection state, and sends native terminal input that writes a marker inside
-the fixture's temporary directory. This verifies the real SSH input path
+the fixture's temporary directory. It also disconnects and reconnects, checks
+the same pane identity, and uses a shell variable to prove that the original
+remote process resumed. This verifies the real SSH/tmux input path
 without adding a production test endpoint or passing terminal streams through
 JavaScript. The remote-shell screenshot is separate from the foundation
 screenshot and is for human inspection; neither screenshot is a pixel gate.
-The iOS job validates compilation and runtime integration of the same Rust SSH
+The iOS job validates compilation and runtime integration of the same Rust SSH/tmux
 core and native adapters; its current smoke interaction uses the local demo.
 See [`SSH.md`](SSH.md) for credentials, commands, and the remaining limits.
 

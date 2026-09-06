@@ -22,6 +22,7 @@ import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import type {
   SshConnectOptions,
   SshConnectionState,
+  TmuxPane,
 } from './modules/meeterm-terminal';
 
 const TERMINAL_ID = 'poc-main';
@@ -319,8 +320,9 @@ function ConnectionModal({ visible, onClose, onSubmit }: ConnectionModalProps) {
               <Text style={styles.introTitle}>Connect with a private key</Text>
               <Text style={styles.introBody}>
                 Public key authentication only. Connection details stay in this
-                form for this app session; authentication material is cleared when
-                you connect or cancel.
+                form for this app session. The key is cleared from this form on
+                connect or cancel; native memory retains it for reconnect until
+                the app closes.
               </Text>
             </View>
 
@@ -515,6 +517,12 @@ function connectionPresentation(connection: SshConnectionState) {
       return { label: 'Authenticating…', tone: 'pending' as const };
     case 'OpeningPty':
       return { label: 'Opening terminal…', tone: 'pending' as const };
+    case 'AttachingTmux':
+      return { label: 'Opening workspace…', tone: 'pending' as const };
+    case 'Synchronizing':
+      return { label: 'Restoring terminals…', tone: 'pending' as const };
+    case 'Reconnecting':
+      return { label: 'Reconnecting…', tone: 'pending' as const };
     case 'Ready':
       return { label: 'Connected', tone: 'ready' as const };
     case 'Closing':
@@ -545,6 +553,7 @@ function printable(value: string) {
 }
 
 export default function App() {
+  const [panes, setPanes] = useState<TmuxPane[]>([]);
   const [connection, setConnection] = useState<SshConnectionState>(
     INITIAL_CONNECTION_STATE,
   );
@@ -553,6 +562,7 @@ export default function App() {
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
   const shownHostKeyPrompt = useRef('');
   const commandPending = useRef(false);
+  const selectionVersion = useRef(0);
 
   useEffect(() => {
     let mounted = true;
@@ -564,10 +574,15 @@ export default function App() {
       }
 
       polling = true;
+      const version = selectionVersion.current;
       try {
         const next = await MeetermTerminal.getConnectionState(TERMINAL_ID);
+        const session = await MeetermTerminal.getSessionState(TERMINAL_ID);
         if (mounted) {
           setConnection(next);
+          if (version === selectionVersion.current && !commandPending.current) {
+            setPanes(session.panes);
+          }
         }
       } catch {
         if (mounted) {
@@ -685,6 +700,36 @@ export default function App() {
       });
   }, []);
 
+  const reconnect = useCallback(() => {
+    if (commandPending.current) return;
+    commandPending.current = true;
+    setControlMessage('');
+    void MeetermTerminal.reconnect(TERMINAL_ID)
+      .catch(() => setControlMessage('Reconnect could not start. Connect again with your SSH key.'))
+      .finally(() => { commandPending.current = false; });
+  }, []);
+
+  const selectPane = useCallback((pane: TmuxPane) => {
+    if (commandPending.current) return;
+    commandPending.current = true;
+    selectionVersion.current += 1;
+    const previous = panes;
+    // Input always follows the displayed borrowed handle, including while
+    // Rust queues tmux selection/zoom. Do not keep typing into the old pane
+    // until the next periodic metadata poll.
+    setPanes((current) => current.map((candidate) => ({
+      ...candidate,
+      selected: candidate.paneId === pane.paneId,
+    })));
+    setControlMessage('');
+    void MeetermTerminal.selectPane(TERMINAL_ID, pane.paneId)
+      .catch(() => {
+        setPanes(previous);
+        setControlMessage('The terminal could not be selected.');
+      })
+      .finally(() => { commandPending.current = false; });
+  }, [panes]);
+
   const reviewChangedHostKey = useCallback(() => {
     const changeId = hostKeyChangeId(connection);
     if (!changeId || removedHostKeyId === changeId) {
@@ -737,6 +782,12 @@ export default function App() {
   const isClosing = connection.state === 'Closing';
   const changeId = hostKeyChangeId(connection);
   const hostKeyWasRemoved = Boolean(changeId && removedHostKeyId === changeId);
+  const selectedPane = panes.find((pane) => pane.selected);
+  const workspaces = panes.filter((pane, index) =>
+    panes.findIndex((candidate) => candidate.windowId === pane.windowId) === index,
+  );
+  const visiblePanes = panes.filter((pane) => pane.windowId === selectedPane?.windowId);
+  const canReconnect = !isActive && !isClosing && panes.length > 0;
 
   return (
     <SafeAreaProvider>
@@ -769,6 +820,16 @@ export default function App() {
             </Text>
           </View>
         </View>
+        {canReconnect ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityHint="Resume the same remote workspace"
+            onPress={reconnect}
+            style={({ pressed }) => [appStyles.toolbarButton, pressed && appStyles.toolbarButtonPressed]}
+          >
+            <Text style={appStyles.toolbarButtonText}>Reconnect</Text>
+          </Pressable>
+        ) : null}
         <Pressable
           accessibilityHint={
             isActive ? 'Disconnect from this SSH host' : 'Enter SSH connection details'
@@ -830,7 +891,41 @@ export default function App() {
           </View>
         ) : null}
 
-        <TerminalView terminalId={TERMINAL_ID} style={appStyles.terminal} />
+        {panes.length > 0 ? (
+          <View style={appStyles.sessionControls}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={appStyles.tabContent}>
+              {workspaces.map((workspace) => (
+                <Pressable
+                  key={workspace.windowId}
+                  accessibilityRole="tab"
+                  accessibilityLabel={`Workspace ${workspace.windowName}`}
+                  accessibilityState={{ selected: workspace.windowId === selectedPane?.windowId, disabled: connection.state !== 'Ready' }}
+                  disabled={connection.state !== 'Ready'}
+                  onPress={() => selectPane(workspace)}
+                  style={({ pressed }) => [appStyles.sessionTab, workspace.windowId === selectedPane?.windowId && appStyles.selectedTab, pressed && appStyles.toolbarButtonPressed]}
+                >
+                  <Text numberOfLines={1} style={appStyles.tabText}>{workspace.windowName || 'Workspace'}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={appStyles.tabContent}>
+              {visiblePanes.map((pane, index) => (
+                <Pressable
+                  key={pane.paneId}
+                  accessibilityRole="tab"
+                  accessibilityLabel={`Terminal ${pane.paneId}`}
+                  accessibilityState={{ selected: pane.selected, disabled: connection.state !== 'Ready' }}
+                  disabled={connection.state !== 'Ready'}
+                  onPress={() => selectPane(pane)}
+                  style={({ pressed }) => [appStyles.sessionTab, pane.selected && appStyles.selectedTab, pressed && appStyles.toolbarButtonPressed]}
+                >
+                  <Text style={appStyles.tabText}>Terminal {index + 1}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+        <TerminalView terminalId={selectedPane?.terminalId ?? TERMINAL_ID} style={appStyles.terminal} />
 
         <ConnectionModal
           onClose={() => setConnectionModalVisible(false)}
@@ -856,6 +951,21 @@ const CHROME_COLORS = {
 };
 
 const appStyles = StyleSheet.create({
+  sessionControls: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: CHROME_COLORS.border,
+  },
+  tabContent: { paddingHorizontal: 8, gap: 4 },
+  sessionTab: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    maxWidth: 240,
+  },
+  selectedTab: { borderBottomColor: CHROME_COLORS.accent },
+  tabText: { color: CHROME_COLORS.label, fontSize: 13 },
   container: {
     backgroundColor: CHROME_COLORS.background,
     flex: 1,

@@ -34,7 +34,10 @@ enum {
   MEETERM_SSH_STATE_OPENING_PTY = 4,
   MEETERM_SSH_STATE_READY = 5,
   MEETERM_SSH_STATE_CLOSING = 6,
-  MEETERM_SSH_STATE_FAILED = 7
+  MEETERM_SSH_STATE_FAILED = 7,
+  MEETERM_SSH_STATE_ATTACHING_TMUX = 8,
+  MEETERM_SSH_STATE_SYNCHRONIZING = 9,
+  MEETERM_SSH_STATE_RECONNECTING = 10
 };
 
 enum {
@@ -80,6 +83,25 @@ int32_t meeterm_connect(
 );
 
 int32_t meeterm_disconnect(uint64_t terminal_id);
+int32_t meeterm_reconnect(uint64_t terminal_id);
+int32_t meeterm_select_pane(uint64_t terminal_id, uint64_t pane_id);
+uint8_t meeterm_terminal_exists(uint64_t terminal_id);
+
+/* Low-frequency topology only, never terminal cells or output. */
+typedef struct meeterm_tmux_pane {
+  uint64_t window_id;
+  uint64_t pane_id;
+  uint64_t terminal_id;
+  uint16_t window_name_len;
+  uint8_t selected;
+  uint8_t reserved[5];
+  uint8_t window_name[256];
+} meeterm_tmux_pane_t;
+
+/* Returns required record count; copies only when capacity is sufficient.
+ * SIZE_MAX indicates an unavailable session. A new connection has zero panes. */
+size_t meeterm_session_panes(uint64_t terminal_id, meeterm_tmux_pane_t *output, size_t capacity);
+size_t meeterm_pane_record_size(void);
 size_t meeterm_connection_snapshot_size(void);
 
 /* Fill one complete, sanitized low-frequency lifecycle snapshot. */

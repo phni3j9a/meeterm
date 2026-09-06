@@ -205,7 +205,7 @@ Security requirements:
 
 SSH is transport, not durable application state.
 
-### Issue #3: direct SSH shell slice
+### Issue #3: historical direct SSH shell slice
 
 Before adding tmux, the SSH slice opens one interactive `xterm-256color` PTY
 and shell for an existing Rust terminal ID. `russh` feeds channel data directly
@@ -226,6 +226,28 @@ with typed commands and connection-state fields. Generated bindings remain the
 preferred direction as the control surface grows. This step does not introduce
 another native library, Tokio runtime, or platform-specific SSH implementation.
 See [`SSH.md`](SSH.md) for the real OpenSSH fixture, validation, and limitations.
+
+### Issue #6: durable session loop
+
+The production connection now starts tmux Control Mode over the authenticated
+SSH channel. The direct shell slice above describes the earlier validation
+boundary. The managed session remains `meeterm` on the ordinary tmux server;
+windows and panes are discovered from tmux rather than invented locally.
+
+The shared Rust core owns the connection profile, decoder, topology snapshots,
+pane-to-terminal mapping, and reconnect/resynchronization. JavaScript receives
+only window/pane identities, labels, selection, and connection state. The same
+native view binds a `native:<id>` borrowed Rust terminal handle when the selected
+pane changes. View unmount does not disconnect or destroy the remote pane.
+
+`Reconnect` is an explicit native control command. Rust retains a parsed private
+key in process memory; the private-key form and passphrase are cleared after
+submission. No credential is saved to disk. After process death the user enters
+the key again and connects to the same remote `meeterm` session. Approved host
+identities remain pinned, including during reconnect.
+
+See [`SSH.md`](SSH.md) for the real fixture, end-to-end tests, and the current
+reconstruction and handoff boundaries.
 
 ## tmux model
 
@@ -249,7 +271,15 @@ tmux attach -t meeterm
 
 ## tmux Control Mode
 
-The mobile client should use tmux Control Mode (`-CC`) rather than scrape a normal interactive tmux client screen.
+The mobile client uses tmux Control Mode over an SSH exec channel without an
+outer PTY: `tmux -C -u new-session -A -s meeterm`. The original `-CC` direction
+assumed a terminal-backed channel. On tmux 3.4, running `-CC` with stdin/stdout
+pipes fails with `tcgetattr failed: Inappropriate ioctl for device`; the same
+bounded test using `-C` emits `%begin` and detaches successfully. There is no
+outer terminal echo or line discipline to disable on this channel. `-C`
+preserves the structured Control Mode boundary; pane contents remain bytes.
+See the [tmux Control Mode documentation](https://github.com/tmux/tmux/wiki/Control-Mode#entering-control-mode)
+for the terminal-attribute difference between the two flags.
 
 Control Mode provides structured notifications and identifies pane output by pane ID. The Rust core should parse Control Mode as a byte-oriented protocol and route each pane's output to its own terminal state.
 
@@ -258,7 +288,7 @@ Conceptually:
 ```text
 SSH channel
   ↓
-tmux -CC ...
+tmux -C ...
   ↓
 Control Mode decoder
   ├── %output %1 → terminal registry %1

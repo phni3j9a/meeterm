@@ -3,6 +3,7 @@ import { registerWebModule, NativeModule } from 'expo';
 import type {
   SshConnectOptions,
   SshConnectionState,
+  TmuxSessionState,
 } from './MeetermTerminal.types';
 
 const WEB_UNAVAILABLE =
@@ -18,6 +19,18 @@ class MeetermTerminalModule extends NativeModule<{}> {
   }
 
   async disconnect(_terminalId: string): Promise<void> {
+    throw new Error(WEB_UNAVAILABLE);
+  }
+
+  async reconnect(_terminalId: string): Promise<void> {
+    throw new Error(WEB_UNAVAILABLE);
+  }
+
+  async getSessionState(_terminalId: string): Promise<TmuxSessionState> {
+    return { panes: [] };
+  }
+
+  async selectPane(_terminalId: string, _paneId: string): Promise<void> {
     throw new Error(WEB_UNAVAILABLE);
   }
 

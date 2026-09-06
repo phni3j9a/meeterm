@@ -31,6 +31,9 @@ internal object TerminalRegistry {
    */
   @Synchronized
   fun ensure(terminalId: String, columns: Int, rows: Int): Long {
+    // Pane handles already belong to the one Rust registry. Never allocate a
+    // second terminal when a view switches to a remote pane.
+    if (terminalId.startsWith("native:")) return nativeHandle(terminalId)
     entries[terminalId]?.let { return it.handle }
 
     val handle = MeetermNative.create(columns, rows)
@@ -47,7 +50,15 @@ internal object TerminalRegistry {
   }
 
   @Synchronized
-  fun handleFor(terminalId: String): Long = entries[terminalId]?.handle ?: 0L
+  fun handleFor(terminalId: String): Long =
+    if (terminalId.startsWith("native:")) nativeHandle(terminalId)
+    else entries[terminalId]?.handle ?: 0L
+
+  private fun nativeHandle(terminalId: String): Long {
+    val handle = terminalId.removePrefix("native:").toLongOrNull()
+      ?.takeIf { it > 0L } ?: return 0L
+    return if (MeetermNative.terminalExists(handle)) handle else 0L
+  }
 
   /** Explicit test/process reset. Normal view unmount does not call this. */
   @Synchronized

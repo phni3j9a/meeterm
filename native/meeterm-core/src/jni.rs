@@ -4,7 +4,7 @@
 //! terminal state remains behind the safe Rust registry; JNI only converts
 //! primitive values and byte arrays at the boundary.
 
-use jni::errors::{Error as JniError, ThrowRuntimeExAndDefault};
+use jni::errors::Error as JniError;
 use jni::objects::{JByteArray, JObject, JObjectArray, JString};
 use jni::sys::{jboolean, jint, jlong};
 use jni::{Env, EnvUnowned, Outcome};
@@ -40,6 +40,92 @@ fn code_from_outcome(outcome: jni::EnvOutcome<'_, jint, JniError>) -> jint {
         // Control-plane methods use a sentinel instead of allowing malformed
         // Java arguments or a caught panic to escape as a RuntimeException.
         Outcome::Err(_) | Outcome::Panic(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_terminalExists(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jboolean {
+    handle_from_jlong(handle)
+        .is_some_and(|id| registry::shared_terminal(id).is_ok())
+        .into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshReconnect(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ssh::reconnect_terminal(handle)
+        .map(|()| 0)
+        .unwrap_or_else(|e| e.code())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxSelectPane(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    pane: jlong,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    let Ok(pane) = u64::try_from(pane) else {
+        return -1;
+    };
+    crate::ssh::select_pane(handle, pane)
+        .map(|()| 0)
+        .unwrap_or_else(|e| e.code())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxSessionState<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+) -> JObjectArray<'caller> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JObjectArray::default();
+    };
+    let result = unowned_env
+        .with_env(|env| -> Result<_, JniError> {
+            let session = crate::ssh::session_snapshot(handle)
+                .map_err(|e| JniError::ParseFailed(e.to_string()))?;
+            let length = session
+                .panes
+                .len()
+                .checked_mul(5)
+                .and_then(|n| i32::try_from(n).ok())
+                .ok_or_else(|| JniError::ParseFailed("Session too large".into()))?;
+            let array =
+                env.new_object_array(length, jni::jni_str!("java/lang/String"), JObject::null())?;
+            for (index, pane) in session.panes.iter().enumerate() {
+                let fields = [
+                    pane.window_id.to_string(),
+                    pane.pane_id.to_string(),
+                    pane.terminal_id.to_string(),
+                    pane.window_name.clone(),
+                    u8::from(pane.selected).to_string(),
+                ];
+                for (field, value) in fields.iter().enumerate() {
+                    let value = env.new_string(value)?;
+                    array.set_element(env, index * 5 + field, &value)?;
+                }
+            }
+            Ok(array)
+        })
+        .into_outcome();
+    match result {
+        Outcome::Ok(array) => array,
+        Outcome::Err(_) | Outcome::Panic(_) => JObjectArray::default(),
     }
 }
 
@@ -93,12 +179,18 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_snapshot<'caller>
         return JByteArray::default();
     };
 
-    unowned_env
+    let outcome = unowned_env
         .with_env(|env| -> jni::errors::Result<_> {
             let snapshot = registry::snapshot(handle).map_err(native_error)?;
             env.byte_array_from_slice(snapshot.as_bytes())
         })
-        .resolve::<ThrowRuntimeExAndDefault>()
+        .into_outcome();
+    // Remote panes can disappear between native frame scheduling and this
+    // lookup. A stale borrowed ID means no frame, never a renderer exception.
+    match outcome {
+        Outcome::Ok(bytes) => bytes,
+        Outcome::Err(_) | Outcome::Panic(_) => JByteArray::default(),
+    }
 }
 
 /// Resize a registry-backed terminal. Zero indicates success.

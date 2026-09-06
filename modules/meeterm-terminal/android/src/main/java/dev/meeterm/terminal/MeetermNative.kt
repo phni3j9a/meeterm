@@ -29,6 +29,12 @@ internal object MeetermNative {
 
   /** Monotonic Rust-owned terminal-content revision. */
   external fun terminalRevision(handle: Long): Long
+  external fun terminalExists(handle: Long): Boolean
+
+  external fun sshReconnect(handle: Long): Int
+  external fun tmuxSelectPane(handle: Long, pane: Long): Int
+  /** One row per pane: window ID, pane ID, terminal handle, window name, selected. */
+  external fun tmuxSessionState(handle: Long): Array<String>?
 
   /** Queue an SSH connect request; zero means the request was accepted. */
   external fun sshConnect(
