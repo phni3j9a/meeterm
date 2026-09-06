@@ -50,8 +50,19 @@ pub(super) async fn run(
     )
     .await?;
     let (reader, writer) = channel.split();
-    let viewport =
-        registry::terminal_dimensions(shared.terminal_id).map_err(|_| FlowFailure::Stale)?;
+    let viewport = shared
+        .session
+        .lock()
+        .map_err(|_| FlowFailure::Stale)?
+        .viewport
+        .unwrap_or(
+            registry::terminal_dimensions(shared.terminal_id).map_err(|_| FlowFailure::Stale)?,
+        );
+    shared
+        .session
+        .lock()
+        .map_err(|_| FlowFailure::Stale)?
+        .viewport = Some(viewport);
     let (pane_sender, pane_receiver) = mpsc::channel(INPUT_QUEUE_CAPACITY);
     let mut client = ControlClient {
         shared: Arc::clone(shared),
@@ -132,6 +143,7 @@ pub(super) async fn run(
                         let selected = shared.session.lock().map_err(|_| FlowFailure::Stale)?.selected_pane;
                         if selected == Some(pane) && client.viewport != (columns, rows) {
                             client.viewport = (columns, rows);
+                            shared.session.lock().map_err(|_| FlowFailure::Stale)?.viewport = Some((columns, rows));
                             client.resize_client().await?;
                             client.synchronize(false).await?;
                         }
@@ -329,10 +341,13 @@ impl ControlClient {
         };
         // Install recovery before applying zoom. Existing indexed user hooks
         // remain intact; only our allocated pair is updated on tab selection.
-        self.query(&tmux::install_zoom_recovery_hooks_command(allocation, pane))
-            .await?;
-        self.query(&tmux::select_pane_command(previous, window, pane))
-            .await?;
+        let mut transition = Vec::new();
+        if let Some(previous) = previous {
+            transition.push(tmux::restore_layout_command(previous));
+        }
+        transition.push(tmux::install_zoom_recovery_hooks_command(allocation, pane));
+        transition.push(tmux::select_pane_command(None, window, pane));
+        self.query(&transition.join(" ; ")).await?;
         let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
         state.selected_pane = Some(pane);
         state.meeterm_zoomed = true;
@@ -580,7 +595,7 @@ impl ControlClient {
         self.capture_complete = false;
         self.capture_output.clear();
         let command = format!(
-            "capture-pane -p -e -C -N -S -2000 -t %{pane} ; display-message -p -t %{pane} '#{{pane_width}},#{{pane_height}},#{{cursor_x}},#{{cursor_y}},#{{alternate_on}},#{{cursor_flag}},#{{keypad_cursor_flag}},#{{keypad_flag}},#{{?bracket_paste_flag,1,0}}'"
+            "capture-pane -p -e -C -N -S -2000 -t %{pane} ; display-message -p -t %{pane} '#{{pane_width}},#{{pane_height}},#{{cursor_x}},#{{cursor_y}},#{{alternate_on}},#{{cursor_flag}},#{{keypad_cursor_flag}},#{{keypad_flag}},#{{?bracket_paste_flag,1,0}},#{{insert_flag}},#{{origin_flag}},#{{wrap_flag}}'"
         );
         let reply = self.query(&command).await?;
         if reply.len() != 2 {
@@ -596,7 +611,7 @@ impl ControlClient {
             })
             .collect::<Option<Vec<_>>>()
             .ok_or(FlowFailure::TmuxProtocol)?;
-        if fields.len() != 9
+        if fields.len() != 12
             || fields[0] < 2
             || fields[0] > 4096
             || fields[1] == 0
@@ -615,11 +630,14 @@ impl ControlClient {
             if index != 0 {
                 bytes.extend_from_slice(b"\r\n");
             }
-            bytes.extend(tmux::decode_octal(line).map_err(|_| FlowFailure::TmuxProtocol)?);
+            bytes.extend(tmux::decode_capture(line).map_err(|_| FlowFailure::TmuxProtocol)?);
         }
         bytes.extend_from_slice(
             format!(
-                "\x1b[{};{}H\x1b[?25{}\x1b[?1{}\x1b[?2004{}{}",
+                "\x1b[4{}\x1b[?6{}\x1b[?7{}\x1b[{};{}H\x1b[?25{}\x1b[?1{}\x1b[?2004{}{}",
+                if fields[9] != 0 { 'h' } else { 'l' },
+                if fields[10] != 0 { 'h' } else { 'l' },
+                if fields[11] != 0 { 'h' } else { 'l' },
                 fields[3] + 1,
                 fields[2] + 1,
                 if fields[5] != 0 { 'h' } else { 'l' },

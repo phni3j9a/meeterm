@@ -85,6 +85,10 @@ addresses only the fixture's absolute `tmux-<uid>/default` socket. This is test
 isolation: the application command has no `-L` or `-S` and uses an ordinary
 server on a real host.
 
+An empty foreground `tmux -D -f /dev/null` server is started by the fixture so
+tests do not load the developer's tmux configuration, key bindings, or hooks.
+No managed session exists initially: the native connection creates `meeterm`.
+
 Prerequisites are Python 3.10+, `/usr/sbin/sshd`, `ssh`, `ssh-keygen`, and `tmux`.
 The fixture refuses to run as root. Missing prerequisites are environment setup
 issues; the script does not install system packages or reconfigure services.
@@ -108,8 +112,11 @@ Assertions cover explicit trust and encrypted-key authentication, pane-specific
 output and input, remote dimensions, topology changes, disconnect and resume,
 and rejection of input while disconnected. Recovery assertions use remote
 process state and native snapshots, not just the presence of a connection flag.
-Additional handoff and reconstruction boundaries are recorded with the test
-results; a fixture passing does not establish physical-device parity.
+The four-pane test also covers ordinary desktop attach/detach, preservation of
+preexisting indexed user hooks, remote pane removal and borrowed-handle
+invalidation, alternate-screen capture, and post-reconnect no-wrap output at
+the right margin. It checks wrong-passphrase and changed-host-key rejection.
+A fixture passing does not establish physical-device parity.
 
 ## Mobile fixture
 

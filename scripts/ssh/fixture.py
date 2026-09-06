@@ -150,6 +150,7 @@ class Fixture:
         self.tmux_socket = self.tmux_tmpdir / f"tmux-{os.getuid()}" / "default"
         self.encrypted_passphrase = secrets.token_urlsafe(32)
         self.process: subprocess.Popen[str] | None = None
+        self.tmux_process: subprocess.Popen[str] | None = None
         self.env_file: Path | None = None
 
     def prepare(self) -> None:
@@ -226,6 +227,24 @@ class Fixture:
         _run_quietly([SSHD, "-t", "-f", str(self.config)])
 
     def start(self) -> None:
+        # Start an empty private server without loading ~/.tmux.conf. -D
+        # keeps the empty server alive; the application still creates the
+        # managed session itself through its ordinary production command.
+        self.tmux_socket.parent.mkdir(mode=0o700, exist_ok=True)
+        tmux_environment = dict(os.environ)
+        tmux_environment.pop("TMUX", None)
+        tmux_environment.pop("TMUX_PANE", None)
+        tmux_environment["TMUX_TMPDIR"] = str(self.tmux_tmpdir)
+        self.tmux_process = subprocess.Popen(
+            [TMUX, "-D", "-f", "/dev/null", "-S", str(self.tmux_socket)],
+            env=tmux_environment, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+        )
+        deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+        while not self.tmux_socket.exists():
+            if self.tmux_process.poll() is not None or time.monotonic() >= deadline:
+                raise FixtureError("isolated tmux fixture did not start")
+            time.sleep(0.05)
         try:
             self.process = subprocess.Popen(
                 [SSHD, "-D", "-e", "-f", str(self.config)],
@@ -360,6 +379,14 @@ class Fixture:
                 # socket or an exited server is harmless; the enclosing
                 # temporary directory remains the ownership boundary.
                 pass
+        tmux_process = self.tmux_process
+        self.tmux_process = None
+        if tmux_process is not None:
+            try:
+                tmux_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                tmux_process.kill()
+                tmux_process.wait()
         process = self.process
         self.process = None
         if process is not None and process.poll() is None:

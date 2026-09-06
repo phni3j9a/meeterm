@@ -1025,6 +1025,11 @@ def fill_field(
     clear_field(device, stage, clear_count)
     if value:
         device.input_text(value, stage)
+    # Compare in memory only. In particular, do not report entered text in a
+    # failure: this helper also protects against an incorrectly cleared port.
+    actual = wait_for_node(device, stage, content_description=content_description)
+    if actual.text != value:
+        raise SmokeFailure(stage, "entry_mismatch")
 
 
 def fill_multiline_key(device: AndroidDevice, key: str) -> None:
@@ -1050,6 +1055,13 @@ def fill_multiline_key(device: AndroidDevice, key: str) -> None:
         # next adb input event; a busy emulator can otherwise coalesce adjacent
         # multiline updates even when adb reports success.
         time.sleep(0.05)
+    # The concealed editor remains concealed on screen. UIAutomator can read
+    # its editable value, which we compare without writing it to any artifact.
+    entered = wait_for_node(
+        device, "private_key_input", content_descriptions=PRIVATE_KEY_ACCESSIBILITY_LABELS
+    )
+    if entered.text.strip() != key.strip():
+        raise SmokeFailure("private_key_input", "entry_mismatch")
 
 
 def host_fingerprint_from_nodes(nodes: list[Node]) -> str | None:
@@ -1071,6 +1083,22 @@ def trust_host(device: AndroidDevice, expected_fingerprint: str) -> None:
         except SmokeFailure:
             time.sleep(0.2)
             continue
+        # Record only fixed product error identifiers. Never dump editable
+        # form values merely to diagnose a missing host-key dialog.
+        known_errors = {
+            "Enter a hostname or IP address.": "host_empty",
+            "The host cannot contain spaces.": "host_invalid",
+            "Use a port from 1 to 65535.": "port_invalid",
+            "Enter the SSH username.": "username_empty",
+            "The username cannot contain spaces.": "username_invalid",
+            "Paste a complete OpenSSH private key, including its BEGIN and END lines.": "key_incomplete",
+            "The private key could not be loaded.": "key_decode_failed",
+            "The SSH connection could not be established.": "network_failed",
+            "The native connection request could not be started.": "native_request_failed",
+        }
+        for message, reason in known_errors.items():
+            if find_node(nodes, text=message) is not None:
+                raise SmokeFailure("host_key_prompt", reason)
         title = find_node(nodes, text="Trust this SSH host?")
         if title is None:
             time.sleep(0.2)

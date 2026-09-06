@@ -579,7 +579,7 @@ export default function App() {
         const next = await MeetermTerminal.getConnectionState(TERMINAL_ID);
         const session = await MeetermTerminal.getSessionState(TERMINAL_ID);
         if (mounted) {
-          setConnection(next);
+          if (version === selectionVersion.current) setConnection(next);
           if (version === selectionVersion.current && !commandPending.current) {
             setPanes(session.panes);
           }
@@ -704,10 +704,16 @@ export default function App() {
     if (commandPending.current) return;
     commandPending.current = true;
     setControlMessage('');
+    const previous = connection;
+    setConnection((current) => ({ ...current, state: 'Reconnecting' }));
+    selectionVersion.current += 1;
     void MeetermTerminal.reconnect(TERMINAL_ID)
-      .catch(() => setControlMessage('Reconnect could not start. Connect again with your SSH key.'))
+      .catch(() => {
+        setConnection(previous);
+        setControlMessage('Reconnect could not start. Connect again with your SSH key.');
+      })
       .finally(() => { commandPending.current = false; });
-  }, []);
+  }, [connection]);
 
   const selectPane = useCallback((pane: TmuxPane) => {
     if (commandPending.current) return;

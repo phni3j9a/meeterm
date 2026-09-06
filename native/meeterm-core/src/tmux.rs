@@ -78,12 +78,6 @@ const ZOOM_RECOVERY_SESSION_CHANGED_HOOK: &str = "client-session-changed";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ZoomRecoveryHookAllocation {
     pub index: u32,
-    /// Clear an unindexed `client-detached` placeholder after removing the
-    /// indexed meeterm hook. This is true only when no index-0 hook was
-    /// present in the inspected `show-hooks` result.
-    pub clear_detached_base: bool,
-    /// Equivalent cleanup flag for `client-session-changed`.
-    pub clear_session_changed_base: bool,
 }
 
 /// A command response block emitted by tmux Control Mode.
@@ -509,6 +503,29 @@ pub fn decode_octal(encoded: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(decoded)
 }
 
+/// `capture-pane -C` quotes a literal backslash as `\\`, unlike `%output`,
+/// which encodes it as an octal byte. Keep the two protocol forms distinct.
+pub fn decode_capture(encoded: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut index = 0;
+    while index < encoded.len() {
+        if encoded[index] != b'\\' {
+            decoded.push(encoded[index]);
+            index += 1;
+        } else if encoded.get(index + 1) == Some(&b'\\') {
+            decoded.push(b'\\');
+            index += 2;
+        } else {
+            let escape = encoded
+                .get(index..index + 4)
+                .ok_or(DecodeError::InvalidOctalEscape)?;
+            decoded.extend(decode_octal(escape)?);
+            index += 4;
+        }
+    }
+    Ok(decoded)
+}
+
 /// Build a Control Mode command. The session name is fixed by product
 /// invariants, while pane/window IDs are validated before being interpolated.
 pub fn initial_command() -> &'static [u8] {
@@ -563,21 +580,13 @@ pub fn restore_layout_command(pane_id: u64) -> String {
 /// declining crash recovery for this connection.
 pub fn choose_zoom_recovery_hook(hooks: &[u8]) -> Option<ZoomRecoveryHookAllocation> {
     let mut occupied = Vec::new();
-    let mut detached_base = false;
-    let mut session_changed_base = false;
 
     for line in hooks.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let Some((name, index)) = parse_hook_entry(line).ok()? else {
+        let Some((_name, index)) = parse_hook_entry(line).ok()? else {
             continue;
         };
         let index = index.unwrap_or(0);
-        if name == ZOOM_RECOVERY_DETACHED_HOOK.as_bytes() && index == 0 {
-            detached_base = true;
-        }
-        if name == ZOOM_RECOVERY_SESSION_CHANGED_HOOK.as_bytes() && index == 0 {
-            session_changed_base = true;
-        }
         if (ZOOM_RECOVERY_HOOK_INDEX_START..ZOOM_RECOVERY_HOOK_INDEX_LIMIT).contains(&index)
             && !occupied.contains(&index)
         {
@@ -587,18 +596,14 @@ pub fn choose_zoom_recovery_hook(hooks: &[u8]) -> Option<ZoomRecoveryHookAllocat
 
     let index = (ZOOM_RECOVERY_HOOK_INDEX_START..ZOOM_RECOVERY_HOOK_INDEX_LIMIT)
         .find(|index| !occupied.contains(index))?;
-    Some(ZoomRecoveryHookAllocation {
-        index,
-        clear_detached_base: !detached_base,
-        clear_session_changed_base: !session_changed_base,
-    })
+    Some(ZoomRecoveryHookAllocation { index })
 }
 
 /// Install the session-scoped recovery pair. The hook is intentionally
 /// limited to `=meeterm:` and to one numeric pane ID. It unzooms that pane's
 /// window only when `window_zoomed_flag` is still set, then removes both
-/// indexed hooks. The optional base cleanup handles the empty index-0 member
-/// tmux can leave when an array hook removes itself.
+/// indexed hooks. An empty index-0 placeholder is harmless and remains;
+/// unsetting an unindexed hook would delete unrelated user entries.
 pub fn install_zoom_recovery_hooks_command(
     allocation: ZoomRecoveryHookAllocation,
     pane_id: u64,
@@ -612,7 +617,7 @@ pub fn install_zoom_recovery_hooks_command(
 
 /// Remove the indexed recovery pair without changing the current layout.
 pub fn remove_zoom_recovery_hooks_command(allocation: ZoomRecoveryHookAllocation) -> String {
-    let mut commands = vec![
+    let commands = [
         format!(
             "set-hook -u -t =meeterm: {ZOOM_RECOVERY_DETACHED_HOOK}[{}]",
             allocation.index
@@ -622,7 +627,6 @@ pub fn remove_zoom_recovery_hooks_command(allocation: ZoomRecoveryHookAllocation
             allocation.index
         ),
     ];
-    append_base_cleanup(&mut commands, allocation);
     commands.join(" ; ")
 }
 
@@ -648,7 +652,7 @@ fn zoom_recovery_hook_body(allocation: ZoomRecoveryHookAllocation, pane_id: u64)
 }
 
 fn remove_zoom_recovery_commands(allocation: ZoomRecoveryHookAllocation) -> Vec<String> {
-    let mut commands = vec![
+    let commands = vec![
         format!(
             "set-hook -u -t =meeterm: {ZOOM_RECOVERY_DETACHED_HOOK}[{}]",
             allocation.index
@@ -658,21 +662,7 @@ fn remove_zoom_recovery_commands(allocation: ZoomRecoveryHookAllocation) -> Vec<
             allocation.index
         ),
     ];
-    append_base_cleanup(&mut commands, allocation);
     commands
-}
-
-fn append_base_cleanup(commands: &mut Vec<String>, allocation: ZoomRecoveryHookAllocation) {
-    if allocation.clear_detached_base {
-        commands.push(format!(
-            "set-hook -u -t =meeterm: {ZOOM_RECOVERY_DETACHED_HOOK}"
-        ));
-    }
-    if allocation.clear_session_changed_base {
-        commands.push(format!(
-            "set-hook -u -t =meeterm: {ZOOM_RECOVERY_SESSION_CHANGED_HOOK}"
-        ));
-    }
 }
 
 type HookEntry<'a> = (&'a [u8], Option<u32>);
@@ -696,6 +686,14 @@ fn parse_hook_entry(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
     }
     let name = &token[..open];
     let digits = &token[open + 1..token.len() - 1];
+    // Recent tmux versions support named array keys. They cannot collide
+    // with our numeric range and must not disable an otherwise valid session.
+    if digits.contains(&b'[') || digits.contains(&b']') {
+        return Err(());
+    }
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return Ok(Some((name, None)));
+    }
     let index = digits.iter().try_fold(0_u32, |value, byte| {
         if !byte.is_ascii_digit() {
             return Err(());
@@ -719,6 +717,15 @@ pub fn send_bytes_command(pane_id: u64, bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_quotes_backslashes_differently_from_output_notifications() {
+        assert_eq!(
+            decode_capture(br"literal\\033 \\xyz \033[31m").unwrap(),
+            b"literal\\033 \\xyz \x1b[31m"
+        );
+        assert_eq!(decode_octal(br"literal\134033").unwrap(), b"literal\\033");
+    }
 
     #[test]
     fn decodes_fragmented_output_and_preserves_spaces() {
@@ -885,19 +892,14 @@ mod tests {
         let hooks = b"client-detached[0] display-message user\nclient-session-changed[1000] user\npane-died[1001] user\nwindow-renamed\n";
         let allocation = choose_zoom_recovery_hook(hooks).unwrap();
         assert_eq!(allocation.index, 1002);
-        assert!(!allocation.clear_detached_base);
-        assert!(allocation.clear_session_changed_base);
 
-        assert!(choose_zoom_recovery_hook(b"pane-died[not-a-number] user\n").is_none());
+        assert!(choose_zoom_recovery_hook(b"pane-died[message] user\n").is_some());
+        assert!(choose_zoom_recovery_hook(b"pane-died[broken[1] user\n").is_none());
     }
 
     #[test]
     fn zoom_recovery_commands_are_session_scoped_and_numeric() {
-        let allocation = ZoomRecoveryHookAllocation {
-            index: 1002,
-            clear_detached_base: false,
-            clear_session_changed_base: true,
-        };
+        let allocation = ZoomRecoveryHookAllocation { index: 1002 };
         let install = install_zoom_recovery_hooks_command(allocation, 23);
         assert!(install.starts_with("set-hook -t =meeterm: client-detached[1002] '"));
         assert!(install.contains("client-session-changed[1002]"));
@@ -908,7 +910,7 @@ mod tests {
         assert!(install.contains("set-hook -u -t =meeterm: client-detached[1002]"));
         assert!(install.contains("set-hook -u -t =meeterm: client-session-changed[1002]"));
         assert!(!install.contains("set-hook -u -t =meeterm: client-detached'"));
-        assert!(install.contains("set-hook -u -t =meeterm: client-session-changed'"));
+        assert!(!install.contains("set-hook -u -t =meeterm: client-session-changed'"));
 
         let cleanup = cleanup_zoom_recovery_hooks_command(allocation, 23);
         assert!(cleanup.starts_with("if-shell -F -t %23"));

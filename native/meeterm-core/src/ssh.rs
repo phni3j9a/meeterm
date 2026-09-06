@@ -217,6 +217,7 @@ impl ConnectionProfile {
 /// native terminal objects.
 #[derive(Default)]
 struct SessionState {
+    viewport: Option<(u16, u16)>,
     generation: u64,
     snapshot: SessionSnapshot,
     pane_terminals: HashMap<u64, TerminalId>,

@@ -128,10 +128,17 @@ fn real_openssh_tmux_session_loop() {
 
     run_remote_tmux(
         &fixture,
+        "tmux set-hook -t '=meeterm:' 'client-detached[77]' 'display-message user-hook-preserved'; tmux set-hook -t '=meeterm:' 'client-session-changed[77]' 'display-message user-hook-preserved'",
+        "install preexisting user hooks",
+    );
+
+    run_remote_tmux(
+        &fixture,
         &format!(
             "tmux rename-window -t @{} main; \
              tmux split-window -h -t %{} 'exec /bin/sh -i'; \
              tmux new-window -t '=meeterm' -n side 'exec /bin/sh -i'; \
+             tmux split-window -h -t '=meeterm:side' 'exec /bin/sh -i'; \
              tmux select-window -t @{}; \
              tmux select-pane -t %{}",
             initial_pane.window_id,
@@ -141,7 +148,7 @@ fn real_openssh_tmux_session_loop() {
         ),
         "create fixture tmux topology",
     );
-    let topology = wait_for_session(id, 3, "tmux topology synchronization");
+    let topology = wait_for_session(id, 4, "tmux topology synchronization");
     assert!(topology.windows.len() >= 2);
     assert_eq!(
         topology
@@ -291,11 +298,15 @@ fn real_openssh_tmux_session_loop() {
     // the shell into the PTY: sending it as input would only feed readline
     // and would never switch the remote terminal's active screen.
     let fullscreen_command = format!(
-        "printf '\\033[?1049h\\033[2J\\033[H'; printf '{}\\n'",
+        "printf '\\033[?1049h\\033[2J\\033[H\\033[?7l'; printf '{}\\n'",
         printf_octal(FULLSCREEN_MARKER)
     );
     assert!(!fullscreen_command.contains(FULLSCREEN_MARKER));
-    send_line_retry(side.terminal_id, &fullscreen_command, "enter alternate screen");
+    send_line_retry(
+        side.terminal_id,
+        &fullscreen_command,
+        "enter alternate screen",
+    );
     wait_for_remote_tmux(
         &fixture,
         &format!(
@@ -306,6 +317,15 @@ fn real_openssh_tmux_session_loop() {
         |output| output.trim() == "1",
     );
     wait_for_pane_text(&side, FULLSCREEN_MARKER, "full-screen marker");
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{wrap_flag}}'",
+            side.pane_id
+        ),
+        "wrap disabled before reconnect",
+        |output| output.trim() == "0",
+    );
 
     let before_loss = session_snapshot(id).expect("session snapshot before transport loss");
     let before_ids = pane_identity_set(&before_loss);
@@ -343,6 +363,26 @@ fn real_openssh_tmux_session_loop() {
         "alternate-screen capture after reconnect",
     );
 
+    // DECAWM remains disabled remotely across transport loss. Writing past
+    // the right margin must overwrite the last cell instead of wrapping in
+    // the reconstructed native Term. Move the prompt away from that row.
+    let columns = read_snapshot(reconnected_side.terminal_id).columns;
+    send_line_retry(
+        reconnected_side.terminal_id,
+        &format!("printf '\\033[10;{}HABCD\\033[11;1H'", columns - 1),
+        "post-reconnect no-wrap output",
+    );
+    wait_for_pane_snapshot(&reconnected_side, "restored no-wrap mode", |snapshot| {
+        snapshot
+            .cells
+            .iter()
+            .any(|cell| cell.row == 9 && cell.column == columns - 2 && cell.base == "A")
+            && snapshot
+                .cells
+                .iter()
+                .any(|cell| cell.row == 9 && cell.column == columns - 1 && cell.base == "D")
+    });
+
     // A graceful disconnect must clean up zoom state as well.  The remote
     // session and pane identities remain available for a later desktop handoff.
     select_pane(id, reconnected_side.pane_id).expect("reselect side pane");
@@ -367,6 +407,49 @@ fn real_openssh_tmux_session_loop() {
         |output| output.trim() == "0",
     );
     assert!(send_bytes(reconnected_side.terminal_id, b"input after disconnect").is_err());
+
+    let hooks = run_remote_tmux(
+        &fixture,
+        "tmux show-hooks -t '=meeterm:'",
+        "preserved user hooks",
+    );
+    let hooks = String::from_utf8_lossy(&hooks.stdout);
+    assert!(hooks.contains("client-detached[77]"));
+    assert!(hooks.contains("client-session-changed[77]"));
+    assert!(
+        !hooks.contains("[1000]"),
+        "only meeterm's hook slots should be removed"
+    );
+
+    // External pane removal invalidates the borrowed native handle and must
+    // not leave a dead zoom target that breaks the next mobile selection.
+    reconnect_terminal(id).expect("reconnect before pane removal");
+    wait_for_ready_without_prompt(id, "reconnect before pane removal");
+    run_remote_tmux(
+        &fixture,
+        &format!("tmux kill-pane -t %{}", side.pane_id),
+        "remove selected remote pane",
+    );
+    let remaining = wait_for_session(id, 3, "removed pane topology");
+    assert!(
+        !remaining
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == side.pane_id)
+    );
+    assert_eq!(
+        meeterm_snapshot_size(side.terminal_id),
+        0,
+        "removed borrowed handle is invalid"
+    );
+    select_pane(id, main.pane_id).expect("select surviving pane after removal");
+    send_line_retry(
+        main.terminal_id,
+        &format!("printf '{}\\n'", printf_octal("MEETERM_AFTER_REMOVE")),
+        "surviving pane input",
+    );
+    wait_for_pane_text(&main, "MEETERM_AFTER_REMOVE", "surviving pane output");
+    disconnect_terminal(id).expect("disconnect surviving session");
 
     // Once the key is pinned, a wrong passphrase fails before tmux is opened.
     let wrong_id = create_terminal(80, 24).expect("create wrong-passphrase terminal");
@@ -473,7 +556,7 @@ fn ssh_command(fixture: &FixtureConfig, allocate_tty: bool) -> Command {
     let port = fixture.port.to_string();
     let known_hosts = format!("UserKnownHostsFile={}", fixture.known_hosts.display());
     if allocate_tty {
-        command.arg("-tt");
+        command.arg("-tt").env("TERM", "xterm-256color");
     }
     command
         .args([
@@ -636,11 +719,11 @@ fn commit_utf8_retry(id: u64, bytes: &[u8]) -> u64 {
     }
 }
 
-fn wait_for_session(id: u64, minimum_panes: usize, label: &str) -> SessionSnapshot {
+fn wait_for_session(id: u64, expected_panes: usize, label: &str) -> SessionSnapshot {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
         let snapshot = session_snapshot(id).expect("tmux session snapshot");
-        if snapshot.panes.len() >= minimum_panes && !snapshot.windows.is_empty() {
+        if snapshot.panes.len() == expected_panes && !snapshot.windows.is_empty() {
             return snapshot;
         }
         let connection = connection_snapshot(id).expect("connection snapshot");
@@ -760,12 +843,12 @@ fn remote_send_keys(fixture: &FixtureConfig, pane_id: u64, marker: &str) {
 fn detach_control_mode_client(fixture: &FixtureConfig) {
     let clients = run_remote_tmux(
         fixture,
-        "tmux list-clients -F '#{client_name}\t#{client_control_mode}'",
+        "tmux list-clients -F '#{client_name}|#{client_control_mode}'",
         "list tmux clients before transport loss",
     );
     let client = String::from_utf8_lossy(&clients.stdout)
         .lines()
-        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|line| line.split_once('|'))
         .find_map(|(name, control_mode)| {
             (control_mode.trim() == "1").then(|| name.trim().to_owned())
         })
@@ -778,7 +861,7 @@ fn detach_control_mode_client(fixture: &FixtureConfig) {
 }
 
 fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn write_alternate_trust_record(fixture: &FixtureConfig) {
