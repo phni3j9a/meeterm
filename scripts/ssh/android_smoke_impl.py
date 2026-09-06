@@ -68,6 +68,7 @@ class Node:
         "enabled",
         "visible_to_user",
         "selected",
+        "focused",
     )
 
     def __init__(
@@ -81,6 +82,7 @@ class Node:
         enabled: bool = True,
         visible_to_user: bool = True,
         selected: bool = False,
+        focused: bool = False,
     ) -> None:
         self.text = text
         self.content_description = content_description
@@ -90,6 +92,7 @@ class Node:
         self.enabled = enabled
         self.visible_to_user = visible_to_user
         self.selected = selected
+        self.focused = focused
 
     @property
     def center(self) -> tuple[int, int]:
@@ -148,6 +151,7 @@ def parse_ui_dump(output: bytes) -> list[Node]:
                 visible_to_user=element.attrib.get("visible-to-user", "true")
                 == "true",
                 selected=element.attrib.get("selected", "false") == "true",
+                focused=element.attrib.get("focused", "false") == "true",
             )
         )
     return nodes
@@ -1053,22 +1057,68 @@ def fill_multiline_key(device: AndroidDevice, key: str) -> None:
         content_descriptions=PRIVATE_KEY_ACCESSIBILITY_LABELS,
         scroll=True,
     )
-    tap_node(device, node, "private_key_input")
+    # A partially visible multiline editor can have its center underneath
+    # the IME or outside the ScrollView. Tap its visible top and require
+    # keyboard focus before sending any credential bytes.
+    for _ in range(3):
+        nodes = device.dump_ui()
+        editor = find_node_with_content_descriptions(
+            nodes, PRIVATE_KEY_ACCESSIBILITY_LABELS, class_fragment="EditText"
+        )
+        if editor is not None and editor.focused:
+            break
+        if editor is None:
+            raise SmokeFailure("private_key_input", "editor_unavailable")
+        left, top, right, bottom = editor.bounds
+        viewport = scroll_container_bounds(nodes)
+        if viewport is not None:
+            left, top = max(left, viewport[0]), max(top, viewport[1])
+            right, bottom = min(right, viewport[2]), min(bottom, viewport[3])
+        if right <= left or bottom - top < 12:
+            raise SmokeFailure("private_key_input", "editor_not_visible")
+        device.input_tap((left + right) // 2, top + min(24, (bottom - top) // 2), "private_key_input")
+        time.sleep(0.2)
+    else:
+        raise SmokeFailure("private_key_input", "editor_not_focused")
+
+    expected = ""
     for index, line in enumerate(lines):
-        device.input_text(line, "private_key_input")
+        # Short batches keep the controlled TextInput's event counter caught
+        # up on loaded emulators. Readback remains in process memory only.
+        for offset in range(0, len(line), 16):
+            chunk = line[offset:offset + 16]
+            device.input_text(chunk, "private_key_input")
+            expected += chunk
+            verify_key_readback(device, expected)
         if index + 1 < len(lines):
             device.input_keyevent(KEYCODE_ENTER, "private_key_input")
-        # Let React Native's controlled TextInput commit each line before the
-        # next adb input event; a busy emulator can otherwise coalesce adjacent
-        # multiline updates even when adb reports success.
-        time.sleep(0.05)
-    # The concealed editor remains concealed on screen. UIAutomator can read
-    # its editable value, which we compare without writing it to any artifact.
-    entered = wait_for_node(
-        device, "private_key_input", content_descriptions=PRIVATE_KEY_ACCESSIBILITY_LABELS
-    )
-    if entered.text.strip() != key.strip():
-        raise SmokeFailure("private_key_input", "entry_mismatch")
+            expected += "\n"
+            verify_key_readback(device, expected)
+
+
+def verify_key_readback(device: AndroidDevice, expected: str) -> None:
+    deadline = time.monotonic() + 5
+    reason = "entry_unavailable"
+    while time.monotonic() < deadline:
+        editor = find_node_with_content_descriptions(
+            device.dump_ui(), PRIVATE_KEY_ACCESSIBILITY_LABELS, class_fragment="EditText"
+        )
+        if editor is None:
+            reason = "editor_unavailable"
+        elif not editor.focused:
+            reason = "editor_lost_focus"
+        elif editor.text == expected:
+            return
+        elif not editor.text:
+            reason = "entry_empty"
+        elif editor.text.replace("\n", " ") == expected.replace("\n", " "):
+            reason = "entry_newline_mismatch"
+        elif len(editor.text) != len(expected):
+            reason = "entry_length_mismatch"
+        else:
+            reason = "entry_content_mismatch"
+        time.sleep(0.1)
+    raise SmokeFailure("private_key_input", reason)
 
 
 def host_fingerprint_from_nodes(nodes: list[Node]) -> str | None:

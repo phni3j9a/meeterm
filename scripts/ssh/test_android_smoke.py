@@ -21,6 +21,26 @@ import android_smoke_impl as smoke
 
 
 class UiDriverTests(unittest.TestCase):
+    def test_key_readback_waits_for_the_focused_editor_update(self) -> None:
+        device = mock.Mock()
+        device.dump_ui.side_effect = [
+            [smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100), focused=True)],
+            [smoke.Node("public-probe\nline", "Private OpenSSH key, Private key entered", "android.widget.EditText", (0, 0, 100, 100), focused=True)],
+        ]
+        smoke.verify_key_readback(device, "public-probe\nline")
+        self.assertEqual(device.dump_ui.call_count, 2)
+
+    def test_matching_text_without_keyboard_focus_is_rejected(self) -> None:
+        device = mock.Mock()
+        device.dump_ui.return_value = [smoke.Node(
+            "public-probe", "Private OpenSSH key, Private key entered",
+            "android.widget.EditText", (0, 0, 100, 100), focused=False,
+        )]
+        with mock.patch.object(smoke.time, "monotonic", side_effect=[0, 0, 6]), mock.patch.object(smoke.time, "sleep"):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.verify_key_readback(device, "public-probe")
+        self.assertEqual(error.exception.reason, "editor_lost_focus")
+
     @unittest.skipUnless(shutil.which("tmux"), "tmux is needed for fixture preparation")
     def test_empty_owned_server_is_accepted_but_existing_sessions_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-test-") as root:
