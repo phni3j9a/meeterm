@@ -125,6 +125,10 @@ def parse_ui_dump(output: bytes) -> list[Node]:
     if xml_start < 0:
         xml_start = output.find(b"<hierarchy")
     if xml_start < 0:
+        if b"could not get idle state" in output:
+            raise SmokeFailure("uiautomator", "accessibility_not_idle")
+        if b"null root node" in output:
+            raise SmokeFailure("uiautomator", "root_unavailable")
         raise SmokeFailure("uiautomator", "xml_unavailable")
     xml_end = output.find(b"</hierarchy>", xml_start)
     if xml_end < 0:
@@ -200,7 +204,9 @@ class AndroidDevice:
                 output = self.run(
                     ("shell", "-tt", "uiautomator", "dump", "/dev/tty"),
                     "uiautomator",
-                    timeout=10.0,
+                    # UIAutomator itself waits up to ten seconds for idle;
+                    # allow its fixed diagnostic to return before adb times out.
+                    timeout=15.0,
                 )
                 return parse_ui_dump(output)
             except SmokeFailure:
@@ -972,10 +978,14 @@ def wait_for_node(
 ) -> Node:
     deadline = time.monotonic() + timeout
     last_swipe_at = 0.0
+    last_dump_failure: SmokeFailure | None = None
+    hierarchy_seen = False
     while time.monotonic() < deadline:
         try:
             nodes = device.dump_ui()
-        except SmokeFailure:
+            hierarchy_seen = True
+        except SmokeFailure as error:
+            last_dump_failure = error
             time.sleep(0.2)
             continue
         if content_descriptions is not None:
@@ -1007,6 +1017,8 @@ def wait_for_node(
                 time.sleep(0.2)
         else:
             time.sleep(0.2)
+    if not hierarchy_seen and last_dump_failure is not None:
+        raise SmokeFailure(stage, last_dump_failure.reason)
     raise SmokeFailure(stage, "ui_timeout")
 
 

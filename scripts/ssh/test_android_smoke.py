@@ -21,6 +21,24 @@ import android_smoke_impl as smoke
 
 
 class UiDriverTests(unittest.TestCase):
+    def test_missing_xml_classifies_only_known_diagnostics(self) -> None:
+        for output, reason in (
+            (b"ERROR: could not get idle state.", "accessibility_not_idle"),
+            (b"ERROR: null root node returned by UiTestAutomationBridge.", "root_unavailable"),
+            (b"unrecognized private diagnostic", "xml_unavailable"),
+        ):
+            with self.subTest(reason=reason), self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.parse_ui_dump(output)
+            self.assertEqual(error.exception.reason, reason)
+
+    def test_node_wait_preserves_acquisition_failure_without_any_hierarchy(self) -> None:
+        device = mock.Mock()
+        device.dump_ui.side_effect = smoke.SmokeFailure("uiautomator", "accessibility_not_idle")
+        with mock.patch.object(smoke.time, "monotonic", side_effect=[0, 0, 31]), mock.patch.object(smoke.time, "sleep"):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_node(device, "launch", text="Connect")
+        self.assertEqual((error.exception.stage, error.exception.reason), ("launch", "accessibility_not_idle"))
+
     def test_ui_dump_retries_transient_missing_hierarchy(self) -> None:
         device = smoke.AndroidDevice("test", "adb")
         with mock.patch.object(device, "run", side_effect=[
