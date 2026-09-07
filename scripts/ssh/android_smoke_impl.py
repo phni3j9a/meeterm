@@ -33,6 +33,10 @@ KEYCODE_MOVE_END = 123
 DEFAULT_UI_TIMEOUT = 30.0
 REMOTE_MARKER_TIMEOUT = 15.0
 RECONNECT_TIMEOUT = 45.0
+KEY_INPUT_TIMEOUT = 600.0
+KEY_READBACK_TIMEOUT = 15.0
+KEY_INPUT_SETTLE_SECONDS = 0.3
+KEY_INPUT_MAX_ATTEMPTS = 4
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 SYNC_MARKER = "MEETERM_ANDROID_SYNC_4C71"
@@ -1103,44 +1107,88 @@ def fill_multiline_key(device: AndroidDevice, key: str) -> None:
         device.input_tap((left + right) // 2, top + min(24, (bottom - top) // 2), "private_key_input")
         time.sleep(0.2)
 
+    deadline = time.monotonic() + KEY_INPUT_TIMEOUT
     expected = ""
+    enter_key_prefix(device, expected, deadline=deadline)
     for index, line in enumerate(lines):
-        # Short batches keep the controlled TextInput's event counter caught
-        # up on loaded emulators. Readback remains in process memory only.
+        # Every operation starts from settled, verified editor state. Never
+        # replay a batch just because Android accepted only part of it.
         for offset in range(0, len(line), 16):
             chunk = line[offset:offset + 16]
-            device.input_text(chunk, "private_key_input")
             expected += chunk
-            verify_key_readback(device, expected)
+            enter_key_prefix(device, expected, deadline=deadline)
         if index + 1 < len(lines):
-            device.input_keyevent(KEYCODE_ENTER, "private_key_input")
             expected += "\n"
-            verify_key_readback(device, expected)
+            enter_key_prefix(device, expected, deadline=deadline)
 
 
-def verify_key_readback(device: AndroidDevice, expected: str) -> None:
-    deadline = time.monotonic() + 5
-    reason = "entry_unavailable"
+def verify_key_readback(
+    device: AndroidDevice, expected: str, *, deadline: float | None = None
+) -> str:
+    """Return a settled exact prefix, keeping all credential text in memory.
+
+    UIAutomator waits for accessibility idle, but a controlled React input
+    can still update after the first read. Require a second identical read
+    after a quiet interval, including when the first value is a full match.
+    Missing focus and non-prefix text are never recoverable by replaying input.
+    """
+
+    read_deadline = time.monotonic() + KEY_READBACK_TIMEOUT
+    deadline = min(deadline, read_deadline) if deadline is not None else read_deadline
+    previous: str | None = None
+    unchanged_since = time.monotonic()
     while time.monotonic() < deadline:
         editor = find_node_with_content_descriptions(
             device.dump_ui(), PRIVATE_KEY_ACCESSIBILITY_LABELS, class_fragment="EditText"
         )
         if editor is None:
-            reason = "editor_unavailable"
-        elif not editor.focused:
-            reason = "editor_lost_focus"
-        elif editor.text == expected:
+            raise SmokeFailure("private_key_input", "editor_unavailable")
+        if not editor.focused:
+            raise SmokeFailure("private_key_input", "editor_lost_focus")
+        if not expected.startswith(editor.text):
+            raise SmokeFailure("private_key_input", "entry_content_mismatch")
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        if editor.text != previous:
+            previous = editor.text
+            unchanged_since = now
+        elif now - unchanged_since >= KEY_INPUT_SETTLE_SECONDS:
+            return editor.text
+        time.sleep(KEY_INPUT_SETTLE_SECONDS)
+    raise SmokeFailure("private_key_input", "entry_not_settled")
+
+
+def enter_key_prefix(device: AndroidDevice, expected: str, *, deadline: float) -> None:
+    """Append only a verified missing suffix, with finite attempts and time."""
+
+    attempts = 0
+    while time.monotonic() < deadline:
+        observed = verify_key_readback(device, expected, deadline=deadline)
+        if observed == expected:
             return
-        elif not editor.text:
-            reason = "entry_empty"
-        elif editor.text.replace("\n", " ") == expected.replace("\n", " "):
-            reason = "entry_newline_mismatch"
-        elif len(editor.text) != len(expected):
-            reason = "entry_length_mismatch"
+        if time.monotonic() >= deadline:
+            break
+        if attempts >= KEY_INPUT_MAX_ATTEMPTS:
+            raise SmokeFailure("private_key_input", "entry_retry_limit")
+        if attempts:
+            # Structural counters only, never the credential or raw hierarchy.
+            print(
+                "Private key input recovery: "
+                f"operation={'newline' if expected.endswith(chr(10)) else 'text'} "
+                f"attempt={attempts} "
+                f"expected_length={len(expected)} observed_length={len(observed)} "
+                f"expected_newlines={expected.count(chr(10))} "
+                f"observed_newlines={observed.count(chr(10))}",
+                flush=True,
+            )
+        missing = expected[len(observed):]
+        if missing.startswith("\n"):
+            device.input_keyevent(KEYCODE_ENTER, "private_key_input")
         else:
-            reason = "entry_content_mismatch"
-        time.sleep(0.1)
-    raise SmokeFailure("private_key_input", reason)
+            device.input_text(missing.split("\n", 1)[0][:16], "private_key_input")
+        attempts += 1
+    raise SmokeFailure("private_key_input", "entry_timeout")
 
 
 def host_fingerprint_from_nodes(nodes: list[Node]) -> str | None:
