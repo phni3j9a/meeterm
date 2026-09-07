@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Deterministic checks for the Android SSH smoke driver.
 
-These tests exercise the parser and command-building boundary without
-requiring an emulator or an OpenSSH fixture.  The hosted job remains the
-authoritative check of the complete UI/native path.
+These tests exercise the parser, command-building boundary, and deterministic
+key-entry state machine without requiring an emulator or an OpenSSH fixture.
+The hosted job remains the authoritative check of the complete UI/native path.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 from pathlib import Path
 import os
 import shutil
@@ -18,6 +20,153 @@ import unittest
 from unittest import mock
 
 import android_smoke_impl as smoke
+
+
+_EDITOR_UNAVAILABLE = object()
+
+
+class _FakeClock:
+    """Small monotonic clock whose sleeps never wait in real time."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleep_calls: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleep_calls.append(seconds)
+        self.now += seconds
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _ProbeEditorDevice:
+    """Deterministic accessibility/editor fake for credential-entry tests.
+
+    Each item in ``observations`` is either probe text (focused), a
+    ``(text, focused)`` pair, or ``_EDITOR_UNAVAILABLE``.  The fake stores
+    input calls as structural records; it never prints or dumps the probe.
+    """
+
+    def __init__(
+        self,
+        clock: _FakeClock,
+        observations: list[object],
+        *,
+        dump_advance: float = 0.0,
+        input_advance: float = 0.0,
+    ) -> None:
+        self.clock = clock
+        self.observations = observations
+        self.dump_advance = dump_advance
+        self.input_advance = input_advance
+        self._observation_index = 0
+        self.dump_calls = 0
+        self.input_text_calls: list[tuple[str, str]] = []
+        self.input_keyevent_calls: list[tuple[int, str]] = []
+        self.input_tap_calls: list[tuple[int, int, str]] = []
+
+    def dump_ui(self) -> list[smoke.Node]:
+        self.dump_calls += 1
+        self.clock.advance(self.dump_advance)
+        if self.observations:
+            observation = self.observations[
+                min(self._observation_index, len(self.observations) - 1)
+            ]
+            self._observation_index += 1
+        else:
+            observation = _EDITOR_UNAVAILABLE
+        if observation is _EDITOR_UNAVAILABLE:
+            return []
+        if isinstance(observation, tuple):
+            text, focused = observation
+        else:
+            text, focused = observation, True
+        description = (
+            "Private OpenSSH key, Empty"
+            if not text
+            else "Private OpenSSH key, Private key entered"
+        )
+        return [
+            smoke.Node(
+                text,
+                description,
+                "android.widget.EditText",
+                (0, 0, 100, 100),
+                focused=focused,
+            )
+        ]
+
+    def input_text(self, value: str, stage: str) -> None:
+        self.input_text_calls.append((value, stage))
+        self.clock.advance(self.input_advance)
+
+    def input_keyevent(self, keycode: int, stage: str) -> None:
+        self.input_keyevent_calls.append((keycode, stage))
+        self.clock.advance(self.input_advance)
+
+    def input_tap(self, x: int, y: int, stage: str) -> None:
+        self.input_tap_calls.append((x, y, stage))
+
+
+class _MutableProbeEditorDevice:
+    """Editor fake that mutates its value when the driver sends input."""
+
+    def __init__(
+        self,
+        clock: _FakeClock,
+        *,
+        initial_text: str = "",
+        focused: bool = False,
+    ) -> None:
+        self.clock = clock
+        self.text = initial_text
+        self.focused = focused
+        self.dump_calls = 0
+        self.input_text_calls: list[tuple[str, str]] = []
+        self.input_keyevent_calls: list[tuple[int, str]] = []
+        self.input_tap_calls: list[tuple[int, int, str]] = []
+
+    def dump_ui(self) -> list[smoke.Node]:
+        self.dump_calls += 1
+        description = (
+            "Private OpenSSH key, Empty"
+            if not self.text
+            else "Private OpenSSH key, Private key entered"
+        )
+        return [
+            smoke.Node(
+                self.text,
+                description,
+                "android.widget.EditText",
+                (0, 0, 100, 100),
+                focused=self.focused,
+            )
+        ]
+
+    def input_tap(self, x: int, y: int, stage: str) -> None:
+        self.input_tap_calls.append((x, y, stage))
+        self.focused = True
+
+    def input_text(self, value: str, stage: str) -> None:
+        self.input_text_calls.append((value, stage))
+        self.text += value
+
+    def input_keyevent(self, keycode: int, stage: str) -> None:
+        self.input_keyevent_calls.append((keycode, stage))
+        if keycode == smoke.KEYCODE_ENTER:
+            self.text += "\n"
+
+
+@contextlib.contextmanager
+def _patched_clock(clock: _FakeClock):
+    with mock.patch.object(smoke.time, "monotonic", side_effect=clock.monotonic), mock.patch.object(
+        smoke.time, "sleep", side_effect=clock.sleep
+    ):
+        yield
 
 
 class UiDriverTests(unittest.TestCase):
@@ -56,36 +205,320 @@ class UiDriverTests(unittest.TestCase):
         self.assertEqual(run.call_count, 3)
         self.assertEqual(error.exception.reason, "xml_unavailable")
 
-    def test_key_input_checks_focus_after_the_last_retry(self) -> None:
+    def test_key_input_checks_focus_before_planning_probe_prefixes(self) -> None:
         device = mock.Mock()
         unfocused = smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100))
         focused = smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100), focused=True)
-        entered = smoke.Node("public-probe", "Private OpenSSH key, Private key entered", "android.widget.EditText", (0, 0, 100, 100), focused=True)
-        device.dump_ui.side_effect = [[unfocused]] * 4 + [[focused], [entered]]
-        with mock.patch.object(smoke.time, "sleep"):
+        device.dump_ui.side_effect = [[unfocused]] * 4 + [[focused]]
+        with mock.patch.object(smoke.time, "sleep"), mock.patch.object(
+            smoke.time, "monotonic", return_value=0.0
+        ), mock.patch.object(smoke, "enter_key_prefix") as enter:
             smoke.fill_multiline_key(device, "public-probe")
         self.assertEqual(device.input_tap.call_count, 3)
-        device.input_text.assert_called_once_with("public-probe", "private_key_input")
+        self.assertEqual(
+            [call.args[1] for call in enter.call_args_list],
+            ["", "public-probe"],
+        )
+        self.assertEqual(
+            enter.call_args.kwargs["deadline"], smoke.KEY_INPUT_TIMEOUT
+        )
+        device.input_text.assert_not_called()
+        device.input_keyevent.assert_not_called()
+
+    def test_multiline_key_plans_empty_prefix_chunks_and_newline(self) -> None:
+        focused = smoke.Node(
+            "",
+            "Private OpenSSH key, Empty",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+            focused=True,
+        )
+        device = mock.Mock()
+        device.dump_ui.return_value = [focused]
+        key = "probe-0123456789abcdef\nprobe-tail"
+        first_line, second_line = key.splitlines()
+
+        with mock.patch.object(smoke.time, "sleep"), mock.patch.object(
+            smoke.time, "monotonic", return_value=0.0
+        ), mock.patch.object(smoke, "enter_key_prefix") as enter:
+            smoke.fill_multiline_key(device, key)
+
+        self.assertEqual(
+            [call.args[1] for call in enter.call_args_list],
+            [
+                "",
+                first_line[:16],
+                first_line,
+                first_line + "\n",
+                key,
+            ],
+        )
+        self.assertEqual(len(enter.call_args_list), 5)
+        self.assertEqual(
+            {call.kwargs["deadline"] for call in enter.call_args_list},
+            {smoke.KEY_INPUT_TIMEOUT},
+        )
+
+    def test_multiline_key_uses_mutating_editor_for_each_settled_prefix(self) -> None:
+        clock = _FakeClock()
+        key = "probe-0123456789abcdef\nprobe-tail"
+        device = _MutableProbeEditorDevice(clock)
+
+        with _patched_clock(clock):
+            smoke.fill_multiline_key(device, key)
+
+        first_line, second_line = key.splitlines()
+        self.assertEqual(device.text, key)
+        self.assertEqual(
+            device.input_text_calls,
+            [
+                (first_line[:16], "private_key_input"),
+                (first_line[16:], "private_key_input"),
+                (second_line, "private_key_input"),
+            ],
+        )
+        self.assertEqual(
+            device.input_keyevent_calls,
+            [(smoke.KEYCODE_ENTER, "private_key_input")],
+        )
+        self.assertEqual(len(device.input_tap_calls), 1)
 
     def test_key_readback_waits_for_the_focused_editor_update(self) -> None:
-        device = mock.Mock()
-        device.dump_ui.side_effect = [
-            [smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100), focused=True)],
-            [smoke.Node("public-probe\nline", "Private OpenSSH key, Private key entered", "android.widget.EditText", (0, 0, 100, 100), focused=True)],
-        ]
-        smoke.verify_key_readback(device, "public-probe\nline")
-        self.assertEqual(device.dump_ui.call_count, 2)
+        clock = _FakeClock()
+        expected = "public-probe\nline"
+        device = _ProbeEditorDevice(clock, [expected, expected])
+
+        with _patched_clock(clock):
+            self.assertEqual(smoke.verify_key_readback(device, expected), expected)
+
+        self.assertEqual(device.dump_calls, 2)
+        self.assertEqual(clock.sleep_calls, [smoke.KEY_INPUT_SETTLE_SECONDS])
+
+    def test_key_readback_returns_a_settled_partial_prefix(self) -> None:
+        clock = _FakeClock()
+        expected = "probe-alpha\nprobe-beta"
+        prefix = "probe-alpha"
+        device = _ProbeEditorDevice(clock, [prefix, prefix])
+
+        with _patched_clock(clock):
+            self.assertEqual(smoke.verify_key_readback(device, expected), prefix)
+
+        self.assertEqual(device.dump_calls, 2)
+        self.assertEqual(clock.sleep_calls, [smoke.KEY_INPUT_SETTLE_SECONDS])
+
+    def test_enter_key_prefix_sends_only_missing_suffix_after_delayed_readback(self) -> None:
+        clock = _FakeClock()
+        expected = "probe-0123456789abcdef"
+        prefix = "probe-"
+        # The first post-input dump is stale.  The driver must let the
+        # accessibility value catch up instead of sending the suffix again.
+        device = _ProbeEditorDevice(
+            clock,
+            [prefix, prefix, prefix, expected, expected],
+        )
+
+        with _patched_clock(clock), contextlib.redirect_stdout(io.StringIO()):
+            smoke.enter_key_prefix(device, expected, deadline=10.0)
+
+        self.assertEqual(
+            device.input_text_calls,
+            [(expected[len(prefix):], "private_key_input")],
+        )
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_enter_key_prefix_recovers_from_repeated_partial_prefixes(self) -> None:
+        clock = _FakeClock()
+        expected = "probe-abcdefghijklmnopqr"
+        first_prefix = expected[:8]
+        device = _ProbeEditorDevice(
+            clock,
+            ["", "", first_prefix, first_prefix, expected, expected],
+        )
+
+        with _patched_clock(clock), contextlib.redirect_stdout(io.StringIO()):
+            smoke.enter_key_prefix(device, expected, deadline=10.0)
+
+        self.assertEqual(
+            device.input_text_calls,
+            [
+                (expected[:16], "private_key_input"),
+                (expected[8:], "private_key_input"),
+            ],
+        )
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_enter_key_prefix_retries_a_dropped_newline_without_replaying_text(self) -> None:
+        clock = _FakeClock()
+        expected = "probe-line\n"
+        before_newline = "probe-line"
+        device = _ProbeEditorDevice(
+            clock,
+            [
+                before_newline,
+                before_newline,
+                before_newline,
+                before_newline,
+                expected,
+                expected,
+            ],
+        )
+
+        with _patched_clock(clock), contextlib.redirect_stdout(io.StringIO()):
+            smoke.enter_key_prefix(device, expected, deadline=10.0)
+
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(
+            device.input_keyevent_calls,
+            [
+                (smoke.KEYCODE_ENTER, "private_key_input"),
+                (smoke.KEYCODE_ENTER, "private_key_input"),
+            ],
+        )
+
+    def test_enter_key_prefix_has_a_bounded_retry_limit_when_text_does_not_progress(self) -> None:
+        clock = _FakeClock()
+        expected = "probe-0123456789abcdef"
+        device = _ProbeEditorDevice(clock, ["", ""] * 5)
+
+        with _patched_clock(clock), contextlib.redirect_stdout(io.StringIO()) as output:
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.enter_key_prefix(device, expected, deadline=20.0)
+
+        self.assertEqual(error.exception.reason, "entry_retry_limit")
+        self.assertEqual(
+            device.input_text_calls,
+            [(expected[:16], "private_key_input")] * smoke.KEY_INPUT_MAX_ATTEMPTS,
+        )
+        self.assertEqual(device.input_keyevent_calls, [])
+        self.assertNotIn(expected, output.getvalue())
+
+    def test_verify_key_readback_reports_unsettled_when_a_dump_crosses_deadline(self) -> None:
+        clock = _FakeClock()
+        device = _ProbeEditorDevice(clock, [""], dump_advance=2.0)
+
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.verify_key_readback(device, "probe-value", deadline=1.0)
+
+        self.assertEqual(error.exception.reason, "entry_not_settled")
+        self.assertEqual(device.dump_calls, 1)
+        self.assertEqual(clock.sleep_calls, [])
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_verify_key_readback_default_timeout_is_finite(self) -> None:
+        clock = _FakeClock()
+        device = _ProbeEditorDevice(
+            clock,
+            [""],
+            dump_advance=smoke.KEY_READBACK_TIMEOUT + 1.0,
+        )
+
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.verify_key_readback(device, "probe-value")
+
+        self.assertEqual(error.exception.reason, "entry_not_settled")
+        self.assertEqual(device.dump_calls, 1)
+        self.assertEqual(clock.sleep_calls, [])
+
+    def test_enter_key_prefix_reports_timeout_after_an_input_crosses_deadline(self) -> None:
+        clock = _FakeClock()
+        expected = "probe-0123456789abcdef"
+        device = _ProbeEditorDevice(
+            clock,
+            ["", ""],
+            input_advance=2.0,
+        )
+
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.enter_key_prefix(device, expected, deadline=1.0)
+
+        self.assertEqual(error.exception.reason, "entry_timeout")
+        self.assertEqual(
+            device.input_text_calls,
+            [(expected[:16], "private_key_input")],
+        )
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_enter_key_prefix_does_not_dump_or_send_after_deadline(self) -> None:
+        clock = _FakeClock()
+        clock.now = 1.0
+        device = _ProbeEditorDevice(clock, ["probe-value"])
+
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.enter_key_prefix(device, "probe-value-suffix", deadline=1.0)
+
+        self.assertEqual(error.exception.reason, "entry_timeout")
+        self.assertEqual(device.dump_calls, 0)
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(device.input_keyevent_calls, [])
 
     def test_matching_text_without_keyboard_focus_is_rejected(self) -> None:
-        device = mock.Mock()
-        device.dump_ui.return_value = [smoke.Node(
-            "public-probe", "Private OpenSSH key, Private key entered",
-            "android.widget.EditText", (0, 0, 100, 100), focused=False,
-        )]
-        with mock.patch.object(smoke.time, "monotonic", side_effect=[0, 0, 6]), mock.patch.object(smoke.time, "sleep"):
+        clock = _FakeClock()
+        device = _ProbeEditorDevice(clock, [("probe-value", False)])
+
+        with _patched_clock(clock):
             with self.assertRaises(smoke.SmokeFailure) as error:
-                smoke.verify_key_readback(device, "public-probe")
+                smoke.enter_key_prefix(device, "probe-value", deadline=5.0)
+
         self.assertEqual(error.exception.reason, "editor_lost_focus")
+        self.assertEqual(device.dump_calls, 1)
+        self.assertEqual(clock.sleep_calls, [])
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_missing_editor_is_rejected_immediately_without_input(self) -> None:
+        clock = _FakeClock()
+        device = _ProbeEditorDevice(clock, [_EDITOR_UNAVAILABLE])
+
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.enter_key_prefix(device, "probe-value", deadline=5.0)
+
+        self.assertEqual(error.exception.reason, "editor_unavailable")
+        self.assertEqual(device.dump_calls, 1)
+        self.assertEqual(clock.sleep_calls, [])
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_nonprefix_corruption_fails_immediately_for_same_length_longer_and_newline(self) -> None:
+        expected = "probe-line\nnext"
+        corruptions = {
+            "same_length": "probe-lxne\nnext",
+            "longer": expected + "x",
+            "wrong_newline": expected.replace("\n", " "),
+        }
+
+        for kind, observed in corruptions.items():
+            with self.subTest(kind=kind):
+                clock = _FakeClock()
+                device = _ProbeEditorDevice(clock, [observed])
+                with _patched_clock(clock):
+                    with self.assertRaises(smoke.SmokeFailure) as error:
+                        smoke.verify_key_readback(device, expected)
+
+                self.assertEqual(error.exception.reason, "entry_content_mismatch")
+                self.assertEqual(device.dump_calls, 1)
+                self.assertEqual(clock.sleep_calls, [])
+                self.assertEqual(device.input_text_calls, [])
+                self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_failed_recovery_diagnostics_never_print_probe_text(self) -> None:
+        probe = "probe-sensitive-value"
+        expected = probe + "-suffix"
+        device = _ProbeEditorDevice(_FakeClock(), [probe, probe] * 5)
+        clock = device.clock
+
+        with _patched_clock(clock), contextlib.redirect_stdout(io.StringIO()) as output:
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.enter_key_prefix(device, expected, deadline=20.0)
+
+        self.assertEqual(error.exception.reason, "entry_retry_limit")
+        self.assertNotIn(probe, output.getvalue())
+        self.assertNotIn(expected, str(error.exception))
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is needed for fixture preparation")
     def test_empty_owned_server_is_accepted_but_existing_sessions_are_preserved(self) -> None:

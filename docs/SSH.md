@@ -178,11 +178,20 @@ known label/value forms, with regression coverage; secret masking and host-key
 verification remain enabled.
 
 The driver also requires keyboard focus before entering the key and verifies
-short input batches and line breaks against the editor in memory. It retries
-accessibility hierarchy acquisition at most three times without replaying
-input. Missing/invalid hierarchy and known UIAutomator idle/root failures are
+short input batches and line breaks against the editor in memory. Two identical
+readbacks separated by a quiet interval must confirm the value, even for a full
+match. If that settled value is an exact prefix of the intended input, only the
+missing suffix (or newline) is sent. Non-prefix corruption, an absent editor,
+and lost keyboard focus fail immediately. Each intended prefix permits at most
+four input attempts; readback has a 15-second budget and the whole key has a
+ten-minute budget. In-flight adb commands retain their own finite timeouts;
+once they return, an expired budget cannot authorize further input.
+
+Accessibility hierarchy acquisition retries at most three times without
+replaying input. Missing/invalid hierarchy and known UIAutomator idle/root failures are
 reported as fixed diagnostic identifiers; neither raw XML nor key readback is
-written to logs or artifacts. Identical native metadata snapshots retain their
+written to logs or artifacts. Recovery diagnostics contain only operation type,
+attempt count, lengths, and newline counts. Identical native metadata snapshots retain their
 React state references, avoiding needless accessibility property updates from
 the one-second metadata poll.
 
