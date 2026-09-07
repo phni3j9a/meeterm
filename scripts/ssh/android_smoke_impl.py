@@ -1139,6 +1139,18 @@ def verify_key_readback(device: AndroidDevice, expected: str) -> None:
             reason = "entry_length_mismatch"
         else:
             reason = "entry_content_mismatch"
+        # Only structural counters leave this process; the editor and expected
+        # credential remain in memory, including on a failing hosted run.
+        if editor is not None and editor.focused:
+            print(
+                "Private key input observation: "
+                f"operation={'newline' if expected.endswith(chr(10)) else 'text'} "
+                f"expected_length={len(expected)} observed_length={len(editor.text)} "
+                f"expected_newlines={expected.count(chr(10))} "
+                f"observed_newlines={editor.text.count(chr(10))} "
+                f"exact_prefix={int(expected.startswith(editor.text))}",
+                flush=True,
+            )
         time.sleep(0.1)
     raise SmokeFailure("private_key_input", reason)
 
