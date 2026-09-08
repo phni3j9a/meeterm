@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import XCTest
 
 /// Real SSH/tmux UI coverage for the hosted iOS Simulator job.
@@ -63,6 +64,10 @@ final class MeetermSmokeUITests: XCTestCase {
       "The meeterm app did not reach the foreground."
     )
     record("app_launched")
+  }
+
+  override func tearDownWithError() throws {
+    UIPasteboard.general.string = nil
   }
 
   override func record(_ issue: XCTIssue) {
@@ -227,7 +232,7 @@ final class MeetermSmokeUITests: XCTestCase {
 
     record("send_terminal_input")
     let markerCommand = "printf '%s\\n' '\(markerValue)' > \(shellQuote(markerPath.path))"
-    typeTerminal(markerCommand)
+    enterTerminalCommand(markerCommand, stage: "send_terminal_input")
     XCTAssertTrue(
       waitForMarkerLines([markerValue]),
       "Native terminal input did not reach the fixture pane."
@@ -235,7 +240,7 @@ final class MeetermSmokeUITests: XCTestCase {
 
     record("send_handoff_variable")
     let handoffCommand = "export MEETERM_IOS_HANDOFF='\(handoffValue)'; printf '%s\\n' \"$MEETERM_IOS_HANDOFF\" >> \(shellQuote(markerPath.path))"
-    typeTerminal(handoffCommand)
+    enterTerminalCommand(handoffCommand, stage: "send_handoff_variable")
     XCTAssertTrue(
       waitForMarkerLines([markerValue, handoffValue]),
       "The fixture shell did not retain the handoff variable."
@@ -280,7 +285,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let resumedTerminal = try terminalElement()
     resumedTerminal.tap()
     let resumeCommand = "test \"$MEETERM_IOS_HANDOFF\" = '\(handoffValue)' && printf '%s\\n' '\(handoffValue)' >> \(shellQuote(markerPath.path))"
-    typeTerminal(resumeCommand)
+    enterTerminalCommand(resumeCommand, stage: "verify_remote_shell_after_reconnect")
     XCTAssertTrue(
       waitForMarkerLines([markerValue, handoffValue, handoffValue]),
       "The reconnect did not resume the original remote shell."
@@ -587,8 +592,59 @@ final class MeetermSmokeUITests: XCTestCase {
     return element.exists && element.isHittable
   }
 
-  private func typeTerminal(_ value: String) {
-    app.typeText(value + "\n")
+  private func enterTerminalCommand(_ value: String, stage: String) {
+    // Tap real keyboard keys so letter commits and Enter are exercised even
+    // though the native preedit-only UITextView is hidden from accessibility.
+    // Paste the remainder through the native toolbar, then require the remote
+    // marker to prove that all three input paths reached the selected shell.
+    let prefix = String(value.prefix { $0.isASCII && $0.isLetter })
+    XCTAssertFalse(prefix.isEmpty, "The fixture command needs an ASCII word prefix.")
+    record("\(stage)_keyboard_letters")
+    for character in prefix {
+      let key = app.keys[String(character)]
+      XCTAssertTrue(key.waitForExistence(timeout: 10), "The terminal keyboard letter is unavailable.")
+      key.tap()
+    }
+
+    UIPasteboard.general.string = String(value.dropFirst(prefix.count))
+    defer { UIPasteboard.general.string = nil }
+    record("\(stage)_paste_set")
+    let paste = button("Paste")
+    record("\(stage)_paste_exists")
+    XCTAssertTrue(paste.waitForExistence(timeout: 10), "The terminal Paste action is unavailable.")
+    record("\(stage)_paste_hittable")
+    XCTAssertTrue(waitForHittable(paste, timeout: 10), "The terminal Paste action is not hittable.")
+    record("\(stage)_paste_tap")
+    paste.tap()
+    allowFixturePasteIfRequested(stage: stage)
+    UIPasteboard.general.string = nil
+
+    record("\(stage)_keyboard_return")
+    let enter = app.keys.matching(
+      NSPredicate(format: "label ==[c] %@ OR identifier ==[c] %@", "return", "return")
+    ).firstMatch
+    XCTAssertTrue(enter.waitForExistence(timeout: 10), "The terminal Return key is unavailable.")
+    enter.tap()
+    record("\(stage)_await_remote_marker")
+  }
+
+  private func allowFixturePasteIfRequested(stage: String) {
+    // The disposable test runner owns the clipboard content. iOS may ask
+    // before the app's explicit native Paste action can read another app's
+    // pasteboard; keep that value until this user-facing permission resolves.
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      for owner in [app, springboard] {
+        let allow = owner.alerts.buttons["Allow Paste"]
+        if allow.exists && allow.isHittable {
+          record("\(stage)_allow_fixture_paste")
+          allow.tap()
+          return
+        }
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
   }
 
   private func waitForDisconnected() -> Bool {

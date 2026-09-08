@@ -98,6 +98,7 @@ final class TerminalInputView: UITextView {
     isScrollEnabled = false
     isAccessibilityElement = false
     accessibilityElementsHidden = true
+    autocapitalizationType = .none
     autocorrectionType = .no
     spellCheckingType = .no
     smartDashesType = .no
@@ -134,42 +135,68 @@ final class TerminalInputView: UITextView {
   }
 
   private func makeAccessoryView() -> UIView {
-    let toolbar = UIToolbar()
-    toolbar.barStyle = .black
-    toolbar.isTranslucent = false
-    toolbar.barTintColor = UIColor(red: 33.0 / 255, green: 31.0 / 255, blue: 27.0 / 255, alpha: 1)
-    toolbar.tintColor = UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
-    toolbar.items = [
-      item(title: "Esc", action: #selector(sendEscape)),
-      flexibleSpace(),
-      item(title: "Tab", action: #selector(sendTab)),
-      flexibleSpace(),
-      item(title: "^C", action: #selector(sendInterrupt)),
-      flexibleSpace(),
-      item(title: "Paste", action: #selector(paste(_:))),
-      flexibleSpace(),
-      item(title: "←", action: #selector(sendLeft)),
-      flexibleSpace(),
-      item(title: "↑", action: #selector(sendUp)),
-      flexibleSpace(),
-      item(title: "↓", action: #selector(sendDown)),
-      flexibleSpace(),
-      item(title: "→", action: #selector(sendRight)),
-      flexibleSpace(),
-      item(title: "⌄", action: #selector(hideKeyboard))
-    ]
-    toolbar.sizeToFit()
-    return toolbar
+    let accessory = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 52))
+    accessory.autoresizingMask = [.flexibleWidth]
+    accessory.backgroundColor = UIColor(red: 33.0 / 255, green: 31.0 / 255, blue: 27.0 / 255, alpha: 1)
+
+    // A compact phone cannot fit every terminal key at its native touch size.
+    // Keep keyboard dismissal visible and let the remaining keys scroll.
+    let scroll = UIScrollView()
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    scroll.showsHorizontalScrollIndicator = false
+    scroll.alwaysBounceHorizontal = false
+    scroll.contentInsetAdjustmentBehavior = .never
+    let keys = UIStackView(arrangedSubviews: [
+      accessoryButton(title: "Esc", action: #selector(sendEscape)),
+      accessoryButton(title: "Tab", action: #selector(sendTab)),
+      accessoryButton(title: "^C", action: #selector(sendInterrupt)),
+      accessoryButton(title: "Paste", action: #selector(paste(_:))),
+      accessoryButton(title: "←", action: #selector(sendLeft)),
+      accessoryButton(title: "↑", action: #selector(sendUp)),
+      accessoryButton(title: "↓", action: #selector(sendDown)),
+      accessoryButton(title: "→", action: #selector(sendRight))
+    ])
+    keys.axis = .horizontal
+    keys.spacing = 4
+    keys.translatesAutoresizingMaskIntoConstraints = false
+    scroll.addSubview(keys)
+    accessory.addSubview(scroll)
+
+    let hide = accessoryButton(title: "⌄", action: #selector(hideKeyboard))
+    accessory.addSubview(hide)
+    NSLayoutConstraint.activate([
+      scroll.leadingAnchor.constraint(equalTo: accessory.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+      scroll.topAnchor.constraint(equalTo: accessory.topAnchor),
+      scroll.bottomAnchor.constraint(equalTo: accessory.bottomAnchor),
+      scroll.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -4),
+      hide.trailingAnchor.constraint(equalTo: accessory.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+      hide.centerYAnchor.constraint(equalTo: accessory.centerYAnchor),
+      hide.widthAnchor.constraint(equalToConstant: 44),
+      keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+      keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+      keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 4),
+      keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -4),
+      keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -8)
+    ])
+    return accessory
   }
 
-  private func item(title: String, action: Selector) -> UIBarButtonItem {
-    let button = UIBarButtonItem(title: title, style: .plain, target: self, action: action)
+  private func accessoryButton(title: String, action: Selector) -> UIButton {
+    var configuration = UIButton.Configuration.plain()
+    configuration.title = title
+    configuration.baseForegroundColor = UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
+    configuration.background.backgroundColor = UIColor(white: 1, alpha: 0.05)
+    configuration.background.cornerRadius = 8
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+    let button = UIButton(configuration: configuration)
+    button.translatesAutoresizingMaskIntoConstraints = false
     button.accessibilityLabel = title == "^C" ? "Ctrl-C" : title == "⌄" ? "Hide keyboard" : title
+    button.addTarget(self, action: action, for: .touchUpInside)
+    NSLayoutConstraint.activate([
+      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+      button.heightAnchor.constraint(equalToConstant: 44)
+    ])
     return button
-  }
-
-  private func flexibleSpace() -> UIBarButtonItem {
-    UIBarButtonItem(systemItem: .flexibleSpace)
   }
 
   @objc private func sendEscape() {

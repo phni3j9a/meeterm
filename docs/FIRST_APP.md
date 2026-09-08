@@ -142,8 +142,8 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 | OpenSSH＋tmux | 隔離fixtureで接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存のPC zoom保持・window内active pane保持通過。通常同期中のReady維持、画面再取得後の入力可能状態保持も回帰確認。2026-09-08ローカル |
 | UI型チェック | 新UI統合後のTypeScriptチェック通過。2026-09-08ローカル |
 | Android CI | [8350397 / run 34189359609](https://github.com/phni3j9a/meeterm/actions/runs/34189359609)のAndroid job成功。実SSH接続・window/pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split/zoom復元まで通過。入力拒否0件 |
-| iOS CI・実SSH操作 | 実SSH XCUITestドライバー実装済み、hosted run実行中 |
-| 両OSスクリーンショット目視 | Android 8350397の5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOSはbd9d257の接続フォーム＋キーボードを目視済み、実SSH端末は未到達 |
+| iOS CI・実SSH操作 | 8350397で署名なしbuild、実SSH接続、ホスト鍵確認、workspace/pane切り替え、ネイティブキーボード表示まで通過。自動入力段階で停止し、入力操作と補助キー配置を修正中。切断・再接続・最終native gateは未完了 |
+| 両OSスクリーンショット目視 | Android 8350397の5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOS 8350397の6枚（接続フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）を目視済み。iOSの補助キーの一部が切れる問題を確認 |
 | Pixel 3実機 | arm64 Releaseのbuild/install/launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVM11テスト通過。実SSH UIは未完了。別アプリが前面に出たためユーザーの端末利用状況を確認中 |
 | iPhone実機・実機Metal・実日本語IME | 未検証 |
 | APK・PR | [Draft PR #12](https://github.com/phni3j9a/meeterm/pull/12)、Android評価APKは上記成果物から取得可能。両OSの受け入れ完了は未達 |
