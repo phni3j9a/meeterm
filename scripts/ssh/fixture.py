@@ -34,6 +34,16 @@ HOST = "127.0.0.1"
 SSHD = "/usr/sbin/sshd"
 READY_TIMEOUT_SECONDS = 10.0
 TMUX = "tmux"
+# The disposable sshd must expose the fixture's tmux binary to non-interactive
+# remote commands. Keep this allowlist to standard macOS/Linux locations plus
+# the directory containing the binary selected by shutil.which; never copy an
+# arbitrary caller PATH into the fixture's sshd environment.
+SYSTEM_PATH_DIRECTORIES = (
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
 
 
 class FixtureError(RuntimeError):
@@ -45,6 +55,7 @@ def _run_quietly(
     *,
     input_text: str | None = None,
     capture_stdout: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a helper without echoing its arguments or output."""
 
@@ -56,7 +67,10 @@ def _run_quietly(
             stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as error:
+        raise FixtureError(f"helper command timed out: {command[0]}") from error
     except FileNotFoundError as error:
         raise FixtureError(f"required command is unavailable: {command[0]}") from error
     except subprocess.CalledProcessError as error:
@@ -158,8 +172,16 @@ class Fixture:
             raise FixtureError("run the fixture as an unprivileged account; sudo is not required")
         if not Path(SSHD).is_file() or not os.access(SSHD, os.X_OK):
             raise FixtureError(f"OpenSSH server not found at {SSHD}")
-        if shutil.which(TMUX) is None:
+        tmux_command = shutil.which(TMUX)
+        if tmux_command is None:
             raise FixtureError("tmux is required for the OpenSSH fixture")
+        fixture_path_directories = dict.fromkeys(
+            [str(Path(tmux_command).absolute().parent), *SYSTEM_PATH_DIRECTORIES]
+        )
+        fixture_path = os.pathsep.join(fixture_path_directories)
+        if any(character in fixture_path for character in "\r\n\0"):
+            raise FixtureError("tmux directory contains an invalid configuration character")
+        fixture_path = fixture_path.replace("\\", "\\\\").replace('"', '\\"')
 
         self.root.chmod(0o700)
         self.tmux_tmpdir.mkdir(mode=0o700)
@@ -200,6 +222,7 @@ class Fixture:
                     # desktop ssh/tmux smoke.  It does not alter the user's
                     # account environment or any system sshd configuration.
                     f"SetEnv TMUX_TMPDIR={self.tmux_tmpdir}",
+                    f'SetEnv "PATH={fixture_path}"',
                     "PubkeyAuthentication yes",
                     "AuthenticationMethods publickey",
                     "PasswordAuthentication no",
@@ -284,6 +307,21 @@ class Fixture:
                 self.process.kill()
                 self.process.communicate()
         raise FixtureError("OpenSSH fixture exited before listening")
+
+    def check_ssh_tmux(self) -> None:
+        """Prove authentication and remote tmux resolution before a mobile build."""
+        public_key = self.host_key.with_name(self.host_key.name + ".pub").read_text().strip()
+        self.trust_store.write_text(f"[{HOST}]:{self.port} {public_key}\n")
+        _run_quietly([
+            "ssh", "-F", "/dev/null",
+            "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+            "-o", "IdentityAgent=none", "-o", "ConnectTimeout=5",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1",
+            "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", f"UserKnownHostsFile={self.trust_store}",
+            "-i", str(self.client_key), "-p", str(self.port),
+            f"{self.user}@{HOST}", "tmux -V",
+        ], timeout=20)
 
     def environment(self) -> dict[str, str]:
         host_public_key = self.host_key.with_name(f"{self.host_key.name}.pub")
@@ -489,12 +527,15 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="print the disposable host fingerprint (never private key material)",
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
+    parser.add_argument("--check", action="store_true", help="verify real SSH authentication and remote tmux, then clean up")
     args = parser.parse_args(argv)
     if args.command and args.command[0] == "--":
         args.command = args.command[1:]
     if args.env_file is not None and args.command:
         parser.error("--env-file is persistent mode and cannot wrap a command")
-    if args.env_file is None and not args.command:
+    if args.check and (args.env_file is not None or args.command):
+        parser.error("--check cannot be combined with a command or --env-file")
+    if args.env_file is None and not args.command and not args.check:
         parser.error("provide a command, or use --env-file for persistent mode")
     return args
 
@@ -513,6 +554,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 fixture.prepare()
                 fixture.start()
+                if args.check:
+                    fixture.check_ssh_tmux()
+                    print("OpenSSH fixture check passed: authenticated SSH and remote tmux")
+                    return 0
                 environment = fixture.environment()
                 if args.print_fingerprint:
                     print(environment["MEETERM_SSH_FINGERPRINT"])

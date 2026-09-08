@@ -55,6 +55,12 @@ remote process resumed. This verifies the real SSH/tmux input path
 without adding a production test endpoint or passing terminal streams through
 JavaScript. The remote-shell screenshot is separate from the foundation
 screenshot and is for human inspection; neither screenshot is a pixel gate.
+Before the iOS build, the job installs fixture-only tmux if needed and runs
+`python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
+remote `tmux` resolution using the disposable host key. The fixture supplies
+its tmux binary directory through its own sshd environment; this preflight is
+environment validation and does not count as iOS terminal or SSH UI evidence.
+
 The iOS job now generates a temporary XCUITest target in the fresh CNG project
 and drives the actual connection form, host trust, workspace/pane selection,
 native input, disconnect, and reconnect against the same disposable fixture.
