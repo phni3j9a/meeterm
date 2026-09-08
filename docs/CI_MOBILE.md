@@ -53,7 +53,13 @@ the fixture's temporary directory. It also disconnects and reconnects, checks
 the same pane identity, and uses a shell variable to prove that the original
 remote process resumed. This verifies the real SSH/tmux input path
 without adding a production test endpoint or passing terminal streams through
-JavaScript. The remote-shell screenshot is separate from the foundation
+JavaScript. While connected, the selected mobile pane may legitimately be
+zoomed, so the resume check compares stable window/pane identities and shell
+PIDs. After each explicit disconnect, including a second disconnect after the
+resume check, the script requires the original split shape and no remaining
+mobile zoom. The PC-help screenshot documents the UI; ordinary desktop attach
+is covered separately by the shared Rust integration test and the iOS fixture.
+The remote-shell screenshot is separate from the foundation
 screenshot and is for human inspection; neither screenshot is a pixel gate.
 Before the iOS build, the job installs fixture-only tmux if needed and runs
 `python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
