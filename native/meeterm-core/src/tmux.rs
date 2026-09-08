@@ -36,6 +36,10 @@ pub struct PaneSnapshot {
     pub pane_id: u64,
     pub terminal_id: u64,
     pub window_name: String,
+    /// The pane selected inside its own tmux window.  This remains true for
+    /// every window's active pane; `selected` is reserved for the one pane
+    /// selected by the mobile client/session.
+    pub active: bool,
     pub selected: bool,
     pub index: u32,
     pub columns: u16,

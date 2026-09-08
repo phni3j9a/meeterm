@@ -1,3 +1,4 @@
+import Foundation
 import UIKit
 
 /// Native UITextInput implementation supplied by UITextView. Marked/preedit
@@ -5,11 +6,16 @@ import UIKit
 /// called exactly once when UIKit commits the text.
 final class TerminalInputView: UITextView {
   var onCommit: ((String) -> Void)?
+  var onPaste: ((String) -> Void)?
   var onPreeditChanged: ((String) -> Void)?
   var onSpecialKey: ((TerminalSpecialKey) -> Void)?
 
   private var isReplacingMarkedText = false
+  private var pasteGeneration: UInt64 = 0
+  private var pendingPasteGeneration: UInt64?
+  private var pendingPasteProgress: Progress?
   private lazy var terminalAccessoryView: UIView = makeAccessoryView()
+  private lazy var terminalPasteControl: UIPasteControl = makePasteControl()
 
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
@@ -25,6 +31,7 @@ final class TerminalInputView: UITextView {
     let commands = [
       UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(sendEscape)),
       UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(sendTab)),
+      UIKeyCommand(input: "c", modifierFlags: [.control], action: #selector(sendInterrupt)),
       UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(sendUp)),
       UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(sendDown)),
       UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(sendLeft)),
@@ -79,6 +86,53 @@ final class TerminalInputView: UITextView {
     }
   }
 
+  override func paste(_ sender: Any?) {
+    // Read the clipboard only in response to the user's explicit paste action.
+    invalidatePendingPaste()
+    guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
+    deliverPaste(pasted)
+  }
+
+  override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
+    itemProviders.contains { $0.canLoadObject(ofClass: String.self) }
+  }
+
+  override func paste(itemProviders: [NSItemProvider]) {
+    invalidatePendingPaste()
+    guard window != nil, isFirstResponder,
+          let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else {
+      return
+    }
+
+    let generation = pasteGeneration
+    pendingPasteGeneration = generation
+    terminalPasteControl.accessibilityValue = "Pasting"
+    pendingPasteProgress = provider.loadObject(ofClass: String.self) { [weak self] pasted, _ in
+      DispatchQueue.main.async { [weak self] in
+        guard let self,
+              self.pasteGeneration == generation,
+              self.pendingPasteGeneration == generation else {
+          return
+        }
+        self.pendingPasteGeneration = nil
+        self.pendingPasteProgress = nil
+        self.terminalPasteControl.accessibilityValue = "Ready"
+        guard self.window != nil, self.isFirstResponder,
+              let pasted, !pasted.isEmpty else {
+          return
+        }
+        self.deliverPaste(pasted)
+      }
+    }
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window == nil {
+      invalidatePendingPaste()
+    }
+  }
+
   private func configure() {
     backgroundColor = .clear
     textColor = .clear
@@ -87,6 +141,7 @@ final class TerminalInputView: UITextView {
     isScrollEnabled = false
     isAccessibilityElement = false
     accessibilityElementsHidden = true
+    autocapitalizationType = .none
     autocorrectionType = .no
     spellCheckingType = .no
     smartDashesType = .no
@@ -95,6 +150,7 @@ final class TerminalInputView: UITextView {
     keyboardType = .default
     keyboardAppearance = .dark
     returnKeyType = .default
+    pasteConfiguration = UIPasteConfiguration(forAccepting: String.self)
     inputAccessoryView = terminalAccessoryView
     inputAssistantItem.leadingBarButtonGroups = []
     inputAssistantItem.trailingBarButtonGroups = []
@@ -109,6 +165,7 @@ final class TerminalInputView: UITextView {
 
   /// Cancel local preedit before borrowing a different native terminal.
   func cancelCompositionForBinding() {
+    invalidatePendingPaste()
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
@@ -117,38 +174,114 @@ final class TerminalInputView: UITextView {
     resignFirstResponder()
   }
 
+  private func invalidatePendingPaste() {
+    pasteGeneration &+= 1
+    pendingPasteGeneration = nil
+    pendingPasteProgress?.cancel()
+    pendingPasteProgress = nil
+    terminalPasteControl.accessibilityValue = "Ready"
+  }
+
+  private func deliverPaste(_ pasted: String) {
+    guard !pasted.isEmpty else { return }
+    super.unmarkText()
+    resetBackingStore()
+    onPreeditChanged?("")
+    onPaste?(pasted)
+  }
+
   private func resetBackingStore() {
     text = ""
     selectedRange = NSRange(location: 0, length: 0)
   }
 
   private func makeAccessoryView() -> UIView {
-    let toolbar = UIToolbar()
-    toolbar.barStyle = .black
-    toolbar.isTranslucent = false
-    toolbar.items = [
-      item(title: "Esc", action: #selector(sendEscape)),
-      flexibleSpace(),
-      item(title: "Tab", action: #selector(sendTab)),
-      flexibleSpace(),
-      item(title: "←", action: #selector(sendLeft)),
-      flexibleSpace(),
-      item(title: "↑", action: #selector(sendUp)),
-      flexibleSpace(),
-      item(title: "↓", action: #selector(sendDown)),
-      flexibleSpace(),
-      item(title: "→", action: #selector(sendRight))
-    ]
-    toolbar.sizeToFit()
-    return toolbar
+    let accessory = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 52))
+    accessory.autoresizingMask = [.flexibleWidth]
+    accessory.backgroundColor = UIColor(red: 33.0 / 255, green: 31.0 / 255, blue: 27.0 / 255, alpha: 1)
+
+    // A compact phone cannot fit every terminal key at its native touch size.
+    // Keep keyboard dismissal visible and let the remaining keys scroll.
+    let scroll = UIScrollView()
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    scroll.showsHorizontalScrollIndicator = false
+    scroll.alwaysBounceHorizontal = false
+    scroll.contentInsetAdjustmentBehavior = .never
+    let keys = UIStackView(arrangedSubviews: [
+      accessoryButton(title: "Esc", action: #selector(sendEscape)),
+      accessoryButton(title: "Tab", action: #selector(sendTab)),
+      accessoryButton(title: "^C", action: #selector(sendInterrupt)),
+      terminalPasteControl,
+      accessoryButton(title: "←", action: #selector(sendLeft)),
+      accessoryButton(title: "↑", action: #selector(sendUp)),
+      accessoryButton(title: "↓", action: #selector(sendDown)),
+      accessoryButton(title: "→", action: #selector(sendRight))
+    ])
+    keys.axis = .horizontal
+    keys.spacing = 4
+    keys.translatesAutoresizingMaskIntoConstraints = false
+    scroll.addSubview(keys)
+    accessory.addSubview(scroll)
+
+    let hide = accessoryButton(title: "⌄", action: #selector(hideKeyboard))
+    accessory.addSubview(hide)
+    NSLayoutConstraint.activate([
+      scroll.leadingAnchor.constraint(equalTo: accessory.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+      scroll.topAnchor.constraint(equalTo: accessory.topAnchor),
+      scroll.bottomAnchor.constraint(equalTo: accessory.bottomAnchor),
+      scroll.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -4),
+      hide.trailingAnchor.constraint(equalTo: accessory.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+      hide.centerYAnchor.constraint(equalTo: accessory.centerYAnchor),
+      hide.widthAnchor.constraint(equalToConstant: 44),
+      keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+      keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+      keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 4),
+      keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -4),
+      keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -8)
+    ])
+    return accessory
   }
 
-  private func item(title: String, action: Selector) -> UIBarButtonItem {
-    UIBarButtonItem(title: title, style: .plain, target: self, action: action)
+  private func makePasteControl() -> UIPasteControl {
+    var configuration = UIPasteControl.Configuration()
+    configuration.baseForegroundColor = UIColor(
+      red: 219.0 / 255,
+      green: 179.0 / 255,
+      blue: 120.0 / 255,
+      alpha: 1
+    )
+    configuration.baseBackgroundColor = UIColor(white: 1, alpha: 0.05)
+    configuration.cornerStyle = .capsule
+    configuration.displayMode = .labelOnly
+    let control = UIPasteControl(configuration: configuration)
+    control.target = self
+    control.accessibilityLabel = "Paste"
+    control.accessibilityIdentifier = "terminal-paste"
+    control.accessibilityValue = "Ready"
+    control.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      control.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
+      control.heightAnchor.constraint(equalToConstant: 44)
+    ])
+    return control
   }
 
-  private func flexibleSpace() -> UIBarButtonItem {
-    UIBarButtonItem(systemItem: .flexibleSpace)
+  private func accessoryButton(title: String, action: Selector) -> UIButton {
+    var configuration = UIButton.Configuration.plain()
+    configuration.title = title
+    configuration.baseForegroundColor = UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
+    configuration.background.backgroundColor = UIColor(white: 1, alpha: 0.05)
+    configuration.background.cornerRadius = 8
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+    let button = UIButton(configuration: configuration)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.accessibilityLabel = title == "^C" ? "Ctrl-C" : title == "⌄" ? "Hide keyboard" : title
+    button.addTarget(self, action: action, for: .touchUpInside)
+    NSLayoutConstraint.activate([
+      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+      button.heightAnchor.constraint(equalToConstant: 44)
+    ])
+    return button
   }
 
   @objc private func sendEscape() {
@@ -157,6 +290,14 @@ final class TerminalInputView: UITextView {
 
   @objc private func sendTab() {
     emitSpecial(.tab)
+  }
+
+  @objc private func sendInterrupt() {
+    emitSpecial(.interrupt)
+  }
+
+  @objc private func hideKeyboard() {
+    cancelCompositionForBinding()
   }
 
   @objc private func sendUp() {

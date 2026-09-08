@@ -141,6 +141,33 @@ pub unsafe extern "C" fn meeterm_send_bytes(id: u64, bytes: *const u8, length: u
         .unwrap_or_else(terminal_error_code)
 }
 
+/// Native paste input, encoded using the terminal's current bracketed-paste mode.
+///
+/// # Safety
+/// For nonzero length, bytes must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_paste_utf8(id: u64, bytes: *const u8, length: usize) -> i32 {
+    if length != 0 && bytes.is_null() {
+        return FFI_ERROR;
+    }
+    let bytes = if length == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(bytes, length) }
+    };
+    registry::paste_utf8(id, bytes)
+        .map(|length| i32::try_from(length).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
+/// Positive lines scroll toward history; negative lines toward live output.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_scroll_lines(id: u64, lines: i32) -> i32 {
+    registry::scroll_lines(id, lines)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
 /// Send one of the stable `SpecialKey` enum values. The return value is the
 /// number of encoded bytes, or a negative error code.
 #[unsafe(no_mangle)]
@@ -260,7 +287,8 @@ pub struct TmuxPaneRecord {
     pub terminal_id: u64,
     pub window_name_len: u16,
     pub selected: u8,
-    pub reserved: [u8; 5],
+    pub active: u8,
+    pub reserved: [u8; 4],
     pub window_name: [u8; 256],
 }
 
@@ -295,7 +323,8 @@ pub unsafe extern "C" fn meeterm_session_panes(
             terminal_id: pane.terminal_id,
             window_name_len: 0,
             selected: u8::from(pane.selected),
-            reserved: [0; 5],
+            active: u8::from(pane.active),
+            reserved: [0; 4],
             window_name: [0; 256],
         };
         let mut length = pane.window_name.len().min(record.window_name.len());
@@ -404,6 +433,7 @@ mod session_abi_tests {
         assert_eq!(std::mem::size_of::<TmuxPaneRecord>(), 288);
         assert_eq!(std::mem::offset_of!(TmuxPaneRecord, window_name_len), 24);
         assert_eq!(std::mem::offset_of!(TmuxPaneRecord, selected), 26);
+        assert_eq!(std::mem::offset_of!(TmuxPaneRecord, active), 27);
         assert_eq!(std::mem::offset_of!(TmuxPaneRecord, window_name), 32);
     }
 

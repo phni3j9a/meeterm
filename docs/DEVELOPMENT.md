@@ -2,7 +2,7 @@
 
 ## Current phase
 
-meeterm is in the architecture-validation phase. The Android/iOS native terminal foundation and hosted smoke jobs are in place. Issue #3 extends the shared Rust core with a direct SSH PTY shell, explicit host-key trust, and public-key authentication. The [SSH runbook](SSH.md) records this slice's validation and limitations. The first-milestone contract below is retained as the foundation and regression boundary; its deliberate omissions describe that earlier milestone.
+The shared native terminal and Rust-owned SSH/tmux session loop are implemented. The current work brings the workspace-first HTML mock into the real React Native app for personal evaluation on both platforms. [First-app usage and evidence](FIRST_APP.md) separates implemented behavior from completed validation. The first-milestone contract below remains a historical foundation and regression boundary; its deliberate omissions do not describe the current app scope.
 
 Read, in order:
 

@@ -174,6 +174,17 @@ fn real_openssh_tmux_session_loop() {
         .find(|pane| pane.window_id != main.window_id)
         .expect("second window pane")
         .clone();
+    let side_active = topology
+        .panes
+        .iter()
+        .find(|pane| pane.window_id == side.window_id && pane.active)
+        .expect("active pane in second window")
+        .clone();
+    assert_ne!(
+        side_active.pane_id, side.pane_id,
+        "the non-selected window must exercise a non-first active pane"
+    );
+    assert!(!side_active.selected);
     let split = topology
         .panes
         .iter()
@@ -285,8 +296,53 @@ fn real_openssh_tmux_session_loop() {
 
     // Resize the selected pane through the native terminal API and verify the
     // dimensions reported by both Rust's terminal snapshot and tmux metadata.
-    resize_and_check_pane(&side, 100, 30, "resize selected pane");
-    resize_and_check_pane(&side, 60, 18, "resize selected pane back");
+    wait_for_state(id, ConnectionState::Ready, "ready before keyboard resize");
+    std::thread::scope(|scope| {
+        let observer = scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                assert_eq!(
+                    connection_snapshot(id)
+                        .expect("connection during resize")
+                        .state,
+                    ConnectionState::Ready as u32,
+                    "routine resize must not tell the UI to unmount its live terminal"
+                );
+                sleep(Duration::from_millis(1));
+            }
+        });
+        resize_and_check_pane(&side, 100, 30, "resize selected pane");
+        resize_and_check_pane(&side, 60, 18, "resize selected pane back");
+        observer.join().expect("continuous readiness during resize");
+    });
+
+    // The phone's native Ctrl-C key must interrupt a real foreground process,
+    // rather than print a label or send the literal characters '^C'.
+    send_line_retry(side.terminal_id, "sleep 30", "start interruptible process");
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{pane_current_command}}'",
+            side.pane_id
+        ),
+        "foreground sleep starts",
+        |output| output.trim() == "sleep",
+    );
+    let interrupt_started = Instant::now();
+    assert_eq!(
+        meeterm_send_special_key(side.terminal_id, SpecialKey::Interrupt as u32),
+        1
+    );
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{pane_current_command}}'",
+            side.pane_id
+        ),
+        "foreground sleep interrupted",
+        |output| output.trim() != "sleep",
+    );
+    assert!(interrupt_started.elapsed() < Duration::from_secs(10));
 
     // The ordinary desktop client is a second consumer of the same session.
     // It attaches using exactly `tmux attach -t meeterm` and detaches cleanly
@@ -420,6 +476,90 @@ fn real_openssh_tmux_session_loop() {
         !hooks.contains("[1000]"),
         "only meeterm's hook slots should be removed"
     );
+
+    // Establish the desired reconnect selection while a live controller owns
+    // the command stream.  Sending a selection immediately after disconnect
+    // would race the cancelled controller's final zoom cleanup.
+    reconnect_terminal(id).expect("prepare main selection before zoom regression");
+    wait_for_ready_without_prompt(id, "prepare main selection before zoom regression");
+    select_pane(id, main.pane_id).expect("select main before zoom regression");
+    wait_for_selected_pane(id, main.pane_id, "select main before zoom regression");
+    disconnect_terminal(id).expect("disconnect before preexisting zoom regression");
+    wait_for_state(
+        id,
+        ConnectionState::Disconnected,
+        "disconnect before preexisting zoom regression",
+    );
+
+    // A desktop client may have zoomed a window before meeterm connects.  The
+    // mobile controller must observe and preserve that ownership boundary:
+    // selecting the pre-zoomed pane is allowed, but disconnect must not undo
+    // the desktop layout.  Clear the zoom before resuming the rest of this
+    // fixture so its later assertions still exercise meeterm-owned cleanup.
+    run_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux select-window -t @{}; tmux select-pane -t %{}; tmux resize-pane -Z -t %{}",
+            side.window_id, side_active.pane_id, side_active.pane_id
+        ),
+        "create preexisting desktop zoom",
+    );
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        "preexisting desktop zoom",
+        |output| output.trim() == "1",
+    );
+    reconnect_terminal(id).expect("reconnect with preexisting desktop zoom");
+    wait_for_ready_without_prompt(id, "reconnect with preexisting desktop zoom");
+    // Select the other pane in the already-zoomed window.  tmux would
+    // otherwise drop the zoom as a side effect of select-pane; the native
+    // controller must restore the zoom while leaving cleanup unowned.
+    select_pane(id, side.pane_id).expect("select pane in preexisting zoomed window");
+    wait_for_selected_pane(id, side.pane_id, "select pane in preexisting zoomed window");
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        "preserve preexisting desktop zoom after pane selection",
+        |output| output.trim() == "1",
+    );
+    disconnect_terminal(id).expect("disconnect after preexisting zoom selection");
+    wait_for_state(
+        id,
+        ConnectionState::Disconnected,
+        "disconnect after preexisting zoom selection",
+    );
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        "preserve preexisting desktop zoom after disconnect",
+        |output| output.trim() == "1",
+    );
+    run_remote_tmux(
+        &fixture,
+        &format!("tmux resize-pane -Z -t %{}", side.pane_id),
+        "clear preexisting desktop zoom",
+    );
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        "clear preexisting desktop zoom",
+        |output| output.trim() == "0",
+    );
+    reconnect_terminal(id).expect("resume meeterm-owned zoom checks");
+    wait_for_ready_without_prompt(id, "resume meeterm-owned zoom checks");
 
     // External pane removal invalidates the borrowed native handle and must
     // not leave a dead zoom target that breaks the next mobile selection.

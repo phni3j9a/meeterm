@@ -5,6 +5,7 @@ readonly package_name="dev.meeterm.app"
 readonly launcher_package_name="com.google.android.apps.nexuslauncher"
 readonly artifact_dir="${GITHUB_WORKSPACE}/artifacts/android-emulator-observability"
 readonly apk_path="${artifact_dir}/app-release.apk"
+readonly foundation_url="meeterm://foundation?foundation=1"
 
 launcher_stabilizer_status="not_run"
 launcher_anr_recovery_status="not_observed"
@@ -95,7 +96,11 @@ app_is_foreground() {
 }
 
 start_meeterm() {
-  adb shell am start -W -n "${package_name}/.MainActivity" >/dev/null
+  adb shell am start -W \
+    -a android.intent.action.VIEW \
+    -d "${foundation_url}" \
+    -n "${package_name}/.MainActivity" \
+    >/dev/null
 }
 
 app_pid() {
@@ -207,7 +212,8 @@ adb shell am force-stop "${package_name}"
 start_meeterm
 {
   echo "package=${package_name}"
-  echo "launch_method=am_start_explicit"
+  echo "launch_method=am_start_foundation_url"
+  echo "launch_uri=${foundation_url}"
   echo "launcher_stabilizer=${launcher_stabilizer_status}"
 } > "${artifact_dir}/launch.txt"
 sleep 2

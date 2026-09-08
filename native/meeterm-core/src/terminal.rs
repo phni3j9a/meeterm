@@ -346,14 +346,22 @@ impl Terminal {
             .map_err(|_| TerminalError::RegistryPoisoned)?
             .clone();
         let commits = self.input_commit_count;
+        let transport_ready = self.transport_ready;
+        let display_offset = self.term.grid().display_offset();
         self.begin_remote(generation)?;
         self.resize_from_remote(columns, rows)?;
         self.feed(bytes);
+        // A pane zoom/resize rebuilds its viewport from tmux. Retain the
+        // reader's history position, bounded by the captured history.
+        self.scroll_lines(i32::try_from(display_offset).unwrap_or(i32::MAX));
         self.input_commit_count = commits;
         *self
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
+        // Rebuilding a viewport must not reject live input while other panes
+        // are still being captured. Initial/offline panes remain unready.
+        self.transport_ready = transport_ready;
         Ok(())
     }
 
@@ -407,6 +415,45 @@ impl Terminal {
         Ok(self.input_commit_count)
     }
 
+    /// Paste is distinct from IME commitment. Strip terminal control characters
+    /// that could escape a paste envelope; normalize newlines for terminal input.
+    pub fn paste_utf8(&mut self, bytes: &[u8]) -> Result<usize, TerminalError> {
+        let text = std::str::from_utf8(bytes).map_err(|_| TerminalError::InvalidUtf8)?;
+        if bytes.len() > MAX_INPUT_BYTES {
+            return Err(TerminalError::InputTooLarge);
+        }
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text: String = text
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+            .collect();
+        if text.is_empty() {
+            return Ok(0);
+        }
+        let bytes = if self
+            .term
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+        {
+            format!("\x1b[200~{text}\x1b[201~").into_bytes()
+        } else {
+            text.replace('\n', "\r").into_bytes()
+        };
+        self.send_bytes(&bytes)
+    }
+
+    /// Move the native viewport, retaining an independent offset per pane.
+    pub fn scroll_lines(&mut self, lines: i32) {
+        let before = self.term.grid().display_offset();
+        self.term
+            .scroll_display(alacritty_terminal::grid::Scroll::Delta(
+                lines.clamp(-10000, 10000),
+            ));
+        if self.term.grid().display_offset() != before {
+            self.content_revision = self.content_revision.saturating_add(1);
+        }
+    }
+
     /// Send a special key through the current native transport.
     pub fn send_special_key(&mut self, key: SpecialKey) -> Result<usize, TerminalError> {
         let application_cursor = self
@@ -446,6 +493,7 @@ impl Terminal {
             self.feed(bytes);
         }
 
+        self.scroll_lines(i32::MIN);
         #[cfg(test)]
         self.input_log.extend_from_slice(bytes);
         Ok(bytes.len())

@@ -102,7 +102,7 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxSessionState<
             let length = session
                 .panes
                 .len()
-                .checked_mul(5)
+                .checked_mul(6)
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| JniError::ParseFailed("Session too large".into()))?;
             let array =
@@ -114,10 +114,11 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxSessionState<
                     pane.terminal_id.to_string(),
                     pane.window_name.clone(),
                     u8::from(pane.selected).to_string(),
+                    u8::from(pane.active).to_string(),
                 ];
                 for (field, value) in fields.iter().enumerate() {
                     let value = env.new_string(value)?;
-                    array.set_element(env, index * 5 + field, &value)?;
+                    array.set_element(env, index * fields.len() + field, &value)?;
                 }
             }
             Ok(array)
@@ -242,6 +243,42 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_commit<'caller>(
         Outcome::Ok(count) => count,
         Outcome::Err(_) | Outcome::Panic(_) => 0,
     }
+}
+
+/// Paste UTF-8 using the mode owned by the shared terminal.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_paste<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    bytes: JByteArray<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    let outcome = unowned_env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let bytes = env.convert_byte_array(&bytes)?;
+            Ok(unsafe { crate::ffi::meeterm_paste_utf8(handle, bytes.as_ptr(), bytes.len()) })
+        })
+        .into_outcome();
+    match outcome {
+        Outcome::Ok(result) => result,
+        Outcome::Err(_) | Outcome::Panic(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_scrollLines(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    lines: jint,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ffi::meeterm_scroll_lines(handle, lines)
 }
 
 /// Send one explicit terminal special key.

@@ -91,7 +91,7 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     solidProgram = createProgram(SOLID_VERTEX_SHADER, SOLID_FRAGMENT_SHADER)
     textureProgram = createProgram(TEXTURE_VERTEX_SHADER, TEXTURE_FRAGMENT_SHADER)
     atlas = GlyphAtlas(typeface, cellWidth, cellHeight, fontPaint.textSize).also { it.createTexture() }
-    GLES20.glClearColor(0.035f, 0.043f, 0.055f, 1f)
+    GLES20.glClearColor(36f / 255f, 33f / 255f, 29f / 255f, 1f)
     GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     GLES20.glEnable(GLES20.GL_BLEND)
     GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)

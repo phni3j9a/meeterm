@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/mobile-smoke.yml"
       - "App.tsx"
+      - "app/**"
       - "app.json"
       - "assets/**"
       - "babel.config.*"
@@ -42,7 +43,7 @@ jobs:
   android-emulator:
     name: Android emulator / native frame
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -93,7 +94,7 @@ jobs:
       - name: Install pinned Rust toolchain and cargo-ndk
         run: |
           rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
-          rustup target add --toolchain "${RUST_VERSION}" x86_64-linux-android
+          rustup target add --toolchain "${RUST_VERSION}" x86_64-linux-android aarch64-linux-android
           cargo +"${RUST_VERSION}" install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked
 
       - name: Generate Android project with Expo CNG
@@ -103,11 +104,12 @@ jobs:
         working-directory: android
         env:
           NODE_ENV: production
+          EXPO_PUBLIC_MEETERM_SMOKE: "1"
           RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
         run: |
           set -o pipefail
           ./gradlew :app:assembleRelease \
-            -PreactNativeArchitectures=x86_64 \
+            -PreactNativeArchitectures=arm64-v8a,x86_64 \
             -PmeetermRustProfile=release \
             --no-daemon --stacktrace \
             2>&1 | tee ../artifacts/android-emulator-observability/gradle-build.log
@@ -202,7 +204,7 @@ jobs:
   ios-simulator:
     name: iOS Simulator / native frame
     runs-on: macos-26-intel
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -237,6 +239,20 @@ jobs:
         run: |
           rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
           rustup target add --toolchain "${RUST_VERSION}" x86_64-apple-ios
+
+      - name: Install fixture-only tmux
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux
+          fi
+          tmux -V
+
+      - name: Verify real OpenSSH fixture before building iOS
+        run: |
+          test -x /usr/sbin/sshd
+          command -v ssh-keygen
+          test "$(id -u)" -ne 0
+          python3 scripts/ssh/fixture.py --check
 
       - name: Boot an available iPhone Simulator
         run: scripts/ci/ios-select-simulator.sh
@@ -275,9 +291,13 @@ jobs:
         working-directory: ios
         run: pod install
 
-      - name: Build unsigned self-contained iOS smoke app
+      - name: Inject disposable iOS XCUITest target
+        run: scripts/ci/ios-inject-ui-test.sh
+
+      - name: Build unsigned self-contained iOS smoke app and UI test
         env:
           NODE_ENV: production
+          EXPO_PUBLIC_MEETERM_SMOKE: "1"
           RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
         run: |
           set -o pipefail
@@ -292,10 +312,10 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             ONLY_ACTIVE_ARCH=YES \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            build \
+            build-for-testing \
             2>&1 | tee artifacts/ios-simulator-observability/xcodebuild.log
 
-      - name: Install and verify the native terminal frame
+      - name: Run real SSH/tmux iOS UI smoke
         run: scripts/ci/ios-smoke.sh
 
       - name: Collect iOS Simulator observability

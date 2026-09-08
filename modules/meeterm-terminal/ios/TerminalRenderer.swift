@@ -254,7 +254,7 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
   override func draw(_ rect: CGRect) {
     autoreleasepool {
       guard let context = UIGraphicsGetCurrentContext() else { return }
-      context.setFillColor(UIColor(red: 9.0 / 255, green: 11.0 / 255, blue: 15.0 / 255, alpha: 1).cgColor)
+      context.setFillColor(UIColor(red: 36.0 / 255, green: 33.0 / 255, blue: 29.0 / 255, alpha: 1).cgColor)
       context.fill(bounds)
       let scale = max(1, window?.screen.scale ?? contentScaleFactor)
       let width = Int((bounds.width * scale).rounded(.up))
@@ -296,7 +296,7 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
 #endif
 
 private enum TerminalRasterizer {
-  private static let background = TerminalColor(red: 9, green: 11, blue: 15, alpha: 255)
+  private static let background = TerminalColor(red: 36, green: 33, blue: 29, alpha: 255)
   private static let preeditColor = TerminalColor(red: 255, green: 201, blue: 92, alpha: 255)
   private static let cursorColor = TerminalColor(red: 197, green: 212, blue: 236, alpha: 255)
   private static let underlineMask = terminalFlagUnderline

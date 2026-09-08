@@ -2,6 +2,7 @@
   "expo": {
     "name": "meeterm",
     "slug": "meeterm",
+    "scheme": "meeterm",
     "version": "0.1.0",
     "orientation": "default",
     "userInterfaceStyle": "automatic",

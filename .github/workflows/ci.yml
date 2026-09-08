@@ -68,6 +68,7 @@ jobs:
       - name: Check SSH smoke driver regressions
         run: |
           python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
+          scripts/ci/ios-collect-artifacts-test.sh
           command -v tmux
           tmux -V
 

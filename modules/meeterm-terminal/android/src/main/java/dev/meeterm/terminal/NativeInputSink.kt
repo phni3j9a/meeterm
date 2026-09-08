@@ -24,4 +24,5 @@ internal enum class TerminalSpecialKey(val nativeCode: Int) {
   Down(5),
   Left(6),
   Right(7),
+  Interrupt(8),
 }

@@ -58,14 +58,15 @@ class MeetermTerminalModule : Module() {
       val handle = ensureHandle(normalizeTerminalId(terminalId))
       val fields = MeetermNative.tmuxSessionState(handle)
         ?: throw IllegalStateException("Native session state is unavailable.")
-      check(fields.size % 5 == 0) { "Native session state is unavailable." }
-      mapOf("panes" to fields.toList().chunked(5).map { pane ->
+      check(fields.size % 6 == 0) { "Native session state is unavailable." }
+      mapOf("panes" to fields.toList().chunked(6).map { pane ->
         mapOf(
           "windowId" to "@${pane[0]}",
           "paneId" to "%${pane[1]}",
           "terminalId" to "native:${pane[2]}",
           "windowName" to sanitize(pane[3], 256),
           "selected" to (pane[4] == "1"),
+          "active" to (pane[5] == "1"),
         )
       })
     }

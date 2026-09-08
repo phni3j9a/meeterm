@@ -256,6 +256,7 @@ struct HostKeyDecision {
 }
 
 struct ConnectionInfo {
+    finished: bool,
     state: ConnectionState,
     host: String,
     port: u16,
@@ -270,6 +271,7 @@ struct ConnectionInfo {
 impl ConnectionInfo {
     fn new(host: String, port: u16) -> Self {
         Self {
+            finished: false,
             state: ConnectionState::Connecting,
             host: host.clone(),
             port,
@@ -379,7 +381,11 @@ impl ConnectionShared {
         // can write a nonterminal state after cancellation has committed.
         if let Ok(mut info) = self.info.lock() {
             self.cancelled.store(true, Ordering::Release);
-            info.state = ConnectionState::Closing;
+            info.state = if info.finished {
+                ConnectionState::Disconnected
+            } else {
+                ConnectionState::Closing
+            };
             info.pending = None;
         } else {
             self.cancelled.store(true, Ordering::Release);
@@ -405,6 +411,19 @@ impl ConnectionShared {
     fn clear_commands(&self) {
         if let Ok(mut commands) = self.commands.lock() {
             *commands = None;
+        }
+    }
+
+    fn clear_owned_zoom(&self) {
+        // A transport failure can leave the Control Mode actor without a
+        // chance to run its cancellation branch.  Clear only the ownership
+        // belonging to this generation so a later connection cannot inherit
+        // stale cleanup authority for the same terminal ID.
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+        {
+            state.meeterm_zoomed = false;
+            state.meeterm_zoomed_pane = None;
         }
     }
 
@@ -435,7 +454,7 @@ impl ConnectionShared {
 
     fn set_state(&self, state: ConnectionState) {
         if let Ok(mut info) = self.info.lock() {
-            if self.is_cancelled() {
+            if self.is_cancelled() || info.finished {
                 return;
             }
             info.state = state;
@@ -444,7 +463,7 @@ impl ConnectionShared {
 
     fn set_host_key(&self, fingerprint: String, algorithm: String) {
         if let Ok(mut info) = self.info.lock() {
-            if self.is_cancelled() {
+            if self.is_cancelled() || info.finished {
                 return;
             }
             info.fingerprint = fingerprint;
@@ -462,7 +481,7 @@ impl ConnectionShared {
         let Ok(mut info) = self.info.lock() else {
             return false;
         };
-        if self.is_cancelled() {
+        if self.is_cancelled() || info.finished {
             return false;
         }
         info.state = ConnectionState::HostKeyPending;
@@ -480,7 +499,7 @@ impl ConnectionShared {
 
     fn set_changed_key(&self, fingerprint: String, algorithm: String, known: String) {
         if let Ok(mut info) = self.info.lock() {
-            if self.is_cancelled() {
+            if self.is_cancelled() || info.finished {
                 return;
             }
             info.state = ConnectionState::Failed;
@@ -495,7 +514,7 @@ impl ConnectionShared {
 
     fn fail(&self, code: &'static str, message: &'static str) {
         if let Ok(mut info) = self.info.lock() {
-            if self.is_cancelled() {
+            if self.is_cancelled() || info.finished {
                 return;
             }
             if info.state == ConnectionState::Failed {
@@ -510,14 +529,29 @@ impl ConnectionShared {
 
     fn mark_closing(&self) {
         if let Ok(mut info) = self.info.lock() {
-            info.state = ConnectionState::Closing;
+            if !info.finished {
+                info.state = ConnectionState::Closing;
+            }
             info.pending = None;
         }
     }
 
-    fn mark_disconnected(&self) {
+    fn finish(&self, result: Result<(), FlowFailure>) {
         if let Ok(mut info) = self.info.lock() {
-            info.state = ConnectionState::Disconnected;
+            // Completion and cancellation commit under the same lock. A late
+            // disconnect must not leave a finished actor permanently Closing.
+            info.finished = true;
+            match result {
+                _ if self.is_cancelled() => info.state = ConnectionState::Disconnected,
+                Ok(()) => info.state = ConnectionState::Disconnected,
+                Err(failure) if info.state != ConnectionState::Failed => {
+                    let (code, message) = failure.details();
+                    info.state = ConnectionState::Failed;
+                    info.error_code = code.to_owned();
+                    info.error_message = message.to_owned();
+                }
+                Err(_) => {}
+            }
             info.pending = None;
         }
     }
@@ -711,11 +745,17 @@ fn start_connection(
         port,
         known_hosts_path.to_owned(),
     ));
-    shared
-        .session
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .generation = generation;
+    {
+        let mut state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        // Abort completion is asynchronous. Install the new generation and
+        // discard the old actor's local cleanup authority in one operation.
+        state.generation = generation;
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_pane = None;
+    }
     if reconnecting {
         shared.set_state(ConnectionState::Reconnecting);
     }
@@ -756,7 +796,6 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
     };
 
     detach_all(&shared);
-    shared.mark_disconnected();
     Ok(())
 }
 
@@ -1367,16 +1406,8 @@ async fn run_connection(
     let result = run_connection_flow(Arc::clone(&shared), start, commands).await;
     shared.clear_commands();
     detach_all(&shared);
-    if shared.is_cancelled() {
-        return;
-    }
-    match result {
-        Ok(()) => shared.mark_disconnected(),
-        Err(failure) => {
-            let (code, message) = failure.details();
-            shared.fail(code, message);
-        }
-    }
+    shared.clear_owned_zoom();
+    shared.finish(result);
 }
 
 async fn run_connection_flow(
@@ -1922,6 +1953,61 @@ mod tests {
         assert_eq!(snapshot.state, ConnectionState::Closing as u32);
         assert_eq!(snapshot.fingerprint_len, 0);
         assert_eq!(snapshot.error_code_len, 0);
+    }
+
+    #[test]
+    fn disconnect_and_flow_completion_never_leave_a_finished_actor_closing() {
+        fn connection() -> Arc<ConnectionShared> {
+            Arc::new(ConnectionShared::new(
+                9013,
+                next_generation(),
+                "example.test".into(),
+                22,
+                PathBuf::from("/tmp/unused-known-hosts"),
+            ))
+        }
+        for cancel_first in [false, true] {
+            let shared = connection();
+            if cancel_first {
+                shared.cancel();
+            }
+            shared.finish(Err(FlowFailure::Transport));
+            if !cancel_first {
+                assert_eq!(
+                    shared.snapshot().unwrap().state,
+                    ConnectionState::Failed as u32
+                );
+                shared.mark_closing();
+                shared.cancel();
+            }
+            assert_eq!(
+                shared.snapshot().unwrap().state,
+                ConnectionState::Disconnected as u32
+            );
+        }
+        for _ in 0..32 {
+            let shared = connection();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let worker_shared = Arc::clone(&shared);
+            let worker_barrier = Arc::clone(&barrier);
+            let completion = std::thread::spawn(move || {
+                worker_barrier.wait();
+                worker_shared.finish(Err(FlowFailure::Transport));
+            });
+            barrier.wait();
+            shared.mark_closing();
+            shared.cancel();
+            completion.join().unwrap();
+            assert_eq!(
+                shared.snapshot().unwrap().state,
+                ConnectionState::Disconnected as u32
+            );
+            shared.set_state(ConnectionState::Ready);
+            assert_eq!(
+                shared.snapshot().unwrap().state,
+                ConnectionState::Disconnected as u32
+            );
+        }
     }
 
     #[test]

@@ -33,10 +33,31 @@ KEYCODE_MOVE_END = 123
 DEFAULT_UI_TIMEOUT = 30.0
 REMOTE_MARKER_TIMEOUT = 15.0
 RECONNECT_TIMEOUT = 45.0
+FIELD_READBACK_TIMEOUT = 8.0
+FIELD_SETTLE_SECONDS = 0.25
+FIELD_INPUT_MAX_ATTEMPTS = 2
 KEY_INPUT_TIMEOUT = 600.0
 KEY_READBACK_TIMEOUT = 15.0
 KEY_INPUT_SETTLE_SECONDS = 0.3
 KEY_INPUT_MAX_ATTEMPTS = 4
+# ``adb shell input text`` expands one argument into a burst of individual
+# KeyEvents. A remote terminal forwards each committed character through a
+# bounded asynchronous tmux queue, so keep the CI burst below that queue's
+# service rate while still exercising the native keyboard key-event path.
+# Paste has its own explicit native control. This is a driver pacing bound,
+# not a delay in the product input path; the queue-overflow explanation
+# remains a hypothesis until the sanitized native counters confirm it.
+TERMINAL_INPUT_CHUNK_SIZE = 16
+TERMINAL_INPUT_CHUNK_DELAY_SECONDS = 0.2
+TERMINAL_FOCUS_SETTLE_SECONDS = 0.8
+INPUT_REJECTION_REASONS = (
+    "unbound",
+    "native_exception",
+    "native_rejection",
+)
+INPUT_REJECTION_PATTERN = re.compile(
+    r"IME commit rejected; reason=(unbound|native_exception|native_rejection)\b"
+)
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 SYNC_MARKER = "MEETERM_ANDROID_SYNC_4C71"
@@ -44,6 +65,28 @@ ANSI_MARKER = "MEETERM_ANDROID_ANSI_8A26"
 REMOTE_MARKER_PREFIX = "meeterm-android-shell-"
 PANE_LABEL_PATTERN = re.compile(r"^Terminal (%[0-9]+)$")
 WORKSPACE_LABEL_PATTERN = re.compile(r"^Workspace .+$")
+BACK_TO_WORKSPACES_LABELS = (
+    "Back to workspaces",
+)
+SWITCH_WORKSPACE_LABELS = (
+    "Switch workspace",
+)
+TERMINAL_MENU_LABELS = (
+    "Terminal menu",
+)
+SERVER_CONNECTION_LABELS = (
+    "Server connection",
+)
+HANDOFF_LABELS = (
+    "PC handoff help",
+)
+DISCONNECT_LABELS = (
+    "Disconnect",
+)
+RECONNECT_LABELS = (
+    "Reconnect",
+)
+HANDOFF_COMMAND = "tmux attach -t meeterm"
 PRIVATE_KEY_ACCESSIBILITY_LABELS = (
     "Private OpenSSH key",
     "Private OpenSSH key, Empty",
@@ -105,14 +148,27 @@ class Node:
 
 
 class TmuxPaneRecord(NamedTuple):
-    """The fixture-side identity and selection state of one tmux pane."""
+    """The fixture-side identity, selection, and split geometry of a pane."""
 
     window_id: str
+    window_name: str
     pane_id: str
     pane_pid: int
+    pane_index: int
     active: bool
+    pane_width: int
+    pane_height: int
+    pane_left: int
+    pane_top: int
+    pane_right: int
+    pane_bottom: int
     window_active: bool
     zoomed: bool
+
+
+FIXTURE_WINDOW_NAMES = ("smoke", "handoff")
+FIXTURE_PANES_PER_WINDOW = 2
+FIXTURE_PANE_COUNT = len(FIXTURE_WINDOW_NAMES) * FIXTURE_PANES_PER_WINDOW
 
 
 def parse_bounds(value: str) -> tuple[int, int, int, int] | None:
@@ -169,6 +225,15 @@ class AndroidDevice:
     def __init__(self, serial: str, adb_path: str) -> None:
         self.serial = serial
         self.adb_path = adb_path
+        # Counts only generated terminal command characters. The values are
+        # used for a sanitized input health summary; command contents never
+        # enter the artifact.
+        self.terminal_input_chars = 0
+        self.terminal_input_chunks = 0
+
+    def note_terminal_input(self, character_count: int) -> None:
+        self.terminal_input_chars += max(0, character_count)
+        self.terminal_input_chunks += 1
 
     def run(self, arguments: tuple[str, ...], stage: str, timeout: float = 15.0) -> bytes:
         command = [self.adb_path, "-s", self.serial, *arguments]
@@ -191,13 +256,18 @@ class AndroidDevice:
         self.run(("wait-for-device",), "device_ready", timeout=30.0)
 
     def assert_process_alive(self, stage: str) -> None:
+        self.process_id(stage)
+
+    def process_id(self, stage: str) -> str:
         output = self.run(
-            ("shell", "pidof", PACKAGE),
+            ("shell", "pidof", "-s", PACKAGE),
             stage,
             timeout=10.0,
         ).decode("utf-8", errors="replace")
-        if not re.fullmatch(r"\s*\d+(?:\s+\d+)*\s*", output):
+        match = re.fullmatch(r"\s*(\d+)\s*", output)
+        if match is None:
             raise SmokeFailure(stage, "app_not_running")
+        return match.group(1)
 
     def dump_ui(self) -> list[Node]:
         # The accessibility service can temporarily return no hierarchy while
@@ -221,7 +291,7 @@ class AndroidDevice:
 
     def assert_foreground(self, stage: str) -> None:
         output = self.run(
-            ("shell", "dumpsys", "window", "windows"),
+            ("shell", "dumpsys", "window"),
             f"{stage}_foreground",
             timeout=10.0,
         ).decode("utf-8", errors="replace")
@@ -258,6 +328,8 @@ class AndroidDevice:
             stage,
             timeout=20.0,
         )
+        if stage == "terminal_input":
+            self.note_terminal_input(len(value))
 
     def input_keyevent(self, keycode: int, stage: str) -> None:
         self.input_keyevents((keycode,), stage)
@@ -325,13 +397,60 @@ class AndroidDevice:
             timeout=20.0,
         ).decode("utf-8", errors="replace")
         kept: list[str] = []
+        accepted_commits = 0
+        accepted_bytes = 0
+        last_native_count: int | None = None
+        rejected_commits = dict.fromkeys(INPUT_REJECTION_REASONS, 0)
         for line in output.splitlines():
-            if not any(tag in line for tag in ("MeetermTerminalView", "MeetermRenderer", "MeetermNative")):
+            if not any(
+                tag in line
+                for tag in (
+                    "MeetermTerminalView",
+                    "MeetermRenderer",
+                    "MeetermNative",
+                    # This tag reports only accepted counts and byte lengths;
+                    # it never includes committed text or clipboard content.
+                    "MeetermInput",
+                )
+            ):
                 continue
             lowered = line.lower()
             if any(secret_word in lowered for secret_word in ("passphrase", "private key", "auth")):
                 continue
+            if "MeetermInput" in line:
+                accepted = re.search(
+                    r"IME commit accepted; nativeCount=(\d+) byteCount=(\d+)",
+                    line,
+                )
+                if accepted is not None:
+                    accepted_commits += 1
+                    accepted_bytes += int(accepted.group(2))
+                    last_native_count = int(accepted.group(1))
+                rejected = INPUT_REJECTION_PATTERN.search(line)
+                if rejected is not None:
+                    rejected_commits[rejected.group(1)] += 1
+                # One aggregate line below is enough for CI diagnosis. Keep no
+                # per-character native input records in the artifact.
+                continue
             kept.append(line)
+        if self.terminal_input_chunks or accepted_commits or any(rejected_commits.values()):
+            # A lower observed byte count is a diagnostic only: logcat can be
+            # truncated or sampled while callbacks are still in flight, so it
+            # must not be reported as proof of native rejection.
+            unobserved_bytes = max(0, self.terminal_input_chars - accepted_bytes)
+            kept.append(
+                "MeetermInput: terminal_input_summary "
+                f"chunks={self.terminal_input_chunks} "
+                f"attemptedBytes={self.terminal_input_chars} "
+                f"acceptedCommits={accepted_commits} "
+                f"acceptedBytes={accepted_bytes} "
+                f"unobservedBytes={unobserved_bytes} "
+                f"lastNativeCount={last_native_count if last_native_count is not None else 'none'} "
+                f"rejectedCommits={sum(rejected_commits.values())} "
+                f"rejectedUnbound={rejected_commits['unbound']} "
+                f"rejectedNativeException={rejected_commits['native_exception']} "
+                f"rejectedNativeRejection={rejected_commits['native_rejection']}"
+            )
         return "\n".join(kept) + ("\n" if kept else "<no filtered native log lines>\n")
 
     def force_stop(self) -> None:
@@ -506,7 +625,7 @@ def _parse_tmux_flag(value: str, stage: str) -> bool:
 
 
 def parse_tmux_panes(output: bytes, stage: str = "tmux_fixture") -> list[TmuxPaneRecord]:
-    """Parse only the stable tmux IDs/PIDs/selection fields we need."""
+    """Parse stable tmux identity, selection, and geometry fields."""
 
     records: list[TmuxPaneRecord] = []
     seen_panes: set[str] = set()
@@ -518,22 +637,72 @@ def parse_tmux_panes(output: bytes, stage: str = "tmux_fixture") -> list[TmuxPan
         if not line:
             continue
         fields = line.split("\t")
-        if len(fields) != 6:
+        if len(fields) != 14:
             raise SmokeFailure(stage, "tmux_state_invalid")
-        window_id, pane_id, pid_text, active_text, window_active_text, zoomed_text = fields
+        (
+            window_id,
+            window_name,
+            pane_id,
+            pid_text,
+            pane_index_text,
+            active_text,
+            pane_width_text,
+            pane_height_text,
+            pane_left_text,
+            pane_top_text,
+            pane_right_text,
+            pane_bottom_text,
+            window_active_text,
+            zoomed_text,
+        ) = fields
         if not re.fullmatch(r"@[0-9]+", window_id):
+            raise SmokeFailure(stage, "tmux_state_invalid")
+        if not window_name or any(ord(character) < 32 for character in window_name):
             raise SmokeFailure(stage, "tmux_state_invalid")
         if not re.fullmatch(r"%[0-9]+", pane_id) or pane_id in seen_panes:
             raise SmokeFailure(stage, "tmux_state_invalid")
         if not re.fullmatch(r"[1-9][0-9]*", pid_text):
             raise SmokeFailure(stage, "tmux_state_invalid")
+        integer_fields = (
+            pane_index_text,
+            pane_width_text,
+            pane_height_text,
+            pane_left_text,
+            pane_top_text,
+            pane_right_text,
+            pane_bottom_text,
+        )
+        if any(not re.fullmatch(r"[0-9]+", value) for value in integer_fields):
+            raise SmokeFailure(stage, "tmux_state_invalid")
+        pane_index = int(pane_index_text)
+        pane_width = int(pane_width_text)
+        pane_height = int(pane_height_text)
+        pane_left = int(pane_left_text)
+        pane_top = int(pane_top_text)
+        pane_right = int(pane_right_text)
+        pane_bottom = int(pane_bottom_text)
+        if (
+            pane_width <= 0
+            or pane_height <= 0
+            or pane_right <= pane_left
+            or pane_bottom <= pane_top
+        ):
+            raise SmokeFailure(stage, "tmux_state_invalid")
         seen_panes.add(pane_id)
         records.append(
             TmuxPaneRecord(
                 window_id=window_id,
+                window_name=window_name,
                 pane_id=pane_id,
                 pane_pid=int(pid_text),
+                pane_index=pane_index,
                 active=_parse_tmux_flag(active_text, stage),
+                pane_width=pane_width,
+                pane_height=pane_height,
+                pane_left=pane_left,
+                pane_top=pane_top,
+                pane_right=pane_right,
+                pane_bottom=pane_bottom,
                 window_active=_parse_tmux_flag(window_active_text, stage),
                 zoomed=_parse_tmux_flag(zoomed_text, stage),
             )
@@ -545,8 +714,9 @@ def parse_tmux_panes(output: bytes, stage: str = "tmux_fixture") -> list[TmuxPan
 
 def list_tmux_panes(socket_path: Path, stage: str) -> list[TmuxPaneRecord]:
     format_string = (
-        "#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
-        "#{window_active}\t#{window_zoomed_flag}"
+        "#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_index}\t"
+        "#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t"
+        "#{pane_right}\t#{pane_bottom}\t#{window_active}\t#{window_zoomed_flag}"
     )
     result = run_tmux_command(
         socket_path,
@@ -556,25 +726,113 @@ def list_tmux_panes(socket_path: Path, stage: str) -> list[TmuxPaneRecord]:
     return parse_tmux_panes(result.stdout, stage)
 
 
+def pane_layout_signature(
+    records: list[TmuxPaneRecord],
+) -> tuple[tuple[str, str, str, int, int], ...]:
+    """Return stable window/pane/PID/index identity tuples for handoff checks."""
+
+    return tuple(
+        sorted(
+            (
+                record.window_id,
+                record.window_name,
+                record.pane_id,
+                record.pane_pid,
+                record.pane_index,
+            )
+            for record in records
+        )
+    )
+
+
+def pane_split_shape(
+    records: list[TmuxPaneRecord],
+) -> tuple[tuple[str, tuple[tuple[int, bool, bool, bool, bool], ...]], ...]:
+    """Normalize pane geometry to split edges, ignoring a resize's dimensions."""
+
+    by_window: dict[str, list[TmuxPaneRecord]] = {}
+    for record in records:
+        by_window.setdefault(record.window_id, []).append(record)
+    shapes: list[tuple[str, tuple[tuple[int, bool, bool, bool, bool], ...]]] = []
+    for window_id, panes in by_window.items():
+        min_left = min(pane.pane_left for pane in panes)
+        min_top = min(pane.pane_top for pane in panes)
+        max_right = max(pane.pane_right for pane in panes)
+        max_bottom = max(pane.pane_bottom for pane in panes)
+        shape = tuple(
+            sorted(
+                (
+                    pane.pane_index,
+                    pane.pane_left > min_left,
+                    pane.pane_top > min_top,
+                    pane.pane_right < max_right,
+                    pane.pane_bottom < max_bottom,
+                )
+                for pane in panes
+            )
+        )
+        shapes.append((window_id, shape))
+    return tuple(sorted(shapes))
+
+
+def assert_fixture_layout_preserved(
+    before: list[TmuxPaneRecord],
+    after: list[TmuxPaneRecord],
+    stage: str,
+) -> None:
+    if pane_layout_signature(before) != pane_layout_signature(after):
+        raise SmokeFailure(stage, "pane_layout_changed")
+    if pane_split_shape(before) != pane_split_shape(after):
+        raise SmokeFailure(stage, "pane_split_changed")
+    if len({record.window_id for record in after}) != len(FIXTURE_WINDOW_NAMES):
+        raise SmokeFailure(stage, "window_layout_changed")
+    if any(record.zoomed for record in after):
+        raise SmokeFailure(stage, "pane_layout_still_zoomed")
+
+
+def assert_fixture_identity_preserved(
+    before: list[TmuxPaneRecord],
+    after: list[TmuxPaneRecord],
+    stage: str,
+) -> None:
+    """Check durable pane identities while mobile presentation may be zoomed."""
+
+    if pane_layout_signature(before) != pane_layout_signature(after):
+        raise SmokeFailure(stage, "pane_layout_changed")
+    window_ids = {record.window_id for record in after}
+    if len(window_ids) != len(FIXTURE_WINDOW_NAMES) or any(
+        sum(record.window_id == window_id for record in after)
+        != FIXTURE_PANES_PER_WINDOW
+        for window_id in window_ids
+    ):
+        raise SmokeFailure(stage, "window_layout_changed")
+
+
+def records_for_window(
+    records: list[TmuxPaneRecord], window_id: str
+) -> list[TmuxPaneRecord]:
+    return [record for record in records if record.window_id == window_id]
+
+
 def _selection_matches(
     records: list[TmuxPaneRecord],
     pane_id: str,
     pane_pid: int,
 ) -> bool:
-    if len(records) != 2:
+    if len(records) != FIXTURE_PANE_COUNT:
         return False
     target = next((record for record in records if record.pane_id == pane_id), None)
     if target is None or target.pane_pid != pane_pid:
         return False
-    active = [record for record in records if record.active]
+    active = [record for record in records if record.active and record.window_active]
     active_windows = [record for record in records if record.window_active]
     return (
-        len({record.window_id for record in records}) == 1
+        len({record.window_id for record in records}) == len(FIXTURE_WINDOW_NAMES)
         and target.active
         and target.window_active
         and target.zoomed
         and len(active) == 1
-        and len(active_windows) == 2
+        and len(active_windows) == FIXTURE_PANES_PER_WINDOW
     )
 
 
@@ -601,7 +859,7 @@ def wait_for_tmux_selection(
 
 
 def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
-    """Create exactly two panes on the fixture socket and select the first."""
+    """Create two windows with two panes each and select the first pane."""
 
     stage = "tmux_fixture"
     try:
@@ -645,9 +903,39 @@ def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
     split = list_tmux_panes(socket_path, stage)
     if len(split) != 2 or len({record.window_id for record in split}) != 1:
         raise SmokeFailure(stage, "pane_layout_invalid")
+
+    run_tmux_command(
+        socket_path,
+        (
+            "new-window",
+            "-d",
+            "-t",
+            "=meeterm:",
+            "-n",
+            FIXTURE_WINDOW_NAMES[1],
+            "/bin/sh",
+            "-i",
+        ),
+        stage,
+    )
+    second_window = list_tmux_panes(socket_path, stage)
+    second_window_ids = {
+        record.window_id for record in second_window if record.window_id != first.window_id
+    }
+    if len(second_window_ids) != 1:
+        raise SmokeFailure(stage, "window_layout_invalid")
+    second_first = next(
+        record for record in second_window if record.window_id in second_window_ids
+    )
+    run_tmux_command(
+        socket_path,
+        ("split-window", "-h", "-t", second_first.pane_id, "/bin/sh", "-i"),
+        stage,
+    )
+    run_tmux_command(socket_path, ("select-window", "-t", first.window_id), stage)
     run_tmux_command(socket_path, ("select-pane", "-t", first.pane_id), stage)
     selected = list_tmux_panes(socket_path, stage)
-    if len(selected) != 2 or not any(
+    if len(selected) != FIXTURE_PANE_COUNT or not any(
         record.pane_id == first.pane_id
         and record.active
         and record.window_active
@@ -655,8 +943,15 @@ def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
         for record in selected
     ):
         raise SmokeFailure(stage, "initial_selection_invalid")
-    if sum(record.active for record in selected) != 1:
+    if sum(record.active and record.window_active for record in selected) != 1:
         raise SmokeFailure(stage, "initial_selection_invalid")
+    if len({record.window_id for record in selected}) != len(FIXTURE_WINDOW_NAMES):
+        raise SmokeFailure(stage, "window_layout_invalid")
+    if any(
+        sum(record.window_id == window_id for record in selected) != FIXTURE_PANES_PER_WINDOW
+        for window_id in {record.window_id for record in selected}
+    ):
+        raise SmokeFailure(stage, "pane_layout_invalid")
     return selected
 
 
@@ -713,6 +1008,36 @@ def find_node_with_content_descriptions(
     return None
 
 
+def find_private_key_editor(
+    nodes: list[Node], *, include_invisible: bool = False
+) -> Node | None:
+    """Find the explicitly labeled private-key editor in a changing layout.
+
+    Android can expose the React Native multiline TextInput as an ``EditText``
+    child on one accessibility pass and as its labeled wrapper on another
+    while the keyboard is changing the ScrollView viewport.  Prefer the real
+    editor when present, but keep the exact label as the identity boundary;
+    this never falls back to a coordinate or to an unrelated text field.
+    """
+
+    candidates: list[Node] = []
+    for node in nodes:
+        if not node.enabled or (not include_invisible and not node.visible_to_user):
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if node.content_description not in PRIVATE_KEY_ACCESSIBILITY_LABELS:
+            continue
+        candidates.append(node)
+    if not candidates:
+        return None
+    return next(
+        (node for node in candidates if "EditText" in node.class_name),
+        candidates[0],
+    )
+
+
 def find_node_casefold(nodes: list[Node], text: str) -> Node | None:
     target = text.casefold()
     for node in nodes:
@@ -725,6 +1050,34 @@ def find_node_casefold(nodes: list[Node], text: str) -> Node | None:
             node.text.casefold() == target
             or node.content_description.casefold() == target
         ):
+            return node
+    return None
+
+
+def content_description_has_label(value: str, label: str) -> bool:
+    """Match a React Native label with its optional Android value suffix.
+
+    Android may expose a TextInput's ``accessibilityLabel`` as either the
+    label alone or ``label, value`` after the controlled value changes.  The
+    suffix is intentionally not interpreted or printed; it only identifies
+    the field whose text is read back below.
+    """
+
+    return value == label or value.startswith(f"{label}, ")
+
+
+def find_text_input(nodes: list[Node], label: str) -> Node | None:
+    """Find one visible enabled TextInput for a stable form label."""
+
+    for node in nodes:
+        if not node.visible_to_user or not node.enabled:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if "EditText" not in node.class_name:
+            continue
+        if content_description_has_label(node.content_description, label):
             return node
     return None
 
@@ -746,14 +1099,88 @@ def is_workspace_label(node: Node) -> bool:
     return WORKSPACE_LABEL_PATTERN.fullmatch(accessible_label(node).strip()) is not None
 
 
-def find_workspace_node(nodes: list[Node]) -> Node | None:
+def find_workspace_nodes(nodes: list[Node]) -> list[Node]:
+    """Return one usable node for each workspace window label."""
+
+    workspaces: dict[str, Node] = {}
     for node in nodes:
         if not node.visible_to_user or not node.enabled or not is_workspace_label(node):
             continue
         left, top, right, bottom = node.bounds
-        if right > left and bottom > top:
+        if right <= left or bottom <= top:
+            continue
+        label = accessible_label(node).strip()
+        previous = workspaces.get(label)
+        if previous is None or (node.selected and not previous.selected):
+            workspaces[label] = node
+    return list(workspaces.values())
+
+
+def find_workspace_node(nodes: list[Node]) -> Node | None:
+    workspaces = find_workspace_nodes(nodes)
+    return next((node for node in workspaces if node.selected), None) or next(
+        iter(workspaces), None
+    )
+
+
+def find_node_with_labels(nodes: list[Node], labels: tuple[str, ...]) -> Node | None:
+    """Find one exact, visible control from an allowlisted label set."""
+
+    for label in labels:
+        node = find_node_casefold(nodes, label)
+        if node is not None:
             return node
     return None
+
+
+def wait_for_node_with_labels(
+    device: AndroidDevice,
+    stage: str,
+    labels: tuple[str, ...],
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    deadline = time.monotonic() + timeout
+    last_dump_failure: SmokeFailure | None = None
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure as error:
+            last_dump_failure = error
+            time.sleep(0.2)
+            continue
+        node = find_node_with_labels(nodes, labels)
+        if node is not None:
+            return node
+        time.sleep(0.2)
+    if not hierarchy_seen and last_dump_failure is not None:
+        raise SmokeFailure(stage, last_dump_failure.reason)
+    raise SmokeFailure(stage, "ui_timeout")
+
+
+def wait_for_workspace_count(
+    device: AndroidDevice,
+    stage: str,
+    *,
+    count: int,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> list[Node]:
+    if count < 1:
+        raise SmokeFailure(stage, "invalid_workspace_count")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        workspaces = find_workspace_nodes(nodes)
+        if len(workspaces) >= count:
+            return workspaces
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "ui_timeout")
 
 
 def wait_for_workspace(
@@ -772,8 +1199,22 @@ def wait_for_workspace(
         except SmokeFailure:
             time.sleep(0.2)
             continue
-        workspace = find_workspace_node(nodes)
-        if workspace is not None and (label is None or accessible_label(workspace) == label):
+        if label is None:
+            workspace = find_workspace_node(nodes)
+        else:
+            # The selected tmux window need not be the workspace requested by
+            # the caller (for example immediately after switching windows).
+            # Search all visible rows when an exact label is provided instead
+            # of letting the selected row mask the desired non-selected one.
+            workspace = next(
+                (
+                    candidate
+                    for candidate in find_workspace_nodes(nodes)
+                    if accessible_label(candidate) == label
+                ),
+                None,
+            )
+        if workspace is not None:
             return workspace
         time.sleep(0.2)
     raise SmokeFailure(stage, "ui_timeout")
@@ -1026,12 +1467,142 @@ def wait_for_node(
     raise SmokeFailure(stage, "ui_timeout")
 
 
+def wait_for_text_input(
+    device: AndroidDevice,
+    stage: str,
+    label: str,
+    *,
+    scroll: bool = False,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    """Wait for a labeled TextInput without assuming its value is in a label."""
+
+    deadline = time.monotonic() + timeout
+    last_swipe_at = 0.0
+    last_dump_failure: SmokeFailure | None = None
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure as error:
+            last_dump_failure = error
+            time.sleep(0.2)
+            continue
+        node = find_text_input(nodes, label)
+        if node is not None:
+            return node
+        if scroll:
+            bounds = scroll_target_bounds(nodes)
+            now = time.monotonic()
+            if bounds is not None and now - last_swipe_at >= 0.8:
+                device.input_swipe(bounds, stage)
+                last_swipe_at = now
+                time.sleep(0.5)
+            else:
+                time.sleep(0.2)
+        else:
+            time.sleep(0.2)
+    if not hierarchy_seen and last_dump_failure is not None:
+        raise SmokeFailure(stage, last_dump_failure.reason)
+    raise SmokeFailure(stage, "ui_timeout")
+
+
+def wait_for_private_key_editor(
+    device: AndroidDevice,
+    stage: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    """Wait for the labeled multiline editor while scrolling the form."""
+
+    deadline = time.monotonic() + timeout
+    last_swipe_at = 0.0
+    last_dump_failure: SmokeFailure | None = None
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure as error:
+            last_dump_failure = error
+            time.sleep(0.2)
+            continue
+        editor = find_private_key_editor(nodes)
+        if editor is not None:
+            return editor
+        bounds = scroll_target_bounds(nodes)
+        now = time.monotonic()
+        if bounds is not None and now - last_swipe_at >= 0.8:
+            device.input_swipe(bounds, stage)
+            last_swipe_at = now
+            time.sleep(0.5)
+        else:
+            time.sleep(0.2)
+    if not hierarchy_seen and last_dump_failure is not None:
+        raise SmokeFailure(stage, last_dump_failure.reason)
+    raise SmokeFailure(stage, "editor_unavailable")
+
+
+def wait_for_field_value(
+    device: AndroidDevice,
+    stage: str,
+    label: str,
+    expected: str,
+    *,
+    timeout: float = FIELD_READBACK_TIMEOUT,
+) -> Node:
+    """Wait for a controlled TextInput to expose a settled expected value.
+
+    The first accessibility dump after ``adb shell input text`` can contain
+    the old value.  Waiting for two identical reads avoids sending a duplicate
+    value while keeping all field contents in memory.
+    """
+
+    deadline = time.monotonic() + timeout
+    previous: str | None = None
+    unchanged_since = time.monotonic()
+    last_dump_failure: SmokeFailure | None = None
+    while time.monotonic() < deadline:
+        try:
+            node = find_text_input(device.dump_ui(), label)
+        except SmokeFailure as error:
+            last_dump_failure = error
+            time.sleep(FIELD_SETTLE_SECONDS)
+            continue
+        if node is None:
+            raise SmokeFailure(stage, "field_unavailable")
+        now = time.monotonic()
+        if node.text != previous:
+            previous = node.text
+            unchanged_since = now
+        elif node.text == expected and now - unchanged_since >= FIELD_SETTLE_SECONDS:
+            return node
+        time.sleep(FIELD_SETTLE_SECONDS)
+    if last_dump_failure is not None and previous is None:
+        raise SmokeFailure(stage, last_dump_failure.reason)
+    raise SmokeFailure(stage, "entry_mismatch")
+
+
 def tap_node(device: AndroidDevice, node: Node, stage: str) -> None:
     left, top, right, bottom = node.bounds
     if right <= left or bottom <= top:
         raise SmokeFailure(stage, "invalid_bounds")
     x, y = node.center
     device.input_tap(x, y, stage)
+
+
+def focus_terminal(device: AndroidDevice, node: Node, stage: str) -> None:
+    """Tap a native terminal and let its IME connection settle.
+
+    The terminal is a native surface rather than an RN text input. A tap
+    posts ``showSoftInput`` and the corresponding InputConnection can attach
+    after the accessibility node is already visible. Keep the delay bounded
+    and apply it at every terminal route boundary before injecting a command.
+    """
+
+    tap_node(device, node, stage)
+    time.sleep(TERMINAL_FOCUS_SETTLE_SECONDS)
 
 
 def clear_field(device: AndroidDevice, stage: str, delete_count: int) -> None:
@@ -1052,60 +1623,102 @@ def fill_field(
     scroll: bool = True,
     clear_count: int = 0,
 ) -> None:
-    node = wait_for_node(
-        device,
-        stage,
-        content_description=content_description,
-        scroll=scroll,
-    )
-    tap_node(device, node, stage)
-    clear_field(device, stage, clear_count)
-    if value:
-        device.input_text(value, stage)
-    # Compare in memory only. In particular, do not report entered text in a
-    # failure: this helper also protects against an incorrectly cleared port.
-    actual = wait_for_node(device, stage, content_description=content_description)
-    if actual.text != value:
-        raise SmokeFailure(stage, "entry_mismatch")
+    for attempt in range(FIELD_INPUT_MAX_ATTEMPTS):
+        node = wait_for_text_input(
+            device,
+            stage,
+            label=content_description,
+            scroll=scroll,
+            timeout=DEFAULT_UI_TIMEOUT if attempt == 0 else FIELD_READBACK_TIMEOUT,
+        )
+        tap_node(device, node, stage)
+        # A failed readback means the first burst may have been dropped or
+        # partially applied. Clear the value observed on the retry pass before
+        # sending it again; this avoids appending a duplicate suffix.
+        retry_clear_count = clear_count if attempt == 0 else len(node.text)
+        clear_field(device, stage, retry_clear_count)
+        if value:
+            device.input_text(value, stage)
+        # Compare in memory only. In particular, do not report entered text in
+        # a failure: this helper also protects against an incorrectly cleared
+        # port.
+        try:
+            wait_for_field_value(device, stage, content_description, value)
+            return
+        except SmokeFailure as error:
+            if (
+                error.reason != "entry_mismatch"
+                or attempt + 1 >= FIELD_INPUT_MAX_ATTEMPTS
+            ):
+                raise
+            time.sleep(FIELD_SETTLE_SECONDS)
 
 
 def fill_multiline_key(device: AndroidDevice, key: str) -> None:
     lines = key.splitlines()
     if not lines:
         raise SmokeFailure("private_key_input", "key_empty")
-    node = wait_for_node(
-        device,
-        "private_key_input",
-        # React Native's Android bridge appends accessibilityValue.text to
-        # contentDescription (for example, "Private OpenSSH key, Empty").
-        # Keep the accepted states explicit so this does not become a broad
-        # prefix match over unrelated form controls.
-        content_descriptions=PRIVATE_KEY_ACCESSIBILITY_LABELS,
-        scroll=True,
-    )
-    # A partially visible multiline editor can have its center underneath
-    # the IME or outside the ScrollView. Tap its visible top and require
-    # keyboard focus before sending any credential bytes.
-    for attempt in range(4):
-        nodes = device.dump_ui()
-        editor = find_node_with_content_descriptions(
-            nodes, PRIVATE_KEY_ACCESSIBILITY_LABELS, class_fragment="EditText"
-        )
-        if editor is not None and editor.focused:
-            break
-        if attempt == 3:
-            raise SmokeFailure("private_key_input", "editor_not_focused")
-        if editor is None:
-            raise SmokeFailure("private_key_input", "editor_unavailable")
-        left, top, right, bottom = editor.bounds
+    stage = "private_key_input"
+    editor = wait_for_private_key_editor(device, stage)
+
+    def tap_editor(nodes: list[Node], candidate: Node) -> None:
+        left, top, right, bottom = candidate.bounds
         viewport = scroll_container_bounds(nodes)
         if viewport is not None:
             left, top = max(left, viewport[0]), max(top, viewport[1])
             right, bottom = min(right, viewport[2]), min(bottom, viewport[3])
         if right <= left or bottom - top < 12:
-            raise SmokeFailure("private_key_input", "editor_not_visible")
-        device.input_tap((left + right) // 2, top + min(24, (bottom - top) // 2), "private_key_input")
-        time.sleep(0.2)
+            raise SmokeFailure(stage, "editor_not_visible")
+        device.input_tap(
+            (left + right) // 2,
+            top + min(24, (bottom - top) // 2),
+            stage,
+        )
+
+    # A fixed-height multiline field can move out of the visible viewport as
+    # the IME opens.  Keep the exact labeled node as the input identity and
+    # allow the accessibility tree several settled passes before using one
+    # bounded keyboard-dismiss/re-scroll recovery.  No credential bytes are
+    # sent until the labeled editor is present again.
+    nodes = device.dump_ui()
+    tap_editor(nodes, editor)
+    focus_deadline = time.monotonic() + 8.0
+    keyboard_reset = False
+    missing_since: float | None = None
+    while time.monotonic() < focus_deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            time.sleep(0.25)
+            continue
+        editor = find_private_key_editor(nodes, include_invisible=True)
+        if editor is None:
+            now = time.monotonic()
+            missing_since = missing_since or now
+            if not keyboard_reset and now - missing_since >= 1.5:
+                # The first BACK is consumed by the IME when the field was
+                # focused. It exposes the editor without closing the form.
+                device.dismiss_keyboard(stage)
+                keyboard_reset = True
+                time.sleep(0.5)
+                editor = wait_for_private_key_editor(device, stage, timeout=5.0)
+                nodes = device.dump_ui()
+                tap_editor(nodes, editor)
+                missing_since = None
+            else:
+                time.sleep(0.25)
+            continue
+        missing_since = None
+        # RN may expose a labeled wrapper without a focus bit. The exact label
+        # is still sufficient for that wrapper; a real EditText must report
+        # focus before any input is sent.
+        if "EditText" not in editor.class_name or editor.focused:
+            break
+        if editor.visible_to_user:
+            tap_editor(nodes, editor)
+        time.sleep(0.25)
+    else:
+        raise SmokeFailure(stage, "editor_not_focused")
 
     deadline = time.monotonic() + KEY_INPUT_TIMEOUT
     expected = ""
@@ -1130,7 +1743,8 @@ def verify_key_readback(
     UIAutomator waits for accessibility idle, but a controlled React input
     can still update after the first read. Require a second identical read
     after a quiet interval, including when the first value is a full match.
-    Missing focus and non-prefix text are never recoverable by replaying input.
+    A real EditText that loses focus and non-prefix text are never recoverable
+    by replaying input; a labeled React Native wrapper may omit the focus bit.
     """
 
     read_deadline = time.monotonic() + KEY_READBACK_TIMEOUT
@@ -1138,12 +1752,11 @@ def verify_key_readback(
     previous: str | None = None
     unchanged_since = time.monotonic()
     while time.monotonic() < deadline:
-        editor = find_node_with_content_descriptions(
-            device.dump_ui(), PRIVATE_KEY_ACCESSIBILITY_LABELS, class_fragment="EditText"
-        )
+        nodes = device.dump_ui()
+        editor = find_private_key_editor(nodes, include_invisible=True)
         if editor is None:
             raise SmokeFailure("private_key_input", "editor_unavailable")
-        if not editor.focused:
+        if "EditText" in editor.class_name and not editor.focused:
             raise SmokeFailure("private_key_input", "editor_lost_focus")
         if not expected.startswith(editor.text):
             raise SmokeFailure("private_key_input", "entry_content_mismatch")
@@ -1325,7 +1938,15 @@ def terminal_line(device: AndroidDevice, command: str) -> None:
     # may contain UTF-8, but it never travels through this Python process.
     if any(ord(character) > 127 for character in command):
         raise SmokeFailure("terminal_input", "non_ascii_command")
-    device.input_text(command, "terminal_input")
+    # Android's input tool turns text into individual KeyEvents. Pacing small
+    # chunks reduce the chance of overwhelming the bounded native SSH queue
+    # with a synthetic CI burst while retaining the real native key-event
+    # route.
+    for offset in range(0, len(command), TERMINAL_INPUT_CHUNK_SIZE):
+        chunk = command[offset : offset + TERMINAL_INPUT_CHUNK_SIZE]
+        device.input_text(chunk, "terminal_input")
+        if offset + TERMINAL_INPUT_CHUNK_SIZE < len(command):
+            time.sleep(TERMINAL_INPUT_CHUNK_DELAY_SECONDS)
     device.input_keyevent(KEYCODE_ENTER, "terminal_input")
 
 
@@ -1384,6 +2005,114 @@ def write_artifact(path: Path, contents: str) -> None:
         pass
 
 
+def capture_optional_screenshot(
+    device: AndroidDevice,
+    output_path: Path,
+    completed: list[str],
+    name: str,
+) -> str:
+    """Capture post-auth UI evidence without making PNG existence a gate."""
+
+    try:
+        device.screenshot(output_path)
+    except SmokeFailure as error:
+        completed.append(f"{name}_screenshot_unavailable")
+        return error.reason
+    completed.append(f"{name}_screenshot")
+    return "ok"
+
+
+def find_node_containing_text(nodes: list[Node], value: str) -> Node | None:
+    """Find a fixed, non-secret text fragment in the accessibility tree."""
+
+    for node in nodes:
+        if not node.visible_to_user or not node.enabled:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if value in node.text or value in node.content_description:
+            return node
+    return None
+
+
+def wait_for_text_fragment(
+    device: AndroidDevice,
+    stage: str,
+    value: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        node = find_node_containing_text(nodes, value)
+        if node is not None:
+            return node
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "ui_timeout")
+
+
+def tap_action(
+    device: AndroidDevice,
+    stage: str,
+    labels: tuple[str, ...],
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    node = wait_for_node_with_labels(device, stage, labels, timeout=timeout)
+    tap_node(device, node, stage)
+    return node
+
+
+def dismiss_handoff(device: AndroidDevice, stage: str) -> None:
+    """Close the handoff sheet without assuming its presentation primitive."""
+
+    # The sheet owns the top-most Back action after opening and the terminal
+    # view remains mounted underneath it. Android's modal back contract is
+    # stable even when the visible copy is localized.
+    device.input_keyevent(KEYCODE_BACK, stage)
+
+
+def open_handoff_and_capture(
+    device: AndroidDevice,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    tap_action(device, "terminal_menu", TERMINAL_MENU_LABELS)
+    tap_action(device, "handoff_action", HANDOFF_LABELS)
+    wait_for_text_fragment(device, "handoff_action", HANDOFF_COMMAND)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "ssh-handoff.png",
+        completed,
+        "handoff",
+    )
+    dismiss_handoff(device, "handoff_close")
+
+
+def open_disconnect_action(device: AndroidDevice, stage: str) -> None:
+    """Reach Disconnect in the terminal's server-connection menu."""
+
+    try:
+        tap_action(device, stage, TERMINAL_MENU_LABELS, timeout=3.0)
+    except SmokeFailure as error:
+        if error.reason != "ui_timeout":
+            raise
+        # Older workspace builds exposed Disconnect directly in the toolbar;
+        # keep that compatibility path narrow and label based.
+    try:
+        tap_action(device, stage, SERVER_CONNECTION_LABELS, timeout=5.0)
+    except SmokeFailure as error:
+        if error.reason != "ui_timeout":
+            raise
+    tap_action(device, stage, DISCONNECT_LABELS, timeout=DEFAULT_UI_TIMEOUT)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Android real-SSH UI smoke.")
     parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/android-ssh"))
@@ -1402,6 +2131,9 @@ def main(argv: list[str] | None = None) -> int:
     tmux_socket: Path | None = None
     marker_path: Path | None = None
     marker_value: str | None = None
+    second_marker_path: Path | None = None
+    second_marker_value: str | None = None
+    initial_app_pid: str | None = None
 
     try:
         try:
@@ -1414,8 +2146,9 @@ def main(argv: list[str] | None = None) -> int:
         if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]+={0,2}", expected_fingerprint):
             raise SmokeFailure("fixture_environment", "invalid_fingerprint")
         tmux_socket = tmux_socket_from_fixture(key_path)
-        prepare_tmux_fixture(tmux_socket)
+        fixture_layout = prepare_tmux_fixture(tmux_socket)
         marker_path, marker_value = make_marker_file(key_path)
+        second_marker_path, second_marker_value = make_marker_file(key_path)
 
         stage = "device_select"
         adb_path = shutil.which("adb") or "adb"
@@ -1443,6 +2176,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         connect_button = wait_for_node(device, stage, text="Connect")
         tap_node(device, connect_button, stage)
+        initial_app_pid = device.process_id("launch")
         completed.append("connect_form_open")
 
         fill_field(device, "Host", host, "host_input", scroll=False)
@@ -1480,26 +2214,66 @@ def main(argv: list[str] | None = None) -> int:
         stage = "tmux_session_state"
         workspace = wait_for_workspace(device, stage, timeout=RECONNECT_TIMEOUT)
         workspace_label = accessible_label(workspace)
-        completed.append("tmux_workspace_discovered")
-
-        pane_nodes = wait_for_panes(
+        workspace_nodes = wait_for_workspace_count(
             device,
             stage,
-            count=2,
-            selected_count=1,
+            count=len(FIXTURE_WINDOW_NAMES),
             timeout=RECONNECT_TIMEOUT,
         )
-        if len(pane_nodes) != 2:
+        completed.append("tmux_workspace_discovered")
+        capture_optional_screenshot(
+            device,
+            args.artifact_dir / "ssh-workspaces.png",
+            completed,
+            "workspaces",
+        )
+
+        # Workspace-first builds land on a list and enter a terminal only when
+        # the row is tapped. Older builds already showed the selected window's
+        # pane tabs; retain a bounded compatibility path while the new flow is
+        # rolled through hosted runners.
+        try:
+            pane_nodes = wait_for_panes(
+                device,
+                stage,
+                count=FIXTURE_PANES_PER_WINDOW,
+                selected_count=1,
+                timeout=5.0,
+            )
+        except SmokeFailure as error:
+            if error.reason != "ui_timeout":
+                raise
+            tap_node(device, workspace, "workspace_open")
+            pane_nodes = wait_for_panes(
+                device,
+                "workspace_open",
+                count=FIXTURE_PANES_PER_WINDOW,
+                selected_count=1,
+                timeout=RECONNECT_TIMEOUT,
+            )
+            completed.append("workspace_opened")
+        if len(pane_nodes) != FIXTURE_PANES_PER_WINDOW:
             raise SmokeFailure(stage, "pane_count_mismatch")
         selected_nodes = [node for node in pane_nodes if node.selected]
         if len(selected_nodes) != 1:
             raise SmokeFailure(stage, "pane_selection_unavailable")
         fixture_panes = list_tmux_panes(tmux_socket, stage)
-        if len(fixture_panes) != 2 or len({pane.window_id for pane in fixture_panes}) != 1:
+        if len(fixture_panes) != FIXTURE_PANE_COUNT or len(
+            {pane.window_id for pane in fixture_panes}
+        ) != len(FIXTURE_WINDOW_NAMES):
             raise SmokeFailure(stage, "pane_layout_mismatch")
-        fixture_active = [pane for pane in fixture_panes if pane.active]
+        # tmux keeps one active pane in every window.  Only the pane in the
+        # active window is the pane the mobile terminal should expose.
+        fixture_active = [
+            pane for pane in fixture_panes if pane.active and pane.window_active
+        ]
         if len(fixture_active) != 1:
             raise SmokeFailure(stage, "pane_selection_unavailable")
+        active_window_id = fixture_active[0].window_id
+        expected_visible_panes = records_for_window(fixture_panes, active_window_id)
+        visible_ids = {pane_id_from_node(node) for node in pane_nodes}
+        if visible_ids != {record.pane_id for record in expected_visible_panes}:
+            raise SmokeFailure(stage, "pane_window_mismatch")
         selected_id = pane_id_from_node(selected_nodes[0])
         if selected_id != fixture_active[0].pane_id:
             raise SmokeFailure(stage, "pane_selection_mismatch")
@@ -1543,7 +2317,7 @@ def main(argv: list[str] | None = None) -> int:
 
         stage = "terminal_focus"
         terminal = wait_for_terminal(device, stage)
-        tap_node(device, terminal, stage)
+        focus_terminal(device, terminal, stage)
         completed.append("terminal_focused")
 
         stage = "remote_marker"
@@ -1575,22 +2349,201 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(2.0)
         completed.append("remote_ansi_cjk_ls_size")
 
-        stage = "disconnect"
-        disconnect_button = wait_for_node(device, stage, text="Disconnect")
-        tap_node(device, disconnect_button, stage)
-        wait_for_node(
+        stage = "keyboard_screenshot"
+        device.assert_foreground(stage)
+        capture_optional_screenshot(
             device,
-            "disconnected",
-            text="Not connected",
+            args.artifact_dir / "ssh-terminal-keyboard.png",
+            completed,
+            "terminal_keyboard",
+        )
+
+        # The terminal is a child route in the workspace-first app. Exercise
+        # its explicit back control and return to the same workspace row.
+        stage = "workspace_back"
+        tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
+        wait_for_workspace(
+            device,
+            stage,
+            label=workspace_label,
             timeout=RECONNECT_TIMEOUT,
         )
+        completed.append("back_to_workspaces")
+
+        stage = "workspace_reopen"
+        workspace = wait_for_workspace(device, stage, label=workspace_label)
+        tap_node(device, workspace, stage)
+        pane_nodes = wait_for_panes(
+            device,
+            stage,
+            count=FIXTURE_PANES_PER_WINDOW,
+            selected_count=1,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        if len(pane_nodes) != FIXTURE_PANES_PER_WINDOW:
+            raise SmokeFailure(stage, "pane_count_mismatch")
+        completed.append("workspace_reopened")
+
+        # Switch to the other tmux window through the terminal's workspace
+        # picker. This proves the mobile window mapping rather than merely
+        # changing a local tab label.
+        stage = "tmux_workspace_switch"
+        tap_action(device, stage, SWITCH_WORKSPACE_LABELS)
+        workspace_nodes = wait_for_workspace_count(
+            device,
+            stage,
+            count=len(FIXTURE_WINDOW_NAMES),
+            timeout=RECONNECT_TIMEOUT,
+        )
+        other_workspace = next(
+            (
+                node
+                for node in workspace_nodes
+                if accessible_label(node) != workspace_label
+            ),
+            None,
+        )
+        if other_workspace is None:
+            raise SmokeFailure(stage, "workspace_switch_unavailable")
+        tap_node(device, other_workspace, stage)
+        other_panes = wait_for_panes(
+            device,
+            stage,
+            count=FIXTURE_PANES_PER_WINDOW,
+            selected_count=1,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        other_fixture_panes = list_tmux_panes(tmux_socket, stage)
+        other_active = [
+            pane
+            for pane in other_fixture_panes
+            if pane.active and pane.window_active
+        ]
+        if len(other_active) != 1 or other_active[0].window_id == active_window_id:
+            raise SmokeFailure(stage, "workspace_selection_mismatch")
+        if len(other_panes) != FIXTURE_PANES_PER_WINDOW:
+            raise SmokeFailure(stage, "pane_count_mismatch")
+        other_window_id = other_active[0].window_id
+        if {pane_id_from_node(node) for node in other_panes} != {
+            record.pane_id
+            for record in records_for_window(other_fixture_panes, other_window_id)
+        }:
+            raise SmokeFailure(stage, "pane_window_mismatch")
+        other_selected = next((node for node in other_panes if node.selected), None)
+        other_pane = next((node for node in other_panes if not node.selected), None)
+        if other_selected is None or other_pane is None:
+            raise SmokeFailure(stage, "pane_selection_unavailable")
+        other_pane_id = pane_id_from_node(other_pane)
+        if other_pane_id is None:
+            raise SmokeFailure(stage, "pane_identity_unavailable")
+        other_target = next(
+            (record for record in other_fixture_panes if record.pane_id == other_pane_id),
+            None,
+        )
+        if other_target is None or other_target.active:
+            raise SmokeFailure(stage, "pane_identity_mismatch")
+        tap_node(device, other_pane, stage)
+        wait_for_pane(
+            device,
+            stage,
+            pane_id=other_pane_id,
+            selected=True,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        wait_for_tmux_selection(
+            tmux_socket,
+            other_pane_id,
+            other_target.pane_pid,
+            stage,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        other_terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+        # Selecting another workspace mounts a fresh native terminal view;
+        # focus_terminal keeps its first key event behind the same bounded
+        # input-connection boundary as the initial terminal. The hosted smoke
+        # exposed a dropped character here (``export`` became ``expot``).
+        focus_terminal(device, other_terminal, stage)
+        terminal_line(
+            device,
+            session_marker_command(
+                second_marker_value or "",
+                second_marker_path or Path("/invalid"),
+                other_target.pane_pid,
+            ),
+        )
+        wait_for_file_contents(
+            second_marker_path or Path("/invalid"),
+            f"{second_marker_value}:{other_target.pane_pid}\n",
+            stage,
+        )
+        completed.append("tmux_workspace_switched")
+        completed.append("tmux_second_pane_selected")
+        completed.append("remote_marker_second_window")
+
+        # Return to the process-preservation pane before showing the handoff
+        # instructions and ending the mobile connection. Keep each UI
+        # boundary separate so a keyboard/modal race is observable.
+        stage = "tmux_workspace_return_switch"
+        tap_action(device, stage, SWITCH_WORKSPACE_LABELS)
+        stage = "tmux_workspace_return_picker"
+        first_workspace = wait_for_workspace(
+            device,
+            stage,
+            label=workspace_label,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        stage = "tmux_workspace_return_open"
+        tap_node(device, first_workspace, stage)
+        stage = "tmux_workspace_return_panes"
+        first_panes = wait_for_panes(
+            device,
+            stage,
+            count=FIXTURE_PANES_PER_WINDOW,
+            selected_count=1,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        if len(first_panes) != FIXTURE_PANES_PER_WINDOW:
+            raise SmokeFailure(stage, "pane_count_mismatch")
+        resume_pane = find_pane_node(first_panes, pane_id)
+        if resume_pane is None:
+            raise SmokeFailure(stage, "pane_identity_changed")
+        stage = "tmux_workspace_return_pane"
+        tap_node(device, resume_pane, stage)
+        wait_for_pane(
+            device,
+            stage,
+            pane_id=pane_id,
+            selected=True,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        wait_for_tmux_selection(
+            tmux_socket,
+            pane_id,
+            target_pane_pid,
+            stage,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        stage = "tmux_workspace_return_terminal"
+        terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+        focus_terminal(device, terminal, stage)
+        completed.append("tmux_workspace_returned")
+
+        stage = "pc_handoff"
+        open_handoff_and_capture(device, args.artifact_dir, completed)
+        completed.append("pc_handoff_layout")
+
+        stage = "disconnect"
+        open_disconnect_action(device, stage)
+        wait_for_node(device, "disconnected", text="Not connected", timeout=RECONNECT_TIMEOUT)
+        disconnected_layout = list_tmux_panes(tmux_socket, stage)
+        assert_fixture_layout_preserved(fixture_layout, disconnected_layout, stage)
         completed.append("disconnected")
 
         stage = "reconnect"
-        reconnect_button = wait_for_node(
+        reconnect_button = wait_for_node_with_labels(
             device,
             stage,
-            text="Reconnect",
+            RECONNECT_LABELS,
             timeout=RECONNECT_TIMEOUT,
         )
         tap_node(device, reconnect_button, stage)
@@ -1598,27 +2551,67 @@ def main(argv: list[str] | None = None) -> int:
         completed.append("reconnected")
 
         stage = "tmux_session_resume"
-        wait_for_workspace(
-            device,
-            stage,
-            label=workspace_label,
-            timeout=RECONNECT_TIMEOUT,
-        )
-        resumed_panes = wait_for_panes(
-            device,
-            stage,
-            count=2,
-            selected_count=1,
-            timeout=RECONNECT_TIMEOUT,
-        )
-        if len(resumed_panes) != 2:
+        # Disconnect leaves the current terminal route mounted, while a
+        # reconnect initiated from the home/server sheet may still show the
+        # workspace list.  Accept either settled route and only tap a row when
+        # the accessibility tree actually exposes one.
+        resumed_workspace: Node | None = None
+        try:
+            resumed_workspace = wait_for_workspace(
+                device,
+                stage,
+                label=workspace_label,
+                timeout=5.0,
+            )
+        except SmokeFailure as error:
+            if error.reason != "ui_timeout":
+                raise
+        try:
+            resumed_panes = wait_for_panes(
+                device,
+                stage,
+                count=FIXTURE_PANES_PER_WINDOW,
+                selected_count=1,
+                timeout=5.0,
+            )
+        except SmokeFailure as error:
+            if error.reason != "ui_timeout":
+                raise
+            if resumed_workspace is None:
+                resumed_workspace = wait_for_workspace(
+                    device,
+                    stage,
+                    label=workspace_label,
+                    timeout=RECONNECT_TIMEOUT,
+                )
+            tap_node(device, resumed_workspace, stage)
+            resumed_panes = wait_for_panes(
+                device,
+                stage,
+                count=FIXTURE_PANES_PER_WINDOW,
+                selected_count=1,
+                timeout=RECONNECT_TIMEOUT,
+            )
+        if len(resumed_panes) != FIXTURE_PANES_PER_WINDOW:
             raise SmokeFailure(stage, "pane_count_mismatch")
-        resumed_pane = find_pane_node(resumed_panes, pane_id, selected=True)
+        resumed_pane = find_pane_node(resumed_panes, pane_id)
         if resumed_pane is None:
             raise SmokeFailure(stage, "pane_identity_changed")
         if pane_id_from_node(resumed_pane) != pane_id:
             raise SmokeFailure(stage, "pane_identity_changed")
         tap_node(device, resumed_pane, stage)
+        wait_for_pane(
+            device,
+            stage,
+            pane_id=pane_id,
+            selected=True,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        resumed_layout = list_tmux_panes(tmux_socket, stage)
+        # Reconnect can legitimately leave the mobile-selected pane zoomed;
+        # compare durable window/pane identities here and defer the desktop
+        # split/no-zoom assertion until the explicit disconnect below.
+        assert_fixture_identity_preserved(fixture_layout, resumed_layout, stage)
         wait_for_tmux_selection(
             tmux_socket,
             pane_id,
@@ -1627,7 +2620,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=RECONNECT_TIMEOUT,
         )
         terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
-        tap_node(device, terminal, stage)
+        focus_terminal(device, terminal, stage)
         completed.append("tmux_pane_resumed")
 
         stage = "remote_marker_resume"
@@ -1647,26 +2640,36 @@ def main(argv: list[str] | None = None) -> int:
         completed.append("remote_marker_resumed")
 
         stage = "process_alive"
-        device.assert_process_alive(stage)
+        current_app_pid = device.process_id(stage)
+        if initial_app_pid is not None and current_app_pid != initial_app_pid:
+            raise SmokeFailure(stage, "app_process_changed")
         completed.append("process_alive")
 
         stage = "screenshot"
-        output_path = args.artifact_dir / "ssh-terminal.png"
         # The native SSH interaction must still belong to the meeterm activity;
         # screenshot collection alone is best effort and must not hide an ANR
         # or a system dialog that covered the terminal.
         device.assert_foreground(stage)
-        try:
-            device.screenshot(output_path)
-        except SmokeFailure as error:
-            # A screenshot is observability evidence and must never turn a
-            # successful real-SSH interaction into a failed machine gate.
-            screenshot_reason = error.reason
-            completed.append("screenshot_unavailable")
-        else:
+        screenshot_reason = capture_optional_screenshot(
+            device,
+            args.artifact_dir / "ssh-terminal.png",
+            completed,
+            "terminal",
+        )
+        if screenshot_reason == "ok":
             screenshot_written = True
-            screenshot_reason = "ok"
-            completed.append("screenshot")
+
+        stage = "disconnect_after_resume"
+        open_disconnect_action(device, stage)
+        wait_for_node(
+            device,
+            stage,
+            text="Not connected",
+            timeout=RECONNECT_TIMEOUT,
+        )
+        final_layout = list_tmux_panes(tmux_socket, stage)
+        assert_fixture_layout_preserved(fixture_layout, final_layout, stage)
+        completed.append("disconnected_after_resume")
         result = "passed"
         reason = "ok"
     except SmokeFailure as error:
@@ -1682,7 +2685,38 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             except OSError:
                 pass
+        if second_marker_path is not None:
+            try:
+                second_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
         if device is not None:
+            # Once the credential form has been submitted, a terminal-only
+            # failure can be reviewed safely. Capture the visible state before
+            # force-stop; never take this diagnostic while secrets are on
+            # screen. The normal terminal screenshot remains the preferred
+            # artifact when the smoke reaches it.
+            if (
+                result != "passed"
+                and secrets_submitted
+                and "terminal_focused" in completed
+            ):
+                try:
+                    device.assert_foreground("terminal_failure_screenshot")
+                except SmokeFailure as error:
+                    completed.append("terminal_failure_screenshot_unavailable")
+                    screenshot_reason = error.reason
+                else:
+                    screenshot_reason = capture_optional_screenshot(
+                        device,
+                        args.artifact_dir / "ssh-terminal-failure.png",
+                        completed,
+                        "terminal_failure",
+                    )
+                    if screenshot_reason == "ok":
+                        screenshot_written = True
             device.force_stop()
             try:
                 log_contents = device.logcat()

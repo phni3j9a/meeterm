@@ -6,18 +6,22 @@ are panes. A desktop user can continue with `tmux attach -t meeterm`.
 
 ## Using the session loop
 
-1. Open **Connect**, enter the SSH endpoint, username, OpenSSH private key, and
+1. Open **サーバーに接続** (accessibility label: **Connect**), enter the SSH endpoint, username, OpenSSH private key, and
    optional passphrase, and submit the form.
 2. Verify the displayed SHA-256 host-key fingerprint through a trusted channel
    before choosing **Trust and connect**. A changed trusted key fails closed.
-3. After **Connected**, select a workspace and its terminal tabs. Existing
+3. Once the status shows **接続中** (**Connected**), select a workspace and its terminal tabs. Existing
    windows and panes can be created or changed with ordinary remote tmux
    commands; the native core discovers the topology.
-4. **Disconnect** closes the mobile connection while the remote session and
-   its processes continue running. **Reconnect** resumes that workspace.
-5. After a transport failure, use **Reconnect**. After the app process exits,
-   enter the connection details and key again with **Connect**; the remote
+4. **切断** (**Disconnect**) closes the mobile connection while the remote session and
+   its processes continue running. **再接続** (**Reconnect**) resumes that workspace.
+5. After a transport failure, use **再接続** (**Reconnect**). After the app process exits,
+   open **サーバーに接続** (**Connect**) and enter the connection details and key again; the remote
    tmux session is still the source of truth.
+
+The form accepts the complete `BEGIN OPENSSH PRIVATE KEY` / `END OPENSSH PRIVATE KEY`
+block, not a `.pub` key or legacy PEM block. See the [first-app setup guide](FIRST_APP.md#接続先の準備と使い方)
+for key preparation and a server-side host-fingerprint check.
 
 The parsed private key is retained only in Rust process memory for explicit
 reconnect. The form clears private-key and passphrase text on submission or
@@ -87,7 +91,10 @@ server on a real host.
 
 An empty foreground `tmux -D -f /dev/null` server is started by the fixture so
 tests do not load the developer's tmux configuration, key bindings, or hooks.
-No managed session exists initially: the native connection creates `meeterm`.
+Only this isolated server sets `default-shell` to `/bin/sh` and
+`default-command` to `exec /bin/sh -i`, preventing developer shell startup
+prompts from interfering with fixture input. No managed session exists
+initially: the native connection creates `meeterm`.
 
 Prerequisites are Python 3.10+, `/usr/sbin/sshd`, `ssh`, `ssh-keygen`, and `tmux`.
 The fixture refuses to run as root. Missing prerequisites are environment setup
@@ -200,8 +207,12 @@ the one-second metadata poll.
 separate. Screenshot capture is not a machine acceptance gate, and unavailable
 captures are reported explicitly. See [`CI_MOBILE.md`](CI_MOBILE.md).
 
-The iOS hosted smoke validates the shared library, native adapter, module
-readiness, and first frame using the local demo. It does not claim an interactive
-iOS SSH flow. A CoreGraphics fallback frame is explicitly different from Metal
-execution. Physical-device GPU, Japanese IME, background network behavior, and
-font parity still need their own device evidence.
+The iOS hosted smoke now runs `scripts/ssh/ios-smoke.py` with a generated
+XCUITest target. It drives the real app against the disposable SSH fixture,
+including workspace/pane selection, input, disconnect/reconnect, and desktop
+handoff. It separately launches the explicit foundation preview for native
+readiness, first frame, and process survival. Implementing this driver is not
+proof that the hosted run passed; see `FIRST_APP.md` for current evidence.
+A CoreGraphics fallback frame is explicitly different from Metal execution.
+Physical-device GPU, Japanese IME, background network behavior, and font parity
+still need their own device evidence.

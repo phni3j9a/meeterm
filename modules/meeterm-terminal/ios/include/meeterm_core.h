@@ -13,6 +13,8 @@ size_t meeterm_snapshot_size(uint64_t terminal_id);
 size_t meeterm_snapshot(uint64_t terminal_id, uint8_t *output, size_t capacity);
 int32_t meeterm_resize_terminal(uint64_t terminal_id, uint16_t columns, uint16_t rows);
 uint64_t meeterm_commit_utf8(uint64_t terminal_id, const uint8_t *bytes, size_t length);
+int32_t meeterm_paste_utf8(uint64_t terminal_id, const uint8_t *bytes, size_t length);
+int32_t meeterm_scroll_lines(uint64_t terminal_id, int32_t lines);
 int32_t meeterm_send_special_key(uint64_t terminal_id, uint32_t key);
 /* Native-only input; never expose terminal byte streams through JavaScript. */
 int32_t meeterm_send_bytes(uint64_t terminal_id, const uint8_t *bytes, size_t length);
@@ -94,7 +96,8 @@ typedef struct meeterm_tmux_pane {
   uint64_t terminal_id;
   uint16_t window_name_len;
   uint8_t selected;
-  uint8_t reserved[5];
+  uint8_t active;
+  uint8_t reserved[4];
   uint8_t window_name[256];
 } meeterm_tmux_pane_t;
 

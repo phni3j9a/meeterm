@@ -188,7 +188,11 @@ fn named_color(color: NamedColor) -> Rgb {
             g: 255,
             b: 255,
         },
-        NamedColor::Background => Rgb { r: 0, g: 0, b: 0 },
+        NamedColor::Background => Rgb {
+            r: 36,
+            g: 33,
+            b: 29,
+        },
         NamedColor::Cursor => Rgb {
             r: 208,
             g: 208,

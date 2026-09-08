@@ -143,6 +143,17 @@ pub fn send_special_key(id: TerminalId, key: SpecialKey) -> Result<usize, Termin
     with_terminal(id, |terminal| terminal.send_special_key(key))
 }
 
+pub fn paste_utf8(id: TerminalId, bytes: &[u8]) -> Result<usize, TerminalError> {
+    with_terminal(id, |terminal| terminal.paste_utf8(bytes))
+}
+
+pub fn scroll_lines(id: TerminalId, lines: i32) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.scroll_lines(lines);
+        Ok(())
+    })
+}
+
 pub(crate) fn send_bytes(id: TerminalId, bytes: &[u8]) -> Result<usize, TerminalError> {
     with_terminal(id, |terminal| terminal.send_bytes(bytes))
 }
