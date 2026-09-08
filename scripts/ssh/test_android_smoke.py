@@ -244,6 +244,110 @@ class UiDriverTests(unittest.TestCase):
         self.assertEqual(node.text, "127.0.0.1")
         self.assertEqual(clock.sleep_calls, [smoke.FIELD_SETTLE_SECONDS] * 3)
 
+    def test_fill_field_retries_once_after_readback_mismatch_without_appending(self) -> None:
+        first = smoke.Node(
+            "",
+            "Host",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+        )
+        partial = smoke.Node(
+            "part",
+            "Host, part",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+        )
+        device = mock.Mock()
+        readback_error = smoke.SmokeFailure("host_input", "entry_mismatch")
+        with mock.patch.object(
+            smoke,
+            "wait_for_text_input",
+            side_effect=[first, partial],
+        ) as find, mock.patch.object(
+            smoke,
+            "wait_for_field_value",
+            side_effect=[readback_error, None],
+        ) as readback, mock.patch.object(smoke.time, "sleep"):
+            smoke.fill_field(device, "Host", "part-value", "host_input", scroll=False)
+
+        self.assertEqual(find.call_count, 2)
+        self.assertEqual(readback.call_count, 2)
+        self.assertEqual(
+            device.input_text.call_args_list,
+            [
+                mock.call("part-value", "host_input"),
+                mock.call("part-value", "host_input"),
+            ],
+        )
+        device.input_keyevents.assert_called_once_with(
+            (smoke.KEYCODE_MOVE_END, smoke.KEYCODE_DEL, smoke.KEYCODE_DEL, smoke.KEYCODE_DEL, smoke.KEYCODE_DEL),
+            "host_input",
+        )
+
+    def test_fill_field_returns_after_first_success_without_retry(self) -> None:
+        node = smoke.Node(
+            "",
+            "Host",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+        )
+        device = mock.Mock()
+        with mock.patch.object(smoke, "wait_for_text_input", return_value=node) as find, mock.patch.object(
+            smoke,
+            "wait_for_field_value",
+            return_value=node,
+        ) as readback:
+            smoke.fill_field(device, "Host", "127.0.0.1", "host_input", scroll=False)
+
+        find.assert_called_once()
+        readback.assert_called_once()
+        device.input_text.assert_called_once_with("127.0.0.1", "host_input")
+        device.input_keyevents.assert_not_called()
+
+    def test_fill_field_stops_after_bounded_mismatch_retries(self) -> None:
+        node = smoke.Node(
+            "",
+            "Host",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+        )
+        device = mock.Mock()
+        mismatch = smoke.SmokeFailure("host_input", "entry_mismatch")
+        with mock.patch.object(smoke, "wait_for_text_input", return_value=node) as find, mock.patch.object(
+            smoke,
+            "wait_for_field_value",
+            side_effect=[mismatch, mismatch],
+        ) as readback, mock.patch.object(smoke.time, "sleep"):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.fill_field(device, "Host", "127.0.0.1", "host_input", scroll=False)
+
+        self.assertEqual(error.exception.reason, "entry_mismatch")
+        self.assertEqual(find.call_count, smoke.FIELD_INPUT_MAX_ATTEMPTS)
+        self.assertEqual(readback.call_count, smoke.FIELD_INPUT_MAX_ATTEMPTS)
+        self.assertEqual(device.input_text.call_count, smoke.FIELD_INPUT_MAX_ATTEMPTS)
+
+    def test_fill_field_does_not_retry_non_mismatch_failure(self) -> None:
+        node = smoke.Node(
+            "",
+            "Host",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+        )
+        device = mock.Mock()
+        with mock.patch.object(smoke, "wait_for_text_input", return_value=node) as find, mock.patch.object(
+            smoke,
+            "wait_for_field_value",
+            side_effect=smoke.SmokeFailure("host_input", "field_unavailable"),
+        ) as readback:
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.fill_field(device, "Host", "127.0.0.1", "host_input", scroll=False)
+
+        self.assertEqual(error.exception.reason, "field_unavailable")
+        find.assert_called_once()
+        readback.assert_called_once()
+        device.input_text.assert_called_once_with("127.0.0.1", "host_input")
+        device.input_keyevents.assert_not_called()
+
     def test_missing_xml_classifies_only_known_diagnostics(self) -> None:
         for output, reason in (
             (b"ERROR: could not get idle state.", "accessibility_not_idle"),

@@ -35,6 +35,7 @@ REMOTE_MARKER_TIMEOUT = 15.0
 RECONNECT_TIMEOUT = 45.0
 FIELD_READBACK_TIMEOUT = 8.0
 FIELD_SETTLE_SECONDS = 0.25
+FIELD_INPUT_MAX_ATTEMPTS = 2
 KEY_INPUT_TIMEOUT = 600.0
 KEY_READBACK_TIMEOUT = 15.0
 KEY_INPUT_SETTLE_SECONDS = 0.3
@@ -1622,19 +1623,35 @@ def fill_field(
     scroll: bool = True,
     clear_count: int = 0,
 ) -> None:
-    node = wait_for_text_input(
-        device,
-        stage,
-        label=content_description,
-        scroll=scroll,
-    )
-    tap_node(device, node, stage)
-    clear_field(device, stage, clear_count)
-    if value:
-        device.input_text(value, stage)
-    # Compare in memory only. In particular, do not report entered text in a
-    # failure: this helper also protects against an incorrectly cleared port.
-    wait_for_field_value(device, stage, content_description, value)
+    for attempt in range(FIELD_INPUT_MAX_ATTEMPTS):
+        node = wait_for_text_input(
+            device,
+            stage,
+            label=content_description,
+            scroll=scroll,
+            timeout=DEFAULT_UI_TIMEOUT if attempt == 0 else FIELD_READBACK_TIMEOUT,
+        )
+        tap_node(device, node, stage)
+        # A failed readback means the first burst may have been dropped or
+        # partially applied. Clear the value observed on the retry pass before
+        # sending it again; this avoids appending a duplicate suffix.
+        retry_clear_count = clear_count if attempt == 0 else len(node.text)
+        clear_field(device, stage, retry_clear_count)
+        if value:
+            device.input_text(value, stage)
+        # Compare in memory only. In particular, do not report entered text in
+        # a failure: this helper also protects against an incorrectly cleared
+        # port.
+        try:
+            wait_for_field_value(device, stage, content_description, value)
+            return
+        except SmokeFailure as error:
+            if (
+                error.reason != "entry_mismatch"
+                or attempt + 1 >= FIELD_INPUT_MAX_ATTEMPTS
+            ):
+                raise
+            time.sleep(FIELD_SETTLE_SECONDS)
 
 
 def fill_multiline_key(device: AndroidDevice, key: str) -> None:
