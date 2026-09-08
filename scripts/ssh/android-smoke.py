@@ -22,7 +22,11 @@ def patch_foreground_check(module: dict[str, object]) -> None:
 
     def assert_foreground(self, stage: str) -> None:
         window_output = self.run(
-            ("shell", "dumpsys", "window", "windows"),
+            # Android 11's `window windows` subcommand can omit both focus
+            # summary fields even while the app is visibly foreground.  The
+            # parent `window` dump retains the same concrete focus records and
+            # is the stronger query on the physical Pixel 3.
+            ("shell", "dumpsys", "window"),
             f"{stage}_foreground",
             timeout=10.0,
         ).decode("utf-8", errors="replace")

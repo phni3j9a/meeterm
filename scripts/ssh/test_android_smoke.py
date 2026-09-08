@@ -161,6 +161,36 @@ class _MutableProbeEditorDevice:
             self.text += "\n"
 
 
+class _FieldProbeDevice:
+    """A controlled TextInput whose accessibility value settles in stages."""
+
+    def __init__(self, label: str, observations: list[str]) -> None:
+        self.label = label
+        self.observations = observations
+        self.index = 0
+        self.input_tap_calls: list[tuple[int, int, str]] = []
+        self.input_text_calls: list[tuple[str, str]] = []
+
+    def dump_ui(self) -> list[smoke.Node]:
+        value = self.observations[min(self.index, len(self.observations) - 1)]
+        self.index += 1
+        description = self.label if not value else f"{self.label}, {value}"
+        return [
+            smoke.Node(
+                value,
+                description,
+                "android.widget.EditText",
+                (0, 0, 100, 100),
+            )
+        ]
+
+    def input_tap(self, x: int, y: int, stage: str) -> None:
+        self.input_tap_calls.append((x, y, stage))
+
+    def input_text(self, value: str, stage: str) -> None:
+        self.input_text_calls.append((value, stage))
+
+
 @contextlib.contextmanager
 def _patched_clock(clock: _FakeClock):
     with mock.patch.object(smoke.time, "monotonic", side_effect=clock.monotonic), mock.patch.object(
@@ -170,6 +200,31 @@ def _patched_clock(clock: _FakeClock):
 
 
 class UiDriverTests(unittest.TestCase):
+    def test_text_input_label_accepts_android_value_suffix_without_printing_value(self) -> None:
+        value = "127.0.0.1"
+        node = smoke.Node(
+            value,
+            f"Host, {value}",
+            "android.widget.EditText",
+            (0, 0, 100, 100),
+        )
+        self.assertTrue(smoke.content_description_has_label(node.content_description, "Host"))
+        self.assertIs(smoke.find_text_input([node], "Host"), node)
+        self.assertFalse(smoke.content_description_has_label("Hostname, other", "Host"))
+
+    def test_field_readback_waits_for_settled_value_after_input(self) -> None:
+        clock = _FakeClock()
+        device = _FieldProbeDevice("Host", ["", "", "127.0.0.1", "127.0.0.1"])
+        with _patched_clock(clock):
+            node = smoke.wait_for_field_value(
+                device,
+                "host_input",
+                "Host",
+                "127.0.0.1",
+            )
+        self.assertEqual(node.text, "127.0.0.1")
+        self.assertEqual(clock.sleep_calls, [smoke.FIELD_SETTLE_SECONDS] * 3)
+
     def test_missing_xml_classifies_only_known_diagnostics(self) -> None:
         for output, reason in (
             (b"ERROR: could not get idle state.", "accessibility_not_idle"),
@@ -537,7 +592,11 @@ class UiDriverTests(unittest.TestCase):
                     time.sleep(0.01)
                 self.assertTrue(socket_path.exists())
                 panes = smoke.prepare_tmux_fixture(socket_path)
-                self.assertEqual(len(panes), 2)
+                self.assertEqual(len(panes), smoke.FIXTURE_PANE_COUNT)
+                self.assertEqual(
+                    len({record.window_id for record in panes}),
+                    len(smoke.FIXTURE_WINDOW_NAMES),
+                )
                 with self.assertRaises(smoke.SmokeFailure) as error:
                     smoke.prepare_tmux_fixture(socket_path)
                 self.assertEqual(error.exception.reason, "session_already_exists")
@@ -672,6 +731,28 @@ UI dumped to: /dev/tty"""
         assert workspace is not None
         self.assertEqual(smoke.accessible_label(workspace), "Workspace 0")
 
+    def test_workspace_lookup_prefers_tmux_selected_window(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Workspace handoff",
+                "android.view.View",
+                (0, 0, 400, 100),
+            ),
+            smoke.Node(
+                "",
+                "Workspace smoke",
+                "android.view.View",
+                (0, 100, 400, 200),
+                selected=True,
+            ),
+        ]
+
+        workspace = smoke.find_workspace_node(nodes)
+        self.assertIsNotNone(workspace)
+        assert workspace is not None
+        self.assertEqual(smoke.accessible_label(workspace), "Workspace smoke")
+
     def test_private_key_label_allows_only_known_accessibility_value_suffixes(self) -> None:
         nodes = [
             smoke.Node(
@@ -702,6 +783,28 @@ UI dumped to: /dev/tty"""
             )
         )
 
+    def test_private_key_editor_prefers_edit_text_and_allows_invisible_focus_pass(self) -> None:
+        wrapper = smoke.Node(
+            "",
+            "Private OpenSSH key, Empty",
+            "android.view.View",
+            (10, 100, 1000, 600),
+        )
+        editor = smoke.Node(
+            "",
+            "Private OpenSSH key, Empty",
+            "android.widget.EditText",
+            (10, 100, 1000, 600),
+            visible_to_user=False,
+            focused=True,
+        )
+
+        self.assertIs(smoke.find_private_key_editor([wrapper, editor]), wrapper)
+        self.assertIs(
+            smoke.find_private_key_editor([wrapper, editor], include_invisible=True),
+            editor,
+        )
+
     def test_terminal_surface_prefers_native_view(self) -> None:
         nodes = [
             smoke.Node("", "", "android.view.View", (0, 50, 1080, 2400)),
@@ -717,8 +820,10 @@ UI dumped to: /dev/tty"""
 
     def test_tmux_parser_keeps_pane_pid_and_real_selection_state(self) -> None:
         output = (
-            b"@4\t%12\t1201\t0\t1\t1\n"
-            b"@4\t%13\t1202\t1\t1\t1\n"
+            b"@4\tsmoke\t%12\t1201\t0\t0\t40\t24\t0\t0\t39\t23\t1\t1\n"
+            b"@4\tsmoke\t%13\t1202\t1\t1\t40\t24\t40\t0\t79\t23\t1\t1\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t40\t24\t0\t0\t39\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t40\t24\t40\t0\t79\t23\t0\t0\n"
         )
 
         records = smoke.parse_tmux_panes(output)
@@ -729,6 +834,28 @@ UI dumped to: /dev/tty"""
             smoke._selection_matches(records, "%13", 1202),
         )
         self.assertFalse(smoke._selection_matches(records, "%12", 1201))
+
+    def test_tmux_layout_check_detects_split_changes_separately_from_identity(self) -> None:
+        output = (
+            b"@4\tsmoke\t%12\t1201\t0\t0\t40\t24\t0\t0\t39\t23\t1\t0\n"
+            b"@4\tsmoke\t%13\t1202\t1\t1\t40\t24\t40\t0\t79\t23\t1\t0\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t40\t24\t0\t0\t39\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t40\t24\t40\t0\t79\t23\t0\t0\n"
+        )
+        records = smoke.parse_tmux_panes(output)
+        smoke.assert_fixture_layout_preserved(records, records, "layout")
+
+        changed_identity = list(records)
+        changed_identity[0] = changed_identity[0]._replace(pane_pid=9999)
+        with self.assertRaises(smoke.SmokeFailure) as identity_error:
+            smoke.assert_fixture_layout_preserved(records, changed_identity, "layout")
+        self.assertEqual(identity_error.exception.reason, "pane_layout_changed")
+
+        changed_split = list(records)
+        changed_split[1] = changed_split[1]._replace(pane_top=1)
+        with self.assertRaises(smoke.SmokeFailure) as split_error:
+            smoke.assert_fixture_layout_preserved(records, changed_split, "layout")
+        self.assertEqual(split_error.exception.reason, "pane_split_changed")
 
     def test_tmux_socket_must_be_fixture_scoped(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root_text:
