@@ -274,12 +274,16 @@ final class MeetermSmokeUITests: XCTestCase {
   private func fillTextField(label: String, value: String, clearExistingCharacters: Int = 0) {
     let field = input(label)
     XCTAssertTrue(field.waitForExistence(timeout: 10), "The \(label) field is unavailable.")
+    if label == "Port" { record("fill_port_focus") }
     field.tap()
     if clearExistingCharacters > 0 {
-      for _ in 0..<clearExistingCharacters {
-        app.keys["delete"].tap()
-      }
+      // The port uses iOS's number-pad, whose delete key is not exposed
+      // consistently through app.keys. Send the key to the focused field so
+      // replacement does not depend on the keyboard's accessibility label.
+      if label == "Port" { record("fill_port_clear") }
+      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: clearExistingCharacters))
     }
+    if label == "Port" { record("fill_port_type") }
     field.typeText(value)
   }
 
