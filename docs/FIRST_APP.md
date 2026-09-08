@@ -111,7 +111,7 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 
 | 検証 | 現在の証拠 |
 | --- | --- |
-| 共有Rust | 40 unit tests、Clippy通過。2026-09-08ローカル |
+| 共有Rust | 41 unit tests、Clippy通過。2026-09-08ローカル |
 | OpenSSH＋tmux | 隔離fixtureで接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存のPC zoom保持・window内active pane保持通過。2026-09-08ローカル |
 | UI型チェック | 新UI統合後のTypeScriptチェック通過。2026-09-08ローカル |
 | Android CI | 最終変更を含むrun待ち |

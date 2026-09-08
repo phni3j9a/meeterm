@@ -745,11 +745,17 @@ fn start_connection(
         port,
         known_hosts_path.to_owned(),
     ));
-    shared
-        .session
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .generation = generation;
+    {
+        let mut state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        // Abort completion is asynchronous. Install the new generation and
+        // discard the old actor's local cleanup authority in one operation.
+        state.generation = generation;
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_pane = None;
+    }
     if reconnecting {
         shared.set_state(ConnectionState::Reconnecting);
     }
