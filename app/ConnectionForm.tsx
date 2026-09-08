@@ -129,7 +129,7 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
             <Pressable accessibilityRole="button" accessibilityLabel="Cancel" onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent }]}>キャンセル</Text></Pressable>
             <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>サーバーに接続</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>接続</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Connect" testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>接続</Text></Pressable>
           </View>
           <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>
             <View style={styles.intro}>

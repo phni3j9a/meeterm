@@ -39,6 +39,9 @@ final class MeetermSmokeUITests: XCTestCase {
       withIntermediateDirectories: true
     )
     try? FileManager.default.removeItem(at: markerPath)
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-failure.txt")
+    )
     record("test_started")
 
     app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -48,6 +51,36 @@ final class MeetermSmokeUITests: XCTestCase {
       "The meeterm app did not reach the foreground."
     )
     record("app_launched")
+  }
+
+  override func record(_ issue: XCTIssue) {
+    // XCTest keeps the complete issue, including the text entered with
+    // typeText, in its result bundle. Emit only a fixed diagnostic category to
+    // the uploaded observability directory; super.record keeps the raw result
+    // under RUNNER_TEMP for XCTest's normal reporting.
+    let description = issue.compactDescription
+    let category: String
+    if description.localizedCaseInsensitiveContains("multiple matching") {
+      category = "multiple_matching"
+    } else if description.localizedCaseInsensitiveContains("no matches found") {
+      category = "no_matches_found"
+    } else if description.localizedCaseInsensitiveContains("hit point")
+      || description.localizedCaseInsensitiveContains("hittable") {
+      category = "hittability"
+    } else {
+      category = "unknown"
+    }
+    let line = "source_line=\(issue.sourceCodeContext.location?.lineNumber ?? 0)\ncategory=\(category)\n"
+    let data = Data(line.utf8)
+    let path = artifactDirectory.appendingPathComponent("ios-ui-failure.txt")
+    if let handle = try? FileHandle(forWritingTo: path) {
+      handle.seekToEndOfFile()
+      handle.write(data)
+      try? handle.close()
+    } else {
+      try? data.write(to: path, options: .atomic)
+    }
+    super.record(issue)
   }
 
   func testRealSshWorkspacePaneInputDisconnectReconnectAndHandoff() throws {
@@ -75,8 +108,12 @@ final class MeetermSmokeUITests: XCTestCase {
     fillPrivateKey(key)
 
     record("submit_connect")
-    let submit = button("Connect")
+    let submit = app.buttons["ssh-submit"]
+    record("submit_connect_exists")
     XCTAssertTrue(submit.waitForExistence(timeout: 10), "The Connect action is unavailable.")
+    record("submit_connect_hittable")
+    XCTAssertTrue(waitForHittable(submit, timeout: 10), "The Connect action is not hittable.")
+    record("submit_connect_tap")
     submit.tap()
 
     record("await_host_trust_prompt")
@@ -338,8 +375,15 @@ final class MeetermSmokeUITests: XCTestCase {
     let buttons = app.buttons.matching(
       NSPredicate(format: "identifier == %@ OR label == %@", label, label)
     )
-    if buttons.count > 0 { return buttons.element(boundBy: buttons.count - 1) }
-    return app.descendants(matching: .any)[label]
+    if buttons.count > 0 {
+      for index in 0..<buttons.count {
+        let candidate = buttons.element(boundBy: index)
+        if candidate.exists && candidate.isHittable { return candidate }
+      }
+      return buttons.element(boundBy: buttons.count - 1)
+    }
+    let descendant = app.descendants(matching: .any)[label]
+    return descendant
   }
 
   private func terminalElement() throws -> XCUIElement {
@@ -400,6 +444,15 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return element.isSelected
+  }
+
+  private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if element.exists && element.isHittable { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return element.exists && element.isHittable
   }
 
   private func typeTerminal(_ value: String) {
