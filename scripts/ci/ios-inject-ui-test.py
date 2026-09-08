@@ -291,6 +291,27 @@ def add_child(group_id: str, child: str) -> None:
 add_child(main_group_id, f"{tests_group_id} /* meetermTests */")
 add_child(products_group_id, f"{product_ref_id} /* meetermTests.xctest */")
 
+# Run focused UIKit input tests in the disposable test runner using the exact
+# production input view and key enum. No Rust registry/runtime is copied into
+# this runner; the real SSH UI test still exercises the app's native package.
+for index, argument in enumerate(sys.argv[4:]):
+    extra_source = Path(argument)
+    extra_ref_id = f"00E357{index:018X}"
+    extra_build_id = f"00E358{index:018X}"
+    if extra_ref_id in project or extra_build_id in project:
+        raise SystemExit("a reserved native input test source ID is already in use")
+    shutil.copyfile(extra_source, generated_tests_dir / extra_source.name)
+    insert_section(
+        "PBXBuildFile",
+        f"\n\t\t{extra_build_id} /* {extra_source.name} in Sources */ = {{isa = PBXBuildFile; fileRef = {extra_ref_id}; }};\n",
+    )
+    insert_section(
+        "PBXFileReference",
+        f'\n\t\t{extra_ref_id} /* {extra_source.name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {extra_source.name}; sourceTree = "<group>"; }};\n',
+    )
+    add_child(tests_group_id, f"{extra_ref_id} /* {extra_source.name} */")
+    add_child(sources_phase_id, f"{extra_build_id} /* {extra_source.name} in Sources */")
+
 project_object_pattern = re.compile(
     rf"(^\s*{re.escape(project_object_id)} /\* Project object \*/ = \{{.*?^\s*\}};\n/\* End PBXProject section \*/)",
     re.MULTILINE | re.DOTALL,

@@ -1,3 +1,4 @@
+import Foundation
 import UIKit
 
 /// Native UITextInput implementation supplied by UITextView. Marked/preedit
@@ -10,7 +11,11 @@ final class TerminalInputView: UITextView {
   var onSpecialKey: ((TerminalSpecialKey) -> Void)?
 
   private var isReplacingMarkedText = false
+  private var pasteGeneration: UInt64 = 0
+  private var pendingPasteGeneration: UInt64?
+  private var pendingPasteProgress: Progress?
   private lazy var terminalAccessoryView: UIView = makeAccessoryView()
+  private lazy var terminalPasteControl: UIPasteControl = makePasteControl()
 
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
@@ -83,11 +88,49 @@ final class TerminalInputView: UITextView {
 
   override func paste(_ sender: Any?) {
     // Read the clipboard only in response to the user's explicit paste action.
+    invalidatePendingPaste()
     guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
-    super.unmarkText()
-    resetBackingStore()
-    onPreeditChanged?("")
-    onPaste?(pasted)
+    deliverPaste(pasted)
+  }
+
+  override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
+    itemProviders.contains { $0.canLoadObject(ofClass: String.self) }
+  }
+
+  override func paste(itemProviders: [NSItemProvider]) {
+    invalidatePendingPaste()
+    guard window != nil, isFirstResponder,
+          let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else {
+      return
+    }
+
+    let generation = pasteGeneration
+    pendingPasteGeneration = generation
+    terminalPasteControl.accessibilityValue = "Pasting"
+    pendingPasteProgress = provider.loadObject(ofClass: String.self) { [weak self] pasted, _ in
+      DispatchQueue.main.async { [weak self] in
+        guard let self,
+              self.pasteGeneration == generation,
+              self.pendingPasteGeneration == generation else {
+          return
+        }
+        self.pendingPasteGeneration = nil
+        self.pendingPasteProgress = nil
+        self.terminalPasteControl.accessibilityValue = "Ready"
+        guard self.window != nil, self.isFirstResponder,
+              let pasted, !pasted.isEmpty else {
+          return
+        }
+        self.deliverPaste(pasted)
+      }
+    }
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window == nil {
+      invalidatePendingPaste()
+    }
   }
 
   private func configure() {
@@ -107,6 +150,7 @@ final class TerminalInputView: UITextView {
     keyboardType = .default
     keyboardAppearance = .dark
     returnKeyType = .default
+    pasteConfiguration = UIPasteConfiguration(forAccepting: String.self)
     inputAccessoryView = terminalAccessoryView
     inputAssistantItem.leadingBarButtonGroups = []
     inputAssistantItem.trailingBarButtonGroups = []
@@ -121,12 +165,29 @@ final class TerminalInputView: UITextView {
 
   /// Cancel local preedit before borrowing a different native terminal.
   func cancelCompositionForBinding() {
+    invalidatePendingPaste()
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
     // End the old UIKit input session before its callbacks can target a new
     // pane. The newly selected terminal can be focused with a native tap.
     resignFirstResponder()
+  }
+
+  private func invalidatePendingPaste() {
+    pasteGeneration &+= 1
+    pendingPasteGeneration = nil
+    pendingPasteProgress?.cancel()
+    pendingPasteProgress = nil
+    terminalPasteControl.accessibilityValue = "Ready"
+  }
+
+  private func deliverPaste(_ pasted: String) {
+    guard !pasted.isEmpty else { return }
+    super.unmarkText()
+    resetBackingStore()
+    onPreeditChanged?("")
+    onPaste?(pasted)
   }
 
   private func resetBackingStore() {
@@ -150,7 +211,7 @@ final class TerminalInputView: UITextView {
       accessoryButton(title: "Esc", action: #selector(sendEscape)),
       accessoryButton(title: "Tab", action: #selector(sendTab)),
       accessoryButton(title: "^C", action: #selector(sendInterrupt)),
-      accessoryButton(title: "Paste", action: #selector(paste(_:))),
+      terminalPasteControl,
       accessoryButton(title: "←", action: #selector(sendLeft)),
       accessoryButton(title: "↑", action: #selector(sendUp)),
       accessoryButton(title: "↓", action: #selector(sendDown)),
@@ -179,6 +240,30 @@ final class TerminalInputView: UITextView {
       keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -8)
     ])
     return accessory
+  }
+
+  private func makePasteControl() -> UIPasteControl {
+    var configuration = UIPasteControl.Configuration()
+    configuration.baseForegroundColor = UIColor(
+      red: 219.0 / 255,
+      green: 179.0 / 255,
+      blue: 120.0 / 255,
+      alpha: 1
+    )
+    configuration.baseBackgroundColor = UIColor(white: 1, alpha: 0.05)
+    configuration.cornerStyle = .capsule
+    configuration.displayMode = .labelOnly
+    let control = UIPasteControl(configuration: configuration)
+    control.target = self
+    control.accessibilityLabel = "Paste"
+    control.accessibilityIdentifier = "terminal-paste"
+    control.accessibilityValue = "Ready"
+    control.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      control.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
+      control.heightAnchor.constraint(equalToConstant: 44)
+    ])
+    return control
   }
 
   private func accessoryButton(title: String, action: Selector) -> UIButton {

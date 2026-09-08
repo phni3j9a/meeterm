@@ -298,7 +298,9 @@ def run_xcuitest(
                 timeout=900,
                 check=False,
             )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        raise SmokeFailure("xcuitest", "xcodebuild_timeout") from error
+    except OSError as error:
         raise SmokeFailure("xcuitest", "xcodebuild_failed") from error
     return completed.returncode
 

@@ -10,6 +10,7 @@ import XCTest
 /// activity/result data stays in RUNNER_TEMP because `typeText` may retain
 /// the strings it sends in an xcresult bundle.
 final class MeetermSmokeUITests: XCTestCase {
+  private let testStartedAt = ProcessInfo.processInfo.systemUptime
   private let app = XCUIApplication(bundleIdentifier: "dev.meeterm.app")
   private let artifactDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["MEETERM_IOS_ARTIFACT_DIR"]
@@ -54,6 +55,9 @@ final class MeetermSmokeUITests: XCTestCase {
     )
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("host-trust-timeout.png")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-timing.txt")
     )
     record("test_started")
 
@@ -310,16 +314,21 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func record(_ stage: String) {
-    let line = stage + "\n"
-    guard let data = line.data(using: .utf8) else { return }
-    if FileManager.default.fileExists(atPath: validationPath.path) {
-      if let handle = try? FileHandle(forWritingTo: validationPath) {
-        handle.seekToEndOfFile()
-        handle.write(data)
-        try? handle.close()
+    // Keep the stage-only contract stable; timing contains only elapsed
+    // milliseconds and the same fixed stage names, never XCTest descriptions.
+    let elapsed = Int((ProcessInfo.processInfo.systemUptime - testStartedAt) * 1000)
+    let timingPath = artifactDirectory.appendingPathComponent("ios-ui-timing.txt")
+    for (path, line) in [(validationPath, stage + "\n"), (timingPath, "\(elapsed) \(stage)\n")] {
+      let data = Data(line.utf8)
+      if FileManager.default.fileExists(atPath: path.path) {
+        if let handle = try? FileHandle(forWritingTo: path) {
+          handle.seekToEndOfFile()
+          handle.write(data)
+          try? handle.close()
+        }
+      } else {
+        try? data.write(to: path, options: .atomic)
       }
-    } else {
-      try? data.write(to: validationPath, options: .atomic)
     }
   }
 
@@ -614,9 +623,20 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(paste.waitForExistence(timeout: 10), "The terminal Paste action is unavailable.")
     record("\(stage)_paste_hittable")
     XCTAssertTrue(waitForHittable(paste, timeout: 10), "The terminal Paste action is not hittable.")
+    let enabled = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == YES"), object: paste
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed, "The terminal Paste action is disabled.")
     record("\(stage)_paste_tap")
     paste.tap()
-    allowFixturePasteIfRequested(stage: stage)
+    record("\(stage)_paste_tapped")
+    // UIPasteControl loads the item provider asynchronously. Wait for the
+    // native action's completion before clearing its source or sending Enter.
+    let finished = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", "Ready"), object: paste
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 10), .completed, "The native paste did not finish.")
+    record("\(stage)_paste_finished")
     UIPasteboard.general.string = nil
 
     record("\(stage)_keyboard_return")
@@ -626,25 +646,6 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(enter.waitForExistence(timeout: 10), "The terminal Return key is unavailable.")
     enter.tap()
     record("\(stage)_await_remote_marker")
-  }
-
-  private func allowFixturePasteIfRequested(stage: String) {
-    // The disposable test runner owns the clipboard content. iOS may ask
-    // before the app's explicit native Paste action can read another app's
-    // pasteboard; keep that value until this user-facing permission resolves.
-    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-    let deadline = Date().addingTimeInterval(5)
-    while Date() < deadline {
-      for owner in [app, springboard] {
-        let allow = owner.alerts.buttons["Allow Paste"]
-        if allow.exists && allow.isHittable {
-          record("\(stage)_allow_fixture_paste")
-          allow.tap()
-          return
-        }
-      }
-      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
-    }
   }
 
   private func waitForDisconnected() -> Bool {

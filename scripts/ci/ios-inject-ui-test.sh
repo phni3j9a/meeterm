@@ -12,4 +12,7 @@ test -f "${source_path}"
 python3 "${GITHUB_WORKSPACE}/scripts/ci/ios-inject-ui-test.py" \
   "${project_path}" \
   "${scheme_path}" \
-  "${source_path}"
+  "${source_path}" \
+  "${GITHUB_WORKSPACE}/scripts/ci/TerminalInputViewTests.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalInputView.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalSpecialKey.swift"
