@@ -50,6 +50,7 @@ required_screenshots=(
   workspace-switched
   pane-switched
   terminal-keyboard
+  terminal-input
   disconnected
   reconnected
 )
