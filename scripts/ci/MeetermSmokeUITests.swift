@@ -85,7 +85,9 @@ final class MeetermSmokeUITests: XCTestCase {
     let expectedFingerprint = requiredEnvironment("MEETERM_SSH_FINGERPRINT")
     record("verify_host_fingerprint")
     XCTAssertTrue(
-      alert.label.contains(expectedFingerprint),
+      alert.staticTexts.allElementsBoundByIndex.contains {
+        $0.label.contains(expectedFingerprint)
+      },
       "The host trust prompt did not display the fixture fingerprint."
     )
     record("capture_host_trust")
@@ -368,7 +370,8 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func waitForPaneLabels(minimum: Int) -> [String] {
     let predicate = NSPredicate(format: "label BEGINSWITH 'Terminal %'")
-    let query = app.buttons.matching(predicate)
+    // React Native's tab role need not be exposed as an XCTest button.
+    let query = app.descendants(matching: .any).matching(predicate)
     let deadline = Date().addingTimeInterval(60)
     while Date() < deadline {
       let labels = (0..<query.count).compactMap { index -> String? in
