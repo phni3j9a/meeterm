@@ -122,7 +122,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("fill_host")
     fillTextField(label: "Host", value: host)
     record("fill_port")
-    fillTextField(label: "Port", value: port, clearExistingCharacters: 2)
+    fillTextField(label: "Port", value: port)
     record("fill_username")
     fillTextField(label: "Username", value: username)
     record("fill_private_key")
@@ -355,20 +355,66 @@ final class MeetermSmokeUITests: XCTestCase {
     record("connection_form_opened")
   }
 
-  private func fillTextField(label: String, value: String, clearExistingCharacters: Int = 0) {
+  private func fillTextField(label: String, value: String) {
+    // Only non-secret short fields use readback. Never inspect or publish the
+    // private-key editor's value through this helper.
+    guard ["Host", "Port", "Username"].contains(label) else {
+      XCTFail("The short-field helper received an unsupported field.")
+      return
+    }
     let field = input(label)
     XCTAssertTrue(field.waitForExistence(timeout: 10), "The \(label) field is unavailable.")
-    if label == "Port" { record("fill_port_focus") }
-    field.tap()
-    if clearExistingCharacters > 0 {
-      // The port uses iOS's number-pad, whose delete key is not exposed
-      // consistently through app.keys. Send the key to the focused field so
-      // replacement does not depend on the keyboard's accessibility label.
-      if label == "Port" { record("fill_port_clear") }
-      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: clearExistingCharacters))
+    let stage = "fill_" + label.lowercased()
+    for attempt in 0..<2 {
+      record("\(stage)_focus")
+      XCTAssertTrue(waitForHittable(field, timeout: 10), "The short field is not hittable.")
+      // These fixture values fit on one line. Tapping its trailing edge puts
+      // the caret after the current value before deleting it on a retry.
+      field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+      guard let observed = shortFieldValue(field), observed.utf16.count <= 256 else {
+        XCTFail("The short field returned an unexpected value length.")
+        return
+      }
+      if !observed.isEmpty {
+        record("\(stage)_clear")
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: observed.utf16.count))
+        guard waitForShortFieldValue(field, expected: "", timeout: 5) else {
+          XCTFail("The short field could not be cleared.")
+          return
+        }
+      }
+      record("\(stage)_type")
+      if attempt == 0 {
+        field.typeText(value)
+      } else {
+        // Settle each prefix on the sole retry so a fast synthetic burst
+        // cannot repeatedly outrun the controlled React Native field.
+        var prefix = ""
+        for character in value {
+          prefix.append(character)
+          field.typeText(String(character))
+          if !waitForShortFieldValue(field, expected: prefix, timeout: 5) { break }
+        }
+      }
+      record("\(stage)_readback")
+      if waitForShortFieldValue(field, expected: value, timeout: 5) {
+        record("\(stage)_verified")
+        return
+      }
+      if attempt == 0 { record("\(stage)_retry") }
     }
-    if label == "Port" { record("fill_port_type") }
-    field.typeText(value)
+    XCTFail("The short field did not retain the expected input after one retry.")
+  }
+
+  private func shortFieldValue(_ field: XCUIElement) -> String? {
+    guard let value = field.value as? String else { return nil }
+    return value == field.placeholderValue ? "" : value
+  }
+
+  private func waitForShortFieldValue(_ field: XCUIElement, expected: String, timeout: TimeInterval) -> Bool {
+    let predicate = NSPredicate { _, _ in self.shortFieldValue(field) == expected }
+    let matched = XCTNSPredicateExpectation(predicate: predicate, object: field)
+    return XCTWaiter.wait(for: [matched], timeout: timeout) == .completed
   }
 
   private func fillPrivateKey(_ value: String) {

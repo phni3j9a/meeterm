@@ -95,18 +95,18 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34192186120 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34192186120/artifacts/10043102429)
-から取得できます（commit `c074723`）。iOSの受け入れ検証は継続中です。
+[run 34199273361 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34199273361/artifacts/10045821741)
+から取得できます（commit `c0e9f85`）。iOSの受け入れ検証は継続中です。
 
 ```sh
-gh run download 34192186120 --repo phni3j9a/meeterm \
+gh run download 34199273361 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`cab264d18eed350fd075950147fa683438cdbe61fedc63cf3d20d351e8398f03`
+`8c8dc237f9a895e279feeca0b1cbfbe6d194e25a7b175664cb1ef33c5e71cfc4`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
@@ -141,9 +141,9 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 | 共有Rust | 42 unit tests、Clippy通過。2026-09-08ローカル |
 | OpenSSH＋tmux | 隔離fixtureで接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存のPC zoom保持・window内active pane保持通過。通常同期中のReady維持、画面再取得後の入力可能状態保持も回帰確認。2026-09-08ローカル |
 | UI型チェック | 新UI統合後のTypeScriptチェック通過。2026-09-08ローカル |
-| Android CI | [c074723 / run 34192186120](https://github.com/phni3j9a/meeterm/actions/runs/34192186120)のAndroid job成功。実SSH接続・window/pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split/zoom復元まで通過。入力拒否0件 |
-| iOS CI・実SSH操作 | c074723で署名なしbuild、実SSH接続、ホスト鍵確認、workspace/pane切り替え、ネイティブキーボードの文字キー操作まで進行。Pasteタップ中にXCTestが時間切れとなり、標準UIPasteControlへ修正中。切断・再接続・最終native gateは未完了 |
-| 両OSスクリーンショット目視 | Android c074723の5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOS c074723の6枚（接続フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）を目視済み。iOSの補助キーを横スクロール＋常時表示の閉じるキーに修正し、表示と自動大文字化の解消を確認 |
+| Android CI | [c0e9f85 / run 34199273361](https://github.com/phni3j9a/meeterm/actions/runs/34199273361)のAndroid job成功。実SSH接続・window/pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split/zoom復元まで通過。入力拒否0件 |
+| iOS CI・実SSH操作 | c074723で実SSH接続・ホスト鍵確認・workspace/pane切り替えまで進行。c0e9f85では標準UIPasteControlと追加UIKitテストの署名なしbuildが通過したが、Hostの自動入力が `1` に欠けて接続前に失敗。短い接続項目の読み戻しと一度だけの再入力を修正中。切断・再接続・最終native gateは未完了 |
+| 両OSスクリーンショット目視 | Android c0e9f85の5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOS c074723の6枚（接続フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）を目視済み。iOSの補助キーを横スクロール＋常時表示の閉じるキーに修正し、表示と自動大文字化の解消を確認。c0e9f85の2枚（空フォーム＋キーボード、接続失敗画面）も目視し、Host入力の欠落を確認 |
 | Pixel 3実機 | arm64 Releaseのbuild/install/launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVM11テスト通過。実SSH UIは未完了。別アプリが前面に出たためユーザーの端末利用状況を確認中 |
 | iPhone実機・実機Metal・実日本語IME | 未検証 |
 | APK・PR | [Draft PR #12](https://github.com/phni3j9a/meeterm/pull/12)、Android評価APKは上記成果物から取得可能。両OSの受け入れ完了は未達 |

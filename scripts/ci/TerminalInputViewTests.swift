@@ -11,6 +11,26 @@ final class TerminalInputViewTests: XCTestCase {
   private var hostWindow: UIWindow!
   private var hostViewController: UIViewController!
   private var inputView: TerminalInputView!
+  private var recordedIssue = false
+
+  override func record(_ issue: XCTIssue) {
+    recordedIssue = true
+    appendValidation("result=failed source_line=\(issue.sourceCodeContext.location?.lineNumber ?? 0)")
+    super.record(issue)
+  }
+
+  private func appendValidation(_ line: String) {
+    guard let directory = ProcessInfo.processInfo.environment["MEETERM_IOS_ARTIFACT_DIR"] else { return }
+    let path = URL(fileURLWithPath: directory).appendingPathComponent("ios-native-input-validation.txt")
+    let data = Data((line + "\n").utf8)
+    if let handle = try? FileHandle(forWritingTo: path) {
+      handle.seekToEndOfFile()
+      handle.write(data)
+      try? handle.close()
+    } else {
+      try? data.write(to: path, options: .atomic)
+    }
+  }
 
   override func setUp() async throws {
     try await super.setUp()
@@ -75,6 +95,7 @@ final class TerminalInputViewTests: XCTestCase {
 
     XCTAssertEqual(pastedValues, [expected])
     XCTAssertEqual(commitCount, 0)
+    if !recordedIssue { appendValidation("case=multiline result=passed") }
   }
 
   @MainActor func testPendingPasteIsDroppedAfterCancelComposition() {
@@ -97,6 +118,7 @@ final class TerminalInputViewTests: XCTestCase {
 
     XCTAssertEqual(pastedCount, 0)
     XCTAssertEqual(commitCount, 0)
+    if !recordedIssue { appendValidation("case=rebind result=passed") }
   }
 
   @MainActor func testPendingPasteIsDroppedWhenInputLeavesWindow() {
@@ -115,6 +137,7 @@ final class TerminalInputViewTests: XCTestCase {
 
     XCTAssertEqual(pastedCount, 0)
     XCTAssertEqual(commitCount, 0)
+    if !recordedIssue { appendValidation("case=unmount result=passed") }
   }
 
   @MainActor private func makeHostWindow() -> UIWindow {
