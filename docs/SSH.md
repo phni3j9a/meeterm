@@ -6,18 +6,22 @@ are panes. A desktop user can continue with `tmux attach -t meeterm`.
 
 ## Using the session loop
 
-1. Open **Connect**, enter the SSH endpoint, username, OpenSSH private key, and
+1. Open **サーバーに接続** (accessibility label: **Connect**), enter the SSH endpoint, username, OpenSSH private key, and
    optional passphrase, and submit the form.
 2. Verify the displayed SHA-256 host-key fingerprint through a trusted channel
    before choosing **Trust and connect**. A changed trusted key fails closed.
-3. After **Connected**, select a workspace and its terminal tabs. Existing
+3. Once the status shows **接続中** (**Connected**), select a workspace and its terminal tabs. Existing
    windows and panes can be created or changed with ordinary remote tmux
    commands; the native core discovers the topology.
-4. **Disconnect** closes the mobile connection while the remote session and
-   its processes continue running. **Reconnect** resumes that workspace.
-5. After a transport failure, use **Reconnect**. After the app process exits,
-   enter the connection details and key again with **Connect**; the remote
+4. **切断** (**Disconnect**) closes the mobile connection while the remote session and
+   its processes continue running. **再接続** (**Reconnect**) resumes that workspace.
+5. After a transport failure, use **再接続** (**Reconnect**). After the app process exits,
+   open **サーバーに接続** (**Connect**) and enter the connection details and key again; the remote
    tmux session is still the source of truth.
+
+The form accepts the complete `BEGIN OPENSSH PRIVATE KEY` / `END OPENSSH PRIVATE KEY`
+block, not a `.pub` key or legacy PEM block. See the [first-app setup guide](FIRST_APP.md#接続先の準備と使い方)
+for key preparation and a server-side host-fingerprint check.
 
 The parsed private key is retained only in Rust process memory for explicit
 reconnect. The form clears private-key and passphrase text on submission or

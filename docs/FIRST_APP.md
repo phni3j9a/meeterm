@@ -43,6 +43,20 @@ OpenSSH秘密鍵による公開鍵認証です。サーバー側に対応する�
 SSH経由のシェルから `tmux` を実行できるようにしてください。
 アプリ専用サーバーやソケットは不要です。
 
+秘密鍵欄には `-----BEGIN OPENSSH PRIVATE KEY-----` から
+`-----END OPENSSH PRIVATE KEY-----` までの全文を貼り付けます。
+公開鍵（`.pub`）や旧PEM形式の秘密鍵は受け付けません。新しく用意する場合は、
+PCで未使用の保存先を指定して `ssh-keygen -t ed25519 -f ~/.ssh/meeterm_ed25519`
+を実行し、生成された `.pub` の内容をサーバーの対象ユーザーに登録します。
+アプリへ入力するのは拡張子のない秘密鍵です。
+
+ホスト鍵の照合では、すでに信頼できる管理経路からサーバー上で、例えば
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256` を実行します。
+アプリが表示する鍵アルゴリズムに対応する公開ホスト鍵ファイルを選び、
+SHA-256指紋を比較してください。未確認の接続先から `ssh-keyscan` で取得した
+指紋だけを信頼の根拠にはしません。
+コマンドの詳細は[OpenSSHのssh-keygenマニュアル](https://man.openbsd.org/ssh-keygen.1)を参照してください。
+
 1. アプリの接続ボタンから接続情報を入力します。初版では毎回入力します。
 2. ホスト鍵の指紋を信頼できる別の経路で確認して承認します。
 3. 接続後、ワークスペースを開いてpaneタブを選びます。
@@ -95,18 +109,18 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34199273361 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34199273361/artifacts/10045821741)
-から取得できます（commit `c0e9f85`）。iOSの受け入れ検証は継続中です。
+[run 34204060937 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34204060937/artifacts/10047846455)
+から取得できます（commit `8070c01`）。iOSの受け入れ検証は継続中です。
 
 ```sh
-gh run download 34199273361 --repo phni3j9a/meeterm \
+gh run download 34204060937 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`8c8dc237f9a895e279feeca0b1cbfbe6d194e25a7b175664cb1ef33c5e71cfc4`
+`273b0b573985d7e1cf6b9ebf1556127ae1f122549d1433f4fab72e20cb0cd5b2`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
@@ -118,6 +132,7 @@ Intel MacのSimulatorでは `x86_64-apple-ios`、Apple Siliconでは
 ```sh
 npm ci
 rustup target add aarch64-apple-ios-sim  # Apple SiliconのSimulator
+# Intel Macでは上の行の代わりに: rustup target add x86_64-apple-ios
 npx expo prebuild --platform ios --non-interactive --no-install
 cd ios
 pod install
@@ -129,6 +144,9 @@ Development BuildはMetroが必要です。CIはRelease構成でJSを同梱し�
 署名なしのSimulatorビルド・インストール・起動を検証します。
 iPhone実機にはAppleの開発署名、開発チーム設定、対象端末の開発者モード、
 `aarch64-apple-ios` targetなどが別途必要です。TestFlightは今回の対象外です。
+実機用targetは `rustup target add aarch64-apple-ios` で追加します。
+生成したXcodeプロジェクトの開発チーム・署名設定と端末の準備を済ませてから、
+`npx expo run:ios --device` で接続したiPhoneを選びます。
 
 Hosted SimulatorでのCoreGraphics fallbackはMetal実行の証拠ではありません。
 Simulatorで成功しても実機GPU・日本語IME・フォントフォールバックの同等性は
@@ -141,9 +159,9 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 | 共有Rust | 42 unit tests、Clippy通過。2026-09-08ローカル |
 | OpenSSH＋tmux | 隔離fixtureで接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存のPC zoom保持・window内active pane保持通過。通常同期中のReady維持、画面再取得後の入力可能状態保持も回帰確認。2026-09-08ローカル |
 | UI型チェック | 新UI統合後のTypeScriptチェック通過。2026-09-08ローカル |
-| Android CI | [c0e9f85 / run 34199273361](https://github.com/phni3j9a/meeterm/actions/runs/34199273361)のAndroid job成功。実SSH接続・window/pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split/zoom復元まで通過。入力拒否0件 |
-| iOS CI・実SSH操作 | c074723で実SSH接続・ホスト鍵確認・workspace/pane切り替えまで進行。c0e9f85では標準UIPasteControlと追加UIKitテストの署名なしbuildが通過したが、Hostの自動入力が `1` に欠けて接続前に失敗。短い接続項目の読み戻しと一度だけの再入力を修正中。切断・再接続・最終native gateは未完了 |
-| 両OSスクリーンショット目視 | Android c0e9f85の5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOS c074723の6枚（接続フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）を目視済み。iOSの補助キーを横スクロール＋常時表示の閉じるキーに修正し、表示と自動大文字化の解消を確認。c0e9f85の2枚（空フォーム＋キーボード、接続失敗画面）も目視し、Host入力の欠落を確認 |
+| Android CI | [8070c01 / run 34204060937](https://github.com/phni3j9a/meeterm/actions/runs/34204060937)のAndroid job成功。実SSH接続・window/pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split/zoom復元まで通過。入力拒否0件 |
+| iOS CI・実SSH操作 | [8070c01 / run 34204060937](https://github.com/phni3j9a/meeterm/actions/runs/34204060937)で署名なしbuild、接続項目の読み戻し、ホスト鍵確認、実SSH接続、workspace/pane切り替え、標準Paste処理の完了まで進行。Returnキーをキー型に限定したテスト検索と、追加UIKitテストのメインキュー待ちで失敗。Return検索をキーボード内の全要素へ広げ、UIKitの待機を非同期化して再検証中。リモート入力確認・切断・再接続・最終native gateは未完了 |
+| 両OSスクリーンショット目視 | Android 8070c01の5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）とiOS 8070c01の6枚（空の接続フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）をダウンロードして目視済み。iOSの補助キーは横スクロール＋常時表示の閉じるキー。自動大文字化の解消を確認。8070c01のネイティブログはMetal first frameを4件記録しているが、最終native gateの完了を意味しない |
 | Pixel 3実機 | arm64 Releaseのbuild/install/launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVM11テスト通過。実SSH UIは未完了。別アプリが前面に出たためユーザーの端末利用状況を確認中 |
 | iPhone実機・実機Metal・実日本語IME | 未検証 |
 | APK・PR | [Draft PR #12](https://github.com/phni3j9a/meeterm/pull/12)、Android評価APKは上記成果物から取得可能。両OSの受け入れ完了は未達 |

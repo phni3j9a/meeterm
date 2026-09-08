@@ -686,10 +686,18 @@ final class MeetermSmokeUITests: XCTestCase {
     UIPasteboard.general.string = nil
 
     record("\(stage)_keyboard_return")
-    let enter = app.keys.matching(
+    // The keyboard's action control may be exposed as a button rather than a
+    // key. Keep the query inside the keyboard but accept either native role.
+    let keyboard = app.keyboards.firstMatch
+    let enter = keyboard.descendants(matching: .any).matching(
       NSPredicate(format: "label ==[c] %@ OR identifier ==[c] %@", "return", "return")
     ).firstMatch
-    XCTAssertTrue(enter.waitForExistence(timeout: 10), "The terminal Return key is unavailable.")
+    guard enter.waitForExistence(timeout: 10), waitForHittable(enter, timeout: 10) else {
+      record("\(stage)_keyboard_return_unavailable")
+      if safeForPostFormScreenshot() { capture("terminal-return-unavailable") }
+      XCTFail("The terminal Return action is unavailable.")
+      return
+    }
     enter.tap()
     record("\(stage)_await_remote_marker")
   }

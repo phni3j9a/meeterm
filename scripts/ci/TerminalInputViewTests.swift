@@ -37,6 +37,7 @@ final class TerminalInputViewTests: XCTestCase {
     await MainActor.run {
       configureUI()
     }
+    await drainMainRunLoop()
   }
 
   @MainActor private func configureUI() {
@@ -56,7 +57,6 @@ final class TerminalInputViewTests: XCTestCase {
     ])
     hostViewController.view.layoutIfNeeded()
     XCTAssertTrue(inputView.becomeFirstResponder(), "The native input view did not become first responder.")
-    drainMainRunLoop()
   }
 
   override func tearDown() async throws {
@@ -76,7 +76,7 @@ final class TerminalInputViewTests: XCTestCase {
     hostWindow = nil
   }
 
-  @MainActor func testMultilinePasteCallsOnPasteOnceWithoutCommit() {
+  @MainActor func testMultilinePasteCallsOnPasteOnceWithoutCommit() async {
     let expected = "printf 'line one\nline two\n'"
     var pastedValues: [String] = []
     var commitCount = 0
@@ -91,14 +91,14 @@ final class TerminalInputViewTests: XCTestCase {
     let provider = plainTextProvider(expected)
     XCTAssertTrue(provider.canLoadObject(ofClass: String.self))
     inputView.paste(itemProviders: [provider])
-    wait(for: [pasted], timeout: 2)
+    await fulfillment(of: [pasted], timeout: 2)
 
     XCTAssertEqual(pastedValues, [expected])
     XCTAssertEqual(commitCount, 0)
     if !recordedIssue { appendValidation("case=multiline result=passed") }
   }
 
-  @MainActor func testPendingPasteIsDroppedAfterCancelComposition() {
+  @MainActor func testPendingPasteIsDroppedAfterCancelComposition() async {
     var pastedCount = 0
     var commitCount = 0
     let provider = DelayedTextProvider(testCase: self)
@@ -106,7 +106,7 @@ final class TerminalInputViewTests: XCTestCase {
     inputView.onCommit = { _ in commitCount += 1 }
     inputView.onPaste = { _ in pastedCount += 1 }
     inputView.paste(itemProviders: [provider])
-    wait(for: [provider.loadStarted], timeout: 2)
+    await fulfillment(of: [provider.loadStarted], timeout: 2)
 
     inputView.cancelCompositionForBinding()
     // Rebind the same native input view before the old provider completes.
@@ -114,14 +114,14 @@ final class TerminalInputViewTests: XCTestCase {
     // the generation guard rather than only the first-responder guard.
     XCTAssertTrue(inputView.becomeFirstResponder(), "The input view could not be rebound.")
     provider.finish(with: "dropped after cancel\n")
-    drainMainRunLoop()
+    await drainMainRunLoop()
 
     XCTAssertEqual(pastedCount, 0)
     XCTAssertEqual(commitCount, 0)
     if !recordedIssue { appendValidation("case=rebind result=passed") }
   }
 
-  @MainActor func testPendingPasteIsDroppedWhenInputLeavesWindow() {
+  @MainActor func testPendingPasteIsDroppedWhenInputLeavesWindow() async {
     var pastedCount = 0
     var commitCount = 0
     let provider = DelayedTextProvider(testCase: self)
@@ -129,11 +129,11 @@ final class TerminalInputViewTests: XCTestCase {
     inputView.onCommit = { _ in commitCount += 1 }
     inputView.onPaste = { _ in pastedCount += 1 }
     inputView.paste(itemProviders: [provider])
-    wait(for: [provider.loadStarted], timeout: 2)
+    await fulfillment(of: [provider.loadStarted], timeout: 2)
 
     inputView.removeFromSuperview()
     provider.finish(with: "dropped after unmount\n")
-    drainMainRunLoop()
+    await drainMainRunLoop()
 
     XCTAssertEqual(pastedCount, 0)
     XCTAssertEqual(commitCount, 0)
@@ -152,14 +152,15 @@ final class TerminalInputViewTests: XCTestCase {
     return UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
   }
 
-  @MainActor private func drainMainRunLoop() {
-    // A main-queue barrier drains the provider completion dispatch without
-    // relying on an arbitrary sleep. XCTest's wait pumps the main run loop.
+  private func drainMainRunLoop() async {
+    // An async XCTest waiter yields the main actor while the provider
+    // completion dispatch is delivered. This avoids blocking the main queue
+    // with wait(for:) and does not rely on an arbitrary sleep.
     let drained = ExpectationBox(expectation(description: "main queue drained"))
     DispatchQueue.main.async {
       drained.fulfill()
     }
-    wait(for: [drained.expectation], timeout: 1)
+    await fulfillment(of: [drained.expectation], timeout: 1)
   }
 
   private func plainTextProvider(_ value: String) -> NSItemProvider {
