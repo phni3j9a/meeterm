@@ -49,6 +49,14 @@ KEY_INPUT_MAX_ATTEMPTS = 4
 TERMINAL_INPUT_CHUNK_SIZE = 16
 TERMINAL_INPUT_CHUNK_DELAY_SECONDS = 0.2
 TERMINAL_FOCUS_SETTLE_SECONDS = 0.8
+INPUT_REJECTION_REASONS = (
+    "unbound",
+    "native_exception",
+    "native_rejection",
+)
+INPUT_REJECTION_PATTERN = re.compile(
+    r"IME commit rejected; reason=(unbound|native_exception|native_rejection)\b"
+)
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 SYNC_MARKER = "MEETERM_ANDROID_SYNC_4C71"
@@ -391,6 +399,7 @@ class AndroidDevice:
         accepted_commits = 0
         accepted_bytes = 0
         last_native_count: int | None = None
+        rejected_commits = dict.fromkeys(INPUT_REJECTION_REASONS, 0)
         for line in output.splitlines():
             if not any(
                 tag in line
@@ -416,11 +425,14 @@ class AndroidDevice:
                     accepted_commits += 1
                     accepted_bytes += int(accepted.group(2))
                     last_native_count = int(accepted.group(1))
+                rejected = INPUT_REJECTION_PATTERN.search(line)
+                if rejected is not None:
+                    rejected_commits[rejected.group(1)] += 1
                 # One aggregate line below is enough for CI diagnosis. Keep no
                 # per-character native input records in the artifact.
                 continue
             kept.append(line)
-        if self.terminal_input_chunks or accepted_commits:
+        if self.terminal_input_chunks or accepted_commits or any(rejected_commits.values()):
             # A lower observed byte count is a diagnostic only: logcat can be
             # truncated or sampled while callbacks are still in flight, so it
             # must not be reported as proof of native rejection.
@@ -432,7 +444,11 @@ class AndroidDevice:
                 f"acceptedCommits={accepted_commits} "
                 f"acceptedBytes={accepted_bytes} "
                 f"unobservedBytes={unobserved_bytes} "
-                f"lastNativeCount={last_native_count if last_native_count is not None else 'none'}"
+                f"lastNativeCount={last_native_count if last_native_count is not None else 'none'} "
+                f"rejectedCommits={sum(rejected_commits.values())} "
+                f"rejectedUnbound={rejected_commits['unbound']} "
+                f"rejectedNativeException={rejected_commits['native_exception']} "
+                f"rejectedNativeRejection={rejected_commits['native_rejection']}"
             )
         return "\n".join(kept) + ("\n" if kept else "<no filtered native log lines>\n")
 

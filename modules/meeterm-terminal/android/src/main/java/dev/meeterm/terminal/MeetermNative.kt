@@ -72,7 +72,10 @@ internal class RustInputSink(
 ) : NativeInputSink {
   override fun commitUtf8(bytes: ByteArray): Boolean {
     val handle = handleProvider()
-    if (handle == 0L) return false
+    if (handle == 0L) {
+      Log.i(TAG, "IME commit rejected; reason=unbound")
+      return false
+    }
 
     val count = try {
       MeetermNative.commit(handle, bytes)
@@ -80,6 +83,7 @@ internal class RustInputSink(
       // The JNI boundary may surface a transient Rust queue rejection as a
       // Java exception while a connection is opening or has closed. IME
       // callbacks must consume that rejection without taking down the view.
+      Log.i(TAG, "IME commit rejected; reason=native_exception")
       return false
     }
     if (count > 0L) {
@@ -88,6 +92,7 @@ internal class RustInputSink(
       Log.i(TAG, "IME commit accepted; nativeCount=$count byteCount=${bytes.size}")
       return true
     }
+    Log.i(TAG, "IME commit rejected; reason=native_rejection")
     return false
   }
 

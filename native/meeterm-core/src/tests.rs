@@ -104,6 +104,40 @@ fn tmux_viewport_recapture_preserves_native_history_position() {
 }
 
 #[test]
+fn tmux_viewport_recapture_preserves_input_readiness() {
+    let mut terminal = Terminal::new(80, 8).unwrap();
+    terminal.begin_remote(93).unwrap();
+    let (sender, mut receiver) = mpsc::channel(8);
+    let (resize, _) = watch::channel((80, 8));
+    terminal.attach_transport(93, sender, resize).unwrap();
+
+    // An initial capture must not enable input before synchronization ends.
+    terminal.restore_screen(93, 80, 8, b"initial").unwrap();
+    assert_eq!(
+        terminal.commit_utf8(b"too early"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert!(receiver.try_recv().is_err());
+
+    terminal.mark_transport_ready(93);
+    assert_eq!(terminal.commit_utf8(b"before"), Ok(1));
+    assert_eq!(receiver.try_recv().unwrap(), b"before");
+    terminal.restore_screen(93, 40, 10, b"resized").unwrap();
+    // A live pane accepts the very next character, without a second ready
+    // callback or a retry that could hide a keystroke lost during resize.
+    assert_eq!(terminal.commit_utf8(b"after"), Ok(2));
+    assert_eq!(receiver.try_recv().unwrap(), b"after");
+
+    terminal.detach_transport(93);
+    terminal.restore_screen(93, 40, 10, b"offline").unwrap();
+    assert_eq!(
+        terminal.commit_utf8(b"disconnected"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn term_owns_scrollback_and_demo_is_fed_during_creation() {
     let terminal = Terminal::new(80, 8).expect("valid dimensions");
 

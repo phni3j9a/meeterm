@@ -346,6 +346,7 @@ impl Terminal {
             .map_err(|_| TerminalError::RegistryPoisoned)?
             .clone();
         let commits = self.input_commit_count;
+        let transport_ready = self.transport_ready;
         let display_offset = self.term.grid().display_offset();
         self.begin_remote(generation)?;
         self.resize_from_remote(columns, rows)?;
@@ -358,6 +359,9 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
+        // Rebuilding a viewport must not reject live input while other panes
+        // are still being captured. Initial/offline panes remain unready.
+        self.transport_ready = transport_ready;
         Ok(())
     }
 

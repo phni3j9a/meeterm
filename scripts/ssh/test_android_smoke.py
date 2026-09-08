@@ -279,6 +279,32 @@ class UiDriverTests(unittest.TestCase):
         self.assertEqual(run.call_count, 3)
         self.assertEqual(error.exception.reason, "xml_unavailable")
 
+    def test_logcat_aggregates_fixed_native_input_rejection_reasons(self) -> None:
+        device = smoke.AndroidDevice("test", "adb")
+        device.note_terminal_input(4)
+        logcat = b"\n".join(
+            (
+                b"01-01 00:00:01.000 I/MeetermInput: IME commit accepted; nativeCount=1 byteCount=2",
+                b"01-01 00:00:01.001 I/MeetermInput: IME commit rejected; reason=unbound",
+                b"01-01 00:00:01.002 I/MeetermInput: IME commit rejected; reason=native_exception",
+                b"01-01 00:00:01.003 I/MeetermInput: IME commit rejected; reason=native_rejection",
+                b"01-01 00:00:01.004 I/MeetermInput: IME commit rejected; reason=unexpected",
+            )
+        )
+
+        with mock.patch.object(device, "run", return_value=logcat):
+            output = device.logcat()
+
+        self.assertIn("acceptedCommits=1", output)
+        self.assertIn("acceptedBytes=2", output)
+        self.assertIn("rejectedCommits=3", output)
+        self.assertIn("rejectedUnbound=1", output)
+        self.assertIn("rejectedNativeException=1", output)
+        self.assertIn("rejectedNativeRejection=1", output)
+        self.assertNotIn("IME commit accepted", output)
+        self.assertNotIn("IME commit rejected", output)
+        self.assertNotIn("unexpected", output)
+
     def test_key_input_checks_focus_before_planning_probe_prefixes(self) -> None:
         device = mock.Mock()
         unfocused = smoke.Node("", "Private OpenSSH key, Empty", "android.widget.EditText", (0, 0, 100, 100))
