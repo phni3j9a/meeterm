@@ -42,6 +42,18 @@ final class MeetermSmokeUITests: XCTestCase {
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-failure.txt")
     )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-form-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-connection-state.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-host-trust-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("host-trust-timeout.png")
+    )
     record("test_started")
 
     app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -116,9 +128,24 @@ final class MeetermSmokeUITests: XCTestCase {
     record("submit_connect_tap")
     submit.tap()
 
+    record("await_connection_form_dismissed")
+    if !waitForConnectionFormDismissal(timeout: 10) {
+      record("form_not_dismissed")
+      writeConnectionFormDiagnostics()
+      XCTFail("The SSH connection form did not dismiss after Connect.")
+      return
+    }
+    record("connection_form_dismissed")
+    recordConnectionState()
+
     record("await_host_trust_prompt")
     let alert = app.alerts.firstMatch
-    XCTAssertTrue(alert.waitForExistence(timeout: 60), "The SSH host trust prompt did not appear.")
+    guard alert.waitForExistence(timeout: 60) else {
+      record("host_trust_timeout")
+      writeHostTrustTimeoutDiagnostics()
+      XCTFail("The SSH host trust prompt did not appear.")
+      return
+    }
     let expectedFingerprint = requiredEnvironment("MEETERM_SSH_FINGERPRINT")
     record("verify_host_fingerprint")
     XCTAssertTrue(
@@ -127,6 +154,12 @@ final class MeetermSmokeUITests: XCTestCase {
       },
       "The host trust prompt did not display the fixture fingerprint."
     )
+    record("guard_host_trust_capture")
+    guard safeForPostFormScreenshot() else {
+      record("host_trust_capture_blocked")
+      XCTFail("The host trust screenshot was blocked because the form or app is not safe.")
+      return
+    }
     record("capture_host_trust")
     capture("host-trust")
     record("trust_host_key")
@@ -444,6 +477,105 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return element.isSelected
+  }
+
+  private func waitForConnectionFormDismissal(timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if !app.buttons["ssh-submit"].exists { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return !app.buttons["ssh-submit"].exists
+  }
+
+  private func connectionFormIsGone() -> Bool {
+    let host = app.descendants(matching: .any)["Host"]
+    let privateKey = app.descendants(matching: .any)["Private OpenSSH key"]
+    return !app.buttons["ssh-submit"].exists && !host.exists && !privateKey.exists
+  }
+
+  private func safeForPostFormScreenshot() -> Bool {
+    app.state == .runningForeground && connectionFormIsGone()
+  }
+
+  private func writeConnectionFormDiagnostics() {
+    // Query only the exact, fixed validation strings from ConnectionForm. The
+    // uploaded file contains flags, never the entered host, username, key, or
+    // any XCTest description.
+    let validations: [(String, String)] = [
+      ("host", "空白を含まないホスト名か IP アドレスを入力してください。"),
+      ("port", "1〜65535 の数字を入力してください。"),
+      ("username", "SSH のユーザー名を入力してください。空白は使えません。"),
+      ("private_key", "BEGIN と END の行を含む OpenSSH 形式の秘密鍵を貼り付けてください。"),
+    ]
+    let lines = validations.map { name, message in
+      "\(name)_validation_error_visible=\(app.staticTexts[message].exists ? 1 : 0)"
+    } + [
+      "host_field_visible=\(app.descendants(matching: .any)["Host"].exists ? 1 : 0)",
+      "private_key_field_visible=\(app.descendants(matching: .any)["Private OpenSSH key"].exists ? 1 : 0)",
+      "submit_visible=\(app.buttons["ssh-submit"].exists ? 1 : 0)",
+      "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+      "form_dismissed=0",
+    ]
+    writeFixedArtifact("ios-ui-form-diagnostics.txt", lines: lines)
+  }
+
+  private func recordConnectionState() {
+    let observation = connectionStateObservation()
+    writeFixedArtifact(
+      "ios-ui-connection-state.txt",
+      lines: [
+        "connection_state=\(observation.key)",
+        "connection_state_label_present=\(observation.present ? 1 : 0)",
+      ]
+    )
+  }
+
+  private func connectionStateObservation() -> (key: String, present: Bool) {
+    let states: [(String, String)] = [
+      ("connecting", "Connecting…"),
+      ("verify_host_key", "Verify host key"),
+      ("authenticating", "Authenticating…"),
+      ("opening_terminal", "Opening terminal…"),
+      ("opening_workspace", "Opening workspace…"),
+      ("restoring_terminals", "Restoring terminals…"),
+      ("connected", "Connected"),
+      ("reconnecting", "Reconnecting…"),
+      ("disconnecting", "Disconnecting…"),
+      ("connection_failed", "Connection failed"),
+      ("not_connected", "Not connected"),
+    ]
+    guard let observed = states.first(where: { _, label in app.staticTexts[label].exists })?.0 else {
+      return ("unavailable", false)
+    }
+    return (observed, true)
+  }
+
+  private func writeHostTrustTimeoutDiagnostics() {
+    let observation = connectionStateObservation()
+    writeFixedArtifact(
+      "ios-ui-host-trust-diagnostics.txt",
+      lines: [
+        "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+        "connection_state=\(observation.key)",
+        "connection_state_label_present=\(observation.present ? 1 : 0)",
+        "submit_visible=\(app.buttons["ssh-submit"].exists ? 1 : 0)",
+        "host_field_visible=\(app.descendants(matching: .any)["Host"].exists ? 1 : 0)",
+        "private_key_field_visible=\(app.descendants(matching: .any)["Private OpenSSH key"].exists ? 1 : 0)",
+        "safe_for_post_form_screenshot=\(safeForPostFormScreenshot() ? 1 : 0)",
+      ]
+    )
+    if safeForPostFormScreenshot() {
+      capture("host-trust-timeout")
+    }
+  }
+
+  private func writeFixedArtifact(_ name: String, lines: [String]) {
+    let contents = lines.joined(separator: "\n") + "\n"
+    try? Data(contents.utf8).write(
+      to: artifactDirectory.appendingPathComponent(name),
+      options: .atomic
+    )
   }
 
   private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
