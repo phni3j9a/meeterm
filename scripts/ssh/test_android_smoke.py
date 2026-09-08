@@ -930,6 +930,26 @@ UI dumped to: /dev/tty"""
             smoke.assert_fixture_layout_preserved(records, changed_split, "layout")
         self.assertEqual(split_error.exception.reason, "pane_split_changed")
 
+    def test_tmux_identity_check_allows_mobile_zoom_geometry(self) -> None:
+        output = (
+            b"@4\tsmoke\t%12\t1201\t0\t0\t40\t24\t0\t0\t39\t23\t1\t0\n"
+            b"@4\tsmoke\t%13\t1202\t1\t1\t40\t24\t40\t0\t79\t23\t1\t0\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t40\t24\t0\t0\t39\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t40\t24\t40\t0\t79\t23\t0\t0\n"
+        )
+        records = smoke.parse_tmux_panes(output)
+        zoomed = list(records)
+        zoomed[0] = zoomed[0]._replace(
+            pane_width=80,
+            pane_right=79,
+            zoomed=True,
+        )
+
+        smoke.assert_fixture_identity_preserved(records, zoomed, "resume")
+        with self.assertRaises(smoke.SmokeFailure) as full_error:
+            smoke.assert_fixture_layout_preserved(records, zoomed, "resume")
+        self.assertEqual(full_error.exception.reason, "pane_split_changed")
+
     def test_tmux_socket_must_be_fixture_scoped(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root_text:
             root = Path(root_text)

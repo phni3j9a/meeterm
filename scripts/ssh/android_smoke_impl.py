@@ -789,6 +789,24 @@ def assert_fixture_layout_preserved(
         raise SmokeFailure(stage, "pane_layout_still_zoomed")
 
 
+def assert_fixture_identity_preserved(
+    before: list[TmuxPaneRecord],
+    after: list[TmuxPaneRecord],
+    stage: str,
+) -> None:
+    """Check durable pane identities while mobile presentation may be zoomed."""
+
+    if pane_layout_signature(before) != pane_layout_signature(after):
+        raise SmokeFailure(stage, "pane_layout_changed")
+    window_ids = {record.window_id for record in after}
+    if len(window_ids) != len(FIXTURE_WINDOW_NAMES) or any(
+        sum(record.window_id == window_id for record in after)
+        != FIXTURE_PANES_PER_WINDOW
+        for window_id in window_ids
+    ):
+        raise SmokeFailure(stage, "window_layout_changed")
+
+
 def records_for_window(
     records: list[TmuxPaneRecord], window_id: str
 ) -> list[TmuxPaneRecord]:
@@ -2573,7 +2591,10 @@ def main(argv: list[str] | None = None) -> int:
             timeout=RECONNECT_TIMEOUT,
         )
         resumed_layout = list_tmux_panes(tmux_socket, stage)
-        assert_fixture_layout_preserved(fixture_layout, resumed_layout, stage)
+        # Reconnect can legitimately leave the mobile-selected pane zoomed;
+        # compare durable window/pane identities here and defer the desktop
+        # split/no-zoom assertion until the explicit disconnect below.
+        assert_fixture_identity_preserved(fixture_layout, resumed_layout, stage)
         wait_for_tmux_selection(
             tmux_socket,
             pane_id,
@@ -2620,6 +2641,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         if screenshot_reason == "ok":
             screenshot_written = True
+
+        stage = "disconnect_after_resume"
+        open_disconnect_action(device, stage)
+        wait_for_node(
+            device,
+            stage,
+            text="Not connected",
+            timeout=RECONNECT_TIMEOUT,
+        )
+        final_layout = list_tmux_panes(tmux_socket, stage)
+        assert_fixture_layout_preserved(fixture_layout, final_layout, stage)
+        completed.append("disconnected_after_resume")
         result = "passed"
         reason = "ok"
     except SmokeFailure as error:
