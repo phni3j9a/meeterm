@@ -39,6 +39,16 @@ KEY_INPUT_TIMEOUT = 600.0
 KEY_READBACK_TIMEOUT = 15.0
 KEY_INPUT_SETTLE_SECONDS = 0.3
 KEY_INPUT_MAX_ATTEMPTS = 4
+# ``adb shell input text`` expands one argument into a burst of individual
+# KeyEvents. A remote terminal forwards each committed character through a
+# bounded asynchronous tmux queue, so keep the CI burst below that queue's
+# service rate while still exercising the native keyboard key-event path.
+# Paste has its own explicit native control. This is a driver pacing bound,
+# not a delay in the product input path; the queue-overflow explanation
+# remains a hypothesis until the sanitized native counters confirm it.
+TERMINAL_INPUT_CHUNK_SIZE = 16
+TERMINAL_INPUT_CHUNK_DELAY_SECONDS = 0.2
+TERMINAL_FOCUS_SETTLE_SECONDS = 0.8
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 SYNC_MARKER = "MEETERM_ANDROID_SYNC_4C71"
@@ -206,6 +216,15 @@ class AndroidDevice:
     def __init__(self, serial: str, adb_path: str) -> None:
         self.serial = serial
         self.adb_path = adb_path
+        # Counts only generated terminal command characters. The values are
+        # used for a sanitized input health summary; command contents never
+        # enter the artifact.
+        self.terminal_input_chars = 0
+        self.terminal_input_chunks = 0
+
+    def note_terminal_input(self, character_count: int) -> None:
+        self.terminal_input_chars += max(0, character_count)
+        self.terminal_input_chunks += 1
 
     def run(self, arguments: tuple[str, ...], stage: str, timeout: float = 15.0) -> bytes:
         command = [self.adb_path, "-s", self.serial, *arguments]
@@ -300,6 +319,8 @@ class AndroidDevice:
             stage,
             timeout=20.0,
         )
+        if stage == "terminal_input":
+            self.note_terminal_input(len(value))
 
     def input_keyevent(self, keycode: int, stage: str) -> None:
         self.input_keyevents((keycode,), stage)
@@ -367,13 +388,52 @@ class AndroidDevice:
             timeout=20.0,
         ).decode("utf-8", errors="replace")
         kept: list[str] = []
+        accepted_commits = 0
+        accepted_bytes = 0
+        last_native_count: int | None = None
         for line in output.splitlines():
-            if not any(tag in line for tag in ("MeetermTerminalView", "MeetermRenderer", "MeetermNative")):
+            if not any(
+                tag in line
+                for tag in (
+                    "MeetermTerminalView",
+                    "MeetermRenderer",
+                    "MeetermNative",
+                    # This tag reports only accepted counts and byte lengths;
+                    # it never includes committed text or clipboard content.
+                    "MeetermInput",
+                )
+            ):
                 continue
             lowered = line.lower()
             if any(secret_word in lowered for secret_word in ("passphrase", "private key", "auth")):
                 continue
+            if "MeetermInput" in line:
+                accepted = re.search(
+                    r"IME commit accepted; nativeCount=(\d+) byteCount=(\d+)",
+                    line,
+                )
+                if accepted is not None:
+                    accepted_commits += 1
+                    accepted_bytes += int(accepted.group(2))
+                    last_native_count = int(accepted.group(1))
+                # One aggregate line below is enough for CI diagnosis. Keep no
+                # per-character native input records in the artifact.
+                continue
             kept.append(line)
+        if self.terminal_input_chunks or accepted_commits:
+            # A lower observed byte count is a diagnostic only: logcat can be
+            # truncated or sampled while callbacks are still in flight, so it
+            # must not be reported as proof of native rejection.
+            unobserved_bytes = max(0, self.terminal_input_chars - accepted_bytes)
+            kept.append(
+                "MeetermInput: terminal_input_summary "
+                f"chunks={self.terminal_input_chunks} "
+                f"attemptedBytes={self.terminal_input_chars} "
+                f"acceptedCommits={accepted_commits} "
+                f"acceptedBytes={accepted_bytes} "
+                f"unobservedBytes={unobserved_bytes} "
+                f"lastNativeCount={last_native_count if last_native_count is not None else 'none'}"
+            )
         return "\n".join(kept) + ("\n" if kept else "<no filtered native log lines>\n")
 
     def force_stop(self) -> None:
@@ -1800,7 +1860,15 @@ def terminal_line(device: AndroidDevice, command: str) -> None:
     # may contain UTF-8, but it never travels through this Python process.
     if any(ord(character) > 127 for character in command):
         raise SmokeFailure("terminal_input", "non_ascii_command")
-    device.input_text(command, "terminal_input")
+    # Android's input tool turns text into individual KeyEvents. Pacing small
+    # chunks reduce the chance of overwhelming the bounded native SSH queue
+    # with a synthetic CI burst while retaining the real native key-event
+    # route.
+    for offset in range(0, len(command), TERMINAL_INPUT_CHUNK_SIZE):
+        chunk = command[offset : offset + TERMINAL_INPUT_CHUNK_SIZE]
+        device.input_text(chunk, "terminal_input")
+        if offset + TERMINAL_INPUT_CHUNK_SIZE < len(command):
+            time.sleep(TERMINAL_INPUT_CHUNK_DELAY_SECONDS)
     device.input_keyevent(KEYCODE_ENTER, "terminal_input")
 
 
@@ -2173,6 +2241,10 @@ def main(argv: list[str] | None = None) -> int:
         terminal = wait_for_terminal(device, stage)
         tap_node(device, terminal, stage)
         completed.append("terminal_focused")
+        # showSoftInput is posted by the native view after the tap. Allow the
+        # input connection and keyboard focus to settle before injecting the
+        # first remote command.
+        time.sleep(TERMINAL_FOCUS_SETTLE_SECONDS)
 
         stage = "remote_marker"
         terminal_line(device, "exec /bin/sh -i")
@@ -2522,6 +2594,30 @@ def main(argv: list[str] | None = None) -> int:
             except OSError:
                 pass
         if device is not None:
+            # Once the credential form has been submitted, a terminal-only
+            # failure can be reviewed safely. Capture the visible state before
+            # force-stop; never take this diagnostic while secrets are on
+            # screen. The normal terminal screenshot remains the preferred
+            # artifact when the smoke reaches it.
+            if (
+                secrets_submitted
+                and "terminal_focused" in completed
+                and "terminal_keyboard_screenshot" not in completed
+            ):
+                try:
+                    device.assert_foreground("terminal_failure_screenshot")
+                except SmokeFailure as error:
+                    completed.append("terminal_failure_screenshot_unavailable")
+                    screenshot_reason = error.reason
+                else:
+                    screenshot_reason = capture_optional_screenshot(
+                        device,
+                        args.artifact_dir / "ssh-terminal-failure.png",
+                        completed,
+                        "terminal_failure",
+                    )
+                    if screenshot_reason == "ok":
+                        screenshot_written = True
             device.force_stop()
             try:
                 log_contents = device.logcat()
