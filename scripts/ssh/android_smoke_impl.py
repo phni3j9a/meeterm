@@ -1164,8 +1164,22 @@ def wait_for_workspace(
         except SmokeFailure:
             time.sleep(0.2)
             continue
-        workspace = find_workspace_node(nodes)
-        if workspace is not None and (label is None or accessible_label(workspace) == label):
+        if label is None:
+            workspace = find_workspace_node(nodes)
+        else:
+            # The selected tmux window need not be the workspace requested by
+            # the caller (for example immediately after switching windows).
+            # Search all visible rows when an exact label is provided instead
+            # of letting the selected row mask the desired non-selected one.
+            workspace = next(
+                (
+                    candidate
+                    for candidate in find_workspace_nodes(nodes)
+                    if accessible_label(candidate) == label
+                ),
+                None,
+            )
+        if workspace is not None:
             return workspace
         time.sleep(0.2)
     raise SmokeFailure(stage, "ui_timeout")
@@ -2403,16 +2417,20 @@ def main(argv: list[str] | None = None) -> int:
         completed.append("remote_marker_second_window")
 
         # Return to the process-preservation pane before showing the handoff
-        # instructions and ending the mobile connection.
-        stage = "tmux_workspace_return"
+        # instructions and ending the mobile connection. Keep each UI
+        # boundary separate so a keyboard/modal race is observable.
+        stage = "tmux_workspace_return_switch"
         tap_action(device, stage, SWITCH_WORKSPACE_LABELS)
+        stage = "tmux_workspace_return_picker"
         first_workspace = wait_for_workspace(
             device,
             stage,
             label=workspace_label,
             timeout=RECONNECT_TIMEOUT,
         )
+        stage = "tmux_workspace_return_open"
         tap_node(device, first_workspace, stage)
+        stage = "tmux_workspace_return_panes"
         first_panes = wait_for_panes(
             device,
             stage,
@@ -2425,6 +2443,7 @@ def main(argv: list[str] | None = None) -> int:
         resume_pane = find_pane_node(first_panes, pane_id)
         if resume_pane is None:
             raise SmokeFailure(stage, "pane_identity_changed")
+        stage = "tmux_workspace_return_pane"
         tap_node(device, resume_pane, stage)
         wait_for_pane(
             device,
@@ -2440,6 +2459,7 @@ def main(argv: list[str] | None = None) -> int:
             stage,
             timeout=RECONNECT_TIMEOUT,
         )
+        stage = "tmux_workspace_return_terminal"
         terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
         tap_node(device, terminal, stage)
         completed.append("tmux_workspace_returned")
@@ -2600,9 +2620,9 @@ def main(argv: list[str] | None = None) -> int:
             # screen. The normal terminal screenshot remains the preferred
             # artifact when the smoke reaches it.
             if (
-                secrets_submitted
+                result != "passed"
+                and secrets_submitted
                 and "terminal_focused" in completed
-                and "terminal_keyboard_screenshot" not in completed
             ):
                 try:
                     device.assert_foreground("terminal_failure_screenshot")

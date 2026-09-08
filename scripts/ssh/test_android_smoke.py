@@ -753,6 +753,34 @@ UI dumped to: /dev/tty"""
         assert workspace is not None
         self.assertEqual(smoke.accessible_label(workspace), "Workspace smoke")
 
+    def test_wait_for_workspace_label_finds_nonselected_requested_window(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Workspace handoff",
+                "android.view.View",
+                (0, 0, 400, 100),
+                selected=True,
+            ),
+            smoke.Node(
+                "",
+                "Workspace smoke",
+                "android.view.View",
+                (0, 100, 400, 200),
+            ),
+        ]
+        device = mock.Mock()
+        device.dump_ui.return_value = nodes
+
+        workspace = smoke.wait_for_workspace(
+            device,
+            "workspace_return",
+            label="Workspace smoke",
+            timeout=1.0,
+        )
+
+        self.assertIs(workspace, nodes[1])
+
     def test_private_key_label_allows_only_known_accessibility_value_suffixes(self) -> None:
         nodes = [
             smoke.Node(
