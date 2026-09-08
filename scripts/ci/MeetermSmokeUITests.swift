@@ -326,8 +326,13 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func button(_ label: String) -> XCUIElement {
-    let buttons = app.buttons[label]
-    if buttons.count > 0 { return buttons.lastMatch }
+    // React Native exposes these contracts as accessibility labels. Match
+    // either label or identifier so the test remains stable across iOS
+    // versions that populate XCUIElementQuery's subscript differently.
+    let buttons = app.buttons.matching(
+      NSPredicate(format: "identifier == %@ OR label == %@", label, label)
+    )
+    if buttons.count > 0 { return buttons.element(boundBy: buttons.count - 1) }
     return app.descendants(matching: .any)[label]
   }
 

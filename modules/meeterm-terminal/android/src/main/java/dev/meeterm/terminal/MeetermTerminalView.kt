@@ -227,6 +227,9 @@ class MeetermTerminalView(
       }
     }
     surface.onResume()
+    // A terminal mounts after the root already received system-bar insets.
+    // Request those immediately instead of waiting for the first IME change.
+    requestApplyInsets()
   }
 
   override fun onDetachedFromWindow() {
