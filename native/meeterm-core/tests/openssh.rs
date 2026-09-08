@@ -288,6 +288,34 @@ fn real_openssh_tmux_session_loop() {
     resize_and_check_pane(&side, 100, 30, "resize selected pane");
     resize_and_check_pane(&side, 60, 18, "resize selected pane back");
 
+    // The phone's native Ctrl-C key must interrupt a real foreground process,
+    // rather than print a label or send the literal characters '^C'.
+    send_line_retry(side.terminal_id, "sleep 30", "start interruptible process");
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{pane_current_command}}'",
+            side.pane_id
+        ),
+        "foreground sleep starts",
+        |output| output.trim() == "sleep",
+    );
+    let interrupt_started = Instant::now();
+    assert_eq!(
+        meeterm_send_special_key(side.terminal_id, SpecialKey::Interrupt as u32),
+        1
+    );
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{pane_current_command}}'",
+            side.pane_id
+        ),
+        "foreground sleep interrupted",
+        |output| output.trim() != "sleep",
+    );
+    assert!(interrupt_started.elapsed() < Duration::from_secs(10));
+
     // The ordinary desktop client is a second consumer of the same session.
     // It attaches using exactly `tmux attach -t meeterm` and detaches cleanly
     // with the standard Ctrl-b d sequence.

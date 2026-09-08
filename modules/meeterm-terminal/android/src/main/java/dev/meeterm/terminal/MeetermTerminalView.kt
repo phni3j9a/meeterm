@@ -96,13 +96,18 @@ class MeetermTerminalView(
   private val onMetrics by EventDispatcher<Map<String, Any>>()
 
   init {
-    setBackgroundColor(Color.rgb(9, 11, 15))
+    setBackgroundColor(Color.rgb(36, 33, 29))
     isFocusable = true
     isFocusableInTouchMode = true
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      // The terminal already draws its own cursor. Android's default focus
+      // scrim otherwise tints every cell when the IME acquires this view.
+      defaultFocusHighlightEnabled = false
+    }
     descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
 
     content.orientation = LinearLayout.VERTICAL
-    content.setBackgroundColor(Color.rgb(9, 11, 15))
+    content.setBackgroundColor(Color.rgb(36, 33, 29))
     addView(
       content,
       ViewGroup.LayoutParams(
@@ -396,12 +401,13 @@ class MeetermTerminalView(
     val row = LinearLayout(context).apply {
       orientation = LinearLayout.HORIZONTAL
       gravity = android.view.Gravity.CENTER_VERTICAL
-      setBackgroundColor(Color.rgb(16, 20, 27))
+      setBackgroundColor(Color.rgb(33, 31, 27))
       importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
     listOf(
       "Esc" to TerminalSpecialKey.Escape,
       "Tab" to TerminalSpecialKey.Tab,
+      "^C" to TerminalSpecialKey.Interrupt,
       "↑" to TerminalSpecialKey.Up,
       "↓" to TerminalSpecialKey.Down,
       "←" to TerminalSpecialKey.Left,
@@ -416,14 +422,14 @@ class MeetermTerminalView(
         minWidth = 0
         minimumWidth = 0
         setPadding(0, 0, 0, 0)
-        setTextColor(Color.rgb(218, 224, 234))
+        setTextColor(Color.rgb(219, 179, 120))
         background = GradientDrawable().apply {
-          setColor(Color.rgb(29, 35, 46))
+          setColor(Color.rgb(48, 44, 38))
           cornerRadius = dp(5).toFloat()
         }
         isClickable = true
         isFocusable = true
-        contentDescription = label
+        contentDescription = if (key == TerminalSpecialKey.Interrupt) "Ctrl-C" else label
         setOnClickListener {
           requestFocusFromTouch()
           if (inputSession.sendSpecial(key)) surface.requestRender()

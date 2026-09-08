@@ -10,6 +10,7 @@ enum TerminalSpecialKey: UInt32 {
   case down = 5
   case left = 6
   case right = 7
+  case interrupt = 8
 }
 
 enum MeetermConnectionPhase: UInt32 {

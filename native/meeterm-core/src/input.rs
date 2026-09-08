@@ -13,6 +13,7 @@ pub enum SpecialKey {
     Down = 5,
     Left = 6,
     Right = 7,
+    Interrupt = 8,
 }
 
 impl TryFrom<u32> for SpecialKey {
@@ -28,6 +29,7 @@ impl TryFrom<u32> for SpecialKey {
             5 => Ok(Self::Down),
             6 => Ok(Self::Left),
             7 => Ok(Self::Right),
+            8 => Ok(Self::Interrupt),
             _ => Err(()),
         }
     }
@@ -50,6 +52,7 @@ pub fn encode_special_key_for_mode(key: SpecialKey, application_cursor: bool) ->
         SpecialKey::Tab => b"\t",
         SpecialKey::Enter => b"\r",
         SpecialKey::Backspace => b"\x7f",
+        SpecialKey::Interrupt => b"\x03",
         SpecialKey::Up if application_cursor => b"\x1bOA",
         SpecialKey::Down if application_cursor => b"\x1bOB",
         SpecialKey::Right if application_cursor => b"\x1bOC",

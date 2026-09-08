@@ -112,6 +112,7 @@ fn special_key_encoding_is_explicit_and_stable() {
         (SpecialKey::Down, b"\x1b[B".as_slice()),
         (SpecialKey::Left, b"\x1b[D".as_slice()),
         (SpecialKey::Right, b"\x1b[C".as_slice()),
+        (SpecialKey::Interrupt, b"\x03".as_slice()),
     ];
 
     for (key, expected) in cases {

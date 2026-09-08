@@ -33,9 +33,9 @@ final class MeetermTerminalView: ExpoView {
         colorPixelFormat: metalView.colorPixelFormat
       ) {
         metalView.clearColor = MTLClearColor(
-          red: Double(9) / 255,
-          green: Double(11) / 255,
-          blue: Double(15) / 255,
+          red: Double(36) / 255,
+          green: Double(33) / 255,
+          blue: Double(29) / 255,
           alpha: 1
         )
         metalView.framebufferOnly = true
@@ -69,9 +69,9 @@ final class MeetermTerminalView: ExpoView {
     super.init(appContext: appContext)
 
     backgroundColor = UIColor(
-      red: CGFloat(9) / 255,
-      green: CGFloat(11) / 255,
-      blue: CGFloat(15) / 255,
+      red: CGFloat(36) / 255,
+      green: CGFloat(33) / 255,
+      blue: CGFloat(29) / 255,
       alpha: 1
     )
     clipsToBounds = true
@@ -175,7 +175,9 @@ final class MeetermTerminalView: ExpoView {
       }
     } else {
       stopRevisionPolling()
-      terminalInputView.resignFirstResponder()
+      // Leaving a screen is not a text commit. Cancel preedit while retaining
+      // the Rust-owned pane so UIKit cannot submit it during responder teardown.
+      terminalInputView.cancelCompositionForBinding()
     }
   }
 

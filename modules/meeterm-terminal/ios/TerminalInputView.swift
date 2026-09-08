@@ -25,6 +25,7 @@ final class TerminalInputView: UITextView {
     let commands = [
       UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(sendEscape)),
       UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(sendTab)),
+      UIKeyCommand(input: "c", modifierFlags: [.control], action: #selector(sendInterrupt)),
       UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(sendUp)),
       UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(sendDown)),
       UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(sendLeft)),
@@ -126,10 +127,14 @@ final class TerminalInputView: UITextView {
     let toolbar = UIToolbar()
     toolbar.barStyle = .black
     toolbar.isTranslucent = false
+    toolbar.barTintColor = UIColor(red: 33.0 / 255, green: 31.0 / 255, blue: 27.0 / 255, alpha: 1)
+    toolbar.tintColor = UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
     toolbar.items = [
       item(title: "Esc", action: #selector(sendEscape)),
       flexibleSpace(),
       item(title: "Tab", action: #selector(sendTab)),
+      flexibleSpace(),
+      item(title: "^C", action: #selector(sendInterrupt)),
       flexibleSpace(),
       item(title: "←", action: #selector(sendLeft)),
       flexibleSpace(),
@@ -137,14 +142,18 @@ final class TerminalInputView: UITextView {
       flexibleSpace(),
       item(title: "↓", action: #selector(sendDown)),
       flexibleSpace(),
-      item(title: "→", action: #selector(sendRight))
+      item(title: "→", action: #selector(sendRight)),
+      flexibleSpace(),
+      item(title: "⌄", action: #selector(hideKeyboard))
     ]
     toolbar.sizeToFit()
     return toolbar
   }
 
   private func item(title: String, action: Selector) -> UIBarButtonItem {
-    UIBarButtonItem(title: title, style: .plain, target: self, action: action)
+    let button = UIBarButtonItem(title: title, style: .plain, target: self, action: action)
+    button.accessibilityLabel = title == "^C" ? "Ctrl-C" : title == "⌄" ? "Hide keyboard" : title
+    return button
   }
 
   private func flexibleSpace() -> UIBarButtonItem {
@@ -157,6 +166,14 @@ final class TerminalInputView: UITextView {
 
   @objc private func sendTab() {
     emitSpecial(.tab)
+  }
+
+  @objc private func sendInterrupt() {
+    emitSpecial(.interrupt)
+  }
+
+  @objc private func hideKeyboard() {
+    cancelCompositionForBinding()
   }
 
   @objc private func sendUp() {
