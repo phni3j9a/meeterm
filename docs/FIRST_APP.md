@@ -1,8 +1,11 @@
 # 初版の実用評価
 
 HTMLモック第5版の画面を、既存のReact Native / Expo・共有Rust・
-ネイティブ端末・SSH / tmuxへ接続した初版です。現在、両OSの受け入れ検証を進めています。
-**下の検証記録が埋まるまでは、初版の受け入れ完了を意味しません。**
+ネイティブ端末・SSH / tmuxへ接続した、Android先行の実用評価版です。
+Androidの実SSH操作とHosted emulatorの受け入れを確認し、ここから実際に使って改善します。
+2026-09-08の方針変更により、iOSの未完了の受け入れ検証は
+[Issue #13](https://github.com/phni3j9a/meeterm/issues/13)へ分離しました。
+**iOSの実装とCIは保持していますが、iOS版の受け入れ完了は意味しません。**
 
 ## 初版の操作範囲
 
@@ -110,7 +113,7 @@ adb shell monkey -p dev.meeterm.app 1
 
 Androidの実SSH操作が通過した評価APKは
 [run 34213506913 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34213506913/artifacts/10051549396)
-から取得できます（commit `a16b33e`）。iOSの受け入れ検証は継続中です。
+から取得できます（commit `a16b33e`）。iOSの受け入れ検証はIssue #13へ引き継いでいます。
 
 ```sh
 gh run download 34213506913 --repo phni3j9a/meeterm \
@@ -124,6 +127,10 @@ adb shell monkey -p dev.meeterm.app 1
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
+
+今回の区切りではiOSの実用評価を保留しています。
+再開時の診断・修正候補・完了条件は[Issue #13](https://github.com/phni3j9a/meeterm/issues/13)を参照してください。
+以下は開発・Simulatorで検証を再開するための手順です。
 
 macOS・Xcode・対応するSimulator runtime・CocoaPods・Node・Rustが必要です。
 Intel MacのSimulatorでは `x86_64-apple-ios`、Apple Siliconでは
@@ -152,7 +159,7 @@ Hosted SimulatorでのCoreGraphics fallbackはMetal実行の証拠ではあり�
 Simulatorで成功しても実機GPU・日本語IME・フォントフォールバックの同等性は
 証明しません。
 
-## 作業中の検証記録
+## 区切り時点の検証記録
 
 | 検証 | 現在の証拠 |
 | --- | --- |
@@ -164,7 +171,7 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 | 両OSスクリーンショット目視 | Android a16b33eの5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOSは8070c01の6枚（空フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）とa16b33eの空フォーム＋キーボード1枚を目視済み。iOSの補助キーは横スクロール＋常時表示の閉じるキー。8070c01のログにはMetal first frameが4件あるが、a16b33eの最終native gate完了を意味しない |
 | Pixel 3実機 | arm64 Releaseのbuild/install/launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVM11テスト通過。実SSH UIは未完了。別アプリが前面に出たためユーザーの端末利用状況を確認中 |
 | iPhone実機・実機Metal・実日本語IME | 未検証 |
-| APK・PR | [Draft PR #12](https://github.com/phni3j9a/meeterm/pull/12)、Android評価APKは上記成果物から取得可能。両OSの受け入れ完了は未達 |
+| APK・PR | [PR #12](https://github.com/phni3j9a/meeterm/pull/12)、Android評価APKは上記成果物から取得可能。Android先行版として区切り、iOSの未完了事項は[Issue #13](https://github.com/phni3j9a/meeterm/issues/13)へ引き継ぎ |
 
 ## 既知の検証境界
 
