@@ -1557,6 +1557,19 @@ def tap_node(device: AndroidDevice, node: Node, stage: str) -> None:
     device.input_tap(x, y, stage)
 
 
+def focus_terminal(device: AndroidDevice, node: Node, stage: str) -> None:
+    """Tap a native terminal and let its IME connection settle.
+
+    The terminal is a native surface rather than an RN text input. A tap
+    posts ``showSoftInput`` and the corresponding InputConnection can attach
+    after the accessibility node is already visible. Keep the delay bounded
+    and apply it at every terminal route boundary before injecting a command.
+    """
+
+    tap_node(device, node, stage)
+    time.sleep(TERMINAL_FOCUS_SETTLE_SECONDS)
+
+
 def clear_field(device: AndroidDevice, stage: str, delete_count: int) -> None:
     if delete_count <= 0:
         return
@@ -2253,12 +2266,8 @@ def main(argv: list[str] | None = None) -> int:
 
         stage = "terminal_focus"
         terminal = wait_for_terminal(device, stage)
-        tap_node(device, terminal, stage)
+        focus_terminal(device, terminal, stage)
         completed.append("terminal_focused")
-        # showSoftInput is posted by the native view after the tap. Allow the
-        # input connection and keyboard focus to settle before injecting the
-        # first remote command.
-        time.sleep(TERMINAL_FOCUS_SETTLE_SECONDS)
 
         stage = "remote_marker"
         terminal_line(device, "exec /bin/sh -i")
@@ -2398,7 +2407,11 @@ def main(argv: list[str] | None = None) -> int:
             timeout=RECONNECT_TIMEOUT,
         )
         other_terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
-        tap_node(device, other_terminal, stage)
+        # Selecting another workspace mounts a fresh native terminal view;
+        # focus_terminal keeps its first key event behind the same bounded
+        # input-connection boundary as the initial terminal. The hosted smoke
+        # exposed a dropped character here (``export`` became ``expot``).
+        focus_terminal(device, other_terminal, stage)
         terminal_line(
             device,
             session_marker_command(
@@ -2461,7 +2474,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         stage = "tmux_workspace_return_terminal"
         terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
-        tap_node(device, terminal, stage)
+        focus_terminal(device, terminal, stage)
         completed.append("tmux_workspace_returned")
 
         stage = "pc_handoff"
@@ -2553,7 +2566,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=RECONNECT_TIMEOUT,
         )
         terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
-        tap_node(device, terminal, stage)
+        focus_terminal(device, terminal, stage)
         completed.append("tmux_pane_resumed")
 
         stage = "remote_marker_resume"

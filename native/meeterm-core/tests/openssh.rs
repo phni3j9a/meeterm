@@ -296,8 +296,25 @@ fn real_openssh_tmux_session_loop() {
 
     // Resize the selected pane through the native terminal API and verify the
     // dimensions reported by both Rust's terminal snapshot and tmux metadata.
-    resize_and_check_pane(&side, 100, 30, "resize selected pane");
-    resize_and_check_pane(&side, 60, 18, "resize selected pane back");
+    wait_for_state(id, ConnectionState::Ready, "ready before keyboard resize");
+    std::thread::scope(|scope| {
+        let observer = scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                assert_eq!(
+                    connection_snapshot(id)
+                        .expect("connection during resize")
+                        .state,
+                    ConnectionState::Ready as u32,
+                    "routine resize must not tell the UI to unmount its live terminal"
+                );
+                sleep(Duration::from_millis(1));
+            }
+        });
+        resize_and_check_pane(&side, 100, 30, "resize selected pane");
+        resize_and_check_pane(&side, 60, 18, "resize selected pane back");
+        observer.join().expect("continuous readiness during resize");
+    });
 
     // The phone's native Ctrl-C key must interrupt a real foreground process,
     // rather than print a label or send the literal characters '^C'.

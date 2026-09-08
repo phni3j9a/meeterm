@@ -200,6 +200,25 @@ def _patched_clock(clock: _FakeClock):
 
 
 class UiDriverTests(unittest.TestCase):
+    def test_focus_terminal_waits_for_native_ime_after_tap(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock()
+        node = smoke.Node(
+            "",
+            "Terminal %1",
+            "dev.meeterm.terminal.MeetermTerminalView",
+            (0, 0, 100, 100),
+        )
+
+        with _patched_clock(clock):
+            smoke.focus_terminal(device, node, "terminal_focus")
+
+        device.input_tap.assert_called_once_with(50, 50, "terminal_focus")
+        self.assertEqual(
+            clock.sleep_calls,
+            [smoke.TERMINAL_FOCUS_SETTLE_SECONDS],
+        )
+
     def test_text_input_label_accepts_android_value_suffix_without_printing_value(self) -> None:
         value = "127.0.0.1"
         node = smoke.Node(

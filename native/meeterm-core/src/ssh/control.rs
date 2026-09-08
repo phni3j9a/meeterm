@@ -473,7 +473,11 @@ impl ControlClient {
     }
 
     async fn synchronize(&mut self, initial: bool) -> Result<(), FlowFailure> {
-        self.shared.set_state(ConnectionState::Synchronizing);
+        // Routine refreshes keep the live transport usable. Reporting a new
+        // connection phase here would make the UI unmount its terminal view.
+        if initial {
+            self.shared.set_state(ConnectionState::Synchronizing);
+        }
         self.dirty = false;
         if initial {
             self.resize_client().await?;
