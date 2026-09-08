@@ -1,11 +1,12 @@
 # 初版の実用評価
 
 HTMLモック第5版の画面を、既存のReact Native / Expo・共有Rust・
-ネイティブ端末・SSH / tmuxへ接続した、Android先行の実用評価版です。
-Androidの実SSH操作とHosted emulatorの受け入れを確認し、ここから実際に使って改善します。
-2026-09-08の方針変更により、iOSの未完了の受け入れ検証は
-[Issue #13](https://github.com/phni3j9a/meeterm/issues/13)へ分離しました。
-**iOSの実装とCIは保持していますが、iOS版の受け入れ完了は意味しません。**
+ネイティブ端末・SSH / tmuxへ接続した実用評価版です。
+Android先行版に続き、[Issue #13の検証](evidence/issue-13-ios-acceptance.md)で
+iOS Simulatorの実SSH操作と最終native smokeの受け入れも完了しました。
+2026-09-09 JST（CI実行日は2026-09-08 UTC）の `012c987` で両OSのHosted jobが成功し、
+両OSの画像をダウンロードして目視しています。
+**iPhone実機・実機日本語IME・TestFlightの検証は別途必要です。**
 
 ## 初版の操作範囲
 
@@ -112,25 +113,28 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34213506913 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34213506913/artifacts/10051549396)
-から取得できます（commit `a16b33e`）。iOSの受け入れ検証はIssue #13へ引き継いでいます。
+[run 34243185286 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34243185286/artifacts/10064096141)
+から取得できます（commit `012c987`、Expo 57.0.21）。
 
 ```sh
-gh run download 34213506913 --repo phni3j9a/meeterm \
+gh run download 34243185286 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`d6930ebf3ae10b6fc8f0fa6b4f11592614b1321bec5c46acd06233a308e3f57d`
+`2c41376d0f4a05404565b1189c6725afccb26dc024e7efd8a476df2657c12a13`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
 
-今回の区切りではiOSの実用評価を保留しています。
-再開時の診断・修正候補・完了条件は[Issue #13](https://github.com/phni3j9a/meeterm/issues/13)を参照してください。
-以下は開発・Simulatorで検証を再開するための手順です。
+Hosted iPhone 17 Pro Simulator／Xcode 26.6で、実フォームからのSSH接続、
+window／pane選択、ネイティブキーボード・Paste・Return、切断・再接続と
+同じshellへの入力を確認しました。通常の `tmux attach -t meeterm` による
+PC引き継ぎ、UIKit入力3テスト、新規起動のnative readiness／Metal first frame／
+no-crashも通過しています。詳細は[受け入れ記録](evidence/issue-13-ios-acceptance.md)を参照してください。
+以下はローカルの開発・Simulator実行手順です。
 
 macOS・Xcode・対応するSimulator runtime・CocoaPods・Node・Rustが必要です。
 Intel MacのSimulatorでは `x86_64-apple-ios`、Apple Siliconでは
@@ -159,19 +163,30 @@ Hosted SimulatorでのCoreGraphics fallbackはMetal実行の証拠ではあり�
 Simulatorで成功しても実機GPU・日本語IME・フォントフォールバックの同等性は
 証明しません。
 
-## 区切り時点の検証記録
+## 検証記録（2026-09-09 JST）
+
+アプリ・依存・テストの検証対象は `012c987` です。以下のHosted結果は
+[Mobile smoke run 34243185286](https://github.com/phni3j9a/meeterm/actions/runs/34243185286)と
+[一般CI run 34243185235](https://github.com/phni3j9a/meeterm/actions/runs/34243185235)に対応します。
+その後のREADME／本書／受け入れ記録の変更は文書のみです。
 
 | 検証 | 現在の証拠 |
 | --- | --- |
-| 共有Rust | 42 unit tests、Clippy通過。2026-09-08ローカル |
-| OpenSSH＋tmux | 隔離fixtureで接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存のPC zoom保持・window内active pane保持通過。通常同期中のReady維持、画面再取得後の入力可能状態保持も回帰確認。2026-09-08ローカル |
-| UI型チェック | 新UI統合後のTypeScriptチェック通過。2026-09-08ローカル |
-| Android CI | [a16b33e / run 34213506913](https://github.com/phni3j9a/meeterm/actions/runs/34213506913)のAndroid job成功。実SSH接続・window/pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split/zoom復元まで通過。入力拒否0件 |
-| iOS CI・実SSH操作 | [a16b33e / run 34213506913](https://github.com/phni3j9a/meeterm/actions/runs/34213506913)で署名なしbuildとUIKitの貼り付け3テスト（複数行を一度だけ配送、再バインド後破棄、unmount後破棄）が成功。実UIテストは起動・フォーム表示・Host/Port読み戻し後、Usernameの一度だけの再入力でも値が一致せず接続前に停止。8070c01では実SSH接続・workspace/pane切り替え・標準Paste処理完了まで進行したが、リモート入力確認・切断・再接続・最終native gateは未完了 |
-| 両OSスクリーンショット目視 | Android a16b33eの5枚（実workspace、端末＋キーボード、再接続後端末、PCヘルプ、native foundation）をダウンロードして目視済み。iOSは8070c01の6枚（空フォーム＋キーボード、ホスト鍵確認、workspace一覧、workspace切り替え、pane切り替え、端末＋キーボード）とa16b33eの空フォーム＋キーボード1枚を目視済み。iOSの補助キーは横スクロール＋常時表示の閉じるキー。8070c01のログにはMetal first frameが4件あるが、a16b33eの最終native gate完了を意味しない |
-| Pixel 3実機 | arm64 Releaseのbuild/install/launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVM11テスト通過。実SSH UIは未完了。別アプリが前面に出たためユーザーの端末利用状況を確認中 |
+| 共有Rust | 42 unit tests、format／Clippy通過 |
+| OpenSSH＋tmux | 隔離fixtureの実SSH統合テスト通過。接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存PC zoom／active pane保持を確認。通常同期中のReady維持と画面再取得後の入力可能状態も回帰確認 |
+| UI・CI回帰 | TypeScript、Expo config／doctor 21項目、Python回帰64件、画像collector回帰通過 |
+| Android CI | 26分1秒で成功。実SSH接続・window／pane切り替え・入力・切断・再接続・同一shellへの入力・最後の切断後split／zoom復元まで通過。native readiness／first frame／no-crash成功、収集ログの入力拒否0件。一般CIのnative module unit testsも通過 |
+| iOS CI・実SSH操作 | 41分35秒で成功。Host／Port／Usernameは最初の試行で一致。ホスト鍵確認・接続・window／pane選択・ネイティブキーボード／Paste／Return・リモート入力・切断・同じshellへの再接続入力・通常のdesktop attachが通過。UIKitの複数行pasteを一度だけ配送、rebind後破棄、unmount後破棄の3テストも成功 |
+| iOS最終native gate | 実SSH中のMetal first frame 5件と、最後の新規プロセスのnative readiness／Metal first frame 1件を別区間で確認。10秒以上のforeground観測が完了し、first frame後5秒以上の生存確認も通過。今回のbackendはMetalで、Simulator-only CoreGraphics fallbackではない |
+| 両OSスクリーンショット目視 | 同じcommitのAndroid 5枚、iOS 10枚をダウンロードして実際に開いた。主要画面・キーボード・入力後・再接続後・native foundationを確認。iOS最後の画像は端末プレビューで、以前停止したOSのURL確認ダイアログはない。画像名と観察内容は[受け入れ記録](evidence/issue-13-ios-acceptance.md)を参照 |
+| Pixel 3実機（過去の記録） | arm64 Releaseのbuild／install／launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVMテスト11件通過。実SSH UIは別アプリが前面に出たため未完了。今回のHosted結果で実機確認済みとはしない |
 | iPhone実機・実機Metal・実日本語IME | 未検証 |
-| APK・PR | [PR #12](https://github.com/phni3j9a/meeterm/pull/12)、Android評価APKは上記成果物から取得可能。Android先行版として区切り、iOSの未完了事項は[Issue #13](https://github.com/phni3j9a/meeterm/issues/13)へ引き継ぎ |
+| APK・PR | Android評価APKは上記 `012c987` の成果物から取得可能。iOSの診断と最終起動の修正・検証記録は[PR #14](https://github.com/phni3j9a/meeterm/pull/14) |
+
+過去の `a16b33e` のUsername不一致は再開後の3つのrunでは再現せず、原因は未確定です。
+失敗時の値を公開しない診断を追加し、完全一致判定・最大2試行・待ち時間は維持しました。
+今回原因を確認して修正したのは、実SSHテスト後の別起動がOSのURL確認ダイアログで
+停止していた問題です。経緯は[Issue #13の記録](evidence/issue-13-ios-acceptance.md)に残しています。
 
 ## 既知の検証境界
 
