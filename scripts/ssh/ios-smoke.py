@@ -244,12 +244,46 @@ def last_ui_stage(path: Path) -> str:
     return "unavailable"
 
 
+def write_xcuitest_diagnostics(raw_log: Path, destination: Path, exit_code: int | None) -> None:
+    """Keep runner failures observable without copying XCTest's credential text."""
+    try:
+        log = raw_log.read_text(encoding="utf-8", errors="replace").lower()
+        available = True
+    except OSError:
+        log = ""
+        available = False
+    signals = {
+        "test_case_started": r"test case .+ started",
+        "test_suite_started": r"test suite .+ started",
+        "runner_launch_failed": r"failed to launch|unable to launch|failed to start.*test runner",
+        "runner_early_exit": r"early unexpected exit|test runner.*crash|runner.*exited",
+        "runner_connection_failed": r"failed to establish.*connection|lost.*connection|failed to get test.*ready|never began executing",
+        "test_bundle_load_failed": r"failed to load.*bundle|could not load.*bundle|dlopen|symbol not found",
+        "swift_cast_failed": r"could not cast value of type",
+        "simulator_boot_failed": r"failed to boot|unable to boot",
+        "device_preparation_failed": r"failed to prepare.*device|failed to install|unable to install",
+        "disk_full": r"no space left on device",
+        "testing_cancelled": r"testing cancel(?:led|ed)|test execution was interrupted",
+    }
+    lines = [
+        f"raw_log_available={int(available)}",
+        f"exit_code={exit_code if exit_code is not None else 'unavailable'}",
+    ]
+    lines.extend(f"{name}={int(re.search(pattern, log) is not None)}" for name, pattern in signals.items())
+    try:
+        write_text(destination, "\n".join(lines) + "\n")
+    except OSError:
+        # Diagnostics must not replace the original test failure.
+        pass
+
+
 def run_xcuitest(
     *,
     derived_data: Path,
     simulator_udid: str,
     result_bundle: Path,
     raw_log: Path,
+    diagnostics_path: Path,
 ) -> int:
     products = derived_data / "Build" / "Products"
     bundles = sorted(products.glob("*.xctestrun"))
@@ -287,6 +321,7 @@ def run_xcuitest(
         "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE",
     ):
         runner_environment.pop(secret_name, None)
+    exit_code = None
     try:
         with raw_log.open("w", encoding="utf-8") as stream:
             completed = subprocess.run(
@@ -298,10 +333,13 @@ def run_xcuitest(
                 timeout=900,
                 check=False,
             )
+            exit_code = completed.returncode
     except subprocess.TimeoutExpired as error:
         raise SmokeFailure("xcuitest", "xcodebuild_timeout") from error
     except OSError as error:
         raise SmokeFailure("xcuitest", "xcodebuild_failed") from error
+    finally:
+        write_xcuitest_diagnostics(raw_log, diagnostics_path, exit_code)
     return completed.returncode
 
 
@@ -417,6 +455,7 @@ def main() -> int:
             / "meeterm-ios-ui.xcresult",
             raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
             / "meeterm-ios-ui-xcodebuild.log",
+            diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
         )
         if run_status != 0:
             ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
