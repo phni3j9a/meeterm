@@ -50,19 +50,35 @@ if grep -Fq 'simctl io' "${xcrun_log}"; then
   exit 1
 fi
 test ! -e "${artifact_root}/terminal.png"
-grep -Fq 'post-test native foundation launch was not reached' \
+grep -Fq 'XCTest did not capture the fresh native foundation' \
   "${artifact_root}/screenshot-unavailable.txt"
 
-rm -rf "${artifact_root}"
-mkdir -p "${artifact_root}"
+# A safe XCTest checkpoint is preserved, and stale unavailable diagnostics are
+# cleared. The collector must never take another screenshot of arbitrary UI.
+python3 - "${artifact_root}/terminal.png" <<'PY'
+import base64
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_bytes(base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY4sAAAAASUVORK5CYII="
+))
+PY
+cp "${artifact_root}/terminal.png" "${temporary_root}/expected.png"
 : > "${xcrun_log}"
-printf '%s\n' 'meeterm.app: 12345' > "${artifact_root}/post-test-launch.txt"
-printf '%s\n' 'post_test_foundation_openurl=issued' \
-  > "${artifact_root}/post-test-foundation-ready.txt"
 run_collector
-if ! grep -Fq 'simctl io SIMULATOR screenshot' "${xcrun_log}"; then
-  echo "collector did not capture a screenshot after the safe post-test marker" >&2
+if grep -Fq 'simctl io' "${xcrun_log}"; then
+  echo "collector recaptured arbitrary UI over the XCTest checkpoint" >&2
   exit 1
 fi
+cmp "${artifact_root}/terminal.png" "${temporary_root}/expected.png"
+test ! -e "${artifact_root}/screenshot-unavailable.txt"
+
+# Invalid images remain explicit diagnostics, without making the collector a
+# screenshot-existence gate or attempting to capture a credentials screen.
+: > "${artifact_root}/terminal.png"
+run_collector
+test ! -e "${artifact_root}/terminal.png"
+grep -Fq 'screenshot capture produced no image data' \
+  "${artifact_root}/screenshot-unavailable.txt"
 
 echo "iOS artifact screenshot boundary regression passed."

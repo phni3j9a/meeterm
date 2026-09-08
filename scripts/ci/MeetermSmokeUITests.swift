@@ -311,6 +311,46 @@ final class MeetermSmokeUITests: XCTestCase {
     // then proves that ordinary tmux attach can continue the same session.
     record("terminate_app_for_handoff")
     app.terminate()
+    try verifyFoundationRelaunch()
+  }
+
+  private func verifyFoundationRelaunch() throws {
+    // Target the installed app explicitly. A host-side simctl openurl can
+    // stop at SpringBoard's "Open in meeterm?" dialog instead of delivering
+    // the URL. This is a fresh launch after the real SSH flow has completed.
+    record("foundation_launch")
+    let launchEpoch = Date().timeIntervalSince1970
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60), "The fresh app did not reach the foreground.")
+    app.open(URL(string: "meeterm://foundation?foundation=1")!)
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60), "The foundation app did not reach the foreground.")
+    XCTAssertTrue(app.staticTexts["Native foundation preview"].waitForExistence(timeout: 60), "The foundation URL did not open the preview.")
+    XCTAssertTrue(waitForTerminal(), "The foundation native terminal is unavailable.")
+
+    record("foundation_survival_start")
+    let survivalStartEpoch = Date().timeIntervalSince1970
+    let leftForeground = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in self.app.state != .runningForeground },
+      object: app
+    )
+    leftForeground.isInverted = true
+    XCTAssertEqual(XCTWaiter.wait(for: [leftForeground], timeout: 10), .completed,
+      "The foundation app left the foreground during the no-crash observation.")
+    let survivalEndEpoch = Date().timeIntervalSince1970
+    // The host requires this fresh launch's native-ready and first-frame logs
+    // at least five seconds before observation ends. The first five seconds
+    // allow the native surface to finish its initial draw after the UI appears.
+    let observation = [
+      "launch_epoch": launchEpoch,
+      "survival_start_epoch": survivalStartEpoch,
+      "survival_end_epoch": survivalEndEpoch,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys])
+    try data.write(to: artifactDirectory.appendingPathComponent("ios-foundation-observation.json"), options: .atomic)
+    record("capture_foundation")
+    capture("terminal")
+    record("foundation_verified")
+    app.terminate()
   }
 
   private func requiredEnvironment(_ name: String) -> String {

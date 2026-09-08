@@ -71,6 +71,14 @@ The iOS job now generates a temporary XCUITest target in the fresh CNG project
 and drives the actual connection form, host trust, workspace/pane selection,
 native input, disconnect, and reconnect against the same disposable fixture.
 The Python driver then checks remote markers and ordinary desktop attach.
+After the real SSH flow, XCUITest terminates the app and opens the explicit
+foundation URL with `XCUIApplication.open(_:)`. It requires the preview and
+native terminal to appear, then continuously observes the app in the foreground
+for ten seconds. The host validates that this fresh process reported native
+readiness and a Metal or Simulator-only software first frame at least five
+seconds before that observation ended. UTC log timestamps keep foundation
+frames separate from the real SSH frame gate. The collector preserves the
+XCTest screenshot rather than capturing an arbitrary post-test screen.
 Raw XCTest output and xcresult bundles can contain typed credentials and remain
 in runner temporary storage; only sanitized stages and safe screenshots are uploaded.
 This is the implemented gate; completed run evidence is tracked in `FIRST_APP.md`.

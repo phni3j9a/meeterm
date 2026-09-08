@@ -7,15 +7,6 @@ find "${artifact_dir}" -maxdepth 1 -type f \
   \( -iname 'meeterm*.crash' -o -iname 'meeterm*.ips' \) \
   -delete 2>/dev/null || true
 
-post_test_launch_ready=0
-if [[ -s "${artifact_dir}/post-test-launch.txt" && -s "${artifact_dir}/post-test-foundation-ready.txt" ]]; then
-  post_test_pid="$(sed -nE 's/.*: ([0-9]+)$/\1/p' "${artifact_dir}/post-test-launch.txt" | tail -n 1)"
-  if [[ "${post_test_pid}" =~ ^[0-9]+$ ]] && grep -Fq 'post_test_foundation_openurl=issued' \
-    "${artifact_dir}/post-test-foundation-ready.txt"; then
-    post_test_launch_ready=1
-  fi
-fi
-
 if [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" && ! -s "${artifact_dir}/simulator.log" ]]; then
   # Collect only explicit native smoke markers even when the real UI test
   # fails before the post-test foundation launch. This keeps failure evidence
@@ -27,15 +18,15 @@ if [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" && ! -s "$
     > "${artifact_dir}/simulator.log" 2>&1 || true
 fi
 
-if [[ -n "${IOS_SIMULATOR_UDID:-}" && "${post_test_launch_ready}" -eq 1 ]]; then
-  xcrun simctl io "${IOS_SIMULATOR_UDID}" screenshot \
-    "${artifact_dir}/terminal.png" 2>&1 \
-    | tee "${artifact_dir}/screenshot.txt" || true
+# XCTest captures this only after the fresh foundation preview is visible and
+# its foreground survival observation completes. Never capture an arbitrary
+# screen after XCTest: it may be a credentials form or a system URL dialog.
+if [[ -f "${artifact_dir}/terminal.png" ]]; then
   scripts/ci/validate-png.sh \
     "${artifact_dir}/terminal.png" \
     "${artifact_dir}/screenshot-unavailable.txt"
-elif [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" ]]; then
-  echo "post-test native foundation launch was not reached; terminal screenshot unavailable" \
+elif [[ -f "${artifact_dir}/launch.txt" ]]; then
+  echo "XCTest did not capture the fresh native foundation; terminal screenshot unavailable" \
     > "${artifact_dir}/screenshot-unavailable.txt"
 fi
 
