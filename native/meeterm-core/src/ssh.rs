@@ -408,6 +408,19 @@ impl ConnectionShared {
         }
     }
 
+    fn clear_owned_zoom(&self) {
+        // A transport failure can leave the Control Mode actor without a
+        // chance to run its cancellation branch.  Clear only the ownership
+        // belonging to this generation so a later connection cannot inherit
+        // stale cleanup authority for the same terminal ID.
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+        {
+            state.meeterm_zoomed = false;
+            state.meeterm_zoomed_pane = None;
+        }
+    }
+
     fn command_sender(&self) -> Option<mpsc::Sender<ControlCommand>> {
         self.commands
             .lock()
@@ -756,7 +769,6 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
     };
 
     detach_all(&shared);
-    shared.mark_disconnected();
     Ok(())
 }
 
@@ -1367,7 +1379,9 @@ async fn run_connection(
     let result = run_connection_flow(Arc::clone(&shared), start, commands).await;
     shared.clear_commands();
     detach_all(&shared);
+    shared.clear_owned_zoom();
     if shared.is_cancelled() {
+        shared.mark_disconnected();
         return;
     }
     match result {

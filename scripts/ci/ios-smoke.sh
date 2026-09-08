@@ -10,6 +10,12 @@ readonly derived_data="${RUNNER_TEMP}/meeterm-derived-data"
 : "${IOS_SIMULATOR_UDID:?IOS_SIMULATOR_UDID was not exported}"
 mkdir -p "${artifact_dir}"
 test -d "${app_path}"
+rm -f \
+  "${artifact_dir}/post-test-launch.txt" \
+  "${artifact_dir}/post-test-openurl.txt" \
+  "${artifact_dir}/post-test-foundation-ready.txt" \
+  "${artifact_dir}/terminal.png" \
+  "${artifact_dir}/simulator.log"
 
 printf '%s\n' \
   "mode=xcuitest-real-ssh" \
@@ -99,6 +105,8 @@ if ! [[ "${app_pid}" =~ ^[0-9]+$ ]]; then
 fi
 xcrun simctl openurl "${IOS_SIMULATOR_UDID}" 'meeterm://foundation?foundation=1' \
   > "${artifact_dir}/post-test-openurl.txt" 2>&1
+printf '%s\n' 'post_test_foundation_openurl=issued' \
+  > "${artifact_dir}/post-test-foundation-ready.txt"
 marker_predicate="process == \"meeterm\" AND processIdentifier == ${app_pid} AND eventMessage CONTAINS \"MEETERM_SMOKE_\""
 simulator_app_is_running() {
   xcrun simctl spawn "${IOS_SIMULATOR_UDID}" launchctl print system 2>/dev/null \

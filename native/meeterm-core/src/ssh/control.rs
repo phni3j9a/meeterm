@@ -33,6 +33,10 @@ impl Drop for ControlClient {
             task.abort();
         }
         detach_all(&self.shared);
+        // Covers transport errors and task aborts that bypass the normal
+        // cancellation branch.  The generation guard keeps an old actor from
+        // clearing ownership established by a replacement connection.
+        self.shared.clear_owned_zoom();
     }
 }
 
@@ -326,32 +330,77 @@ impl ControlClient {
             .lock()
             .map_err(|_| FlowFailure::Stale)?
             .meeterm_zoomed_pane;
-        let allocation = if let Some(allocation) = self.zoom_hooks {
-            allocation
-        } else {
-            let reply = self.query("show-hooks -t =meeterm:").await?;
-            let hooks = reply
-                .into_iter()
-                .flat_map(|b| b.lines)
-                .collect::<Vec<_>>()
-                .join(&b'\n');
-            let allocation = tmux::choose_zoom_recovery_hook(&hooks).ok_or(FlowFailure::Tmux)?;
-            self.zoom_hooks = Some(allocation);
-            allocation
-        };
-        // Install recovery before applying zoom. Existing indexed user hooks
-        // remain intact; only our allocated pair is updated on tab selection.
-        let mut transition = Vec::new();
+        // Return an earlier meeterm-owned window to its ordinary layout before
+        // inspecting the new target.  This ordering matters when the target
+        // is the same pane: the zoom we just remove must not be mistaken for
+        // a desktop zoom that meeterm should preserve.
         if let Some(previous) = previous {
-            transition.push(tmux::restore_layout_command(previous));
+            self.query(&tmux::restore_layout_command(previous)).await?;
         }
-        transition.push(tmux::install_zoom_recovery_hooks_command(allocation, pane));
-        transition.push(tmux::select_pane_command(None, window, pane));
-        self.query(&transition.join(" ; ")).await?;
+
+        // A desktop user may already have zoomed this window.  The latest
+        // topology snapshot records that state for every window.  If the
+        // previous pane was meeterm-owned in this same window, the restore
+        // above has just cleared that zoom and the stale snapshot must not
+        // make us treat it as desktop-owned.
+        let zoomed = {
+            let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            let zoomed = state
+                .snapshot
+                .windows
+                .iter()
+                .find(|candidate| candidate.window_id == window)
+                .is_some_and(|candidate| candidate.zoomed);
+            let previous_same_window = previous.is_some_and(|previous| {
+                state
+                    .snapshot
+                    .panes
+                    .iter()
+                    .find(|candidate| candidate.pane_id == previous)
+                    .is_some_and(|candidate| candidate.window_id == window)
+            });
+            zoomed && !previous_same_window
+        };
+        if zoomed {
+            // tmux unzooms a window when selecting a different pane inside
+            // the zoomed window.  Its normal idempotent selection command
+            // immediately re-zooms the new target, so the desktop zoom state
+            // survives the mobile tab change even though meeterm does not own
+            // the cleanup.
+            let mut transition = vec![tmux::select_pane_command(None, window, pane)];
+            if let Some(allocation) = self.zoom_hooks.take() {
+                transition.push(tmux::remove_zoom_recovery_hooks_command(allocation));
+            }
+            self.query(&transition.join(" ; ")).await?;
+        } else {
+            let allocation = if let Some(allocation) = self.zoom_hooks {
+                allocation
+            } else {
+                let reply = self.query("show-hooks -t =meeterm:").await?;
+                let hooks = reply
+                    .into_iter()
+                    .flat_map(|b| b.lines)
+                    .collect::<Vec<_>>()
+                    .join(&b'\n');
+                let allocation =
+                    tmux::choose_zoom_recovery_hook(&hooks).ok_or(FlowFailure::Tmux)?;
+                self.zoom_hooks = Some(allocation);
+                allocation
+            };
+            // Install recovery before applying zoom. Existing indexed user
+            // hooks remain intact; only our allocated pair is updated on tab
+            // selection.
+            let transition = [
+                tmux::install_zoom_recovery_hooks_command(allocation, pane),
+                tmux::select_pane_command(None, window, pane),
+            ]
+            .join(" ; ");
+            self.query(&transition).await?;
+        }
         let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
         state.selected_pane = Some(pane);
-        state.meeterm_zoomed = true;
-        state.meeterm_zoomed_pane = Some(pane);
+        state.meeterm_zoomed = !zoomed;
+        state.meeterm_zoomed_pane = (!zoomed).then_some(pane);
         mark_selected(&mut state.snapshot, pane);
         Ok(())
     }
@@ -362,7 +411,7 @@ impl ControlClient {
             .session
             .lock()
             .ok()
-            .and_then(|s| s.meeterm_zoomed_pane);
+            .and_then(|s| s.meeterm_zoomed.then_some(s.meeterm_zoomed_pane).flatten());
         if let Some(pane) = pane {
             // Cancellation rejects all normal commands. This bounded best
             // effort cleanup is the only write permitted after cancellation.
@@ -377,6 +426,18 @@ impl ControlClient {
                 self.writer.data_bytes(command.into_bytes()),
             )
             .await;
+            // A disconnected actor must not leave stale ownership behind for
+            // the next reconnect.  The generation check prevents an older
+            // cancellation from clearing ownership established by a newer
+            // Control Mode actor using the same terminal ID.
+            if let Ok(mut state) = self.shared.session.lock()
+                && state.generation == self.shared.generation
+                && state.meeterm_zoomed
+                && state.meeterm_zoomed_pane == Some(pane)
+            {
+                state.meeterm_zoomed = false;
+                state.meeterm_zoomed_pane = None;
+            }
         }
     }
 
@@ -525,6 +586,7 @@ impl ControlClient {
                 pane_id: pane.pane_id,
                 terminal_id: mapping[&pane.pane_id],
                 window_name: names.get(&pane.window_id).cloned().unwrap_or_default(),
+                active: pane.active,
                 selected: pane.pane_id == selected,
                 index: pane.index,
                 columns: pane.columns,

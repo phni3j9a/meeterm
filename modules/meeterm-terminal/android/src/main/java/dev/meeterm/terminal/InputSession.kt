@@ -42,6 +42,11 @@ internal class InputSession(
     return true
   }
 
+  /** Drop only the active IME composition before an out-of-band paste. */
+  fun clearComposition() {
+    clearPreedit()
+  }
+
   fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
     val before = beforeLength.coerceAtLeast(0)
     val after = afterLength.coerceAtLeast(0)

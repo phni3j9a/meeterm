@@ -15,9 +15,10 @@ pub use ffi::{
     meeterm_commit_utf8, meeterm_connect, meeterm_connection_snapshot,
     meeterm_connection_snapshot_size, meeterm_create_terminal, meeterm_destroy_terminal,
     meeterm_disconnect, meeterm_forget_host_key, meeterm_input_commit_count,
-    meeterm_pane_record_size, meeterm_reconnect, meeterm_resize_terminal, meeterm_respond_host_key,
-    meeterm_select_pane, meeterm_send_bytes, meeterm_send_special_key, meeterm_session_panes,
-    meeterm_snapshot, meeterm_snapshot_size, meeterm_terminal_exists, meeterm_terminal_revision,
+    meeterm_pane_record_size, meeterm_paste_utf8, meeterm_reconnect, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_scroll_lines, meeterm_select_pane, meeterm_send_bytes,
+    meeterm_send_special_key, meeterm_session_panes, meeterm_snapshot, meeterm_snapshot_size,
+    meeterm_terminal_exists, meeterm_terminal_revision,
 };
 pub use input::{SpecialKey, encode_special_key};
 pub use registry::{create_terminal, destroy_terminal, terminal_count};

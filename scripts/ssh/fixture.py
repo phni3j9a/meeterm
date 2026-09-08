@@ -245,6 +245,14 @@ class Fixture:
             if self.tmux_process.poll() is not None or time.monotonic() >= deadline:
                 raise FixtureError("isolated tmux fixture did not start")
             time.sleep(0.05)
+        # Keep disposable panes independent of the developer's interactive
+        # shell startup (for example an oh-my-zsh update prompt). These options
+        # affect only the absolute fixture socket, never the ordinary server.
+        _run_quietly([
+            TMUX, "-S", str(self.tmux_socket),
+            "set-option", "-g", "default-shell", "/bin/sh", ";",
+            "set-option", "-g", "default-command", "exec /bin/sh -i",
+        ])
         try:
             self.process = subprocess.Popen(
                 [SSHD, "-D", "-e", "-f", str(self.config)],

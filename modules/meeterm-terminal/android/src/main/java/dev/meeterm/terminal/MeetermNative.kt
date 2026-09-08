@@ -19,6 +19,12 @@ internal object MeetermNative {
   /** Returns the native commit count after accepting the byte array. */
   external fun commit(handle: Long, bytes: ByteArray): Long
 
+  /** Returns accepted UTF-8 byte count, or a negative transport rejection. */
+  external fun paste(handle: Long, bytes: ByteArray): Int
+
+  /** Scroll history by terminal lines; positive is older history. */
+  external fun scrollLines(handle: Long, lines: Int): Int
+
   /** Returns the encoded byte count, or a negative error value. */
   external fun sendSpecial(handle: Long, key: Int): Int
 
@@ -33,7 +39,7 @@ internal object MeetermNative {
 
   external fun sshReconnect(handle: Long): Int
   external fun tmuxSelectPane(handle: Long, pane: Long): Int
-  /** One row per pane: window ID, pane ID, terminal handle, window name, selected. */
+  /** One row per pane: window ID, pane ID, terminal handle, window name, selected, active. */
   external fun tmuxSessionState(handle: Long): Array<String>?
 
   /** Queue an SSH connect request; zero means the request was accepted. */

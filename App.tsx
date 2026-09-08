@@ -48,6 +48,7 @@ function samePanes(a: TmuxPane[], b: TmuxPane[]) {
     const other = b[index];
     return pane.windowId === other.windowId && pane.paneId === other.paneId
       && pane.terminalId === other.terminalId && pane.windowName === other.windowName
+      && pane.active === other.active
       && pane.selected === other.selected;
   });
 }
@@ -231,7 +232,9 @@ function AppContent() {
   const chosenPaneId = selectedPaneIds[windowId];
   const selectedPane = chosenPaneId
     ? workspace?.panes.find(pane => pane.paneId === chosenPaneId)
-    : workspace?.panes.find(pane => pane.selected) ?? workspace?.panes[0];
+    : workspace?.panes.find(pane => pane.active)
+      ?? workspace?.panes.find(pane => pane.selected)
+      ?? workspace?.panes[0];
   const activeWindowId = panes.find(pane => pane.selected)?.windowId;
   const colors = screen === 'terminal' ? DARK : homeColors;
   const presentation = connectionPresentation(connection);
@@ -314,7 +317,9 @@ function AppContent() {
     if (commandPending.current) return;
     Keyboard.dismiss();
     const pane = item.panes.find(candidate => candidate.paneId === selectedPaneIds[item.id])
-      ?? item.panes.find(candidate => candidate.selected) ?? item.panes[0];
+      ?? item.panes.find(candidate => candidate.active)
+      ?? item.panes.find(candidate => candidate.selected)
+      ?? item.panes[0];
     if (pane) {
       void choosePane(pane).then(success => {
         if (!success) return;

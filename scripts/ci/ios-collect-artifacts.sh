@@ -3,25 +3,40 @@ set -u
 
 readonly artifact_dir="${GITHUB_WORKSPACE}/artifacts/ios-simulator-observability"
 mkdir -p "${artifact_dir}"
+find "${artifact_dir}" -maxdepth 1 -type f \
+  \( -iname 'meeterm*.crash' -o -iname 'meeterm*.ips' \) \
+  -delete 2>/dev/null || true
 
-if [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" ]]; then
+post_test_launch_ready=0
+if [[ -s "${artifact_dir}/post-test-launch.txt" && -s "${artifact_dir}/post-test-foundation-ready.txt" ]]; then
+  post_test_pid="$(sed -nE 's/.*: ([0-9]+)$/\1/p' "${artifact_dir}/post-test-launch.txt" | tail -n 1)"
+  if [[ "${post_test_pid}" =~ ^[0-9]+$ ]] && grep -Fq 'post_test_foundation_openurl=issued' \
+    "${artifact_dir}/post-test-foundation-ready.txt"; then
+    post_test_launch_ready=1
+  fi
+fi
+
+if [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" && ! -s "${artifact_dir}/simulator.log" ]]; then
+  # Collect only explicit native smoke markers even when the real UI test
+  # fails before the post-test foundation launch. This keeps failure evidence
+  # useful without exposing process logs or entered credentials.
+  xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
+    --style compact \
+    --last 10m \
+    --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"' \
+    > "${artifact_dir}/simulator.log" 2>&1 || true
+fi
+
+if [[ -n "${IOS_SIMULATOR_UDID:-}" && "${post_test_launch_ready}" -eq 1 ]]; then
   xcrun simctl io "${IOS_SIMULATOR_UDID}" screenshot \
     "${artifact_dir}/terminal.png" 2>&1 \
     | tee "${artifact_dir}/screenshot.txt" || true
   scripts/ci/validate-png.sh \
     "${artifact_dir}/terminal.png" \
     "${artifact_dir}/screenshot-unavailable.txt"
-
-  # Preserve the fresh PID/time-filtered log produced by ios-smoke.sh. If the
-  # smoke did not reach that point, collect marker events only; broad process
-  # logs could include connection details and are not useful evidence here.
-  if [[ ! -s "${artifact_dir}/simulator.log" ]]; then
-    xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
-      --style compact \
-      --last 10m \
-      --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"' \
-      > "${artifact_dir}/simulator.log" 2>&1 || true
-  fi
+elif [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" ]]; then
+  echo "post-test native foundation launch was not reached; terminal screenshot unavailable" \
+    > "${artifact_dir}/screenshot-unavailable.txt"
 fi
 
 # XCUITest writes only safe checkpoints: the connection form is captured
@@ -61,9 +76,4 @@ fi
   echo "simulator_name=${IOS_SIMULATOR_NAME:-unavailable}"
 } >> "${artifact_dir}/metadata.txt"
 
-diagnostic_root="${HOME}/Library/Logs/DiagnosticReports"
-if [[ -d "${diagnostic_root}" ]]; then
-  find "${diagnostic_root}" -maxdepth 1 -type f \
-    \( -iname 'meeterm*.crash' -o -iname 'meeterm*.ips' \) \
-    -exec cp {} "${artifact_dir}/" \; 2>/dev/null || true
-fi
+echo "raw_crash_reports=omitted" >> "${artifact_dir}/metadata.txt"

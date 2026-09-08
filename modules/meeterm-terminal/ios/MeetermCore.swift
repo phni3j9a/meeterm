@@ -152,7 +152,8 @@ enum MeetermCore {
           "paneId": "%\(pane.pane_id)",
           "terminalId": "native:\(pane.terminal_id)",
           "windowName": sanitize(decode(pane.window_name, length: pane.window_name_len), maxLength: 256),
-          "selected": pane.selected == 1
+          "selected": pane.selected == 1,
+          "active": pane.active == 1
         ]
       }
     }
@@ -310,6 +311,17 @@ enum MeetermCore {
       return false
     }
     return meeterm_send_special_key(terminalId, key.rawValue) >= 0
+  }
+
+  static func paste(terminalId: UInt64, text: String) -> Bool {
+    let bytes = Array(text.utf8)
+    return bytes.withUnsafeBufferPointer { buffer in
+      meeterm_paste_utf8(terminalId, buffer.baseAddress, buffer.count) >= 0
+    }
+  }
+
+  static func scroll(terminalId: UInt64, lines: Int32) -> Bool {
+    meeterm_scroll_lines(terminalId, lines) == 0
   }
 
   @discardableResult

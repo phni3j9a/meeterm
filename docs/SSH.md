@@ -87,7 +87,10 @@ server on a real host.
 
 An empty foreground `tmux -D -f /dev/null` server is started by the fixture so
 tests do not load the developer's tmux configuration, key bindings, or hooks.
-No managed session exists initially: the native connection creates `meeterm`.
+Only this isolated server sets `default-shell` to `/bin/sh` and
+`default-command` to `exec /bin/sh -i`, preventing developer shell startup
+prompts from interfering with fixture input. No managed session exists
+initially: the native connection creates `meeterm`.
 
 Prerequisites are Python 3.10+, `/usr/sbin/sshd`, `ssh`, `ssh-keygen`, and `tmux`.
 The fixture refuses to run as root. Missing prerequisites are environment setup
@@ -200,8 +203,12 @@ the one-second metadata poll.
 separate. Screenshot capture is not a machine acceptance gate, and unavailable
 captures are reported explicitly. See [`CI_MOBILE.md`](CI_MOBILE.md).
 
-The iOS hosted smoke validates the shared library, native adapter, module
-readiness, and first frame using the local demo. It does not claim an interactive
-iOS SSH flow. A CoreGraphics fallback frame is explicitly different from Metal
-execution. Physical-device GPU, Japanese IME, background network behavior, and
-font parity still need their own device evidence.
+The iOS hosted smoke now runs `scripts/ssh/ios-smoke.py` with a generated
+XCUITest target. It drives the real app against the disposable SSH fixture,
+including workspace/pane selection, input, disconnect/reconnect, and desktop
+handoff. It separately launches the explicit foundation preview for native
+readiness, first frame, and process survival. Implementing this driver is not
+proof that the hosted run passed; see `FIRST_APP.md` for current evidence.
+A CoreGraphics fallback frame is explicitly different from Metal execution.
+Physical-device GPU, Japanese IME, background network behavior, and font parity
+still need their own device evidence.

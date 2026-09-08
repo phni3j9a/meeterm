@@ -58,6 +58,20 @@ class InputSessionTest {
   }
 
   @Test
+  fun clearCompositionDropsOnlyUncommittedPreedit() {
+    val sink = RecordingSink()
+    val preeditStates = mutableListOf<String>()
+    val session = InputSession(sink, preeditStates::add)
+
+    session.setComposingText("仮入力")
+    session.clearComposition()
+
+    assertEquals("", session.composingText)
+    assertEquals(emptyList<ByteArray>(), sink.commits)
+    assertEquals("", preeditStates.last())
+  }
+
+  @Test
   fun independentCommitWithSameTextIsNotSuppressed() {
     val sink = RecordingSink()
     val session = InputSession(sink)

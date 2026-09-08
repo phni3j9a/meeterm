@@ -5,6 +5,7 @@ import UIKit
 /// called exactly once when UIKit commits the text.
 final class TerminalInputView: UITextView {
   var onCommit: ((String) -> Void)?
+  var onPaste: ((String) -> Void)?
   var onPreeditChanged: ((String) -> Void)?
   var onSpecialKey: ((TerminalSpecialKey) -> Void)?
 
@@ -80,6 +81,15 @@ final class TerminalInputView: UITextView {
     }
   }
 
+  override func paste(_ sender: Any?) {
+    // Read the clipboard only in response to the user's explicit paste action.
+    guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
+    super.unmarkText()
+    resetBackingStore()
+    onPreeditChanged?("")
+    onPaste?(pasted)
+  }
+
   private func configure() {
     backgroundColor = .clear
     textColor = .clear
@@ -135,6 +145,8 @@ final class TerminalInputView: UITextView {
       item(title: "Tab", action: #selector(sendTab)),
       flexibleSpace(),
       item(title: "^C", action: #selector(sendInterrupt)),
+      flexibleSpace(),
+      item(title: "Paste", action: #selector(paste(_:))),
       flexibleSpace(),
       item(title: "←", action: #selector(sendLeft)),
       flexibleSpace(),

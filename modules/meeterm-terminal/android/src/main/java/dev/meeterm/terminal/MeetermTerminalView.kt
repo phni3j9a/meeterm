@@ -1,6 +1,7 @@
 package dev.meeterm.terminal
 
 import android.content.Context
+import android.content.ClipboardManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -13,6 +14,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -23,6 +25,8 @@ import android.widget.TextView
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import java.nio.charset.StandardCharsets
+import kotlin.math.abs
 import kotlin.math.max
 
 /**
@@ -59,6 +63,13 @@ class MeetermTerminalView(
   private var systemInsetRight = 0
   private var lastTerminalRevision = -1L
   private val editable = SpannableStringBuilder()
+  private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+  private var touchDownX = 0f
+  private var touchDownY = 0f
+  private var touchLastY = 0f
+  private var touchInSurface = false
+  private var touchDragging = false
+  private var touchScrollRemainderPx = 0f
   // Keep one post-resize draw after EGL settles. This is separate from the
   // revision poll: it repairs a surface timing race even when terminal
   // content did not change.
@@ -87,6 +98,15 @@ class MeetermTerminalView(
   private val inputSession = InputSession(
     sink = RustInputSink { terminalHandle },
     onPreeditChanged = { value ->
+      editable.replace(0, editable.length, value)
+      BaseInputConnection.removeComposingSpans(editable)
+      if (value.isNotEmpty()) {
+        // The backing editor contains only the active composition. Reapply
+        // composing spans after local deletion/clear callbacks so Android IMEs
+        // keep their surrounding-text contract without retaining committed
+        // terminal input.
+        BaseInputConnection.setComposingSpans(editable)
+      }
       renderer.setPreedit(value)
       surface.requestRender()
     },
@@ -273,17 +293,135 @@ class MeetermTerminalView(
     }
   }
 
+  override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> {
+        touchDownX = event.x
+        touchDownY = event.y
+        touchLastY = event.y
+        touchInSurface = event.y < surface.bottom
+        touchDragging = false
+        touchScrollRemainderPx = 0f
+      }
+      MotionEvent.ACTION_MOVE -> {
+        if (touchInSurface && !touchDragging) {
+          val deltaX = event.x - touchDownX
+          val deltaY = event.y - touchDownY
+          if (abs(deltaY) > touchSlop && abs(deltaY) >= abs(deltaX)) {
+            touchDragging = true
+            // The terminal surface must receive a cancel before this parent
+            // consumes the rest of a vertical gesture as scroll input.
+            parent?.requestDisallowInterceptTouchEvent(true)
+            return true
+          }
+        }
+      }
+      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+        if (touchDragging) {
+          // Keep the drag state until onTouchEvent receives the terminal
+          // gesture's final event and performs the single cleanup. Returning
+          // true here routes that event to the parent even when the child
+          // surface owned the preceding MOVE events.
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  override fun onTouchEvent(event: MotionEvent): Boolean {
+    if (!touchInSurface) return super.onTouchEvent(event)
+    when (event.actionMasked) {
+      MotionEvent.ACTION_MOVE -> {
+        // If the surface declined DOWN, ViewGroup sends MOVE directly here
+        // without consulting onInterceptTouchEvent again.
+        if (touchInSurface && !touchDragging) {
+          val deltaX = event.x - touchDownX
+          val deltaY = event.y - touchDownY
+          if (abs(deltaY) > touchSlop && abs(deltaY) >= abs(deltaX)) {
+            touchDragging = true
+            parent?.requestDisallowInterceptTouchEvent(true)
+          }
+        }
+        if (touchDragging) {
+          scrollForDrag(event.y)
+          touchLastY = event.y
+        }
+      }
+      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+        touchDragging = false
+        touchInSurface = false
+        touchScrollRemainderPx = 0f
+      }
+    }
+    return true
+  }
+
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
     if (event.actionMasked == MotionEvent.ACTION_DOWN) {
       if (event.y < surface.bottom) {
         requestFocusFromTouch()
-        post {
-          val inputManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-          inputManager?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
-        }
       }
     }
-    return super.dispatchTouchEvent(event)
+    // Capture the tap before dispatching the terminal child event. A
+    // GLSurfaceView may consume ACTION_DOWN/ACTION_UP, while a surface that
+    // declines the event lets ViewGroup route ACTION_UP through our own
+    // onTouchEvent. In the latter case onTouchEvent clears touchInSurface
+    // before this method regains control. Keeping this snapshot makes both
+    // paths request the IME consistently, while vertical drags remain
+    // excluded once interception has marked them as such.
+    val tapCandidate =
+      event.actionMasked == MotionEvent.ACTION_UP && touchInSurface && !touchDragging
+    val handled = super.dispatchTouchEvent(event)
+    if (tapCandidate) {
+      post {
+        val inputManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        inputManager?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+      }
+      touchInSurface = false
+    }
+    return handled
+  }
+
+  private fun scrollForDrag(y: Float) {
+    val cellHeight = renderer.cellHeightPx
+    val handle = terminalHandle
+    if (cellHeight <= 0 || handle == 0L) return
+    touchScrollRemainderPx += y - touchLastY
+    val lines = (touchScrollRemainderPx / cellHeight).toInt()
+    if (lines == 0) return
+    val result = try {
+      MeetermNative.scrollLines(handle, lines)
+    } catch (_: RuntimeException) {
+      -1
+    }
+    if (result == 0) {
+      touchScrollRemainderPx -= lines * cellHeight
+      surface.requestRender()
+    }
+  }
+
+  /** Handle the Android/IME paste actions without routing clipboard text via JS. */
+  internal fun performContextMenuAction(id: Int): Boolean {
+    if (id != android.R.id.paste && id != android.R.id.pasteAsPlainText) return false
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+      ?: return false
+    val item = clipboard.primaryClip?.getItemAt(0) ?: return false
+    val text = item.coerceToText(context)?.toString().orEmpty()
+    if (text.isEmpty()) return true
+    val handle = terminalHandle
+    if (handle == 0L) return false
+    val result = try {
+      MeetermNative.paste(handle, text.toByteArray(StandardCharsets.UTF_8))
+    } catch (_: RuntimeException) {
+      -1
+    }
+    if (result < 0) return false
+    inputSession.clearComposition()
+    editable.clear()
+    BaseInputConnection.removeComposingSpans(editable)
+    surface.requestRender()
+    return true
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -319,6 +457,10 @@ class MeetermTerminalView(
         if (generation != inputGeneration) return false
         val editorResult = super.commitText(text ?: "", newCursorPosition)
         val result = inputSession.commitText(text)
+        if (editorResult) {
+          editable.clear()
+          BaseInputConnection.removeComposingSpans(editable)
+        }
         if (result) surface.requestRender()
         return editorResult && result
       }
@@ -347,8 +489,17 @@ class MeetermTerminalView(
         if (generation != inputGeneration) return false
         val editorResult = super.finishComposingText()
         val result = inputSession.finishComposingText()
+        if (editorResult) {
+          editable.clear()
+          BaseInputConnection.removeComposingSpans(editable)
+        }
         if (result) surface.requestRender()
         return editorResult && result
+      }
+
+      override fun performContextMenuAction(id: Int): Boolean {
+        if (generation != inputGeneration) return false
+        return this@MeetermTerminalView.performContextMenuAction(id)
       }
     }
   }
@@ -440,6 +591,32 @@ class MeetermTerminalView(
         marginEnd = dp(1)
       })
     }
+    val pasteButton = TextView(context).apply {
+      text = "Paste"
+      textSize = 12f
+      gravity = android.view.Gravity.CENTER
+      minHeight = dp(44)
+      minimumHeight = dp(44)
+      minWidth = 0
+      minimumWidth = 0
+      setPadding(0, 0, 0, 0)
+      setTextColor(Color.rgb(219, 179, 120))
+      background = GradientDrawable().apply {
+        setColor(Color.rgb(48, 44, 38))
+        cornerRadius = dp(5).toFloat()
+      }
+      isClickable = true
+      isFocusable = true
+      contentDescription = "Paste"
+      setOnClickListener {
+        requestFocusFromTouch()
+        performContextMenuAction(android.R.id.paste)
+      }
+    }
+    row.addView(pasteButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+      marginStart = dp(1)
+      marginEnd = dp(1)
+    })
     return row
   }
 

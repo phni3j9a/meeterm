@@ -87,6 +87,12 @@ final class MeetermTerminalView: ExpoView {
     terminalInputView.onCommit = { [weak self] text in
       self?.commit(text)
     }
+    terminalInputView.onPaste = { [weak self] text in
+      guard let self, self.terminalHandle != 0 else { return }
+      if MeetermCore.paste(terminalId: self.terminalHandle, text: text) {
+        self.renderer.requestFrame()
+      }
+    }
     terminalInputView.onSpecialKey = { [weak self] key in
       self?.send(key)
     }
@@ -95,6 +101,10 @@ final class MeetermTerminalView: ExpoView {
     let focusGesture = UITapGestureRecognizer(target: self, action: #selector(focusTerminal))
     focusGesture.cancelsTouchesInView = false
     addGestureRecognizer(focusGesture)
+    let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(scrollTerminal(_:)))
+    scrollGesture.maximumNumberOfTouches = 1
+    addGestureRecognizer(scrollGesture)
+    focusGesture.require(toFail: scrollGesture)
 
     NotificationCenter.default.addObserver(
       self,
@@ -328,6 +338,18 @@ final class MeetermTerminalView: ExpoView {
       "cellHeightPx": Int((TerminalRenderer.cellHeightPoints * scale).rounded())
     ])
     renderer.requestFrame()
+  }
+
+  @objc private func scrollTerminal(_ gesture: UIPanGestureRecognizer) {
+    guard terminalHandle != 0 else { return }
+    let translation = gesture.translation(in: self)
+    let lines = Int32((translation.y / TerminalRenderer.cellHeightPoints).rounded(.towardZero))
+    if lines != 0 {
+      if MeetermCore.scroll(terminalId: terminalHandle, lines: lines) {
+        renderer.requestFrame()
+      }
+      gesture.setTranslation(CGPoint(x: 0, y: translation.y - CGFloat(lines) * TerminalRenderer.cellHeightPoints), in: self)
+    }
   }
 
   private func commit(_ text: String) {

@@ -32,6 +32,78 @@ fn fixed_demo_exercises_the_required_terminal_features() {
 }
 
 #[test]
+fn native_paste_obeys_mode_and_cannot_inject_an_end_marker() {
+    let mut terminal = Terminal::new(80, 8).unwrap();
+    terminal.begin_remote(91).unwrap();
+    let (sender, mut receiver) = mpsc::channel(8);
+    let (resize, _) = watch::channel((80, 8));
+    terminal.attach_transport(91, sender, resize).unwrap();
+    terminal.mark_transport_ready(91);
+    terminal.feed(b"\x1b[?2004h");
+    terminal
+        .paste_utf8("日本語\r\necho two\x1b[201~\x03".as_bytes())
+        .unwrap();
+    assert_eq!(
+        receiver.try_recv().unwrap(),
+        "\x1b[200~日本語\necho two[201~\x1b[201~".as_bytes()
+    );
+    terminal.commit_utf8(b"typed").unwrap();
+    assert_eq!(receiver.try_recv().unwrap(), b"typed");
+    terminal.feed(b"\x1b[?2004l");
+    terminal.paste_utf8(b"one\r\ntwo\n").unwrap();
+    assert_eq!(receiver.try_recv().unwrap(), b"one\rtwo\r");
+    terminal.detach_transport(91);
+    assert_eq!(
+        terminal.paste_utf8(b"offline"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn native_scroll_is_bounded_and_retained_by_registry_until_input() {
+    let id = meeterm_create_terminal(80, 8);
+    let initial = crate::registry::snapshot(id).unwrap();
+    let revision = meeterm_terminal_revision(id);
+    assert_eq!(crate::ffi::meeterm_scroll_lines(id, i32::MAX), 0);
+    let history = crate::registry::snapshot(id).unwrap();
+    assert_ne!(initial, history);
+    assert!(meeterm_terminal_revision(id) > revision);
+    assert_eq!(crate::ffi::meeterm_scroll_lines(id, i32::MAX), 0);
+    assert_eq!(history, crate::registry::snapshot(id).unwrap());
+    let other = meeterm_create_terminal(80, 8);
+    crate::ffi::meeterm_scroll_lines(other, 2);
+    assert_eq!(history, crate::registry::snapshot(id).unwrap());
+    crate::ffi::meeterm_scroll_lines(id, i32::MIN);
+    assert_eq!(initial, crate::registry::snapshot(id).unwrap());
+    crate::ffi::meeterm_scroll_lines(id, 3);
+    crate::registry::commit_utf8(id, b"x").unwrap();
+    assert_eq!(
+        with_terminal_for_test(id, |terminal| terminal.term().grid().display_offset()).unwrap(),
+        0
+    );
+    meeterm_destroy_terminal(id);
+    meeterm_destroy_terminal(other);
+    assert!(crate::ffi::meeterm_scroll_lines(id, 1) < 0);
+}
+
+#[test]
+fn tmux_viewport_recapture_preserves_native_history_position() {
+    let mut terminal = Terminal::new(80, 8).unwrap();
+    terminal.begin_remote(92).unwrap();
+    let output = "history\r\n".repeat(50);
+    terminal.feed(output.as_bytes());
+    terminal.scroll_lines(12);
+    assert_eq!(terminal.term().grid().display_offset(), 12);
+    terminal
+        .restore_screen(92, 40, 10, output.as_bytes())
+        .unwrap();
+    assert_eq!(terminal.term().grid().display_offset(), 12);
+    terminal.restore_screen(92, 40, 10, b"short").unwrap();
+    assert_eq!(terminal.term().grid().display_offset(), 0);
+}
+
+#[test]
 fn term_owns_scrollback_and_demo_is_fed_during_creation() {
     let terminal = Terminal::new(80, 8).expect("valid dimensions");
 

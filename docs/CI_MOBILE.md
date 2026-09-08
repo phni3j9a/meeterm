@@ -55,8 +55,15 @@ remote process resumed. This verifies the real SSH/tmux input path
 without adding a production test endpoint or passing terminal streams through
 JavaScript. The remote-shell screenshot is separate from the foundation
 screenshot and is for human inspection; neither screenshot is a pixel gate.
-The iOS job validates compilation and runtime integration of the same Rust SSH/tmux
-core and native adapters; its current smoke interaction uses the local demo.
+The iOS job now generates a temporary XCUITest target in the fresh CNG project
+and drives the actual connection form, host trust, workspace/pane selection,
+native input, disconnect, and reconnect against the same disposable fixture.
+The Python driver then checks remote markers and ordinary desktop attach.
+Raw XCTest output and xcresult bundles can contain typed credentials and remain
+in runner temporary storage; only sanitized stages and safe screenshots are uploaded.
+This is the implemented gate; completed run evidence is tracked in `FIRST_APP.md`.
+Both foundation previews require a smoke build and an explicit
+`meeterm://foundation?foundation=1` launch. Ordinary startup opens the real app.
 See [`SSH.md`](SSH.md) for credentials, commands, and the remaining limits.
 
 ## Artifacts and visual review

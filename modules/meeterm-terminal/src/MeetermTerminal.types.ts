@@ -46,6 +46,8 @@ export type TmuxPane = {
   paneId: string;
   terminalId: string;
   windowName: string;
+  /** Active pane within this pane's window, including non-selected windows. */
+  active: boolean;
   selected: boolean;
 };
 

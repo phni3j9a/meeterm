@@ -1,0 +1,128 @@
+# 初版の実用評価
+
+HTMLモック第5版の画面を、既存のReact Native / Expo・共有Rust・
+ネイティブ端末・SSH / tmuxへ接続した初版です。現在、両OSの受け入れ検証を進めています。
+**下の検証記録が埋まるまでは、初版の受け入れ完了を意味しません。**
+
+## 初版の操作範囲
+
+- SSHホスト・ポート・ユーザー・OpenSSH秘密鍵・必要ならパスフレーズを入力。
+- 初回ホスト鍵のSHA-256指紋を明示的に承認。承認済み鍵の変更は拒否。
+- 接続先の実際のtmux windowをワークスペース一覧として選択・検索。
+- 実際のtmux paneをターミナルタブで選択し、ネイティブ端末で表示・入力。
+- 接続状態・エラーを表示し、明示的な切断・再接続を提供。
+- 戻る操作やpane切り替えでリモートプロセスを破棄しない。
+- PCへの引き継ぎはスマホを切断して `tmux attach -t meeterm`。
+
+接続先プロファイルや秘密鍵は保存しません。再接続に必要な解析済みの鍵は
+Rustのプロセスメモリだけに保持します。アプリの終了後は再入力が必要です。
+承認済みホスト鍵の保存・照合は既存のネイティブ実装を維持します。
+
+作成・名前変更・削除、広範な設定、複数接続先の永続的な管理は初版の必須導線に
+含めず、未実装のボタンを表示しません。必要なwindow / paneは通常のtmuxから
+作成できます。デモ画面は通常の起動・接続画面に混在させません。
+
+## 接続先の準備と使い方
+
+接続先は通常のOpenSSHサーバーとtmuxが必要です。現在の認証方式は
+OpenSSH秘密鍵による公開鍵認証です。サーバー側に対応する公開鍵を登録し、
+SSH経由のシェルから `tmux` を実行できるようにしてください。
+アプリ専用サーバーやソケットは不要です。
+
+1. アプリの接続ボタンから接続情報を入力します。初版では毎回入力します。
+2. ホスト鍵の指紋を信頼できる別の経路で確認して承認します。
+3. 接続後、ワークスペースを開いてpaneタブを選びます。
+4. 端末面をタップしてOSキーボードを開きます。Esc・Tab・矢印・Ctrl-Cは
+   ネイティブ補助キーから送信します。履歴は端末面の上下スワイプで読み、
+   入力すると最新出力へ戻ります。貼り付けは端末の **Paste** 操作を使います。
+   OSキーボード独自のクリップボード機能は通常の文字確定として届く場合があるため、
+   bracketed pasteを保証しません。
+5. ワークスペース一覧へ戻っても接続とリモート作業は継続します。
+6. 作業終了時は切断します。再接続は同じリモートtmuxへ戻ります。
+7. PCでは同じユーザーでSSH接続して `tmux attach -t meeterm` を実行します。
+
+接続時に `meeterm` セッションがなければ自動作成されます。追加の作業を作る場合は、
+同じサーバー・ユーザーで通常のtmuxを操作します。例えば次の操作は `project`
+というワークスペースと、その中の2つ目のターミナルを作ります。
+
+```sh
+tmux new-window -t meeterm -n project
+tmux split-window -h -t meeterm:project
+```
+
+アプリの一覧へ反映されます。名前変更や終了も通常のtmuxから行ってください。
+
+ホスト鍵変更のエラーは自動承認しません。正当な交換かどうかを確認するまで
+接続を中止してください。
+
+## Android
+
+開発時は[Androidの環境手順](POC_ANDROID.md)に従いSDK・NDK・JDKを用意します。
+生成済みの `android/` は編集元ではありません。
+
+```sh
+npm ci
+npx expo prebuild --platform android --non-interactive --no-install
+npx expo run:android --device
+```
+
+このDevelopment BuildはMetroを使用します。SSHで開発マシンを操作する場合は
+USBで `adb reverse tcp:8081 tcp:8081` を設定するなど、端末からMetroへ到達できる
+状態にします。Expo Goでは動作しません。
+
+自己完結する評価APKはMobile smokeの `android-emulator-observability` に
+`app-release.apk` として保存する構成です。arm64実機とx86_64エミュレーターを
+対象にし、JavaScriptを同梱するためMetro不要です。開発用の署名を使用し、
+ストア配布用の署名・公開は今回の範囲外です。
+
+```sh
+adb install -r app-release.apk
+adb shell monkey -p dev.meeterm.app 1
+```
+
+検証済みのrun・APK取得先は、両OSの最終CI完了後に下へ記録します。
+
+## iOS
+
+macOS・Xcode・対応するSimulator runtime・CocoaPods・Node・Rustが必要です。
+Intel MacのSimulatorでは `x86_64-apple-ios`、Apple Siliconでは
+`aarch64-apple-ios-sim` のRust targetを使用します。
+
+```sh
+npm ci
+rustup target add aarch64-apple-ios-sim  # Apple SiliconのSimulator
+npx expo prebuild --platform ios --non-interactive --no-install
+cd ios
+pod install
+cd ..
+npx expo run:ios
+```
+
+Development BuildはMetroが必要です。CIはRelease構成でJSを同梱し、
+署名なしのSimulatorビルド・インストール・起動を検証します。
+iPhone実機にはAppleの開発署名、開発チーム設定、対象端末の開発者モード、
+`aarch64-apple-ios` targetなどが別途必要です。TestFlightは今回の対象外です。
+
+Hosted SimulatorでのCoreGraphics fallbackはMetal実行の証拠ではありません。
+Simulatorで成功しても実機GPU・日本語IME・フォントフォールバックの同等性は
+証明しません。
+
+## 作業中の検証記録
+
+| 検証 | 現在の証拠 |
+| --- | --- |
+| 共有Rust | 40 unit tests、Clippy通過。2026-09-08ローカル |
+| OpenSSH＋tmux | 隔離fixtureで接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存のPC zoom保持・window内active pane保持通過。2026-09-08ローカル |
+| UI型チェック | 新UI統合後のTypeScriptチェック通過。2026-09-08ローカル |
+| Android CI | 最終変更を含むrun待ち |
+| iOS CI・実SSH操作 | 実SSH XCUITestドライバー実装済み、hosted run実行中 |
+| 両OSスクリーンショット目視 | 最終runの実画像待ち |
+| Pixel 3実機 | arm64 Releaseのbuild/install/launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVM11テスト通過。実SSH UIは未完了。別アプリが前面に出たためユーザーの端末利用状況を確認中 |
+| iPhone実機・実機Metal・実日本語IME | 未検証 |
+| APK・PR | [Draft PR #12](https://github.com/phni3j9a/meeterm/pull/12)、APKは最終CI待ち |
+
+## 既知の検証境界
+
+自動再接続は追加しません。アプリ終了後の復帰は接続情報の再入力が必要です。
+任意の全画面TUIのプロセス終了後の完全復元は未保証であり、再描画が必要な
+場合があります。詳細は[SSHの復元境界](SSH.md)を参照してください。
