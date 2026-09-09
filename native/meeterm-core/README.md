@@ -56,12 +56,19 @@ defines the exact ABI; connection snapshots carry fixed-size UTF-8 fields with
 explicit lengths. They contain lifecycle state and host identity, never
 terminal output or authentication material.
 
-Keys and optional passphrases are passed transiently. The parsed key remains
-in Rust process memory for an explicit reconnect and is not persisted. Rust owns host-key trust
-decisions and the app-private trust file supplied by each platform. Unknown
-keys require explicit acceptance; changed or unreadable trust state fails
-closed. See [SSH validation](../../docs/SSH.md) for the real OpenSSH tests and
-current authentication/lifecycle limits.
+OpenSSH keys, optional passphrases, and SSH passwords are passed transiently.
+The selected parsed credential remains in Rust process memory for an explicit
+reconnect and is never persisted to disk. Password authentication uses only the
+SSH `password` method; keyboard-interactive prompts and MFA are not implemented.
+The extended connect ABI appends auth_method and password pointer/length pairs
+after the existing known-hosts path; callers must rebuild all native adapters
+together. The selector accepts publicKey and password (an empty selector keeps
+the legacy public-key default), and rejects mixed credential fields. Password
+whitespace is preserved exactly.
+Rust owns host-key trust decisions and the app-private trust file supplied by
+each platform. Unknown keys require explicit acceptance; changed or unreadable
+trust state fails closed. See [SSH validation](../../docs/SSH.md) for the real
+OpenSSH tests and current authentication/lifecycle limits.
 
 `meeterm_terminal_revision` lets attached native views detect output changes
 without transferring snapshots to JavaScript. Native views check revisions

@@ -10,8 +10,9 @@ use jni::sys::{jboolean, jint, jlong};
 use jni::{Env, EnvUnowned, Outcome};
 
 use crate::registry;
-use crate::ssh::{ConnectOptions, ConnectionSnapshot};
+use crate::ssh::{AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot};
 use crate::terminal::TerminalError;
+use zeroize::Zeroizing;
 
 fn native_error(error: TerminalError) -> JniError {
     JniError::ParseFailed(error.to_string())
@@ -329,9 +330,13 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_destroy(
 
 /// Start an SSH connection for an existing terminal.
 ///
-/// The private key is an inline OpenSSH/PEM string.  The platform owns the
+/// The private key is an inline OpenSSH/PEM string for the `publicKey` method.
+/// `auth_method` and `password` are appended after the existing
+/// `known_hosts_path` argument. An empty method retains the legacy public-key
+/// default; only `publicKey` and `password` are otherwise accepted. Password
+/// input is passed byte-for-byte, including whitespace. The platform owns the
 /// path passed as `known_hosts_path`; Rust owns parsing, trust decisions, and
-/// persistence.  A negative return value is a stable native error code.
+/// persistence. A negative return value is a stable native error code.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnect<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
@@ -343,6 +348,8 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnect<'calle
     private_key: JString<'caller>,
     passphrase: JString<'caller>,
     known_hosts_path: JString<'caller>,
+    auth_method: JString<'caller>,
+    password: JString<'caller>,
 ) -> jint {
     let Some(handle) = handle_from_jlong(handle) else {
         return -2;
@@ -354,15 +361,38 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnect<'calle
     code_from_outcome(unowned_env.with_env(|env| {
         let host = string_from_java(env, &host)?;
         let username = string_from_java(env, &username)?;
-        let private_key = string_from_java(env, &private_key)?;
-        let passphrase = string_from_java(env, &passphrase)?;
+        // Wrap credentials as soon as they cross JNI so a later conversion
+        // error cannot leave earlier secrets in ordinary String storage.
+        let private_key = Zeroizing::new(string_from_java(env, &private_key)?);
+        let passphrase = Zeroizing::new(string_from_java(env, &passphrase)?);
         let known_hosts_path = string_from_java(env, &known_hosts_path)?;
+        let auth_method = string_from_java(env, &auth_method)?;
+        let password = Zeroizing::new(string_from_java(env, &password)?);
+        let credentials = match auth_method.as_str() {
+            "" | "publicKey" => {
+                if !password.is_empty() {
+                    return Ok(ConnectionError::InvalidArgument.code());
+                }
+                AuthOptions::PublicKey {
+                    private_key,
+                    passphrase: (!passphrase.is_empty()).then_some(passphrase),
+                }
+            }
+            "password" => {
+                if !private_key.is_empty() || !passphrase.is_empty() {
+                    return Ok(ConnectionError::InvalidArgument.code());
+                }
+                AuthOptions::Password { password }
+            }
+            _ => {
+                return Ok(ConnectionError::InvalidArgument.code());
+            }
+        };
         let options = ConnectOptions {
             host,
             port,
             username,
-            private_key,
-            passphrase: (!passphrase.is_empty()).then_some(passphrase),
+            credentials,
             known_hosts_path: known_hosts_path.into(),
         };
         Ok(crate::ssh::connect_terminal(handle, options)

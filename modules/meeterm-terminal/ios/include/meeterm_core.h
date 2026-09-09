@@ -81,7 +81,11 @@ int32_t meeterm_connect(
   const uint8_t *passphrase,
   size_t passphrase_length,
   const uint8_t *known_hosts_path,
-  size_t known_hosts_path_length
+  size_t known_hosts_path_length,
+  const uint8_t *auth_method,
+  size_t auth_method_length,
+  const uint8_t *password,
+  size_t password_length
 );
 
 int32_t meeterm_disconnect(uint64_t terminal_id);

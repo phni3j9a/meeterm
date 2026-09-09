@@ -3,17 +3,31 @@ import type {
   ViewProps,
 } from 'react-native';
 
-/**
- * Authentication uses an OpenSSH private key. Rust retains the parsed key in
- * process memory for reconnect; credentials are never persisted by this module.
- */
-export type SshConnectOptions = {
+/** Common endpoint fields shared by both supported SSH authentication methods. */
+type SshConnectEndpoint = {
   host: string;
   port: number;
   username: string;
-  privateKey: string;
-  passphrase: string;
 };
+
+/**
+ * Authentication credentials are submitted transiently. Rust retains only
+ * the parsed credential needed for an in-process reconnect; this module never
+ * persists either form.
+ *
+ * `authMethod` is optional on the public-key branch for compatibility with
+ * callers that predate password authentication.
+ */
+export type SshConnectOptions =
+  | (SshConnectEndpoint & {
+      authMethod?: 'publicKey';
+      privateKey: string;
+      passphrase: string;
+    })
+  | (SshConnectEndpoint & {
+      authMethod: 'password';
+      password: string;
+    });
 
 export type SshConnectionPhase =
   | 'Disconnected'

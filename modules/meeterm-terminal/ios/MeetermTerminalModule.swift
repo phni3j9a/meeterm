@@ -22,7 +22,9 @@ public final class MeetermTerminalModule: Module {
         username: connection.username,
         privateKey: connection.privateKey,
         passphrase: connection.passphrase,
-        knownHostsPath: knownHostsPath
+        knownHostsPath: knownHostsPath,
+        authMethod: connection.authMethod,
+        password: connection.password
       )
       guard result == 0 else {
         throw Self.error("The SSH connection could not be started.")
@@ -122,33 +124,71 @@ public final class MeetermTerminalModule: Module {
     let host: String
     let port: Int
     let username: String
+    let authMethod: String
     let privateKey: String
     let passphrase: String
+    let password: String
   }
 
   private static func decodeOptions(_ values: [String: Any]) throws -> SshOptions {
     guard let host = (values["host"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
           let username = (values["username"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          let privateKey = values["privateKey"] as? String,
-          let passphrase = values["passphrase"] as? String,
           let port = integer(values["port"]),
           !host.isEmpty,
           !username.isEmpty,
-          !privateKey.isEmpty,
           !containsControl(host),
           !containsControl(username),
-          !privateKey.utf8.contains(0),
-          !passphrase.utf8.contains(0),
           (1...65535).contains(port) else {
       throw error("The SSH connection options are invalid.")
     }
-    return SshOptions(
-      host: host,
-      port: port,
-      username: username,
-      privateKey: privateKey,
-      passphrase: passphrase
-    )
+
+    let authMethod: String
+    if values.keys.contains("authMethod") {
+      guard let value = values["authMethod"] as? String,
+            value == "publicKey" || value == "password" else {
+        throw error("The SSH connection options are invalid.")
+      }
+      authMethod = value
+    } else {
+      authMethod = "publicKey"
+    }
+
+    switch authMethod {
+    case "publicKey":
+      guard let privateKey = values["privateKey"] as? String,
+            let passphrase = values["passphrase"] as? String,
+            !privateKey.isEmpty,
+            !privateKey.utf8.contains(0),
+            !passphrase.utf8.contains(0) else {
+        throw error("The SSH connection options are invalid.")
+      }
+      return SshOptions(
+        host: host,
+        port: port,
+        username: username,
+        authMethod: authMethod,
+        privateKey: privateKey,
+        passphrase: passphrase,
+        password: ""
+      )
+    case "password":
+      guard let password = values["password"] as? String,
+            !password.isEmpty,
+            !password.utf8.contains(0) else {
+        throw error("The SSH connection options are invalid.")
+      }
+      return SshOptions(
+        host: host,
+        port: port,
+        username: username,
+        authMethod: authMethod,
+        privateKey: "",
+        passphrase: "",
+        password: password
+      )
+    default:
+      throw error("The SSH connection options are invalid.")
+    }
   }
 
   private static func integer(_ value: Any?) -> Int? {

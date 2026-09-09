@@ -22,6 +22,8 @@ class MeetermTerminalModule : Module() {
         nativeOptions.privateKey,
         nativeOptions.passphrase,
         KnownHostsStore.path(context),
+        nativeOptions.authMethod,
+        nativeOptions.password,
       )
       if (result != 0) {
         throw IllegalStateException("The SSH connection could not be started.")
@@ -152,29 +154,54 @@ class MeetermTerminalModule : Module() {
     )
   }
 
-  private data class SshOptions(
+  internal data class SshOptions(
     val host: String,
     val port: Int,
     val username: String,
+    val authMethod: String,
     val privateKey: String,
     val passphrase: String,
+    val password: String,
   ) {
     companion object {
       fun from(values: Map<String, Any?>): SshOptions {
         val host = (values["host"] as? String)?.trim()
         val port = numberAsInt(values["port"])
         val username = (values["username"] as? String)?.trim()
-        val privateKey = values["privateKey"] as? String
-        val passphrase = values["passphrase"] as? String
         if (host.isNullOrEmpty() || host.any { it.isISOControl() } ||
           port == null || port !in 1..65535 ||
-          username.isNullOrEmpty() || username.any { it.isISOControl() } ||
-          privateKey.isNullOrEmpty() || privateKey.any { it == '\u0000' } ||
-          passphrase == null || passphrase.any { it == '\u0000' }
+          username.isNullOrEmpty() || username.any { it.isISOControl() }
         ) {
           throw IllegalArgumentException("The SSH connection options are invalid.")
         }
-        return SshOptions(host, port, username, privateKey, passphrase)
+
+        val authMethod = when {
+          !values.containsKey("authMethod") -> PUBLIC_KEY_AUTH_METHOD
+          values["authMethod"] == PUBLIC_KEY_AUTH_METHOD -> PUBLIC_KEY_AUTH_METHOD
+          values["authMethod"] == PASSWORD_AUTH_METHOD -> PASSWORD_AUTH_METHOD
+          else -> throw IllegalArgumentException("The SSH connection options are invalid.")
+        }
+
+        return when (authMethod) {
+          PUBLIC_KEY_AUTH_METHOD -> {
+            val privateKey = values["privateKey"] as? String
+            val passphrase = values["passphrase"] as? String
+            if (privateKey.isNullOrEmpty() || privateKey.any { it == '\u0000' } ||
+              passphrase == null || passphrase.any { it == '\u0000' }
+            ) {
+              throw IllegalArgumentException("The SSH connection options are invalid.")
+            }
+            SshOptions(host, port, username, authMethod, privateKey, passphrase, "")
+          }
+          PASSWORD_AUTH_METHOD -> {
+            val password = values["password"] as? String
+            if (password.isNullOrEmpty() || password.any { it == '\u0000' }) {
+              throw IllegalArgumentException("The SSH connection options are invalid.")
+            }
+            SshOptions(host, port, username, authMethod, "", "", password)
+          }
+          else -> error("unreachable authentication method")
+        }
       }
 
       private fun numberAsInt(value: Any?): Int? {
@@ -187,6 +214,8 @@ class MeetermTerminalModule : Module() {
   }
 
   private companion object {
+    const val PUBLIC_KEY_AUTH_METHOD = "publicKey"
+    const val PASSWORD_AUTH_METHOD = "password"
     const val DEFAULT_COLUMNS = 80
     const val DEFAULT_ROWS = 24
     const val STATE_FIELD_COUNT = 8

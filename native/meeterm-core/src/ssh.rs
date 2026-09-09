@@ -24,7 +24,7 @@ use russh::{ChannelMsg, Disconnect};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
@@ -101,16 +101,73 @@ impl ConnectionSnapshot {
     }
 }
 
-/// Options accepted by the native SSH connect entry point.
+/// Authentication credentials accepted by the native SSH connect entry point.
 ///
-/// The private key and passphrase are intentionally not part of a debug
-/// representation and are owned only by the short-lived connection task.
+/// Secret values are wrapped in [`Zeroizing`] so an aborted or failed connect
+/// still clears credentials that have not yet reached the SSH task.  The enum
+/// keeps authentication method selection explicit: a password is never used
+/// as a fallback for a key, and a key is never tried for a password request.
+#[derive(Clone)]
+pub enum AuthOptions {
+    PublicKey {
+        private_key: Zeroizing<String>,
+        passphrase: Option<Zeroizing<String>>,
+    },
+    Password {
+        password: Zeroizing<String>,
+    },
+}
+
+impl AuthOptions {
+    /// Build a public-key credential while keeping the existing Rust-facing
+    /// string API convenient for callers and tests.
+    pub fn public_key(private_key: String, passphrase: Option<String>) -> Self {
+        Self::PublicKey {
+            private_key: Zeroizing::new(private_key),
+            passphrase: passphrase.map(Zeroizing::new),
+        }
+    }
+
+    /// Build a password credential without trimming or otherwise normalizing
+    /// the password. Whitespace is valid SSH password input.
+    pub fn password(password: String) -> Self {
+        Self::Password {
+            password: Zeroizing::new(password),
+        }
+    }
+
+    fn validate(&self) -> Result<(), ConnectionError> {
+        match self {
+            Self::PublicKey {
+                private_key,
+                passphrase,
+            } => {
+                if private_key.is_empty()
+                    || passphrase
+                        .as_deref()
+                        .is_some_and(|passphrase| passphrase.contains('\0'))
+                {
+                    return Err(ConnectionError::InvalidArgument);
+                }
+            }
+            Self::Password { password } => {
+                // Empty passwords are rejected locally. A whitespace-only
+                // password remains valid and is passed byte-for-byte to SSH.
+                if password.is_empty() || password.contains('\0') {
+                    return Err(ConnectionError::InvalidArgument);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Options accepted by the native SSH connect entry point.
 pub struct ConnectOptions {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub private_key: String,
-    pub passphrase: Option<String>,
+    pub credentials: AuthOptions,
     pub known_hosts_path: PathBuf,
 }
 
@@ -121,16 +178,10 @@ impl ConnectOptions {
         {
             return Err(ConnectionError::InvalidArgument);
         }
-        if self.private_key.is_empty() || self.known_hosts_path.as_os_str().is_empty() {
+        if self.known_hosts_path.as_os_str().is_empty() {
             return Err(ConnectionError::InvalidArgument);
         }
-        if self
-            .passphrase
-            .as_deref()
-            .is_some_and(|passphrase| passphrase.contains('\0'))
-        {
-            return Err(ConnectionError::InvalidArgument);
-        }
+        self.credentials.validate()?;
         Ok(Self { host, ..self })
     }
 }
@@ -189,9 +240,10 @@ impl fmt::Display for ConnectionError {
 
 impl std::error::Error for ConnectionError {}
 
-/// Credentials retained only for an in-process reconnect.  The private key
-/// is parsed before it reaches this structure; no PEM or passphrase survives
-/// the initial connect call.  This state is deliberately process-local and is
+/// Credentials retained only for an in-process reconnect. The private key is
+/// parsed before it reaches this structure; no PEM or passphrase survives the
+/// initial connect call. Password credentials remain in a process-local
+/// [`Zeroizing`] buffer for the lifetime of the reconnect profile and are
 /// removed when the owner terminal is destroyed.
 #[derive(Clone)]
 struct ConnectionProfile {
@@ -199,16 +251,43 @@ struct ConnectionProfile {
     port: u16,
     username: String,
     known_hosts_path: PathBuf,
-    key: Arc<keys::PrivateKey>,
+    credentials: StoredCredentials,
 }
 
-impl ConnectionProfile {
-    fn endpoint_matches(&self, options: &ConnectOptions) -> bool {
+/// The last explicitly requested endpoint.  This remains after credentials
+/// are invalidated so a subsequent connection to another host cannot inherit
+/// the previous endpoint's pane topology.  It contains no authentication
+/// material.
+#[derive(Clone, PartialEq, Eq)]
+struct SessionEndpoint {
+    host: String,
+    port: u16,
+    username: String,
+    known_hosts_path: PathBuf,
+}
+
+impl SessionEndpoint {
+    fn from_options(options: &ConnectOptions) -> Self {
+        Self {
+            host: options.host.clone(),
+            port: options.port,
+            username: options.username.clone(),
+            known_hosts_path: options.known_hosts_path.clone(),
+        }
+    }
+
+    fn matches(&self, options: &ConnectOptions) -> bool {
         self.host == options.host
             && self.port == options.port
             && self.username == options.username
             && self.known_hosts_path == options.known_hosts_path
     }
+}
+
+#[derive(Clone)]
+enum StoredCredentials {
+    PublicKey { key: Arc<keys::PrivateKey> },
+    Password { password: Arc<Zeroizing<String>> },
 }
 
 /// Durable in-process metadata associated with one owner terminal.  The
@@ -221,6 +300,7 @@ struct SessionState {
     generation: u64,
     snapshot: SessionSnapshot,
     pane_terminals: HashMap<u64, TerminalId>,
+    endpoint: Option<SessionEndpoint>,
     profile: Option<ConnectionProfile>,
     selected_pane: Option<u64>,
     /// True only when meeterm has zoomed the current window.  A desktop user's
@@ -661,31 +741,34 @@ fn prepare_session_endpoint(
     options: &ConnectOptions,
 ) -> Result<Vec<TerminalId>, ConnectionError> {
     let state = session_state(terminal_id);
-    let stale = {
-        let state = state.lock().map_err(|_| ConnectionError::Internal)?;
-        state
-            .profile
-            .as_ref()
-            .is_some_and(|profile| !profile.endpoint_matches(options))
-    };
+    let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    // Keep endpoint identity separately from credentials. An explicit connect
+    // invalidates the old secret before parsing the new one, but a later
+    // endpoint change still needs to know whether the retained pane topology
+    // belongs to this host.
+    let stale = state
+        .endpoint
+        .as_ref()
+        .is_some_and(|endpoint| !endpoint.matches(options));
+    // Every explicit connect replaces the selected credential. Clear the old
+    // profile even when the endpoint is unchanged, so a malformed new key or
+    // failed credential cannot leave an unrelated password/key available to
+    // reconnect.
+    state.endpoint = Some(SessionEndpoint::from_options(options));
+    state.profile = None;
     if !stale {
         return Ok(Vec::new());
     }
-    let stale_terminals = {
-        let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
-        let stale_terminals = state
-            .pane_terminals
-            .drain()
-            .filter_map(|(_, id)| (id != terminal_id).then_some(id))
-            .collect::<Vec<_>>();
-        state.generation = 0;
-        state.snapshot = SessionSnapshot::default();
-        state.profile = None;
-        state.selected_pane = None;
-        state.meeterm_zoomed = false;
-        state.meeterm_zoomed_pane = None;
-        stale_terminals
-    };
+    let stale_terminals = state
+        .pane_terminals
+        .drain()
+        .filter_map(|(_, id)| (id != terminal_id).then_some(id))
+        .collect::<Vec<_>>();
+    state.generation = 0;
+    state.snapshot = SessionSnapshot::default();
+    state.selected_pane = None;
+    state.meeterm_zoomed = false;
+    state.meeterm_zoomed_pane = None;
     Ok(stale_terminals)
 }
 
@@ -1087,7 +1170,7 @@ impl FlowFailure {
         match self {
             Self::KeyFile => ("key_file", "The private key could not be loaded."),
             Self::Network => ("network", "The SSH connection could not be established."),
-            Self::Authentication => ("auth_failed", "Public-key authentication failed."),
+            Self::Authentication => ("auth_failed", "SSH authentication failed."),
             Self::Channel => ("channel", "The SSH session channel could not be opened."),
             Self::Transport => ("transport", "The SSH terminal transport stopped."),
             Self::RemoteClosed => ("remote_closed", "The remote terminal closed the session."),
@@ -1421,22 +1504,41 @@ async fn run_connection_flow(
             host,
             port,
             username,
-            mut private_key,
-            mut passphrase,
+            credentials,
             known_hosts_path,
         }) => {
-            let decoded_key = keys::decode_secret_key(&private_key, passphrase.as_deref());
-            // Clear the caller-provided PEM and passphrase before the first
-            // await. The reconnect profile retains only the parsed key.
-            private_key.zeroize();
-            passphrase.zeroize();
-            let key = decoded_key.map_err(|_| FlowFailure::KeyFile)?;
+            let credentials = match credentials {
+                AuthOptions::PublicKey {
+                    mut private_key,
+                    mut passphrase,
+                } => {
+                    let decoded_key = keys::decode_secret_key(
+                        &private_key,
+                        passphrase.as_deref().map(String::as_str),
+                    );
+                    // Clear the caller-provided PEM and passphrase before the
+                    // first await. The reconnect profile retains only the
+                    // parsed key.
+                    private_key.zeroize();
+                    if let Some(passphrase) = passphrase.as_mut() {
+                        passphrase.zeroize();
+                    }
+                    let key = decoded_key.map_err(|_| FlowFailure::KeyFile)?;
+                    StoredCredentials::PublicKey { key: Arc::new(key) }
+                }
+                AuthOptions::Password { password } => StoredCredentials::Password {
+                    // Move the already zeroizing input into the reconnect
+                    // profile. Arc cloning below shares this buffer without
+                    // making another password copy in native state.
+                    password: Arc::new(password),
+                },
+            };
             let profile = ConnectionProfile {
                 host,
                 port,
                 username,
                 known_hosts_path,
-                key: Arc::new(key),
+                credentials,
             };
             shared.set_profile(profile.clone());
             profile
@@ -1515,28 +1617,45 @@ async fn run_tmux_authenticated_session(
     commands: mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::Authenticating);
-    let hash_alg = if profile.key.algorithm().is_rsa() {
-        await_stage(
-            shared,
-            session.best_supported_rsa_hash(),
-            SSH_STAGE_TIMEOUT,
-            FlowFailure::Authentication,
-        )
-        .await?
-        .flatten()
-    } else {
-        None
+    let authentication = match &profile.credentials {
+        StoredCredentials::PublicKey { key } => {
+            let hash_alg = if key.algorithm().is_rsa() {
+                await_stage(
+                    shared,
+                    session.best_supported_rsa_hash(),
+                    SSH_STAGE_TIMEOUT,
+                    FlowFailure::Authentication,
+                )
+                .await?
+                .flatten()
+            } else {
+                None
+            };
+            await_stage(
+                shared,
+                session.authenticate_publickey(
+                    profile.username.to_owned(),
+                    PrivateKeyWithHashAlg::new(Arc::clone(key), hash_alg),
+                ),
+                SSH_STAGE_TIMEOUT,
+                FlowFailure::Authentication,
+            )
+            .await?
+        }
+        StoredCredentials::Password { password } => {
+            // russh owns a transient String while it processes the SSH
+            // USERAUTH request; the retained reconnect copy remains wrapped
+            // in Zeroizing and is never logged or persisted. Passing the
+            // exact &str preserves whitespace passwords byte-for-byte.
+            await_stage(
+                shared,
+                session.authenticate_password(profile.username.to_owned(), password.as_str()),
+                SSH_STAGE_TIMEOUT,
+                FlowFailure::Authentication,
+            )
+            .await?
+        }
     };
-    let authentication = await_stage(
-        shared,
-        session.authenticate_publickey(
-            profile.username.to_owned(),
-            PrivateKeyWithHashAlg::new(Arc::clone(&profile.key), hash_alg),
-        ),
-        SSH_STAGE_TIMEOUT,
-        FlowFailure::Authentication,
-    )
-    .await?;
     if !matches!(authentication, client::AuthResult::Success) {
         return Err(FlowFailure::Authentication);
     }
@@ -1953,6 +2072,95 @@ mod tests {
         assert_eq!(snapshot.state, ConnectionState::Closing as u32);
         assert_eq!(snapshot.fingerprint_len, 0);
         assert_eq!(snapshot.error_code_len, 0);
+    }
+
+    #[test]
+    fn failed_explicit_connect_clears_credentials_and_next_endpoint_discards_topology() {
+        let owner = registry::create_terminal(80, 24).expect("owner terminal");
+        let stale_pane = registry::create_terminal(80, 24).expect("stale pane terminal");
+        let known_hosts_path = PathBuf::from("/tmp/meeterm-endpoint-regression-known-hosts");
+        let old_profile = ConnectionProfile {
+            host: "old.example.test".to_owned(),
+            port: 22,
+            username: "meeterm".to_owned(),
+            known_hosts_path: known_hosts_path.clone(),
+            credentials: StoredCredentials::Password {
+                password: Arc::new(Zeroizing::new("old secret".to_owned())),
+            },
+        };
+
+        {
+            let state = session_state(owner);
+            let mut state = state.lock().expect("session state");
+            // Simulate a previously connected password session. Endpoint
+            // identity is retained independently from the credential profile.
+            state.endpoint = Some(SessionEndpoint {
+                host: "old.example.test".to_owned(),
+                port: 22,
+                username: "meeterm".to_owned(),
+                known_hosts_path: known_hosts_path.clone(),
+            });
+            state.profile = Some(old_profile);
+            state.pane_terminals.insert(42, stale_pane);
+            state.snapshot.selected_pane = Some(42);
+        }
+
+        let malformed_key = |host: &str| ConnectOptions {
+            host: host.to_owned(),
+            port: 22,
+            username: "meeterm".to_owned(),
+            credentials: AuthOptions::public_key("definitely-not-a-private-key".to_owned(), None),
+            known_hosts_path: known_hosts_path.clone(),
+        };
+
+        // The key is non-empty and passes synchronous argument validation, so
+        // the connection task reaches key parsing after the old profile has
+        // already been invalidated.
+        connect_terminal(owner, malformed_key("old.example.test"))
+            .expect("start malformed same-endpoint connection");
+        assert_eq!(
+            reconnect_terminal(owner),
+            Err(ConnectionError::ReconnectUnavailable)
+        );
+        {
+            let state = session_state(owner);
+            assert!(state.lock().expect("session state").profile.is_none());
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = connection_snapshot(owner).expect("connection snapshot");
+            if snapshot.state == ConnectionState::Failed as u32 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "malformed key did not fail");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // A new endpoint must compare against the retained endpoint identity,
+        // even though the failed credential profile has been removed. This
+        // drains the old pane mapping before the new connection starts.
+        connect_terminal(owner, malformed_key("new.example.test"))
+            .expect("start malformed new-endpoint connection");
+        assert_eq!(
+            session_snapshot(owner).expect("new endpoint snapshot"),
+            SessionSnapshot::default()
+        );
+        {
+            let state = session_state(owner);
+            let state = state.lock().expect("session state");
+            assert!(state.profile.is_none());
+            assert!(state.pane_terminals.is_empty());
+            assert_eq!(
+                state
+                    .endpoint
+                    .as_ref()
+                    .map(|endpoint| endpoint.host.as_str()),
+                Some("new.example.test")
+            );
+        }
+
+        registry::destroy_terminal(owner);
     }
 
     #[test]

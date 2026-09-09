@@ -4,9 +4,11 @@ use std::slice;
 use crate::input::SpecialKey;
 use crate::registry;
 use crate::ssh::{
-    ConnectOptions, ConnectionError, ConnectionSnapshot, connect_terminal, connection_snapshot,
-    disconnect_terminal, forget_host_key, respond_to_host_key, terminal_revision,
+    AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot, connect_terminal,
+    connection_snapshot, disconnect_terminal, forget_host_key, respond_to_host_key,
+    terminal_revision,
 };
+use zeroize::Zeroizing;
 
 const FFI_ERROR: i32 = -1;
 const FFI_INVALID_KEY: i32 = -2;
@@ -192,12 +194,22 @@ pub extern "C" fn meeterm_destroy_terminal(id: u64) -> i32 {
     i32::from(registry::destroy_terminal(id))
 }
 
-/// Start a public-key SSH connection.  All string arguments are UTF-8 byte
-/// slices; the platform supplies the app-private known-hosts path.
+/// Start an SSH connection. All string arguments are UTF-8 byte slices; the
+/// platform supplies the app-private known-hosts path. The authentication
+/// arguments are appended after the original endpoint/key/trust-store
+/// arguments, keeping the original arguments in their existing order. All
+/// callers must rebuild against the extended declaration; an old binary that
+/// calls the shorter function signature is not compatible with this symbol.
 ///
-/// `passphrase_length == 0` means that the key is unencrypted.  The
-/// passphrase is copied into the short-lived connection task and never placed
-/// in a snapshot or log.
+/// `auth_method` is `publicKey` or `password`. An empty method retains the
+/// legacy public-key default for adapters that predate the method selector;
+/// every other value is rejected. For `publicKey`, `private_key` is the
+/// complete OpenSSH private-key text and an empty passphrase means no
+/// passphrase. For `password`, `password` is required and is passed without
+/// trimming; the key and passphrase arguments must be empty.
+///
+/// Credential text is copied into zeroizing Rust-owned storage before the
+/// connection task is spawned. It is never placed in a snapshot or log.
 ///
 /// # Safety
 ///
@@ -218,15 +230,61 @@ pub unsafe extern "C" fn meeterm_connect(
     passphrase_length: usize,
     known_hosts_path: *const u8,
     known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
 ) -> i32 {
-    let (Ok(host), Ok(username), Ok(private_key), Ok(passphrase), Ok(known_hosts_path)) = (
-        unsafe { utf8_argument(host, host_length) },
-        unsafe { utf8_argument(username, username_length) },
-        unsafe { utf8_argument(private_key, private_key_length) },
-        unsafe { utf8_argument(passphrase, passphrase_length) },
-        unsafe { utf8_argument(known_hosts_path, known_hosts_path_length) },
-    ) else {
+    let Ok(host) = (unsafe { utf8_argument(host, host_length) }) else {
         return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(username) = (unsafe { utf8_argument(username, username_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    // Decode secrets into zeroizing buffers one at a time so a later malformed
+    // argument cannot leave an earlier credential as an ordinary String.
+    let Ok(private_key) =
+        (unsafe { utf8_argument(private_key, private_key_length) }).map(Zeroizing::new)
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(passphrase) =
+        (unsafe { utf8_argument(passphrase, passphrase_length) }).map(Zeroizing::new)
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(known_hosts_path) =
+        (unsafe { utf8_argument(known_hosts_path, known_hosts_path_length) })
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(auth_method) = (unsafe { utf8_argument(auth_method, auth_method_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(password) = (unsafe { utf8_argument(password, password_length) }).map(Zeroizing::new)
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+
+    let credentials = match auth_method.as_str() {
+        "" | "publicKey" => {
+            if !password.is_empty() {
+                return ConnectionError::InvalidArgument.code();
+            }
+            AuthOptions::PublicKey {
+                private_key,
+                passphrase: (!passphrase.is_empty()).then_some(passphrase),
+            }
+        }
+        "password" => {
+            if !private_key.is_empty() || !passphrase.is_empty() {
+                return ConnectionError::InvalidArgument.code();
+            }
+            AuthOptions::Password { password }
+        }
+        _ => {
+            return ConnectionError::InvalidArgument.code();
+        }
     };
 
     connect_terminal(
@@ -235,12 +293,7 @@ pub unsafe extern "C" fn meeterm_connect(
             host,
             port,
             username,
-            private_key,
-            passphrase: if passphrase.is_empty() {
-                None
-            } else {
-                Some(passphrase)
-            },
+            credentials,
             known_hosts_path: known_hosts_path.into(),
         },
     )
@@ -451,5 +504,92 @@ mod session_abi_tests {
             unsafe { meeterm_session_panes(id, std::ptr::null_mut(), 0) },
             usize::MAX
         );
+    }
+
+    #[test]
+    fn connect_rejects_unknown_or_mixed_authentication_arguments() {
+        let id = meeterm_create_terminal(80, 24);
+        assert_ne!(id, 0);
+        let host = b"127.0.0.1";
+        let username = b"meeterm";
+        let known_hosts = b"/tmp/meeterm-known-hosts";
+        let private_key = b"private-key";
+        let passphrase = b"passphrase";
+        let password = b"password";
+        let unknown = b"keyboardInteractive";
+        let password_method = b"password";
+        let public_key_method = b"publicKey";
+
+        // SAFETY: every pointer below remains valid for the duration of the
+        // synchronous boundary call.
+        let result = unsafe {
+            meeterm_connect(
+                id,
+                host.as_ptr(),
+                host.len(),
+                22,
+                username.as_ptr(),
+                username.len(),
+                private_key.as_ptr(),
+                private_key.len(),
+                passphrase.as_ptr(),
+                passphrase.len(),
+                known_hosts.as_ptr(),
+                known_hosts.len(),
+                unknown.as_ptr(),
+                unknown.len(),
+                password.as_ptr(),
+                password.len(),
+            )
+        };
+        assert_eq!(result, ConnectionError::InvalidArgument.code());
+
+        // A password selection cannot smuggle key material or silently fall
+        // back to public-key authentication.
+        let result = unsafe {
+            meeterm_connect(
+                id,
+                host.as_ptr(),
+                host.len(),
+                22,
+                username.as_ptr(),
+                username.len(),
+                private_key.as_ptr(),
+                private_key.len(),
+                passphrase.as_ptr(),
+                passphrase.len(),
+                known_hosts.as_ptr(),
+                known_hosts.len(),
+                password_method.as_ptr(),
+                password_method.len(),
+                password.as_ptr(),
+                password.len(),
+            )
+        };
+        assert_eq!(result, ConnectionError::InvalidArgument.code());
+
+        // A public-key selection cannot accept a password field.
+        let result = unsafe {
+            meeterm_connect(
+                id,
+                host.as_ptr(),
+                host.len(),
+                22,
+                username.as_ptr(),
+                username.len(),
+                private_key.as_ptr(),
+                private_key.len(),
+                passphrase.as_ptr(),
+                passphrase.len(),
+                known_hosts.as_ptr(),
+                known_hosts.len(),
+                public_key_method.as_ptr(),
+                public_key_method.len(),
+                password.as_ptr(),
+                password.len(),
+            )
+        };
+        assert_eq!(result, ConnectionError::InvalidArgument.code());
+        assert_eq!(meeterm_destroy_terminal(id), 1);
     }
 }

@@ -51,6 +51,8 @@ internal object MeetermNative {
     privateKey: String,
     passphrase: String,
     knownHostsPath: String,
+    authMethod: String,
+    password: String,
   ): Int
 
   /** Queue an SSH close request; zero means accepted/already closed. */

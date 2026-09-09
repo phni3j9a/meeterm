@@ -10,7 +10,7 @@ iOS Simulatorの実SSH操作と最終native smokeの受け入れも完了しま�
 
 ## 初版の操作範囲
 
-- SSHホスト・ポート・ユーザー・OpenSSH秘密鍵・必要ならパスフレーズを入力。
+- SSHホスト・ポート・ユーザーを入力し、OpenSSH秘密鍵（必要ならパスフレーズ）またはSSHパスワードを選んで入力。
 - 初回ホスト鍵のSHA-256指紋を明示的に承認。承認済み鍵の変更は拒否。
 - 接続先の実際のtmux windowをワークスペース一覧として選択・検索。
 - 実際のtmux paneをターミナルタブで選択し、ネイティブ端末で表示・入力。
@@ -18,8 +18,8 @@ iOS Simulatorの実SSH操作と最終native smokeの受け入れも完了しま�
 - 戻る操作やpane切り替えでリモートプロセスを破棄しない。
 - PCへの引き継ぎはスマホを切断して `tmux attach -t meeterm`。
 
-接続先プロファイルや秘密鍵は保存しません。再接続に必要な解析済みの鍵は
-Rustのプロセスメモリだけに保持します。アプリの終了後は再入力が必要です。
+接続先プロファイル、秘密鍵、パスフレーズ、パスワードは保存しません。再接続に必要な
+認証情報はRustのプロセスメモリだけに保持します。アプリの終了後は再入力が必要です。
 承認済みホスト鍵の保存・照合は既存のネイティブ実装を維持します。
 
 作成・名前変更・削除、広範な設定、複数接続先の永続的な管理は初版の必須導線に
@@ -42,9 +42,11 @@ Rustのプロセスメモリだけに保持します。アプリの終了後は�
 
 ## 接続先の準備と使い方
 
-接続先は通常のOpenSSHサーバーとtmuxが必要です。現在の認証方式は
-OpenSSH秘密鍵による公開鍵認証です。サーバー側に対応する公開鍵を登録し、
-SSH経由のシェルから `tmux` を実行できるようにしてください。
+接続先は通常のOpenSSHサーバーとtmuxが必要です。認証方式はOpenSSH秘密鍵による
+公開鍵認証、またはSSHパスワード認証から選べます。パスワード認証はSSHの
+`password` メソッドだけを使い、keyboard-interactive、MFA、SSH-agentには対応しません。
+公開鍵認証を使う場合はサーバー側に対応する公開鍵を登録し、SSH経由のシェルから
+`tmux` を実行できるようにしてください。
 アプリ専用サーバーやソケットは不要です。
 
 秘密鍵欄には `-----BEGIN OPENSSH PRIVATE KEY-----` から
@@ -54,6 +56,10 @@ PCで未使用の保存先を指定して `ssh-keygen -t ed25519 -f ~/.ssh/meete
 を実行し、生成された `.pub` の内容をサーバーの対象ユーザーに登録します。
 アプリへ入力するのは拡張子のない秘密鍵です。
 
+パスワード方式を使う場合は、サーバー側で SSH の `password` 認証を有効にし、
+対象アカウントにパスワードを設定してください。keyboard-interactive や MFA の
+追加プロンプトには対応していません。
+
 ホスト鍵の照合では、すでに信頼できる管理経路からサーバー上で、例えば
 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256` を実行します。
 アプリが表示する鍵アルゴリズムに対応する公開ホスト鍵ファイルを選び、
@@ -61,7 +67,7 @@ SHA-256指紋を比較してください。未確認の接続先から `ssh-keys
 指紋だけを信頼の根拠にはしません。
 コマンドの詳細は[OpenSSHのssh-keygenマニュアル](https://man.openbsd.org/ssh-keygen.1)を参照してください。
 
-1. アプリの接続ボタンから接続情報を入力します。初版では毎回入力します。
+1. アプリの接続ボタンから接続情報と、選択した認証方式の資格情報を入力します。初版では毎回入力します。
 2. ホスト鍵の指紋を信頼できる別の経路で確認して承認します。
 3. 接続後、ワークスペースを開いてpaneタブを選びます。
 4. 端末面をタップしてOSキーボードを開きます。Esc・Tab・矢印・Ctrl-Cは
@@ -113,18 +119,18 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34243185286 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34243185286/artifacts/10064096141)
-から取得できます（commit `012c987`、Expo 57.0.21）。
+[run 34343699940 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34343699940/artifacts/10101618354)
+から取得できます（commit `4ab4365`、Expo 57.0.21、SSHパスワード認証対応）。
 
 ```sh
-gh run download 34243185286 --repo phni3j9a/meeterm \
+gh run download 34343699940 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`2c41376d0f4a05404565b1189c6725afccb26dc024e7efd8a476df2657c12a13`
+`61ffd68685ba52c744ea8802e9aaad4192ec137402c554ebb9ed0923c9592f88`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
@@ -163,9 +169,10 @@ Hosted SimulatorでのCoreGraphics fallbackはMetal実行の証拠ではあり�
 Simulatorで成功しても実機GPU・日本語IME・フォントフォールバックの同等性は
 証明しません。
 
-## 検証記録（2026-09-09 JST）
+## 初版の検証記録（012c987、2026-09-09 JST）
 
-アプリ・依存・テストの検証対象は `012c987` です。以下のHosted結果は
+初版の検証対象は `012c987` です。パスワード認証追加後の検証は
+[パスワード認証・Fold7導入記録](evidence/password-auth-fold7.md)を参照してください。以下のHosted結果は
 [Mobile smoke run 34243185286](https://github.com/phni3j9a/meeterm/actions/runs/34243185286)と
 [一般CI run 34243185235](https://github.com/phni3j9a/meeterm/actions/runs/34243185235)に対応します。
 その後のREADME／本書／受け入れ記録の変更は文書のみです。

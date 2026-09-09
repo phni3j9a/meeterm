@@ -10,16 +10,16 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use meeterm_core::{
-    ConnectOptions, ConnectionSnapshot, ConnectionState, PaneSnapshot, SessionSnapshot, SpecialKey,
-    connect_terminal, connection_snapshot, create_terminal, destroy_terminal, disconnect_terminal,
-    meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
-    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
-    reconnect_terminal, select_pane, send_bytes, session_snapshot,
+    AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, PaneSnapshot,
+    SessionSnapshot, SpecialKey, connect_terminal, connection_snapshot, create_terminal,
+    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count,
+    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot,
+    meeterm_snapshot_size, reconnect_terminal, select_pane, send_bytes, session_snapshot,
 };
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -594,8 +594,7 @@ fn real_openssh_tmux_session_loop() {
     // Once the key is pinned, a wrong passphrase fails before tmux is opened.
     let wrong_id = create_terminal(80, 24).expect("create wrong-passphrase terminal");
     let _wrong_guard = TerminalGuard { id: wrong_id };
-    let mut wrong_options = fixture.options();
-    wrong_options.passphrase = Some("definitely-wrong-passphrase".to_owned());
+    let wrong_options = fixture.options_with_passphrase("definitely-wrong-passphrase");
     connect_terminal(wrong_id, wrong_options).expect("start wrong-passphrase connection");
     let wrong = wait_for_state(
         wrong_id,
@@ -633,6 +632,183 @@ fn real_openssh_tmux_session_loop() {
     );
 }
 
+/// Exercise the password-only path against the disposable Docker OpenSSH
+/// fixture. The fixture publishes only endpoint, trust-store, and password
+/// environment variables; no key material is needed by this test.
+#[test]
+#[ignore = "requires the disposable password-enabled OpenSSH fixture"]
+fn real_openssh_password_auth_reconnect_and_host_key_gate() {
+    let fixture = PasswordFixtureConfig::from_environment();
+    let id = create_terminal(80, 24).expect("create password SSH terminal");
+    let _guard = TerminalGuard { id };
+
+    connect_terminal(id, fixture.options()).expect("start password connection");
+    let ready = wait_for_ready_without_prompt(id, "password authentication");
+    assert_eq!(
+        connection_string(&ready.algorithm, ready.algorithm_len),
+        "ssh-ed25519"
+    );
+
+    let initial = wait_for_session(id, 1, "password meeterm session");
+    let pane = initial
+        .panes
+        .first()
+        .expect("password session pane")
+        .clone();
+    prepare_pane(&pane, "password pane shell");
+    let marker = "MEETERM_PASSWORD_AUTH_OK_5C2A";
+    send_line_retry(
+        pane.terminal_id,
+        &format!("printf '{}\\n'", printf_octal(marker)),
+        "password authentication marker",
+    );
+    wait_for_pane_text(&pane, marker, "password authentication marker");
+
+    // A normal disconnect preserves the parsed password profile. Reconnect
+    // must use password authentication again and retain the same tmux pane /
+    // native terminal identity.
+    disconnect_terminal(id).expect("disconnect password connection");
+    wait_for_state(id, ConnectionState::Disconnected, "password disconnect");
+    reconnect_terminal(id).expect("reconnect with in-memory password");
+    wait_for_ready_without_prompt(id, "password reconnect");
+    let reconnected = wait_for_session(id, 1, "password reconnect session");
+    let reconnected_pane = reconnected
+        .panes
+        .iter()
+        .find(|candidate| candidate.pane_id == pane.pane_id)
+        .expect("password reconnect retains pane identity")
+        .clone();
+    assert_eq!(
+        reconnected_pane.terminal_id, pane.terminal_id,
+        "password reconnect retains native terminal identity"
+    );
+    let reconnect_marker = "MEETERM_PASSWORD_RECONNECT_OK_6D3B";
+    send_line_retry(
+        reconnected_pane.terminal_id,
+        &format!("printf '{}\\n'", printf_octal(reconnect_marker)),
+        "password reconnect marker",
+    );
+    wait_for_pane_text(
+        &reconnected_pane,
+        reconnect_marker,
+        "password reconnect marker",
+    );
+
+    // A rejected password must not fall through to public-key or any other
+    // method. The host key is already pinned, so this reaches authentication.
+    let wrong_id = create_terminal(80, 24).expect("create wrong-password terminal");
+    let _wrong_guard = TerminalGuard { id: wrong_id };
+    connect_terminal(
+        wrong_id,
+        fixture.options_with_password("wrong password that must be rejected"),
+    )
+    .expect("start wrong-password connection");
+    let wrong = wait_for_state(wrong_id, ConnectionState::Failed, "wrong password");
+    assert_eq!(
+        connection_string(&wrong.error_code, wrong.error_code_len),
+        "auth_failed"
+    );
+    assert_eq!(
+        connection_string(&wrong.error_message, wrong.error_message_len),
+        "SSH authentication failed."
+    );
+
+    // Use an independent trust path so the long-lived fixture remains usable
+    // by other smoke tests. A changed host identity must fail before the
+    // deliberately wrong password can be attempted.
+    let changed_trust = std::env::temp_dir().join(format!(
+        "meeterm-password-changed-trust-{}",
+        std::process::id()
+    ));
+    write_alternate_password_trust_record(&fixture, &changed_trust);
+    let changed_id = create_terminal(80, 24).expect("create changed-key terminal");
+    let _changed_guard = TerminalGuard { id: changed_id };
+    connect_terminal(
+        changed_id,
+        fixture.options_with_password_and_trust(
+            "wrong password must never be reached",
+            changed_trust.clone(),
+        ),
+    )
+    .expect("start changed-key connection");
+    let changed = wait_for_state(
+        changed_id,
+        ConnectionState::Failed,
+        "changed host-key rejection before password auth",
+    );
+    assert_eq!(
+        connection_string(&changed.error_code, changed.error_code_len),
+        "host_key_changed"
+    );
+    assert_eq!(
+        connection_string(&changed.fingerprint, changed.fingerprint_len),
+        fixture.fingerprint
+    );
+    let _ = fs::remove_file(changed_trust);
+}
+
+struct PasswordFixtureConfig {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    fingerprint: String,
+    known_hosts: PathBuf,
+}
+
+impl PasswordFixtureConfig {
+    fn from_environment() -> Self {
+        assert_eq!(
+            value("MEETERM_SSH_AUTH"),
+            "password",
+            "password test requires MEETERM_SSH_AUTH=password"
+        );
+        let port = value("MEETERM_SSH_PORT")
+            .parse::<u16>()
+            .expect("MEETERM_SSH_PORT must be a u16");
+        assert!(port > 1024);
+        Self {
+            host: value("MEETERM_SSH_HOST"),
+            port,
+            username: value("MEETERM_SSH_USERNAME"),
+            password: value("MEETERM_SSH_PASSWORD"),
+            fingerprint: value("MEETERM_SSH_FINGERPRINT"),
+            known_hosts: PathBuf::from(value("MEETERM_SSH_KNOWN_HOSTS_FILE")),
+        }
+    }
+
+    fn options(&self) -> ConnectOptions {
+        self.options_with_password_and_trust(&self.password, self.known_hosts.clone())
+    }
+
+    fn options_with_password(&self, password: &str) -> ConnectOptions {
+        self.options_with_password_and_trust(password, self.known_hosts.clone())
+    }
+
+    fn options_with_password_and_trust(
+        &self,
+        password: &str,
+        known_hosts: PathBuf,
+    ) -> ConnectOptions {
+        ConnectOptions {
+            host: self.host.clone(),
+            port: self.port,
+            username: self.username.clone(),
+            credentials: AuthOptions::password(password.to_owned()),
+            known_hosts_path: known_hosts,
+        }
+    }
+}
+
+fn write_alternate_password_trust_record(fixture: &PasswordFixtureConfig, path: &std::path::Path) {
+    // This is a fixed valid Ed25519 public key that differs from the random
+    // key generated by the disposable fixture. It is used only to exercise
+    // the changed-host-key branch; no private key exists for it.
+    const ALTERNATE_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ meeterm-test-alternate";
+    let record = format!("[{}]:{} {}\n", fixture.host, fixture.port, ALTERNATE_KEY);
+    fs::write(path, record).expect("write alternate password trust store");
+}
+
 impl FixtureConfig {
     fn from_environment() -> Self {
         let port = value("MEETERM_SSH_PORT")
@@ -643,8 +819,8 @@ impl FixtureConfig {
             host: value("MEETERM_SSH_HOST"),
             port,
             username: value("MEETERM_SSH_USERNAME"),
-            // ConnectOptions deliberately receives the PEM text as a String
-            // because the core decodes it before opening the SSH session.
+            // ConnectOptions receives the PEM text transiently because the
+            // core decodes it before opening the SSH session.
             private_key: fs::read_to_string(value("MEETERM_SSH_PRIVATE_KEY_FILE"))
                 .expect("fixture private key file must be readable"),
             passphrase: value("MEETERM_SSH_PASSPHRASE"),
@@ -658,12 +834,18 @@ impl FixtureConfig {
     }
 
     fn options(&self) -> ConnectOptions {
+        self.options_with_passphrase(&self.passphrase)
+    }
+
+    fn options_with_passphrase(&self, passphrase: &str) -> ConnectOptions {
         ConnectOptions {
             host: self.host.clone(),
             port: self.port,
             username: self.username.clone(),
-            private_key: self.private_key.clone(),
-            passphrase: Some(self.passphrase.clone()),
+            credentials: AuthOptions::public_key(
+                self.private_key.clone(),
+                Some(passphrase.to_owned()),
+            ),
             known_hosts_path: self.known_hosts.clone(),
         }
     }
@@ -781,8 +963,8 @@ fn ordinary_desktop_attach(fixture: &FixtureConfig) {
         .stderr(Stdio::null())
         .spawn()
         .expect("start ordinary desktop tmux attach");
-    sleep(Duration::from_millis(250));
     let mut input = child.stdin.take().expect("desktop attach stdin");
+    wait_for_desktop_tmux_client(fixture, &mut child);
     input
         .write_all(b"\x02d")
         .expect("send ordinary tmux detach keys");
@@ -798,6 +980,45 @@ fn ordinary_desktop_attach(fixture: &FixtureConfig) {
             let _ = child.kill();
             let _ = child.wait();
             panic!("ordinary tmux attach did not detach with Ctrl-b d");
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn wait_for_desktop_tmux_client(fixture: &FixtureConfig, child: &mut Child) {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let command = "tmux list-clients -F '#{client_session}|#{client_control_mode}|#{client_width}|#{client_height}'";
+    loop {
+        if let Some(status) = child.try_wait().expect("poll ordinary desktop attach") {
+            panic!("ordinary desktop attach exited before readiness: {status}");
+        }
+
+        let output = ssh_command(fixture, false)
+            .arg(command)
+            .output()
+            .expect("query ordinary desktop tmux client");
+        let ready = output.status.success()
+            && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                let mut fields = line.trim().split('|');
+                let session = fields.next();
+                let control_mode = fields.next();
+                let width = fields.next().and_then(|value| value.parse::<u16>().ok());
+                let height = fields.next().and_then(|value| value.parse::<u16>().ok());
+                session == Some("meeterm")
+                    && control_mode == Some("0")
+                    && width.is_some_and(|width| width > 0)
+                    && height.is_some_and(|height| height > 0)
+            });
+        if ready {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for ordinary desktop tmux client: status={}, stdout={:?}, stderr={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         sleep(POLL_INTERVAL);
     }

@@ -84,7 +84,7 @@ jobs:
         run: |
           python3 scripts/ssh/fixture.py -- \
             cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
-            --test openssh -- --ignored --nocapture
+            --test openssh real_openssh_tmux_session_loop -- --ignored --nocapture
 
       - name: Clippy
         working-directory: native/meeterm-core

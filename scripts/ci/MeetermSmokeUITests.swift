@@ -128,6 +128,7 @@ final class MeetermSmokeUITests: XCTestCase {
     fillTextField(label: "Port", value: port)
     record("fill_username")
     fillTextField(label: "Username", value: username)
+    verifyPasswordForm()
     record("fill_private_key")
     fillPrivateKey(key)
 
@@ -312,6 +313,75 @@ final class MeetermSmokeUITests: XCTestCase {
     record("terminate_app_for_handoff")
     app.terminate()
     try verifyFoundationRelaunch()
+  }
+
+  private func verifyPasswordForm() {
+    record("password_form")
+    let passwordChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-password").firstMatch
+    XCTAssertTrue(passwordChoice.waitForExistence(timeout: 10), "Password authentication is unavailable.")
+    XCTAssertTrue(revealAuthenticationControl(passwordChoice, stage: "password_choice"), "Password authentication cannot be selected.")
+    passwordChoice.tap()
+    let password = app.secureTextFields["SSH password"]
+    XCTAssertTrue(password.waitForExistence(timeout: 10), "The password field is not a secure text field.")
+    XCTAssertTrue(revealAuthenticationControl(password, stage: "password_field"), "The password field is not hittable.")
+    password.tap()
+    // Capture only the empty password field, before real credentials are entered.
+    capture("password-form-keyboard")
+    let keyChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-public-key").firstMatch
+    XCTAssertTrue(keyChoice.waitForExistence(timeout: 10), "Private key authentication is unavailable.")
+    XCTAssertTrue(revealAuthenticationControl(keyChoice, stage: "key_choice", upward: false), "Private key authentication cannot be selected.")
+    keyChoice.tap()
+    XCTAssertFalse(password.exists, "The unselected password field is still exposed.")
+    record("authentication_selector_verified")
+  }
+
+  /// Used only before any credential is entered. A full-frame swipe can
+  /// start on the IME when the sheet's scroll frame extends below it.
+  private func revealAuthenticationControl(
+    _ element: XCUIElement,
+    stage: String,
+    upward: Bool = true
+  ) -> Bool {
+    let scroll = app.scrollViews.containing(.textField, identifier: "ssh-host").firstMatch
+    for attempt in 0..<5 {
+      if waitForHittable(element, timeout: 1) { return true }
+      let keyboard = app.keyboards.firstMatch
+      appendFixedArtifact("ios-ui-auth-control-diagnostics.txt", lines: [
+        "stage=\(stage)",
+        "attempt=\(attempt)",
+        "control_exists=\(element.exists ? 1 : 0)",
+        "control_frame=\(element.exists ? String(describing: element.frame) : "unavailable")",
+        "scroll_exists=\(scroll.exists ? 1 : 0)",
+        "scroll_frame=\(scroll.exists ? String(describing: scroll.frame) : "unavailable")",
+        "keyboard_exists=\(keyboard.exists ? 1 : 0)",
+        "keyboard_frame=\(keyboard.exists ? String(describing: keyboard.frame) : "unavailable")",
+      ])
+      guard scroll.exists else { break }
+      let appFrame = app.frame
+      let viewport = scroll.frame.intersection(appFrame)
+      guard !viewport.isNull else { break }
+      var bottom = viewport.maxY
+      if keyboard.exists && keyboard.frame.intersects(viewport) {
+        bottom = min(bottom, keyboard.frame.minY)
+      }
+      let height = bottom - viewport.minY
+      guard height >= 80, viewport.width > 0 else { break }
+      let origin = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+      let start = origin.withOffset(CGVector(
+        dx: viewport.midX - appFrame.minX,
+        dy: viewport.minY + height * (upward ? 0.75 : 0.25) - appFrame.minY
+      ))
+      let end = origin.withOffset(CGVector(
+        dx: viewport.midX - appFrame.minX,
+        dy: viewport.minY + height * (upward ? 0.25 : 0.75) - appFrame.minY
+      ))
+      record("\(stage)_scroll_visible_viewport")
+      start.press(forDuration: 0.05, thenDragTo: end)
+    }
+    if waitForHittable(element, timeout: 2) { return true }
+    // All callers are inside verifyPasswordForm, before the key is entered.
+    capture("password-form-\(stage)-unavailable")
+    return false
   }
 
   private func verifyFoundationRelaunch() throws {
