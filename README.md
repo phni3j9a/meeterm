@@ -63,6 +63,7 @@ npx expo run:android --device
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
 - [First-app evaluation, installation, and evidence](docs/FIRST_APP.md)
+- [SSH password authentication and Fold7 installation evidence](docs/evidence/password-auth-fold7.md)
 - [SSH validation and limitations](docs/SSH.md)
 - [Mobile CI guide](docs/CI_MOBILE.md)
 - [Android PoC runbook](docs/POC_ANDROID.md)

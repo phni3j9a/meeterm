@@ -28,10 +28,14 @@ authentication. To exercise password mode manually, use an OpenSSH server with
 `PasswordAuthentication yes` and a password-enabled account; the app does not
 turn keyboard-interactive or MFA prompts into a password flow.
 
-The separate password-enabled Docker fixture exposes a mode-0600
-`connection.env` file. Source that file without printing it, then run the
-focused ignored test (the file supplies the endpoint, trust path, username,
-and password):
+The password acceptance run uses a separately provisioned disposable Docker
+OpenSSH/tmux server; `fixture.py` does not provision it. Its mode-0600
+`connection.env` supplies `MEETERM_SSH_AUTH=password`, `MEETERM_SSH_HOST`,
+`MEETERM_SSH_PORT` (above 1024), `MEETERM_SSH_USERNAME`, `MEETERM_SSH_PASSWORD`,
+`MEETERM_SSH_FINGERPRINT`, and `MEETERM_SSH_KNOWN_HOSTS_FILE`. The last file pins
+the fixture's verified host key in OpenSSH known-hosts format. Source the env
+file without printing it, then run the focused ignored test against this
+disposable server:
 
 ```sh
 set -a; . /path/to/connection.env; set +a

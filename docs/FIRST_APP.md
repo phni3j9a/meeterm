@@ -119,18 +119,18 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34243185286 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34243185286/artifacts/10064096141)
-から取得できます（commit `012c987`、Expo 57.0.21）。
+[run 34337594548 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34337594548/artifacts/10099163134)
+から取得できます（commit `ba31908`、Expo 57.0.21、SSHパスワード認証対応）。
 
 ```sh
-gh run download 34243185286 --repo phni3j9a/meeterm \
+gh run download 34337594548 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`2c41376d0f4a05404565b1189c6725afccb26dc024e7efd8a476df2657c12a13`
+`5b1ef1852dc2e19ac0b0ef5398640d9aefd83bf904057f7e864a9537d49fa858`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
@@ -169,9 +169,10 @@ Hosted SimulatorでのCoreGraphics fallbackはMetal実行の証拠ではあり�
 Simulatorで成功しても実機GPU・日本語IME・フォントフォールバックの同等性は
 証明しません。
 
-## 検証記録（2026-09-09 JST）
+## 初版の検証記録（012c987、2026-09-09 JST）
 
-アプリ・依存・テストの検証対象は `012c987` です。以下のHosted結果は
+初版の検証対象は `012c987` です。パスワード認証追加後の検証は
+[パスワード認証・Fold7導入記録](evidence/password-auth-fold7.md)を参照してください。以下のHosted結果は
 [Mobile smoke run 34243185286](https://github.com/phni3j9a/meeterm/actions/runs/34243185286)と
 [一般CI run 34243185235](https://github.com/phni3j9a/meeterm/actions/runs/34243185235)に対応します。
 その後のREADME／本書／受け入れ記録の変更は文書のみです。
