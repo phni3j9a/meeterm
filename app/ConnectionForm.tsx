@@ -62,7 +62,18 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
   const usernameRef = useRef<TextInput>(null);
   const privateKeyRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const submitting = useRef(false);
+
+  const scrollPasswordIntoView = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (passwordRef.current?.isFocused()) {
+          scrollRef.current?.scrollToEnd({ animated: true });
+        }
+      });
+    });
+  }, []);
 
   const clearSecrets = useCallback(() => {
     setPrivateKey('');
@@ -85,6 +96,15 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
   useEffect(() => () => {
     clearSecrets();
   }, [clearSecrets]);
+
+  useEffect(() => {
+    const subscription = Keyboard.addListener('keyboardDidShow', () => {
+      if (authMethod === 'password' && passwordRef.current?.isFocused()) {
+        scrollPasswordIntoView();
+      }
+    });
+    return () => subscription.remove();
+  }, [authMethod, scrollPasswordIntoView]);
 
   const close = useCallback(() => {
     Keyboard.dismiss();
@@ -153,13 +173,13 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.root, { backgroundColor: colors.background }]}>
         <StatusBar hidden={false} barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.root}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
             <Pressable accessibilityRole="button" accessibilityLabel="Cancel" onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent }]}>キャンセル</Text></Pressable>
             <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>サーバーに接続</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="Connect" testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>接続</Text></Pressable>
           </View>
-          <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>
+          <ScrollView ref={scrollRef} onLayout={scrollPasswordIntoView} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>
             <View style={styles.intro}>
               <Text style={[styles.title, { color: colors.text }]}>いつもの作業へ。</Text>
               <Text style={[styles.body, { color: colors.muted }]}>SSH の接続先と認証情報を入力してください。接続後に、サーバーのワークスペースが並びます。</Text>
@@ -206,7 +226,7 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
                 <Text style={[styles.helper, { color: colors.muted }]}>秘密鍵とパスフレーズは保存しません。接続・キャンセル時に入力欄から消去します。接続後は、アプリを閉じるまで再接続に使えます。</Text>
               </> : <>
                 <Field label="SSH パスワード" colors={colors} error={errors.password} action={{ label: showPassword ? '隠す' : '表示', accessibilityLabel: showPassword ? 'Hide password' : 'Show password', onPress: () => setShowPassword(value => !value) }}>
-                  <TextInput ref={passwordRef} accessibilityLabel="SSH password" testID="ssh-password" accessibilityValue={{ text: password ? 'Password entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" value={password} onChangeText={value => { setPassword(value); setErrors(current => ({ ...current, password: undefined })); }} onSubmitEditing={submit} placeholder="SSH サーバーのパスワード" returnKeyType="go" secureTextEntry={!showPassword} style={[inputStyle, errors.password && { borderColor: colors.danger }]} />
+                  <TextInput ref={passwordRef} accessibilityLabel="SSH password" testID="ssh-password" accessibilityValue={{ text: password ? 'Password entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" value={password} onChangeText={value => { setPassword(value); setErrors(current => ({ ...current, password: undefined })); }} onFocus={scrollPasswordIntoView} onSubmitEditing={submit} placeholder="SSH サーバーのパスワード" returnKeyType="go" secureTextEntry={!showPassword} style={[inputStyle, errors.password && { borderColor: colors.danger }]} />
                 </Field>
                 <Text style={[styles.helper, { color: colors.muted }]}>パスワードは保存しません。接続・キャンセル時に入力欄から消去します。接続後は、アプリを閉じるまで再接続に使えます。</Text>
               </>}

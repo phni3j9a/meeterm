@@ -88,27 +88,26 @@ enum MeetermCore {
         withUTF8(privateKey) { keyPointer, keyLength in
           withUTF8(passphrase) { passphrasePointer, passphraseLength in
             withUTF8(knownHostsPath) { pathPointer, pathLength in
-                withUTF8(authMethod) { authMethodPointer, authMethodLength in
-                  withUTF8(password) { passwordPointer, passwordLength in
-                    meeterm_connect(
-                      terminalId,
-                      hostPointer,
-                      hostLength,
-                      port,
-                      usernamePointer,
-                      usernameLength,
-                      keyPointer,
-                      keyLength,
-                      passphrasePointer,
-                      passphraseLength,
-                      pathPointer,
-                      pathLength,
-                      authMethodPointer,
-                      authMethodLength,
-                      passwordPointer,
-                      passwordLength
-                    )
-                  }
+              withUTF8(authMethod) { authMethodPointer, authMethodLength in
+                withUTF8(password) { passwordPointer, passwordLength in
+                  meeterm_connect(
+                    terminalId,
+                    hostPointer,
+                    hostLength,
+                    port,
+                    usernamePointer,
+                    usernameLength,
+                    keyPointer,
+                    keyLength,
+                    passphrasePointer,
+                    passphraseLength,
+                    pathPointer,
+                    pathLength,
+                    authMethodPointer,
+                    authMethodLength,
+                    passwordPointer,
+                    passwordLength
+                  )
                 }
               }
             }
