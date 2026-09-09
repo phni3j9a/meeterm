@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -963,8 +963,8 @@ fn ordinary_desktop_attach(fixture: &FixtureConfig) {
         .stderr(Stdio::null())
         .spawn()
         .expect("start ordinary desktop tmux attach");
-    sleep(Duration::from_millis(250));
     let mut input = child.stdin.take().expect("desktop attach stdin");
+    wait_for_desktop_tmux_client(fixture, &mut child);
     input
         .write_all(b"\x02d")
         .expect("send ordinary tmux detach keys");
@@ -980,6 +980,45 @@ fn ordinary_desktop_attach(fixture: &FixtureConfig) {
             let _ = child.kill();
             let _ = child.wait();
             panic!("ordinary tmux attach did not detach with Ctrl-b d");
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn wait_for_desktop_tmux_client(fixture: &FixtureConfig, child: &mut Child) {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let command = "tmux list-clients -F '#{client_session}|#{client_control_mode}|#{client_width}|#{client_height}'";
+    loop {
+        if let Some(status) = child.try_wait().expect("poll ordinary desktop attach") {
+            panic!("ordinary desktop attach exited before readiness: {status}");
+        }
+
+        let output = ssh_command(fixture, false)
+            .arg(command)
+            .output()
+            .expect("query ordinary desktop tmux client");
+        let ready = output.status.success()
+            && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                let mut fields = line.trim().split('|');
+                let session = fields.next();
+                let control_mode = fields.next();
+                let width = fields.next().and_then(|value| value.parse::<u16>().ok());
+                let height = fields.next().and_then(|value| value.parse::<u16>().ok());
+                session == Some("meeterm")
+                    && control_mode == Some("0")
+                    && width.is_some_and(|width| width > 0)
+                    && height.is_some_and(|height| height > 0)
+            });
+        if ready {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for ordinary desktop tmux client: status={}, stdout={:?}, stderr={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         sleep(POLL_INTERVAL);
     }
