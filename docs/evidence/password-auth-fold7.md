@@ -34,9 +34,9 @@ Androidではキーボード表示時にフォームの高さを調整し、フ�
 | SSH smoke driver | Python回帰64件成功 |
 | 実OpenSSHパスワード認証 | 下記の統合テスト1件成功、3.48秒 |
 | 独立コードレビュー | 指摘を修正し、未解決の重大な指摘なし |
-| 一般CI | `f502e0a` の[run 34341016988](https://github.com/phni3j9a/meeterm/actions/runs/34341016988)全ジョブ成功 |
-| Android Hosted | `ba31908` と `f502e0a` の[run 34341016983](https://github.com/phni3j9a/meeterm/actions/runs/34341016983)で成功。両方の画像を実際に開いて確認 |
-| iOS Hosted | `4ab4365` の[run 34343699940](https://github.com/phni3j9a/meeterm/actions/runs/34343699940)で再検証中 |
+| 一般CI | テスト待機修正を含む `bfdc02d` の[run 34352099845](https://github.com/phni3j9a/meeterm/actions/runs/34352099845)全ジョブ成功 |
+| Android Hosted | `4ab4365` の[run 34343699940](https://github.com/phni3j9a/meeterm/actions/runs/34343699940)で成功。取得したパスワード入力中の画像を実際に開いて確認 |
+| iOS Hosted | `4ab4365` の[run 34343699940](https://github.com/phni3j9a/meeterm/actions/runs/34343699940)再実行で成功。実SSH操作、Metal first frame、no-crash、UIKit入力3件、PC attachを確認 |
 
 パスワード対応の使い捨てDocker OpenSSH＋tmux環境で、次のテストを実行しました。
 ユーザーのSSH設定、ログインパスワード、通常のtmuxサーバーは変更していません。
@@ -58,7 +58,7 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 
 ### モバイルで確認した範囲
 
-`ba31908` のAndroid `password-form-keyboard.png` を目視し、入力欄と接続ヘッダーが
+`ba31908` と最終アプリ `4ab4365` のAndroid `password-form-keyboard.png` を目視し、入力欄と接続ヘッダーが
 キーボードの上で見えることを確認しました。`password-form.png` と
 `ssh-terminal-keyboard.png` も目視しました。キーボードを閉じた直後の画像は
 レイアウト復帰途中の可能性があるため、安定した非表示状態の証拠とは扱いません。
@@ -77,16 +77,27 @@ IMEの背後にあり、全面スワイプの開始位置がIMEに入る可能�
 対象フォームと可視領域に限定したドラッグへ変更しました。
 このテストに追加した診断用 `NSStringFromCGRect` が現在のSwiftで使用不可のため、
 `f502e0a` のテストビルドは失敗しました。`4ab4365` でSwiftの
-`String(describing:)` に修正して再検証しています。iOSのパスワード画面や
-最終native gateの成功は、まだ確認できていません。
+`String(describing:)` に修正しました。
 `4ab4365` の最初のiOS実行は `index.crates.io` のDNS解決タイムアウトで
 依存ライブラリを取得できず失敗しました。同コミットの一般CIでは既存の
-通常tmux attach後の切断確認がタイムアウトしました。失敗ジョブを再実行しています。
+通常tmux attach後の切断確認がタイムアウトしました。失敗ジョブを再実行し、iOSは成功しました。
 通常tmux attachのテストは別のPR CIでも同じタイムアウトを再現したため、固定250msの
 待機を廃止し、通常clientが接続されて正の端末サイズを持つことを確認してから
 Ctrl-b dを送るよう修正しました。切断後のchild正常終了検証は維持しています。
 この修正は製品コードに影響せず、実OpenSSH統合テスト1件（10.37秒）、Clippy、
 独立レビューを通過しています。
+`bfdc02d` の一般CIも全ジョブ成功しました。このコミットとMobile smokeの対象
+`4ab4365` の差分は文書とRust統合テストのみで、製品コードおよびiOS操作テストは
+同一です。実行中のiOSを中断しないよう自動CIを抑え、一般CIを手動起動して検証しました。
+
+iOSの[最終成果物](https://github.com/phni3j9a/meeterm/actions/runs/34343699940/artifacts/10105610331)
+から `password-form-keyboard.png`、`terminal-keyboard.png`、`terminal.png` を
+ダウンロードして実際に開きました。認証方式の切り替えとsecure text fieldの存在確認が
+通過し、秘密鍵による実SSH/tmux操作、切断・再接続、通常のPC attach、UIKit入力3件、
+独立した新規プロセスのnative readiness/Metal first frame/no-crashも成功しています。
+パスワード画面の画像はタップ直後の遷移中でIMEと入力欄の安定した配置が写っていないため、
+この画像だけでiOSのパスワード入力中の配置を保証したとは扱いません。端末のキーボード画面と
+native foundationの画像は目視できています。iPhone実機での検証は行っていません。
 
 ## Fold7への導入状況
 
@@ -110,7 +121,7 @@ Fold7では接続情報の手入力が見えたため、自動フォーム操作
 
 ## Hosted APK
 
-[Android成果物](https://github.com/phni3j9a/meeterm/actions/runs/34337594548/artifacts/10099163134)
-に `ba31908` のarm64/x86_64 APKがあります。SHA-256は
-`5b1ef1852dc2e19ac0b0ef5398640d9aefd83bf904057f7e864a9537d49fa858` です。
+[Android成果物](https://github.com/phni3j9a/meeterm/actions/runs/34343699940/artifacts/10101618354)
+に `4ab4365` のarm64/x86_64 APKがあります。SHA-256は
+`61ffd68685ba52c744ea8802e9aaad4192ec137402c554ebb9ed0923c9592f88` です。
 取得・導入手順は[初版の実用評価](../FIRST_APP.md#android)に記載しています。
