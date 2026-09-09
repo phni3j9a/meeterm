@@ -350,11 +350,11 @@ final class MeetermSmokeUITests: XCTestCase {
         "stage=\(stage)",
         "attempt=\(attempt)",
         "control_exists=\(element.exists ? 1 : 0)",
-        "control_frame=\(element.exists ? NSStringFromCGRect(element.frame) : "unavailable")",
+        "control_frame=\(element.exists ? String(describing: element.frame) : "unavailable")",
         "scroll_exists=\(scroll.exists ? 1 : 0)",
-        "scroll_frame=\(scroll.exists ? NSStringFromCGRect(scroll.frame) : "unavailable")",
+        "scroll_frame=\(scroll.exists ? String(describing: scroll.frame) : "unavailable")",
         "keyboard_exists=\(keyboard.exists ? 1 : 0)",
-        "keyboard_frame=\(keyboard.exists ? NSStringFromCGRect(keyboard.frame) : "unavailable")",
+        "keyboard_frame=\(keyboard.exists ? String(describing: keyboard.frame) : "unavailable")",
       ])
       guard scroll.exists else { break }
       let appFrame = app.frame
