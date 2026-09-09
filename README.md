@@ -39,7 +39,7 @@ Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME compos
 
 ## Project status
 
-The first evaluation release is **Android-first**. Its hosted emulator run passed real SSH input, workspace/pane selection, disconnect/reconnect, and layout restoration, and the screenshots were downloaded and reviewed. A self-contained APK that does not need Metro is available through the [installation guide](docs/FIRST_APP.md#android). iOS implementation and CI remain in the repository, but iOS acceptance is deferred to [Issue #13](https://github.com/phni3j9a/meeterm/issues/13); it is not yet a verified first-use release.
+The first evaluation app has passed real SSH connection, workspace/pane selection, native input, and disconnect/reconnect on both the hosted Android emulator and iOS Simulator. The [verified run on `012c987`](https://github.com/phni3j9a/meeterm/actions/runs/34243185286) also passed both native readiness/first-frame/no-crash gates, iOS UIKit input tests, and ordinary desktop tmux attach. Android and iOS screenshots were downloaded and reviewed. iOS reported Metal frames in this Simulator run; physical iPhone GPU and Japanese IME behavior remain unverified. A self-contained Android APK that does not need Metro is available through the [installation guide](docs/FIRST_APP.md#android). See the [Issue #13 acceptance record](docs/evidence/issue-13-ios-acceptance.md) for the iOS launch fix, evidence, and remaining limits.
 
 The shared Rust terminal foundation has Android and iOS native adapters, with GLES on Android and Metal on iOS. Hosted iOS Simulators without Metal use an explicitly identified native CoreGraphics fallback. Both platforms have build/install/launch/first-frame smoke jobs. The original Android foundation was also exercised on a physical Pixel 3, including Japanese IME composition/commit and resize; that historical device evidence remains separate from later SSH validation.
 
@@ -67,6 +67,7 @@ npx expo run:android --device
 - [Mobile CI guide](docs/CI_MOBILE.md)
 - [Android PoC runbook](docs/POC_ANDROID.md)
 - [Issue #1 Android device validation](docs/evidence/issue-1-android-device.md)
+- [Issue #13 iOS SSH and native smoke acceptance](docs/evidence/issue-13-ios-acceptance.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [ADR 0001: native terminal first](docs/decisions/0001-native-terminal-first.md)
 - [Agent instructions](AGENTS.md)

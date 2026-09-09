@@ -48,6 +48,9 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("ios-ui-form-diagnostics.txt")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-short-field-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-connection-state.txt")
     )
     try? FileManager.default.removeItem(
@@ -237,10 +240,15 @@ final class MeetermSmokeUITests: XCTestCase {
     record("send_terminal_input")
     let markerCommand = "printf '%s\\n' '\(markerValue)' > \(shellQuote(markerPath.path))"
     enterTerminalCommand(markerCommand, stage: "send_terminal_input")
+    let markerReached = waitForMarkerLines([markerValue])
     XCTAssertTrue(
-      waitForMarkerLines([markerValue]),
+      markerReached,
       "Native terminal input did not reach the fixture pane."
     )
+    if markerReached {
+      record("capture_terminal_input")
+      capture("terminal-input")
+    }
 
     record("send_handoff_variable")
     let handoffCommand = "export MEETERM_IOS_HANDOFF='\(handoffValue)'; printf '%s\\n' \"$MEETERM_IOS_HANDOFF\" >> \(shellQuote(markerPath.path))"
@@ -302,6 +310,46 @@ final class MeetermSmokeUITests: XCTestCase {
     // End the mobile side before the shell-level handoff check. The fixture
     // then proves that ordinary tmux attach can continue the same session.
     record("terminate_app_for_handoff")
+    app.terminate()
+    try verifyFoundationRelaunch()
+  }
+
+  private func verifyFoundationRelaunch() throws {
+    // Target the installed app explicitly. A host-side simctl openurl can
+    // stop at SpringBoard's "Open in meeterm?" dialog instead of delivering
+    // the URL. This is a fresh launch after the real SSH flow has completed.
+    record("foundation_launch")
+    let launchEpoch = Date().timeIntervalSince1970
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60), "The fresh app did not reach the foreground.")
+    app.open(URL(string: "meeterm://foundation?foundation=1")!)
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 60), "The foundation app did not reach the foreground.")
+    XCTAssertTrue(app.staticTexts["Native foundation preview"].waitForExistence(timeout: 60), "The foundation URL did not open the preview.")
+    XCTAssertTrue(waitForTerminal(), "The foundation native terminal is unavailable.")
+
+    record("foundation_survival_start")
+    let survivalStartEpoch = Date().timeIntervalSince1970
+    let leftForeground = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in self.app.state != .runningForeground },
+      object: app
+    )
+    leftForeground.isInverted = true
+    XCTAssertEqual(XCTWaiter.wait(for: [leftForeground], timeout: 10), .completed,
+      "The foundation app left the foreground during the no-crash observation.")
+    let survivalEndEpoch = Date().timeIntervalSince1970
+    // The host requires this fresh launch's native-ready and first-frame logs
+    // at least five seconds before observation ends. The first five seconds
+    // allow the native surface to finish its initial draw after the UI appears.
+    let observation = [
+      "launch_epoch": launchEpoch,
+      "survival_start_epoch": survivalStartEpoch,
+      "survival_end_epoch": survivalEndEpoch,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys])
+    try data.write(to: artifactDirectory.appendingPathComponent("ios-foundation-observation.json"), options: .atomic)
+    record("capture_foundation")
+    capture("terminal")
+    record("foundation_verified")
     app.terminate()
   }
 
@@ -372,6 +420,13 @@ final class MeetermSmokeUITests: XCTestCase {
       // the caret after the current value before deleting it on a retry.
       field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
       guard let observed = shortFieldValue(field), observed.utf16.count <= 256 else {
+        writeShortFieldDiagnostics(
+          label: label,
+          field: field,
+          expected: value,
+          phase: "initial_value_unavailable",
+          attempt: attempt
+        )
         XCTFail("The short field returned an unexpected value length.")
         return
       }
@@ -379,6 +434,13 @@ final class MeetermSmokeUITests: XCTestCase {
         record("\(stage)_clear")
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: observed.utf16.count))
         guard waitForShortFieldValue(field, expected: "", timeout: 5) else {
+          writeShortFieldDiagnostics(
+            label: label,
+            field: field,
+            expected: "",
+            phase: "clear_mismatch",
+            attempt: attempt
+          )
           XCTFail("The short field could not be cleared.")
           return
         }
@@ -393,14 +455,31 @@ final class MeetermSmokeUITests: XCTestCase {
         for character in value {
           prefix.append(character)
           field.typeText(String(character))
-          if !waitForShortFieldValue(field, expected: prefix, timeout: 5) { break }
+          if !waitForShortFieldValue(field, expected: prefix, timeout: 5) {
+            writeShortFieldDiagnostics(
+              label: label,
+              field: field,
+              expected: prefix,
+              phase: "retry_prefix_mismatch",
+              attempt: attempt
+            )
+            break
+          }
         }
       }
       record("\(stage)_readback")
-      if waitForShortFieldValue(field, expected: value, timeout: 5) {
+      let readbackMatched = waitForShortFieldValue(field, expected: value, timeout: 5)
+      if readbackMatched {
         record("\(stage)_verified")
         return
       }
+      writeShortFieldDiagnostics(
+        label: label,
+        field: field,
+        expected: value,
+        phase: "readback_mismatch",
+        attempt: attempt
+      )
       if attempt == 0 { record("\(stage)_retry") }
     }
     XCTFail("The short field did not retain the expected input after one retry.")
@@ -415,6 +494,42 @@ final class MeetermSmokeUITests: XCTestCase {
     let predicate = NSPredicate { _, _ in self.shortFieldValue(field) == expected }
     let matched = XCTNSPredicateExpectation(predicate: predicate, object: field)
     return XCTWaiter.wait(for: [matched], timeout: timeout) == .completed
+  }
+
+  private func writeShortFieldDiagnostics(
+    label: String,
+    field: XCUIElement,
+    expected: String,
+    phase: String,
+    attempt: Int
+  ) {
+    let observed = shortFieldValue(field)
+    let valueAvailable = observed == nil ? 0 : 1
+    let valueEmpty = observed.map { $0.isEmpty ? 1 : 0 } ?? -1
+    let valueLength = observed?.utf16.count ?? -1
+    let expectedPrefix = observed.map { expected.hasPrefix($0) ? 1 : 0 } ?? -1
+    let caseInsensitiveMatch = observed.map {
+      $0.caseInsensitiveCompare(expected) == .orderedSame ? 1 : 0
+    } ?? -1
+    let keyboard = app.keyboards.firstMatch
+    appendFixedArtifact(
+      "ios-ui-short-field-diagnostics.txt",
+      lines: [
+        "field=\(label.lowercased())",
+        "phase=\(phase)",
+        "attempt=\(attempt)",
+        "field_exists=\(field.exists ? 1 : 0)",
+        "field_hittable=\(field.isHittable ? 1 : 0)",
+        "value_available=\(valueAvailable)",
+        "value_empty=\(valueEmpty)",
+        "value_length=\(valueLength)",
+        "expected_length=\(expected.utf16.count)",
+        "observed_is_expected_prefix=\(expectedPrefix)",
+        "case_insensitive_match=\(caseInsensitiveMatch)",
+        "keyboard_exists=\(keyboard.exists ? 1 : 0)",
+        "keyboard_hittable=\(keyboard.isHittable ? 1 : 0)",
+      ]
+    )
   }
 
   private func fillPrivateKey(_ value: String) {
@@ -636,6 +751,18 @@ final class MeetermSmokeUITests: XCTestCase {
       to: artifactDirectory.appendingPathComponent(name),
       options: .atomic
     )
+  }
+
+  private func appendFixedArtifact(_ name: String, lines: [String]) {
+    let data = Data((lines.joined(separator: "\n") + "\n").utf8)
+    let path = artifactDirectory.appendingPathComponent(name)
+    if let handle = try? FileHandle(forWritingTo: path) {
+      handle.seekToEndOfFile()
+      handle.write(data)
+      try? handle.close()
+    } else {
+      try? data.write(to: path, options: .atomic)
+    }
   }
 
   private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
