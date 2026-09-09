@@ -80,7 +80,8 @@ function connectionPresentation(connection: SshConnectionState) {
 function connectionError(connection: SshConnectionState) {
   if (connection.errorCode === 'host_key_changed') return '保存したホスト鍵と一致しません。サーバーの本人確認が必要です。';
   if (connection.errorCode === 'host_key_rejected') return 'ホスト鍵の確認をキャンセルしました。接続するには、もう一度確認してください。';
-  if (connection.errorCode.includes('auth') || connection.errorCode.includes('private_key')) return '認証できませんでした。ユーザー名、秘密鍵、パスフレーズを確認してください。';
+  if (connection.errorCode.includes('private_key')) return '秘密鍵を読み込めませんでした。鍵の形式とパスフレーズを確認してください。';
+  if (connection.errorCode.includes('auth')) return '認証できませんでした。ユーザー名と、選択した認証方式のパスワードまたは秘密鍵を確認してください。';
   return connection.errorMessage || 'サーバーに接続できませんでした。接続先とネットワークを確認してください。';
 }
 
@@ -292,7 +293,7 @@ function AppContent() {
     setSheet(null);
     const previous = connection;
     setConnection(current => ({ ...current, state: 'Reconnecting', errorCode: '', errorMessage: '' }));
-    void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), '再接続を開始できませんでした。「接続情報を入力」から秘密鍵を入力してください。').then(success => {
+    void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), '再接続を開始できませんでした。「接続情報を入力」から認証情報を入力し直してください。').then(success => {
       if (!success) setConnection(previous);
     });
   }, [connection, runCommand]);

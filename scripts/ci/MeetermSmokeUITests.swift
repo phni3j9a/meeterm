@@ -128,6 +128,7 @@ final class MeetermSmokeUITests: XCTestCase {
     fillTextField(label: "Port", value: port)
     record("fill_username")
     fillTextField(label: "Username", value: username)
+    verifyPasswordForm()
     record("fill_private_key")
     fillPrivateKey(key)
 
@@ -312,6 +313,33 @@ final class MeetermSmokeUITests: XCTestCase {
     record("terminate_app_for_handoff")
     app.terminate()
     try verifyFoundationRelaunch()
+  }
+
+  private func verifyPasswordForm() {
+    record("password_form")
+    let passwordChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-password").firstMatch
+    XCTAssertTrue(passwordChoice.waitForExistence(timeout: 10), "Password authentication is unavailable.")
+    for _ in 0..<3 where !passwordChoice.isHittable {
+      app.scrollViews.firstMatch.swipeUp()
+    }
+    XCTAssertTrue(passwordChoice.isHittable, "Password authentication cannot be selected.")
+    passwordChoice.tap()
+    let password = app.secureTextFields["SSH password"]
+    XCTAssertTrue(password.waitForExistence(timeout: 10), "The password field is not a secure text field.")
+    for _ in 0..<3 where !password.isHittable {
+      app.scrollViews.firstMatch.swipeUp()
+    }
+    XCTAssertTrue(password.isHittable, "The password field is not hittable.")
+    password.tap()
+    // Capture only the empty password field, before real credentials are entered.
+    capture("password-form-keyboard")
+    let keyChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-public-key").firstMatch
+    XCTAssertTrue(keyChoice.waitForExistence(timeout: 10), "Private key authentication is unavailable.")
+    if !keyChoice.isHittable { app.scrollViews.firstMatch.swipeDown() }
+    XCTAssertTrue(keyChoice.isHittable, "Private key authentication cannot be selected.")
+    keyChoice.tap()
+    XCTAssertFalse(password.exists, "The unselected password field is still exposed.")
+    record("authentication_selector_verified")
   }
 
   private func verifyFoundationRelaunch() throws {

@@ -2011,7 +2011,7 @@ def capture_optional_screenshot(
     completed: list[str],
     name: str,
 ) -> str:
-    """Capture post-auth UI evidence without making PNG existence a gate."""
+    """Capture credential-free UI evidence without making PNG existence a gate."""
 
     try:
         device.screenshot(output_path)
@@ -2192,6 +2192,31 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(0.5)
         device.dismiss_keyboard("username_input")
         time.sleep(0.5)
+        # Exercise the authentication selector before entering any secret.
+        # These captures therefore contain only the disposable fixture address.
+        stage = "password_form"
+        password_choice = wait_for_node(
+            device, stage, content_description="Password authentication", scroll=True
+        )
+        tap_node(device, password_choice, stage)
+        password_editor = wait_for_text_input(
+            device, stage, label="SSH password", scroll=True
+        )
+        tap_node(device, password_editor, stage)
+        time.sleep(0.5)
+        capture_optional_screenshot(
+            device, args.artifact_dir / "password-form-keyboard.png", completed,
+            "password_form_keyboard",
+        )
+        device.dismiss_keyboard(stage)
+        capture_optional_screenshot(
+            device, args.artifact_dir / "password-form.png", completed, "password_form"
+        )
+        key_choice = wait_for_node(
+            device, stage, content_description="Private key authentication", scroll=True
+        )
+        tap_node(device, key_choice, stage)
+        completed.append("authentication_selector_verified")
         fill_multiline_key(device, key)
         completed.append("form_filled")
 

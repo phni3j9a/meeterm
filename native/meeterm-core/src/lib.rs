@@ -24,9 +24,9 @@ pub use input::{SpecialKey, encode_special_key};
 pub use registry::{create_terminal, destroy_terminal, terminal_count};
 pub use snapshot::Snapshot;
 pub use ssh::{
-    ALGORITHM_CAPACITY, ConnectOptions, ConnectionError, ConnectionSnapshot, ConnectionState,
-    ERROR_CODE_CAPACITY, ERROR_MESSAGE_CAPACITY, FINGERPRINT_CAPACITY, HOST_CAPACITY,
-    connect_terminal, connection_snapshot, disconnect_terminal, forget_host_key,
+    ALGORITHM_CAPACITY, AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot,
+    ConnectionState, ERROR_CODE_CAPACITY, ERROR_MESSAGE_CAPACITY, FINGERPRINT_CAPACITY,
+    HOST_CAPACITY, connect_terminal, connection_snapshot, disconnect_terminal, forget_host_key,
     reconnect_terminal, select_pane, send_bytes, session_snapshot, terminal_revision,
 };
 pub use terminal::{FIXED_DEMO_BYTES, Terminal, TerminalError};

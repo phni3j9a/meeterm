@@ -200,7 +200,10 @@ Security requirements:
 
 - never silently accept a changed known host key;
 - use explicit host-key verification / TOFU behavior for first connection;
-- keep secrets in platform secure storage, not ordinary React Native persistence;
+- keep secrets out of disk and ordinary React Native persistence in this slice;
+  if a future product needs persistence, use platform secure storage. Pass
+  current credentials transiently to Rust, which may retain only the selected
+  credential in process memory for explicit reconnect;
 - do not log private keys, passwords, passphrases, or raw authentication material.
 
 SSH is transport, not durable application state.
@@ -215,11 +218,14 @@ The fixed local demo remains available before connecting, and its input loopback
 is disabled when that terminal enters the SSH path.
 
 The initial authentication path is an OpenSSH private key with an optional
-passphrase. Credentials are supplied transiently and are not saved. Host-key
-trust is separate: Rust persists explicitly accepted host identities in an
-app-private file supplied by the platform adapter, and a changed identity fails
-closed. This slice has explicit connect/disconnect ownership, with no automatic
-reconnect or tmux session behavior.
+passphrase. The current form also supports the SSH `password` authentication
+method. Password authentication does not add keyboard-interactive prompts or
+MFA. Credentials are supplied transiently and are never saved to disk; Rust
+retains the selected credential in process memory for explicit reconnect.
+Host-key trust is separate: Rust persists explicitly accepted host identities in
+an app-private file supplied by the platform adapter, and a changed identity
+fails closed. This slice has explicit connect/disconnect ownership, with no
+automatic reconnect or tmux session behavior.
 
 The small control surface extends the existing native package and C/JNI bridge
 with typed commands and connection-state fields. Generated bindings remain the
@@ -240,11 +246,14 @@ only window/pane identities, labels, selection, and connection state. The same
 native view binds a `native:<id>` borrowed Rust terminal handle when the selected
 pane changes. View unmount does not disconnect or destroy the remote pane.
 
-`Reconnect` is an explicit native control command. Rust retains a parsed private
-key in process memory; the private-key form and passphrase are cleared after
-submission. No credential is saved to disk. After process death the user enters
-the key again and connects to the same remote `meeterm` session. Approved host
-identities remain pinned, including during reconnect.
+`Reconnect` is an explicit native control command. Rust retains the selected
+parsed key or a `Zeroizing` password buffer in process memory. The form's
+private-key, passphrase, and password inputs are cleared after submission;
+the Rust credential remains available for in-process reconnect. No credential
+is saved to disk. After
+process death the user enters the selected credential again and connects to the
+same remote `meeterm` session. Approved host identities remain pinned,
+including during reconnect.
 
 See [`SSH.md`](SSH.md) for the real fixture, end-to-end tests, and the current
 reconstruction and handoff boundaries.

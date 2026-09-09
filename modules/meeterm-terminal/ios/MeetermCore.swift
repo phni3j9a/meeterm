@@ -66,8 +66,9 @@ enum MeetermCore {
     return meeterm_create_terminal(columns, rows)
   }
 
-  /// Submit a native SSH request. The key and passphrase are copied only for
-  /// this call; this adapter never writes either value to disk or logs it.
+  /// Submit a native SSH request. Credential strings are copied only for this
+  /// call; this adapter never writes them to disk or logs them. The Rust core
+  /// owns the selected credential retained for an in-process reconnect.
   static func connect(
     terminalId: UInt64,
     host: String,
@@ -75,7 +76,9 @@ enum MeetermCore {
     username: String,
     privateKey: String,
     passphrase: String,
-    knownHostsPath: String
+    knownHostsPath: String,
+    authMethod: String,
+    password: String
   ) -> Int32 {
     guard let port = UInt16(exactly: port) else {
       return -1
@@ -85,20 +88,29 @@ enum MeetermCore {
         withUTF8(privateKey) { keyPointer, keyLength in
           withUTF8(passphrase) { passphrasePointer, passphraseLength in
             withUTF8(knownHostsPath) { pathPointer, pathLength in
-              meeterm_connect(
-                terminalId,
-                hostPointer,
-                hostLength,
-                port,
-                usernamePointer,
-                usernameLength,
-                keyPointer,
-                keyLength,
-                passphrasePointer,
-                passphraseLength,
-                pathPointer,
-                pathLength
-              )
+                withUTF8(authMethod) { authMethodPointer, authMethodLength in
+                  withUTF8(password) { passwordPointer, passwordLength in
+                    meeterm_connect(
+                      terminalId,
+                      hostPointer,
+                      hostLength,
+                      port,
+                      usernamePointer,
+                      usernameLength,
+                      keyPointer,
+                      keyLength,
+                      passphrasePointer,
+                      passphraseLength,
+                      pathPointer,
+                      pathLength,
+                      authMethodPointer,
+                      authMethodLength,
+                      passwordPointer,
+                      passwordLength
+                    )
+                  }
+                }
+              }
             }
           }
         }

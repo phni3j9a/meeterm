@@ -6,8 +6,8 @@ are panes. A desktop user can continue with `tmux attach -t meeterm`.
 
 ## Using the session loop
 
-1. Open **サーバーに接続** (accessibility label: **Connect**), enter the SSH endpoint, username, OpenSSH private key, and
-   optional passphrase, and submit the form.
+1. Open **サーバーに接続** (accessibility label: **Connect**), enter the SSH endpoint and username, choose **秘密鍵** or
+   **パスワード**, enter the selected credential, and submit the form. The key form also accepts an optional passphrase.
 2. Verify the displayed SHA-256 host-key fingerprint through a trusted channel
    before choosing **Trust and connect**. A changed trusted key fails closed.
 3. Once the status shows **接続中** (**Connected**), select a workspace and its terminal tabs. Existing
@@ -16,19 +16,40 @@ are panes. A desktop user can continue with `tmux attach -t meeterm`.
 4. **切断** (**Disconnect**) closes the mobile connection while the remote session and
    its processes continue running. **再接続** (**Reconnect**) resumes that workspace.
 5. After a transport failure, use **再接続** (**Reconnect**). After the app process exits,
-   open **サーバーに接続** (**Connect**) and enter the connection details and key again; the remote
+   open **サーバーに接続** (**Connect**) and enter the connection details and selected credential again; the remote
    tmux session is still the source of truth.
 
 The form accepts the complete `BEGIN OPENSSH PRIVATE KEY` / `END OPENSSH PRIVATE KEY`
 block, not a `.pub` key or legacy PEM block. See the [first-app setup guide](FIRST_APP.md#接続先の準備と使い方)
 for key preparation and a server-side host-fingerprint check.
 
-The parsed private key is retained only in Rust process memory for explicit
-reconnect. The form clears private-key and passphrase text on submission or
-cancellation. Credentials are not saved to disk. Approved host identities are
-stored separately in app-private storage and checked again during reconnect.
-Password, keyboard-interactive, SSH-agent, server profiles, and saving keys in
-platform secure storage remain outside this slice.
+The disposable fixture described below is configured for public-key
+authentication. To exercise password mode manually, use an OpenSSH server with
+`PasswordAuthentication yes` and a password-enabled account; the app does not
+turn keyboard-interactive or MFA prompts into a password flow.
+
+The separate password-enabled Docker fixture exposes a mode-0600
+`connection.env` file. Source that file without printing it, then run the
+focused ignored test (the file supplies the endpoint, trust path, username,
+and password):
+
+```sh
+set -a; . /path/to/connection.env; set +a
+cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
+  --test openssh real_openssh_password_auth_reconnect_and_host_key_gate \
+  -- --ignored --nocapture
+```
+
+The test covers password success, wrong-password rejection, in-process
+password reconnect, and changed-host-key rejection before authentication.
+
+The selected credential is retained only in Rust process memory for explicit
+reconnect. The form clears private-key, passphrase, and password text on
+submission, cancellation, unmount, or authentication-method changes. Credentials
+are never saved to disk. Approved host identities are stored separately in
+app-private storage and checked again during reconnect. Password authentication
+uses only the SSH `password` method; keyboard-interactive prompts, MFA, SSH-agent,
+server profiles, and platform credential storage are outside this slice.
 
 ## Native data and lifecycle boundary
 
@@ -105,7 +126,7 @@ Run the native integration target:
 ```sh
 python3 scripts/ssh/fixture.py -- \
   cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
-  --test openssh -- --ignored --nocapture
+  --test openssh real_openssh_tmux_session_loop -- --ignored --nocapture
 ```
 
 Run the deterministic driver regressions:
