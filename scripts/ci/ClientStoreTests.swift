@@ -1,7 +1,7 @@
 import Foundation
 import Security
 import XCTest
-@testable import MeetermTerminal
+@testable internal import MeetermTerminal
 
 /// Runs in the entitled app host against the production native storage module.
 /// Only generated test profiles are removed; no secrets or raw errors are logged.

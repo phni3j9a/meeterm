@@ -99,8 +99,14 @@ The iOS job passed actual CocoaPods integration but failed while compiling
 `ClientStoreTests.swift`: its implicit `@testable import MeetermTerminal` conflicts
 with an explicit `internal import` in the Expo-generated storage-target provider.
 The four production storage cases and UI/SSH interaction were not executed; no
-new iOS app screenshot is available from this build failure. The generated
-provider/import boundary is being corrected before the next run.
+new iOS app screenshot is available from this build failure. The local fix uses
+`@testable internal import` and disables the inherited Expo autolinking manager
+only on this disposable storage target. CocoaPods search-path inheritance stays
+in place, and the app retains its provider. A post-pod-install gate requires
+only the storage test source in the child target, one provider in the app, and
+no direct native-module linker flag in the storage target. This scoped override
+uses the pinned Expo target extension; actual generated-project verification
+and the full storage/UI run remain required.
 A previous [minimal app-hosted XCTest probe](https://github.com/phni3j9a/meeterm/actions/runs/34443153451)
 passed real Keychain add/delete with status `0`; this is not a substitute for the
 production app/pod tests. The integrated candidate passed independent static

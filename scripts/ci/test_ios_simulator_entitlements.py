@@ -301,6 +301,10 @@ class IOSSimulatorEntitlementInjectionTests(unittest.TestCase):
             podfile = (root / "ios" / "Podfile").read_text()
             self.assertEqual(podfile.count("target 'meetermStorageTests' do"), 1)
             self.assertIn("inherit! :search_paths", podfile)
+            self.assertEqual(
+                podfile.count("current_target_definition.define_singleton_method(:autolinking_manager) { nil }"),
+                1,
+            )
 
     def test_derq_failure_is_fail_closed_before_project_write(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ios-entitlements-") as directory:

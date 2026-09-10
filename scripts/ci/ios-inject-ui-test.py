@@ -99,7 +99,15 @@ def patch_podfile_with_storage_target(podfile_path: Path, app_target_name: str) 
             f"iOS storage test target injection expected one Podfile target opener for {app_target_name}, "
             f"found {len(matches)}"
         )
-    insertion = "\n  target 'meetermStorageTests' do\n    inherit! :search_paths\n  end\n"
+    insertion = """
+  target 'meetermStorageTests' do
+    inherit! :search_paths
+    # The app host already owns ExpoModulesProvider. Expo's target extension
+    # inherits its manager even for search-path-only children; suppress only
+    # this disposable target's provider to avoid a duplicate Objective-C class.
+    current_target_definition.define_singleton_method(:autolinking_manager) { nil }
+  end
+"""
     end = matches[0].end()
     return podfile[:end] + insertion + podfile[end:]
 

@@ -294,6 +294,38 @@ jobs:
         working-directory: ios
         run: pod install
 
+      - name: Verify app-hosted storage source isolation
+        run: |
+          node <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const project = require('xcode').project('ios/meeterm.xcodeproj/project.pbxproj');
+          project.parseSync();
+          const objects = project.hash.project.objects;
+          const unquote = value => String(value).replace(/^"|"$/g, '');
+          const targets = Object.entries(objects.PBXNativeTarget)
+            .filter(([id]) => !id.endsWith('_comment')).map(([, target]) => target);
+          const app = targets.find(target => unquote(target.name) === 'meeterm');
+          const storage = targets.find(target => unquote(target.name) === 'meetermStorageTests');
+          assert(app && storage, 'Expected app and storage targets');
+          const sources = target => target.buildPhases
+            .map(phase => objects.PBXSourcesBuildPhase[phase.value]).filter(Boolean)
+            .flatMap(phase => phase.files.map(file => objects.PBXBuildFile[file.value].fileRef))
+            .map(id => path.basename(unquote(objects.PBXFileReference[id].path)));
+          assert.deepEqual(sources(storage), ['ClientStoreTests.swift']);
+          assert.equal(sources(app).filter(name => name === 'ExpoModulesProvider.swift').length, 1);
+          for (const configuration of ['debug', 'release']) {
+            const config = fs.readFileSync(
+              `ios/Pods/Target Support Files/Pods-meetermStorageTests/Pods-meetermStorageTests.${configuration}.xcconfig`, 'utf8');
+            const flags = config.split('\n').filter(line => /^OTHER_LDFLAGS\s*=/.test(line));
+            assert(!flags.some(line => line.includes('MeetermTerminal')),
+              'Storage tests must resolve the production module through their app host');
+          }
+          fs.writeFileSync('artifacts/ios-simulator-observability/ios-storage-source-isolation.txt',
+            'app_provider=single\nstorage_sources=isolated\nstorage_direct_native_link=absent\n');
+          JS
+
       - name: Build unsigned self-contained iOS smoke app and UI test
         env:
           NODE_ENV: production
