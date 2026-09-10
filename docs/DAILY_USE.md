@@ -75,6 +75,28 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
+Candidate `8c35463` passed all jobs in [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34450226608).
+Its [Android mobile job](https://github.com/phni3j9a/meeterm/actions/runs/34450222434)
+passed native readiness/frame, saved-credential cold reconnect, settings,
+CJK atlas stress, workspace/pane create/rename/confirmed close, and the exact
+`COPY29F7` native selection/copy/paste gate. Main downloaded and viewed the
+selection, post-Copy, created-pane, settings, servers, CJK atlas, foundation and
+SSH keyboard screenshots. The post-Copy screenshot still shows the highlight;
+clipboard success does not establish immediate visual selection clearing.
+The later PC-handoff interaction stopped at `handoff_action (ui_timeout)`.
+The failure image shows the longer server menu with the handoff item below the
+viewport; the driver had not scrolled that menu. This requires a driver fix,
+not a claim that the complete Android smoke passed.
+
+iOS passed actual CocoaPods integration and the new app/storage source-isolation
+gate on this candidate; compilation and the production storage/UI checks are
+still running. A separate acceptance audit also identified two missing mobile
+interaction paths: profile edit/delete/active switch and OS background/foreground
+return. Both are being added before credential-free recording starts. Completion
+still requires those paths, the remaining mobile gates and actual image review.
+
+#### Previous candidate and its focused reproductions
+
 Candidate `5795dfa` passed all jobs in [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34444868633).
 Its [Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34444865747)
 again passed Android native readiness/frame, saved-credential cold reconnect,
