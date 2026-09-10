@@ -163,6 +163,11 @@ class MeetermTerminalView(
       ),
   )
 
+    // Expose the actual cell surface, independently of the sibling key row.
+    // Accessibility and coordinate-based UI tests must not mistake an outer
+    // React Native container for the terminal's viewport.
+    surface.contentDescription = "Terminal"
+    surface.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     surface.setEGLContextClientVersion(2)
     surface.setRenderer(renderer)
     surface.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY

@@ -73,6 +73,7 @@ DAILY_WORKSPACE_NAME = "daily-ci"
 DAILY_WORKSPACE_RENAMED = "daily-ci-renamed"
 DAILY_PANE_NAME = "daily-pane"
 DAILY_SELECTION_MARKER = "COPY29F7"
+TERMINAL_SURFACE_ACCESSIBILITY_LABEL = "Terminal"
 DAILY_GLYPH_STRESS_COUNT = 1024
 DAILY_GLYPH_STRESS_COLUMNS = 16
 GLYPH_ATLAS_RESET_PATTERN = re.compile(
@@ -442,14 +443,18 @@ class AndroidDevice:
     ) -> None:
         """Long-press one terminal cell, then extend its native selection."""
 
-        if duration_ms <= 0:
+        if (
+            duration_ms <= 0
+            or min(start_x, start_y, end_x, end_y) < 0
+            or (start_x, start_y) == (end_x, end_y)
+        ):
             raise SmokeFailure(stage, "invalid_long_press")
         self.assert_foreground(stage)
         self.run(
             (
                 "shell",
                 "input",
-                "swipe",
+                "draganddrop",
                 str(start_x),
                 str(start_y),
                 str(end_x),
@@ -1410,6 +1415,10 @@ def wait_for_panes(
 def find_terminal_node(nodes: list[Node]) -> Node | None:
     """Locate the native terminal surface exposed by the app."""
 
+    labeled_surface = find_labeled_terminal_surface(nodes)
+    if labeled_surface is not None:
+        return labeled_surface
+
     for class_fragment in ("MeetermTerminalView", "GLSurfaceView"):
         node = find_node(nodes, class_fragment=class_fragment)
         if node is not None and node.visible_to_user and node.enabled:
@@ -1436,6 +1445,28 @@ def find_terminal_node(nodes: list[Node]) -> Node | None:
     )
 
 
+def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
+    """Locate the explicitly labeled native cell surface without a fallback."""
+
+    candidates = []
+    for node in nodes:
+        left, top, right, bottom = node.bounds
+        if (
+            node.content_description == TERMINAL_SURFACE_ACCESSIBILITY_LABEL
+            and node.visible_to_user
+            and node.enabled
+            and right > left
+            and bottom > top
+        ):
+            candidates.append(node)
+    return max(
+        candidates,
+        key=lambda node: (node.bounds[2] - node.bounds[0])
+        * (node.bounds[3] - node.bounds[1]),
+        default=None,
+    )
+
+
 def wait_for_terminal(device: AndroidDevice, stage: str, timeout: float = DEFAULT_UI_TIMEOUT) -> Node:
     """Wait for the selected pane's native terminal surface."""
 
@@ -1451,6 +1482,27 @@ def wait_for_terminal(device: AndroidDevice, stage: str, timeout: float = DEFAUL
             return node
         time.sleep(0.2)
     raise SmokeFailure(stage, "terminal_view_unavailable")
+
+
+def wait_for_labeled_terminal_surface(
+    device: AndroidDevice,
+    stage: str,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    """Wait for the exact native surface required by coordinate gestures."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        node = find_labeled_terminal_surface(nodes)
+        if node is not None:
+            return node
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "terminal_surface_unavailable")
 
 
 def reverse_local_mapping_exists(output: str, port: int) -> bool:
@@ -1816,6 +1868,38 @@ def selection_drag_points(
     # without including the 48dp native key row at the bottom of the view.
     row_zero_y = top + max(1, min(height - 1, round(cell_width)))
     return (start_x, row_zero_y), (end_x, row_zero_y)
+
+
+def selection_geometry_diagnostic(
+    node: Node,
+    *,
+    columns: int,
+    character_count: int,
+    start: tuple[int, int],
+    end: tuple[int, int],
+) -> str:
+    """Describe selection structure without exposing any terminal contents."""
+
+    left, top, right, bottom = node.bounds
+    surface_class = (
+        node.class_name
+        if re.fullmatch(r"[A-Za-z0-9_.$]+", node.class_name)
+        else "unavailable"
+    )
+    return (
+        "surface_label=Terminal\n"
+        f"surface_class={surface_class}\n"
+        f"bounds_left={left}\n"
+        f"bounds_top={top}\n"
+        f"bounds_right={right}\n"
+        f"bounds_bottom={bottom}\n"
+        f"columns={columns}\n"
+        f"character_count={character_count}\n"
+        f"start_x={start[0]}\n"
+        f"start_y={start[1]}\n"
+        f"end_x={end[0]}\n"
+        f"end_y={end[1]}\n"
+    )
 
 
 def focus_terminal(device: AndroidDevice, node: Node, stage: str) -> None:
@@ -2993,7 +3077,11 @@ def exercise_daily_workspace_and_selection(
     )
 
     stage = "daily_terminal_selection"
-    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
     focus_terminal(device, terminal, stage)
     # Hide the IME before placing the marker. Its resize can reflow terminal
     # history, so clearing first and then hiding would make row zero unstable.
@@ -3005,7 +3093,11 @@ def exercise_daily_workspace_and_selection(
         f"clear; printf '{DAILY_SELECTION_MARKER}\\n'; stty echo",
     )
     time.sleep(1.0)
-    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
     current_panes = list_tmux_panes(tmux_socket, stage)
     current_pane = next(
         (pane for pane in current_panes if pane.pane_id == created_pane_id),
@@ -3017,6 +3109,16 @@ def exercise_daily_workspace_and_selection(
         terminal,
         columns=current_pane.pane_width,
         character_count=len(DAILY_SELECTION_MARKER),
+    )
+    write_artifact(
+        artifact_dir / "daily-selection-geometry.txt",
+        selection_geometry_diagnostic(
+            terminal,
+            columns=current_pane.pane_width,
+            character_count=len(DAILY_SELECTION_MARKER),
+            start=selection_start,
+            end=selection_end,
+        ),
     )
     device.input_long_press_drag(
         selection_start[0],
@@ -3045,7 +3147,11 @@ def exercise_daily_workspace_and_selection(
         completed,
         "daily_selection_cleared",
     )
-    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
     focus_terminal(device, terminal, stage)
     terminal_line(device, "IFS= read -r MEETERM_DAILY_COPIED")
     time.sleep(0.3)

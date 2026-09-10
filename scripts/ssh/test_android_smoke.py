@@ -1387,6 +1387,29 @@ UI dumped to: /dev/tty"""
 
         self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
 
+    def test_labeled_terminal_surface_beats_larger_generic_parent(self) -> None:
+        nodes = [
+            smoke.Node("", "", "android.view.View", (0, 50, 1080, 2400)),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.view.View",
+                (0, 430, 1080, 2200),
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[1])
+        self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
+
+    def test_labeled_terminal_surface_rejects_unlabeled_fallbacks(self) -> None:
+        nodes = [
+            smoke.Node("", "", "android.view.View", (0, 50, 1080, 2400)),
+            smoke.Node("", "", "android.opengl.GLSurfaceView", (0, 430, 1080, 2200)),
+            smoke.Node("", "Terminal", "android.view.View", (0, 430, 0, 2200)),
+        ]
+
+        self.assertIsNone(smoke.find_labeled_terminal_surface(nodes))
+
     def test_selection_drag_maps_exact_first_row_character_range(self) -> None:
         terminal = smoke.Node(
             "",
@@ -1411,6 +1434,38 @@ UI dumped to: /dev/tty"""
             )
         self.assertEqual(error.exception.reason, "invalid_selection_geometry")
 
+    def test_selection_geometry_diagnostic_has_only_fixed_structure(self) -> None:
+        terminal = smoke.Node(
+            "",
+            "Terminal",
+            "android.view.View",
+            (10, 100, 1010, 1900),
+        )
+
+        diagnostic = smoke.selection_geometry_diagnostic(
+            terminal,
+            columns=50,
+            character_count=8,
+            start=(20, 120),
+            end=(160, 120),
+        )
+
+        self.assertEqual(
+            diagnostic,
+            "surface_label=Terminal\n"
+            "surface_class=android.view.View\n"
+            "bounds_left=10\n"
+            "bounds_top=100\n"
+            "bounds_right=1010\n"
+            "bounds_bottom=1900\n"
+            "columns=50\n"
+            "character_count=8\n"
+            "start_x=20\n"
+            "start_y=120\n"
+            "end_x=160\n"
+            "end_y=120\n",
+        )
+
     def test_native_selection_gesture_is_a_bounded_long_press_drag(self) -> None:
         device = smoke.AndroidDevice("emulator-5554", "adb")
         device.assert_foreground = mock.Mock()
@@ -1423,7 +1478,7 @@ UI dumped to: /dev/tty"""
             (
                 "shell",
                 "input",
-                "swipe",
+                "draganddrop",
                 "20",
                 "120",
                 "160",
@@ -1433,6 +1488,20 @@ UI dumped to: /dev/tty"""
             "selection",
             timeout=10.0,
         )
+
+    def test_native_selection_gesture_rejects_invalid_coordinates(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        device.assert_foreground = mock.Mock()
+        device.run = mock.Mock(return_value=b"")
+
+        for coordinates in ((-1, 120, 160, 120), (20, 120, 20, 120)):
+            with self.subTest(coordinates=coordinates):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    device.input_long_press_drag(*coordinates, "selection")
+                self.assertEqual(error.exception.reason, "invalid_long_press")
+
+        device.assert_foreground.assert_not_called()
+        device.run.assert_not_called()
 
     def test_screenrecord_owns_remote_pid_and_stops_only_that_process(self) -> None:
         device = mock.Mock(spec=smoke.AndroidDevice)
