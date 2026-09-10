@@ -45,6 +45,40 @@ class _FakeClock:
 
 
 class ArtifactBoundaryTests(unittest.TestCase):
+    def test_glyph_stress_sequence_checks_real_marker_before_capture(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.run.side_effect = [
+            b"",
+            b"I/MeetermRenderer: MEETERM_GLYPH_ATLAS_RESET count=1\n",
+        ]
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            stress = smoke.make_glyph_stress_file(fixture / "key")
+            marker = fixture / "done.txt"
+            completed: list[str] = []
+
+            def send_line(_device: object, command: str) -> None:
+                if str(stress) in command:
+                    marker.write_text("fixture-done\n", encoding="utf-8")
+
+            with (
+                _patched_clock(clock),
+                mock.patch.object(smoke, "wait_for_terminal"),
+                mock.patch.object(smoke, "focus_terminal"),
+                mock.patch.object(smoke, "terminal_line", side_effect=send_line),
+                mock.patch.object(smoke, "capture_optional_screenshot", return_value="ok") as capture,
+            ):
+                smoke.exercise_glyph_atlas_stress(
+                    device, stress, marker, "fixture-done", fixture, completed
+                )
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "fixture-done\n")
+            self.assertEqual(completed, ["daily_glyph_atlas_reset"])
+            self.assertEqual(device.run.call_count, 2)
+            capture.assert_called_once()
+            self.assertEqual(capture.call_args.args[1], fixture / "daily-glyph-atlas.png")
+
     def test_glyph_stress_file_has_distinct_public_cjk_and_final_marker(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
             stress_path = smoke.make_glyph_stress_file(Path(root) / "fixture-key")

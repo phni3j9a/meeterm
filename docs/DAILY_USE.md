@@ -108,7 +108,7 @@ history-limit or persist terminal output to its own disk files.
 - Shared Rust library: 57 tests passed, along with formatting and Clippy.
 - Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
   recovery, name encoding, and closing the last pane/window.
-- TypeScript and 84 Python regression tests passed, including atlas/selector checks.
+- TypeScript and 85 Python regression tests passed, including atlas/selector checks.
 - Android native JVM tests: 24 passed.
 - Android arm64 Release built successfully and installed on the connected Pixel 3.
 - Pixel 3: changed font to 18 pt, history to 20,000 and theme to light through
@@ -159,6 +159,17 @@ password form screenshots were downloaded and actually viewed. This run does not
 verify an iOS terminal frame or Metal execution. The next candidate adds exact
 public profile-name checks, fixed submission diagnostics and separate native
 storage test markers. Complete daily-use interaction runs remain pending.
+
+The third [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34430487992)
+passed on candidate `747ad81`. Its Android mobile run again passed saved-credential
+cold reconnect and persisted settings. The updated server/settings screens and
+native CJK foundation frame were downloaded and viewed, including the explicit
+2,000-line cold-history limit. The atlas smoke then stopped in the test driver:
+a new call supplied a `timeout` keyword that the existing marker helper does not
+accept. A regression through the actual stress orchestration reproduced the
+`TypeError`; removing that keyword made the full 85-test Python suite pass.
+The native atlas stress and remaining CRUD/copy interaction gates still need
+a complete run. The third iOS job remains in progress.
 
 Physical full-flow Android attempts stopped before submitting the test profile
 when foreground/editor observations were unavailable. They do not establish

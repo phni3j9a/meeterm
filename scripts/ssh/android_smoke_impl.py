@@ -2803,7 +2803,6 @@ def exercise_glyph_atlas_stress(
         done_marker_path,
         f"{done_marker_value}\n",
         stage,
-        timeout=RECONNECT_TIMEOUT,
     )
     wait_for_new_atlas_reset(device, baseline_events, stage)
     time.sleep(0.5)
