@@ -124,6 +124,7 @@ class MeetermTerminalView(
       editable.replace(0, editable.length, value)
       BaseInputConnection.removeComposingSpans(editable)
       if (value.isNotEmpty()) {
+        clearTerminalSelection()
         // The backing editor contains only the active composition. Reapply
         // composing spans after local deletion/clear callbacks so Android IMEs
         // keep their surrounding-text contract without retaining committed
@@ -428,6 +429,7 @@ class MeetermTerminalView(
     }
     val handled = super.dispatchTouchEvent(event)
     if (tapCandidate) {
+      clearTerminalSelection()
       post {
         val inputManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         inputManager?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
@@ -509,6 +511,7 @@ class MeetermTerminalView(
       -1
     }
     if (result < 0) return false
+    clearTerminalSelection()
     inputSession.clearComposition()
     editable.clear()
     BaseInputConnection.removeComposingSpans(editable)
@@ -525,7 +528,19 @@ class MeetermTerminalView(
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
       ?: return false
     clipboard.setPrimaryClip(ClipData.newPlainText("Terminal selection", text))
+    clearTerminalSelection()
     return true
+  }
+
+  private fun clearTerminalSelection() {
+    val handle = terminalHandle
+    if (handle == 0L) return
+    try {
+      MeetermNative.clearSelection(handle)
+    } catch (_: RuntimeException) {
+      return
+    }
+    surface.requestRender()
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -873,6 +888,7 @@ class MeetermTerminalView(
     inputSession.cancel()
     editable.clear()
     if (terminalHandle == 0L) return
+    clearTerminalSelection()
     TerminalRegistry.release(terminalId, terminalHandle)
     terminalHandle = 0L
     lastTerminalRevision = -1L

@@ -330,7 +330,10 @@ enum MeetermCore {
   }
 
   static func commitModified(terminalId: UInt64, text: String, modifiers: UInt32) -> Bool {
-    withUTF8(text) { pointer, length in meeterm_commit_modified_utf8(terminalId, pointer, length, modifiers) >= 0 }
+    let result = withUTF8(text) { pointer, length in
+      meeterm_commit_modified_utf8(terminalId, pointer, length, modifiers)
+    }
+    return result >= 0
   }
 
   static func selectStart(terminalId: UInt64, row: Int, column: Int) -> Bool {

@@ -490,6 +490,12 @@ fn native_selection_handles_cjk_wide_spacers_and_combining_marks() {
 
     terminal.clear_selection();
     assert_eq!(terminal.selection_text(), None);
+    let cleared = terminal.snapshot().unwrap();
+    let restored = decode_cells(cleared.as_bytes())
+        .into_iter()
+        .find(|cell| cell.base == "日")
+        .expect("CJK glyph remains after clearing selection");
+    assert_ne!(restored.background, selected.background);
 }
 
 #[test]

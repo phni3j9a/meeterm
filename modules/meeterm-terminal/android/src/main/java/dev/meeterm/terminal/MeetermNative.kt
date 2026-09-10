@@ -92,6 +92,7 @@ internal class RustInputSink(
     }
 
     val count = try {
+      MeetermNative.clearSelection(handle)
       MeetermNative.commit(handle, bytes)
     } catch (_: RuntimeException) {
       // The JNI boundary may surface a transient Rust queue rejection as a
@@ -114,6 +115,7 @@ internal class RustInputSink(
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
+      MeetermNative.clearSelection(handle)
       MeetermNative.commitModified(handle, bytes, modifiers) >= 0
     } catch (_: RuntimeException) {
       false
@@ -124,6 +126,7 @@ internal class RustInputSink(
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
+      MeetermNative.clearSelection(handle)
       MeetermNative.sendSpecial(handle, key.nativeCode) >= 0
     } catch (_: RuntimeException) {
       false
@@ -134,6 +137,7 @@ internal class RustInputSink(
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
+      MeetermNative.clearSelection(handle)
       MeetermNative.sendKey(handle, key.nativeCode, modifiers) >= 0
     } catch (_: RuntimeException) {
       false
