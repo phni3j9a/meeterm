@@ -45,6 +45,153 @@ class _FakeClock:
 
 
 class ArtifactBoundaryTests(unittest.TestCase):
+    def test_selection_fixture_missing_ack_stops_before_native_drag(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            setup_marker = fixture / "selection-ready.txt"
+            with (
+                _patched_clock(clock),
+                mock.patch.object(smoke, "terminal_line") as terminal_line,
+                mock.patch.object(smoke, "run_tmux_command") as capture_row,
+                mock.patch.object(smoke, "wait_for_labeled_terminal_surface") as wait_surface,
+                mock.patch.object(smoke, "list_tmux_panes") as list_panes,
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.prepare_and_select_daily_marker(
+                        device,
+                        fixture / "tmux.sock",
+                        "%7",
+                        setup_marker,
+                        "fixture-ready",
+                        fixture,
+                        [],
+                    )
+
+            self.assertEqual(
+                (error.exception.stage, error.exception.reason),
+                ("daily_selection_fixture", "marker_timeout"),
+            )
+            terminal_line.assert_called_once()
+            capture_row.assert_not_called()
+            wait_surface.assert_not_called()
+            list_panes.assert_not_called()
+            device.input_long_press_drag.assert_not_called()
+
+    def test_selection_fixture_exact_ack_proceeds_to_native_drag(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        terminal = smoke.Node(
+            "",
+            "Terminal",
+            "android.view.SurfaceView",
+            (0, 448, 1080, 1391),
+        )
+        panes = smoke.parse_tmux_panes(
+            b"@3\tdaily-ci-renamed\t%7\t1201\t1\t1\t45\t14\t0\t0\t44\t13\t1\t0\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            setup_marker = fixture / "selection-ready.txt"
+            completed: list[str] = []
+
+            def send_fixture_line(_device: object, command: str) -> None:
+                self.assertIn("clear; printf 'COPY29F7\\n' && ", command)
+                self.assertIn("&& echo fixture-ready > ", command)
+                self.assertIn(str(setup_marker), command)
+                self.assertTrue(command.endswith("; stty echo"))
+                setup_marker.write_text("fixture-ready\n", encoding="utf-8")
+
+            with (
+                _patched_clock(clock),
+                mock.patch.object(
+                    smoke,
+                    "terminal_line",
+                    side_effect=send_fixture_line,
+                ),
+                mock.patch.object(
+                    smoke,
+                    "wait_for_labeled_terminal_surface",
+                    return_value=terminal,
+                ),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    return_value=subprocess.CompletedProcess(
+                        [],
+                        0,
+                        b"COPY29F7\n",
+                    ),
+                ) as capture_row,
+                mock.patch.object(smoke, "list_tmux_panes", return_value=panes),
+            ):
+                smoke.prepare_and_select_daily_marker(
+                    device,
+                    fixture / "tmux.sock",
+                    "%7",
+                    setup_marker,
+                    "fixture-ready",
+                    fixture,
+                    completed,
+                )
+
+            self.assertEqual(completed, ["daily_selection_fixture_ready"])
+            self.assertEqual(
+                capture_row.call_args.args[1],
+                ("capture-pane", "-p", "-t", "%7", "-S", "0", "-E", "0"),
+            )
+            device.input_long_press_drag.assert_called_once_with(
+                12,
+                472,
+                180,
+                472,
+                "daily_terminal_selection",
+            )
+            self.assertTrue((fixture / "daily-selection-geometry.txt").exists())
+
+    def test_selection_fixture_rejects_wrong_visible_row_before_drag(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            setup_marker = fixture / "selection-ready.txt"
+
+            def acknowledge_fixture(_device: object, _command: str) -> None:
+                setup_marker.write_text("fixture-ready\n", encoding="utf-8")
+
+            with (
+                _patched_clock(clock),
+                mock.patch.object(
+                    smoke,
+                    "terminal_line",
+                    side_effect=acknowledge_fixture,
+                ),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    return_value=subprocess.CompletedProcess([], 0, b"COPY29F8\n"),
+                ),
+                mock.patch.object(smoke, "wait_for_labeled_terminal_surface") as wait_surface,
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.prepare_and_select_daily_marker(
+                        device,
+                        fixture / "tmux.sock",
+                        "%7",
+                        setup_marker,
+                        "fixture-ready",
+                        fixture,
+                        [],
+                    )
+
+            self.assertEqual(
+                (error.exception.stage, error.exception.reason),
+                ("daily_selection_fixture", "display_marker_mismatch"),
+            )
+            wait_surface.assert_not_called()
+            device.input_long_press_drag.assert_not_called()
+
     def test_glyph_stress_sequence_checks_real_marker_before_capture(self) -> None:
         clock = _FakeClock()
         device = mock.Mock(spec=smoke.AndroidDevice)

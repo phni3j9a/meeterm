@@ -75,6 +75,76 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
+Candidate `5795dfa` passed all jobs in [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34444868633).
+Its [Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34444865747)
+again passed Android native readiness/frame, saved-credential cold reconnect,
+persisted preferences, CJK atlas stress/reset, and workspace/pane creation and
+rename. The copy equality gate failed at `daily_terminal_selection`.
+
+Main downloaded and viewed the Android selection/cleared, created-pane, atlas,
+settings, server and foundation screenshots. The updated native surface locator
+and long press now produce the blue selection rectangle over the first eight
+characters. However, the displayed row is `/bin/sh: 2: print: not found`, not the
+expected `COPY29F7`: the generated setup command contains `printf`, but the remote
+shell received `print`. The same selection rectangle remains after the Copy
+attempt. Input diagnostics show 603 attempted bytes, 582 observed accepted bytes
+and zero explicit native rejections. These observations do not identify whether
+IME handling, input delivery or tap routing caused the remaining failures.
+A focused local-terminal Android probe is being prepared. The separate
+fixture-preparation gate now requires a fresh command-success acknowledgment
+and an exact visible row before selection; its three new regression cases pass
+within the full 95-test Python suite, and independent review is clear.
+
+The iOS job passed actual CocoaPods integration but failed while compiling
+`ClientStoreTests.swift`: its implicit `@testable import MeetermTerminal` conflicts
+with an explicit `internal import` in the Expo-generated storage-target provider.
+The four production storage cases and UI/SSH interaction were not executed; no
+new iOS app screenshot is available from this build failure. The generated
+provider/import boundary is being corrected before the next run.
+A previous [minimal app-hosted XCTest probe](https://github.com/phni3j9a/meeterm/actions/runs/34443153451)
+passed real Keychain add/delete with status `0`; this is not a substitute for the
+production app/pod tests. The integrated candidate passed independent static
+review, 92 Python driver tests, three generation tests and exact-script fresh CNG
+source-membership checks. The milestone and PR remain a draft while mobile
+acceptance is incomplete.
+
+## User behavior and storage boundary
+
+The server list manages local profiles; only one server is interactive at a time.
+Connecting to another saved server asks before disconnecting the current transport.
+A profile can be saved without a credential. Credential saving is opt-in, and an
+endpoint, username or authentication-method change invalidates the old credential.
+Renaming a profile preserves its credential. Removing the profile also removes
+its saved credential; it does not close the remote tmux workspace.
+
+Android stores metadata and authenticated ciphertext in one atomic file under
+`noBackupFilesDir`, with an AES-GCM key held by Android Keystore. The final file
+is bounded to 16 MiB before replacing existing data. iOS stores only metadata
+and opaque IDs in Application Support, with secrets in this-device-only Keychain
+items. A small pending-deletion journal makes interrupted Keychain/metadata
+updates recoverable. A failed replacement can require credential re-entry;
+it must not leave an unreferenced secret that cannot later be removed.
+
+The terminal's Ctrl and Alt controls apply to one committed key/text action.
+Composition stays native; changing the bound pane cancels pending composition
+and modifiers. Long press begins selection; drag adjusts the range, then the
+native Copy action writes to the system clipboard. Explicit application color
+sequences continue to take precedence over the default light/dark palette.
+
+History is held by Rust in memory, with a configured limit per terminal. The
+setting applies to hidden panes too. Reducing the limit discards the oldest
+rows only after the preference has been saved. Process death loses the local
+buffer; recovery uses the history still available in tmux, currently captured
+up to 2,000 preceding lines. The app does not silently change the user's tmux
+history-limit or persist terminal output to its own disk files.
+
+## Historical evidence during implementation
+
+The following candidate timeline is historical; the latest status above takes
+precedence over its earlier pending or in-progress statements.
+
+#### Candidate 4 and preparation for candidate 5
+
 Remote candidate `0a11c02` passed [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34436390119).
 Its [Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34436387115)
 passed the Android build and native first frame, saved-credential cold profile
@@ -114,40 +184,7 @@ checks do not replace the Hosted mobile run.
 The milestone remains a draft until the open mobile gates and both screenshot
 reviews finish.
 
-## User behavior and storage boundary
-
-The server list manages local profiles; only one server is interactive at a time.
-Connecting to another saved server asks before disconnecting the current transport.
-A profile can be saved without a credential. Credential saving is opt-in, and an
-endpoint, username or authentication-method change invalidates the old credential.
-Renaming a profile preserves its credential. Removing the profile also removes
-its saved credential; it does not close the remote tmux workspace.
-
-Android stores metadata and authenticated ciphertext in one atomic file under
-`noBackupFilesDir`, with an AES-GCM key held by Android Keystore. The final file
-is bounded to 16 MiB before replacing existing data. iOS stores only metadata
-and opaque IDs in Application Support, with secrets in this-device-only Keychain
-items. A small pending-deletion journal makes interrupted Keychain/metadata
-updates recoverable. A failed replacement can require credential re-entry;
-it must not leave an unreferenced secret that cannot later be removed.
-
-The terminal's Ctrl and Alt controls apply to one committed key/text action.
-Composition stays native; changing the bound pane cancels pending composition
-and modifiers. Long press begins selection; drag adjusts the range, then the
-native Copy action writes to the system clipboard. Explicit application color
-sequences continue to take precedence over the default light/dark palette.
-
-History is held by Rust in memory, with a configured limit per terminal. The
-setting applies to hidden panes too. Reducing the limit discards the oldest
-rows only after the preference has been saved. Process death loses the local
-buffer; recovery uses the history still available in tmux, currently captured
-up to 2,000 preceding lines. The app does not silently change the user's tmux
-history-limit or persist terminal output to its own disk files.
-
-## Historical evidence during implementation
-
-The following candidate timeline is historical; the latest status above takes
-precedence over its earlier pending or in-progress statements.
+#### Earlier checks
 
 - Shared Rust library: 57 tests passed, along with formatting and Clippy.
 - Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
