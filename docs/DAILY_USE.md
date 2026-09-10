@@ -75,6 +75,21 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
+Candidate `180c525` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34459894012)
+and the complete Android job in [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34459888911).
+Main downloaded and viewed its foundation, settings, post-Copy and SSH-terminal
+screenshots. The evaluation APK in `FIRST_APP.md` points to this Android build.
+The iOS unsigned build, four production storage cases and seven native-input
+cases passed again. This time the UI test stopped earlier, at `await_connected`
+after the host-trust tap; Main viewed the actual host-trust screenshot. The
+connection-state artifact was captured before the tap and does not establish
+the failure-time state. The cause is not established by this artifact bundle.
+The next driver revision adds a bounded trust-button hittability check and
+sanitized post-trust failure observations, retaining the connection success gate.
+The cold saved-profile lookup also uses the existing modal-row test identifier
+to avoid ambiguity with the home quick-connect row. Complete iOS daily-use and
+final foundation runtime acceptance remain pending.
+
 The [complete Android daily-use fixture](https://github.com/phni3j9a/meeterm/actions/runs/34453281079)
 passed using the `8c35463` APK and the reviewed `54cb4f4` driver (diagnostic
 checkout `928e3eb`). This includes profile edit, a second saved server, switching
@@ -101,9 +116,9 @@ Its [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34
 passed the complete Android job, including all the daily-use gates above. Main
 viewed eight new Android screenshots: foundation, saved servers, settings, SSH
 terminal, selection, post-Copy, PC handoff and CJK atlas stress. The evaluation
-APK link and checksum in `FIRST_APP.md` now point to this successful Android build.
+APK from this successful build has since been superseded by the candidate above.
 
-iOS passed CocoaPods integration, source/link isolation, the unsigned app/test
+On candidate `c16821c`, iOS passed CocoaPods integration, source/link isolation, the unsigned app/test
 build and both Keychain entitlement-section checks. All four production storage
 cases and all seven native-input cases actually passed. The UI flow also passed
 host trust, SSH connection, workspace/pane switching, native input and reconnect

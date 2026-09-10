@@ -10,6 +10,13 @@ import XCTest
 /// activity/result data stays in RUNNER_TEMP because `typeText` may retain
 /// the strings it sends in an xcresult bundle.
 final class MeetermSmokeUITests: XCTestCase {
+  private enum HostTrustFailurePhase: String {
+    case buttonMissing = "button_missing"
+    case buttonNotHittable = "button_not_hittable"
+    case alertNotDismissed = "alert_not_dismissed"
+    case connectedTimeout = "connected_timeout"
+  }
+
   private let testStartedAt = ProcessInfo.processInfo.systemUptime
   private let app = XCUIApplication(bundleIdentifier: "dev.meeterm.app")
   private let artifactDirectory = URL(
@@ -57,7 +64,13 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("ios-ui-host-trust-diagnostics.txt")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-host-trust-response-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("host-trust-timeout.png")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("host-trust-response-failure.png")
     )
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-timing.txt")
@@ -185,15 +198,41 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     record("capture_host_trust")
     capture("host-trust")
+    let trust = alert.buttons["Trust and connect"]
+    record("await_host_trust_button")
+    guard trust.waitForExistence(timeout: 10) else {
+      record("host_trust_button_missing")
+      writePostTrustDiagnostics(phase: .buttonMissing, alert: alert, trust: trust)
+      XCTFail("The SSH host trust action is unavailable.")
+      return
+    }
+    record("await_host_trust_button_hittable")
+    guard waitForHittable(trust, timeout: 10) else {
+      record("host_trust_button_not_hittable")
+      writePostTrustDiagnostics(phase: .buttonNotHittable, alert: alert, trust: trust)
+      XCTFail("The SSH host trust action is not hittable.")
+      return
+    }
     record("trust_host_key")
-    alert.buttons["Trust and connect"].tap()
+    trust.tap()
+    record("trust_host_key_tapped")
+    record("await_host_trust_dismissed")
+    guard waitForDisappearance(alert, timeout: 10) else {
+      record("host_trust_not_dismissed")
+      writePostTrustDiagnostics(phase: .alertNotDismissed, alert: alert, trust: trust)
+      XCTFail("The SSH host trust prompt did not dismiss after tapping Trust and connect.")
+      return
+    }
+    record("host_trust_dismissed")
 
     record("await_connected")
     let connected = app.staticTexts["Connected"]
-    XCTAssertTrue(
-      connected.waitForExistence(timeout: 90),
-      "The native SSH/tmux connection did not reach Connected."
-    )
+    guard connected.waitForExistence(timeout: 90) else {
+      record("connected_timeout_after_host_trust")
+      writePostTrustDiagnostics(phase: .connectedTimeout, alert: alert, trust: trust)
+      XCTFail("The native SSH/tmux connection did not reach Connected.")
+      return
+    }
 
     record("await_workspaces")
     let workspaceLabels = waitForWorkspaceLabels(minimum: 2)
@@ -361,7 +400,12 @@ final class MeetermSmokeUITests: XCTestCase {
     record("daily_cold_servers_tap")
     servers.tap()
     record("daily_cold_profile_wait")
-    let saved = button("Connect saved server Daily fixture")
+    let saved = app.buttons.matching(
+      NSPredicate(
+        format: "identifier BEGINSWITH %@ AND label == %@",
+        "server-profile-", "Connect saved server Daily fixture"
+      )
+    ).firstMatch
     XCTAssertTrue(saved.waitForExistence(timeout: 20), "The saved profile did not survive process restart.")
     record("daily_cold_profile_capture")
     capture("daily-servers")
@@ -1036,6 +1080,10 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func recordConnectionState() {
     let observation = connectionStateObservation()
+    writeConnectionStateArtifact(observation)
+  }
+
+  private func writeConnectionStateArtifact(_ observation: (key: String, present: Bool)) {
     writeFixedArtifact(
       "ios-ui-connection-state.txt",
       lines: [
@@ -1067,9 +1115,11 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func writeHostTrustTimeoutDiagnostics() {
     let observation = connectionStateObservation()
+    writeConnectionStateArtifact(observation)
     writeFixedArtifact(
       "ios-ui-host-trust-diagnostics.txt",
       lines: [
+        "phase=prompt_timeout",
         "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
         "connection_state=\(observation.key)",
         "connection_state_label_present=\(observation.present ? 1 : 0)",
@@ -1081,6 +1131,42 @@ final class MeetermSmokeUITests: XCTestCase {
     )
     if safeForPostFormScreenshot() {
       capture("host-trust-timeout")
+    }
+  }
+
+  private func writePostTrustDiagnostics(
+    phase: HostTrustFailurePhase,
+    alert: XCUIElement,
+    trust: XCUIElement
+  ) {
+    // Persist only fixed state keys and booleans. Never serialize the alert,
+    // whose body contains the fixture endpoint and host-key fingerprint.
+    let observation = connectionStateObservation()
+    let alertExists = alert.exists
+    let trustExists = trust.exists
+    let trustHittable = trustExists && trust.isHittable
+    let appForeground = app.state == .runningForeground
+    let hostResponseError = app.staticTexts[
+      "ホスト鍵への回答を送れませんでした。接続をやり直してください。"
+    ].exists
+    let screenshotSafe = appForeground && connectionFormIsGone()
+    writeConnectionStateArtifact(observation)
+    writeFixedArtifact(
+      "ios-ui-host-trust-response-diagnostics.txt",
+      lines: [
+        "phase=\(phase.rawValue)",
+        "app_foreground=\(appForeground ? 1 : 0)",
+        "connection_state=\(observation.key)",
+        "connection_state_label_present=\(observation.present ? 1 : 0)",
+        "trust_alert_exists=\(alertExists ? 1 : 0)",
+        "trust_button_exists=\(trustExists ? 1 : 0)",
+        "trust_button_hittable=\(trustHittable ? 1 : 0)",
+        "host_response_error_visible=\(hostResponseError ? 1 : 0)",
+        "safe_for_post_form_screenshot=\(screenshotSafe ? 1 : 0)",
+      ]
+    )
+    if screenshotSafe {
+      capture("host-trust-response-failure")
     }
   }
 
@@ -1111,6 +1197,15 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return element.exists && element.isHittable
+  }
+
+  private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if !element.exists { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return !element.exists
   }
 
   private func enterTerminalCommand(_ value: String, stage: String) {

@@ -75,7 +75,8 @@ SHA-256指紋を比較してください。未確認の接続先から `ssh-keys
 2. ホスト鍵の指紋を信頼できる別の経路で確認して承認します。
 3. 接続後、ワークスペースを開いてpaneタブを選びます。
 4. 端末面をタップしてOSキーボードを開きます。Esc・Tab・矢印・Ctrl-Cは
-   ネイティブ補助キーから送信します。Ctrl・Altは有効にしてから次のキーを入力すると解除されます。
+   ネイティブ補助キーから送信します。iOSは補助キーの列を左右にスワイプすると、
+   Ctrl・Alt・矢印・Home・Endなどが現れます。Ctrl・Altは有効にしてから次のキーを入力すると解除されます。
    履歴は端末面の上下スワイプで読み、
    入力すると最新出力へ戻ります。貼り付けは端末の **Paste** 操作を使います。
    OSキーボード独自のクリップボード機能は通常の文字確定として届く場合があるため、
@@ -134,18 +135,18 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34455886343 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34455886343/artifacts/10144730334)
-から取得できます（commit `c16821c`、Expo 57.0.21、日常利用9項目のAndroid操作検証を完走）。
+[run 34459888911 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34459888911/artifacts/10146510033)
+から取得できます（commit `180c525`、Expo 57.0.21、日常利用版のAndroid操作検証を完走）。
 
 ```sh
-gh run download 34455886343 --repo phni3j9a/meeterm \
+gh run download 34459888911 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`36dc76166be3968b472b2634d34988cc64a1ac773cc29fc573d718804334bcb2`
+`8cb24ef0ebca2d826c5dcb546295f39637c8ec1d1944dbda94e5135175a12c04`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
@@ -190,9 +191,10 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 [パスワード認証・Fold7導入記録](evidence/password-auth-fold7.md)を参照してください。以下のHosted結果は
 [Mobile smoke run 34243185286](https://github.com/phni3j9a/meeterm/actions/runs/34243185286)と
 [一般CI run 34243185235](https://github.com/phni3j9a/meeterm/actions/runs/34243185235)に対応します。
-その後のREADME／本書／受け入れ記録の変更は文書のみです。
+初版PR内でこの検証コミット以降に行ったREADME／本書／受け入れ記録の変更は文書のみです。
+今回の日常利用版の実装・検証は [DAILY_USE.md](DAILY_USE.md) に記録しています。
 
-| 検証 | 現在の証拠 |
+| 検証 | 初版時点の証拠 |
 | --- | --- |
 | 共有Rust | 42 unit tests、format／Clippy通過 |
 | OpenSSH＋tmux | 隔離fixtureの実SSH統合テスト通過。接続・鍵確認・pane入出力・サイズ変更・切断・再接続・PC attach・pane消失・Ctrl-C・既存PC zoom／active pane保持を確認。通常同期中のReady維持と画面再取得後の入力可能状態も回帰確認 |
@@ -203,7 +205,7 @@ Simulatorで成功しても実機GPU・日本語IME・フォントフォール�
 | 両OSスクリーンショット目視 | 同じcommitのAndroid 5枚、iOS 10枚をダウンロードして実際に開いた。主要画面・キーボード・入力後・再接続後・native foundationを確認。iOS最後の画像は端末プレビューで、以前停止したOSのURL確認ダイアログはない。画像名と観察内容は[受け入れ記録](evidence/issue-13-ios-acceptance.md)を参照 |
 | Pixel 3実機（過去の記録） | arm64 Releaseのbuild／install／launch、初回ホーム・接続フォーム・Gboard表示を目視。ネイティブJVMテスト11件通過。実SSH UIは別アプリが前面に出たため未完了。今回のHosted結果で実機確認済みとはしない |
 | iPhone実機・実機Metal・実日本語IME | 未検証 |
-| APK・PR | Android評価APKは上記 `012c987` の成果物から取得可能。iOSの診断と最終起動の修正・検証記録は[PR #14](https://github.com/phni3j9a/meeterm/pull/14) |
+| APK・PR | 当時のAndroid評価APKは `012c987` の成果物。現在の評価APKは本書Android節を参照。iOSの診断と最終起動の修正・検証記録は[PR #14](https://github.com/phni3j9a/meeterm/pull/14) |
 
 過去の `a16b33e` のUsername不一致は再開後の3つのrunでは再現せず、原因は未確定です。
 失敗時の値を公開しない診断を追加し、完全一致判定・最大2試行・待ち時間は維持しました。
