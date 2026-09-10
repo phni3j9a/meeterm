@@ -304,8 +304,7 @@ jobs:
             set +e
             scripts/ci/android-smoke.sh
             smoke_status=$?
-            python3 scripts/ssh/android_foundation_copy_probe.py \
-              --artifact-dir artifacts/android-foundation-copy-probe
+            python3 scripts/ssh/android_foundation_copy_probe.py --artifact-dir artifacts/android-foundation-copy-probe
             probe_status=$?
             set -e
             {
