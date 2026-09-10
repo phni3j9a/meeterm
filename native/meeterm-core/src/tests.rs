@@ -533,6 +533,35 @@ fn generic_modifier_encoding_covers_text_navigation_and_decckm() {
 }
 
 #[test]
+fn modified_function_keys_use_xterm_f1_through_f4_sequences() {
+    let function_keys = [
+        (KeyCode::F1, 'P'),
+        (KeyCode::F2, 'Q'),
+        (KeyCode::F3, 'R'),
+        (KeyCode::F4, 'S'),
+    ];
+    let modifiers = [
+        (Modifiers::SHIFT, 2),
+        (Modifiers::ALT, 3),
+        (Modifiers::CTRL, 5),
+    ];
+
+    for (key, final_byte) in function_keys {
+        for (modifier, parameter) in modifiers {
+            assert_eq!(
+                encode_key(key, modifier, false),
+                format!("\x1b[1;{parameter}{final_byte}").into_bytes(),
+                "unexpected sequence for {key:?} with {modifier:?}",
+            );
+        }
+    }
+    assert_eq!(
+        encode_key(KeyCode::F5, Modifiers::CTRL, false),
+        b"\x1b[15;5~"
+    );
+}
+
+#[test]
 fn scrollback_setting_is_bounded_and_updates_existing_and_future_terminals() {
     let previous = scrollback_lines();
     assert_eq!(previous, DEFAULT_SCROLLBACK_LINES);

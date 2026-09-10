@@ -43,6 +43,10 @@ internal class InputSession(
   fun commitText(text: CharSequence?, modifiers: Int = 0): Boolean {
     val committed = text?.toString().orEmpty()
     clearPreedit()
+    // Android can send an empty commit while replacing/cancelling composition.
+    // It does not reach the terminal, so an accessory modifier remains armed
+    // for the next real commit.
+    if (committed.isEmpty()) return true
     val selectedModifiers = consumeModifiers(modifiers)
     return commitBytes(committed, selectedModifiers)
   }
@@ -50,6 +54,8 @@ internal class InputSession(
   fun finishComposingText(): Boolean {
     val committed = preedit
     clearPreedit()
+    // Finishing an already empty composition is a bookkeeping callback only.
+    if (committed.isEmpty()) return true
     return commitBytes(committed, consumeModifiers(0))
   }
 
@@ -62,7 +68,6 @@ internal class InputSession(
   fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
     val before = beforeLength.coerceAtLeast(0)
     val after = afterLength.coerceAtLeast(0)
-    val selectedModifiers = consumeModifiers(0)
 
     if (preedit.isNotEmpty()) {
       // The editor keeps the composing cursor at the end. Delete code points
@@ -71,6 +76,9 @@ internal class InputSession(
       onPreeditChanged(preedit)
       return before > 0 || after > 0
     }
+
+    if (before == 0 && after == 0) return false
+    val selectedModifiers = consumeModifiers(0)
 
     var accepted = true
     var first = true

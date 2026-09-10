@@ -247,6 +247,29 @@ class InputSessionTest {
   }
 
   @Test
+  fun emptyCallbacksAndLocalPreeditDeletionKeepOneShotModifierArmed() {
+    val sink = RecordingSink()
+    val session = InputSession(sink)
+
+    session.toggleModifier(InputSession.MOD_CTRL)
+    assertTrue(session.commitText(null))
+    assertTrue(session.modifierIsActive(InputSession.MOD_CTRL))
+    assertTrue(session.finishComposingText())
+    assertTrue(session.modifierIsActive(InputSession.MOD_CTRL))
+    assertEquals(false, session.deleteSurroundingText(0, 0))
+    assertTrue(session.modifierIsActive(InputSession.MOD_CTRL))
+
+    // This is the IME sequence that previously lost Ctrl: local composition
+    // deletion consumed the modifier before the following real commit.
+    session.setComposingText("x")
+    assertTrue(session.deleteSurroundingText(1, 0))
+    assertTrue(session.modifierIsActive(InputSession.MOD_CTRL))
+    assertTrue(session.commitText("c"))
+    assertEquals(InputSession.MOD_CTRL, sink.modifiedCommits.single().second)
+    assertEquals(1, sink.modifiedCommits.size)
+  }
+
+  @Test
   fun cancelClearsCompositionAndAccessoryModifiers() {
     val sink = RecordingSink()
     val preeditStates = mutableListOf<String>()

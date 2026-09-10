@@ -263,10 +263,10 @@ pub fn encode_key_for_mode(
         KeyCode::Delete => encode_tilde_key(3, modifiers),
         KeyCode::PageUp => encode_tilde_key(5, modifiers),
         KeyCode::PageDown => encode_tilde_key(6, modifiers),
-        KeyCode::F1 => encode_function_key(b'P', 11, modifiers),
-        KeyCode::F2 => encode_function_key(b'Q', 12, modifiers),
-        KeyCode::F3 => encode_function_key(b'R', 13, modifiers),
-        KeyCode::F4 => encode_function_key(b'S', 14, modifiers),
+        KeyCode::F1 => encode_function_key(b'P', modifiers),
+        KeyCode::F2 => encode_function_key(b'Q', modifiers),
+        KeyCode::F3 => encode_function_key(b'R', modifiers),
+        KeyCode::F4 => encode_function_key(b'S', modifiers),
         KeyCode::F5 => encode_tilde_key(15, modifiers),
         KeyCode::F6 => encode_tilde_key(17, modifiers),
         KeyCode::F7 => encode_tilde_key(18, modifiers),
@@ -376,11 +376,13 @@ fn encode_tilde_key(number: u8, modifiers: Modifiers) -> Vec<u8> {
     format!("\x1b[{number};{}~", modifier_parameter(modifiers)).into_bytes()
 }
 
-fn encode_function_key(normal_final: u8, tilde_number: u8, modifiers: Modifiers) -> Vec<u8> {
+fn encode_function_key(normal_final: u8, modifiers: Modifiers) -> Vec<u8> {
     if modifiers.is_empty() {
         return vec![0x1b, b'O', normal_final];
     }
-    format!("\x1b[{tilde_number};{}~", modifier_parameter(modifiers)).into_bytes()
+    // xterm uses the cursor-key form for F1-F4 when modifiers are present:
+    // CSI 1 ; <modifier> P/Q/R/S.
+    csi_modifier(1, modifier_parameter(modifiers), normal_final)
 }
 
 fn csi_modifier(number: u8, modifier: u8, final_byte: u8) -> Vec<u8> {
