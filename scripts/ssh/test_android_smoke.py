@@ -13,6 +13,7 @@ import io
 from pathlib import Path
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -44,6 +45,61 @@ class _FakeClock:
 
 
 class ArtifactBoundaryTests(unittest.TestCase):
+    def test_glyph_stress_file_has_distinct_public_cjk_and_final_marker(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            stress_path = smoke.make_glyph_stress_file(Path(root) / "fixture-key")
+            try:
+                lines = stress_path.read_text(encoding="utf-8").splitlines()
+                cjk = "".join(lines[:-1])
+                self.assertEqual(len(cjk), smoke.DAILY_GLYPH_STRESS_COUNT)
+                self.assertEqual(
+                    [ord(character) for character in cjk],
+                    list(
+                        range(
+                            0x4E00,
+                            0x4E00 + smoke.DAILY_GLYPH_STRESS_COUNT,
+                        )
+                    ),
+                )
+                self.assertTrue(
+                    all(
+                        len(line) == smoke.DAILY_GLYPH_STRESS_COLUMNS
+                        for line in lines[:-1]
+                    )
+                )
+                self.assertEqual(lines[-1], "END 日本語")
+                self.assertEqual(stat.S_IMODE(stress_path.stat().st_mode), 0o600)
+            finally:
+                stress_path.unlink()
+
+    def test_wait_for_atlas_reset_requires_a_new_sanitized_marker(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.run.side_effect = [
+            b"I/MeetermRenderer: MEETERM_GLYPH_ATLAS_RESET count=1\n",
+            (
+                b"I/MeetermRenderer: MEETERM_GLYPH_ATLAS_RESET count=1\n"
+                b"I/MeetermRenderer: unrelated count=2\n"
+            ),
+            (
+                b"I/MeetermRenderer: MEETERM_GLYPH_ATLAS_RESET count=1\n"
+                b"I/MeetermRenderer: MEETERM_GLYPH_ATLAS_RESET count=2\n"
+            ),
+        ]
+
+        baseline = smoke.renderer_atlas_reset_events(device, "daily_glyph_atlas")
+        with _patched_clock(clock):
+            smoke.wait_for_new_atlas_reset(
+                device,
+                baseline,
+                "daily_glyph_atlas",
+                timeout=2.0,
+            )
+
+        self.assertEqual(baseline, 1)
+        self.assertEqual(device.run.call_count, 3)
+        self.assertEqual(device.assert_foreground.call_count, 2)
+
     def test_screenshot_skips_capture_when_another_app_is_focused(self) -> None:
         device = smoke.AndroidDevice("emulator-5554", "adb")
         device.run = mock.Mock(return_value=b"mCurrentFocus=Window{other.app/.Main}")
@@ -989,7 +1045,8 @@ class UiDriverTests(unittest.TestCase):
 <?xml version='1.0' encoding='UTF-8' ?><hierarchy>
 <node class='android.widget.ScrollView' content-desc='' bounds='[0,100][1080,1900]'
  scrollable='true' enabled='true' visible-to-user='true'>
-<node class='android.widget.EditText' content-desc='Private OpenSSH key, Empty'
+<node class='android.widget.EditText' resource-id='ssh-private-key'
+   content-desc='Private OpenSSH key, Empty'
    bounds='[20,1200][1060,1700]' scrollable='false' enabled='true'
    visible-to-user='true' selected='true' checked='true'/>
 </node></hierarchy>
@@ -999,6 +1056,7 @@ UI dumped to: /dev/tty"""
 
         self.assertEqual(len(nodes), 2)
         self.assertTrue(nodes[0].scrollable)
+        self.assertEqual(nodes[1].resource_id, "ssh-private-key")
         self.assertEqual(nodes[1].content_description, "Private OpenSSH key, Empty")
         self.assertTrue(nodes[1].selected)
         self.assertTrue(nodes[1].checked)
@@ -1114,6 +1172,7 @@ UI dumped to: /dev/tty"""
                 "",
                 "android.widget.TextView",
                 (10, 20, 300, 90),
+                resource_id="workspace-row-@0",
             ),
             smoke.Node(
                 "",
@@ -1154,12 +1213,14 @@ UI dumped to: /dev/tty"""
                 "Workspace handoff",
                 "android.view.View",
                 (0, 0, 400, 100),
+                resource_id="workspace-row-@1",
             ),
             smoke.Node(
                 "",
                 "Workspace smoke",
                 "android.view.View",
                 (0, 100, 400, 200),
+                resource_id="workspace-row-@0",
                 selected=True,
             ),
         ]
@@ -1176,6 +1237,7 @@ UI dumped to: /dev/tty"""
                 "Workspace handoff",
                 "android.view.View",
                 (0, 0, 400, 100),
+                resource_id="workspace-row-@1",
                 selected=True,
             ),
             smoke.Node(
@@ -1183,6 +1245,7 @@ UI dumped to: /dev/tty"""
                 "Workspace smoke",
                 "android.view.View",
                 (0, 100, 400, 200),
+                resource_id="workspace-row-@0",
             ),
         ]
         device = mock.Mock()
@@ -1196,6 +1259,34 @@ UI dumped to: /dev/tty"""
         )
 
         self.assertIs(workspace, nodes[1])
+
+    def test_workspace_rows_ignore_option_buttons_without_name_reservations(self) -> None:
+        output = b"""<?xml version='1.0' encoding='UTF-8' ?><hierarchy>
+<node class='android.view.View' resource-id='dev.meeterm.app:id/workspace-row-@1'
+ content-desc='Workspace smoke' bounds='[0,0][800,100]' enabled='true' visible-to-user='true'/>
+<node class='android.view.View' resource-id='' content-desc='Workspace options smoke'
+ bounds='[800,0][1000,100]' enabled='true' visible-to-user='true'/>
+<node class='android.view.View' resource-id='workspace-row-@2'
+ content-desc='Workspace handoff' bounds='[0,100][800,200]' enabled='true' visible-to-user='true'/>
+<node class='android.view.View' resource-id='' content-desc='Workspace options handoff'
+ bounds='[800,100][1000,200]' enabled='true' visible-to-user='true'/>
+<node class='android.view.View' resource-id='workspace-row-@3'
+ content-desc='Workspace options foo' bounds='[0,200][800,300]' enabled='true' visible-to-user='true'/>
+<node class='android.view.View' resource-id='' content-desc='Workspace options options foo'
+ bounds='[800,200][1000,300]' enabled='true' visible-to-user='true'/>
+</hierarchy>"""
+
+        rows = smoke.find_workspace_nodes(smoke.parse_ui_dump(output))
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            {smoke.workspace_id_from_node(node) for node in rows},
+            {"@1", "@2", "@3"},
+        )
+        self.assertEqual(
+            {smoke.accessible_label(node) for node in rows},
+            {"Workspace smoke", "Workspace handoff", "Workspace options foo"},
+        )
 
     def test_private_key_label_allows_only_known_accessibility_value_suffixes(self) -> None:
         nodes = [

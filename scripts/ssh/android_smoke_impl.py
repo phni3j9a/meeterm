@@ -73,6 +73,11 @@ DAILY_WORKSPACE_NAME = "daily-ci"
 DAILY_WORKSPACE_RENAMED = "daily-ci-renamed"
 DAILY_PANE_NAME = "daily-pane"
 DAILY_SELECTION_MARKER = "COPY29F7"
+DAILY_GLYPH_STRESS_COUNT = 1024
+DAILY_GLYPH_STRESS_COLUMNS = 16
+GLYPH_ATLAS_RESET_PATTERN = re.compile(
+    r"\bMEETERM_GLYPH_ATLAS_RESET count=[1-9][0-9]*\b"
+)
 PANE_LABEL_PATTERN = re.compile(r"^Terminal (%[0-9]+)$")
 WORKSPACE_LABEL_PATTERN = re.compile(r"^Workspace .+$")
 BACK_TO_WORKSPACES_LABELS = (
@@ -119,6 +124,7 @@ class Node:
     __slots__ = (
         "text",
         "content_description",
+        "resource_id",
         "class_name",
         "bounds",
         "scrollable",
@@ -136,6 +142,7 @@ class Node:
         class_name: str,
         bounds: tuple[int, int, int, int],
         *,
+        resource_id: str = "",
         scrollable: bool = False,
         enabled: bool = True,
         visible_to_user: bool = True,
@@ -145,6 +152,7 @@ class Node:
     ) -> None:
         self.text = text
         self.content_description = content_description
+        self.resource_id = resource_id
         self.class_name = class_name
         self.bounds = bounds
         self.scrollable = scrollable
@@ -229,6 +237,7 @@ def parse_ui_dump(output: bytes) -> list[Node]:
             Node(
                 text=element.attrib.get("text", ""),
                 content_description=element.attrib.get("content-desc", ""),
+                resource_id=element.attrib.get("resource-id", ""),
                 class_name=element.attrib.get("class", ""),
                 bounds=bounds,
                 scrollable=element.attrib.get("scrollable", "false") == "true",
@@ -1170,24 +1179,31 @@ def pane_id_from_node(node: Node) -> str | None:
     return match.group(1) if match is not None else None
 
 
-def is_workspace_label(node: Node) -> bool:
-    return WORKSPACE_LABEL_PATTERN.fullmatch(accessible_label(node).strip()) is not None
+def workspace_id_from_node(node: Node) -> str | None:
+    resource_id = node.resource_id.removeprefix(f"{PACKAGE}:id/")
+    match = re.fullmatch(r"workspace-row-(@[0-9]+)", resource_id)
+    return match.group(1) if match is not None else None
 
 
 def find_workspace_nodes(nodes: list[Node]) -> list[Node]:
-    """Return one usable node for each workspace window label."""
+    """Return one stable test-ID row for each tmux workspace window."""
 
     workspaces: dict[str, Node] = {}
     for node in nodes:
-        if not node.visible_to_user or not node.enabled or not is_workspace_label(node):
+        window_id = workspace_id_from_node(node)
+        if (
+            not node.visible_to_user
+            or not node.enabled
+            or window_id is None
+            or WORKSPACE_LABEL_PATTERN.fullmatch(accessible_label(node).strip()) is None
+        ):
             continue
         left, top, right, bottom = node.bounds
         if right <= left or bottom <= top:
             continue
-        label = accessible_label(node).strip()
-        previous = workspaces.get(label)
+        previous = workspaces.get(window_id)
         if previous is None or (node.selected and not previous.selected):
-            workspaces[label] = node
+            workspaces[window_id] = node
     return list(workspaces.values())
 
 
@@ -2223,6 +2239,68 @@ def make_marker_file(key_path: Path) -> tuple[Path, str]:
     return path, marker
 
 
+def make_glyph_stress_file(key_path: Path) -> Path:
+    """Write public, deterministic CJK rows inside the disposable fixture."""
+
+    root = key_path.parent
+    if not root.is_dir() or not root.name.startswith("meeterm-ssh-fixture-"):
+        raise SmokeFailure("daily_glyph_atlas", "fixture_root_unavailable")
+    path = root / f".meeterm-glyph-stress-{secrets.token_hex(12)}.txt"
+    characters = [chr(0x4E00 + offset) for offset in range(DAILY_GLYPH_STRESS_COUNT)]
+    rows = [
+        "".join(characters[offset : offset + DAILY_GLYPH_STRESS_COLUMNS])
+        for offset in range(0, len(characters), DAILY_GLYPH_STRESS_COLUMNS)
+    ]
+    rows.append("END 日本語")
+    payload = ("\n".join(rows) + "\n").encode("utf-8")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = None
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+    except (FileExistsError, OSError) as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise SmokeFailure("daily_glyph_atlas", "stress_file_unavailable") from error
+    return path
+
+
+def renderer_atlas_reset_events(device: AndroidDevice, stage: str) -> int:
+    """Count only the renderer's fixed, credential-free atlas reset marker."""
+
+    output = device.run(
+        ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermRenderer:I"),
+        stage,
+        timeout=20.0,
+    ).decode("utf-8", errors="replace")
+    return len(GLYPH_ATLAS_RESET_PATTERN.findall(output))
+
+
+def wait_for_new_atlas_reset(
+    device: AndroidDevice,
+    baseline_events: int,
+    stage: str,
+    *,
+    timeout: float = REMOTE_MARKER_TIMEOUT,
+) -> None:
+    """Require one reset emitted after this smoke's bounded stress output."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        device.assert_foreground(stage)
+        if renderer_atlas_reset_events(device, stage) > baseline_events:
+            return
+        time.sleep(0.3)
+    raise SmokeFailure(stage, "atlas_reset_timeout")
+
+
 def wait_for_file_contents(path: Path, expected: str, stage: str) -> None:
     deadline = time.monotonic() + REMOTE_MARKER_TIMEOUT
     while time.monotonic() < deadline:
@@ -2693,10 +2771,58 @@ def fixture_workspace_label(fixture_layout: list[TmuxPaneRecord]) -> str:
     return f"Workspace {next(iter(active_names))}"
 
 
+def exercise_glyph_atlas_stress(
+    device: AndroidDevice,
+    stress_path: Path,
+    done_marker_path: Path,
+    done_marker_value: str,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    """Cross the glyph atlas boundary and retain the late visible CJK page."""
+
+    stage = "daily_glyph_atlas"
+    baseline_events = renderer_atlas_reset_events(device, stage)
+    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, stage)
+    terminal_line(device, "stty -echo")
+    device.dismiss_keyboard(stage)
+    time.sleep(0.5)
+    # Pace the public fixture rows to expose more than the final snapshot.
+    # The new atlas-reset assertion below proves that capacity was crossed;
+    # timing alone does not guarantee a renderer frame for every row.
+    # The remote marker follows the final END Japanese line.
+    command = (
+        f"clear; cat {shell_quote(str(stress_path))} | "
+        "while IFS= read -r line; do echo \"$line\"; sleep 0.05; done; "
+        f"echo {shell_quote(done_marker_value)} > "
+        f"{shell_quote(str(done_marker_path))}; stty echo"
+    )
+    terminal_line(device, command)
+    wait_for_file_contents(
+        done_marker_path,
+        f"{done_marker_value}\n",
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    wait_for_new_atlas_reset(device, baseline_events, stage)
+    time.sleep(0.5)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-glyph-atlas.png",
+        completed,
+        "daily_glyph_atlas",
+    )
+    completed.append("daily_glyph_atlas_reset")
+
+
 def exercise_daily_workspace_and_selection(
     device: AndroidDevice,
     tmux_socket: Path,
     fixture_layout: list[TmuxPaneRecord],
+    glyph_stress_path: Path,
+    glyph_done_marker_path: Path,
+    glyph_done_marker_value: str,
     copy_marker_path: Path,
     copy_marker_value: str,
     artifact_dir: Path,
@@ -2729,6 +2855,14 @@ def exercise_daily_workspace_and_selection(
         artifact_dir / "daily-terminal-light.png",
         completed,
         "daily_terminal_light",
+    )
+    exercise_glyph_atlas_stress(
+        device,
+        glyph_stress_path,
+        glyph_done_marker_path,
+        glyph_done_marker_value,
+        artifact_dir,
+        completed,
     )
     tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
     wait_for_workspace(
@@ -3043,6 +3177,9 @@ def main(argv: list[str] | None = None) -> int:
     second_marker_value: str | None = None
     copy_marker_path: Path | None = None
     copy_marker_value: str | None = None
+    glyph_stress_path: Path | None = None
+    glyph_done_marker_path: Path | None = None
+    glyph_done_marker_value: str | None = None
     initial_app_pid: str | None = None
     daily_recording: ScreenRecording | None = None
     screenrecord_reason = "not_attempted"
@@ -3062,6 +3199,8 @@ def main(argv: list[str] | None = None) -> int:
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
         copy_marker_path, copy_marker_value = make_marker_file(key_path)
+        glyph_stress_path = make_glyph_stress_file(key_path)
+        glyph_done_marker_path, glyph_done_marker_value = make_marker_file(key_path)
 
         stage = "device_select"
         adb_path = shutil.which("adb") or "adb"
@@ -3204,6 +3343,9 @@ def main(argv: list[str] | None = None) -> int:
             device,
             tmux_socket,
             fixture_layout,
+            glyph_stress_path,
+            glyph_done_marker_path,
+            glyph_done_marker_value,
             copy_marker_path,
             copy_marker_value,
             args.artifact_dir,
@@ -3703,6 +3845,20 @@ def main(argv: list[str] | None = None) -> int:
         if copy_marker_path is not None:
             try:
                 copy_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if glyph_stress_path is not None:
+            try:
+                glyph_stress_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if glyph_done_marker_path is not None:
+            try:
+                glyph_done_marker_path.unlink()
             except FileNotFoundError:
                 pass
             except OSError:

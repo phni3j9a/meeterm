@@ -106,7 +106,7 @@ function SearchField({ value, onChange, colors, label = 'Search workspaces', aut
 }
 
 function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker = false, disabled = false, optionsDisabled = false }: { workspace: Workspace; selected: boolean; colors: Palette; onPress: () => void; onOptions?: () => void; picker?: boolean; disabled?: boolean; optionsDisabled?: boolean }) {
-  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable accessibilityRole="button" accessibilityLabel={`Workspace ${workspace.name}`} accessibilityHint={`${workspace.panes.length} terminals`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
+  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={`Workspace ${workspace.name}`} accessibilityHint={`${workspace.panes.length} terminals`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
     <Icon name="terminal" color={colors.muted} size={23} />
     <View style={styles.rowCopy}>
       <Text numberOfLines={picker ? undefined : 2} style={[styles.rowTitle, { color: colors.text }]}>{workspace.name}</Text>

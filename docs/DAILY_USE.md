@@ -108,7 +108,7 @@ history-limit or persist terminal output to its own disk files.
 - Shared Rust library: 57 tests passed, along with formatting and Clippy.
 - Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
   recovery, name encoding, and closing the last pane/window.
-- TypeScript and 72 Python regression tests passed.
+- TypeScript and 84 Python regression tests passed, including atlas/selector checks.
 - Android native JVM tests: 24 passed.
 - Android arm64 Release built successfully and installed on the connected Pixel 3.
 - Pixel 3: changed font to 18 pt, history to 20,000 and theme to light through
@@ -139,6 +139,29 @@ The Swift wrapper is corrected. The Android driver now configures persistence be
 in the observed outer form padding. Pixel 3 public-field probes verified the
 settings switches and return to the key editor. Japanese Gboard conversion is
 handled before the unchanged exact-value/prefix readback gates.
+
+The second [Hosted CI](https://github.com/phni3j9a/meeterm/actions/runs/34426022716)
+passed on candidate `7246ede`. Its [Android mobile run](https://github.com/phni3j9a/meeterm/actions/runs/34426022773)
+built and launched successfully, saved a profile and its optional credential,
+terminated/relaunched the app, connected with the native saved credential, and
+saved/reopened 18 pt, light theme and 20,000 history lines. The downloaded server,
+settings and light-terminal screenshots were actually viewed. Its interaction
+recording showed successful creation of the third workspace; the UI driver then
+failed because it counted the new workspace-options buttons as workspace rows.
+The updated selector uses a stable window-ID test identifier. iOS validation
+and the next complete Android interaction run remain pending.
+
+Physical full-flow Android attempts stopped before submitting the test profile
+when foreground/editor observations were unavailable. They do not establish
+credential restoration, selection or atlas stress on the physical device. The
+public-input/settings probes above are the physical-device evidence currently
+available. No physical iPhone is connected.
+
+The Android evidence driver now discards recordings after detected foreground
+loss and checks foreground before and after each screenshot. These are sampled
+checks; a leave-and-return entirely between observations is not detected. The
+recording starts only after authentication and cold-profile restoration, so no
+credential-entry UI is intentionally recorded.
 
 The independent integration review has no unresolved material code findings.
 Updated Hosted mobile checks and complete daily-use interaction evidence are
