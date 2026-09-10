@@ -148,8 +148,17 @@ saved/reopened 18 pt, light theme and 20,000 history lines. The downloaded serve
 settings and light-terminal screenshots were actually viewed. Its interaction
 recording showed successful creation of the third workspace; the UI driver then
 failed because it counted the new workspace-options buttons as workspace rows.
-The updated selector uses a stable window-ID test identifier. iOS validation
-and the next complete Android interaction run remain pending.
+The updated selector uses a stable window-ID test identifier.
+
+The second iOS job built the app and test bundle successfully. Seven native-input
+cases passed, including hardware Shift combinations and marked-text commit.
+The UI test stopped at `form_not_dismissed` after submitting the credential-saving
+connection form. Its fixed diagnostics did not yet cover profile-name validation
+or submission errors, so they do not establish the cause. The two empty connection/
+password form screenshots were downloaded and actually viewed. This run does not
+verify an iOS terminal frame or Metal execution. The next candidate adds exact
+public profile-name checks, fixed submission diagnostics and separate native
+storage test markers. Complete daily-use interaction runs remain pending.
 
 Physical full-flow Android attempts stopped before submitting the test profile
 when foreground/editor observations were unavailable. They do not establish

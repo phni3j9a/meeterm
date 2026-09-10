@@ -132,6 +132,13 @@ final class MeetermSmokeUITests: XCTestCase {
     configureSavedFixtureProfile()
     record("fill_private_key")
     fillPrivateKey(key)
+    // A public-field check catches focus leaking back into the profile editor
+    // without publishing any field contents after secret entry.
+    let profileNameUnchanged = shortFieldValue(input("Server name")) == "Daily fixture"
+    appendFixedArtifact("ios-ui-form-diagnostics.txt", lines: [
+      "profile_name_unchanged_after_key=\(profileNameUnchanged ? 1 : 0)",
+    ])
+    XCTAssertTrue(profileNameUnchanged, "The saved-server name changed during private-key entry.")
 
     record("submit_connect")
     let submit = app.buttons["ssh-submit"]
@@ -143,7 +150,9 @@ final class MeetermSmokeUITests: XCTestCase {
     submit.tap()
 
     record("await_connection_form_dismissed")
-    if !waitForConnectionFormDismissal(timeout: 10) {
+    // Credential persistence now completes before the form closes. Keep a
+    // bounded wait for the asynchronous native save and connection command.
+    if !waitForConnectionFormDismissal(timeout: 30) {
       record("form_not_dismissed")
       writeConnectionFormDiagnostics()
       XCTFail("The SSH connection form did not dismiss after Connect.")
@@ -322,8 +331,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("daily_save_credential_opt_in")
     let name = input("Server name")
     XCTAssertTrue(revealAuthenticationControl(name, stage: "profile_name"))
-    name.tap()
-    name.typeText("Daily fixture")
+    fillTextField(label: "Server name", value: "Daily fixture")
     let save = app.switches["save-credentials"]
     XCTAssertTrue(revealAuthenticationControl(save, stage: "save_credentials"))
     if save.value as? String != "1" { save.tap() }
@@ -605,13 +613,13 @@ final class MeetermSmokeUITests: XCTestCase {
   private func fillTextField(label: String, value: String) {
     // Only non-secret short fields use readback. Never inspect or publish the
     // private-key editor's value through this helper.
-    guard ["Host", "Port", "Username", "Terminal font size", "Scrollback lines", "Workspace or terminal name"].contains(label) else {
+    guard ["Host", "Port", "Username", "Server name", "Terminal font size", "Scrollback lines", "Workspace or terminal name"].contains(label) else {
       XCTFail("The short-field helper received an unsupported field.")
       return
     }
     let field = input(label)
     XCTAssertTrue(field.waitForExistence(timeout: 10), "The \(label) field is unavailable.")
-    let stage = "fill_" + label.lowercased()
+    let stage = "fill_" + label.lowercased().replacingOccurrences(of: " ", with: "_")
     for attempt in 0..<2 {
       record("\(stage)_focus")
       XCTAssertTrue(waitForHittable(field, timeout: 10), "The short field is not hittable.")
@@ -877,10 +885,14 @@ final class MeetermSmokeUITests: XCTestCase {
     // uploaded file contains flags, never the entered host, username, key, or
     // any XCTest description.
     let validations: [(String, String)] = [
+      ("profile_name", "名前は制御文字を含まない80文字以内で入力してください。"),
       ("host", "空白を含まないホスト名か IP アドレスを入力してください。"),
       ("port", "1〜65535 の数字を入力してください。"),
       ("username", "SSH のユーザー名を入力してください。空白は使えません。"),
       ("private_key", "BEGIN と END の行を含む OpenSSH 形式の秘密鍵を貼り付けてください。"),
+      ("password", "SSH パスワードを入力してください。"),
+      ("submission_rejected", "保存または接続を開始できませんでした。接続先を確認して、認証情報を入力し直してください。"),
+      ("submission_failed", "保存または接続を開始できませんでした。認証情報を入力し直して、もう一度試してください。"),
     ]
     let lines = validations.map { name, message in
       "\(name)_validation_error_visible=\(app.staticTexts[message].exists ? 1 : 0)"
@@ -888,10 +900,13 @@ final class MeetermSmokeUITests: XCTestCase {
       "host_field_visible=\(app.descendants(matching: .any)["Host"].exists ? 1 : 0)",
       "private_key_field_visible=\(app.descendants(matching: .any)["Private OpenSSH key"].exists ? 1 : 0)",
       "submit_visible=\(app.buttons["ssh-submit"].exists ? 1 : 0)",
+      "submit_enabled=\(app.buttons["ssh-submit"].isEnabled ? 1 : 0)",
+      "activity_indicator_visible=\(app.activityIndicators.firstMatch.exists ? 1 : 0)",
+      "profile_name_matches=\(shortFieldValue(input("Server name")) == "Daily fixture" ? 1 : 0)",
       "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
       "form_dismissed=0",
     ]
-    writeFixedArtifact("ios-ui-form-diagnostics.txt", lines: lines)
+    appendFixedArtifact("ios-ui-form-diagnostics.txt", lines: lines)
   }
 
   private func recordConnectionState() {

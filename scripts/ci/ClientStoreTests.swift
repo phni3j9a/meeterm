@@ -5,6 +5,27 @@ import XCTest
 /// Runs against the actual Simulator Keychain in the isolated XCTest runner.
 /// Only generated test profiles are removed; no production storage is shared.
 final class ClientStoreTests: XCTestCase {
+  private var recordedIssue = false
+
+  override func record(_ issue: XCTIssue) {
+    recordedIssue = true
+    appendValidation("result=failed source_line=\(issue.sourceCodeContext.location?.lineNumber ?? 0)")
+    super.record(issue)
+  }
+
+  private func appendValidation(_ line: String) {
+    guard let directory = ProcessInfo.processInfo.environment["MEETERM_IOS_ARTIFACT_DIR"] else { return }
+    let path = URL(fileURLWithPath: directory).appendingPathComponent("ios-native-storage-validation.txt")
+    let data = Data((line + "\n").utf8)
+    if let handle = try? FileHandle(forWritingTo: path) {
+      handle.seekToEndOfFile()
+      handle.write(data)
+      try? handle.close()
+    } else {
+      try? data.write(to: path, options: .atomic)
+    }
+  }
+
   func testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials() throws {
     let id = UUID().uuidString.lowercased()
     let profile: [String: Any] = ["id": id, "name": "Journal fixture", "host": "fixture.invalid",
@@ -33,6 +54,7 @@ final class ClientStoreTests: XCTestCase {
     XCTAssertEqual(try ClientStore.connectionOptions(id)["password"] as? String, "fixture-only")
     let recovered = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
     XCTAssertNil(recovered["pendingCredentialDeletes"])
+    if !recordedIssue { appendValidation("case=interrupted_write_cleanup result=passed") }
   }
 
   func testCredentialRemainsNativeAndCannotFollowAnEndpointChange() throws {
@@ -58,6 +80,7 @@ final class ClientStoreTests: XCTestCase {
     let changed = try ClientStore.saveProfile(renamed, credential: nil, keepCredential: true)
     XCTAssertEqual(changed["credentialSaved"] as? Bool, false)
     XCTAssertThrowsError(try ClientStore.connectionOptions(id))
+    if !recordedIssue { appendValidation("case=credential_endpoint_binding result=passed") }
   }
 
   func testRemovingSavedCredentialAndProfile() throws {
@@ -73,6 +96,7 @@ final class ClientStoreTests: XCTestCase {
     XCTAssertThrowsError(try ClientStore.connectionOptions(id))
     try ClientStore.deleteProfile(id)
     XCTAssertFalse(try ClientStore.profiles().contains { $0["id"] as? String == id })
+    if !recordedIssue { appendValidation("case=remove_saved_credential result=passed") }
   }
 
   func testPreferencesRoundTripAndValidation() throws {
@@ -92,5 +116,6 @@ final class ClientStoreTests: XCTestCase {
       invalid[field] = value
       XCTAssertThrowsError(try ClientStore.setPreferences(invalid))
     }
+    if !recordedIssue { appendValidation("case=preferences_validation result=passed") }
   }
 }
