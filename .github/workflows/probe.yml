@@ -1,0 +1,62 @@
+name: Disposable iOS storage reproduction
+on: push
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - name: Reproduce unsigned and local ad-hoc Keychain access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/Probe.swift <<'SWIFT'
+          import UIKit
+          import Security
+          @main final class AppDelegate: UIResponder, UIApplicationDelegate {
+            func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+              do {
+                let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("meeterm-probe")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let file = directory.appendingPathComponent("probe.json")
+                let data = try JSONSerialization.data(withJSONObject: ["version": 1, "profiles": [[String: Any]]()], options: .sortedKeys)
+                try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                let state = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+                let version = state["version"] as! NSNumber
+                print("PROBE filesystem=passed version_is_boolean=\(CFGetTypeID(version) == CFBooleanGetTypeID())")
+                try FileManager.default.removeItem(at: directory)
+              } catch {
+                print("PROBE filesystem=failed code=\((error as NSError).code)")
+              }
+              let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "dev.meeterm.disposable-probe", kSecAttrAccount as String: UUID().uuidString, kSecAttrSynchronizable as String: false]
+              var item = query
+              item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+              item[kSecValueData as String] = Data("public-fixture-only".utf8)
+              print("PROBE keychain_add=\(SecItemAdd(item as CFDictionary, nil))")
+              print("PROBE keychain_delete=\(SecItemDelete(query as CFDictionary))")
+              fflush(stdout)
+              exit(0)
+            }
+          }
+          SWIFT
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          directory = Path('/tmp/StorageProbe.app')
+          directory.mkdir()
+          (directory/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'dev.meeterm.storage-probe','CFBundleExecutable':'StorageProbe','CFBundleName':'StorageProbe','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1','LSRequiresIPhoneOS':True,'MinimumOSVersion':'16.4','UIDeviceFamily':[1]}))
+          Path('/tmp/probe-entitlements.plist').write_bytes(plistlib.dumps({'application-identifier':'MEETERMCI.dev.meeterm.storage-probe','keychain-access-groups':['MEETERMCI.dev.meeterm.storage-probe']}))
+          PY
+          xcrun --sdk iphonesimulator swiftc -parse-as-library -target x86_64-apple-ios16.4-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" /tmp/Probe.swift -o /tmp/StorageProbe.app/StorageProbe
+          probe_udid=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if x["isAvailable"] and x["name"].startswith("iPhone")))')
+          xcrun simctl boot "$probe_udid"
+          xcrun simctl bootstatus "$probe_udid" -b
+          echo 'PROBE mode=unsigned'
+          xcrun simctl install "$probe_udid" /tmp/StorageProbe.app
+          xcrun simctl launch --console "$probe_udid" dev.meeterm.storage-probe
+          xcrun simctl uninstall "$probe_udid" dev.meeterm.storage-probe
+          codesign --force --sign - --entitlements /tmp/probe-entitlements.plist /tmp/StorageProbe.app
+          echo 'PROBE mode=local_adhoc'
+          xcrun simctl install "$probe_udid" /tmp/StorageProbe.app
+          xcrun simctl launch --console "$probe_udid" dev.meeterm.storage-probe
