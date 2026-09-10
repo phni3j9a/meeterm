@@ -18,9 +18,20 @@ import time
 
 PACKAGE = "dev.meeterm.app"
 KNOWN_ROW = "COPY_PROBE_29F7"
-PRINTF_SPLIT = "printf 'COPY29F7\\n'"
+PRINTF_TEXT = "printf 'COPY29F7\\n'"
 PRINTF_WHOLE = "printf 'PROBE_ASCII_123'"
+FOCUS_ASCII = "FOCUS_ASCII_7B"
 TERMINAL_COLUMNS_FALLBACK = 54
+INPUT_SUMMARY_PATTERN = re.compile(
+    r"terminal_input_summary "
+    r"chunks=(?P<chunks>[0-9]+) "
+    r"attemptedBytes=(?P<attempted>[0-9]+) "
+    r"acceptedCommits=(?P<commits>[0-9]+) "
+    r"acceptedBytes=(?P<accepted>[0-9]+) "
+    r"unobservedBytes=(?P<unobserved>[0-9]+) "
+    r"lastNativeCount=(?:[0-9]+|none) "
+    r"rejectedCommits=(?P<rejected>[0-9]+)"
+)
 
 
 def load_smoke_helpers() -> dict[str, object]:
@@ -57,6 +68,13 @@ def ime_summary(device: object) -> str:
 def latest_columns(logcat: str) -> int:
     values = [int(value) for value in re.findall(r"\bcolumns=(\d+)\b", logcat)]
     return values[-1] if values and 2 <= values[-1] <= 240 else TERMINAL_COLUMNS_FALLBACK
+
+
+def parse_input_summary(logcat: str) -> dict[str, int] | None:
+    match = INPUT_SUMMARY_PATTERN.search(logcat)
+    if match is None:
+        return None
+    return {key: int(value) for key, value in match.groupdict().items()}
 
 
 def reset_screen(device: object, helpers: dict[str, object], stage: str) -> None:
@@ -112,6 +130,89 @@ def input_case(
         f"input_case_{name}=completed\n"
         f"input_case_{name}_expected_chars={len(value)}\n"
         f"input_case_{name}_chunked={1 if chunked else 0}\n"
+        + ime_summary(device)
+    )
+
+
+def toolbar_focus_case(
+    device: object,
+    helpers: dict[str, object],
+    output_dir: Path,
+) -> str:
+    """Probe toolbar focus without tapping the terminal between key events.
+
+    The terminal is focused once while the IME is visible.  Each Esc toolbar
+    action receives a tap, followed immediately by its VT bytes and ASCII;
+    the probe deliberately does not call ``focus_terminal`` again.  This keeps
+    the case useful for both the current APK and the qualified outer-view
+    focus fix without attributing an unobserved byte to a particular cause.
+    """
+
+    stage = "foundation_toolbar_focus"
+    wait_for_terminal = helpers["wait_for_labeled_terminal_surface"]
+    wait_for_node = helpers["wait_for_node"]
+    tap_node = helpers["tap_node"]
+    terminal = wait_for_terminal(device, stage, timeout=20.0)
+    helpers["focus_terminal"](device, terminal, stage)
+    before = wait_for_terminal(device, stage, timeout=20.0)
+    clear_logcat(device)
+    # No terminal tap or focus helper is allowed between either toolbar action
+    # and the committed text calls below.
+    escape = wait_for_node(device, stage, text="Esc", timeout=20.0)
+    tap_node(device, escape, stage)
+    time.sleep(0.15)
+    getattr(device, "input_text")("[2J", "terminal_input")
+    escape = wait_for_node(device, stage, text="Esc", timeout=20.0)
+    tap_node(device, escape, stage)
+    time.sleep(0.15)
+    getattr(device, "input_text")("[H", "terminal_input")
+    getattr(device, "input_text")(FOCUS_ASCII, "terminal_input")
+    time.sleep(0.8)
+    after = wait_for_terminal(device, stage, timeout=20.0)
+    getattr(device, "screenshot")(output_dir / "foundation-toolbar-focus.png")
+    logcat = getattr(device, "logcat")()
+    write_fixed(output_dir / "foundation-toolbar-focus-logcat.txt", logcat)
+    summary = parse_input_summary(logcat)
+    expected_bytes = len("[2J") + len("[H") + len(FOCUS_ASCII)
+    write_fixed(
+        output_dir / "foundation-toolbar-focus-geometry.txt",
+        "terminal_retap_between_esc_and_input=0\n"
+        "ime_hide_requested=0\n"
+        + node_bounds("terminal_before", before)
+        + node_bounds("terminal_after", after)
+        + (
+            "input_summary=present\n"
+            f"input_summary_attempted_bytes={summary['attempted']}\n"
+            f"input_summary_accepted_commits={summary['commits']}\n"
+            f"input_summary_accepted_bytes={summary['accepted']}\n"
+            f"input_summary_unobserved_bytes={summary['unobserved']}\n"
+            f"input_summary_rejected_commits={summary['rejected']}\n"
+            if summary is not None
+            else "input_summary=absent\n"
+        )
+        + ime_summary(device),
+    )
+    smoke_failure = helpers["SmokeFailure"]
+    if summary is None:
+        raise smoke_failure(stage, "input_summary_unavailable")
+    if summary["attempted"] != expected_bytes:
+        raise smoke_failure(stage, "input_attempted_byte_mismatch")
+    if summary["accepted"] != expected_bytes:
+        raise smoke_failure(stage, "input_accepted_byte_mismatch")
+    if summary["unobserved"] != 0:
+        raise smoke_failure(stage, "input_unobserved_bytes")
+    if summary["rejected"] != 0:
+        raise smoke_failure(stage, "input_rejected_commits")
+    return (
+        "toolbar_focus_case=completed\n"
+        "toolbar_focus_esc_vt_ascii_without_terminal_retap=attempted\n"
+        f"toolbar_focus_expected_input_bytes={expected_bytes}\n"
+        f"toolbar_focus_attempted_input_bytes={summary['attempted']}\n"
+        f"toolbar_focus_accepted_input_commits={summary['commits']}\n"
+        f"toolbar_focus_accepted_input_bytes={summary['accepted']}\n"
+        f"toolbar_focus_unobserved_input_bytes={summary['unobserved']}\n"
+        f"toolbar_focus_rejected_commits={summary['rejected']}\n"
+        "toolbar_focus_history_clear_assertion=not_claimed\n"
         + ime_summary(device)
     )
 
@@ -236,16 +337,18 @@ def run_probe(output_dir: Path, requested_serial: str | None) -> int:
             device, "foundation_probe_surface", timeout=20.0
         )
         helpers["focus_terminal"](device, terminal, "foundation_probe_focus")
+        details.append(toolbar_focus_case(device, helpers, output_dir))
         reset_screen(device, helpers, "foundation_probe_reset")
-        # These two cases isolate the existing helper's 16-character pacing
-        # from one adb input call at the same printf boundary.
+        # These compare one adb input call with the existing 16-character
+        # pacing. The split occurs after "printf 'COPY29F7", so it does not
+        # exercise a loss inside the leading printf token.
         details.append(
             input_case(
                 device,
                 helpers,
                 output_dir,
                 name="printf-single",
-                value=PRINTF_SPLIT,
+                value=PRINTF_TEXT,
                 chunked=False,
             )
         )
@@ -256,7 +359,7 @@ def run_probe(output_dir: Path, requested_serial: str | None) -> int:
                 helpers,
                 output_dir,
                 name="printf-16char-chunks",
-                value=PRINTF_SPLIT,
+                value=PRINTF_TEXT,
                 chunked=True,
             )
         )

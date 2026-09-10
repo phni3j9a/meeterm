@@ -26,19 +26,22 @@ on:
         required: false
         default: "false"
         type: boolean
-      source_artifact_id:
-        description: Existing Android APK artifact ID for foundation_probe
+      fixture_probe:
+        description: Run the APK-only Android full SSH and tmux fixture probe
         required: false
-        default: "10139943289"
+        default: "false"
+        type: boolean
+      source_artifact_id:
+        description: Existing Android APK artifact ID for a diagnostic probe
+        required: true
         type: string
       source_run_id:
         description: Source run ID recorded with the APK evidence
-        required: false
-        default: "34444865747"
+        required: true
         type: string
-
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: mobile-smoke-${{ github.workflow }}-${{ github.ref }}
@@ -57,7 +60,7 @@ env:
 
 jobs:
   android-emulator:
-    if: inputs.foundation_probe != true
+    if: inputs.foundation_probe != true && inputs.fixture_probe != true
     name: Android emulator / native frame
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -219,7 +222,7 @@ jobs:
           retention-days: 14
 
   android-foundation-input-probe:
-    if: inputs.foundation_probe == true
+    if: inputs.foundation_probe == true && inputs.fixture_probe != true
     name: Android foundation input and copy
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -300,20 +303,7 @@ jobs:
           ram-size: 4096M
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: |
-            set +e
-            scripts/ci/android-smoke.sh
-            smoke_status=$?
-            python3 scripts/ssh/android_foundation_copy_probe.py --artifact-dir artifacts/android-foundation-copy-probe
-            probe_status=$?
-            set -e
-            {
-              echo "smoke_status=${smoke_status}"
-              echo "probe_status=${probe_status}"
-            } > artifacts/android-foundation-copy-probe/status.txt
-            if (( smoke_status != 0 || probe_status != 0 )); then
-              exit 1
-            fi
+          script: scripts/ci/android-foundation-copy-probe.sh
 
       - name: Upload foundation probe artifacts
         if: always()
@@ -326,8 +316,124 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  android-full-fixture-probe:
+    # The full fixture takes precedence if both diagnostic inputs are selected.
+    if: inputs.fixture_probe == true
+    name: Android full SSH fixture / reused APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out probe source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Initialize fixture probe artifacts
+        env:
+          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p artifacts/android-emulator-observability artifacts/android-full-fixture-probe
+          {
+            echo "runner=${RUNNER_NAME}"
+            echo "os=${RUNNER_OS}"
+            echo "arch=${RUNNER_ARCH}"
+            echo "source_artifact_id=${SOURCE_ARTIFACT_ID}"
+            echo "source_run_id=${SOURCE_RUN_ID}"
+            echo "driver_source_commit=${GITHUB_SHA}"
+            echo "driver_source_paths=scripts/ssh/android-smoke.py,scripts/ssh/android_smoke_impl.py,scripts/ci/android-smoke.sh"
+          } > artifacts/android-full-fixture-probe/metadata.txt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+
+      - name: Install pinned emulator image
+        run: |
+          sdkmanager --sdk_root="${ANDROID_HOME}" --install \
+            "platform-tools" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "system-images;${ANDROID_PLATFORM};google_apis;x86_64"
+
+      - name: Verify the production SSH and tmux fixture dependencies
+        run: |
+          set -Eeuo pipefail
+          test -x /usr/sbin/sshd
+          command -v ssh-keygen
+          command -v tmux
+          python3 scripts/ssh/fixture.py --check
+
+      - name: Download the existing APK artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ inputs.source_artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          path: ${{ runner.temp }}/android-source-artifact
+          merge-multiple: true
+
+      - name: Verify APK and source metadata
+        env:
+          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -Eeuo pipefail
+          readonly source_apk="${RUNNER_TEMP}/android-source-artifact/app-release.apk"
+          test -s "${source_apk}"
+          cp "${source_apk}" artifacts/android-emulator-observability/app-release.apk
+          if [[ ! "${SOURCE_ARTIFACT_ID}" =~ ^[0-9]+$ || ! "${SOURCE_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            exit 1
+          fi
+          {
+            echo "source_artifact_id=${SOURCE_ARTIFACT_ID}"
+            echo "source_run_id=${SOURCE_RUN_ID}"
+            echo "driver_source_commit=${GITHUB_SHA}"
+            echo "driver_source_paths=scripts/ssh/android-smoke.py,scripts/ssh/android_smoke_impl.py,scripts/ci/android-smoke.sh"
+          } > artifacts/android-full-fixture-probe/source.txt
+
+      - name: Enable KVM access
+        run: |
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm
+          fi
+
+      - name: Boot emulator and run the full fixture probe
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          cores: 4
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: scripts/ci/android-full-fixture-probe.sh
+
+      - name: Record unavailable fixture evidence
+        if: always()
+        run: scripts/ci/finalize-evidence.sh android-full-fixture-probe
+
+      - name: Upload full fixture probe artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: android-full-fixture-probe
+          path: |
+            artifacts/android-emulator-observability
+            artifacts/android-full-fixture-probe
+          if-no-files-found: error
+          retention-days: 7
+
   ios-simulator:
-    if: inputs.foundation_probe != true
+    if: inputs.foundation_probe != true && inputs.fixture_probe != true
     name: iOS Simulator / native frame
     runs-on: macos-26-intel
     timeout-minutes: 90

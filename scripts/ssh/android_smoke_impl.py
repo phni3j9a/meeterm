@@ -2899,6 +2899,87 @@ def exercise_glyph_atlas_stress(
     completed.append("daily_glyph_atlas_reset")
 
 
+def prepare_and_select_daily_marker(
+    device: AndroidDevice,
+    tmux_socket: Path,
+    created_pane_id: str,
+    setup_marker_path: Path,
+    setup_marker_value: str,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    """Prove the public marker was printed before exercising native selection."""
+
+    stage = "daily_selection_fixture"
+    if setup_marker_path.exists():
+        raise SmokeFailure(stage, "marker_not_fresh")
+    terminal_line(
+        device,
+        f"clear; printf '{DAILY_SELECTION_MARKER}\\n' && "
+        f"echo {shell_quote(setup_marker_value)} > "
+        f"{shell_quote(str(setup_marker_path))}; stty echo",
+    )
+    wait_for_file_contents(
+        setup_marker_path,
+        f"{setup_marker_value}\n",
+        stage,
+    )
+    visible_row = run_tmux_command(
+        tmux_socket,
+        (
+            "capture-pane",
+            "-p",
+            "-t",
+            created_pane_id,
+            "-S",
+            "0",
+            "-E",
+            "0",
+        ),
+        stage,
+    ).stdout
+    if visible_row.splitlines() != [DAILY_SELECTION_MARKER.encode("ascii")]:
+        raise SmokeFailure(stage, "display_marker_mismatch")
+    completed.append("daily_selection_fixture_ready")
+
+    stage = "daily_terminal_selection"
+    time.sleep(1.0)
+    terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    current_panes = list_tmux_panes(tmux_socket, stage)
+    current_pane = next(
+        (pane for pane in current_panes if pane.pane_id == created_pane_id),
+        None,
+    )
+    if current_pane is None:
+        raise SmokeFailure(stage, "pane_identity_changed")
+    selection_start, selection_end = selection_drag_points(
+        terminal,
+        columns=current_pane.pane_width,
+        character_count=len(DAILY_SELECTION_MARKER),
+    )
+    write_artifact(
+        artifact_dir / "daily-selection-geometry.txt",
+        selection_geometry_diagnostic(
+            terminal,
+            columns=current_pane.pane_width,
+            character_count=len(DAILY_SELECTION_MARKER),
+            start=selection_start,
+            end=selection_end,
+        ),
+    )
+    device.input_long_press_drag(
+        selection_start[0],
+        selection_start[1],
+        selection_end[0],
+        selection_end[1],
+        stage,
+    )
+
+
 def exercise_daily_workspace_and_selection(
     device: AndroidDevice,
     tmux_socket: Path,
@@ -2906,6 +2987,8 @@ def exercise_daily_workspace_and_selection(
     glyph_stress_path: Path,
     glyph_done_marker_path: Path,
     glyph_done_marker_value: str,
+    selection_setup_marker_path: Path,
+    selection_setup_marker_value: str,
     copy_marker_path: Path,
     copy_marker_value: str,
     artifact_dir: Path,
@@ -3083,61 +3166,29 @@ def exercise_daily_workspace_and_selection(
         timeout=RECONNECT_TIMEOUT,
     )
     focus_terminal(device, terminal, stage)
-    # Hide the IME before placing the marker. Its resize can reflow terminal
-    # history, so clearing first and then hiding would make row zero unstable.
+    # Keep the focused IME open while preparing the marker. Hiding it just
+    # before injected text can replace the input connection and resize the grid.
     terminal_line(device, "stty -echo")
-    device.dismiss_keyboard(stage)
-    time.sleep(0.5)
-    terminal_line(
+    prepare_and_select_daily_marker(
         device,
-        f"clear; printf '{DAILY_SELECTION_MARKER}\\n'; stty echo",
-    )
-    time.sleep(1.0)
-    terminal = wait_for_labeled_terminal_surface(
-        device,
-        stage,
-        timeout=RECONNECT_TIMEOUT,
-    )
-    current_panes = list_tmux_panes(tmux_socket, stage)
-    current_pane = next(
-        (pane for pane in current_panes if pane.pane_id == created_pane_id),
-        None,
-    )
-    if current_pane is None:
-        raise SmokeFailure(stage, "pane_identity_changed")
-    selection_start, selection_end = selection_drag_points(
-        terminal,
-        columns=current_pane.pane_width,
-        character_count=len(DAILY_SELECTION_MARKER),
-    )
-    write_artifact(
-        artifact_dir / "daily-selection-geometry.txt",
-        selection_geometry_diagnostic(
-            terminal,
-            columns=current_pane.pane_width,
-            character_count=len(DAILY_SELECTION_MARKER),
-            start=selection_start,
-            end=selection_end,
-        ),
-    )
-    device.input_long_press_drag(
-        selection_start[0],
-        selection_start[1],
-        selection_end[0],
-        selection_end[1],
-        stage,
-    )
-    copy_selection = wait_for_node(
-        device,
-        stage,
-        content_description="Copy selection",
-        timeout=RECONNECT_TIMEOUT,
+        tmux_socket,
+        created_pane_id,
+        selection_setup_marker_path,
+        selection_setup_marker_value,
+        artifact_dir,
+        completed,
     )
     capture_optional_screenshot(
         device,
         artifact_dir / "daily-selection.png",
         completed,
         "daily_selection",
+    )
+    copy_selection = wait_for_node(
+        device,
+        stage,
+        content_description="Copy selection",
+        timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, copy_selection, stage)
     time.sleep(0.5)
@@ -3280,6 +3331,8 @@ def main(argv: list[str] | None = None) -> int:
     marker_value: str | None = None
     second_marker_path: Path | None = None
     second_marker_value: str | None = None
+    selection_setup_marker_path: Path | None = None
+    selection_setup_marker_value: str | None = None
     copy_marker_path: Path | None = None
     copy_marker_value: str | None = None
     glyph_stress_path: Path | None = None
@@ -3303,6 +3356,9 @@ def main(argv: list[str] | None = None) -> int:
         fixture_layout = prepare_tmux_fixture(tmux_socket)
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
+        selection_setup_marker_path, selection_setup_marker_value = make_marker_file(
+            key_path
+        )
         copy_marker_path, copy_marker_value = make_marker_file(key_path)
         glyph_stress_path = make_glyph_stress_file(key_path)
         glyph_done_marker_path, glyph_done_marker_value = make_marker_file(key_path)
@@ -3451,6 +3507,8 @@ def main(argv: list[str] | None = None) -> int:
             glyph_stress_path,
             glyph_done_marker_path,
             glyph_done_marker_value,
+            selection_setup_marker_path,
+            selection_setup_marker_value,
             copy_marker_path,
             copy_marker_value,
             args.artifact_dir,
@@ -3943,6 +4001,13 @@ def main(argv: list[str] | None = None) -> int:
         if second_marker_path is not None:
             try:
                 second_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if selection_setup_marker_path is not None:
+            try:
+                selection_setup_marker_path.unlink()
             except FileNotFoundError:
                 pass
             except OSError:
