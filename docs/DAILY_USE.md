@@ -73,6 +73,25 @@ from fresh CNG output; their screenshots must be downloaded and actually viewed.
 New workflows need interaction evidence, not just a first frame. An independent
 review follows integration. Physical-device-only claims require device evidence.
 
+### Latest candidate status
+
+Remote candidate `0a11c02` passed [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34436390119).
+Its [Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34436387115)
+passed the Android build and native first frame, saved-credential cold profile
+restore, persisted preferences, CJK atlas reset, and workspace/pane create and
+rename. The Android copy exact-marker gate failed, and no selection highlight
+was observed in the captured image; selection/copy is therefore still open. Main viewed the latest
+Android settings, server, foundation, atlas and selection-cleared PNGs and the
+177.95-second video contact sheet; that video ends before the copy attempt.
+The iOS job is still running. Simulator DER entitlement injection passed, but
+there is not yet a complete iOS build, storage, daily-flow or screenshot claim.
+
+Local follow-up `228d3fc` is not pushed. It contains the exact native terminal
+surface locator, drag-and-drop and structural-diagnostic fixes; its local checks
+are 89 passing Python tests and a successful arm64 Release build (45 seconds), with independent
+review clear. These checks do not replace the Hosted mobile run. The milestone
+remains a draft until the open mobile gates and both screenshot reviews finish.
+
 ## User behavior and storage boundary
 
 The server list manages local profiles; only one server is interactive at a time.
@@ -103,7 +122,10 @@ buffer; recovery uses the history still available in tmux, currently captured
 up to 2,000 preceding lines. The app does not silently change the user's tmux
 history-limit or persist terminal output to its own disk files.
 
-## Local evidence during implementation
+## Historical evidence during implementation
+
+The following candidate timeline is historical; the latest status above takes
+precedence over its earlier pending or in-progress statements.
 
 - Shared Rust library: 57 tests passed, along with formatting and Clippy.
 - Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
@@ -173,9 +195,11 @@ native CJK foundation frame were downloaded and viewed, including the explicit
 a new call supplied a `timeout` keyword that the existing marker helper does not
 accept. A regression through the actual stress orchestration reproduced the
 `TypeError`; removing that keyword made the full 85-test Python suite pass.
-The native atlas stress and remaining CRUD/copy interaction gates still need
-a complete run. The third iOS job failed at native storage; the focused
-reproduction below identifies missing Simulator Keychain entitlements.
+At that point the native atlas stress and remaining CRUD/copy interaction gates
+still needed a complete run. The latest candidate above supersedes the
+atlas-specific pending claim; copy remains unresolved. The third iOS job failed
+at native storage; the focused reproduction below identifies missing Simulator
+Keychain entitlements.
 
 Physical full-flow Android attempts stopped before submitting the test profile
 when foreground/editor observations were unavailable. They do not establish
