@@ -29,6 +29,7 @@ TMUX = "tmux"
 KEYCODE_DEL = 67
 KEYCODE_ENTER = 66
 KEYCODE_BACK = 4
+KEYCODE_HOME = 3
 KEYCODE_MOVE_END = 123
 KEYCODE_F10 = 140
 DEFAULT_UI_TIMEOUT = 30.0
@@ -69,6 +70,8 @@ SYNC_MARKER = "MEETERM_ANDROID_SYNC_4C71"
 ANSI_MARKER = "MEETERM_ANDROID_ANSI_8A26"
 REMOTE_MARKER_PREFIX = "meeterm-android-shell-"
 DAILY_PROFILE_NAME = "Android daily fixture"
+DAILY_PROFILE_RENAMED = "Android daily primary renamed"
+DAILY_SECOND_PROFILE_NAME = "Android daily second"
 DAILY_WORKSPACE_NAME = "daily-ci"
 DAILY_WORKSPACE_RENAMED = "daily-ci-renamed"
 DAILY_PANE_NAME = "daily-pane"
@@ -206,6 +209,46 @@ def parse_bounds(value: str) -> tuple[int, int, int, int] | None:
     if match is None:
         return None
     return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def normalize_android_component(value: str) -> str | None:
+    """Return one canonical Android package/activity component identity."""
+
+    match = re.fullmatch(
+        r"([A-Za-z][A-Za-z0-9_.$]*)/(\.?[A-Za-z][A-Za-z0-9_.$]*)",
+        value.strip(),
+    )
+    if match is None:
+        return None
+    package, activity = match.groups()
+    if activity.startswith("."):
+        activity = package + activity
+    return f"{package}/{activity}"
+
+
+def resolved_home_component(output: bytes) -> str:
+    """Parse the device's configured HOME activity without accepting an app guess."""
+
+    for line in reversed(output.decode("utf-8", errors="replace").splitlines()):
+        component = normalize_android_component(line)
+        if component is not None:
+            return component
+    raise SmokeFailure("daily_foreground_home", "launcher_identity_unavailable")
+
+
+def focused_window_component(output: bytes) -> str | None:
+    """Read only the current focused component from sanitized window structure."""
+
+    for line in output.decode("utf-8", errors="replace").splitlines():
+        if "mCurrentFocus" not in line:
+            continue
+        match = re.search(
+            r"\b([A-Za-z][A-Za-z0-9_.$]*/\.?[A-Za-z][A-Za-z0-9_.$]*)\b",
+            line,
+        )
+        if match is not None:
+            return normalize_android_component(match.group(1))
+    return None
 
 
 def parse_ui_dump(output: bytes) -> list[Node]:
@@ -547,6 +590,56 @@ class AndroidDevice:
             self.run(("shell", "am", "force-stop", PACKAGE), "cleanup", timeout=10.0)
         except SmokeFailure:
             pass
+
+
+def configured_home_component(device: AndroidDevice, stage: str) -> str:
+    output = device.run(
+        (
+            "shell",
+            "cmd",
+            "package",
+            "resolve-activity",
+            "--brief",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.HOME",
+        ),
+        stage,
+        timeout=10.0,
+    )
+    return resolved_home_component(output)
+
+
+def wait_for_home_foreground(
+    device: AndroidDevice,
+    expected_component: str,
+    stage: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> None:
+    """Require the configured launcher after the driver's intentional HOME."""
+
+    expected = normalize_android_component(expected_component)
+    if expected is None:
+        raise SmokeFailure(stage, "launcher_identity_unavailable")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        output = device.run(
+            ("shell", "dumpsys", "window"),
+            stage,
+            timeout=10.0,
+        )
+        current = focused_window_component(output)
+        if current == expected:
+            return
+        if current is not None and not current.startswith(f"{PACKAGE}/"):
+            # Only the resolved HOME activity is expected here. Preserve the
+            # privacy latch when an unrelated foreground app is actually seen.
+            device.foreground_evidence_lost = True
+            raise SmokeFailure(stage, "unexpected_foreground")
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "launcher_not_foreground")
 
 
 def resolve_serial(adb_path: str, requested: str | None) -> str:
@@ -2664,6 +2757,78 @@ def wait_for_text_fragment(
     raise SmokeFailure(stage, "ui_timeout")
 
 
+def find_saved_profile_node(
+    nodes: list[Node],
+    name: str,
+    *,
+    selected: bool | None = None,
+) -> Node | None:
+    label = f"Connect saved server {name}"
+    for node in nodes:
+        if (
+            node.visible_to_user
+            and node.enabled
+            and node.content_description == label
+            and (selected is None or node.selected == selected)
+        ):
+            left, top, right, bottom = node.bounds
+            if right > left and bottom > top:
+                return node
+    return None
+
+
+def wait_for_saved_profile(
+    device: AndroidDevice,
+    stage: str,
+    name: str,
+    *,
+    selected: bool | None = None,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> Node:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            node = find_saved_profile_node(device.dump_ui(), name, selected=selected)
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        if node is not None:
+            return node
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "profile_unavailable")
+
+
+def wait_for_saved_profile_absent(
+    device: AndroidDevice,
+    stage: str,
+    removed_name: str,
+    retained_name: str,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> None:
+    """Require a removed fixture profile while a retained row stays visible."""
+
+    deadline = time.monotonic() + timeout
+    absent_samples = 0
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            absent_samples = 0
+            time.sleep(0.2)
+            continue
+        retained = find_saved_profile_node(nodes, retained_name)
+        removed = find_saved_profile_node(nodes, removed_name)
+        if retained is not None and removed is None:
+            absent_samples += 1
+            if absent_samples >= 2:
+                return
+        else:
+            absent_samples = 0
+        time.sleep(FIELD_SETTLE_SECONDS)
+    raise SmokeFailure(stage, "profile_not_removed")
+
+
 def tap_action(
     device: AndroidDevice,
     stage: str,
@@ -2691,7 +2856,13 @@ def open_handoff_and_capture(
     completed: list[str],
 ) -> None:
     tap_action(device, "terminal_menu", TERMINAL_MENU_LABELS)
-    tap_action(device, "handoff_action", HANDOFF_LABELS)
+    handoff = wait_for_node(
+        device,
+        "handoff_action",
+        content_description=HANDOFF_LABELS[0],
+        scroll=True,
+    )
+    tap_node(device, handoff, "handoff_action")
     wait_for_text_fragment(device, "handoff_action", HANDOFF_COMMAND)
     capture_optional_screenshot(
         device,
@@ -2718,6 +2889,260 @@ def open_disconnect_action(device: AndroidDevice, stage: str) -> None:
         if error.reason != "ui_timeout":
             raise
     tap_action(device, stage, DISCONNECT_LABELS, timeout=DEFAULT_UI_TIMEOUT)
+
+
+def edit_saved_profile_name(
+    device: AndroidDevice,
+    current_name: str,
+    next_name: str,
+    stage: str,
+) -> Node:
+    options = wait_for_node(
+        device,
+        stage,
+        content_description=f"Server options {current_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, options, stage)
+    tap_action(device, stage, ("名前・情報を編集",))
+    fill_field(
+        device,
+        "Server name",
+        next_name,
+        stage,
+        scroll_gutter=True,
+        clear_count=len(current_name),
+    )
+    device.dismiss_keyboard(stage)
+    tap_action(device, stage, ("Save server",))
+    return wait_for_saved_profile(device, stage, next_name, selected=True)
+
+
+def add_second_saved_fixture_profile(
+    device: AndroidDevice,
+    host: str,
+    port: int,
+    username: str,
+    key: str,
+) -> Node:
+    """Save one fixture-owned profile; no credential value is logged or captured."""
+
+    stage = "daily_profile_add"
+    tap_action(device, stage, ("Add server",))
+    fill_field(device, "Host", host, "daily_profile_add_host", scroll=False)
+    fill_field(
+        device,
+        "Port",
+        str(port),
+        "daily_profile_add_port",
+        scroll=False,
+        clear_count=2,
+    )
+    fill_field(device, "Username", username, "daily_profile_add_username")
+    device.dismiss_keyboard("daily_profile_add_username")
+    fill_field(
+        device,
+        "Server name",
+        DAILY_SECOND_PROFILE_NAME,
+        "daily_profile_add_name",
+        scroll_gutter=True,
+    )
+    device.dismiss_keyboard("daily_profile_add_name")
+    set_toggle(
+        device,
+        "Save credentials securely",
+        True,
+        "daily_profile_add_credential_toggle",
+        scroll_gutter=True,
+    )
+    try:
+        fill_multiline_key(device, key, return_from_form_end=True)
+    except SmokeFailure as error:
+        raise SmokeFailure("daily_profile_add_credential", error.reason) from error
+    tap_action(device, stage, ("Save server",))
+    return wait_for_saved_profile(
+        device,
+        stage,
+        DAILY_SECOND_PROFILE_NAME,
+        selected=False,
+    )
+
+
+def switch_saved_profile(
+    device: AndroidDevice,
+    name: str,
+    stage: str,
+) -> Node:
+    profile = wait_for_saved_profile(device, stage, name, selected=False)
+    tap_node(device, profile, stage)
+    wait_for_node(device, stage, text="接続先を切り替えますか？")
+    tap_action(device, stage, ("切り替える",))
+    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+    tap_action(device, stage, ("Saved servers",))
+    return wait_for_saved_profile(device, stage, name, selected=True)
+
+
+def exercise_saved_profile_management(
+    device: AndroidDevice,
+    host: str,
+    port: int,
+    username: str,
+    key: str,
+    completed: list[str],
+) -> None:
+    """Exercise fixture-owned profile edit, switch, cancellation, and removal."""
+
+    stage = "daily_profile_management_open"
+    tap_action(device, stage, ("Saved servers",))
+    wait_for_saved_profile(device, stage, DAILY_PROFILE_NAME, selected=True)
+
+    edit_saved_profile_name(
+        device,
+        DAILY_PROFILE_NAME,
+        DAILY_PROFILE_RENAMED,
+        "daily_profile_edit",
+    )
+    edit_saved_profile_name(
+        device,
+        DAILY_PROFILE_RENAMED,
+        DAILY_PROFILE_NAME,
+        "daily_profile_edit_restore",
+    )
+    completed.append("daily_profile_edited")
+
+    add_second_saved_fixture_profile(device, host, port, username, key)
+    completed.append("daily_second_profile_saved")
+
+    switch_saved_profile(device, DAILY_SECOND_PROFILE_NAME, "daily_profile_switch_second")
+    completed.append("daily_profile_switched")
+    switch_saved_profile(device, DAILY_PROFILE_NAME, "daily_profile_switch_primary")
+    completed.append("daily_profile_switch_restored")
+
+    stage = "daily_profile_delete_cancel"
+    second_options = wait_for_node(
+        device,
+        stage,
+        content_description=f"Server options {DAILY_SECOND_PROFILE_NAME}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, second_options, stage)
+    tap_action(device, stage, ("削除",))
+    wait_for_node(device, stage, text="保存済みサーバーを削除しますか？")
+    tap_action(device, stage, ("キャンセル",))
+    wait_for_saved_profile(device, stage, DAILY_SECOND_PROFILE_NAME, selected=False)
+    completed.append("daily_profile_delete_cancelled")
+
+    stage = "daily_profile_delete_confirm"
+    second_options = wait_for_node(
+        device,
+        stage,
+        content_description=f"Server options {DAILY_SECOND_PROFILE_NAME}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, second_options, stage)
+    tap_action(device, stage, ("削除",))
+    wait_for_node(device, stage, text="保存済みサーバーを削除しますか？")
+    tap_action(device, stage, ("削除",))
+    wait_for_saved_profile_absent(
+        device,
+        stage,
+        DAILY_SECOND_PROFILE_NAME,
+        DAILY_PROFILE_NAME,
+    )
+    wait_for_saved_profile(device, stage, DAILY_PROFILE_NAME, selected=True)
+    completed.append("daily_second_profile_deleted")
+    tap_action(device, stage, ("Close sheet",))
+    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+
+
+def exercise_foreground_return(
+    device: AndroidDevice,
+    fixture_layout: list[TmuxPaneRecord],
+    marker_path: Path,
+    marker_value: str,
+    completed: list[str],
+    expected_pid: str,
+) -> None:
+    """Background a live native terminal, then prove same-process input resumes."""
+
+    stage = "daily_foreground_prepare"
+    active_panes = [
+        pane for pane in fixture_layout if pane.active and pane.window_active
+    ]
+    if len(active_panes) != 1:
+        raise SmokeFailure(stage, "pane_selection_unavailable")
+    expected_pane = active_panes[0]
+    workspace = wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {expected_pane.window_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, stage)
+    wait_for_pane(
+        device,
+        stage,
+        pane_id=expected_pane.pane_id,
+        selected=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    wait_for_labeled_terminal_surface(device, stage, timeout=RECONNECT_TIMEOUT)
+    device.assert_foreground(stage)
+    if device.process_id(stage) != expected_pid:
+        raise SmokeFailure(stage, "app_process_changed")
+
+    home_component = configured_home_component(device, "daily_foreground_home")
+    device.input_keyevent(KEYCODE_HOME, "daily_foreground_home")
+    wait_for_home_foreground(
+        device,
+        home_component,
+        "daily_foreground_home",
+        timeout=DEFAULT_UI_TIMEOUT,
+    )
+    if device.process_id("daily_foreground_home") != expected_pid:
+        raise SmokeFailure("daily_foreground_home", "app_process_changed")
+    completed.append("daily_app_backgrounded")
+
+    stage = "daily_foreground_return"
+    device.run(
+        ("shell", "am", "start", "-W", "-n", f"{PACKAGE}/.MainActivity"),
+        stage,
+        timeout=15.0,
+    )
+    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+    device.assert_foreground(stage)
+    if device.process_id(stage) != expected_pid:
+        raise SmokeFailure(stage, "app_process_changed")
+    wait_for_pane(
+        device,
+        stage,
+        pane_id=expected_pane.pane_id,
+        selected=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    focus_terminal(device, terminal, stage)
+    terminal_line(
+        device,
+        session_marker_command(marker_value, marker_path, expected_pane.pane_pid),
+    )
+    wait_for_file_contents(
+        marker_path,
+        f"{marker_value}:{expected_pane.pane_pid}\n",
+        stage,
+    )
+    completed.append("daily_foreground_terminal_resumed")
+    tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
+    wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {expected_pane.window_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
 
 
 def reconnect_saved_profile_after_restart(
@@ -2753,6 +3178,12 @@ def reconnect_saved_profile_after_restart(
         stage,
         content_description=f"Connect saved server {DAILY_PROFILE_NAME}",
         timeout=RECONNECT_TIMEOUT,
+    )
+    wait_for_saved_profile_absent(
+        device,
+        stage,
+        DAILY_SECOND_PROFILE_NAME,
+        DAILY_PROFILE_NAME,
     )
     wait_for_text_fragment(
         device,
@@ -3331,6 +3762,8 @@ def main(argv: list[str] | None = None) -> int:
     marker_value: str | None = None
     second_marker_path: Path | None = None
     second_marker_value: str | None = None
+    foreground_marker_path: Path | None = None
+    foreground_marker_value: str | None = None
     selection_setup_marker_path: Path | None = None
     selection_setup_marker_value: str | None = None
     copy_marker_path: Path | None = None
@@ -3356,6 +3789,7 @@ def main(argv: list[str] | None = None) -> int:
         fixture_layout = prepare_tmux_fixture(tmux_socket)
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
+        foreground_marker_path, foreground_marker_value = make_marker_file(key_path)
         selection_setup_marker_path, selection_setup_marker_value = make_marker_file(
             key_path
         )
@@ -3480,6 +3914,22 @@ def main(argv: list[str] | None = None) -> int:
 
         if initial_app_pid is None:
             raise SmokeFailure("daily_process_restart", "app_process_unavailable")
+        exercise_saved_profile_management(
+            device,
+            host,
+            port,
+            username,
+            key,
+            completed,
+        )
+        exercise_foreground_return(
+            device,
+            fixture_layout,
+            foreground_marker_path,
+            foreground_marker_value,
+            completed,
+            initial_app_pid,
+        )
         initial_app_pid = reconnect_saved_profile_after_restart(
             device,
             args.artifact_dir,
@@ -4005,6 +4455,13 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             except OSError:
                 pass
+        if foreground_marker_path is not None:
+            try:
+                foreground_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
         if selection_setup_marker_path is not None:
             try:
                 selection_setup_marker_path.unlink()
@@ -4045,11 +4502,10 @@ def main(argv: list[str] | None = None) -> int:
                     if screenrecord_reason == "ok"
                     else "daily_video_unavailable"
                 )
-            # Once the credential form has been submitted, a terminal-only
-            # failure can be reviewed safely. Capture the visible state before
-            # force-stop; never take this diagnostic while secrets are on
-            # screen. The normal terminal screenshot remains the preferred
-            # artifact when the smoke reaches it.
+            # `terminal_focused` is reached only after both credential forms
+            # have submitted and closed. Keep that later completion marker in
+            # this guard: `secrets_submitted` alone becomes true before the
+            # second saved-profile credential is entered.
             if (
                 result != "passed"
                 and secrets_submitted

@@ -45,6 +45,153 @@ class _FakeClock:
 
 
 class ArtifactBoundaryTests(unittest.TestCase):
+    def test_selection_fixture_missing_ack_stops_before_native_drag(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            setup_marker = fixture / "selection-ready.txt"
+            with (
+                _patched_clock(clock),
+                mock.patch.object(smoke, "terminal_line") as terminal_line,
+                mock.patch.object(smoke, "run_tmux_command") as capture_row,
+                mock.patch.object(smoke, "wait_for_labeled_terminal_surface") as wait_surface,
+                mock.patch.object(smoke, "list_tmux_panes") as list_panes,
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.prepare_and_select_daily_marker(
+                        device,
+                        fixture / "tmux.sock",
+                        "%7",
+                        setup_marker,
+                        "fixture-ready",
+                        fixture,
+                        [],
+                    )
+
+            self.assertEqual(
+                (error.exception.stage, error.exception.reason),
+                ("daily_selection_fixture", "marker_timeout"),
+            )
+            terminal_line.assert_called_once()
+            capture_row.assert_not_called()
+            wait_surface.assert_not_called()
+            list_panes.assert_not_called()
+            device.input_long_press_drag.assert_not_called()
+
+    def test_selection_fixture_exact_ack_proceeds_to_native_drag(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        terminal = smoke.Node(
+            "",
+            "Terminal",
+            "android.view.SurfaceView",
+            (0, 448, 1080, 1391),
+        )
+        panes = smoke.parse_tmux_panes(
+            b"@3\tdaily-ci-renamed\t%7\t1201\t1\t1\t45\t14\t0\t0\t44\t13\t1\t0\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            setup_marker = fixture / "selection-ready.txt"
+            completed: list[str] = []
+
+            def send_fixture_line(_device: object, command: str) -> None:
+                self.assertIn("clear; printf 'COPY29F7\\n' && ", command)
+                self.assertIn("&& echo fixture-ready > ", command)
+                self.assertIn(str(setup_marker), command)
+                self.assertTrue(command.endswith("; stty echo"))
+                setup_marker.write_text("fixture-ready\n", encoding="utf-8")
+
+            with (
+                _patched_clock(clock),
+                mock.patch.object(
+                    smoke,
+                    "terminal_line",
+                    side_effect=send_fixture_line,
+                ),
+                mock.patch.object(
+                    smoke,
+                    "wait_for_labeled_terminal_surface",
+                    return_value=terminal,
+                ),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    return_value=subprocess.CompletedProcess(
+                        [],
+                        0,
+                        b"COPY29F7\n",
+                    ),
+                ) as capture_row,
+                mock.patch.object(smoke, "list_tmux_panes", return_value=panes),
+            ):
+                smoke.prepare_and_select_daily_marker(
+                    device,
+                    fixture / "tmux.sock",
+                    "%7",
+                    setup_marker,
+                    "fixture-ready",
+                    fixture,
+                    completed,
+                )
+
+            self.assertEqual(completed, ["daily_selection_fixture_ready"])
+            self.assertEqual(
+                capture_row.call_args.args[1],
+                ("capture-pane", "-p", "-t", "%7", "-S", "0", "-E", "0"),
+            )
+            device.input_long_press_drag.assert_called_once_with(
+                12,
+                472,
+                180,
+                472,
+                "daily_terminal_selection",
+            )
+            self.assertTrue((fixture / "daily-selection-geometry.txt").exists())
+
+    def test_selection_fixture_rejects_wrong_visible_row_before_drag(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            fixture = Path(root)
+            setup_marker = fixture / "selection-ready.txt"
+
+            def acknowledge_fixture(_device: object, _command: str) -> None:
+                setup_marker.write_text("fixture-ready\n", encoding="utf-8")
+
+            with (
+                _patched_clock(clock),
+                mock.patch.object(
+                    smoke,
+                    "terminal_line",
+                    side_effect=acknowledge_fixture,
+                ),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    return_value=subprocess.CompletedProcess([], 0, b"COPY29F8\n"),
+                ),
+                mock.patch.object(smoke, "wait_for_labeled_terminal_surface") as wait_surface,
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.prepare_and_select_daily_marker(
+                        device,
+                        fixture / "tmux.sock",
+                        "%7",
+                        setup_marker,
+                        "fixture-ready",
+                        fixture,
+                        [],
+                    )
+
+            self.assertEqual(
+                (error.exception.stage, error.exception.reason),
+                ("daily_selection_fixture", "display_marker_mismatch"),
+            )
+            wait_surface.assert_not_called()
+            device.input_long_press_drag.assert_not_called()
+
     def test_glyph_stress_sequence_checks_real_marker_before_capture(self) -> None:
         clock = _FakeClock()
         device = mock.Mock(spec=smoke.AndroidDevice)
@@ -177,6 +324,392 @@ class ArtifactBoundaryTests(unittest.TestCase):
         self.assertFalse(any(args[0] == "pull" for args in arguments))
         self.assertIn(("shell", "kill", "-2", "4312"), arguments)
         self.assertTrue(any(args[:3] == ("shell", "rm", "-f") for args in arguments))
+
+
+class DailyAcceptanceFlowTests(unittest.TestCase):
+    @staticmethod
+    def profile_node(name: str, *, selected: bool = False) -> smoke.Node:
+        return smoke.Node(
+            "",
+            f"Connect saved server {name}",
+            "android.view.View",
+            (0, 100, 800, 220),
+            selected=selected,
+        )
+
+    def test_saved_profile_management_runs_before_secret_safe_return(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        events: list[tuple[str, ...]] = []
+
+        def wait_profile(
+            _device: object,
+            stage: str,
+            name: str,
+            *,
+            selected: bool | None = None,
+            timeout: float = smoke.RECONNECT_TIMEOUT,
+        ) -> smoke.Node:
+            del timeout
+            events.append(("profile", stage, name, str(selected)))
+            return self.profile_node(name, selected=bool(selected))
+
+        def action(
+            _device: object,
+            stage: str,
+            labels: tuple[str, ...],
+            *,
+            timeout: float = smoke.DEFAULT_UI_TIMEOUT,
+        ) -> smoke.Node:
+            del timeout
+            events.append(("action", stage, labels[0]))
+            return smoke.Node("", labels[0], "android.widget.Button", (0, 0, 100, 100))
+
+        def fill(
+            _device: object,
+            label: str,
+            _value: str,
+            stage: str,
+            **_kwargs: object,
+        ) -> None:
+            events.append(("fill", stage, label))
+
+        def key_entry(
+            _device: object,
+            _key: str,
+            *,
+            return_from_form_end: bool = False,
+        ) -> None:
+            self.assertTrue(return_from_form_end)
+            events.append(("credential", "entered"))
+
+        completed: list[str] = []
+        with (
+            mock.patch.object(smoke, "wait_for_saved_profile", side_effect=wait_profile),
+            mock.patch.object(smoke, "tap_action", side_effect=action),
+            mock.patch.object(
+                smoke,
+                "wait_for_node",
+                return_value=smoke.Node("", "public-control", "android.view.View", (0, 0, 100, 100)),
+            ),
+            mock.patch.object(smoke, "tap_node"),
+            mock.patch.object(smoke, "fill_field", side_effect=fill),
+            mock.patch.object(smoke, "set_toggle") as set_toggle,
+            mock.patch.object(smoke, "fill_multiline_key", side_effect=key_entry),
+            mock.patch.object(smoke, "wait_for_saved_profile_absent") as wait_absent,
+            mock.patch.object(smoke, "capture_optional_screenshot") as capture,
+        ):
+            smoke.exercise_saved_profile_management(
+                device,
+                "127.0.0.1",
+                2222,
+                "fixture",
+                "fixture-key",
+                completed,
+            )
+
+        self.assertEqual(
+            completed,
+            [
+                "daily_profile_edited",
+                "daily_second_profile_saved",
+                "daily_profile_switched",
+                "daily_profile_switch_restored",
+                "daily_profile_delete_cancelled",
+                "daily_second_profile_deleted",
+            ],
+        )
+        self.assertIn(("fill", "daily_profile_edit", "Server name"), events)
+        self.assertIn(("fill", "daily_profile_edit_restore", "Server name"), events)
+        self.assertIn(("fill", "daily_profile_add_host", "Host"), events)
+        self.assertIn(("fill", "daily_profile_add_port", "Port"), events)
+        self.assertIn(("fill", "daily_profile_add_username", "Username"), events)
+        self.assertIn(("fill", "daily_profile_add_name", "Server name"), events)
+        credential_index = events.index(("credential", "entered"))
+        second_save_index = events.index(
+            ("action", "daily_profile_add", "Save server")
+        )
+        first_switch_index = events.index(
+            ("action", "daily_profile_switch_second", "切り替える")
+        )
+        self.assertLess(credential_index, second_save_index)
+        self.assertLess(second_save_index, first_switch_index)
+        self.assertEqual(
+            [event for event in events if event[0] == "action" and event[2] == "切り替える"],
+            [
+                ("action", "daily_profile_switch_second", "切り替える"),
+                ("action", "daily_profile_switch_primary", "切り替える"),
+            ],
+        )
+        self.assertIn(("action", "daily_profile_delete_cancel", "キャンセル"), events)
+        self.assertEqual(
+            [event for event in events if event[0] == "action" and event[2] == "削除"],
+            [
+                ("action", "daily_profile_delete_cancel", "削除"),
+                ("action", "daily_profile_delete_confirm", "削除"),
+                ("action", "daily_profile_delete_confirm", "削除"),
+            ],
+        )
+        set_toggle.assert_called_once_with(
+            device,
+            "Save credentials securely",
+            True,
+            "daily_profile_add_credential_toggle",
+            scroll_gutter=True,
+        )
+        wait_absent.assert_called_once_with(
+            device,
+            "daily_profile_delete_confirm",
+            smoke.DAILY_SECOND_PROFILE_NAME,
+            smoke.DAILY_PROFILE_NAME,
+        )
+        capture.assert_not_called()
+
+    def test_handoff_action_scrolls_the_server_sheet_before_tapping(self) -> None:
+        clock = _FakeClock()
+        scroll = smoke.Node(
+            "",
+            "",
+            "android.widget.ScrollView",
+            (0, 100, 1080, 1900),
+            scrollable=True,
+        )
+        handoff = smoke.Node(
+            "",
+            smoke.HANDOFF_LABELS[0],
+            "android.widget.Button",
+            (24, 1600, 1056, 1720),
+        )
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.side_effect = [[scroll]] * 5 + [[scroll, handoff]]
+
+        with (
+            _patched_clock(clock),
+            mock.patch.object(smoke, "tap_action") as tap_action,
+            mock.patch.object(smoke, "wait_for_text_fragment"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(smoke, "dismiss_handoff"),
+        ):
+            smoke.open_handoff_and_capture(
+                device,
+                Path("/tmp/public-artifacts"),
+                [],
+            )
+
+        tap_action.assert_called_once_with(
+            device,
+            "terminal_menu",
+            smoke.TERMINAL_MENU_LABELS,
+        )
+        device.input_swipe.assert_called_once_with(
+            scroll.bounds,
+            "handoff_action",
+        )
+        device.input_tap.assert_called_once_with(
+            *handoff.center,
+            "handoff_action",
+        )
+
+    def test_removed_profile_must_be_absent_in_settled_retained_list(self) -> None:
+        clock = _FakeClock()
+        primary = self.profile_node(smoke.DAILY_PROFILE_NAME, selected=True)
+        second = self.profile_node(smoke.DAILY_SECOND_PROFILE_NAME)
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.side_effect = [
+            [primary, second],
+            [primary],
+            [primary],
+        ]
+
+        with _patched_clock(clock):
+            smoke.wait_for_saved_profile_absent(
+                device,
+                "daily_profile_delete_confirm",
+                smoke.DAILY_SECOND_PROFILE_NAME,
+                smoke.DAILY_PROFILE_NAME,
+            )
+
+        self.assertEqual(device.dump_ui.call_count, 3)
+
+    def test_cold_restart_rechecks_that_only_the_fixture_primary_remains(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.process_id.return_value = "9000"
+        saved_servers = smoke.Node(
+            "",
+            "Saved servers",
+            "android.widget.Button",
+            (0, 0, 100, 100),
+        )
+        primary = self.profile_node(smoke.DAILY_PROFILE_NAME)
+        connected = smoke.Node("Connected", "", "android.view.View", (0, 0, 100, 100))
+        completed: list[str] = []
+
+        with (
+            mock.patch.object(
+                smoke,
+                "wait_for_node",
+                side_effect=[saved_servers, primary, connected],
+            ),
+            mock.patch.object(smoke, "tap_node"),
+            mock.patch.object(smoke, "wait_for_saved_profile_absent") as wait_absent,
+            mock.patch.object(smoke, "wait_for_text_fragment"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+        ):
+            restarted = smoke.reconnect_saved_profile_after_restart(
+                device,
+                Path("/tmp/public-artifacts"),
+                completed,
+                "4312",
+            )
+
+        self.assertEqual(restarted, "9000")
+        wait_absent.assert_called_once_with(
+            device,
+            "daily_saved_profile",
+            smoke.DAILY_SECOND_PROFILE_NAME,
+            smoke.DAILY_PROFILE_NAME,
+        )
+        self.assertEqual(
+            completed,
+            [
+                "daily_process_restarted",
+                "daily_profile_and_credential_restored",
+                "daily_saved_profile_connected",
+            ],
+        )
+
+    def test_home_foreground_requires_the_resolved_launcher(self) -> None:
+        output = b"com.google.android.apps.nexuslauncher/.NexusLauncherActivity\n"
+        expected = smoke.resolved_home_component(output)
+        self.assertEqual(
+            expected,
+            "com.google.android.apps.nexuslauncher/"
+            "com.google.android.apps.nexuslauncher.NexusLauncherActivity",
+        )
+        focused = (
+            b"mCurrentFocus=Window{123 u0 com.google.android.apps.nexuslauncher/"
+            b"com.google.android.apps.nexuslauncher.NexusLauncherActivity}\n"
+        )
+        self.assertEqual(smoke.focused_window_component(focused), expected)
+
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.foreground_evidence_lost = False
+        device.run.return_value = b"mCurrentFocus=Window{123 u0 other.app/.Main}\n"
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.wait_for_home_foreground(device, expected, "daily_foreground_home")
+        self.assertEqual(error.exception.reason, "unexpected_foreground")
+        self.assertTrue(device.foreground_evidence_lost)
+
+    def test_foreground_return_keeps_pid_and_requires_native_terminal_ack(self) -> None:
+        fixture = smoke.parse_tmux_panes(
+            b"@4\tsmoke\t%12\t1201\t0\t1\t80\t24\t0\t0\t79\t23\t1\t0\n"
+        )
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.foreground_evidence_lost = False
+        device.process_id.return_value = "4312"
+        device.run.return_value = b""
+        workspace = smoke.Node("", "Workspace smoke", "android.view.View", (0, 0, 100, 100))
+        terminal = smoke.Node("", "Terminal", "android.view.SurfaceView", (0, 100, 100, 300))
+        completed: list[str] = []
+        marker = Path("/tmp/meeterm-ssh-fixture-test/foreground.txt")
+
+        with (
+            mock.patch.object(smoke, "wait_for_workspace", return_value=workspace),
+            mock.patch.object(smoke, "tap_node"),
+            mock.patch.object(smoke, "wait_for_pane"),
+            mock.patch.object(smoke, "wait_for_labeled_terminal_surface", return_value=terminal),
+            mock.patch.object(smoke, "configured_home_component", return_value="launcher.app/.Home"),
+            mock.patch.object(smoke, "wait_for_home_foreground") as wait_home,
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "focus_terminal") as focus,
+            mock.patch.object(smoke, "terminal_line") as terminal_line,
+            mock.patch.object(smoke, "wait_for_file_contents") as wait_marker,
+            mock.patch.object(smoke, "tap_action"),
+        ):
+            smoke.exercise_foreground_return(
+                device,
+                fixture,
+                marker,
+                "fresh-ack",
+                completed,
+                "4312",
+            )
+
+        device.input_keyevent.assert_called_once_with(
+            smoke.KEYCODE_HOME,
+            "daily_foreground_home",
+        )
+        wait_home.assert_called_once_with(
+            device,
+            "launcher.app/.Home",
+            "daily_foreground_home",
+            timeout=smoke.DEFAULT_UI_TIMEOUT,
+        )
+        self.assertEqual(
+            device.run.call_args_list,
+            [
+                mock.call(
+                    (
+                        "shell",
+                        "am",
+                        "start",
+                        "-W",
+                        "-n",
+                        f"{smoke.PACKAGE}/.MainActivity",
+                    ),
+                    "daily_foreground_return",
+                    timeout=15.0,
+                )
+            ],
+        )
+        terminal_line.assert_called_once_with(
+            device,
+            smoke.session_marker_command("fresh-ack", marker, 1201),
+        )
+        wait_marker.assert_called_once_with(
+            marker,
+            "fresh-ack:1201\n",
+            "daily_foreground_return",
+        )
+        focus.assert_called_once_with(device, terminal, "daily_foreground_return")
+        self.assertEqual(
+            completed,
+            ["daily_app_backgrounded", "daily_foreground_terminal_resumed"],
+        )
+        self.assertFalse(device.foreground_evidence_lost)
+
+    def test_foreground_return_rejects_a_restarted_process_before_ack(self) -> None:
+        fixture = smoke.parse_tmux_panes(
+            b"@4\tsmoke\t%12\t1201\t0\t1\t80\t24\t0\t0\t79\t23\t1\t0\n"
+        )
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.foreground_evidence_lost = False
+        device.process_id.side_effect = ["4312", "4312", "9000"]
+        device.run.return_value = b""
+        node = smoke.Node("", "fixture", "android.view.View", (0, 0, 100, 100))
+        with (
+            mock.patch.object(smoke, "wait_for_workspace", return_value=node),
+            mock.patch.object(smoke, "tap_node"),
+            mock.patch.object(smoke, "wait_for_pane"),
+            mock.patch.object(smoke, "wait_for_labeled_terminal_surface", return_value=node),
+            mock.patch.object(smoke, "configured_home_component", return_value="launcher.app/.Home"),
+            mock.patch.object(smoke, "wait_for_home_foreground"),
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "terminal_line") as terminal_line,
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.exercise_foreground_return(
+                    device,
+                    fixture,
+                    Path("/tmp/meeterm-ssh-fixture-test/foreground.txt"),
+                    "fresh-ack",
+                    [],
+                    "4312",
+                )
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("daily_foreground_return", "app_process_changed"),
+        )
+        terminal_line.assert_not_called()
 
 
 class _ProbeEditorDevice:
