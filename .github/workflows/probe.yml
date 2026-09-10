@@ -9,6 +9,8 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
+      - name: Check out the disposable probe
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Reproduce unsigned and local ad-hoc Keychain access
         shell: bash
         run: |
@@ -63,3 +65,96 @@ jobs:
           echo 'PROBE mode=unsigned_simulator_entitlements' 
           xcrun simctl install "$probe_udid" /tmp/StorageProbe.app
           xcrun simctl launch --console "$probe_udid" dev.meeterm.storage-probe
+
+      - name: Check Xcode Mach-O section tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          objcopy=$(xcrun --find llvm-objcopy)
+          test -x "$objcopy"
+          echo "PROBE llvm_objcopy=$objcopy"
+          "$objcopy" --version | head -n 1
+
+      - name: Run unsigned XCTest runner entitlement probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          derived_data=/tmp/meeterm-runner-probe-derived
+          rm -rf "$derived_data" /tmp/meeterm-runner-before.xcresult /tmp/meeterm-runner-after.xcresult
+          xcodebuild \
+            -project RunnerKeychainProbe.xcodeproj \
+            -scheme RunnerKeychainProbe \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$derived_data" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            build-for-testing | tee /tmp/meeterm-runner-build.log
+
+          products="$derived_data/Build/Products"
+          xctestrun=$(find "$products" -maxdepth 1 -name '*.xctestrun' -type f -print -quit)
+          runner=$(find "$products" -path '*/RunnerKeychainTests-Runner.app/RunnerKeychainTests-Runner' -type f -print -quit)
+          test -n "$xctestrun"
+          test -n "$runner"
+          echo "PROBE xctestrun=$xctestrun"
+          echo "PROBE runner_before=$runner"
+
+          probe_udid=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if x["isAvailable"] and x["name"].startswith("iPhone")))')
+          xcrun simctl boot "$probe_udid" 2>/dev/null || true
+          xcrun simctl bootstatus "$probe_udid" -b
+
+          set +e
+          xcodebuild \
+            test-without-building \
+            -xctestrun "$xctestrun" \
+            -destination "platform=iOS Simulator,id=$probe_udid" \
+            -resultBundlePath /tmp/meeterm-runner-before.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            > /tmp/meeterm-runner-before.log 2>&1
+          before_status=$?
+          set -e
+          rg 'PROBE runner_keychain_(add|delete)=' /tmp/meeterm-runner-before.log || true
+          echo "PROBE runner_before_status=$before_status"
+
+          cat > /tmp/runner-entitlements.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>application-identifier</key><string>MEETERMCI.dev.meeterm.runner-probe</string>
+          <key>keychain-access-groups</key><array><string>MEETERMCI.dev.meeterm.runner-probe</string></array>
+          </dict></plist>
+          PLIST
+          /usr/bin/derq query -f xml -i /tmp/runner-entitlements.plist -o /tmp/runner-entitlements.der --raw
+
+          objcopy=$(xcrun --find llvm-objcopy)
+          patched="$runner.patched"
+          "$objcopy" \
+            --add-section "__TEXT,__entitlements=/tmp/runner-entitlements.plist" \
+            --add-section "__TEXT,__ents_der=/tmp/runner-entitlements.der" \
+            "$runner" "$patched"
+          mv "$patched" "$runner"
+          echo 'PROBE runner_objcopy=passed'
+          xcrun otool -l "$runner" > /tmp/meeterm-runner-otool.txt
+          rg -q 'sectname __entitlements' /tmp/meeterm-runner-otool.txt
+          rg -q 'sectname __ents_der' /tmp/meeterm-runner-otool.txt
+          echo 'PROBE runner_sections=passed'
+
+          set +e
+          xcodebuild \
+            test-without-building \
+            -xctestrun "$xctestrun" \
+            -destination "platform=iOS Simulator,id=$probe_udid" \
+            -resultBundlePath /tmp/meeterm-runner-after.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            > /tmp/meeterm-runner-after.log 2>&1
+          after_status=$?
+          set -e
+          cat /tmp/meeterm-runner-after.log
+          rg -q 'PROBE runner_keychain_add=0' /tmp/meeterm-runner-after.log
+          rg -q 'PROBE runner_keychain_delete=0' /tmp/meeterm-runner-after.log
+          test "$after_status" -eq 0
+          echo 'PROBE runner_keychain=passed'
