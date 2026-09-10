@@ -473,6 +473,101 @@ final class MeetermSmokeUITests: XCTestCase {
     record("authentication_selector_verified")
   }
 
+  private func effectiveScrollViewport(_ scroll: XCUIElement) -> CGRect? {
+    guard scroll.exists else { return nil }
+    let viewport = scroll.frame.intersection(app.frame)
+    guard !viewport.isNull, viewport.width > 0, viewport.height > 0 else { return nil }
+    let keyboard = app.keyboards.firstMatch
+    guard keyboard.exists, keyboard.frame.intersects(viewport) else { return viewport }
+    let effectiveBottom = min(viewport.maxY, keyboard.frame.minY)
+    guard effectiveBottom > viewport.minY else { return nil }
+    return CGRect(
+      x: viewport.minX,
+      y: viewport.minY,
+      width: viewport.width,
+      height: effectiveBottom - viewport.minY
+    )
+  }
+
+  private func authenticationControlIsFullyVisible(
+    _ element: XCUIElement,
+    in scroll: XCUIElement
+  ) -> Bool {
+    guard element.exists, let viewport = effectiveScrollViewport(scroll) else { return false }
+    let frame = element.frame
+    return frame.width > 0 && frame.height > 0 && viewport.contains(frame)
+  }
+
+  private func waitForVisibleAuthenticationControl(
+    _ element: XCUIElement,
+    in scroll: XCUIElement,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      let matches = element.exists && element.isEnabled && element.isHittable
+        && authenticationControlIsFullyVisible(element, in: scroll)
+      if matches { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return false
+  }
+
+  private func recordAuthenticationControlGeometry(
+    _ element: XCUIElement,
+    scroll: XCUIElement,
+    stage: String,
+    attempt: Int,
+    phase: String
+  ) {
+    let keyboard = app.keyboards.firstMatch
+    let controlExists = element.exists
+    let controlFrame: CGRect? = controlExists ? element.frame : nil
+    let controlEnabled = controlExists ? element.isEnabled : false
+    let controlHittable = controlExists ? element.isHittable : false
+    let scrollExists = scroll.exists
+    let scrollFrame: CGRect? = scrollExists ? scroll.frame : nil
+    let keyboardExists = keyboard.exists
+    let keyboardFrame: CGRect? = keyboardExists ? keyboard.frame : nil
+    var effectiveViewport: CGRect?
+    if let scrollFrame = scrollFrame {
+      let viewport = scrollFrame.intersection(app.frame)
+      if !viewport.isNull, viewport.width > 0, viewport.height > 0 {
+        if let keyboardFrame = keyboardFrame, keyboardFrame.intersects(viewport) {
+          let effectiveBottom = min(viewport.maxY, keyboardFrame.minY)
+          if effectiveBottom > viewport.minY {
+            effectiveViewport = CGRect(
+              x: viewport.minX,
+              y: viewport.minY,
+              width: viewport.width,
+              height: effectiveBottom - viewport.minY
+            )
+          }
+        } else {
+          effectiveViewport = viewport
+        }
+      }
+    }
+    let controlFullyVisible = controlFrame.map { frame in
+      frame.width > 0 && frame.height > 0 && effectiveViewport?.contains(frame) == true
+    } ?? false
+    appendFixedArtifact("ios-ui-auth-control-diagnostics.txt", lines: [
+      "stage=\(stage)",
+      "attempt=\(attempt)",
+      "phase=\(phase)",
+      "control_exists=\(controlExists ? 1 : 0)",
+      "control_frame=\(controlFrame.map { String(describing: $0) } ?? "unavailable")",
+      "control_enabled=\(controlEnabled ? 1 : 0)",
+      "control_hittable=\(controlHittable ? 1 : 0)",
+      "scroll_exists=\(scrollExists ? 1 : 0)",
+      "scroll_frame=\(scrollFrame.map { String(describing: $0) } ?? "unavailable")",
+      "effective_viewport=\(effectiveViewport.map { String(describing: $0) } ?? "unavailable")",
+      "control_fully_visible=\(controlFullyVisible ? 1 : 0)",
+      "keyboard_exists=\(keyboardExists ? 1 : 0)",
+      "keyboard_frame=\(keyboardFrame.map { String(describing: $0) } ?? "unavailable")",
+    ])
+  }
+
   /// Used only before any credential is entered. A full-frame swipe can
   /// start on the IME when the sheet's scroll frame extends below it.
   private func revealAuthenticationControl(
@@ -482,41 +577,46 @@ final class MeetermSmokeUITests: XCTestCase {
   ) -> Bool {
     let scroll = app.scrollViews.containing(.textField, identifier: "ssh-host").firstMatch
     for attempt in 0..<5 {
-      if waitForHittable(element, timeout: 1) { return true }
-      let keyboard = app.keyboards.firstMatch
-      appendFixedArtifact("ios-ui-auth-control-diagnostics.txt", lines: [
-        "stage=\(stage)",
-        "attempt=\(attempt)",
-        "control_exists=\(element.exists ? 1 : 0)",
-        "control_frame=\(element.exists ? String(describing: element.frame) : "unavailable")",
-        "scroll_exists=\(scroll.exists ? 1 : 0)",
-        "scroll_frame=\(scroll.exists ? String(describing: scroll.frame) : "unavailable")",
-        "keyboard_exists=\(keyboard.exists ? 1 : 0)",
-        "keyboard_frame=\(keyboard.exists ? String(describing: keyboard.frame) : "unavailable")",
-      ])
+      if waitForVisibleAuthenticationControl(element, in: scroll, timeout: 1) { return true }
+      recordAuthenticationControlGeometry(
+        element,
+        scroll: scroll,
+        stage: stage,
+        attempt: attempt,
+        phase: "before_scroll"
+      )
       guard scroll.exists else { break }
       let appFrame = app.frame
-      let viewport = scroll.frame.intersection(appFrame)
-      guard !viewport.isNull else { break }
-      var bottom = viewport.maxY
-      if keyboard.exists && keyboard.frame.intersects(viewport) {
-        bottom = min(bottom, keyboard.frame.minY)
-      }
-      let height = bottom - viewport.minY
-      guard height >= 80, viewport.width > 0 else { break }
+      guard let viewport = effectiveScrollViewport(scroll) else { break }
+      guard viewport.height >= 80, viewport.width >= 16 else { break }
       let origin = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
       let start = origin.withOffset(CGVector(
-        dx: viewport.midX - appFrame.minX,
-        dy: viewport.minY + height * (upward ? 0.75 : 0.25) - appFrame.minY
+        dx: viewport.minX + 8 - appFrame.minX,
+        dy: viewport.minY + viewport.height * (upward ? 0.75 : 0.25) - appFrame.minY
       ))
       let end = origin.withOffset(CGVector(
-        dx: viewport.midX - appFrame.minX,
-        dy: viewport.minY + height * (upward ? 0.25 : 0.75) - appFrame.minY
+        dx: viewport.minX + 8 - appFrame.minX,
+        dy: viewport.minY + viewport.height * (upward ? 0.25 : 0.75) - appFrame.minY
       ))
       record("\(stage)_scroll_visible_viewport")
       start.press(forDuration: 0.05, thenDragTo: end)
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+      recordAuthenticationControlGeometry(
+        element,
+        scroll: scroll,
+        stage: stage,
+        attempt: attempt,
+        phase: "after_scroll"
+      )
     }
-    if waitForHittable(element, timeout: 2) { return true }
+    if waitForVisibleAuthenticationControl(element, in: scroll, timeout: 2) { return true }
+    recordAuthenticationControlGeometry(
+      element,
+      scroll: scroll,
+      stage: stage,
+      attempt: 5,
+      phase: "final"
+    )
     // All callers run before the private key or passphrase is entered.
     capture("password-form-\(stage)-unavailable")
     return false
@@ -623,10 +723,15 @@ final class MeetermSmokeUITests: XCTestCase {
     let stage = "fill_" + label.lowercased().replacingOccurrences(of: " ", with: "_")
     for attempt in 0..<2 {
       record("\(stage)_focus")
-      XCTAssertTrue(waitForHittable(field, timeout: 10), "The short field is not hittable.")
+      guard waitForHittable(field, timeout: 10) else {
+        XCTFail("The short field is not hittable.")
+        return
+      }
+      record("\(stage)_hittable")
       // These fixture values fit on one line. Tapping its trailing edge puts
       // the caret after the current value before deleting it on a retry.
       field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+      record("\(stage)_tapped")
       guard let observed = shortFieldValue(field), observed.utf16.count <= 256 else {
         writeShortFieldDiagnostics(
           label: label,
