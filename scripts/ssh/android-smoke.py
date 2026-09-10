@@ -20,7 +20,7 @@ def patch_foreground_check(module: dict[str, object]) -> None:
     AndroidDevice = module["AndroidDevice"]
     SmokeFailure = module["SmokeFailure"]
 
-    def assert_foreground(self, stage: str) -> None:
+    def check_foreground(self, stage: str) -> None:
         window_output = self.run(
             # Android 11's `window windows` subcommand can omit both focus
             # summary fields even while the app is visibly foreground.  The
@@ -64,6 +64,16 @@ def patch_foreground_check(module: dict[str, object]) -> None:
         ):
             return
         raise SmokeFailure(stage, "app_not_foreground")
+
+    def assert_foreground(self, stage: str) -> None:
+        try:
+            check_foreground(self, stage)
+        except SmokeFailure:
+            # Preserve the implementation's evidence boundary when adding the
+            # API-36 ActivityManager fallback. Returning later cannot make a
+            # recording containing a detected interruption safe to retain.
+            self.foreground_evidence_lost = True
+            raise
 
     AndroidDevice.assert_foreground = assert_foreground
 
