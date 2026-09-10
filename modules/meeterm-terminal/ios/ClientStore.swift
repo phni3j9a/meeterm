@@ -7,18 +7,69 @@ enum ClientStore {
   private static let lock = NSLock()
   private static let service = "dev.meeterm.credentials.v1"
   private static let maxProfiles = 100
+  static let diagnosticCategoryKey = "dev.meeterm.storage.category"
+  static let diagnosticCodeKey = "dev.meeterm.storage.code"
+
+  private enum DiagnosticCategory: Int {
+    case unknown = 0
+    case validation = 1
+    case filesystem = 2
+    case json = 3
+    case keychainAdd = 4
+    case keychainDelete = 5
+    case keychainRead = 6
+  }
+
+  private enum KeychainOperation {
+    case add
+    case delete
+    case read
+  }
+
+  private enum Failure: Error {
+    case invalid
+    case unavailable
+    case keychain(KeychainOperation, OSStatus)
+  }
 
   private static func guarded<T>(_ body: () throws -> T) throws -> T {
     lock.lock()
     defer { lock.unlock() }
     do { return try body() }
     catch {
-      throw NSError(domain: "dev.meeterm.storage", code: 1, userInfo: [NSLocalizedDescriptionKey:
-        "Saved server storage is unavailable or its values are invalid. Check the details or enter credentials again."])
+      let diagnostic: (DiagnosticCategory, Int)
+      switch error {
+      case Failure.invalid:
+        diagnostic = (.validation, 1)
+      case Failure.unavailable:
+        diagnostic = (.unknown, 0)
+      case let Failure.keychain(operation, status):
+        let category: DiagnosticCategory
+        switch operation {
+        case .add: category = .keychainAdd
+        case .delete: category = .keychainDelete
+        case .read: category = .keychainRead
+        }
+        diagnostic = (category, Int(status))
+      case let nsError as NSError:
+        if nsError.domain == NSCocoaErrorDomain && (3840...3853).contains(nsError.code) {
+          diagnostic = (.json, nsError.code)
+        } else if nsError.domain == NSCocoaErrorDomain || nsError.domain == NSPOSIXErrorDomain {
+          diagnostic = (.filesystem, nsError.code)
+        } else {
+          diagnostic = (.unknown, 0)
+        }
+      default:
+        diagnostic = (.unknown, 0)
+      }
+      throw NSError(domain: "dev.meeterm.storage", code: 1, userInfo: [
+        NSLocalizedDescriptionKey:
+          "Saved server storage is unavailable or its values are invalid. Check the details or enter credentials again.",
+        diagnosticCategoryKey: diagnostic.0.rawValue,
+        diagnosticCodeKey: diagnostic.1
+      ])
     }
   }
-
-  private enum Failure: Error { case invalid, unavailable }
 
   private static func fileURL() throws -> URL {
     guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -76,13 +127,14 @@ enum ClientStore {
     item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     item[kSecValueData as String] = try JSONSerialization.data(withJSONObject:
       ["identity": identity(profile), "credential": credential])
-    guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw Failure.unavailable }
+    let status = SecItemAdd(item as CFDictionary, nil)
+    guard status == errSecSuccess else { throw Failure.keychain(.add, status) }
   }
 
   private static func removeCredential(_ id: String?) throws {
     guard let id else { return }
     let result = SecItemDelete(query(id) as CFDictionary)
-    guard result == errSecSuccess || result == errSecItemNotFound else { throw Failure.unavailable }
+    guard result == errSecSuccess || result == errSecItemNotFound else { throw Failure.keychain(.delete, result) }
   }
 
   private static func credential(_ profile: [String: Any]) throws -> [String: Any] {
@@ -91,11 +143,14 @@ enum ClientStore {
     lookup[kSecReturnData as String] = true
     lookup[kSecMatchLimit as String] = kSecMatchLimitOne
     var result: CFTypeRef?
-    guard SecItemCopyMatching(lookup as CFDictionary, &result) == errSecSuccess,
-          let data = result as? Data,
+    let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+    guard status == errSecSuccess else { throw Failure.keychain(.read, status) }
+    guard let data = result as? Data,
           let record = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           let storedIdentity = record["identity"] as? [String], storedIdentity == identity(profile),
-          let secret = record["credential"] as? [String: Any] else { throw Failure.unavailable }
+          let secret = record["credential"] as? [String: Any] else {
+      throw Failure.unavailable
+    }
     return try validateCredential(secret, profile: profile)
   }
 
