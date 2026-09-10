@@ -5,6 +5,30 @@ Pending and in-progress statements below describe those earlier runs, not the
 current milestone status. See [the current daily-use record](../DAILY_USE.md)
 for the latest acceptance result and user-facing behavior.
 
+## Candidate b2efd85: authentication-control overscroll
+
+[Mobile run 34484118695](https://github.com/phni3j9a/meeterm/actions/runs/34484118695)
+passed Android's complete daily flow. Main viewed the Android foundation,
+settings and SSH screenshots and verified the APK checksum in `FIRST_APP.md`.
+iOS passed the unsigned build, entitlement checks, all four production storage
+cases and seven native input cases. The UI test exited 65 at the password
+selector (`source_line=607`); the overall iOS job was marked cancelled. Neither
+the daily section nor final fresh foundation was reached.
+
+The fixed geometry diagnostic shows the control initially at y=578..628 below
+the keyboard-adjusted viewport y=122..583. The first drag moved it to y=104..154,
+partly above the viewport. Subsequent fixed-direction drags moved it farther
+up to y=-128. Main viewed `password-form-password_choice-unavailable.png`, which
+shows the form scrolled past the authentication selector. This establishes a
+driver overscroll failure; it does not establish an application authentication
+failure. No daily video was recorded because that section was not reached.
+
+The reviewed driver fix recalculates the signed drag distance from the current
+control frame, bounds both coordinates inside the visible viewport, and uses
+a slow drag with an ending hold. Existing visibility, hittability and attempt
+limits remain. Runtime verification is pending. The user's next priority is to
+standardize the shorter testing sequence documented in `docs/TESTING.md`.
+
 ## Candidate 11: `c9ddf4b`
 
 Candidate `c9ddf4b` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34477697084)

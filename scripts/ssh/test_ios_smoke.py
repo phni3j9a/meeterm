@@ -1,6 +1,7 @@
 """Privacy and failure-path checks for the iOS XCTest runner diagnostics."""
 
 import importlib.util
+import plistlib
 from pathlib import Path
 import re
 import subprocess
@@ -156,6 +157,26 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             "case=preferences_validation result=passed\n"
         )
 
+    @staticmethod
+    def write_native_success(root):
+        (root / "ios-native-input-validation.txt").write_text(
+            "case=multiline result=passed\n"
+            "case=rebind result=passed\n"
+            "case=unmount result=passed\n"
+            "case=control_one_shot result=passed\n"
+            "case=hardware_control result=passed\n"
+            "case=hardware_shift_combinations result=passed\n"
+            "case=marked_commit result=passed\n"
+        )
+
+    @staticmethod
+    def write_forms_success(root):
+        (root / "ios-ui-forms-validation.txt").write_text("case=forms result=passed\n")
+
+    @staticmethod
+    def write_full_stages(root):
+        (root / "ios-ui-stages.txt").write_text("daily_complete\nfoundation_verified\n")
+
     def test_runner_failure_reports_only_fixed_flags_and_actual_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -218,6 +239,9 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             def successful_run(command, **kwargs):
                 if "-only-testing:meetermStorageTests" in command:
                     self.write_storage_success(root)
+                if smoke.FULL_TEST_SELECTOR in command:
+                    self.write_native_success(root)
+                    self.write_full_stages(root)
                 return subprocess.CompletedProcess(command, 0)
 
             with mock.patch.object(smoke, "inject_test_environment"), \
@@ -235,7 +259,10 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             storage, ui = run.call_args_list
             self.assertIn("-only-testing:meetermStorageTests", storage.args[0])
-            self.assertIn("-skip-testing:meetermStorageTests", ui.args[0])
+            self.assertIn(smoke.FULL_TEST_SELECTOR, ui.args[0])
+            self.assertIn(smoke.NATIVE_TEST_SELECTOR, ui.args[0])
+            self.assertNotIn(smoke.FORMS_TEST_SELECTOR, ui.args[0])
+            self.assertNotIn("-skip-testing:meetermStorageTests", ui.args[0])
             self.assertIn(str(root / "result-storage.xcresult"), storage.args[0])
             self.assertIn(str(root / "result.xcresult"), ui.args[0])
             self.assertEqual(storage.kwargs["timeout"], 1795)
@@ -265,6 +292,221 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual((failure.exception.stage, failure.exception.reason), ("xcuitest_storage", "storage_tests_failed"))
             self.assertIn("exit_code=65\n", (root / "ios-storage-xctest-runner-diagnostics.txt").read_text())
             self.assertFalse((root / "raw.log").exists())
+
+    def test_forms_runs_only_public_form_selector_without_fixture_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def successful_run(command, **kwargs):
+                self.write_forms_success(root)
+                (root / "ios-ui-stages.txt").write_text("forms_complete\n")
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.dict(smoke.os.environ, {
+                     "MEETERM_SSH_HOST": "fixture-secret-host",
+                     "MEETERM_SSH_PRIVATE_KEY_FILE": "fixture-secret-key",
+                     "MEETERM_SSH_EXTRA_SENTINEL": "fixture-secret-sentinel",
+                 }, clear=False):
+                monotonic = [100.0, 100.25]
+                with mock.patch.object(smoke.time, "monotonic", side_effect=monotonic):
+                    status = smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="forms",
+                    )
+            self.assertEqual(status, 0)
+            self.assertEqual(run.call_count, 1)
+            command = run.call_args.args[0]
+            self.assertIn(smoke.FORMS_TEST_SELECTOR, command)
+            self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
+            self.assertNotIn(smoke.FULL_TEST_SELECTOR, command)
+            environment = run.call_args.kwargs["env"]
+            self.assertNotIn("MEETERM_SSH_HOST", environment)
+            self.assertNotIn("MEETERM_SSH_PRIVATE_KEY_FILE", environment)
+            self.assertNotIn("MEETERM_SSH_EXTRA_SENTINEL", environment)
+            self.assertEqual(run.call_args.kwargs["timeout"], 599.75)
+            self.assertTrue(list(products.glob(".meeterm-*.xctestrun")) == [])
+
+    def test_native_runs_storage_then_input_and_requires_both_case_sets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def successful_run(command, **kwargs):
+                if smoke.STORAGE_TEST_SELECTOR in command:
+                    self.write_storage_success(root)
+                if smoke.NATIVE_TEST_SELECTOR in command:
+                    self.write_native_success(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25, 100.5]):
+                status = smoke.run_xcuitest(
+                    derived_data=root,
+                    simulator_udid="fixture-simulator",
+                    result_bundle=root / "result.xcresult",
+                    raw_log=root / "raw.log",
+                    diagnostics_path=root / "diagnostics.txt",
+                    suite="native",
+                )
+            self.assertEqual(status, 0)
+            self.assertEqual(run.call_count, 2)
+            self.assertIn(smoke.STORAGE_TEST_SELECTOR, run.call_args_list[0].args[0])
+            self.assertIn(smoke.NATIVE_TEST_SELECTOR, run.call_args_list[1].args[0])
+            self.assertNotIn(smoke.FULL_TEST_SELECTOR, run.call_args_list[1].args[0])
+            self.assertEqual(run.call_args_list[0].kwargs["timeout"], 599.75)
+            self.assertEqual(run.call_args_list[1].kwargs["timeout"], 599.5)
+
+    def test_forms_zero_exit_without_fresh_completion_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            # A prior focused result and stage must not satisfy this run.
+            self.write_forms_success(root)
+            (root / "ios-ui-stages.txt").write_text("forms_complete\n")
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="forms",
+                    )
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_forms", "forms_cases_incomplete"),
+            )
+
+    def test_native_storage_success_without_all_input_cases_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def incomplete_run(command, **kwargs):
+                if smoke.STORAGE_TEST_SELECTOR in command:
+                    self.write_storage_success(root)
+                if smoke.NATIVE_TEST_SELECTOR in command:
+                    self.write_native_success(root)
+                    validation = root / "ios-native-input-validation.txt"
+                    validation.write_text(
+                        "\n".join(
+                            line
+                            for line in validation.read_text().splitlines()
+                            if "case=marked_commit" not in line
+                        )
+                        + "\n"
+                    )
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=incomplete_run) as run:
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="native",
+                    )
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_native", "native_cases_incomplete"),
+            )
+
+    def test_full_ui_success_without_fresh_input_cases_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def missing_native_run(command, **kwargs):
+                if smoke.STORAGE_TEST_SELECTOR in command:
+                    self.write_storage_success(root)
+                if smoke.FULL_TEST_SELECTOR in command:
+                    # Stale completion markers must not make a no-input run pass.
+                    self.write_full_stages(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=missing_native_run) as run:
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                    )
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest", "native_cases_incomplete"),
+            )
+
+    def test_run_does_not_mutate_pristine_xctestrun_or_leave_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            source = products / "fixture.xctestrun"
+            source.write_bytes(plistlib.dumps({
+                "Tests": {
+                    "TestBundlePath": str(products / "meetermTests.xctest"),
+                    "EnvironmentVariables": {
+                        "MEETERM_SSH_HOST": "stale-fixture-host",
+                        "UNRELATED_TEST_FLAG": "preserved",
+                    },
+                },
+            }))
+            pristine = source.read_bytes()
+
+            def successful_run(command, **kwargs):
+                if smoke.STORAGE_TEST_SELECTOR in command:
+                    self.write_storage_success(root)
+                if smoke.NATIVE_TEST_SELECTOR in command:
+                    self.write_native_success(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run):
+                status = smoke.run_xcuitest(
+                    derived_data=root,
+                    simulator_udid="fixture-simulator",
+                    result_bundle=root / "result.xcresult",
+                    raw_log=root / "raw.log",
+                    diagnostics_path=root / "diagnostics.txt",
+                    suite="native",
+                )
+            self.assertEqual(status, 0)
+            self.assertEqual(source.read_bytes(), pristine)
+            self.assertEqual(list(products.glob(".meeterm-*.xctestrun")), [])
 
     def test_zero_exit_without_fresh_storage_cases_cannot_start_ui(self):
         with tempfile.TemporaryDirectory() as directory:

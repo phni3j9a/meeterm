@@ -36,6 +36,8 @@ run_collector() {
     cd "${workspace_root}"
     GITHUB_WORKSPACE="${workspace_root}" \
       IOS_SIMULATOR_UDID="SIMULATOR" \
+      DEVELOPER_DIR="/fixture/SelectedXcode/Contents/Developer" \
+      MEETERM_IOS_SUITE="${1:-full}" \
       IOS_COLLECT_TEST_XCRUN_LOG="${xcrun_log}" \
       PATH="${fake_bin}:${PATH}" \
       scripts/ci/ios-collect-artifacts.sh
@@ -50,6 +52,7 @@ if grep -Fq 'simctl io' "${xcrun_log}"; then
   exit 1
 fi
 test ! -e "${artifact_root}/terminal.png"
+grep -Fxq 'xcode_developer_dir=/fixture/SelectedXcode/Contents/Developer' "${artifact_root}/metadata.txt"
 grep -Fq 'XCTest did not capture the fresh native foundation' \
   "${artifact_root}/screenshot-unavailable.txt"
 
@@ -81,4 +84,28 @@ test ! -e "${artifact_root}/terminal.png"
 grep -Fq 'screenshot capture produced no image data' \
   "${artifact_root}/screenshot-unavailable.txt"
 
-echo "iOS artifact screenshot boundary regression passed."
+# Focused success never demands foundation/full-flow screenshots. Preserve
+# only its own safe images and report a missing focused checkpoint precisely.
+for checkpoint in forms-keyboard password-form-keyboard forms-controls; do
+  cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
+done
+run_collector forms
+grep -Fq 'suite=forms; native foundation screenshot not requested' "${artifact_root}/screenshot-unavailable.txt"
+test ! -e "${artifact_root}/ui-screenshots-unavailable.txt"
+cmp "${artifact_root}/forms-controls.png" "${temporary_root}/expected.png"
+: > "${artifact_root}/forms-controls.png"
+run_collector forms
+grep -Fq 'forms-controls' "${artifact_root}/ui-screenshots-unavailable.txt"
+if grep -Eq 'host-trust|reconnected' "${artifact_root}/ui-screenshots-unavailable.txt"; then
+  echo "focused form evidence incorrectly requires full-flow checkpoints" >&2
+  exit 1
+fi
+run_collector native
+grep -Fq 'suite=native; UI screenshots not requested' "${artifact_root}/screenshot-unavailable.txt"
+test ! -e "${artifact_root}/ui-screenshots-unavailable.txt"
+if grep -Fq 'simctl io' "${xcrun_log}"; then
+  echo "focused collector captured arbitrary UI" >&2
+  exit 1
+fi
+
+echo "iOS artifact screenshot boundary and focused scope regressions passed."

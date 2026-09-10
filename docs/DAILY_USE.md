@@ -75,25 +75,20 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
-Candidate `c9ddf4b` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34477697084)
-and the complete Android job in [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34477690475).
-Main viewed its Android foundation, settings and SSH-terminal screenshots and
-verified the APK bundle and checksum linked in `FIRST_APP.md`. iOS passed the
-unsigned app/test build, entitlement checks, four production storage cases,
-seven native-input cases and host-side copy verification. Main viewed the iOS
-cleared-selection, settings and light-terminal screenshots. Settings input and
-redisplay checks passed again.
+Candidate `b2efd85` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34484122278)
+and Android's complete [fresh-CNG Mobile flow](https://github.com/phni3j9a/meeterm/actions/runs/34484118695).
+Main viewed the Android screenshots and verified the APK linked in `FIRST_APP.md`.
+iOS passed the unsigned build, four production storage cases and seven native
+input cases, then the UI driver overscrolled the authentication selector before
+connecting. Main inspected its geometry diagnostics and failure screenshot.
+Full iOS daily-use/fresh-foundation acceptance remains incomplete.
 
-The UI test stopped at `daily_create_workspace`, on the 20-second wait for the
-expected workspace row (`MeetermSmokeUITests.swift:526`). Creation used a direct
-`typeText` without checking the field before submission. The artifacts cannot
-distinguish incorrect input, unsuccessful submission and remote creation failure:
-the recording failed (`capture_failed`) and no creation-form/failure image was
-captured. The new Select All/Delete path was not reached. Name changes, close
-operations and final fresh-foundation acceptance remain pending; earlier Metal
-markers do not satisfy the final gate. The next driver revision requires exact
-field readback before submission and records guarded creation-state evidence.
-It preserves the existing deadlines and does not change product code.
+The user prioritized improving and standardizing the testing method before
+continuing that full acceptance. [TESTING.md](TESTING.md) defines the cheap Swift
+preflight, focused forms/native suites, separate iOS build/runtime jobs and
+exact-source diagnostic product reuse. The implementation is being validated.
+The reviewed target-aware scroll correction is included in that validation.
+Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
 
 ## User behavior and storage boundary
 

@@ -2,7 +2,10 @@
 
 This guide defines the intended GitHub-hosted Android emulator and iOS Simulator validation. It complements the Android device runbook in [`POC_ANDROID.md`](POC_ANDROID.md); it does not turn a simulator/emulator into a physical-device substitute.
 
-The repository workflow is the integration point for the shared checks and both mobile runtime jobs. The target shape is described here so that the native implementation and CI environment are designed together: [`../.github/workflows/ci.yml`](../.github/workflows/ci.yml).
+The standard day-to-day sequence and exact commands are in [TESTING.md](TESTING.md).
+Use cheap checks, an explicit focused suite, and then full acceptance.
+
+The implementation lives in [CI](../.github/workflows/ci.yml) for shared and fast checks and [Mobile smoke](../.github/workflows/mobile-smoke.yml) for native builds and runtime verification.
 
 ## Source of truth and CNG
 
@@ -13,7 +16,7 @@ Tracked source remains:
 - `native/meeterm-core/`, including shared Rust terminal semantics and bridge source;
 - lockfiles and pinned toolchain/dependency declarations.
 
-`android/` and `ios/` are Expo Continuous Native Generation (CNG) output and remain untracked. Every mobile job starts from a fresh checkout, runs `npm ci`, generates only the requested platform with `expo prebuild`, and builds that generated project. Do not make a generated Gradle/Xcode/Podfile edit the source of truth.
+`android/` and `ios/` are Expo Continuous Native Generation (CNG) output and remain untracked. Each acceptance build starts from a fresh checkout, runs `npm ci`, generates only the requested platform with `expo prebuild`, and builds that generated project. The iOS runtime job consumes pristine test products from its build job. Explicit same-commit product reuse is diagnostic only and is not a new fresh-CNG acceptance run. Do not make a generated Gradle/Xcode/Podfile edit the source of truth.
 
 ## Staged jobs
 
@@ -21,12 +24,31 @@ Tracked source remains:
 | --- | --- | --- | --- |
 | Shared checks | `ubuntu-24.04` | Typecheck, Expo config/doctor, Rust format/test/clippy | Test output and logs |
 | Android emulator | Pinned Ubuntu image | CNG, native build, emulator install/launch, native readiness, first frame, no crash | Screenshot and sanitized log, always uploaded |
-| iOS Simulator | Pinned macOS/Xcode image | CNG, unsigned simulator build, simulator install/launch, native readiness, first frame, no crash | Screenshot and sanitized log, always uploaded |
+| iOS driver preflight | Pinned macOS/Xcode image | UI/input Swift typecheck without CNG, app build, or Simulator | Compiler output; does not cover the production storage module |
+| iOS build | Pinned macOS/Xcode image | Fresh CNG and unsigned app/test build | Build diagnostics always uploaded; pristine Products tar on success |
+| iOS Simulator | Same pinned macOS/Xcode image | Restore matching products, install/launch, selected scope | Screenshot and sanitized log, always uploaded; full scope retains all runtime gates |
 | Physical devices | Separate later infrastructure | Android GPU/IME/font and iOS device/IME/font validation | Device-specific evidence |
 
 Bring the Android emulator and iOS Simulator jobs online early, in parallel with the thin native adapters. A temporary toolchain/CNG bootstrap check may run before the iOS adapter exists, but it must not be described as iOS terminal verification or produce a fake terminal screenshot.
 
 GitHub-hosted runners provide the required OS split: Android jobs can run on Ubuntu, while iOS Simulator jobs require macOS with Xcode and simulator runtimes. Pin the macOS runner/Xcode generation used by the project instead of relying on `macos-latest` for reproducibility. The current workflow uses `macos-26-intel` with Xcode 26.6 so the simulator Rust slice is `x86_64-apple-ios`. See [GitHub-hosted runners](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners) and the [macOS runner image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md).
+
+## Focused execution and product reuse
+
+`Mobile smoke` accepts `platform=both|android|ios` and `ios_suite=full|forms|native`.
+Forms and native runs are focused diagnostics with their own completion records;
+they do not satisfy the full SSH/tmux, daily-use or fresh-foundation gates.
+The iOS build and runtime jobs have separate budgets. Full storage plus UI tests
+retain their shared 30-minute deadline.
+
+The build uploads `ios-test-products` before fixture environment injection.
+Executables and symlinks are preserved in a tar archive, with a manifest binding
+its checksum to the commit, Xcode version/build, architecture and Simulator
+configuration. The runtime checks both GitHub run provenance and the manifest.
+An explicit `ios_build_run` may reuse an identical-source build for diagnosis;
+source changes require a new build. Runtime injection modifies a disposable
+xctestrun copy, never the pristine products. See [TESTING.md](TESTING.md) for
+commands, triage, the limits of reuse and the final acceptance procedure.
 
 ## Machine gates
 
@@ -68,23 +90,26 @@ transition requires the configured launcher, the same app PID on return and a
 fresh acknowledgment from the original remote shell. Recording starts after
 credential entry and restoration; detected unexpected foreground loss discards
 the recording rather than capturing another app.
-Before the iOS build, the job installs fixture-only tmux if needed and runs
+Before full iOS runtime testing, the runtime job installs fixture-only tmux if needed and runs
 `python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
 remote `tmux` resolution using the disposable host key. The fixture supplies
 its tmux binary directory through its own sshd environment; this preflight is
 environment validation and does not count as iOS terminal or SSH UI evidence.
+Focused forms/native runs skip fixture installation and startup. The build job
+does not boot a Simulator or start an SSH fixture.
 
-The iOS job generates a temporary app-hosted storage test target and an XCUITest
+The iOS build job generates a temporary app-hosted storage test target and an XCUITest
 target in the fresh CNG project. The storage target compiles only
 `ClientStoreTests.swift` and resolves the production module through `TEST_HOST`;
 it does not copy the storage implementation or link a second native runtime.
 After CocoaPods integration, the job removes the inherited Rust library flag
 from the storage target's generated Debug/Release configurations and verifies
 that the app retains it. It also checks that only the app generates an Expo
-provider. Four fresh storage-case success markers are required before UI tests
-run; a successful runner exit without those cases does not pass the gate.
+provider. Full and native suites require four fresh storage-case success markers
+before their input/UI tests run; a successful runner exit without those cases
+does not pass the gate. The forms-only diagnostic does not run storage tests.
 
-The XCUITest target drives the actual connection form, host trust, workspace/pane selection,
+In full scope, the XCUITest target drives the actual connection form, host trust, workspace/pane selection,
 native input, disconnect, and reconnect against the same disposable fixture.
 The Python driver then checks remote markers and ordinary desktop attach.
 The daily iOS flow also checks saved-credential cold restart, native selection

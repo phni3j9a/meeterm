@@ -166,6 +166,18 @@ Before broad UI or SSH/tmux features, prove:
 
 Only after both adapters and their meaningful mobile smoke gates are in place should the project add `russh`, tmux Control Mode, pane routing, reconnect/resync, and full product UI.
 
+## Standard testing workflow
+
+Read `docs/TESTING.md` before changing tests, CI, or native code. Use cheap
+checks, then the affected focused suite, then the required full acceptance run.
+The iOS UI/input Swift preflight runs before CNG/app compilation. Use explicit
+`forms`, `native`, or `full` scope; never report a focused pass as full acceptance.
+For identical-source diagnosis, reuse pristine iOS test products only through
+the workflow's commit/toolchain/hash checks. Source changes require a new build.
+Investigate the first failed stage before rerunning; retain bounded state waits,
+exact completion evidence, and sanitized artifacts. Do not fix failures by
+silently skipping assertions, adding blind retries, or extending deadlines.
+
 ## CI and visual evidence boundary
 
 For both mobile jobs, the machine-gated acceptance boundary is: generated project/build succeeds, the app installs, the app launches, the expected native module is ready, a first native terminal frame is reported, and the process does not crash. These gates do not claim physical-device GPU, font fallback, rotation, or IME parity.

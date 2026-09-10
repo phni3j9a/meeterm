@@ -5,7 +5,6 @@ on:
     branches:
       - "**"
     paths:
-      - ".github/workflows/mobile-smoke.yml"
       - "App.tsx"
       - "app/**"
       - "app.json"
@@ -17,15 +16,29 @@ on:
       - "package-lock.json"
       - "modules/**"
       - "native/**"
-      - "scripts/ci/**"
-      - "scripts/ssh/**"
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to validate
+        type: choice
+        options: [both, android, ios]
+        default: both
+      ios_suite:
+        description: iOS scope (forms/native are focused diagnostics)
+        type: choice
+        options: [full, forms, native]
+        default: full
+      ios_build_run:
+        description: Optional exact-commit Mobile smoke run containing ios-test-products
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: mobile-smoke-${{ github.workflow }}-${{ github.ref }}
+  group: mobile-smoke-${{ github.ref }}-${{ inputs.platform || 'both' }}-${{ inputs.ios_suite || 'full' }}
   cancel-in-progress: true
 
 env:
@@ -41,6 +54,7 @@ env:
 
 jobs:
   android-emulator:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'ios' }}
     name: Android emulator / native frame
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -201,8 +215,32 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  ios-simulator:
-    name: iOS Simulator / native frame
+  ios-driver-check:
+    name: iOS driver / fast typecheck
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'android' }}
+    runs-on: macos-26-intel
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+
+      - name: Check iOS driver and reusable product regressions
+        run: |
+          python3 -m unittest discover -s scripts/ssh -p 'test_ios_smoke.py'
+          python3 scripts/ci/test_ios_test_products.py
+
+      - name: Typecheck XCTest and native input sources without app build
+        run: scripts/ci/ios-typecheck.sh
+
+  ios-build:
+    name: iOS / fresh CNG build
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    needs: ios-driver-check
+    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.platform != 'android') && !inputs.ios_build_run }}
     runs-on: macos-26-intel
     timeout-minutes: 90
     steps:
@@ -211,18 +249,17 @@ jobs:
 
       - name: Initialize iOS evidence directory
         run: |
-          mkdir -p artifacts/ios-simulator-observability
+          mkdir -p artifacts/ios-build-observability
           {
             echo "runner=${RUNNER_NAME}"
             echo "os=${RUNNER_OS}"
             echo "arch=${RUNNER_ARCH}"
             echo "commit=${GITHUB_SHA}"
-          } > artifacts/ios-simulator-observability/metadata.txt
+          } > artifacts/ios-build-observability/metadata.txt
 
-      - name: Select pinned Xcode
+      - name: Record pinned Xcode
         run: |
-          sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
-          xcodebuild -version | tee artifacts/ios-simulator-observability/xcode-version.txt
+          xcodebuild -version | tee artifacts/ios-build-observability/xcode-version.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -239,50 +276,6 @@ jobs:
         run: |
           rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
           rustup target add --toolchain "${RUST_VERSION}" x86_64-apple-ios
-
-      - name: Install fixture-only tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux
-          fi
-          tmux -V
-
-      - name: Verify real OpenSSH fixture before building iOS
-        run: |
-          test -x /usr/sbin/sshd
-          command -v ssh-keygen
-          test "$(id -u)" -ne 0
-          python3 scripts/ssh/fixture.py --check
-
-      - name: Boot an available iPhone Simulator
-        run: scripts/ci/ios-select-simulator.sh
-
-      - name: Record Metal availability
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
-
-          output_path = Path("artifacts/ios-simulator-observability/metal-preflight.txt")
-          try:
-              result = subprocess.run(
-                  [
-                      "swift",
-                      "-e",
-                      'import Metal; print(MTLCreateSystemDefaultDevice() == nil ? "unavailable" : "available")',
-                  ],
-                  capture_output=True,
-                  text=True,
-                  timeout=30,
-                  check=False,
-              )
-              output = result.stdout + result.stderr
-              if result.returncode != 0:
-                  output += f"preflight-exit={result.returncode}\n"
-          except subprocess.TimeoutExpired:
-              output = "preflight-timeout-after-30s\n"
-          output_path.write_text(output or "preflight-produced-no-output\n", encoding="utf-8")
-          PY
 
       - name: Generate iOS project with Expo CNG
         run: npx expo prebuild --platform ios --non-interactive --no-install
@@ -331,7 +324,7 @@ jobs:
               && line.includes('-l"meeterm_core"')),
               'The app host must retain the production Rust library link');
           }
-          fs.writeFileSync('artifacts/ios-simulator-observability/ios-storage-source-isolation.txt',
+          fs.writeFileSync('artifacts/ios-build-observability/ios-storage-source-isolation.txt',
             'app_provider=single\nstorage_sources=isolated\nstorage_direct_native_link=absent\n');
           JS
 
@@ -347,15 +340,16 @@ jobs:
             -scheme meeterm \
             -configuration Release \
             -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_UDID}" \
+            -destination "generic/platform=iOS Simulator" \
             -derivedDataPath "${RUNNER_TEMP}/meeterm-derived-data" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             ENABLE_TESTABILITY=YES \
             ONLY_ACTIVE_ARCH=YES \
+            ARCHS=x86_64 \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build-for-testing \
-            2>&1 | tee artifacts/ios-simulator-observability/xcodebuild.log
+            2>&1 | tee artifacts/ios-build-observability/xcodebuild.log
 
       - name: Verify Simulator Keychain entitlement sections
         run: |
@@ -380,10 +374,141 @@ jobs:
                   lines.append(f"target={target} section={section} present={int(present)}")
                   valid = valid and present
           lines.append(f"result={'passed' if valid else 'failed'}")
-          Path("artifacts/ios-simulator-observability/ios-simulator-entitlements.txt").write_text(
+          Path("artifacts/ios-build-observability/ios-simulator-entitlements.txt").write_text(
               "\n".join(lines) + "\n", encoding="utf-8")
           if not valid:
               raise SystemExit("The unsigned Simulator app host lacks Keychain entitlement sections.")
+          PY
+
+      - name: Package pristine test products before fixture injection
+        run: |
+          python3 scripts/ci/ios-test-products.py pack \
+            --products "${RUNNER_TEMP}/meeterm-derived-data/Build/Products" \
+            --package "${RUNNER_TEMP}/ios-test-products" \
+            --source-sha "${GITHUB_SHA}" \
+            --xcode-version-file artifacts/ios-build-observability/xcode-version.txt
+
+      - name: Upload reusable exact-source test products
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ios-test-products
+          path: ${{ runner.temp }}/ios-test-products
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Record build-only evidence boundary
+        if: always()
+        run: scripts/ci/finalize-evidence.sh ios-build-observability
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ios-build-observability
+          path: artifacts/ios-build-observability
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-simulator:
+    name: iOS Simulator / ${{ inputs.ios_suite || 'full' }}
+    needs: [ios-driver-check, ios-build]
+    if: ${{ always() && !cancelled() && needs.ios-driver-check.result == 'success' && (needs.ios-build.result == 'success' || (needs.ios-build.result == 'skipped' && inputs.ios_build_run != '')) }}
+    runs-on: macos-26-intel
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MEETERM_IOS_SUITE: ${{ inputs.ios_suite || 'full' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Initialize iOS evidence directory
+        run: |
+          mkdir -p artifacts/ios-simulator-observability
+          {
+            echo "runner=${RUNNER_NAME}"
+            echo "os=${RUNNER_OS}"
+            echo "arch=${RUNNER_ARCH}"
+            echo "commit=${GITHUB_SHA}"
+          } > artifacts/ios-simulator-observability/metadata.txt
+
+      - name: Record pinned Xcode
+        run: |
+          xcodebuild -version | tee artifacts/ios-simulator-observability/xcode-version.txt
+
+      - name: Restore matching pristine test products
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.ios_build_run || github.run_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${SOURCE_RUN}" =~ ^[0-9]+$ ]]
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN}" --jq '.head_sha')"
+          source_workflow="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN}" --jq '.path')"
+          [[ "${source_sha}" == "${GITHUB_SHA}" ]]
+          [[ "${source_workflow}" == '.github/workflows/mobile-smoke.yml' ]]
+          gh run download "${SOURCE_RUN}" --repo "${GITHUB_REPOSITORY}" \
+            --name ios-test-products --dir "${RUNNER_TEMP}/ios-test-products"
+          python3 scripts/ci/ios-test-products.py restore \
+            --package "${RUNNER_TEMP}/ios-test-products" \
+            --destination "${RUNNER_TEMP}/meeterm-derived-data/Build" \
+            --source-sha "${GITHUB_SHA}" \
+            --xcode-version-file artifacts/ios-simulator-observability/xcode-version.txt
+          {
+            echo "test_scope=${MEETERM_IOS_SUITE}"
+            echo "build_source_run=${SOURCE_RUN}"
+            echo "build_source_commit=${source_sha}"
+            if [[ "${SOURCE_RUN}" == "${GITHUB_RUN_ID}" ]]; then
+              echo 'build_mode=fresh-cng'
+            else
+              echo 'build_mode=reused-exact-source-diagnostic'
+            fi
+          } >> artifacts/ios-simulator-observability/metadata.txt
+
+      - name: Install fixture-only tmux
+        if: env.MEETERM_IOS_SUITE == 'full'
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux
+          fi
+          tmux -V
+
+      - name: Verify real OpenSSH fixture before full runtime testing
+        if: env.MEETERM_IOS_SUITE == 'full'
+        run: |
+          test -x /usr/sbin/sshd
+          command -v ssh-keygen
+          test "$(id -u)" -ne 0
+          python3 scripts/ssh/fixture.py --check
+
+      - name: Boot an available iPhone Simulator
+        run: scripts/ci/ios-select-simulator.sh
+
+      - name: Record Metal availability
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          output_path = Path("artifacts/ios-simulator-observability/metal-preflight.txt")
+          try:
+              result = subprocess.run(
+                  [
+                      "swift",
+                      "-e",
+                      'import Metal; print(MTLCreateSystemDefaultDevice() == nil ? "unavailable" : "available")',
+                  ],
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+                  check=False,
+              )
+              output = result.stdout + result.stderr
+              if result.returncode != 0:
+                  output += f"preflight-exit={result.returncode}\n"
+          except subprocess.TimeoutExpired:
+              output = "preflight-timeout-after-30s\n"
+          output_path.write_text(output or "preflight-produced-no-output\n", encoding="utf-8")
           PY
 
       - name: Run real SSH/tmux iOS UI smoke

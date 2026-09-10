@@ -388,6 +388,60 @@ final class MeetermSmokeUITests: XCTestCase {
     try verifyFoundationRelaunch()
   }
 
+  func testConnectionFormControlsWithoutSecrets() throws {
+    // Focused form coverage never starts the SSH fixture and never reads or
+    // enters a private key/password. The values below exercise only public
+    // field and control wiring before cancelling the dirty form.
+    record("forms_open_connection")
+    openConnectionForm()
+
+    record("forms_fill_public_fields")
+    fillTextField(label: "Host", value: "127.0.0.1")
+    fillTextField(label: "Port", value: "22")
+    fillTextField(label: "Username", value: "fixture")
+    // This is a safe focused-suite frame: only the fixed public form values
+    // have been entered, and the keyboard path is still visible.
+    capture("forms-keyboard")
+
+    // Reuse the full test's credential-free selector check. It reveals and
+    // taps the empty password field so this focused suite covers the keyboard
+    // path, then switches back without entering any secret.
+    verifyPasswordForm()
+
+    record("forms_profile_controls")
+    let profileName = input("Server name")
+    XCTAssertTrue(revealAuthenticationControl(profileName, stage: "forms_profile_name"))
+    fillTextField(label: "Server name", value: "Focused form")
+    let saveServer = app.switches["save-server-profile"]
+    XCTAssertTrue(revealAuthenticationControl(saveServer, stage: "forms_save_server"))
+    if saveServer.value as? String == "1" { saveServer.tap() }
+    XCTAssertEqual(saveServer.value as? String, "0", "The save-server control could not be disabled.")
+    saveServer.tap()
+    XCTAssertEqual(saveServer.value as? String, "1", "The save-server control could not be re-enabled.")
+    let saveCredentials = app.switches["save-credentials"]
+    XCTAssertTrue(revealAuthenticationControl(saveCredentials, stage: "forms_save_credentials"))
+    if saveCredentials.value as? String == "1" { saveCredentials.tap() }
+    XCTAssertEqual(saveCredentials.value as? String, "0", "Credential saving was enabled unexpectedly.")
+    // This frame contains only public fields and control state; it is useful
+    // for visual review but is deliberately not a machine acceptance gate.
+    capture("forms-controls")
+
+    record("forms_cancel")
+    let cancel = button("Cancel")
+    XCTAssertTrue(cancel.waitForExistence(timeout: 10), "The form Cancel action is unavailable.")
+    XCTAssertTrue(waitForHittable(cancel, timeout: 10), "The form Cancel action is not hittable.")
+    cancel.tap()
+    let discard = app.alerts.firstMatch
+    XCTAssertTrue(discard.waitForExistence(timeout: 10), "The dirty form did not ask for confirmation.")
+    let discardButton = discard.buttons["破棄"]
+    XCTAssertTrue(discardButton.waitForExistence(timeout: 5), "The form discard action is unavailable.")
+    discardButton.tap()
+    XCTAssertTrue(waitForConnectionFormDismissal(timeout: 10), "The form did not dismiss after cancellation.")
+    XCTAssertTrue(connectionFormIsGone(), "The cancelled connection form remains exposed.")
+    record("forms_complete")
+    writeFixedArtifact("ios-ui-forms-validation.txt", lines: ["case=forms result=passed"])
+  }
+
   private func configureSavedFixtureProfile() {
     record("daily_save_credential_opt_in")
     let name = input("Server name")
@@ -398,7 +452,7 @@ final class MeetermSmokeUITests: XCTestCase {
     if save.value as? String != "1" { save.tap() }
     XCTAssertEqual(save.value as? String, "1", "Credential saving was not selected.")
     let key = input("Private OpenSSH key")
-    XCTAssertTrue(revealAuthenticationControl(key, stage: "return_to_key", upward: false))
+    XCTAssertTrue(revealAuthenticationControl(key, stage: "return_to_key"))
   }
 
   private func verifyDailyUse(firstWorkspace: String, pane: String) throws {
@@ -614,7 +668,7 @@ final class MeetermSmokeUITests: XCTestCase {
     capture("password-form-keyboard")
     let keyChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-public-key").firstMatch
     XCTAssertTrue(keyChoice.waitForExistence(timeout: 10), "Private key authentication is unavailable.")
-    XCTAssertTrue(revealAuthenticationControl(keyChoice, stage: "key_choice", upward: false), "Private key authentication cannot be selected.")
+    XCTAssertTrue(revealAuthenticationControl(keyChoice, stage: "key_choice"), "Private key authentication cannot be selected.")
     keyChoice.tap()
     XCTAssertFalse(password.exists, "The unselected password field is still exposed.")
     record("authentication_selector_verified")
@@ -719,8 +773,7 @@ final class MeetermSmokeUITests: XCTestCase {
   /// start on the IME when the sheet's scroll frame extends below it.
   private func revealAuthenticationControl(
     _ element: XCUIElement,
-    stage: String,
-    upward: Bool = true
+    stage: String
   ) -> Bool {
     let scroll = app.scrollViews.containing(.textField, identifier: "ssh-host").firstMatch
     for attempt in 0..<5 {
@@ -736,17 +789,26 @@ final class MeetermSmokeUITests: XCTestCase {
       let appFrame = app.frame
       guard let viewport = effectiveScrollViewport(scroll) else { break }
       guard viewport.height >= 80, viewport.width >= 16 else { break }
+      guard element.exists else { break }
+      // Recompute the direction from the current frame on every attempt. A
+      // previous drag can pass the target, especially with the keyboard open.
+      let distance = max(-viewport.height * 0.5,
+        min(viewport.height * 0.5, viewport.midY - element.frame.midY))
+      guard abs(distance) > 1 else { break }
+      let startY = viewport.midY - distance / 2
       let origin = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
       let start = origin.withOffset(CGVector(
         dx: viewport.minX + 8 - appFrame.minX,
-        dy: viewport.minY + viewport.height * (upward ? 0.75 : 0.25) - appFrame.minY
+        dy: startY - appFrame.minY
       ))
       let end = origin.withOffset(CGVector(
         dx: viewport.minX + 8 - appFrame.minX,
-        dy: viewport.minY + viewport.height * (upward ? 0.25 : 0.75) - appFrame.minY
+        dy: startY + distance - appFrame.minY
       ))
       record("\(stage)_scroll_visible_viewport")
-      start.press(forDuration: 0.05, thenDragTo: end)
+      // Release only after holding still, rather than ending with a fling.
+      start.press(forDuration: 0.05, thenDragTo: end,
+        withVelocity: .slow, thenHoldForDuration: 0.2)
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
       recordAuthenticationControlGeometry(
         element,

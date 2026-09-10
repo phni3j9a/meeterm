@@ -62,6 +62,7 @@ npx expo run:android --device
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development](docs/DEVELOPMENT.md)
+- [Standard testing workflow](docs/TESTING.md)
 - [First-app evaluation, installation, and evidence](docs/FIRST_APP.md)
 - [Daily-use features and acceptance](docs/DAILY_USE.md)
 - [SSH password authentication and Fold7 installation evidence](docs/evidence/password-auth-fold7.md)

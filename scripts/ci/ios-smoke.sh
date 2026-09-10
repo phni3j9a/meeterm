@@ -6,8 +6,13 @@ readonly app_path="${RUNNER_TEMP}/meeterm-derived-data/Build/Products/Release-ip
 readonly artifact_dir="${GITHUB_WORKSPACE}/artifacts/ios-simulator-observability"
 readonly fixture_env="${RUNNER_TEMP}/meeterm-ssh.env"
 readonly derived_data="${RUNNER_TEMP}/meeterm-derived-data"
+readonly suite="${MEETERM_IOS_SUITE:-full}"
 
 : "${IOS_SIMULATOR_UDID:?IOS_SIMULATOR_UDID was not exported}"
+case "${suite}" in
+  full|forms|native) ;;
+  *) echo "Unsupported iOS smoke suite: ${suite}" >&2; exit 2 ;;
+esac
 mkdir -p "${artifact_dir}"
 test -d "${app_path}"
 rm -f \
@@ -17,7 +22,7 @@ rm -f \
   "${artifact_dir}/simulator.log"
 
 printf '%s\n' \
-  "mode=xcuitest-real-ssh" \
+  "mode=xcuitest-${suite}" \
   "bundle_id=${bundle_id}" \
   "test_result_bundle=RUNNER_TEMP" \
   > "${artifact_dir}/launch.txt"
@@ -34,35 +39,53 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-rm -f "${fixture_env}"
-python3 "${GITHUB_WORKSPACE}/scripts/ssh/fixture.py" --env-file "${fixture_env}" &
-fixture_pid=$!
+if [[ "${suite}" == "full" ]]; then
+  rm -f "${fixture_env}"
+  python3 "${GITHUB_WORKSPACE}/scripts/ssh/fixture.py" --env-file "${fixture_env}" &
+  fixture_pid=$!
 
-fixture_deadline=$((SECONDS + 30))
-while [[ ! -s "${fixture_env}" ]]; do
-  if ! kill -0 "${fixture_pid}" 2>/dev/null; then
-    echo "The disposable OpenSSH fixture exited before becoming ready." >&2
-    exit 1
-  fi
-  if (( SECONDS >= fixture_deadline )); then
-    echo "The disposable OpenSSH fixture did not become ready." >&2
-    exit 1
-  fi
-  sleep 0.2
-done
+  fixture_deadline=$((SECONDS + 30))
+  while [[ ! -s "${fixture_env}" ]]; do
+    if ! kill -0 "${fixture_pid}" 2>/dev/null; then
+      echo "The disposable OpenSSH fixture exited before becoming ready." >&2
+      exit 1
+    fi
+    if (( SECONDS >= fixture_deadline )); then
+      echo "The disposable OpenSSH fixture did not become ready." >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
 
-# fixture.py writes shell-quoted values and never prints the key/passphrase.
-# Avoid xtrace around this source operation and around the XCUITest invocation.
-# shellcheck disable=SC1090
-source "${fixture_env}"
+  # fixture.py writes shell-quoted values and never prints the key/passphrase.
+  # Avoid xtrace around this source operation and around the XCUITest invocation.
+  # shellcheck disable=SC1090
+  source "${fixture_env}"
+else
+  # Focused suites are deliberately independent of the disposable SSH fixture.
+  # Remove any inherited fixture contract before xcodebuild can pass it on.
+  unset MEETERM_SSH_HOST MEETERM_SSH_PORT MEETERM_SSH_USERNAME \
+    MEETERM_SSH_FINGERPRINT MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE \
+    MEETERM_SSH_PRIVATE_KEY_FILE MEETERM_SSH_PASSPHRASE \
+    MEETERM_SSH_KNOWN_HOSTS_FILE MEETERM_SSH_HOST_KEY_FILE \
+    MEETERM_SSH_ALTERNATE_HOST_KEY_FILE
+fi
 xcrun simctl uninstall "${IOS_SIMULATOR_UDID}" "${bundle_id}" 2>/dev/null || true
 xcrun simctl install "${IOS_SIMULATOR_UDID}" "${app_path}"
-smoke_started_at="$(date -u '+%Y-%m-%d %H:%M:%S')"
+if [[ "${suite}" == "full" ]]; then
+  smoke_started_at="$(date -u '+%Y-%m-%d %H:%M:%S')"
+fi
 
 python3 "${GITHUB_WORKSPACE}/scripts/ssh/ios-smoke.py" \
   --artifact-dir "${artifact_dir}" \
   --derived-data "${derived_data}" \
-  --simulator-udid "${IOS_SIMULATOR_UDID}"
+  --simulator-udid "${IOS_SIMULATOR_UDID}" \
+  --suite "${suite}"
+
+if [[ "${suite}" != "full" ]]; then
+  echo "iOS ${suite} focused smoke passed."
+  exit 0
+fi
 
 # XCTest owns both the real SSH UI and the fresh foundation URL launch. Split
 # the marker logs at that relaunch so foundation frames cannot satisfy the
