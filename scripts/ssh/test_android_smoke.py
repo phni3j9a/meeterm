@@ -202,7 +202,7 @@ def _patched_clock(clock: _FakeClock):
 class UiDriverTests(unittest.TestCase):
     def test_focus_terminal_waits_for_native_ime_after_tap(self) -> None:
         clock = _FakeClock()
-        device = mock.Mock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
         node = smoke.Node(
             "",
             "Terminal %1",
@@ -243,6 +243,54 @@ class UiDriverTests(unittest.TestCase):
             )
         self.assertEqual(node.text, "127.0.0.1")
         self.assertEqual(clock.sleep_calls, [smoke.FIELD_SETTLE_SECONDS] * 3)
+
+    def test_field_readback_preserves_foreground_loss_when_editor_disappears(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = []
+        device.assert_foreground.side_effect = smoke.SmokeFailure(
+            "host_input",
+            "app_not_foreground",
+        )
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.wait_for_field_value(
+                device,
+                "host_input",
+                "Host",
+                "127.0.0.1",
+            )
+
+        self.assertEqual(error.exception.reason, "app_not_foreground")
+        device.assert_foreground.assert_called_once_with("host_input")
+
+    def test_field_timeout_rechecks_foreground_before_entry_mismatch(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [
+            smoke.Node(
+                "partial",
+                "Host, partial",
+                "android.widget.EditText",
+                (0, 0, 100, 100),
+            )
+        ]
+        device.assert_foreground.side_effect = smoke.SmokeFailure(
+            "host_input",
+            "app_not_foreground",
+        )
+
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_field_value(
+                    device,
+                    "host_input",
+                    "Host",
+                    "127.0.0.1",
+                    timeout=1.0,
+                )
+
+        self.assertEqual(error.exception.reason, "app_not_foreground")
+        device.assert_foreground.assert_called_once_with("host_input")
 
     def test_fill_field_retries_once_after_readback_mismatch_without_appending(self) -> None:
         first = smoke.Node(

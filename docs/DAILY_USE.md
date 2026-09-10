@@ -67,7 +67,7 @@ are applied to the Rust terminal registry, including hidden panes.
 
 ## Verification
 
-Pending implementation. Local deterministic tests, real SSH/tmux integration,
+Implementation is present. Local deterministic tests, real SSH/tmux integration,
 Android native tests and TypeScript must pass. Both Hosted mobile jobs must run
 from fresh CNG output; their screenshots must be downloaded and actually viewed.
 New workflows need interaction evidence, not just a first frame. An independent
@@ -105,17 +105,23 @@ history-limit or persist terminal output to its own disk files.
 
 ## Local evidence during implementation
 
-- Shared Rust library: 53 tests passed before the final adapter integration.
-- TypeScript and 64 existing Python regression tests passed.
+- Shared Rust library: 56 tests passed, along with formatting and Clippy.
+- Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
+  recovery, name encoding, and closing the last pane/window.
+- TypeScript and 70 Python regression tests passed.
+- Android native JVM tests: 22 passed.
 - Android arm64 Release built successfully and installed on the connected Pixel 3.
 - Pixel 3: changed font to 18 pt, history to 20,000 and theme to light through
   the actual settings UI, saved, terminated and relaunched the app, then verified
   the persisted values. Captured a 43-second interaction recording and viewed
   its extracted frame sequence. This revealed a stale Android dialog status-bar
-  appearance when switching themes; the correction still needs verification.
+  appearance when switching themes. Applying the appearance after Android
+  registers each modal window corrected it; the light settings screen and both
+  light/dark server sheets were captured and actually viewed on the latest APK.
 - Early independent storage/UI review found three material issues (interrupted
   iOS Keychain updates, destructive history application before durable settings,
   and Android store size overflow). All three were fixed and re-reviewed.
 
-Hosted mobile checks, full daily-use interaction evidence and the final review
-are still pending. The entries above are not a release acceptance declaration.
+General Hosted CI passed on candidate `2f54449` (Rust, real OpenSSH, JavaScript,
+Expo and Android native build/tests). Hosted mobile checks, full daily-use
+interaction evidence and the final review are still pending. The entries above are not a release acceptance declaration.

@@ -1625,6 +1625,11 @@ def wait_for_field_value(
             time.sleep(FIELD_SETTLE_SECONDS)
             continue
         if node is None:
+            # A system or third-party Activity can replace the foreground
+            # window between the pre-input check and controlled-value
+            # readback. Preserve that actionable classification instead of
+            # reporting the resulting missing editor as an input failure.
+            device.assert_foreground(stage)
             raise SmokeFailure(stage, "field_unavailable")
         now = time.monotonic()
         if node.text != previous:
@@ -1634,7 +1639,9 @@ def wait_for_field_value(
             return node
         time.sleep(FIELD_SETTLE_SECONDS)
     if last_dump_failure is not None and previous is None:
+        device.assert_foreground(stage)
         raise SmokeFailure(stage, last_dump_failure.reason)
+    device.assert_foreground(stage)
     raise SmokeFailure(stage, "entry_mismatch")
 
 

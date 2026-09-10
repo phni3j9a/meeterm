@@ -66,9 +66,9 @@ function FormModal({ visible, title, submitLabel, submitId, submitText = '保存
   visible: boolean; title: string; submitLabel: string; submitId: string; submitText?: string;
   busy: boolean; colors: Palette; onClose: () => void; onSubmit: () => void; children: ReactNode;
 }) {
-  // Android dialogs retain their window's status-bar appearance between opens.
-  // Recreate that window when the persisted palette changes.
-  return <Modal key={colors.background} visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose}>
+  // Apply after Android registers the dialog window; its initial appearance
+  // can still reflect the preceding palette during a theme transition.
+  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider><SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.flex, { backgroundColor: colors.background }]}>
       <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
