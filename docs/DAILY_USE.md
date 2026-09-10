@@ -75,6 +75,30 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
+Candidate `f8f77b0` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34472077011)
+and the complete Android job in [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34472071201).
+Main downloaded and viewed its Android foundation, settings, selection and
+SSH-terminal screenshots, and verified the APK bundle and checksum linked in
+`FIRST_APP.md`. iOS passed its unsigned native build, entitlement/source-isolation
+checks, four production storage cases and seven native-input cases. The host-side
+native-copy observer passed; Main viewed the actual cleared selection, settings
+(font size 18, history 20000) and resized light terminal screenshots. The test also
+verified saved settings after reopening, created and renamed a workspace, and
+created another pane. It then failed during the pane-name field's clear operation
+(`MeetermSmokeUITests.swift:868`, last stage `fill_workspace_or_terminal_name_clear`).
+The failure diagnostic observed an empty field after its five-second wait had
+returned unsuccessful. Main viewed the interaction recording: the long original
+pane name was still being erased between 150 and 165 seconds and was empty by
+170 seconds. The test sent one Delete for every character; the recording shows
+that long sequence being processed, but does not isolate an internal RN delay.
+The next driver revision uses Select All and one Delete for the name field while
+retaining the bounded exact-empty check.
+The remaining pane rename/close, workspace close and final fresh-foundation gates
+are still pending. The recorded Metal markers belong to earlier runtime activity;
+this failed run does not establish the final fresh-foundation acceptance gate.
+
+### Previous candidates
+
 Candidate `b2e2b81` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34465426353)
 and the complete Android job in [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34465422908).
 Main downloaded and viewed its foundation, settings, selection and SSH-terminal

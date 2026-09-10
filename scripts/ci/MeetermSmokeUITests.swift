@@ -856,8 +856,39 @@ final class MeetermSmokeUITests: XCTestCase {
       }
       if !observed.isEmpty {
         record("\(stage)_clear")
-        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: observed.utf16.count))
-        guard waitForShortFieldValue(field, expected: "", timeout: 5) else {
+        if label == "Workspace or terminal name" {
+          // Tmux can supply a long generated pane title. Selecting it all and
+          // sending one delete avoids queuing one controlled-input update per
+          // UTF-16 code unit through React Native.
+          record("\(stage)_clear_select_all")
+          field.press(forDuration: 1.0)
+          guard let selectAll = waitForHittableElement(
+            [app.menuItems["Select All"], app.buttons["Select All"]],
+            timeout: 5
+          ) else {
+            record("\(stage)_clear_select_all_unavailable")
+            writeShortFieldDiagnostics(
+              label: label,
+              field: field,
+              expected: "",
+              phase: "clear_select_all_unavailable",
+              attempt: attempt
+            )
+            XCTFail("The name field Select All action is unavailable.")
+            return
+          }
+          record("\(stage)_clear_select_all_ready")
+          selectAll.tap()
+          record("\(stage)_clear_delete")
+          field.typeText(XCUIKeyboardKey.delete.rawValue)
+        } else {
+          field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: observed.utf16.count))
+        }
+        record("\(stage)_clear_wait")
+        let clearWaitResult = shortFieldWaitResult(field, expected: "", timeout: 5)
+        guard clearWaitResult == .completed else {
+          record("\(stage)_clear_wait_\(waiterResultKey(clearWaitResult))")
+          record("\(stage)_clear_failed")
           writeShortFieldDiagnostics(
             label: label,
             field: field,
@@ -868,6 +899,7 @@ final class MeetermSmokeUITests: XCTestCase {
           XCTFail("The short field could not be cleared.")
           return
         }
+        record("\(stage)_clear_verified")
       }
       record("\(stage)_type")
       if attempt == 0 {
@@ -915,9 +947,28 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func waitForShortFieldValue(_ field: XCUIElement, expected: String, timeout: TimeInterval) -> Bool {
+    shortFieldWaitResult(field, expected: expected, timeout: timeout) == .completed
+  }
+
+  private func shortFieldWaitResult(
+    _ field: XCUIElement,
+    expected: String,
+    timeout: TimeInterval
+  ) -> XCTWaiter.Result {
     let predicate = NSPredicate { _, _ in self.shortFieldValue(field) == expected }
     let matched = XCTNSPredicateExpectation(predicate: predicate, object: field)
-    return XCTWaiter.wait(for: [matched], timeout: timeout) == .completed
+    return XCTWaiter.wait(for: [matched], timeout: timeout)
+  }
+
+  private func waiterResultKey(_ result: XCTWaiter.Result) -> String {
+    switch result {
+    case .completed: return "completed"
+    case .timedOut: return "timed_out"
+    case .incorrectOrder: return "incorrect_order"
+    case .invertedFulfillment: return "inverted_fulfillment"
+    case .interrupted: return "interrupted"
+    @unknown default: return "unknown"
+    }
   }
 
   private func writeShortFieldDiagnostics(
@@ -1248,6 +1299,20 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return element.exists && element.isHittable
+  }
+
+  private func waitForHittableElement(
+    _ elements: [XCUIElement],
+    timeout: TimeInterval
+  ) -> XCUIElement? {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      for element in elements where element.exists && element.isHittable {
+        return element
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return elements.first(where: { $0.exists && $0.isHittable })
   }
 
   private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
