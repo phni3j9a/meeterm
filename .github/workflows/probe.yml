@@ -54,16 +54,13 @@ jobs:
           products="$derived_data/Build/Products"
           xctestrun=$(find "$products" -maxdepth 1 -name '*.xctestrun' -type f -print -quit)
           host="$products/Release-iphonesimulator/RunnerHost.app/RunnerHost"
-          test_bundle="$products/Release-iphonesimulator/RunnerKeychainTests-Runner.app/PlugIns/RunnerKeychainTests.xctest/RunnerKeychainTests"
-          test_runner="$products/Release-iphonesimulator/RunnerKeychainTests-Runner.app/RunnerKeychainTests-Runner"
+          test_bundle="$products/Release-iphonesimulator/RunnerHost.app/PlugIns/RunnerKeychainTests.xctest/RunnerKeychainTests"
           test -n "$xctestrun"
           test -x "$host"
           test -x "$test_bundle"
-          test -x "$test_runner"
           echo "PROBE xctestrun=$xctestrun"
           echo "PROBE host=$host"
           echo "PROBE test_bundle=$test_bundle"
-          echo "PROBE test_runner=$test_runner"
 
           xcrun otool -l "$host" > /tmp/meeterm-host-probe-host-otool.txt
           grep -q 'sectname __entitlements' /tmp/meeterm-host-probe-host-otool.txt
