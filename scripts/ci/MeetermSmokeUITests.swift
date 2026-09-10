@@ -129,6 +129,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("fill_username")
     fillTextField(label: "Username", value: username)
     verifyPasswordForm()
+    configureSavedFixtureProfile()
     record("fill_private_key")
     fillPrivateKey(key)
 
@@ -306,6 +307,8 @@ final class MeetermSmokeUITests: XCTestCase {
     record("capture_reconnected")
     capture("reconnected")
 
+    try verifyDailyUse(firstWorkspace: firstWorkspace, pane: switchedPane)
+
     record("verify_app_foreground")
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5), "The app left the foreground during the smoke.")
     // End the mobile side before the shell-level handoff check. The fixture
@@ -313,6 +316,132 @@ final class MeetermSmokeUITests: XCTestCase {
     record("terminate_app_for_handoff")
     app.terminate()
     try verifyFoundationRelaunch()
+  }
+
+  private func configureSavedFixtureProfile() {
+    record("daily_save_credential_opt_in")
+    let name = input("Server name")
+    XCTAssertTrue(revealAuthenticationControl(name, stage: "profile_name"))
+    name.tap()
+    name.typeText("Daily fixture")
+    let save = app.switches["save-credentials"]
+    XCTAssertTrue(revealAuthenticationControl(save, stage: "save_credentials"))
+    if save.value as? String != "1" { save.tap() }
+    XCTAssertEqual(save.value as? String, "1", "Credential saving was not selected.")
+    let key = input("Private OpenSSH key")
+    XCTAssertTrue(revealAuthenticationControl(key, stage: "return_to_key", upward: false))
+  }
+
+  private func verifyDailyUse(firstWorkspace: String, pane: String) throws {
+    record("daily_cold_restart")
+    app.terminate()
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    let servers = button("Saved servers")
+    XCTAssertTrue(servers.waitForExistence(timeout: 20))
+    servers.tap()
+    let saved = button("Connect saved server Daily fixture")
+    XCTAssertTrue(saved.waitForExistence(timeout: 20), "The saved profile did not survive process restart.")
+    capture("daily-servers")
+    saved.tap()
+    XCTAssertTrue(app.staticTexts["Connected"].waitForExistence(timeout: 90), "The saved native credential could not reconnect.")
+    XCTAssertFalse(input("Private OpenSSH key").exists, "Saved credentials must not be returned to the form.")
+    XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 20))
+    button(firstWorkspace).tap()
+    XCTAssertTrue(waitForTerminal())
+    XCTAssertTrue(button(pane).waitForExistence(timeout: 20))
+    button(pane).tap()
+    XCTAssertTrue(waitForSelected(button(pane)))
+    try terminalElement().tap()
+    let dailyPath = markerPath.appendingPathExtension("daily")
+    try? FileManager.default.removeItem(at: dailyPath)
+    enterTerminalCommand("test \"$MEETERM_IOS_HANDOFF\" = '\(handoffValue)' && printf 'daily\\n' > \(shellQuote(dailyPath.path))", stage: "daily_resumed_shell")
+    let marker = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      (try? String(contentsOf: dailyPath, encoding: .utf8)) == "daily\n"
+    }, object: nil)
+    XCTAssertEqual(XCTWaiter.wait(for: [marker], timeout: 20), .completed)
+
+    record("daily_selection")
+    enterTerminalCommand("i=0; while [ $i -lt 80 ]; do printf 'COPY 日本語 selection %s\\n' \"$i\"; i=$((i+1)); done", stage: "daily_selection_content")
+    if button("Hide keyboard").exists { button("Hide keyboard").tap() }
+    let surface = try terminalElement()
+    let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.65))
+    let end = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.8))
+    start.press(forDuration: 0.7, thenDragTo: end)
+    XCTAssertTrue(button("Copy selection").waitForExistence(timeout: 10))
+    capture("daily-selection")
+    button("Copy selection").tap()
+    XCTAssertFalse(button("Copy selection").exists)
+    XCTAssertTrue(UIPasteboard.general.string?.contains("COPY") == true)
+    UIPasteboard.general.string = nil
+
+    record("daily_settings")
+    button("Back to workspaces").tap()
+    button("Terminal settings").tap()
+    fillTextField(label: "Terminal font size", value: "18")
+    fillTextField(label: "Scrollback lines", value: "20000")
+    let theme = button("terminal-theme")
+    theme.tap()
+    app.buttons["ライト"].tap()
+    capture("daily-settings")
+    button("settings-submit").tap()
+    XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 15))
+    button(firstWorkspace).tap()
+    XCTAssertTrue(waitForTerminal())
+    capture("daily-terminal-light")
+    button("Back to workspaces").tap()
+    button("Terminal settings").tap()
+    XCTAssertEqual(shortFieldValue(input("Terminal font size")), "18")
+    XCTAssertEqual(shortFieldValue(input("Scrollback lines")), "20000")
+    fillTextField(label: "Terminal font size", value: "15")
+    button("terminal-theme").tap()
+    app.buttons["ダーク"].tap()
+    button("settings-submit").tap()
+
+    record("daily_create_workspace")
+    XCTAssertTrue(button("Create workspace").waitForExistence(timeout: 15))
+    button("Create workspace").tap()
+    input("Workspace or terminal name").typeText("daily-smoke")
+    button("name-submit").tap()
+    XCTAssertTrue(button("Workspace daily-smoke").waitForExistence(timeout: 20))
+    button("Workspace options daily-smoke").tap()
+    button("名前を変更").tap()
+    fillTextField(label: "Workspace or terminal name", value: "daily-renamed")
+    button("name-submit").tap()
+    XCTAssertTrue(button("Workspace daily-renamed").waitForExistence(timeout: 20))
+    button("Workspace daily-renamed").tap()
+    XCTAssertTrue(waitForTerminal())
+    XCTAssertTrue(button("Create terminal").waitForExistence(timeout: 15))
+    button("Create terminal").tap()
+    XCTAssertGreaterThanOrEqual(waitForPaneLabels(minimum: 2).count, 2)
+    button("Terminal menu").tap()
+    button("Rename terminal").tap()
+    fillTextField(label: "Workspace or terminal name", value: "daily-pane")
+    button("name-submit").tap()
+    XCTAssertTrue(waitForTerminal())
+    capture("daily-created-pane")
+    button("Terminal menu").tap()
+    button("Refresh terminal").tap()
+    XCTAssertTrue(waitForTerminal())
+    button("Terminal menu").tap()
+    button("Close terminal").tap()
+    let closePane = app.alerts.firstMatch
+    XCTAssertTrue(closePane.waitForExistence(timeout: 10))
+    closePane.buttons["終了"].tap()
+    let paneRemoved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      let tabs = self.app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Terminal %'"))
+      return Set(tabs.allElementsBoundByIndex.map { $0.label }).count == 1
+    }, object: nil)
+    XCTAssertEqual(XCTWaiter.wait(for: [paneRemoved], timeout: 20), .completed)
+    button("Back to workspaces").tap()
+    button("Workspace options daily-renamed").tap()
+    button("終了").tap()
+    let confirm = app.alerts.firstMatch
+    XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+    confirm.buttons["終了"].tap()
+    let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == NO"), object: button("Workspace daily-renamed"))
+    XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 20), .completed)
+    record("daily_complete")
   }
 
   private func verifyPasswordForm() {
@@ -379,7 +508,7 @@ final class MeetermSmokeUITests: XCTestCase {
       start.press(forDuration: 0.05, thenDragTo: end)
     }
     if waitForHittable(element, timeout: 2) { return true }
-    // All callers are inside verifyPasswordForm, before the key is entered.
+    // All callers run before the private key or passphrase is entered.
     capture("password-form-\(stage)-unavailable")
     return false
   }
@@ -476,7 +605,7 @@ final class MeetermSmokeUITests: XCTestCase {
   private func fillTextField(label: String, value: String) {
     // Only non-secret short fields use readback. Never inspect or publish the
     // private-key editor's value through this helper.
-    guard ["Host", "Port", "Username"].contains(label) else {
+    guard ["Host", "Port", "Username", "Terminal font size", "Scrollback lines", "Workspace or terminal name"].contains(label) else {
       XCTFail("The short-field helper received an unsupported field.")
       return
     }

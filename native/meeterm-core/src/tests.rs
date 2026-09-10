@@ -1,5 +1,8 @@
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use tokio::sync::{mpsc, watch};
 
 use crate::ffi::{
@@ -7,12 +10,18 @@ use crate::ffi::{
     meeterm_input_commit_count, meeterm_resize_terminal, meeterm_send_special_key,
     meeterm_snapshot, meeterm_snapshot_size, meeterm_terminal_revision,
 };
-use crate::input::{SpecialKey, encode_special_key};
-use crate::registry::{create_terminal, destroy_terminal, with_terminal_for_test};
+use crate::input::{KeyCode, Modifiers, SpecialKey, encode_key, encode_special_key, encode_text};
+use crate::registry::{
+    create_terminal, destroy_terminal, scrollback_lines, set_scrollback_limit,
+    with_terminal_for_test,
+};
 use crate::snapshot::{
     SNAPSHOT_CELL_METADATA_SIZE, SNAPSHOT_HEADER_SIZE, SNAPSHOT_MAGIC, SNAPSHOT_VERSION,
 };
-use crate::terminal::{FIXED_DEMO_BYTES, Terminal, TerminalError};
+use crate::terminal::{
+    DEFAULT_SCROLLBACK_LINES, FIXED_DEMO_BYTES, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES,
+    Terminal, TerminalError,
+};
 
 #[test]
 fn fixed_demo_exercises_the_required_terminal_features() {
@@ -100,7 +109,9 @@ fn tmux_viewport_recapture_preserves_native_history_position() {
         .unwrap();
     assert_eq!(terminal.term().grid().display_offset(), 12);
     terminal.restore_screen(92, 40, 10, b"short").unwrap();
-    assert_eq!(terminal.term().grid().display_offset(), 0);
+    // Same-generation refreshes retain the existing native history and the
+    // reader's viewport position even when tmux returns only a short capture.
+    assert_eq!(terminal.term().grid().display_offset(), 12);
 }
 
 #[test]
@@ -180,6 +191,41 @@ fn snapshot_is_little_endian_and_preserves_cjk_combining_wide_and_colors() {
     assert_eq!(red.foreground, [205, 0, 0, 255]);
     assert_eq!(red.background, [0, 0, 238, 255]);
     assert_ne!(red.flags & Flags::BOLD.bits(), 0);
+}
+
+#[test]
+fn theme_changes_named_fallbacks_but_preserves_explicit_ansi_colors() {
+    let mut terminal = Terminal::new(20, 3).expect("valid dimensions");
+    terminal.feed(b"\x1b[2J\x1b[Hx \x1b[38;2;1;2;3;48;2;4;5;6mY\x1b[0m");
+
+    let dark = decode_cells(terminal.snapshot().unwrap().as_bytes());
+    let dark_default = dark
+        .iter()
+        .find(|cell| cell.base == "x")
+        .expect("default-colored cell");
+    let dark_explicit = dark
+        .iter()
+        .find(|cell| cell.base == "Y")
+        .expect("explicit-colored cell");
+    assert_eq!(dark_default.foreground, [208, 208, 208, 255]);
+    assert_eq!(dark_default.background, [36, 33, 29, 255]);
+    assert_eq!(dark_explicit.foreground, [1, 2, 3, 255]);
+    assert_eq!(dark_explicit.background, [4, 5, 6, 255]);
+
+    terminal.set_theme(true);
+    let light = decode_cells(terminal.snapshot().unwrap().as_bytes());
+    let light_default = light
+        .iter()
+        .find(|cell| cell.base == "x")
+        .expect("default-colored cell");
+    let light_explicit = light
+        .iter()
+        .find(|cell| cell.base == "Y")
+        .expect("explicit-colored cell");
+    assert_eq!(light_default.foreground, [53, 43, 34, 255]);
+    assert_eq!(light_default.background, [251, 247, 239, 255]);
+    assert_eq!(light_explicit.foreground, dark_explicit.foreground);
+    assert_eq!(light_explicit.background, dark_explicit.background);
 }
 
 #[test]
@@ -415,6 +461,226 @@ fn registry_lookup_does_not_expose_terminal_memory() {
     let count = with_terminal_for_test(id, |terminal| terminal.input_commit_count()).unwrap();
     assert_eq!(count, 0);
     assert!(destroy_terminal(id));
+}
+
+#[test]
+fn native_selection_handles_cjk_wide_spacers_and_combining_marks() {
+    let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
+    terminal.feed(b"\x1b[2J\x1b[HA ");
+    terminal.feed("日本語 e\u{301}".as_bytes());
+
+    // Column 3 is the spacer following the leading 日 cell. The native
+    // selection anchor normalizes it to the leading cell and alacritty keeps
+    // the combining mark attached to e.
+    terminal.select_start(0, 3).unwrap();
+    terminal.select_update(0, 9).unwrap();
+    assert_eq!(
+        terminal.selection_text().as_deref(),
+        Some("日本語 e\u{301}")
+    );
+
+    let snapshot = terminal.snapshot().unwrap();
+    let selected = decode_cells(snapshot.as_bytes())
+        .into_iter()
+        .find(|cell| cell.base == "日")
+        .expect("wide CJK leading cell");
+    assert_eq!(selected.foreground, [255, 255, 255, 255]);
+    assert_eq!(selected.background, [78, 105, 132, 255]);
+    assert_eq!(selected.flags & Flags::INVERSE.bits(), 0);
+
+    terminal.clear_selection();
+    assert_eq!(terminal.selection_text(), None);
+}
+
+#[test]
+fn native_selection_preserves_multiline_boundaries_and_wrapped_text() {
+    let mut terminal = Terminal::new(12, 4).expect("valid dimensions");
+    terminal.feed(b"\x1b[2J\x1b[Hfirst line\r\nsecond line");
+    terminal.select_start(0, 0).unwrap();
+    terminal.select_update(1, 5).unwrap();
+    assert_eq!(
+        terminal.selection_text().as_deref(),
+        Some("first line\nsecond")
+    );
+
+    let mut wrapped = Terminal::new(6, 3).expect("valid dimensions");
+    wrapped.feed(b"\x1b[2J\x1b[Habcdefghi");
+    wrapped.select_start(0, 0).unwrap();
+    wrapped.select_update(1, 2).unwrap();
+    // WRAPLINE joins the first two physical rows without inventing a newline.
+    assert_eq!(wrapped.selection_text().as_deref(), Some("abcdefghi"));
+}
+
+#[test]
+fn generic_modifier_encoding_covers_text_navigation_and_decckm() {
+    assert_eq!(encode_text("c", Modifiers::CTRL), b"\x03");
+    assert_eq!(encode_text("a", Modifiers::ALT), b"\x1ba");
+    assert_eq!(encode_text("日本", Modifiers::SHIFT), "日本".as_bytes());
+    assert_eq!(encode_key(KeyCode::Home, Modifiers::NONE, false), b"\x1b[H");
+    assert_eq!(
+        encode_key(KeyCode::Delete, Modifiers::SHIFT, false),
+        b"\x1b[3;2~"
+    );
+    assert_eq!(
+        encode_key(KeyCode::Up, Modifiers::CTRL, false),
+        b"\x1b[1;5A"
+    );
+    assert_eq!(encode_key(KeyCode::Up, Modifiers::NONE, true), b"\x1bOA");
+    assert_eq!(
+        encode_key(KeyCode::PageDown, Modifiers::ALT, false),
+        b"\x1b[6;3~"
+    );
+}
+
+#[test]
+fn scrollback_setting_is_bounded_and_updates_existing_and_future_terminals() {
+    let previous = scrollback_lines();
+    assert_eq!(previous, DEFAULT_SCROLLBACK_LINES);
+    assert_eq!(
+        set_scrollback_limit(MIN_SCROLLBACK_LINES - 1),
+        Err(TerminalError::InvalidScrollbackLines)
+    );
+    assert_eq!(
+        set_scrollback_limit(MAX_SCROLLBACK_LINES + 1),
+        Err(TerminalError::InvalidScrollbackLines)
+    );
+
+    let id = create_terminal(12, 3).unwrap();
+    set_scrollback_limit(MIN_SCROLLBACK_LINES).unwrap();
+    assert_eq!(scrollback_lines(), MIN_SCROLLBACK_LINES);
+    let revision = with_terminal_for_test(id, |terminal| terminal.content_revision()).unwrap();
+    set_scrollback_limit(MIN_SCROLLBACK_LINES).unwrap();
+    assert_eq!(
+        with_terminal_for_test(id, |terminal| terminal.content_revision()).unwrap(),
+        revision
+    );
+    // Existing grids apply the new bounded limit immediately; their allocated
+    // history grows lazily as new output arrives. Feed enough lines to verify
+    // that the current terminal can use the newly configured capacity.
+    with_terminal_for_test(id, |terminal| {
+        for index in 0..(MIN_SCROLLBACK_LINES + 8) {
+            terminal.feed(format!("line-{index}\r\n").as_bytes());
+        }
+        assert!(terminal.term().grid().history_size() <= MIN_SCROLLBACK_LINES);
+    })
+    .unwrap();
+    let mut future = Terminal::new(12, 3).unwrap();
+    for index in 0..(MIN_SCROLLBACK_LINES + 8) {
+        future.feed(format!("future-{index}\r\n").as_bytes());
+    }
+    assert!(future.term().grid().history_size() <= MIN_SCROLLBACK_LINES);
+
+    set_scrollback_limit(previous).unwrap();
+    destroy_terminal(id);
+}
+
+#[test]
+fn same_process_reconnect_retains_history_without_replaying_capture_lines() {
+    let mut terminal = Terminal::new(20, 4).unwrap();
+    terminal.begin_remote(101).unwrap();
+    let capture = b"old-one\r\nold-two\r\nold-three\r\nold-four\r\nold-five\r\nold-six";
+    terminal.restore_screen(101, 20, 4, capture).unwrap();
+    let before = grid_text(&terminal);
+    assert_eq!(before.matches("old-one").count(), 1);
+    assert_eq!(before.matches("old-six").count(), 1);
+
+    terminal.begin_remote(102).unwrap();
+    terminal.restore_screen(102, 20, 4, capture).unwrap();
+    let after = grid_text(&terminal);
+    for marker in [
+        "old-one",
+        "old-two",
+        "old-three",
+        "old-four",
+        "old-five",
+        "old-six",
+    ] {
+        assert_eq!(
+            after.matches(marker).count(),
+            1,
+            "duplicate marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn same_generation_recapture_retains_native_history() {
+    let mut terminal = Terminal::new(20, 4).unwrap();
+    terminal.begin_remote(103).unwrap();
+    terminal
+        .restore_screen(
+            103,
+            20,
+            4,
+            b"first-history\r\nsecond-history\r\nthird-history\r\nfourth-history\r\nfifth-history\r\nsixth-history",
+        )
+        .unwrap();
+    terminal.feed(b"\r\nlive-line\r\n");
+
+    let before = grid_text(&terminal);
+    assert_eq!(before.matches("first-history").count(), 1);
+    assert_eq!(before.matches("live-line").count(), 1);
+
+    // A refresh/resize/pane-zoom capture can use the same remote generation.
+    // Its bounded tmux history must update only the viewport; replacing the
+    // whole `Term` here would silently discard the native history above.
+    terminal
+        .restore_screen(103, 20, 4, b"new-one\r\nnew-two\r\nnew-three\r\nnew-four")
+        .unwrap();
+
+    let after = grid_text(&terminal);
+    assert_eq!(after.matches("first-history").count(), 1);
+    assert_eq!(after.matches("new-one").count(), 1);
+    assert_eq!(after.matches("new-four").count(), 1);
+}
+
+#[test]
+fn recapture_reseeds_cursor_template_and_applies_capture_modes() {
+    let mut terminal = Terminal::new(20, 4).unwrap();
+    terminal.begin_remote(104).unwrap();
+    terminal.restore_screen(104, 20, 4, b"old").unwrap();
+
+    // Leave state behind that would change the way the next viewport is
+    // parsed if the preserving path reused the old cursor template/modes.
+    terminal.feed(b"\x1b[31m\x1b[1m\x1b[4h\x1b[?6h\x1b[?7l");
+    terminal
+        .restore_screen(
+            104,
+            20,
+            4,
+            b"new\r\n\x1b[4l\x1b[?6l\x1b[?7h\x1b[1;1H\x1b[?25h\x1b[?1l\x1b[?2004l\x1b>",
+        )
+        .unwrap();
+
+    let grid = terminal.term().grid();
+    assert_eq!(grid.cursor.point, Point::new(Line(0), Column(0)));
+    assert_eq!(
+        grid.cursor.template.fg,
+        Color::Named(NamedColor::Foreground)
+    );
+    assert!(grid.cursor.template.flags.is_empty());
+    assert_eq!(grid.saved_cursor.template, grid.cursor.template);
+
+    let mode = *terminal.term().mode();
+    assert!(!mode.intersects(
+        TermMode::INSERT | TermMode::ORIGIN | TermMode::APP_CURSOR | TermMode::BRACKETED_PASTE
+    ));
+    assert!(mode.contains(TermMode::SHOW_CURSOR | TermMode::LINE_WRAP));
+}
+
+fn grid_text(terminal: &Terminal) -> String {
+    let grid = terminal.term().grid();
+    let mut text = String::new();
+    for row in -(grid.history_size() as i32)..(grid.screen_lines() as i32) {
+        for cell in &grid[Line(row)] {
+            text.push(cell.c);
+            for character in cell.zerowidth().unwrap_or(&[]) {
+                text.push(*character);
+            }
+        }
+        text.push('\n');
+    }
+    text
 }
 
 #[derive(Debug)]

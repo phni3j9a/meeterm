@@ -16,7 +16,7 @@ Pod::Spec.new do |s|
     'ios/build-rust.sh',
     'ios/include/**/*'
   ]
-  s.frameworks = 'CoreGraphics', 'CoreText', 'Metal', 'MetalKit', 'UIKit'
+  s.frameworks = 'CoreGraphics', 'CoreText', 'Metal', 'MetalKit', 'UIKit', 'Security'
   s.libraries = 'meeterm_core'
   s.dependency 'ExpoModulesCore'
 

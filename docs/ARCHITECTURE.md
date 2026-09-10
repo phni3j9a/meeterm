@@ -200,10 +200,10 @@ Security requirements:
 
 - never silently accept a changed known host key;
 - use explicit host-key verification / TOFU behavior for first connection;
-- keep secrets out of disk and ordinary React Native persistence in this slice;
-  if a future product needs persistence, use platform secure storage. Pass
-  current credentials transiently to Rust, which may retain only the selected
-  credential in process memory for explicit reconnect;
+- keep secrets out of ordinary React Native persistence. Optional saved credentials
+  use Android Keystore-backed AES-GCM or iOS Keychain; saved credentials are loaded
+  directly by the native connection path. Rust retains the selected credential
+  in process memory for reconnect;
 - do not log private keys, passwords, passphrases, or raw authentication material.
 
 SSH is transport, not durable application state.
@@ -246,14 +246,15 @@ only window/pane identities, labels, selection, and connection state. The same
 native view binds a `native:<id>` borrowed Rust terminal handle when the selected
 pane changes. View unmount does not disconnect or destroy the remote pane.
 
-`Reconnect` is an explicit native control command. Rust retains the selected
-parsed key or a `Zeroizing` password buffer in process memory. The form's
-private-key, passphrase, and password inputs are cleared after submission;
-the Rust credential remains available for in-process reconnect. No credential
-is saved to disk. After
-process death the user enters the selected credential again and connects to the
-same remote `meeterm` session. Approved host identities remain pinned,
-including during reconnect.
+`Reconnect` is an explicit native control command, supplemented by Rust-owned
+bounded automatic retry after transient transport loss and foreground return.
+Explicit disconnect cancels retry; host-key/authentication failures require user
+action. Rust retains the selected parsed key or a `Zeroizing` password buffer
+in process memory. The form clears credential inputs after submission. Optional
+platform-secure credential storage supports reopening a saved server after
+process death without passing its secret back to JavaScript. Approved host
+identities remain pinned during every reconnect. See [DAILY_USE.md](DAILY_USE.md)
+for profile, preference, native selection and scrollback boundaries.
 
 See [`SSH.md`](SSH.md) for the real fixture, end-to-end tests, and the current
 reconstruction and handoff boundaries.

@@ -16,10 +16,12 @@ use std::time::{Duration, Instant};
 
 use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, PaneSnapshot,
-    SessionSnapshot, SpecialKey, connect_terminal, connection_snapshot, create_terminal,
-    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count,
-    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot,
-    meeterm_snapshot_size, reconnect_terminal, select_pane, send_bytes, session_snapshot,
+    SessionSnapshot, SpecialKey, close_pane, close_workspace, connect_terminal,
+    connection_snapshot, create_pane, create_terminal, create_workspace, destroy_terminal,
+    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
+    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace, select_pane, send_bytes,
+    session_snapshot,
 };
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -36,6 +38,10 @@ const MAIN_PANE_MARKER: &str = "MEETERM_TMUX_MAIN_PANE_0A11";
 const SIDE_PANE_MARKER: &str = "MEETERM_TMUX_SIDE_PANE_0A12";
 const DURABLE_MARKER: &str = "MEETERM_TMUX_DURABLE_0A13";
 const FULLSCREEN_MARKER: &str = "MEETERM_TMUX_FULLSCREEN_0A15";
+const TUI_MARKER: &str = "MEETERM_TMUX_TUI_REDRAW_0A16";
+const TUI_INPUT_MARKER: &str = "MEETERM_TMUX_TUI_INPUT_0A17";
+const TUI_COLD_MARKER: &str = "MEETERM_TMUX_TUI_COLD_0A18";
+const TUI_COLD_INPUT_MARKER: &str = "MEETERM_TMUX_TUI_COLD_INPUT_0A19";
 const JAPANESE_TEXT: &str = "日本語";
 
 struct FixtureConfig {
@@ -383,19 +389,119 @@ fn real_openssh_tmux_session_loop() {
         |output| output.trim() == "0",
     );
 
+    // Exercise a real alternate-screen application when the fixture image
+    // provides one. The explicit redraw command must reconstruct the current
+    // TUI screen in the native terminal without routing cells through JS.
+    let vim_available = ssh_command(&fixture, false)
+        .arg("command -v vim")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        vim_available,
+        "the OpenSSH fixture must provide vim for the full-screen TUI recovery boundary"
+    );
+    let tui = ["nvim", "vim"]
+        .into_iter()
+        .find(|program| {
+            ssh_command(&fixture, false)
+                .arg(format!("command -v {program}"))
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+        .expect("vim must be available after the fixture boundary check");
+    {
+        send_line_retry(
+            side.terminal_id,
+            "printf '\\033[?1049l'",
+            "leave shell alternate screen before TUI",
+        );
+        wait_for_remote_tmux(
+            &fixture,
+            &format!(
+                "tmux display-message -p -t %{} '#{{alternate_on}}'",
+                side.pane_id
+            ),
+            "leave shell alternate screen before TUI",
+            |output| output.trim() == "0",
+        );
+        let launch = match tui {
+            "nvim" => "nvim -u NONE -N",
+            "vim" => "vim -Nu NONE -n",
+            _ => unreachable!("only nvim or vim can reach the TUI fixture"),
+        };
+        send_line_retry(side.terminal_id, launch, "launch real full-screen TUI");
+        wait_for_remote_tmux(
+            &fixture,
+            &format!(
+                "tmux display-message -p -t %{} '#{{alternate_on}}'",
+                side.pane_id
+            ),
+            "real full-screen TUI enters alternate screen",
+            |output| output.trim() == "1",
+        );
+        // Leave Vim in insert mode while the native transport is interrupted.
+        // Reconnect must restore the alternate-screen capture and keep
+        // accepting the already active TUI input mode; the second marker is
+        // intentionally sent without another `i`.
+        send_raw_retry(
+            side.terminal_id,
+            format!("i{TUI_MARKER}").as_bytes(),
+            "vim TUI marker",
+        );
+        refresh_terminal(id).expect("request native TUI redraw");
+        wait_for_pane_text(&side, TUI_MARKER, "native TUI redraw marker");
+        detach_control_mode_client(&fixture);
+        wait_for_reconnecting(id, "TUI transport loss");
+        wait_for_ready_without_prompt(id, "TUI automatic reconnect");
+        refresh_terminal(id).expect("request TUI redraw after reconnect");
+        wait_for_pane_text(&side, TUI_MARKER, "TUI marker after reconnect");
+        send_raw_retry(
+            side.terminal_id,
+            format!("{TUI_INPUT_MARKER}\x1b").as_bytes(),
+            "recovered Vim insert mode",
+        );
+        wait_for_pane_text(&side, TUI_INPUT_MARKER, "recovered Vim input mode marker");
+        send_raw_retry(side.terminal_id, b":q!\r", "exit vim TUI");
+        wait_for_remote_tmux(
+            &fixture,
+            &format!(
+                "tmux display-message -p -t %{} '#{{alternate_on}}'",
+                side.pane_id
+            ),
+            "real full-screen TUI exits alternate screen",
+            |output| output.trim() == "0",
+        );
+        // Re-establish the shell-owned alternate screen used by the later
+        // transport-loss assertion after the real TUI has exited.
+        send_line_retry(
+            side.terminal_id,
+            &fullscreen_command,
+            "restore alternate screen marker",
+        );
+        wait_for_remote_tmux(
+            &fixture,
+            &format!(
+                "tmux display-message -p -t %{} '#{{alternate_on}}'",
+                side.pane_id
+            ),
+            "restore alternate screen marker",
+            |output| output.trim() == "1",
+        );
+        wait_for_pane_text(&side, FULLSCREEN_MARKER, "restored alternate screen marker");
+    }
+
     let before_loss = session_snapshot(id).expect("session snapshot before transport loss");
     let before_ids = pane_identity_set(&before_loss);
     // Detaching the native Control Mode client from another ordinary SSH
     // client simulates an abrupt transport loss while leaving tmux alive.
     detach_control_mode_client(&fixture);
-    wait_for_transport_loss(id, "abrupt transport loss");
+    wait_for_reconnecting(id, "abrupt transport loss");
     assert!(send_bytes(side.terminal_id, b"should be rejected").is_err());
 
     // tmux remains durable while SSH is gone. Inject a shell sentinel via a
     // separate ordinary SSH client before reconnecting the native owner.
     remote_send_keys(&fixture, side.pane_id, DURABLE_MARKER);
-    reconnect_terminal(id).expect("start reconnect after transport loss");
-    wait_for_ready_without_prompt(id, "pinned reconnect after transport loss");
+    wait_for_ready_without_prompt(id, "automatic reconnect after transport loss");
     let after_loss = wait_for_session(id, before_loss.panes.len(), "resynchronized tmux topology");
     assert_eq!(pane_identity_set(&after_loss), before_ids);
     let reconnected_side = after_loss
@@ -589,7 +695,224 @@ fn real_openssh_tmux_session_loop() {
         "surviving pane input",
     );
     wait_for_pane_text(&main, "MEETERM_AFTER_REMOVE", "surviving pane output");
-    disconnect_terminal(id).expect("disconnect surviving session");
+
+    // CRUD uses numeric tmux identities and one quoted argument for each
+    // user-visible name. Creation selects the newly created mobile target so
+    // the app can open it immediately while the ordinary tmux layout remains
+    // durable on the remote server.
+    let before_crud = session_snapshot(id).expect("CRUD baseline snapshot");
+    let workspace_name = "daily ; # $HOME \\ \" 日本語";
+    create_workspace(id, workspace_name).expect("create workspace");
+    let after_workspace = wait_for_snapshot(id, "workspace creation", |snapshot| {
+        snapshot.windows.len() == before_crud.windows.len() + 1
+    });
+    let created_window = after_workspace
+        .windows
+        .iter()
+        .find(|window| {
+            !before_crud
+                .windows
+                .iter()
+                .any(|old| old.window_id == window.window_id)
+        })
+        .expect("created workspace identity")
+        .clone();
+    assert_eq!(created_window.name, workspace_name);
+    assert!(created_window.selected);
+
+    let renamed_workspace = "renamed workspace ; $HOME";
+    rename_workspace(id, created_window.window_id, renamed_workspace).expect("rename workspace");
+    let renamed = wait_for_snapshot(id, "workspace rename", |snapshot| {
+        snapshot.windows.iter().any(|window| {
+            window.window_id == created_window.window_id && window.name == renamed_workspace
+        })
+    });
+    let created_window = renamed
+        .windows
+        .iter()
+        .find(|window| window.window_id == created_window.window_id)
+        .expect("renamed workspace")
+        .clone();
+
+    let before_pane_count = renamed.panes.len();
+    create_pane(id, created_window.window_id).expect("create pane");
+    let after_pane = wait_for_snapshot(id, "pane creation", |snapshot| {
+        snapshot.panes.len() == before_pane_count + 1
+            && snapshot
+                .panes
+                .iter()
+                .any(|pane| pane.window_id == created_window.window_id && pane.selected)
+    });
+    let created_pane = after_pane
+        .panes
+        .iter()
+        .find(|pane| {
+            pane.window_id == created_window.window_id
+                && !created_window
+                    .panes
+                    .iter()
+                    .any(|old| old.pane_id == pane.pane_id)
+        })
+        .expect("created pane identity")
+        .clone();
+    let pane_name = "editor pane ; # $HOME \\ \" 日本語";
+    rename_pane(id, created_pane.pane_id, pane_name).expect("rename pane");
+    let renamed_pane = wait_for_snapshot(id, "pane rename", |snapshot| {
+        snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == created_pane.pane_id && pane.pane_name == pane_name)
+    });
+    assert_eq!(
+        renamed_pane
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == created_pane.pane_id)
+            .expect("renamed pane")
+            .pane_name,
+        pane_name
+    );
+    close_pane(id, created_pane.pane_id).expect("close pane");
+    let after_close_pane = wait_for_snapshot(id, "pane close", |snapshot| {
+        !snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == created_pane.pane_id)
+    });
+    assert_eq!(after_close_pane.panes.len(), before_pane_count);
+    close_workspace(id, created_window.window_id).expect("close workspace");
+    let after_close_workspace = wait_for_snapshot(id, "workspace close", |snapshot| {
+        !snapshot
+            .windows
+            .iter()
+            .any(|window| window.window_id == created_window.window_id)
+    });
+    assert_eq!(
+        after_close_workspace.windows.len(),
+        before_crud.windows.len()
+    );
+
+    // Keep a real Vim process alive while the original native owner is
+    // destroyed. A new owner must attach to the same durable tmux pane,
+    // recapture the alternate screen into a fresh terminal registry, and
+    // continue in Vim's existing insert mode without another `i` command.
+    select_pane(id, main.pane_id).expect("select shell pane for cold TUI recovery");
+    wait_for_selected_pane(id, main.pane_id, "select shell pane for cold TUI recovery");
+    send_line_retry(
+        main.terminal_id,
+        "vim -Nu NONE -n",
+        "launch Vim for cold TUI recovery",
+    );
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{alternate_on}}'",
+            main.pane_id
+        ),
+        "cold Vim enters alternate screen",
+        |output| output.trim() == "1",
+    );
+    send_raw_retry(
+        main.terminal_id,
+        format!("i{TUI_COLD_MARKER}").as_bytes(),
+        "cold Vim initial marker",
+    );
+    wait_for_pane_text(&main, TUI_COLD_MARKER, "cold Vim initial marker");
+
+    disconnect_terminal(id).expect("disconnect original owner with Vim alive");
+    wait_for_state(
+        id,
+        ConnectionState::Disconnected,
+        "disconnect original owner with Vim alive",
+    );
+    assert!(
+        destroy_terminal(id),
+        "destroy original terminal registry owner"
+    );
+
+    let cold_id = create_terminal(80, 24).expect("create cold TUI recovery owner");
+    let _cold_guard = TerminalGuard { id: cold_id };
+    connect_terminal(cold_id, fixture.options()).expect("connect cold TUI recovery owner");
+    wait_for_ready_without_prompt(cold_id, "cold TUI recovery owner ready");
+    let cold_session = wait_for_snapshot(cold_id, "cold TUI recovery session", |snapshot| {
+        snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == main.pane_id)
+    });
+    let cold_pane = cold_session
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == main.pane_id)
+        .expect("cold owner finds Vim pane identity")
+        .clone();
+    refresh_terminal(cold_id).expect("recapture Vim screen in fresh owner");
+    wait_for_pane_text(&cold_pane, TUI_COLD_MARKER, "cold Vim screen recapture");
+    send_raw_retry(
+        cold_pane.terminal_id,
+        format!("{TUI_COLD_INPUT_MARKER}\x1b").as_bytes(),
+        "cold Vim recovered insert mode",
+    );
+    wait_for_pane_text(
+        &cold_pane,
+        TUI_COLD_INPUT_MARKER,
+        "cold Vim recovered insert mode",
+    );
+    send_raw_retry(cold_pane.terminal_id, b":q!\r", "exit cold Vim TUI");
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t %{} '#{{alternate_on}}'",
+            main.pane_id
+        ),
+        "cold Vim exits alternate screen",
+        |output| output.trim() == "0",
+    );
+    // Explicitly closing the final pane must converge to Disconnected. It is
+    // a user requested end of the managed session, so reconnect must not
+    // silently recreate an empty `meeterm` workspace.
+    let remaining = session_snapshot(cold_id).expect("cold session after Vim exit");
+    let final_pane = remaining
+        .panes
+        .last()
+        .expect("cold session retains a pane after Vim exit")
+        .clone();
+    for pane in remaining
+        .panes
+        .iter()
+        .filter(|pane| pane.pane_id != final_pane.pane_id)
+    {
+        close_pane(cold_id, pane.pane_id).expect("close non-final cold pane");
+        wait_for_snapshot(cold_id, "close non-final cold pane", |snapshot| {
+            !snapshot
+                .panes
+                .iter()
+                .any(|candidate| candidate.pane_id == pane.pane_id)
+        });
+    }
+    close_pane(cold_id, final_pane.pane_id).expect("close final cold pane");
+    wait_for_state(
+        cold_id,
+        ConnectionState::Disconnected,
+        "close final cold pane",
+    );
+
+    // The same final-window path is exercised after a fresh attach. This
+    // catches a window-close implementation that only handles pane removal.
+    reconnect_terminal(cold_id).expect("recreate cold owner for final workspace close");
+    wait_for_ready_without_prompt(cold_id, "recreate cold owner for final workspace close");
+    let recreated = wait_for_session(cold_id, 1, "recreated one-pane session");
+    let final_window = recreated
+        .windows
+        .first()
+        .expect("recreated final workspace")
+        .window_id;
+    close_workspace(cold_id, final_window).expect("close final cold workspace");
+    wait_for_state(
+        cold_id,
+        ConnectionState::Disconnected,
+        "close final cold workspace",
+    );
 
     // Once the key is pinned, a wrong passphrase fails before tmux is opened.
     let wrong_id = create_terminal(80, 24).expect("create wrong-passphrase terminal");
@@ -1107,6 +1430,41 @@ fn wait_for_session(id: u64, expected_panes: usize, label: &str) -> SessionSnaps
     }
 }
 
+fn wait_for_snapshot(
+    id: u64,
+    label: &str,
+    mut predicate: impl FnMut(&SessionSnapshot) -> bool,
+) -> SessionSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let snapshot = session_snapshot(id).expect("tmux session snapshot");
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        let connection = connection_snapshot(id).expect("connection snapshot");
+        if connection.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: state={}, errorCode={}",
+                state_name(connection.state),
+                connection_string(&connection.error_code, connection.error_code_len)
+            );
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for {label}: state={}, errorCode={}, windows={:?}",
+                state_name(connection.state),
+                connection_string(&connection.error_code, connection.error_code_len),
+                snapshot
+                    .windows
+                    .iter()
+                    .map(|window| (window.window_id, window.name.clone()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
 fn wait_for_selected_pane(id: u64, pane_id: u64, label: &str) {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
@@ -1240,26 +1598,27 @@ fn write_alternate_trust_record(fixture: &FixtureConfig) {
     fs::write(&fixture.known_hosts, record).expect("replace fixture trust record");
 }
 
-fn wait_for_transport_loss(id: u64, label: &str) {
+fn wait_for_reconnecting(id: u64, label: &str) {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
         let snapshot = connection_snapshot(id).expect("connection snapshot");
-        match snapshot.state {
-            value if value == ConnectionState::Disconnected as u32 => return,
-            value if value == ConnectionState::Failed as u32 => {
-                let code = connection_string(&snapshot.error_code, snapshot.error_code_len);
-                assert!(
-                    code == "transport" || code == "remote_closed",
-                    "{label} failed with unexpected error code {code}"
-                );
-                return;
-            }
-            _ if Instant::now() < deadline => sleep(POLL_INTERVAL),
-            _ => panic!(
+        if snapshot.state == ConnectionState::Reconnecting as u32 {
+            return;
+        }
+        if snapshot.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: state={}, errorCode={}",
+                state_name(snapshot.state),
+                connection_string(&snapshot.error_code, snapshot.error_code_len)
+            );
+        }
+        if Instant::now() >= deadline {
+            panic!(
                 "timed out waiting for {label}: state={}",
                 state_name(snapshot.state)
-            ),
+            );
         }
+        sleep(POLL_INTERVAL);
     }
 }
 

@@ -2,6 +2,7 @@ package dev.meeterm.terminal
 
 import android.content.Context
 import android.content.ClipboardManager
+import android.content.ClipData
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -52,6 +53,8 @@ class MeetermTerminalView(
   private val content: LinearLayout = LinearLayout(context)
   private val renderer = TerminalRenderer(context)
   private lateinit var specialKeyRow: LinearLayout
+  private var controlModifierButton: TextView? = null
+  private var altModifierButton: TextView? = null
   private var terminalId: String = DEFAULT_TERMINAL_ID
   private var inputGeneration = 0L
   @Volatile private var terminalHandle: Long = 0L
@@ -70,6 +73,26 @@ class MeetermTerminalView(
   private var touchInSurface = false
   private var touchDragging = false
   private var touchScrollRemainderPx = 0f
+  private var selectionGestureActive = false
+  private var selectionStartedThisGesture = false
+  private val selectionLongPress = Runnable {
+    if (!attached || !touchInSurface || touchDragging || terminalHandle == 0L) return@Runnable
+    val point = terminalPoint(touchDownX, touchDownY) ?: return@Runnable
+    val result = try {
+      MeetermNative.selectStart(terminalHandle, point.first, point.second)
+    } catch (_: RuntimeException) {
+      -1
+    }
+    if (result == 0) {
+      selectionGestureActive = true
+      selectionStartedThisGesture = true
+      parent?.requestDisallowInterceptTouchEvent(true)
+      surface.requestRender()
+    }
+  }
+  private var fontSizePoints = 15.0
+  private var themeName = "dark"
+  private var scrollbackLineLimit = 10_000
   // Keep one post-resize draw after EGL settles. This is separate from the
   // revision poll: it repairs a surface timing race even when terminal
   // content did not change.
@@ -110,13 +133,16 @@ class MeetermTerminalView(
       renderer.setPreedit(value)
       surface.requestRender()
     },
+    onModifiersChanged = {
+      if (::specialKeyRow.isInitialized) syncModifierButtons()
+    },
   )
 
   private val onNativeReady by EventDispatcher<Map<String, Any>>()
   private val onMetrics by EventDispatcher<Map<String, Any>>()
 
   init {
-    setBackgroundColor(Color.rgb(36, 33, 29))
+    applyThemeColors()
     isFocusable = true
     isFocusableInTouchMode = true
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -200,6 +226,7 @@ class MeetermTerminalView(
     terminalHandle = TerminalRegistry.acquire(nextId, DEFAULT_COLUMNS, DEFAULT_ROWS)
     Log.i(TAG, "bound terminalId=$terminalId handle=$terminalHandle")
     renderer.attachTerminal(terminalHandle)
+    applyNativeSettings(terminalHandle)
     (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.restartInput(this)
     lastTerminalRevision = MeetermNative.terminalRevision(terminalHandle)
     post {
@@ -237,6 +264,7 @@ class MeetermTerminalView(
     attached = false
     stopRevisionPolling()
     removeCallbacks(settledFrameRequest)
+    removeCallbacks(selectionLongPress)
     surface.onPause()
     renderer.attachTerminal(0L)
     releaseBinding()
@@ -305,13 +333,21 @@ class MeetermTerminalView(
         touchInSurface = event.y < surface.bottom
         touchDragging = false
         touchScrollRemainderPx = 0f
+        selectionGestureActive = false
+        selectionStartedThisGesture = false
+        removeCallbacks(selectionLongPress)
+        if (touchInSurface) {
+          postDelayed(selectionLongPress, ViewConfiguration.getLongPressTimeout().toLong())
+        }
       }
       MotionEvent.ACTION_MOVE -> {
+        if (selectionGestureActive) return true
         if (touchInSurface && !touchDragging) {
           val deltaX = event.x - touchDownX
           val deltaY = event.y - touchDownY
           if (abs(deltaY) > touchSlop && abs(deltaY) >= abs(deltaX)) {
             touchDragging = true
+            removeCallbacks(selectionLongPress)
             // The terminal surface must receive a cancel before this parent
             // consumes the rest of a vertical gesture as scroll input.
             parent?.requestDisallowInterceptTouchEvent(true)
@@ -320,6 +356,7 @@ class MeetermTerminalView(
         }
       }
       MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+        removeCallbacks(selectionLongPress)
         if (touchDragging) {
           // Keep the drag state until onTouchEvent receives the terminal
           // gesture's final event and performs the single cleanup. Returning
@@ -336,6 +373,10 @@ class MeetermTerminalView(
     if (!touchInSurface) return super.onTouchEvent(event)
     when (event.actionMasked) {
       MotionEvent.ACTION_MOVE -> {
+        if (selectionGestureActive) {
+          updateSelection(event.x, event.y)
+          return true
+        }
         // If the surface declined DOWN, ViewGroup sends MOVE directly here
         // without consulting onInterceptTouchEvent again.
         if (touchInSurface && !touchDragging) {
@@ -352,6 +393,11 @@ class MeetermTerminalView(
         }
       }
       MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+        removeCallbacks(selectionLongPress)
+        if (selectionGestureActive && event.actionMasked == MotionEvent.ACTION_UP) {
+          updateSelection(event.x, event.y)
+        }
+        selectionGestureActive = false
         touchDragging = false
         touchInSurface = false
         touchScrollRemainderPx = 0f
@@ -374,7 +420,12 @@ class MeetermTerminalView(
     // paths request the IME consistently, while vertical drags remain
     // excluded once interception has marked them as such.
     val tapCandidate =
-      event.actionMasked == MotionEvent.ACTION_UP && touchInSurface && !touchDragging
+      event.actionMasked == MotionEvent.ACTION_UP && touchInSurface &&
+        !touchDragging && !selectionStartedThisGesture
+    if (selectionGestureActive && event.actionMasked == MotionEvent.ACTION_MOVE) {
+      updateSelection(event.x, event.y)
+      return true
+    }
     val handled = super.dispatchTouchEvent(event)
     if (tapCandidate) {
       post {
@@ -383,7 +434,44 @@ class MeetermTerminalView(
       }
       touchInSurface = false
     }
+    if (selectionGestureActive &&
+      (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL)
+    ) {
+      if (event.actionMasked == MotionEvent.ACTION_UP) {
+        updateSelection(event.x, event.y)
+      }
+      selectionGestureActive = false
+      touchInSurface = false
+    }
+    if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+      removeCallbacks(selectionLongPress)
+      selectionStartedThisGesture = false
+    }
     return handled
+  }
+
+  private fun terminalPoint(x: Float, y: Float): Pair<Int, Int>? {
+    val cellWidth = renderer.cellWidthPx
+    val cellHeight = renderer.cellHeightPx
+    val handle = terminalHandle
+    if (handle == 0L || cellWidth <= 0 || cellHeight <= 0) return null
+    val columns = if (lastColumns > 0) lastColumns else max(1, surface.width / cellWidth)
+    val rows = if (lastRows > 0) lastRows else max(1, surface.height / cellHeight)
+    val column = ((x - surface.left) / cellWidth).toInt().coerceIn(0, columns - 1)
+    val row = ((y - surface.top) / cellHeight).toInt().coerceIn(0, rows - 1)
+    return row to column
+  }
+
+  private fun updateSelection(x: Float, y: Float) {
+    val point = terminalPoint(x, y) ?: return
+    val result = try {
+      MeetermNative.selectUpdate(terminalHandle, point.first, point.second)
+    } catch (_: RuntimeException) {
+      -1
+    }
+    if (result == 0) {
+      surface.requestRender()
+    }
   }
 
   private fun scrollForDrag(y: Float) {
@@ -406,6 +494,7 @@ class MeetermTerminalView(
 
   /** Handle the Android/IME paste actions without routing clipboard text via JS. */
   internal fun performContextMenuAction(id: Int): Boolean {
+    if (id == android.R.id.copy) return copySelection()
     if (id != android.R.id.paste && id != android.R.id.pasteAsPlainText) return false
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
       ?: return false
@@ -427,8 +516,25 @@ class MeetermTerminalView(
     return true
   }
 
+  private fun copySelection(): Boolean {
+    val text = try {
+      MeetermNative.selectionText(terminalHandle)
+    } catch (_: RuntimeException) {
+      null
+    } ?: return true
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+      ?: return false
+    clipboard.setPrimaryClip(ClipData.newPlainText("Terminal selection", text))
+    return true
+  }
+
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    val handled = inputSession.handleKeyEvent(event.action, event.keyCode, event.unicodeChar)
+    val handled = inputSession.handleKeyEvent(
+      event.action,
+      event.keyCode,
+      event.unicodeChar,
+      event.metaState,
+    )
     if (handled) {
       if (event.action != KeyEvent.ACTION_UP) surface.requestRender()
       return true
@@ -481,7 +587,12 @@ class MeetermTerminalView(
 
       override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (generation != inputGeneration) return false
-        val result = inputSession.handleKeyEvent(event.action, event.keyCode, event.unicodeChar)
+        val result = inputSession.handleKeyEvent(
+          event.action,
+          event.keyCode,
+          event.unicodeChar,
+          event.metaState,
+        )
         if (result && event.action != KeyEvent.ACTION_UP) surface.requestRender()
         return result
       }
@@ -551,6 +662,44 @@ class MeetermTerminalView(
     )
   }
 
+  private fun syncModifierButtons() {
+    listOf(
+      controlModifierButton to InputSession.MOD_CTRL,
+      altModifierButton to InputSession.MOD_ALT,
+    ).forEach { (button, modifier) ->
+      val modifierButton = button ?: return@forEach
+      val selected = inputSession.modifierIsActive(modifier)
+      modifierButton.background = GradientDrawable().apply {
+        setColor(if (selected) Color.rgb(117, 83, 39) else Color.rgb(48, 44, 38))
+        cornerRadius = dp(5).toFloat()
+      }
+      modifierButton.contentDescription = if (selected) {
+        "${modifierButton.text} modifier on"
+      } else {
+        "${modifierButton.text} modifier off"
+      }
+    }
+  }
+
+  private fun createModifierButton(context: Context, label: String, modifier: Int): TextView =
+    TextView(context).apply {
+      text = label
+      textSize = 12f
+      gravity = android.view.Gravity.CENTER
+      minHeight = dp(44)
+      minimumHeight = dp(44)
+      minWidth = 0
+      minimumWidth = 0
+      setPadding(0, 0, 0, 0)
+      setTextColor(Color.rgb(219, 179, 120))
+      isClickable = true
+      isFocusable = true
+      setOnClickListener {
+        requestFocusFromTouch()
+        inputSession.toggleModifier(modifier)
+      }
+    }
+
   private fun createSpecialKeyRow(context: Context): LinearLayout {
     val row = LinearLayout(context).apply {
       orientation = LinearLayout.HORIZONTAL
@@ -558,6 +707,10 @@ class MeetermTerminalView(
       setBackgroundColor(Color.rgb(33, 31, 27))
       importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
+    val controlButton = createModifierButton(context, "Ctrl", InputSession.MOD_CTRL)
+    val altButton = createModifierButton(context, "Alt", InputSession.MOD_ALT)
+    controlModifierButton = controlButton
+    altModifierButton = altButton
     listOf(
       "Esc" to TerminalSpecialKey.Escape,
       "Tab" to TerminalSpecialKey.Tab,
@@ -594,6 +747,12 @@ class MeetermTerminalView(
         marginEnd = dp(1)
       })
     }
+    listOf(controlButton, altButton).forEach { button ->
+      row.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+        marginStart = dp(1)
+        marginEnd = dp(1)
+      })
+    }
     val pasteButton = TextView(context).apply {
       text = "Paste"
       textSize = 12f
@@ -620,7 +779,90 @@ class MeetermTerminalView(
       marginStart = dp(1)
       marginEnd = dp(1)
     })
+    val copyButton = TextView(context).apply {
+      text = "Copy"
+      textSize = 12f
+      gravity = android.view.Gravity.CENTER
+      minHeight = dp(44)
+      minimumHeight = dp(44)
+      minWidth = 0
+      minimumWidth = 0
+      setPadding(0, 0, 0, 0)
+      setTextColor(Color.rgb(219, 179, 120))
+      background = GradientDrawable().apply {
+        setColor(Color.rgb(48, 44, 38))
+        cornerRadius = dp(5).toFloat()
+      }
+      isClickable = true
+      isFocusable = true
+      contentDescription = "Copy selection"
+      setOnClickListener {
+        requestFocusFromTouch()
+        copySelection()
+      }
+    }
+    row.addView(copyButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+      marginStart = dp(1)
+      marginEnd = dp(1)
+    })
+    syncModifierButtons()
     return row
+  }
+
+  fun setFontSize(value: Double) {
+    fontSizePoints = if (value.isFinite()) value.coerceIn(10.0, 24.0) else 15.0
+    renderer.setFontSize(fontSizePoints)
+    post {
+      reconcileResize(surface.width, surface.height)
+      surface.requestRender()
+    }
+  }
+
+  fun setTheme(value: String) {
+    themeName = if (value.equals("light", ignoreCase = true)) "light" else "dark"
+    applyThemeColors()
+    applyNativeSettings(terminalHandle)
+    surface.requestRender()
+  }
+
+  fun setScrollbackLines(value: Int) {
+    scrollbackLineLimit = value.coerceIn(1_000, 50_000)
+    if (terminalHandle != 0L) {
+      applyNativeSettings(terminalHandle)
+    } else {
+      try {
+        MeetermNative.setScrollbackLimit(scrollbackLineLimit)
+      } catch (_: RuntimeException) {
+        Log.w(TAG, "Could not apply scrollback limit before terminal binding")
+      }
+    }
+  }
+
+  private fun applyNativeSettings(handle: Long) {
+    if (handle == 0L) return
+    try {
+      if (MeetermNative.setTheme(handle, themeName == "light") != 0) {
+        Log.w(TAG, "Could not apply terminal theme")
+      }
+      if (MeetermNative.setScrollbackLimit(scrollbackLineLimit) != 0) {
+        Log.w(TAG, "Could not apply terminal scrollback")
+      }
+    } catch (_: RuntimeException) {
+      Log.w(TAG, "Could not apply native terminal settings")
+    }
+  }
+
+  private fun applyThemeColors() {
+    val background = if (themeName == "light") Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
+    setBackgroundColor(background)
+    content.setBackgroundColor(background)
+    if (::specialKeyRow.isInitialized) {
+      specialKeyRow.setBackgroundColor(
+        if (themeName == "light") Color.rgb(242, 237, 226) else Color.rgb(33, 31, 27),
+      )
+      syncModifierButtons()
+    }
+    renderer.setTheme(themeName == "light")
   }
 
   private fun dp(value: Int): Int =
@@ -628,7 +870,7 @@ class MeetermTerminalView(
 
   private fun releaseBinding() {
     inputGeneration += 1
-    inputSession.setComposingText("")
+    inputSession.cancel()
     editable.clear()
     if (terminalHandle == 0L) return
     TerminalRegistry.release(terminalId, terminalHandle)

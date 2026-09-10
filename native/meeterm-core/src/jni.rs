@@ -45,6 +45,192 @@ fn code_from_outcome(outcome: jni::EnvOutcome<'_, jint, JniError>) -> jint {
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sendKey(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    key: jint,
+    modifiers: jint,
+) -> jint {
+    let (Some(handle), Ok(key), Ok(modifiers)) = (
+        handle_from_jlong(handle),
+        u32::try_from(key),
+        u32::try_from(modifiers),
+    ) else {
+        return -1;
+    };
+    crate::ffi::meeterm_send_key(handle, key, modifiers)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_commitModified<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    bytes: JByteArray<'caller>,
+    modifiers: jint,
+) -> jint {
+    let (Some(handle), Ok(modifiers)) = (handle_from_jlong(handle), u32::try_from(modifiers))
+    else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let bytes = env.convert_byte_array(&bytes)?;
+        Ok(unsafe {
+            crate::ffi::meeterm_commit_modified_utf8(handle, bytes.as_ptr(), bytes.len(), modifiers)
+        })
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_selectStart(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    row: jint,
+    column: jint,
+) -> jint {
+    let (Some(handle), Ok(row), Ok(column)) = (
+        handle_from_jlong(handle),
+        u32::try_from(row),
+        u32::try_from(column),
+    ) else {
+        return -1;
+    };
+    crate::ffi::meeterm_select_start(handle, row, column)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_selectUpdate(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    row: jint,
+    column: jint,
+) -> jint {
+    let (Some(handle), Ok(row), Ok(column)) = (
+        handle_from_jlong(handle),
+        u32::try_from(row),
+        u32::try_from(column),
+    ) else {
+        return -1;
+    };
+    crate::ffi::meeterm_select_update(handle, row, column)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_clearSelection(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ffi::meeterm_clear_selection(handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_selectionText<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JString::default();
+    };
+    let result = unowned_env
+        .with_env(|env| -> Result<_, JniError> {
+            let text = registry::selection_text(handle).map_err(native_error)?;
+            match text {
+                Some(text) if text.len() <= 4 * 1024 * 1024 => env.new_string(text),
+                _ => Ok(JString::default()),
+            }
+        })
+        .into_outcome();
+    match result {
+        Outcome::Ok(text) => text,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setTheme(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    light: jboolean,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ffi::meeterm_set_theme(handle, u8::from(light))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setScrollbackLimit(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    lines: jint,
+) -> jint {
+    let Ok(lines) = u32::try_from(lines) else {
+        return -1;
+    };
+    crate::ffi::meeterm_set_scrollback_limit(lines)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxCommand<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    operation: jint,
+    target: jlong,
+    name: JString<'caller>,
+) -> jint {
+    let (Some(handle), Ok(operation), Ok(target)) = (
+        handle_from_jlong(handle),
+        u32::try_from(operation),
+        u64::try_from(target),
+    ) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let name = string_from_java(env, &name)?;
+        // The string owns its bytes for the entire FFI call.
+        Ok(unsafe {
+            crate::ffi::meeterm_tmux_command(handle, operation, target, name.as_ptr(), name.len())
+        })
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setForeground(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    foreground: jboolean,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ffi::meeterm_set_foreground(handle, u8::from(foreground))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setAutomaticReconnect(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    enabled: jboolean,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ffi::meeterm_set_automatic_reconnect(handle, u8::from(enabled))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_terminalExists(
     _env: EnvUnowned<'_>,
     _this: JObject<'_>,
@@ -103,7 +289,7 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxSessionState<
             let length = session
                 .panes
                 .len()
-                .checked_mul(6)
+                .checked_mul(7)
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| JniError::ParseFailed("Session too large".into()))?;
             let array =
@@ -116,6 +302,7 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_tmuxSessionState<
                     pane.window_name.clone(),
                     u8::from(pane.selected).to_string(),
                     u8::from(pane.active).to_string(),
+                    pane.pane_name.clone(),
                 ];
                 for (field, value) in fields.iter().enumerate() {
                     let value = env.new_string(value)?;

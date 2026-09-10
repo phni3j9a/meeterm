@@ -284,6 +284,33 @@ class UiDriverTests(unittest.TestCase):
             "host_input",
         )
 
+    def test_set_toggle_taps_once_and_verifies_checked_state(self) -> None:
+        switch = smoke.Node(
+            "",
+            "Save server profile",
+            "android.widget.Switch",
+            (0, 0, 100, 100),
+            checked=False,
+        )
+        device = mock.Mock()
+        device.dump_ui.return_value = [switch]
+        device.input_tap.side_effect = lambda _x, _y, _stage: setattr(
+            switch,
+            "checked",
+            True,
+        )
+
+        smoke.set_toggle(
+            device,
+            "Save server profile",
+            True,
+            "save_profile",
+            scroll=False,
+        )
+
+        device.input_tap.assert_called_once_with(50, 50, "save_profile")
+        self.assertTrue(switch.checked)
+
     def test_fill_field_returns_after_first_success_without_retry(self) -> None:
         node = smoke.Node(
             "",
@@ -779,7 +806,7 @@ class UiDriverTests(unittest.TestCase):
  scrollable='true' enabled='true' visible-to-user='true'>
 <node class='android.widget.EditText' content-desc='Private OpenSSH key, Empty'
    bounds='[20,1200][1060,1700]' scrollable='false' enabled='true'
-   visible-to-user='true' selected='true'/>
+   visible-to-user='true' selected='true' checked='true'/>
 </node></hierarchy>
 UI dumped to: /dev/tty"""
 
@@ -789,6 +816,7 @@ UI dumped to: /dev/tty"""
         self.assertTrue(nodes[0].scrollable)
         self.assertEqual(nodes[1].content_description, "Private OpenSSH key, Empty")
         self.assertTrue(nodes[1].selected)
+        self.assertTrue(nodes[1].checked)
         self.assertEqual(
             smoke.scroll_container_bounds(nodes),
             (0, 100, 1080, 1900),
@@ -994,6 +1022,92 @@ UI dumped to: /dev/tty"""
         ]
 
         self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
+
+    def test_selection_drag_maps_exact_first_row_character_range(self) -> None:
+        terminal = smoke.Node(
+            "",
+            "",
+            "dev.meeterm.terminal.MeetermTerminalView",
+            (10, 100, 1010, 1900),
+        )
+
+        start, end = smoke.selection_drag_points(
+            terminal,
+            columns=50,
+            character_count=8,
+        )
+
+        self.assertEqual(start, (20, 120))
+        self.assertEqual(end, (160, 120))
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.selection_drag_points(
+                terminal,
+                columns=7,
+                character_count=8,
+            )
+        self.assertEqual(error.exception.reason, "invalid_selection_geometry")
+
+    def test_native_selection_gesture_is_a_bounded_long_press_drag(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        device.assert_foreground = mock.Mock()
+        device.run = mock.Mock(return_value=b"")
+
+        device.input_long_press_drag(20, 120, 160, 120, "selection")
+
+        device.assert_foreground.assert_called_once_with("selection")
+        device.run.assert_called_once_with(
+            (
+                "shell",
+                "input",
+                "swipe",
+                "20",
+                "120",
+                "160",
+                "120",
+                "1200",
+            ),
+            "selection",
+            timeout=10.0,
+        )
+
+    def test_screenrecord_owns_remote_pid_and_stops_only_that_process(self) -> None:
+        device = mock.Mock()
+        device.adb_path = "adb"
+        device.serial = "emulator-5554"
+        device.run.side_effect = [b"", b"4312\n", b"", b""]
+
+        with tempfile.TemporaryDirectory(prefix="meeterm-video-") as root:
+            output = Path(root) / "daily-use.mp4"
+            recording, reason = smoke.start_optional_screenrecord(device, output)
+
+            self.assertEqual(reason, "ok")
+            self.assertEqual(
+                recording,
+                smoke.ScreenRecording(4312, smoke.SCREENRECORD_REMOTE_PATH, output),
+            )
+            start_script = device.run.call_args_list[1].args[0]
+            self.assertEqual(start_script[:3], ("shell", "sh", "-c"))
+            self.assertIn("--time-limit 180", start_script[3])
+            self.assertIn("echo $child", start_script[3])
+            self.assertNotIn("pkill", start_script[3])
+
+            assert recording is not None
+
+            def finish_run(arguments, _stage, timeout):
+                if arguments[:3] == ("shell", "kill", "-0"):
+                    raise smoke.SmokeFailure("daily_screenrecord_wait", "adb_failed")
+                if arguments[0] == "pull":
+                    output.write_bytes(b"\x00\x00\x00\x18ftypisom")
+                return b""
+
+            device.run.reset_mock(side_effect=True)
+            device.run.side_effect = finish_run
+            self.assertEqual(
+                smoke.finish_optional_screenrecord(device, recording),
+                "ok",
+            )
+            stop_arguments = device.run.call_args_list[0].args[0]
+            self.assertEqual(stop_arguments, ("shell", "kill", "-2", "4312"))
 
     def test_tmux_parser_keeps_pane_pid_and_real_selection_state(self) -> None:
         output = (

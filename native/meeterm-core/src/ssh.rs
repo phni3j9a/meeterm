@@ -294,7 +294,6 @@ enum StoredCredentials {
 /// actual durable workspace remains tmux; this map only retains native IDs so
 /// reconnecting the same owner can bind the same pane IDs back to the same
 /// native terminal objects.
-#[derive(Default)]
 struct SessionState {
     viewport: Option<(u16, u16)>,
     generation: u64,
@@ -307,6 +306,26 @@ struct SessionState {
     /// pre-existing zoom is observed but never claimed for cleanup.
     meeterm_zoomed: bool,
     meeterm_zoomed_pane: Option<u64>,
+    foreground: bool,
+    automatic_reconnect: bool,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            viewport: None,
+            generation: 0,
+            snapshot: SessionSnapshot::default(),
+            pane_terminals: HashMap::new(),
+            endpoint: None,
+            profile: None,
+            selected_pane: None,
+            meeterm_zoomed: false,
+            meeterm_zoomed_pane: None,
+            foreground: true,
+            automatic_reconnect: true,
+        }
+    }
 }
 
 static SESSION_STATES: OnceLock<Mutex<HashMap<TerminalId, Arc<Mutex<SessionState>>>>> =
@@ -423,6 +442,12 @@ struct ConnectionShared {
     commands: Mutex<Option<mpsc::Sender<ControlCommand>>>,
     cancelled: AtomicBool,
     cancel_notify: Arc<Notify>,
+    finished_notify: Arc<Notify>,
+    retry_notify: Arc<Notify>,
+    foreground: AtomicBool,
+    automatic_reconnect: AtomicBool,
+    ready_once: AtomicBool,
+    ready_epoch: AtomicU64,
 }
 
 impl ConnectionShared {
@@ -433,17 +458,28 @@ impl ConnectionShared {
         port: u16,
         known_hosts_path: PathBuf,
     ) -> Self {
+        let session = session_state(terminal_id);
+        let (foreground, automatic_reconnect) = session
+            .lock()
+            .map(|state| (state.foreground, state.automatic_reconnect))
+            .unwrap_or((true, true));
         Self {
             terminal_id,
             generation,
             host: host.clone(),
             port,
             known_hosts_path,
-            session: session_state(terminal_id),
+            session,
             info: Mutex::new(ConnectionInfo::new(host, port)),
             commands: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             cancel_notify: Arc::new(Notify::new()),
+            finished_notify: Arc::new(Notify::new()),
+            retry_notify: Arc::new(Notify::new()),
+            foreground: AtomicBool::new(foreground),
+            automatic_reconnect: AtomicBool::new(automatic_reconnect),
+            ready_once: AtomicBool::new(false),
+            ready_epoch: AtomicU64::new(0),
         }
     }
 
@@ -471,6 +507,7 @@ impl ConnectionShared {
             self.cancelled.store(true, Ordering::Release);
         }
         self.cancel_notify.notify_waiters();
+        self.retry_notify.notify_waiters();
     }
 
     fn set_profile(&self, profile: ConnectionProfile) {
@@ -532,13 +569,80 @@ impl ConnectionShared {
         }
     }
 
+    async fn finished(&self) {
+        loop {
+            let notified = self.finished_notify.notified();
+            tokio::pin!(notified);
+            // Register before checking the mutex-backed flag so completion
+            // cannot land between the check and the wait.
+            notified.as_mut().enable();
+            let is_finished = self.info.lock().map(|info| info.finished).unwrap_or(true);
+            if is_finished {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     fn set_state(&self, state: ConnectionState) {
         if let Ok(mut info) = self.info.lock() {
             if self.is_cancelled() || info.finished {
                 return;
             }
             info.state = state;
+            if state == ConnectionState::Ready {
+                self.ready_once.store(true, Ordering::Release);
+                self.ready_epoch.fetch_add(1, Ordering::AcqRel);
+            }
         }
+    }
+
+    fn mark_reconnecting(&self) {
+        if let Ok(mut info) = self.info.lock() {
+            if self.is_cancelled() || info.finished {
+                return;
+            }
+            info.state = ConnectionState::Reconnecting;
+            info.error_code.clear();
+            info.error_message.clear();
+            info.pending = None;
+        }
+    }
+
+    fn set_foreground(&self, foreground: bool) {
+        self.foreground.store(foreground, Ordering::Release);
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+        {
+            state.foreground = foreground;
+        }
+        self.retry_notify.notify_waiters();
+    }
+
+    fn set_automatic_reconnect(&self, enabled: bool) {
+        self.automatic_reconnect.store(enabled, Ordering::Release);
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+        {
+            state.automatic_reconnect = enabled;
+        }
+        self.retry_notify.notify_waiters();
+    }
+
+    fn is_foreground(&self) -> bool {
+        self.foreground.load(Ordering::Acquire)
+    }
+
+    fn automatic_reconnect_enabled(&self) -> bool {
+        self.automatic_reconnect.load(Ordering::Acquire)
+    }
+
+    fn has_been_ready(&self) -> bool {
+        self.ready_once.load(Ordering::Acquire)
+    }
+
+    fn ready_epoch(&self) -> u64 {
+        self.ready_epoch.load(Ordering::Acquire)
     }
 
     fn set_host_key(&self, fingerprint: String, algorithm: String) {
@@ -634,6 +738,7 @@ impl ConnectionShared {
             }
             info.pending = None;
         }
+        self.finished_notify.notify_waiters();
     }
 
     fn snapshot(&self) -> Result<ConnectionSnapshot, ConnectionError> {
@@ -646,6 +751,13 @@ impl ConnectionShared {
 
 enum ControlCommand {
     SelectPane { window_id: u64, pane_id: u64 },
+    CreateWorkspace { name: String },
+    RenameWorkspace { window_id: u64, name: String },
+    CloseWorkspace { window_id: u64 },
+    CreatePane { window_id: u64 },
+    RenamePane { pane_id: u64, name: String },
+    ClosePane { pane_id: u64 },
+    RefreshTerminal,
 }
 
 struct ConnectionEntry {
@@ -727,6 +839,165 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
     Ok(())
 }
 
+/// Create a tmux window for a new workspace. The command is queued on the
+/// serialized Control Mode actor; topology is refreshed before the next
+/// command is accepted, so callers never construct shell fragments locally.
+pub fn create_workspace(terminal_id: TerminalId, name: &str) -> Result<(), ConnectionError> {
+    validate_tmux_name(name)?;
+    enqueue_control(
+        terminal_id,
+        ControlCommand::CreateWorkspace {
+            name: name.to_owned(),
+        },
+    )
+}
+
+pub fn rename_workspace(
+    terminal_id: TerminalId,
+    window_id: u64,
+    name: &str,
+) -> Result<(), ConnectionError> {
+    validate_tmux_name(name)?;
+    ensure_window_target(terminal_id, window_id)?;
+    enqueue_control(
+        terminal_id,
+        ControlCommand::RenameWorkspace {
+            window_id,
+            name: name.to_owned(),
+        },
+    )
+}
+
+pub fn close_workspace(terminal_id: TerminalId, window_id: u64) -> Result<(), ConnectionError> {
+    ensure_window_target(terminal_id, window_id)?;
+    enqueue_control(terminal_id, ControlCommand::CloseWorkspace { window_id })
+}
+
+pub fn create_pane(terminal_id: TerminalId, window_id: u64) -> Result<(), ConnectionError> {
+    ensure_window_target(terminal_id, window_id)?;
+    enqueue_control(terminal_id, ControlCommand::CreatePane { window_id })
+}
+
+pub fn rename_pane(
+    terminal_id: TerminalId,
+    pane_id: u64,
+    name: &str,
+) -> Result<(), ConnectionError> {
+    validate_tmux_name(name)?;
+    ensure_pane_target(terminal_id, pane_id)?;
+    enqueue_control(
+        terminal_id,
+        ControlCommand::RenamePane {
+            pane_id,
+            name: name.to_owned(),
+        },
+    )
+}
+
+pub fn close_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), ConnectionError> {
+    ensure_pane_target(terminal_id, pane_id)?;
+    enqueue_control(terminal_id, ControlCommand::ClosePane { pane_id })
+}
+
+/// Ask the native Control Mode actor to recapture the selected pane. This is
+/// the explicit redraw/recovery action used after a full-screen TUI loses its
+/// local frame during a reconnect or lifecycle transition.
+pub fn refresh_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
+    enqueue_control(terminal_id, ControlCommand::RefreshTerminal)
+}
+
+/// Mark whether the owning app is in the foreground. Automatic reconnects
+/// wait in Rust while this is false and are resumed by the next foreground
+/// transition; no timer state machine is needed in JavaScript.
+pub fn set_foreground(terminal_id: TerminalId, foreground: bool) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = connections()
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .get(&terminal_id)
+        .map(|entry| Arc::clone(&entry.shared));
+    if let Some(shared) = shared {
+        shared.set_foreground(foreground);
+    } else {
+        let state = session_state(terminal_id);
+        state
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .foreground = foreground;
+    }
+    Ok(())
+}
+
+/// Enable or disable bounded native reconnect attempts for this owner. The
+/// preference is retained across explicit reconnects while credentials remain
+/// in the process-local profile.
+pub fn set_automatic_reconnect(
+    terminal_id: TerminalId,
+    enabled: bool,
+) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = connections()
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .get(&terminal_id)
+        .map(|entry| Arc::clone(&entry.shared));
+    if let Some(shared) = shared {
+        shared.set_automatic_reconnect(enabled);
+    } else {
+        let state = session_state(terminal_id);
+        state
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .automatic_reconnect = enabled;
+    }
+    Ok(())
+}
+
+fn validate_tmux_name(name: &str) -> Result<(), ConnectionError> {
+    tmux::quote_tmux_argument(name)
+        .map(|_| ())
+        .map_err(|_| ConnectionError::InvalidArgument)
+}
+
+fn ensure_window_target(terminal_id: TerminalId, window_id: u64) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let state = session_state(terminal_id);
+    let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    state
+        .snapshot
+        .windows
+        .iter()
+        .any(|window| window.window_id == window_id)
+        .then_some(())
+        .ok_or(ConnectionError::InvalidArgument)
+}
+
+fn ensure_pane_target(terminal_id: TerminalId, pane_id: u64) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let state = session_state(terminal_id);
+    let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    state
+        .snapshot
+        .panes
+        .iter()
+        .any(|pane| pane.pane_id == pane_id)
+        .then_some(())
+        .ok_or(ConnectionError::InvalidArgument)
+}
+
+fn enqueue_control(
+    terminal_id: TerminalId,
+    command: ControlCommand,
+) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let sender = current_connection(terminal_id)?
+        .command_sender()
+        .ok_or(ConnectionError::Internal)?;
+    sender
+        .try_send(command)
+        .map_err(|_| ConnectionError::Internal)
+}
+
 /// Return the latest coherent tmux topology known to the native core.
 pub fn session_snapshot(terminal_id: TerminalId) -> Result<SessionSnapshot, ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
@@ -796,6 +1067,32 @@ impl ConnectionStart {
     }
 }
 
+/// Give the previous generation a bounded chance to send its tmux cleanup
+/// before a replacement generation changes the shared session generation.
+/// This runs the wait on a short-lived blocking helper thread so a native
+/// caller that happens to be on a Tokio worker cannot starve the cancelled
+/// Control Mode actor. The timeout is only a last-resort bound for a dead
+/// transport; normal disconnects complete through `ConnectionShared::finish`.
+fn wait_for_generation_finish(runtime: &'static Runtime, shared: Arc<ConnectionShared>) -> bool {
+    let already_finished = shared.info.lock().map(|info| info.finished).unwrap_or(true);
+    if already_finished {
+        return true;
+    }
+
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let finished = runtime.block_on(async {
+            tokio::time::timeout(REPLACEMENT_GRACE_TIMEOUT, shared.finished())
+                .await
+                .is_ok()
+        });
+        let _ = sender.send(finished);
+    });
+    receiver
+        .recv_timeout(REPLACEMENT_GRACE_TIMEOUT + Duration::from_millis(100))
+        .unwrap_or(false)
+}
+
 fn start_connection(
     terminal_id: TerminalId,
     start: ConnectionStart,
@@ -806,14 +1103,20 @@ fn start_connection(
 
     let (host, port, _username, known_hosts_path) = start.endpoint();
 
-    let mut entries = connections()
+    let old = connections()
         .lock()
-        .map_err(|_| ConnectionError::Internal)?;
-
-    if let Some(old) = entries.remove(&terminal_id) {
+        .map_err(|_| ConnectionError::Internal)?
+        .remove(&terminal_id);
+    if let Some(old) = old {
         old.shared.mark_closing();
         old.shared.cancel();
-        old.abort.abort();
+        if !wait_for_generation_finish(runtime, Arc::clone(&old.shared)) {
+            // A transport that never acknowledges cancellation cannot safely
+            // retain the old generation. Cleanup is best effort in this
+            // branch; the new generation still receives a fresh ownership
+            // guard below.
+            old.abort.abort();
+        }
     }
 
     let stale_terminals = match &start {
@@ -848,14 +1151,16 @@ fn start_connection(
     let join = runtime.spawn(async move {
         run_connection(task_shared, start, command_receiver).await;
     });
-    entries.insert(
-        terminal_id,
-        ConnectionEntry {
-            shared,
-            abort: join.abort_handle(),
-        },
-    );
-    drop(entries);
+    connections()
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .insert(
+            terminal_id,
+            ConnectionEntry {
+                shared,
+                abort: join.abort_handle(),
+            },
+        );
     for id in stale_terminals {
         registry::destroy_terminal(id);
     }
@@ -1193,6 +1498,10 @@ const SSH_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 // setup.
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(180);
 const HOST_KEY_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 6;
+const AUTO_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
+const AUTO_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(15);
+const REPLACEMENT_GRACE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Cancellation and the deadline used by the pre-authentication russh task.
 ///
@@ -1483,20 +1792,131 @@ async fn wait_channel_message(
 /// when the command is executed over a non-PTY SSH channel.
 async fn run_connection(
     shared: Arc<ConnectionShared>,
-    start: ConnectionStart,
-    commands: mpsc::Receiver<ControlCommand>,
+    mut start: ConnectionStart,
+    mut commands: mpsc::Receiver<ControlCommand>,
 ) {
-    let result = run_connection_flow(Arc::clone(&shared), start, commands).await;
+    let mut retries = 0;
+    let result = loop {
+        let ready_epoch = shared.ready_epoch();
+        let result = run_connection_flow(Arc::clone(&shared), start, &mut commands).await;
+        detach_all(&shared);
+
+        // A flow may stay alive for hours after reaching Ready. Reset the
+        // outage budget whenever this flow reached a fresh Ready snapshot so
+        // six unrelated network drops over the lifetime of the owner cannot
+        // permanently disable native reconnect.
+        if shared.ready_epoch() != ready_epoch {
+            retries = 0;
+        }
+
+        let Err(failure) = result else {
+            shared.clear_owned_zoom();
+            break Ok(());
+        };
+        if !automatic_retry_allowed(&shared, failure) || retries >= AUTO_RECONNECT_MAX_ATTEMPTS {
+            shared.clear_owned_zoom();
+            break Err(failure);
+        }
+
+        let delay = reconnect_delay(retries);
+        shared.mark_reconnecting();
+        if !wait_for_reconnect(&shared, delay).await {
+            shared.clear_owned_zoom();
+            break Err(failure);
+        }
+        let Some(profile) = retained_profile(&shared) else {
+            shared.clear_owned_zoom();
+            break Err(failure);
+        };
+        retries = retries.saturating_add(1);
+        start = ConnectionStart::Profile(profile);
+    };
     shared.clear_commands();
     detach_all(&shared);
     shared.clear_owned_zoom();
     shared.finish(result);
 }
 
+fn retained_profile(shared: &ConnectionShared) -> Option<ConnectionProfile> {
+    shared
+        .session
+        .lock()
+        .ok()
+        .and_then(|state| state.profile.clone())
+}
+
+fn automatic_retry_allowed(shared: &ConnectionShared, failure: FlowFailure) -> bool {
+    if shared.is_cancelled() || !shared.automatic_reconnect_enabled() || !shared.has_been_ready() {
+        return false;
+    }
+    // A host-key or authentication failure is terminal even when russh
+    // reports it through the generic network path. The explicit Failed state
+    // is set by the host-key handler and is checked before retrying.
+    let failed_state = shared
+        .info
+        .lock()
+        .map(|info| info.state == ConnectionState::Failed)
+        .unwrap_or(true);
+    if failed_state {
+        return false;
+    }
+    matches!(
+        failure,
+        FlowFailure::Network
+            | FlowFailure::Channel
+            | FlowFailure::Transport
+            | FlowFailure::RemoteClosed
+    )
+}
+
+fn reconnect_delay(retry: u32) -> Duration {
+    let multiplier = 1_u32.checked_shl(retry.min(6)).unwrap_or(u32::MAX);
+    AUTO_RECONNECT_BASE_DELAY
+        .checked_mul(multiplier)
+        .unwrap_or(AUTO_RECONNECT_MAX_DELAY)
+        .min(AUTO_RECONNECT_MAX_DELAY)
+}
+
+async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        if shared.is_cancelled() || !shared.automatic_reconnect_enabled() {
+            return false;
+        }
+        if !shared.is_foreground() {
+            let notified = shared.retry_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if shared.is_cancelled() || !shared.automatic_reconnect_enabled() {
+                return false;
+            }
+            if shared.is_foreground() {
+                continue;
+            }
+            tokio::select! {
+                _ = shared.cancelled() => return false,
+                _ = notified => {}
+            }
+            continue;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return true;
+        }
+        let notified = shared.retry_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        tokio::select! {
+            _ = shared.cancelled() => return false,
+            _ = &mut notified => {},
+            _ = tokio::time::sleep_until(deadline) => return true,
+        }
+    }
+}
+
 async fn run_connection_flow(
     shared: Arc<ConnectionShared>,
     start: ConnectionStart,
-    commands: mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     let profile = match start {
         ConnectionStart::Profile(profile) => profile,
@@ -1614,7 +2034,7 @@ async fn run_tmux_authenticated_session(
     shared: &Arc<ConnectionShared>,
     profile: &ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
-    commands: mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::Authenticating);
     let authentication = match &profile.credentials {
@@ -2072,6 +2492,47 @@ mod tests {
         assert_eq!(snapshot.state, ConnectionState::Closing as u32);
         assert_eq!(snapshot.fingerprint_len, 0);
         assert_eq!(snapshot.error_code_len, 0);
+    }
+
+    #[test]
+    fn reconnect_wait_is_foreground_aware_and_disableable() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let shared = Arc::new(ConnectionShared::new(
+                9003,
+                1,
+                "example.test".to_owned(),
+                22,
+                PathBuf::from("/tmp/example-known-hosts"),
+            ));
+            shared.set_state(ConnectionState::Ready);
+            assert!(automatic_retry_allowed(&shared, FlowFailure::Transport));
+            assert_eq!(shared.ready_epoch(), 1);
+            shared.set_state(ConnectionState::Ready);
+            assert_eq!(shared.ready_epoch(), 2);
+
+            shared.set_foreground(false);
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_millis(1)).await }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(!waiting.is_finished(), "background reconnect must wait");
+            shared.set_foreground(true);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), waiting)
+                    .await
+                    .expect("foreground should wake retry")
+                    .expect("retry task should join")
+            );
+
+            shared.set_foreground(false);
+            shared.set_automatic_reconnect(false);
+            assert!(!wait_for_reconnect(&shared, Duration::from_millis(1)).await);
+        });
     }
 
     #[test]

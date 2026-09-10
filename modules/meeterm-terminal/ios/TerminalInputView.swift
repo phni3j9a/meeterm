@@ -9,6 +9,15 @@ final class TerminalInputView: UITextView {
   var onPaste: ((String) -> Void)?
   var onPreeditChanged: ((String) -> Void)?
   var onSpecialKey: ((TerminalSpecialKey) -> Void)?
+  var onModifiedCommit: ((String, UInt32) -> Void)?
+  var onModifiedSpecialKey: ((TerminalSpecialKey, UInt32) -> Void)?
+  var onCopySelection: (() -> Void)?
+  var hasTerminalSelection: (() -> Bool)?
+
+  // One-shot accessory modifiers live next to UIKit composition, never in JS.
+  private var modifiers: UInt32 = 0
+  private weak var controlButton: UIButton?
+  private weak var altButton: UIButton?
 
   private var isReplacingMarkedText = false
   private var pasteGeneration: UInt64 = 0
@@ -28,15 +37,23 @@ final class TerminalInputView: UITextView {
   }
 
   override var keyCommands: [UIKeyCommand]? {
-    let commands = [
-      UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(sendEscape)),
-      UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(sendTab)),
-      UIKeyCommand(input: "c", modifierFlags: [.control], action: #selector(sendInterrupt)),
-      UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(sendUp)),
-      UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(sendDown)),
-      UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(sendLeft)),
-      UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(sendRight))
-    ]
+    var commands: [UIKeyCommand] = []
+    let special = [UIKeyCommand.inputEscape, "\t", UIKeyCommand.inputUpArrow,
+      UIKeyCommand.inputDownArrow, UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow,
+      UIKeyCommand.inputHome, UIKeyCommand.inputEnd, UIKeyCommand.inputPageUp,
+      UIKeyCommand.inputPageDown, UIKeyCommand.inputDelete]
+    let combinations: [UIKeyModifierFlags] = [[], .shift, .control, .alternate,
+      [.control, .shift], [.alternate, .shift], [.control, .alternate], [.control, .alternate, .shift]]
+    for flags in combinations {
+      for input in special { commands.append(UIKeyCommand(input: input, modifierFlags: flags, action: #selector(hardwareKey(_:)))) }
+    }
+    let textCombinations: [UIKeyModifierFlags] = [.control, .alternate, [.control, .alternate]]
+    for flags in textCombinations {
+      for scalar in 32...126 {
+        let input = String(UnicodeScalar(scalar)!)
+        commands.append(UIKeyCommand(input: input, modifierFlags: flags, action: #selector(hardwareKey(_:))))
+      }
+    }
     for command in commands {
       command.wantsPriorityOverSystemBehavior = true
     }
@@ -53,7 +70,7 @@ final class TerminalInputView: UITextView {
     super.unmarkText()
     onPreeditChanged?("")
     if !isReplacingMarkedText, !committed.isEmpty {
-      onCommit?(committed)
+      emitCommit(committed)
       resetBackingStore()
     }
   }
@@ -66,12 +83,12 @@ final class TerminalInputView: UITextView {
 
     switch text {
     case "\n", "\r":
-      onSpecialKey?(.enter)
+      emitSpecial(.enter)
     case "\t":
-      onSpecialKey?(.tab)
+      emitSpecial(.tab)
     default:
       if !text.isEmpty {
-        onCommit?(text)
+        emitCommit(text)
       }
     }
     resetBackingStore()
@@ -82,7 +99,7 @@ final class TerminalInputView: UITextView {
       super.deleteBackward()
       onPreeditChanged?(currentMarkedText())
     } else {
-      onSpecialKey?(.backspace)
+      emitSpecial(.backspace)
     }
   }
 
@@ -91,6 +108,13 @@ final class TerminalInputView: UITextView {
     invalidatePendingPaste()
     guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
     deliverPaste(pasted)
+  }
+
+  override func copy(_ sender: Any?) { onCopySelection?() }
+
+  override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+    if action == #selector(copy(_:)) { return hasTerminalSelection?() == true }
+    return super.canPerformAction(action, withSender: sender)
   }
 
   override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
@@ -165,6 +189,7 @@ final class TerminalInputView: UITextView {
 
   /// Cancel local preedit before borrowing a different native terminal.
   func cancelCompositionForBinding() {
+    clearModifiers()
     invalidatePendingPaste()
     super.unmarkText()
     resetBackingStore()
@@ -187,6 +212,7 @@ final class TerminalInputView: UITextView {
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
+    clearModifiers()
     onPaste?(pasted)
   }
 
@@ -207,15 +233,26 @@ final class TerminalInputView: UITextView {
     scroll.showsHorizontalScrollIndicator = false
     scroll.alwaysBounceHorizontal = false
     scroll.contentInsetAdjustmentBehavior = .never
+    let control = accessoryButton(title: "Ctrl", action: #selector(toggleControl))
+    let alt = accessoryButton(title: "Alt", action: #selector(toggleAlt))
+    controlButton = control
+    altButton = alt
     let keys = UIStackView(arrangedSubviews: [
       accessoryButton(title: "Esc", action: #selector(sendEscape)),
       accessoryButton(title: "Tab", action: #selector(sendTab)),
       accessoryButton(title: "^C", action: #selector(sendInterrupt)),
       terminalPasteControl,
+      control,
+      alt,
       accessoryButton(title: "←", action: #selector(sendLeft)),
       accessoryButton(title: "↑", action: #selector(sendUp)),
       accessoryButton(title: "↓", action: #selector(sendDown)),
-      accessoryButton(title: "→", action: #selector(sendRight))
+      accessoryButton(title: "→", action: #selector(sendRight)),
+      accessoryButton(title: "Home", action: #selector(sendHome)),
+      accessoryButton(title: "End", action: #selector(sendEnd)),
+      accessoryButton(title: "PgUp", action: #selector(sendPageUp)),
+      accessoryButton(title: "PgDn", action: #selector(sendPageDown)),
+      accessoryButton(title: "Del", action: #selector(sendDelete))
     ])
     keys.axis = .horizontal
     keys.spacing = 4
@@ -316,12 +353,73 @@ final class TerminalInputView: UITextView {
     emitSpecial(.right)
   }
 
-  private func emitSpecial(_ key: TerminalSpecialKey) {
+  @objc private func sendHome() { emitSpecial(.home) }
+  @objc private func sendEnd() { emitSpecial(.end) }
+  @objc private func sendPageUp() { emitSpecial(.pageUp) }
+  @objc private func sendPageDown() { emitSpecial(.pageDown) }
+  @objc private func sendDelete() { emitSpecial(.delete) }
+  @objc private func toggleControl() { modifiers ^= 1; updateModifierButtons() }
+  @objc private func toggleAlt() { modifiers ^= 2; updateModifierButtons() }
+
+  private func updateModifierButtons() {
+    for (button, bit) in [(controlButton, UInt32(1)), (altButton, UInt32(2))] {
+      let selected = modifiers & bit != 0
+      button?.isSelected = selected
+      button?.accessibilityValue = selected ? "On" : "Off"
+      button?.configuration?.background.backgroundColor = selected
+        ? UIColor(red: 0.57, green: 0.38, blue: 0.13, alpha: 0.65) : UIColor(white: 1, alpha: 0.05)
+    }
+  }
+
+  private func clearModifiers() { modifiers = 0; updateModifierButtons() }
+
+  private func emitCommit(_ text: String, flags: UInt32? = nil) {
+    let selected = flags ?? modifiers
+    clearModifiers()
+    if selected == 0 { onCommit?(text) } else { onModifiedCommit?(text, selected) }
+  }
+
+  @objc private func hardwareKey(_ command: UIKeyCommand) {
+    guard let input = command.input else { return }
+    var flags: UInt32 = 0
+    if command.modifierFlags.contains(.shift) { flags |= 4 }
+    if command.modifierFlags.contains(.alternate) { flags |= 2 }
+    if command.modifierFlags.contains(.control) { flags |= 1 }
+    let key: TerminalSpecialKey?
+    switch input {
+    case UIKeyCommand.inputEscape: key = .escape
+    case "\t": key = .tab
+    case UIKeyCommand.inputUpArrow: key = .up
+    case UIKeyCommand.inputDownArrow: key = .down
+    case UIKeyCommand.inputLeftArrow: key = .left
+    case UIKeyCommand.inputRightArrow: key = .right
+    case UIKeyCommand.inputHome: key = .home
+    case UIKeyCommand.inputEnd: key = .end
+    case UIKeyCommand.inputPageUp: key = .pageUp
+    case UIKeyCommand.inputPageDown: key = .pageDown
+    case UIKeyCommand.inputDelete: key = .delete
+    default: key = nil
+    }
+    if let key { emitSpecial(key, flags: flags) }
+    else {
+      // Hardware shortcuts cancel preedit; they must never commit it as text.
+      if markedTextRange != nil {
+        super.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
+        resetBackingStore()
+        onPreeditChanged?("")
+      }
+      emitCommit(input, flags: flags)
+    }
+  }
+
+  private func emitSpecial(_ key: TerminalSpecialKey, flags: UInt32? = nil) {
     if markedTextRange != nil {
       super.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
       resetBackingStore()
       onPreeditChanged?("")
     }
-    onSpecialKey?(key)
+    let selected = flags ?? modifiers
+    clearModifiers()
+    if selected == 0 { onSpecialKey?(key) } else { onModifiedSpecialKey?(key, selected) }
   }
 }

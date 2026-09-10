@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -9,18 +11,28 @@ import {
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-import type { SshConnectOptions } from '../modules/meeterm-terminal';
-import { DARK, MONO, usePalette } from './ui';
+import type { SavedCredential, ServerProfile } from '../modules/meeterm-terminal';
+import { DARK, MONO } from './ui';
 import type { Palette } from './ui';
 
 type AuthMethod = 'publicKey' | 'password';
-type FormErrors = Partial<Record<'host' | 'port' | 'username' | 'privateKey' | 'password', string>>;
+type FormErrors = Partial<Record<'name' | 'host' | 'port' | 'username' | 'privateKey' | 'password', string>>;
+
+export type ConnectionSubmission = {
+  profile: Omit<ServerProfile, 'credentialSaved'>;
+  credential: SavedCredential | null;
+  saveProfile: boolean;
+  saveCredential: boolean;
+  keepCredential: boolean;
+  connect: boolean;
+};
 
 function Field({ label, error, optional, action, children, colors }: {
   label: string;
@@ -40,12 +52,16 @@ function Field({ label, error, optional, action, children, colors }: {
   </View>;
 }
 
-export function ConnectionForm({ visible, onClose, onSubmit }: {
+export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialProfile, mode = 'connect', colors }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (options: SshConnectOptions) => void;
+  onDismiss?: () => void;
+  onSubmit: (submission: ConnectionSubmission) => Promise<boolean>;
+  initialProfile?: ServerProfile;
+  mode?: 'connect' | 'save';
+  colors: Palette;
 }) {
-  const colors = usePalette();
+  const [name, setName] = useState('');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('22');
   const [username, setUsername] = useState('');
@@ -57,6 +73,12 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
+  const [saveServer, setSaveServer] = useState(true);
+  const [saveCredential, setSaveCredential] = useState(false);
+  const [replaceCredential, setReplaceCredential] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [submissionError, setSubmissionError] = useState('');
+  const nameRef = useRef<TextInput>(null);
   const hostRef = useRef<TextInput>(null);
   const portRef = useRef<TextInput>(null);
   const usernameRef = useRef<TextInput>(null);
@@ -65,11 +87,22 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
   const scrollRef = useRef<ScrollView>(null);
   const submitting = useRef(false);
 
+  const credentialMatches = Boolean(initialProfile?.credentialSaved
+    && host.trim() === initialProfile.host && Number(port) === initialProfile.port
+    && username.trim() === initialProfile.username && authMethod === initialProfile.authMethod);
+  const usingSavedCredential = credentialMatches && saveCredential && !replaceCredential;
+
   const scrollPasswordIntoView = useCallback(() => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (passwordRef.current?.isFocused()) {
-          scrollRef.current?.scrollToEnd({ animated: true });
+          // Settings follow the credential field now, so scrolling to the end
+          // would move the focused password out of view.
+          scrollRef.current?.getNativeScrollRef()?.measureInWindow((_x, top) => {
+            if (passwordRef.current?.isFocused()) {
+              scrollRef.current?.scrollResponderScrollNativeHandleToKeyboard(passwordRef.current, top + 16, true);
+            }
+          });
         }
       });
     });
@@ -87,15 +120,22 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
   useEffect(() => {
     if (visible) {
       submitting.current = false;
+      setBusy(false);
+      setName(initialProfile?.name ?? '');
+      setHost(initialProfile?.host ?? '');
+      setPort(String(initialProfile?.port ?? 22));
+      setUsername(initialProfile?.username ?? '');
+      setAuthMethod(initialProfile?.authMethod ?? 'publicKey');
+      setSaveServer(true);
+      setSaveCredential(Boolean(initialProfile?.credentialSaved));
+      setReplaceCredential(false);
+      setSubmissionError('');
+      clearSecrets();
     } else {
       clearSecrets();
       setErrors({});
     }
-  }, [clearSecrets, visible]);
-
-  useEffect(() => () => {
-    clearSecrets();
-  }, [clearSecrets]);
+  }, [clearSecrets, initialProfile, visible]);
 
   useEffect(() => {
     const subscription = Keyboard.addListener('keyboardDidShow', () => {
@@ -106,7 +146,7 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
     return () => subscription.remove();
   }, [authMethod, scrollPasswordIntoView]);
 
-  const close = useCallback(() => {
+  const discard = useCallback(() => {
     Keyboard.dismiss();
     submitting.current = false;
     clearSecrets();
@@ -114,21 +154,36 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
     onClose();
   }, [clearSecrets, onClose]);
 
+  const close = useCallback(() => {
+    if (submitting.current) return;
+    const dirty = name !== (initialProfile?.name ?? '') || host !== (initialProfile?.host ?? '')
+      || port !== String(initialProfile?.port ?? 22) || username !== (initialProfile?.username ?? '')
+      || authMethod !== (initialProfile?.authMethod ?? 'publicKey') || Boolean(privateKey || passphrase || password)
+      || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved);
+    if (!dirty) { discard(); return; }
+    Alert.alert('変更を破棄しますか？', '入力した変更は保存されません。', [
+      { text: '編集を続ける', style: 'cancel' },
+      { text: '破棄', style: 'destructive', onPress: discard },
+    ]);
+  }, [authMethod, discard, host, initialProfile, name, passphrase, password, port, privateKey, saveCredential, saveServer, username]);
+
   const changeAuthMethod = useCallback((next: AuthMethod) => {
     if (next === authMethod) return;
     Keyboard.dismiss();
     clearSecrets();
     setErrors({});
+    setReplaceCredential(false);
     setAuthMethod(next);
   }, [authMethod, clearSecrets]);
 
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     if (submitting.current) return;
     const trimmedHost = host.trim();
     const parsedPort = Number(port);
     const trimmedUsername = username.trim();
     const trimmedKey = privateKey.trim();
     const nextErrors: FormErrors = {};
+    if (name.trim().length > 80 || /[\x00-\x1f\x7f]/.test(name)) nextErrors.name = '名前は制御文字を含まない80文字以内で入力してください。';
     if (!trimmedHost || /[\s\x00-\x1f\x7f]/.test(trimmedHost)) {
       nextErrors.host = '空白を含まないホスト名か IP アドレスを入力してください。';
     }
@@ -138,16 +193,17 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
     if (!trimmedUsername || /[\s\x00-\x1f\x7f]/.test(trimmedUsername)) {
       nextErrors.username = 'SSH のユーザー名を入力してください。空白は使えません。';
     }
-    if (authMethod === 'publicKey') {
+    const needsCredential = !usingSavedCredential && (mode === 'connect' || saveCredential || Boolean(privateKey || password || passphrase));
+    if (needsCredential && authMethod === 'publicKey') {
       if (!trimmedKey.startsWith('-----BEGIN OPENSSH PRIVATE KEY-----') || !trimmedKey.endsWith('-----END OPENSSH PRIVATE KEY-----')) {
         nextErrors.privateKey = 'BEGIN と END の行を含む OpenSSH 形式の秘密鍵を貼り付けてください。';
       }
-    } else if (!password || password.includes('\u0000')) {
+    } else if (needsCredential && (!password || password.includes('\u0000'))) {
       nextErrors.password = 'SSH パスワードを入力してください。';
     }
     if (Object.keys(nextErrors).length) {
       setErrors(nextErrors);
-      const target = nextErrors.host ? hostRef
+      const target = nextErrors.name ? nameRef : nextErrors.host ? hostRef
         : nextErrors.port ? portRef
           : nextErrors.username ? usernameRef
             : nextErrors.privateKey ? privateKeyRef : passwordRef;
@@ -155,35 +211,48 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
       return;
     }
     submitting.current = true;
-    const options: SshConnectOptions = authMethod === 'password'
-      ? { authMethod: 'password', host: trimmedHost, port: parsedPort, username: trimmedUsername, password }
-      : { host: trimmedHost, port: parsedPort, username: trimmedUsername, privateKey: trimmedKey, passphrase };
-    // Only this one-shot command carries credentials. No UI state or disk
-    // persistence retains them after submission or cancellation.
+    setBusy(true);
+    setSubmissionError('');
+    const credential: SavedCredential | null = needsCredential
+      ? authMethod === 'password' ? { authMethod: 'password', password }
+        : { authMethod: 'publicKey', privateKey: trimmedKey, passphrase }
+      : null;
+    // Secrets leave this form through one write-only command. Saved credentials
+    // are consumed natively and never populated into a JavaScript field.
     clearSecrets();
     setErrors({});
     Keyboard.dismiss();
-    onSubmit(options);
-  }, [authMethod, clearSecrets, host, onSubmit, passphrase, password, port, privateKey, username]);
+    try {
+      const accepted = await onSubmit({
+        profile: { id: initialProfile?.id ?? '', name: name.trim() || trimmedHost.slice(0, 80), host: trimmedHost, port: parsedPort, username: trimmedUsername, authMethod },
+        credential, saveProfile: mode === 'save' || saveServer, saveCredential: saveServer && saveCredential,
+        keepCredential: saveServer && usingSavedCredential, connect: mode === 'connect',
+      });
+      if (!accepted) setSubmissionError('保存または接続を開始できませんでした。接続先を確認して、認証情報を入力し直してください。');
+    } catch {
+      setSubmissionError('保存または接続を開始できませんでした。認証情報を入力し直して、もう一度試してください。');
+    } finally { submitting.current = false; setBusy(false); }
+  }, [authMethod, clearSecrets, host, initialProfile, mode, name, onSubmit, passphrase, password, port, privateKey, saveCredential, saveServer, username, usingSavedCredential]);
 
   const inputStyle = [styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }];
   const inputDefaults = { autoCapitalize: 'none' as const, autoComplete: 'off' as const, autoCorrect: false, spellCheck: false, placeholderTextColor: colors.placeholder, selectionColor: colors.accent };
 
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={close} onDismiss={clearSecrets}>
+  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={close} onDismiss={() => { clearSecrets(); onDismiss?.(); }}>
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.root, { backgroundColor: colors.background }]}>
         <StatusBar hidden={false} barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.root}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Cancel" onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent }]}>キャンセル</Text></Pressable>
-            <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>サーバーに接続</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Connect" testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}><Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>接続</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={busy} onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed, busy && { opacity: .45 }]}><Text style={[styles.headerActionText, { color: colors.accent }]}>キャンセル</Text></Pressable>
+            <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>{mode === 'save' ? initialProfile ? 'サーバーを編集' : 'サーバーを追加' : 'サーバーに接続'}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={mode === 'save' ? 'Save server' : 'Connect'} accessibilityState={{ disabled: busy, busy }} disabled={busy} testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.accent} /> : <Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>{mode === 'save' ? '保存' : '接続'}</Text>}</Pressable>
           </View>
-          <ScrollView ref={scrollRef} onLayout={scrollPasswordIntoView} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>
+          <ScrollView ref={scrollRef} pointerEvents={busy ? 'none' : 'auto'} onLayout={scrollPasswordIntoView} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>
             <View style={styles.intro}>
-              <Text style={[styles.title, { color: colors.text }]}>いつもの作業へ。</Text>
-              <Text style={[styles.body, { color: colors.muted }]}>SSH の接続先と認証情報を入力してください。接続後に、サーバーのワークスペースが並びます。</Text>
+              <Text style={[styles.title, { color: colors.text }]}>{mode === 'save' ? 'いつもの接続先を。' : 'いつもの作業へ。'}</Text>
+              <Text style={[styles.body, { color: colors.muted }]}>{mode === 'save' ? '接続先をこの端末に保存します。認証情報の保存は任意です。' : 'SSH の接続先と認証情報を入力してください。接続後に、サーバーのワークスペースが並びます。'}</Text>
             </View>
+            {submissionError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.danger }]}>{submissionError}</Text> : null}
             <View style={styles.section}>
               <Text style={[styles.sectionLabel, { color: colors.muted }]}>接続先</Text>
               <View style={styles.hostPortRow}>
@@ -213,7 +282,11 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
                   <Text style={[styles.authChoiceText, { color: authMethod === 'password' ? colors.onAccent : colors.text }]}>パスワード</Text>
                 </Pressable>
               </View>
-              {authMethod === 'publicKey' ? <>
+              {usingSavedCredential ? <View style={[styles.savedCredential, { backgroundColor: colors.surface }]}>
+                <Text style={[styles.label, { color: colors.text }]}>認証情報を安全に保存済み</Text>
+                <Text style={[styles.helper, { color: colors.muted }]}>保存済みの認証情報を使います。内容は画面に表示しません。</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Replace saved credentials" onPress={() => setReplaceCredential(true)} style={styles.replaceAction}><Text style={[styles.label, { color: colors.accent }]}>認証情報を入れ替える</Text></Pressable>
+              </View> : authMethod === 'publicKey' ? <>
                 <Field label="OpenSSH 秘密鍵" colors={colors} error={errors.privateKey} action={{ label: showPrivateKey ? '隠す' : '表示', accessibilityLabel: showPrivateKey ? 'Hide private key' : 'Show private key', onPress: () => setShowPrivateKey(value => !value) }}>
                   <View style={[styles.keyShell, { backgroundColor: colors.surface, borderColor: errors.privateKey ? colors.danger : colors.border }]}>
                     <TextInput ref={privateKeyRef} accessibilityLabel="Private OpenSSH key" testID="ssh-private-key" accessibilityValue={{ text: privateKey ? 'Private key entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" multiline caretHidden={!showPrivateKey} value={privateKey} onChangeText={value => { setPrivateKey(value); setErrors(current => ({ ...current, privateKey: undefined })); }} placeholder={showPrivateKey ? '-----BEGIN OPENSSH PRIVATE KEY-----' : undefined} selectionColor={showPrivateKey ? colors.accent : 'transparent'} style={[styles.keyInput, { color: showPrivateKey ? colors.text : 'transparent' }]} textAlignVertical="top" />
@@ -223,13 +296,22 @@ export function ConnectionForm({ visible, onClose, onSubmit }: {
                 <Field label="鍵のパスフレーズ" colors={colors} optional action={{ label: showPassphrase ? '隠す' : '表示', accessibilityLabel: showPassphrase ? 'Hide passphrase' : 'Show passphrase', onPress: () => setShowPassphrase(value => !value) }}>
                   <TextInput accessibilityLabel="Key passphrase, optional" testID="ssh-passphrase" {...inputDefaults} importantForAutofill="no" value={passphrase} onChangeText={setPassphrase} onSubmitEditing={submit} placeholder="暗号化された鍵の場合のみ" returnKeyType="go" secureTextEntry={!showPassphrase} style={inputStyle} />
                 </Field>
-                <Text style={[styles.helper, { color: colors.muted }]}>秘密鍵とパスフレーズは保存しません。接続・キャンセル時に入力欄から消去します。接続後は、アプリを閉じるまで再接続に使えます。</Text>
               </> : <>
                 <Field label="SSH パスワード" colors={colors} error={errors.password} action={{ label: showPassword ? '隠す' : '表示', accessibilityLabel: showPassword ? 'Hide password' : 'Show password', onPress: () => setShowPassword(value => !value) }}>
                   <TextInput ref={passwordRef} accessibilityLabel="SSH password" testID="ssh-password" accessibilityValue={{ text: password ? 'Password entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" value={password} onChangeText={value => { setPassword(value); setErrors(current => ({ ...current, password: undefined })); }} onFocus={scrollPasswordIntoView} onSubmitEditing={submit} placeholder="SSH サーバーのパスワード" returnKeyType="go" secureTextEntry={!showPassword} style={[inputStyle, errors.password && { borderColor: colors.danger }]} />
                 </Field>
-                <Text style={[styles.helper, { color: colors.muted }]}>パスワードは保存しません。接続・キャンセル時に入力欄から消去します。接続後は、アプリを閉じるまで再接続に使えます。</Text>
               </>}
+              {!usingSavedCredential ? <Text style={[styles.helper, { color: colors.muted }]}>{mode === 'save' && !saveCredential ? '認証情報は空欄のまま保存できます。接続するときに入力します。' : '接続・保存・キャンセル時に、認証情報を入力欄から消去します。'}</Text> : null}
+            </View>
+            <View style={styles.section}>
+              <Text style={[styles.sectionLabel, { color: colors.muted }]}>この端末に保存</Text>
+              {mode === 'connect' ? <View style={styles.switchRow}><Text style={[styles.switchLabel, { color: colors.text }]}>接続先を保存</Text><Switch accessibilityLabel="Save server profile" testID="save-server-profile" value={saveServer} onValueChange={value => { setSaveServer(value); if (!value) setSaveCredential(false); }} disabled={busy || Boolean(initialProfile)} trackColor={{ true: colors.accentFill }} /></View> : null}
+              {saveServer || mode === 'save' ? <>
+                <Field label="表示名" colors={colors} optional error={errors.name}><TextInput ref={nameRef} accessibilityLabel="Server name" testID="server-profile-name" value={name} onChangeText={setName} placeholder={host.trim() || '自宅のサーバー'} placeholderTextColor={colors.placeholder} selectionColor={colors.accent} autoComplete="off" returnKeyType="done" onSubmitEditing={Keyboard.dismiss} style={inputStyle} /></Field>
+                <View style={styles.switchRow}><Text style={[styles.switchLabel, { color: colors.text }]}>認証情報も保存</Text><Switch accessibilityLabel="Save credentials securely" testID="save-credentials" value={saveCredential} onValueChange={setSaveCredential} disabled={busy} trackColor={{ true: colors.accentFill }} /></View>
+                <Text style={[styles.helper, { color: colors.muted }]}>{saveCredential ? '秘密鍵・パスワードは OS の安全な保存領域で保護します。次回から入力せず接続できます。' : initialProfile?.credentialSaved ? '保存時に、この接続先の保存済み認証情報を削除します。' : '認証情報は保存しません。アプリを終了した後は、接続時に再入力します。'}</Text>
+                {initialProfile?.credentialSaved && !credentialMatches ? <Text style={[styles.helper, { color: colors.muted }]}>接続先・ユーザー・認証方式を変えたため、以前の認証情報は引き継ぎません。</Text> : null}
+              </> : null}
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -268,5 +350,9 @@ const styles = StyleSheet.create({
   keyMask: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, padding: 12 },
   error: { fontSize: 13, lineHeight: 20 },
   helper: { fontSize: 13, lineHeight: 22 },
+  switchRow: { minHeight: 52, flexDirection: 'row', gap: 16, alignItems: 'center', justifyContent: 'space-between' },
+  switchLabel: { flex: 1, fontSize: 16, lineHeight: 24 },
+  savedCredential: { padding: 16, gap: 8, borderRadius: 12, borderCurve: 'continuous' },
+  replaceAction: { minHeight: 44, justifyContent: 'center' },
   pressed: { opacity: .6 },
 });

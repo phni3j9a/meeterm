@@ -26,6 +26,13 @@ internal data class RendererMetrics(
   val rows: Int,
 )
 
+private data class FontMetrics(
+  val sizeSp: Float,
+  val cellWidthPx: Int,
+  val cellHeightPx: Int,
+  val generation: Long,
+)
+
 /**
  * GLES 2 renderer for the native-only MTRM snapshot.
  *
@@ -41,12 +48,16 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     textSize = FONT_SIZE_SP * density
     color = Color.WHITE
   }
-  private val fontMetrics = fontPaint.fontMetrics
-  private val cellWidth = max(1, ceil(fontPaint.measureText("M")).toInt())
-  private val cellHeight = max(
-    1,
-    ceil(fontMetrics.descent - fontMetrics.ascent + density * 2f).toInt(),
+  @Volatile private var fontMetrics = FontMetrics(
+    sizeSp = FONT_SIZE_SP,
+    cellWidthPx = max(1, ceil(fontPaint.measureText("M")).toInt()),
+    cellHeightPx = max(
+      1,
+      ceil(fontPaint.fontMetrics.descent - fontPaint.fontMetrics.ascent + density * 2f).toInt(),
+    ),
+    generation = 0L,
   )
+  private var appliedFontGeneration = -1L
 
   private val positionBuffer = directFloatBuffer(8)
   private val textureBuffer = directFloatBuffer(8)
@@ -56,19 +67,45 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   @Volatile private var surfaceHeight = 0
   @Volatile private var terminalHandle = 0L
   @Volatile private var preedit = ""
+  @Volatile private var lightTheme = false
   private var atlas: GlyphAtlas? = null
-  private var latestMetrics = RendererMetrics(cellWidth, cellHeight, 0, 0)
+  @Volatile private var latestMetrics = RendererMetrics(
+    fontMetrics.cellWidthPx,
+    fontMetrics.cellHeightPx,
+    0,
+    0,
+  )
   private var loggedSnapshot = false
   private var loggedFirstFrame = false
 
   val cellWidthPx: Int
-    get() = cellWidth
+    get() = fontMetrics.cellWidthPx
 
   val cellHeightPx: Int
-    get() = cellHeight
+    get() = fontMetrics.cellHeightPx
 
   val metrics: RendererMetrics
     get() = latestMetrics
+
+  fun setFontSize(value: Double) {
+    val normalized = (if (value.isFinite()) value else FONT_SIZE_SP.toDouble())
+      .toFloat()
+      .coerceIn(10f, 24f)
+    val current = fontMetrics
+    if (normalized == current.sizeSp) return
+    fontPaint.textSize = normalized * density
+    val width = max(1, ceil(fontPaint.measureText("M")).toInt())
+    val height = max(
+      1,
+      ceil(fontPaint.fontMetrics.descent - fontPaint.fontMetrics.ascent + density * 2f).toInt(),
+    )
+    fontMetrics = FontMetrics(normalized, width, height, current.generation + 1)
+    latestMetrics = latestMetrics.copy(cellWidthPx = width, cellHeightPx = height)
+  }
+
+  fun setTheme(light: Boolean) {
+    lightTheme = light
+  }
 
   fun attachTerminal(handle: Long) {
     terminalHandle = handle
@@ -81,21 +118,34 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   fun updateSurfaceSize(width: Int, height: Int) {
     surfaceWidth = width
     surfaceHeight = height
+    val metrics = fontMetrics
     latestMetrics = latestMetrics.copy(
-      columns = width / cellWidth,
-      rows = height / cellHeight,
+      cellWidthPx = metrics.cellWidthPx,
+      cellHeightPx = metrics.cellHeightPx,
+      columns = width / metrics.cellWidthPx,
+      rows = height / metrics.cellHeightPx,
     )
   }
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
     solidProgram = createProgram(SOLID_VERTEX_SHADER, SOLID_FRAGMENT_SHADER)
     textureProgram = createProgram(TEXTURE_VERTEX_SHADER, TEXTURE_FRAGMENT_SHADER)
-    atlas = GlyphAtlas(typeface, cellWidth, cellHeight, fontPaint.textSize).also { it.createTexture() }
-    GLES20.glClearColor(36f / 255f, 33f / 255f, 29f / 255f, 1f)
+    val metrics = fontMetrics
+    atlas = GlyphAtlas(
+      typeface,
+      metrics.cellWidthPx,
+      metrics.cellHeightPx,
+      metrics.sizeSp * density,
+    ).also { it.createTexture() }
+    appliedFontGeneration = metrics.generation
+    setClearColor()
     GLES20.glDisable(GLES20.GL_DEPTH_TEST)
     GLES20.glEnable(GLES20.GL_BLEND)
     GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-    Log.i(TAG, "GLES surface created cell=${cellWidth}x$cellHeight")
+    Log.i(
+      TAG,
+      "GLES surface created cell=${metrics.cellWidthPx}x${metrics.cellHeightPx}",
+    )
   }
 
   override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -105,6 +155,24 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   }
 
   override fun onDrawFrame(gl: GL10?) {
+    val metrics = fontMetrics
+    if (appliedFontGeneration != metrics.generation || atlas == null) {
+      val replacement = GlyphAtlas(
+        typeface,
+        metrics.cellWidthPx,
+        metrics.cellHeightPx,
+        metrics.sizeSp * density,
+      ).also { it.createTexture() }
+      atlas?.deleteTexture()
+      atlas = replacement
+      appliedFontGeneration = metrics.generation
+      Log.i(
+        TAG,
+        "font metrics updated cell=${metrics.cellWidthPx}x${metrics.cellHeightPx} " +
+          "size=${metrics.sizeSp}sp",
+      )
+    }
+    setClearColor()
     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
     val handle = terminalHandle
@@ -303,6 +371,16 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     }
   }
 
+  private fun setClearColor() {
+    val background = if (lightTheme) Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
+    GLES20.glClearColor(
+      Color.red(background) / 255f,
+      Color.green(background) / 255f,
+      Color.blue(background) / 255f,
+      1f,
+    )
+  }
+
   private fun preeditWidth(codePoint: Int): Int {
     return when {
       codePoint in 0x1100..0x11ff ||
@@ -382,6 +460,12 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
       GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
     }
 
+    fun deleteTexture() {
+      if (textureId == 0) return
+      GLES20.glDeleteTextures(1, intArrayOf(textureId), 0)
+      textureId = 0
+    }
+
     fun glyph(text: String, bold: Boolean): Glyph? {
       val key = "$bold\u0000$text"
       entries[key]?.let { return it }
@@ -426,7 +510,7 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   private companion object {
     const val TAG = "MeetermRenderer"
     const val FONT_ASSET = "fonts/MPLUS1Code[wght].ttf"
-    const val FONT_SIZE_SP = 14f
+    const val FONT_SIZE_SP = 15f
     const val ATLAS_SIZE = 1024
     const val ATLAS_PADDING = 2
 

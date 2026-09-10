@@ -59,10 +59,19 @@ INPUT_REJECTION_PATTERN = re.compile(
     r"IME commit rejected; reason=(unbound|native_exception|native_rejection)\b"
 )
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MP4_FILE_TYPE_BOX = b"ftyp"
+SCREENRECORD_REMOTE_PATH = "/sdcard/meeterm-daily-use.mp4"
+SCREENRECORD_REMOTE_PID_PATH = "/sdcard/meeterm-daily-use.pid"
+SCREENRECORD_LIMIT_SECONDS = 180
 
 SYNC_MARKER = "MEETERM_ANDROID_SYNC_4C71"
 ANSI_MARKER = "MEETERM_ANDROID_ANSI_8A26"
 REMOTE_MARKER_PREFIX = "meeterm-android-shell-"
+DAILY_PROFILE_NAME = "Android daily fixture"
+DAILY_WORKSPACE_NAME = "daily-ci"
+DAILY_WORKSPACE_RENAMED = "daily-ci-renamed"
+DAILY_PANE_NAME = "daily-pane"
+DAILY_SELECTION_MARKER = "COPY29F7"
 PANE_LABEL_PATTERN = re.compile(r"^Terminal (%[0-9]+)$")
 WORKSPACE_LABEL_PATTERN = re.compile(r"^Workspace .+$")
 BACK_TO_WORKSPACES_LABELS = (
@@ -115,6 +124,7 @@ class Node:
         "enabled",
         "visible_to_user",
         "selected",
+        "checked",
         "focused",
     )
 
@@ -129,6 +139,7 @@ class Node:
         enabled: bool = True,
         visible_to_user: bool = True,
         selected: bool = False,
+        checked: bool = False,
         focused: bool = False,
     ) -> None:
         self.text = text
@@ -139,6 +150,7 @@ class Node:
         self.enabled = enabled
         self.visible_to_user = visible_to_user
         self.selected = selected
+        self.checked = checked
         self.focused = focused
 
     @property
@@ -164,6 +176,14 @@ class TmuxPaneRecord(NamedTuple):
     pane_bottom: int
     window_active: bool
     zoomed: bool
+
+
+class ScreenRecording(NamedTuple):
+    """One optional, credential-free adb screenrecord process."""
+
+    remote_pid: int
+    remote_path: str
+    output_path: Path
 
 
 FIXTURE_WINDOW_NAMES = ("smoke", "handoff")
@@ -215,6 +235,7 @@ def parse_ui_dump(output: bytes) -> list[Node]:
                 visible_to_user=element.attrib.get("visible-to-user", "true")
                 == "true",
                 selected=element.attrib.get("selected", "false") == "true",
+                checked=element.attrib.get("checked", "false") == "true",
                 focused=element.attrib.get("focused", "false") == "true",
             )
         )
@@ -378,6 +399,36 @@ class AndroidDevice:
             ),
             stage,
             timeout=10.0,
+        )
+
+    def input_long_press_drag(
+        self,
+        start_x: int,
+        start_y: int,
+        end_x: int,
+        end_y: int,
+        stage: str,
+        *,
+        duration_ms: int = 1200,
+    ) -> None:
+        """Long-press one terminal cell, then extend its native selection."""
+
+        if duration_ms <= 0:
+            raise SmokeFailure(stage, "invalid_long_press")
+        self.assert_foreground(stage)
+        self.run(
+            (
+                "shell",
+                "input",
+                "swipe",
+                str(start_x),
+                str(start_y),
+                str(end_x),
+                str(end_y),
+                str(duration_ms),
+            ),
+            stage,
+            timeout=max(10.0, duration_ms / 1000.0 + 5.0),
         )
 
     def screenshot(self, output_path: Path) -> None:
@@ -1165,6 +1216,7 @@ def wait_for_workspace_count(
     stage: str,
     *,
     count: int,
+    exact: bool = False,
     timeout: float = DEFAULT_UI_TIMEOUT,
 ) -> list[Node]:
     if count < 1:
@@ -1177,7 +1229,7 @@ def wait_for_workspace_count(
             time.sleep(0.2)
             continue
         workspaces = find_workspace_nodes(nodes)
-        if len(workspaces) >= count:
+        if (len(workspaces) == count if exact else len(workspaces) >= count):
             return workspaces
         time.sleep(0.2)
     raise SmokeFailure(stage, "ui_timeout")
@@ -1287,6 +1339,7 @@ def wait_for_panes(
     *,
     count: int,
     selected_count: int | None = None,
+    exact: bool = False,
     timeout: float = DEFAULT_UI_TIMEOUT,
 ) -> list[Node]:
     """Wait until the accessibility tree exposes the requested pane tabs."""
@@ -1304,7 +1357,8 @@ def wait_for_panes(
             time.sleep(0.2)
             continue
         panes = find_pane_nodes(nodes)
-        if len(panes) >= count and (
+        count_matches = len(panes) == count if exact else len(panes) >= count
+        if count_matches and (
             selected_count is None
             or sum(node.selected for node in panes) == selected_count
         ):
@@ -1590,6 +1644,70 @@ def tap_node(device: AndroidDevice, node: Node, stage: str) -> None:
         raise SmokeFailure(stage, "invalid_bounds")
     x, y = node.center
     device.input_tap(x, y, stage)
+
+
+def set_toggle(
+    device: AndroidDevice,
+    label: str,
+    desired: bool,
+    stage: str,
+    *,
+    scroll: bool = True,
+) -> None:
+    """Set one labeled native switch and verify its checked state."""
+
+    node = wait_for_node(
+        device,
+        stage,
+        content_description=label,
+        scroll=scroll,
+    )
+    if node.checked == desired:
+        return
+    tap_node(device, node, stage)
+    deadline = time.monotonic() + FIELD_READBACK_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            current = find_node_casefold(device.dump_ui(), label)
+        except SmokeFailure:
+            time.sleep(FIELD_SETTLE_SECONDS)
+            continue
+        if current is not None and current.checked == desired:
+            return
+        time.sleep(FIELD_SETTLE_SECONDS)
+    raise SmokeFailure(stage, "toggle_mismatch")
+
+
+def selection_drag_points(
+    node: Node,
+    *,
+    columns: int,
+    character_count: int,
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Map a known first-row ASCII range to density-independent touch points."""
+
+    left, top, right, bottom = node.bounds
+    width = right - left
+    height = bottom - top
+    if (
+        width <= 1
+        or height <= 1
+        or columns < 2
+        or character_count < 1
+        or character_count > columns
+    ):
+        raise SmokeFailure("terminal_selection", "invalid_selection_geometry")
+    cell_width = width / columns
+    start_x = left + max(1, min(width - 1, int(cell_width * 0.5)))
+    end_x = left + max(
+        1,
+        min(width - 1, int(cell_width * (character_count - 0.5))),
+    )
+    # Android's terminal font metrics use a cell height close to twice the
+    # monospace advance. One advance below the top lands near row-zero center
+    # without including the 48dp native key row at the bottom of the view.
+    row_zero_y = top + max(1, min(height - 1, round(cell_width)))
+    return (start_x, row_zero_y), (end_x, row_zero_y)
 
 
 def focus_terminal(device: AndroidDevice, node: Node, stage: str) -> None:
@@ -1938,16 +2056,24 @@ def terminal_line(device: AndroidDevice, command: str) -> None:
     # may contain UTF-8, but it never travels through this Python process.
     if any(ord(character) > 127 for character in command):
         raise SmokeFailure("terminal_input", "non_ascii_command")
+    terminal_text(device, command)
+    device.input_keyevent(KEYCODE_ENTER, "terminal_input")
+
+
+def terminal_text(device: AndroidDevice, text: str) -> None:
+    """Enter generated ASCII without submitting the remote shell line."""
+
+    if any(ord(character) > 127 for character in text):
+        raise SmokeFailure("terminal_input", "non_ascii_command")
     # Android's input tool turns text into individual KeyEvents. Pacing small
-    # chunks reduce the chance of overwhelming the bounded native SSH queue
+    # chunks reduces the chance of overwhelming the bounded native SSH queue
     # with a synthetic CI burst while retaining the real native key-event
     # route.
-    for offset in range(0, len(command), TERMINAL_INPUT_CHUNK_SIZE):
-        chunk = command[offset : offset + TERMINAL_INPUT_CHUNK_SIZE]
+    for offset in range(0, len(text), TERMINAL_INPUT_CHUNK_SIZE):
+        chunk = text[offset : offset + TERMINAL_INPUT_CHUNK_SIZE]
         device.input_text(chunk, "terminal_input")
-        if offset + TERMINAL_INPUT_CHUNK_SIZE < len(command):
+        if offset + TERMINAL_INPUT_CHUNK_SIZE < len(text):
             time.sleep(TERMINAL_INPUT_CHUNK_DELAY_SECONDS)
-    device.input_keyevent(KEYCODE_ENTER, "terminal_input")
 
 
 def make_marker_file(key_path: Path) -> tuple[Path, str]:
@@ -2020,6 +2146,178 @@ def capture_optional_screenshot(
         return error.reason
     completed.append(f"{name}_screenshot")
     return "ok"
+
+
+def start_optional_screenrecord(
+    device: AndroidDevice,
+    output_path: Path,
+) -> tuple[ScreenRecording | None, str]:
+    """Start bounded video evidence after all credential UI is dismissed."""
+
+    remote_pid: int | None = None
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+        device.run(
+            (
+                "shell",
+                "rm",
+                "-f",
+                SCREENRECORD_REMOTE_PATH,
+                SCREENRECORD_REMOTE_PID_PATH,
+            ),
+            "daily_screenrecord_cleanup",
+            timeout=10.0,
+        )
+        script = (
+            "screenrecord --time-limit "
+            f"{SCREENRECORD_LIMIT_SECONDS} {SCREENRECORD_REMOTE_PATH} "
+            "</dev/null >/dev/null 2>&1 & child=$!; "
+            f"echo $child > {SCREENRECORD_REMOTE_PID_PATH}; echo $child"
+        )
+        pid_output = device.run(
+            ("shell", "sh", "-c", shlex.quote(script)),
+            "daily_screenrecord_start",
+            timeout=10.0,
+        ).decode("ascii", errors="replace")
+        pid_match = re.fullmatch(r"\s*(\d+)\s*", pid_output)
+        if pid_match is None:
+            pid_output = device.run(
+                ("shell", "cat", SCREENRECORD_REMOTE_PID_PATH),
+                "daily_screenrecord_start",
+                timeout=10.0,
+            ).decode("ascii", errors="replace")
+            pid_match = re.fullmatch(r"\s*(\d+)\s*", pid_output)
+        if pid_match is None:
+            raise SmokeFailure("daily_screenrecord_start", "pid_unavailable")
+        remote_pid = int(pid_match.group(1))
+        if remote_pid <= 0:
+            raise SmokeFailure("daily_screenrecord_start", "pid_unavailable")
+        device.run(
+            ("shell", "kill", "-0", str(remote_pid)),
+            "daily_screenrecord_start",
+            timeout=10.0,
+        )
+    except (OSError, SmokeFailure):
+        if remote_pid is not None:
+            try:
+                device.run(
+                    ("shell", "kill", "-2", str(remote_pid)),
+                    "daily_screenrecord_cleanup",
+                    timeout=10.0,
+                )
+            except SmokeFailure:
+                pass
+            try:
+                device.run(
+                    ("shell", "kill", "-9", str(remote_pid)),
+                    "daily_screenrecord_cleanup",
+                    timeout=10.0,
+                )
+            except SmokeFailure:
+                pass
+        try:
+            device.run(
+                (
+                    "shell",
+                    "rm",
+                    "-f",
+                    SCREENRECORD_REMOTE_PATH,
+                    SCREENRECORD_REMOTE_PID_PATH,
+                ),
+                "daily_screenrecord_cleanup",
+                timeout=10.0,
+            )
+        except SmokeFailure:
+            pass
+        return None, "start_failed"
+    try:
+        device.run(
+            ("shell", "rm", "-f", SCREENRECORD_REMOTE_PID_PATH),
+            "daily_screenrecord_cleanup",
+            timeout=10.0,
+        )
+    except SmokeFailure:
+        pass
+    assert remote_pid is not None
+    return ScreenRecording(remote_pid, SCREENRECORD_REMOTE_PATH, output_path), "ok"
+
+
+def finish_optional_screenrecord(
+    device: AndroidDevice,
+    recording: ScreenRecording,
+) -> str:
+    """Stop, pull, validate, and remotely remove optional video evidence."""
+
+    try:
+        try:
+            device.run(
+                ("shell", "kill", "-2", str(recording.remote_pid)),
+                "daily_screenrecord_stop",
+                timeout=10.0,
+            )
+        except SmokeFailure:
+            # A recording that reached its 180-second bound has already
+            # finalized and exited; pulling it remains useful evidence.
+            pass
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                device.run(
+                    ("shell", "kill", "-0", str(recording.remote_pid)),
+                    "daily_screenrecord_wait",
+                    timeout=5.0,
+                )
+            except SmokeFailure:
+                break
+            time.sleep(0.2)
+        else:
+            try:
+                device.run(
+                    ("shell", "kill", "-9", str(recording.remote_pid)),
+                    "daily_screenrecord_cleanup",
+                    timeout=10.0,
+                )
+            except SmokeFailure:
+                pass
+            return "stop_timeout"
+        device.run(
+            ("pull", recording.remote_path, str(recording.output_path)),
+            "daily_screenrecord_pull",
+            timeout=30.0,
+        )
+        video = recording.output_path.read_bytes()
+        if len(video) < 12 or video[4:8] != MP4_FILE_TYPE_BOX:
+            try:
+                recording.output_path.unlink()
+            except OSError:
+                pass
+            return "invalid_mp4"
+        return "ok"
+    except (OSError, SmokeFailure):
+        try:
+            recording.output_path.unlink()
+        except OSError:
+            pass
+        return "pull_failed"
+    finally:
+        try:
+            device.run(
+                (
+                    "shell",
+                    "rm",
+                    "-f",
+                    recording.remote_path,
+                    SCREENRECORD_REMOTE_PID_PATH,
+                ),
+                "daily_screenrecord_cleanup",
+                timeout=10.0,
+            )
+        except SmokeFailure:
+            pass
 
 
 def find_node_containing_text(nodes: list[Node], value: str) -> Node | None:
@@ -2113,6 +2411,462 @@ def open_disconnect_action(device: AndroidDevice, stage: str) -> None:
     tap_action(device, stage, DISCONNECT_LABELS, timeout=DEFAULT_UI_TIMEOUT)
 
 
+def reconnect_saved_profile_after_restart(
+    device: AndroidDevice,
+    artifact_dir: Path,
+    completed: list[str],
+    previous_pid: str,
+) -> str:
+    """Prove that profile metadata and native credentials survive process death."""
+
+    stage = "daily_process_restart"
+    device.run(("shell", "am", "force-stop", PACKAGE), stage, timeout=10.0)
+    device.run(
+        ("shell", "am", "start", "-W", "-n", f"{PACKAGE}/.MainActivity"),
+        stage,
+        timeout=15.0,
+    )
+    saved_servers = wait_for_node(
+        device,
+        stage,
+        content_description="Saved servers",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    restarted_pid = device.process_id(stage)
+    if restarted_pid == previous_pid:
+        raise SmokeFailure(stage, "app_process_unchanged")
+    completed.append("daily_process_restarted")
+
+    stage = "daily_saved_profile"
+    tap_node(device, saved_servers, stage)
+    profile = wait_for_node(
+        device,
+        stage,
+        content_description=f"Connect saved server {DAILY_PROFILE_NAME}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    wait_for_text_fragment(
+        device,
+        stage,
+        "認証情報を保存済み",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-servers.png",
+        completed,
+        "daily_servers",
+    )
+    completed.append("daily_profile_and_credential_restored")
+
+    stage = "daily_saved_profile_connect"
+    tap_node(device, profile, stage)
+    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+    device.assert_process_alive(stage)
+    completed.append("daily_saved_profile_connected")
+    return restarted_pid
+
+
+def exercise_daily_settings(
+    device: AndroidDevice,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    """Persist the daily terminal settings and verify their redisplay."""
+
+    stage = "daily_settings_open"
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_text_input(device, stage, "Terminal font size")
+
+    stage = "daily_settings_theme"
+    tap_action(device, stage, ("Terminal theme",))
+    light = wait_for_node(device, stage, text="ライト")
+    tap_node(device, light, stage)
+
+    fill_field(
+        device,
+        "Terminal font size",
+        "18",
+        "daily_settings_font",
+        scroll=False,
+        clear_count=2,
+    )
+    device.dismiss_keyboard("daily_settings_font")
+    time.sleep(0.5)
+    fill_field(
+        device,
+        "Scrollback lines",
+        "20000",
+        "daily_settings_scrollback",
+        clear_count=5,
+    )
+    device.dismiss_keyboard("daily_settings_scrollback")
+
+    stage = "daily_settings_save"
+    tap_action(device, stage, ("Save settings",))
+    wait_for_node(
+        device,
+        stage,
+        content_description="Terminal settings",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_settings_saved")
+
+    stage = "daily_settings_reopen"
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_field_value(device, stage, "Terminal font size", "18")
+    wait_for_node(device, stage, text="ライト")
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-settings.png",
+        completed,
+        "daily_settings",
+    )
+    wait_for_text_input(
+        device,
+        stage,
+        "Scrollback lines",
+        scroll=True,
+    )
+    wait_for_field_value(device, stage, "Scrollback lines", "20000")
+    completed.append("daily_settings_redisplayed")
+    tap_action(device, "daily_settings_close", ("Cancel",))
+    wait_for_node(
+        device,
+        "daily_settings_close",
+        content_description="Terminal settings",
+        timeout=RECONNECT_TIMEOUT,
+    )
+
+
+def fixture_workspace_label(fixture_layout: list[TmuxPaneRecord]) -> str:
+    active_names = {pane.window_name for pane in fixture_layout if pane.window_active}
+    if len(active_names) != 1:
+        raise SmokeFailure("daily_fixture_workspace", "workspace_selection_unavailable")
+    return f"Workspace {next(iter(active_names))}"
+
+
+def exercise_daily_workspace_and_selection(
+    device: AndroidDevice,
+    tmux_socket: Path,
+    fixture_layout: list[TmuxPaneRecord],
+    copy_marker_path: Path,
+    copy_marker_value: str,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    """Exercise light rendering, native selection, and temporary tmux CRUD."""
+
+    original_workspace_label = fixture_workspace_label(fixture_layout)
+
+    stage = "daily_terminal_light"
+    original_workspace = wait_for_workspace(
+        device,
+        stage,
+        label=original_workspace_label,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, original_workspace, stage)
+    wait_for_panes(
+        device,
+        stage,
+        count=FIXTURE_PANES_PER_WINDOW,
+        selected_count=1,
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    time.sleep(1.0)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-terminal-light.png",
+        completed,
+        "daily_terminal_light",
+    )
+    tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
+    wait_for_workspace(
+        device,
+        stage,
+        label=original_workspace_label,
+        timeout=RECONNECT_TIMEOUT,
+    )
+
+    stage = "daily_workspace_create"
+    tap_action(device, stage, ("Create workspace",))
+    fill_field(
+        device,
+        "Workspace or terminal name",
+        DAILY_WORKSPACE_NAME,
+        stage,
+        scroll=False,
+        clear_count=80,
+    )
+    tap_action(device, stage, ("Save name",))
+    wait_for_workspace_count(
+        device,
+        stage,
+        count=len(FIXTURE_WINDOW_NAMES) + 1,
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    temporary_workspace = wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {DAILY_WORKSPACE_NAME}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_workspace_created")
+
+    stage = "daily_workspace_rename"
+    options = wait_for_node(
+        device,
+        stage,
+        content_description=f"Workspace options {DAILY_WORKSPACE_NAME}",
+        scroll=True,
+    )
+    tap_node(device, options, stage)
+    tap_action(device, stage, ("名前を変更",))
+    fill_field(
+        device,
+        "Workspace or terminal name",
+        DAILY_WORKSPACE_RENAMED,
+        stage,
+        scroll=False,
+        clear_count=len(DAILY_WORKSPACE_NAME),
+    )
+    tap_action(device, stage, ("Save name",))
+    temporary_workspace = wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {DAILY_WORKSPACE_RENAMED}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_workspace_renamed")
+
+    stage = "daily_workspace_open"
+    tap_node(device, temporary_workspace, stage)
+    initial_panes = wait_for_panes(
+        device,
+        stage,
+        count=1,
+        selected_count=1,
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    initial_pane_ids = {pane_id_from_node(node) for node in initial_panes}
+
+    stage = "daily_pane_create"
+    tap_action(device, stage, ("Create terminal",))
+    pane_nodes = wait_for_panes(
+        device,
+        stage,
+        count=2,
+        selected_count=1,
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    created_panes = [
+        node for node in pane_nodes if pane_id_from_node(node) not in initial_pane_ids
+    ]
+    if len(created_panes) != 1:
+        raise SmokeFailure(stage, "pane_identity_unavailable")
+    created_pane = created_panes[0]
+    created_pane_id = pane_id_from_node(created_pane)
+    if created_pane_id is None:
+        raise SmokeFailure(stage, "pane_identity_unavailable")
+    if not created_pane.selected:
+        tap_node(device, created_pane, stage)
+        wait_for_pane(
+            device,
+            stage,
+            pane_id=created_pane_id,
+            selected=True,
+            timeout=RECONNECT_TIMEOUT,
+        )
+    completed.append("daily_pane_created")
+
+    stage = "daily_pane_rename"
+    tap_action(device, stage, TERMINAL_MENU_LABELS)
+    rename_pane = wait_for_node(
+        device,
+        stage,
+        content_description="Rename terminal",
+        scroll=True,
+    )
+    tap_node(device, rename_pane, stage)
+    fill_field(
+        device,
+        "Workspace or terminal name",
+        DAILY_PANE_NAME,
+        stage,
+        scroll=False,
+        clear_count=80,
+    )
+    tap_action(device, stage, ("Save name",))
+    wait_for_node(device, stage, text=DAILY_PANE_NAME, timeout=RECONNECT_TIMEOUT)
+    completed.append("daily_pane_renamed")
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-created-pane.png",
+        completed,
+        "daily_created_pane",
+    )
+
+    stage = "daily_terminal_selection"
+    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, stage)
+    # Hide the IME before placing the marker. Its resize can reflow terminal
+    # history, so clearing first and then hiding would make row zero unstable.
+    terminal_line(device, "stty -echo")
+    device.dismiss_keyboard(stage)
+    time.sleep(0.5)
+    terminal_line(
+        device,
+        f"clear; printf '{DAILY_SELECTION_MARKER}\\n'; stty echo",
+    )
+    time.sleep(1.0)
+    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    current_panes = list_tmux_panes(tmux_socket, stage)
+    current_pane = next(
+        (pane for pane in current_panes if pane.pane_id == created_pane_id),
+        None,
+    )
+    if current_pane is None:
+        raise SmokeFailure(stage, "pane_identity_changed")
+    selection_start, selection_end = selection_drag_points(
+        terminal,
+        columns=current_pane.pane_width,
+        character_count=len(DAILY_SELECTION_MARKER),
+    )
+    device.input_long_press_drag(
+        selection_start[0],
+        selection_start[1],
+        selection_end[0],
+        selection_end[1],
+        stage,
+    )
+    copy_selection = wait_for_node(
+        device,
+        stage,
+        content_description="Copy selection",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-selection.png",
+        completed,
+        "daily_selection",
+    )
+    tap_node(device, copy_selection, stage)
+    terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, stage)
+    terminal_line(device, "IFS= read -r MEETERM_DAILY_COPIED")
+    time.sleep(0.3)
+    paste = wait_for_node(
+        device,
+        stage,
+        content_description="Paste",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, paste, stage)
+    time.sleep(0.3)
+    device.input_keyevent(KEYCODE_ENTER, "terminal_input")
+    time.sleep(0.3)
+    verify_copy = (
+        f"[ \"$MEETERM_DAILY_COPIED\" = {shell_quote(DAILY_SELECTION_MARKER)} ] "
+        f"&& echo {shell_quote(copy_marker_value)} > "
+        f"{shell_quote(str(copy_marker_path))}"
+    )
+    terminal_line(device, verify_copy)
+    wait_for_file_contents(
+        copy_marker_path,
+        f"{copy_marker_value}\n",
+        stage,
+    )
+    completed.append("daily_native_selection_copied")
+
+    stage = "daily_pane_close"
+    tap_action(device, stage, TERMINAL_MENU_LABELS)
+    close_pane = wait_for_node(
+        device,
+        stage,
+        content_description="Close terminal",
+        scroll=True,
+    )
+    tap_node(device, close_pane, stage)
+    wait_for_node(device, stage, text="ターミナルを終了しますか？")
+    tap_action(device, stage, ("終了",))
+    wait_for_panes(
+        device,
+        stage,
+        count=1,
+        selected_count=1,
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_pane_closed")
+
+    stage = "daily_workspace_close"
+    tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
+    wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {DAILY_WORKSPACE_RENAMED}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    options = wait_for_node(
+        device,
+        stage,
+        content_description=f"Workspace options {DAILY_WORKSPACE_RENAMED}",
+        scroll=True,
+    )
+    tap_node(device, options, stage)
+    tap_action(device, stage, ("終了",))
+    wait_for_node(device, stage, text="ワークスペースを終了しますか？")
+    tap_action(device, stage, ("終了",))
+    remaining_workspaces = wait_for_workspace_count(
+        device,
+        stage,
+        count=len(FIXTURE_WINDOW_NAMES),
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    if any(
+        accessible_label(node) == f"Workspace {DAILY_WORKSPACE_RENAMED}"
+        for node in remaining_workspaces
+    ):
+        raise SmokeFailure(stage, "workspace_not_closed")
+    restored_layout = list_tmux_panes(tmux_socket, stage)
+    assert_fixture_identity_preserved(fixture_layout, restored_layout, stage)
+    completed.append("daily_workspace_closed")
+
+    stage = "daily_fixture_return"
+    original_workspace = wait_for_workspace(
+        device,
+        stage,
+        label=original_workspace_label,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, original_workspace, stage)
+    wait_for_panes(
+        device,
+        stage,
+        count=FIXTURE_PANES_PER_WINDOW,
+        selected_count=1,
+        exact=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
+    returned_layout = list_tmux_panes(tmux_socket, stage)
+    assert_fixture_identity_preserved(fixture_layout, returned_layout, stage)
+    active_names = {
+        pane.window_name for pane in returned_layout if pane.window_active
+    }
+    if active_names != {original_workspace_label.removeprefix("Workspace ")}:
+        raise SmokeFailure(stage, "workspace_selection_mismatch")
+    completed.append("daily_fixture_restored")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Android real-SSH UI smoke.")
     parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/android-ssh"))
@@ -2133,7 +2887,11 @@ def main(argv: list[str] | None = None) -> int:
     marker_value: str | None = None
     second_marker_path: Path | None = None
     second_marker_value: str | None = None
+    copy_marker_path: Path | None = None
+    copy_marker_value: str | None = None
     initial_app_pid: str | None = None
+    daily_recording: ScreenRecording | None = None
+    screenrecord_reason = "not_attempted"
 
     try:
         try:
@@ -2149,6 +2907,7 @@ def main(argv: list[str] | None = None) -> int:
         fixture_layout = prepare_tmux_fixture(tmux_socket)
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
+        copy_marker_path, copy_marker_value = make_marker_file(key_path)
 
         stage = "device_select"
         adb_path = shutil.which("adb") or "adb"
@@ -2220,6 +2979,29 @@ def main(argv: list[str] | None = None) -> int:
         fill_multiline_key(device, key)
         completed.append("form_filled")
 
+        # Configure persistence only after all public form controls have been
+        # exercised. From here until submission, accessibility dumps stay in
+        # memory and no screenshot or log artifact is captured.
+        set_toggle(
+            device,
+            "Save server profile",
+            True,
+            "daily_profile_save_toggle",
+        )
+        fill_field(
+            device,
+            "Server name",
+            DAILY_PROFILE_NAME,
+            "daily_profile_name",
+        )
+        set_toggle(
+            device,
+            "Save credentials securely",
+            True,
+            "daily_credential_save_toggle",
+        )
+        completed.append("daily_profile_persistence_selected")
+
         stage = "form_submit"
         submit_button = wait_for_node(device, stage, text="Connect")
         tap_node(device, submit_button, stage)
@@ -2235,6 +3017,47 @@ def main(argv: list[str] | None = None) -> int:
         stage = "connected"
         wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
         completed.append("connected")
+
+        if initial_app_pid is None:
+            raise SmokeFailure("daily_process_restart", "app_process_unavailable")
+        initial_app_pid = reconnect_saved_profile_after_restart(
+            device,
+            args.artifact_dir,
+            completed,
+            initial_app_pid,
+        )
+
+        # The private-key editor was cleared before native connect, the app
+        # process was replaced, and the saved-profile sheet has closed. Video
+        # therefore starts only after no credential UI can be captured.
+        daily_recording, screenrecord_reason = start_optional_screenrecord(
+            device,
+            args.artifact_dir / "daily-use.mp4",
+        )
+        if daily_recording is None:
+            completed.append("daily_video_unavailable")
+        else:
+            completed.append("daily_video_started")
+
+        exercise_daily_settings(device, args.artifact_dir, completed)
+        exercise_daily_workspace_and_selection(
+            device,
+            tmux_socket,
+            fixture_layout,
+            copy_marker_path,
+            copy_marker_value,
+            args.artifact_dir,
+            completed,
+        )
+        if daily_recording is not None:
+            screenrecord_reason = finish_optional_screenrecord(
+                device,
+                daily_recording,
+            )
+            daily_recording = None
+            completed.append(
+                "daily_video" if screenrecord_reason == "ok" else "daily_video_unavailable"
+            )
 
         stage = "tmux_session_state"
         workspace = wait_for_workspace(device, stage, timeout=RECONNECT_TIMEOUT)
@@ -2717,7 +3540,25 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             except OSError:
                 pass
+        if copy_marker_path is not None:
+            try:
+                copy_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
         if device is not None:
+            if daily_recording is not None:
+                screenrecord_reason = finish_optional_screenrecord(
+                    device,
+                    daily_recording,
+                )
+                daily_recording = None
+                completed.append(
+                    "daily_video"
+                    if screenrecord_reason == "ok"
+                    else "daily_video_unavailable"
+                )
             # Once the credential form has been submitted, a terminal-only
             # failure can be reviewed safely. Capture the visible state before
             # force-stop; never take this diagnostic while secrets are on
@@ -2761,6 +3602,7 @@ def main(argv: list[str] | None = None) -> int:
             f"secrets_submitted={'yes' if secrets_submitted else 'no'}",
             f"screenshot={'written' if screenshot_written else 'unavailable'}",
             f"screenshot_reason={screenshot_reason}",
+            f"screenrecord_reason={screenrecord_reason}",
             "completed=" + (",".join(completed) if completed else "none"),
         ]
         write_artifact(args.artifact_dir / "ssh-validation.txt", "\n".join(summary_lines) + "\n")

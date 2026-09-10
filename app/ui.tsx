@@ -22,7 +22,7 @@ export const LIGHT = {
   accentFill: '#956222',
   onAccent: '#fff9ee',
   danger: '#ab4938',
-  terminal: '#211f1b',
+  terminal: '#fbf7ef',
 };
 
 export const DARK: typeof LIGHT = {
@@ -43,8 +43,9 @@ export const DARK: typeof LIGHT = {
 export type Palette = typeof LIGHT;
 export const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
-export function usePalette() {
-  return useColorScheme() === 'dark' ? DARK : LIGHT;
+export function usePalette(preference: 'system' | 'light' | 'dark' = 'system') {
+  const system = useColorScheme();
+  return (preference === 'system' ? system : preference) === 'dark' ? DARK : LIGHT;
 }
 
 type IconName = 'search' | 'server' | 'terminal' | 'back' | 'chevron' | 'down' | 'close' | 'menu' | 'check' | 'plus';

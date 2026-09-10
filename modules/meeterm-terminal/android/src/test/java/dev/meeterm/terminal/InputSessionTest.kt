@@ -8,16 +8,28 @@ import org.junit.Test
 class InputSessionTest {
   private class RecordingSink : NativeInputSink {
     val commits = mutableListOf<ByteArray>()
+    val modifiedCommits = mutableListOf<Pair<ByteArray, Int>>()
     val specials = mutableListOf<TerminalSpecialKey>()
+    val modifiedKeys = mutableListOf<Pair<TerminalSpecialKey, Int>>()
 
     override fun commitUtf8(bytes: ByteArray): Boolean {
       commits += bytes
       return true
     }
 
+    override fun commitModifiedUtf8(bytes: ByteArray, modifiers: Int): Boolean {
+      modifiedCommits += bytes to modifiers
+      return true
+    }
+
     override fun sendSpecial(key: TerminalSpecialKey): Boolean {
       specials += key
       return true
+    }
+
+    override fun sendKey(key: TerminalSpecialKey, modifiers: Int): Boolean {
+      modifiedKeys += key to modifiers
+      return if (modifiers == 0) sendSpecial(key) else true
     }
   }
 
@@ -158,5 +170,96 @@ class InputSessionTest {
       listOf(TerminalSpecialKey.Backspace, TerminalSpecialKey.Backspace),
       sink.specials,
     )
+  }
+
+  @Test
+  fun physicalModifiersUseSharedNativeBitsForKeysAndText() {
+    val sink = RecordingSink()
+    val session = InputSession(sink)
+
+    assertTrue(
+      session.handleKey(
+        InputSession.KEYCODE_DPAD_UP,
+        modifiers = InputSession.MOD_CTRL or InputSession.MOD_ALT,
+      ),
+    )
+    assertTrue(
+      session.handleKey(
+        InputSession.KEYCODE_C,
+        unicodeCodePoint = 3,
+        modifiers = InputSession.MOD_CTRL,
+      ),
+    )
+
+    assertEquals(
+      listOf(TerminalSpecialKey.Up to (InputSession.MOD_CTRL or InputSession.MOD_ALT)),
+      sink.modifiedKeys,
+    )
+    assertEquals(1, sink.modifiedCommits.size)
+    assertEquals("c", String(sink.modifiedCommits.single().first, StandardCharsets.UTF_8))
+    assertEquals(InputSession.MOD_CTRL, sink.modifiedCommits.single().second)
+  }
+
+  @Test
+  fun androidMetaStateMapsToStableModifierBits() {
+    assertEquals(
+      InputSession.MOD_CTRL or InputSession.MOD_ALT or InputSession.MOD_SHIFT,
+      InputSession.modifiersForMetaState(
+        InputSession.META_CTRL_MASK or InputSession.META_ALT_MASK or InputSession.META_SHIFT_MASK,
+      ),
+    )
+  }
+
+  @Test
+  fun accessoryModifiersAreOneShotAcrossCommitFinishDeleteAndKeyUp() {
+    val sink = RecordingSink()
+    val session = InputSession(sink)
+
+    session.toggleModifier(InputSession.MOD_CTRL)
+    assertTrue(session.commitText("a"))
+    assertEquals(InputSession.MOD_CTRL, sink.modifiedCommits.single().second)
+    assertTrue(session.commitText("b"))
+    assertEquals(1, sink.commits.size)
+
+    session.setComposingText("x")
+    session.toggleModifier(InputSession.MOD_ALT)
+    assertTrue(session.finishComposingText())
+    assertEquals(InputSession.MOD_ALT, sink.modifiedCommits.last().second)
+
+    session.toggleModifier(InputSession.MOD_CTRL)
+    assertTrue(session.deleteSurroundingText(0, 1))
+    assertEquals(
+      TerminalSpecialKey.Delete to InputSession.MOD_CTRL,
+      sink.modifiedKeys.single(),
+    )
+    assertTrue(session.deleteSurroundingText(0, 1))
+    assertEquals(listOf(TerminalSpecialKey.Delete), sink.specials.takeLast(1))
+
+    session.toggleModifier(InputSession.MOD_ALT)
+    assertTrue(
+      session.handleKeyEvent(
+        InputSession.ACTION_UP,
+        InputSession.KEYCODE_ENTER,
+      ),
+    )
+    assertTrue(session.handleKey(InputSession.KEYCODE_ENTER))
+    assertEquals(TerminalSpecialKey.Enter, sink.specials.last())
+  }
+
+  @Test
+  fun cancelClearsCompositionAndAccessoryModifiers() {
+    val sink = RecordingSink()
+    val preeditStates = mutableListOf<String>()
+    val session = InputSession(sink, preeditStates::add)
+
+    session.setComposingText("pending")
+    session.toggleModifier(InputSession.MOD_CTRL)
+    session.cancel()
+
+    assertEquals("", session.composingText)
+    assertEquals("", preeditStates.last())
+    assertTrue(session.commitText("a"))
+    assertEquals(1, sink.commits.size)
+    assertTrue(sink.modifiedCommits.isEmpty())
   }
 }

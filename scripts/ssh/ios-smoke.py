@@ -10,6 +10,7 @@ evidence. XCTest's raw log and xcresult remain under RUNNER_TEMP.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import pty
@@ -22,6 +23,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -277,6 +279,75 @@ def write_xcuitest_diagnostics(raw_log: Path, destination: Path, exit_code: int 
         pass
 
 
+@contextmanager
+def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_dir: Path):
+    """Record only the post-authentication daily-use section, never the form."""
+    stopped = threading.Event()
+
+    def monitor() -> None:
+        recorder = None
+        result = "unavailable"
+        reason = "daily_section_not_reached"
+        video = artifact_dir / "daily-interactions.mp4"
+        try:
+            while not stopped.wait(0.5):
+                try:
+                    stages = stage_path.read_text(encoding="utf-8").splitlines()
+                except OSError:
+                    continue
+                # This marker is emitted after the cold-restart saved-credential
+                # reconnect, with the native terminal already visible. No later
+                # daily-use operation opens an authentication form.
+                if "daily_selection" not in stages:
+                    continue
+                xcrun = shutil.which("xcrun")
+                if xcrun is None:
+                    reason = "xcrun_unavailable"
+                    break
+                recorder = subprocess.Popen(
+                    [xcrun, "simctl", "io", simulator_udid, "recordVideo", "--codec=h264", str(video)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                deadline = time.monotonic() + 180
+                while not stopped.wait(0.5) and time.monotonic() < deadline:
+                    if recorder.poll() is not None:
+                        break
+                    try:
+                        if "daily_complete" in stage_path.read_text(encoding="utf-8").splitlines():
+                            break
+                    except OSError:
+                        pass
+                reason = "capture_failed"
+                break
+        except OSError:
+            reason = "capture_unavailable"
+        finally:
+            if recorder is not None:
+                if recorder.poll() is None:
+                    try:
+                        recorder.send_signal(signal.SIGINT)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    recorder.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    recorder.kill()
+                    recorder.wait(timeout=5)
+                if recorder.returncode == 0 and video.is_file() and video.stat().st_size > 0:
+                    result, reason = "captured", "none"
+                else:
+                    video.unlink(missing_ok=True)
+            write_text(artifact_dir / "daily-recording.txt", f"recording={result}\nreason={reason}\n")
+
+    thread = threading.Thread(target=monitor, name="daily-interaction-evidence", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=25)
+
+
 def run_xcuitest(
     *,
     derived_data: Path,
@@ -448,15 +519,16 @@ def main() -> int:
         )
 
         stage = "xcuitest"
-        run_status = run_xcuitest(
-            derived_data=args.derived_data,
-            simulator_udid=args.simulator_udid,
-            result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / "meeterm-ios-ui.xcresult",
-            raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / "meeterm-ios-ui-xcodebuild.log",
-            diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
-        )
+        with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir):
+            run_status = run_xcuitest(
+                derived_data=args.derived_data,
+                simulator_udid=args.simulator_udid,
+                result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                / "meeterm-ios-ui.xcresult",
+                raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                / "meeterm-ios-ui-xcodebuild.log",
+                diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
+            )
         if run_status != 0:
             ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
             raise SmokeFailure("xcuitest", "ui_test_failed")

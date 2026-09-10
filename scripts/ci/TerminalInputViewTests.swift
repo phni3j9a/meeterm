@@ -140,6 +140,68 @@ final class TerminalInputViewTests: XCTestCase {
     if !recordedIssue { appendValidation("case=unmount result=passed") }
   }
 
+  @MainActor func testControlModifierAppliesToOneCommitAndIsCancelledOnRebind() {
+    var modified: [(String, UInt32)] = []
+    var committed: [String] = []
+    inputView.onModifiedCommit = { modified.append(($0, $1)) }
+    inputView.onCommit = { committed.append($0) }
+    guard let control = findButton(title: "Ctrl", in: inputView.inputAccessoryView) else {
+      XCTFail("The native Control key is missing."); return
+    }
+    control.sendActions(for: .touchUpInside)
+    inputView.insertText("r")
+    inputView.insertText("a")
+    XCTAssertEqual(modified.count, 1)
+    XCTAssertEqual(modified.first?.0, "r")
+    XCTAssertEqual(modified.first?.1, 1)
+    XCTAssertEqual(committed, ["a"])
+    control.sendActions(for: .touchUpInside)
+    inputView.cancelCompositionForBinding()
+    inputView.insertText("b")
+    XCTAssertEqual(committed, ["a", "b"])
+    XCTAssertEqual(modified.count, 1)
+    if !recordedIssue { appendValidation("case=control_one_shot result=passed") }
+  }
+
+  @MainActor func testHardwareControlUsesModifiedInputWithoutDoubleCommit() {
+    var modified: [(String, UInt32)] = []
+    var committed: [String] = []
+    inputView.onModifiedCommit = { modified.append(($0, $1)) }
+    inputView.onCommit = { committed.append($0) }
+    guard let command = inputView.keyCommands?.first(where: { $0.input == "d" && $0.modifierFlags == .control }) else {
+      XCTFail("The hardware Control-D command is missing."); return
+    }
+    _ = inputView.perform(command.action, with: command)
+    XCTAssertEqual(modified.count, 1)
+    XCTAssertEqual(modified.first?.0, "d")
+    XCTAssertEqual(modified.first?.1, 1)
+    XCTAssertTrue(committed.isEmpty)
+    if !recordedIssue { appendValidation("case=hardware_control result=passed") }
+  }
+
+  @MainActor func testMarkedCompositionIsLocalAndCommitsOnce() {
+    var committed: [String] = []
+    var preedit: [String] = []
+    inputView.onCommit = { committed.append($0) }
+    inputView.onPreeditChanged = { preedit.append($0) }
+    inputView.setMarkedText("きょう", selectedRange: NSRange(location: 3, length: 0))
+    XCTAssertTrue(committed.isEmpty)
+    XCTAssertEqual(preedit.last, "きょう")
+    inputView.insertText("今日")
+    inputView.unmarkText()
+    XCTAssertEqual(committed, ["今日"])
+    XCTAssertEqual(preedit.last, "")
+    if !recordedIssue { appendValidation("case=marked_commit result=passed") }
+  }
+
+  @MainActor private func findButton(title: String, in view: UIView?) -> UIButton? {
+    if let button = view as? UIButton, button.configuration?.title == title { return button }
+    for child in view?.subviews ?? [] {
+      if let button = findButton(title: title, in: child) { return button }
+    }
+    return nil
+  }
+
   @MainActor private func makeHostWindow() -> UIWindow {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
     if let scene = scenes.first(where: {

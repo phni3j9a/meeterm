@@ -125,6 +125,18 @@ enum MeetermCore {
     meeterm_reconnect(terminalId)
   }
 
+  static func tmuxCommand(terminalId: UInt64, operation: UInt32, target: UInt64 = 0, name: String = "") -> Int32 {
+    withUTF8(name) { pointer, length in meeterm_tmux_command(terminalId, operation, target, pointer, length) }
+  }
+
+  static func setForeground(terminalId: UInt64, foreground: Bool) -> Int32 {
+    meeterm_set_foreground(terminalId, foreground ? 1 : 0)
+  }
+
+  static func setAutomaticReconnect(terminalId: UInt64, enabled: Bool) -> Int32 {
+    meeterm_set_automatic_reconnect(terminalId, enabled ? 1 : 0)
+  }
+
   static func selectPane(terminalId: UInt64, paneId: UInt64) -> Int32 {
     meeterm_select_pane(terminalId, paneId)
   }
@@ -151,6 +163,7 @@ enum MeetermCore {
           "paneId": "%\(pane.pane_id)",
           "terminalId": "native:\(pane.terminal_id)",
           "windowName": sanitize(decode(pane.window_name, length: pane.window_name_len), maxLength: 256),
+          "paneName": sanitize(decode(pane.pane_name, length: pane.pane_name_len), maxLength: 256),
           "selected": pane.selected == 1,
           "active": pane.active == 1
         ]
@@ -309,7 +322,50 @@ enum MeetermCore {
     guard terminalId != 0 else {
       return false
     }
-    return meeterm_send_special_key(terminalId, key.rawValue) >= 0
+    return meeterm_send_key(terminalId, key.rawValue, 0) >= 0
+  }
+
+  static func sendKey(terminalId: UInt64, key: TerminalSpecialKey, modifiers: UInt32) -> Bool {
+    meeterm_send_key(terminalId, key.rawValue, modifiers) >= 0
+  }
+
+  static func commitModified(terminalId: UInt64, text: String, modifiers: UInt32) -> Bool {
+    withUTF8(text) { pointer, length in meeterm_commit_modified_utf8(terminalId, pointer, length, modifiers) >= 0 }
+  }
+
+  static func selectStart(terminalId: UInt64, row: Int, column: Int) -> Bool {
+    guard let row = UInt32(exactly: row), let column = UInt32(exactly: column) else { return false }
+    return meeterm_select_start(terminalId, row, column) == 0
+  }
+
+  static func selectUpdate(terminalId: UInt64, row: Int, column: Int) -> Bool {
+    guard let row = UInt32(exactly: row), let column = UInt32(exactly: column) else { return false }
+    return meeterm_select_update(terminalId, row, column) == 0
+  }
+
+  @discardableResult static func clearSelection(terminalId: UInt64) -> Bool {
+    meeterm_clear_selection(terminalId) == 0
+  }
+
+  static func selectionText(terminalId: UInt64) -> String? {
+    var capacity = meeterm_selection_text(terminalId, nil, 0)
+    for _ in 0..<3 {
+      guard capacity > 0, capacity <= 4 * 1024 * 1024 else { return nil }
+      var bytes = [UInt8](repeating: 0, count: capacity)
+      let copied = bytes.withUnsafeMutableBufferPointer { meeterm_selection_text(terminalId, $0.baseAddress, $0.count) }
+      if copied > capacity { capacity = copied; continue }
+      return String(bytes: bytes.prefix(copied), encoding: .utf8)
+    }
+    return nil
+  }
+
+  @discardableResult static func setTheme(terminalId: UInt64, light: Bool) -> Bool {
+    meeterm_set_theme(terminalId, light ? 1 : 0) == 0
+  }
+
+  @discardableResult static func setScrollbackLimit(_ lines: Int) -> Bool {
+    guard let lines = UInt32(exactly: lines) else { return false }
+    return meeterm_set_scrollback_limit(lines) == 0
   }
 
   static func paste(terminalId: UInt64, text: String) -> Bool {

@@ -27,6 +27,15 @@ internal object MeetermNative {
 
   /** Returns the encoded byte count, or a negative error value. */
   external fun sendSpecial(handle: Long, key: Int): Int
+  external fun sendKey(handle: Long, key: Int, modifiers: Int): Int
+  external fun commitModified(handle: Long, bytes: ByteArray, modifiers: Int): Int
+  external fun selectStart(handle: Long, row: Int, column: Int): Int
+  external fun selectUpdate(handle: Long, row: Int, column: Int): Int
+  external fun clearSelection(handle: Long): Int
+  /** Clipboard data stays native. Null means no selection or invalid handle. */
+  external fun selectionText(handle: Long): String?
+  external fun setTheme(handle: Long, light: Boolean): Int
+  external fun setScrollbackLimit(lines: Int): Int
 
   external fun inputCommitCount(handle: Long): Long
 
@@ -38,8 +47,11 @@ internal object MeetermNative {
   external fun terminalExists(handle: Long): Boolean
 
   external fun sshReconnect(handle: Long): Int
+  external fun tmuxCommand(handle: Long, operation: Int, target: Long, name: String): Int
+  external fun setForeground(handle: Long, foreground: Boolean): Int
+  external fun setAutomaticReconnect(handle: Long, enabled: Boolean): Int
   external fun tmuxSelectPane(handle: Long, pane: Long): Int
-  /** One row per pane: window ID, pane ID, terminal handle, window name, selected, active. */
+  /** One row per pane: window ID, pane ID, terminal handle, window name, selected, active, pane name. */
   external fun tmuxSessionState(handle: Long): Array<String>?
 
   /** Queue an SSH connect request; zero means the request was accepted. */
@@ -98,11 +110,31 @@ internal class RustInputSink(
     return false
   }
 
+  override fun commitModifiedUtf8(bytes: ByteArray, modifiers: Int): Boolean {
+    val handle = handleProvider()
+    if (handle == 0L) return false
+    return try {
+      MeetermNative.commitModified(handle, bytes, modifiers) >= 0
+    } catch (_: RuntimeException) {
+      false
+    }
+  }
+
   override fun sendSpecial(key: TerminalSpecialKey): Boolean {
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
       MeetermNative.sendSpecial(handle, key.nativeCode) >= 0
+    } catch (_: RuntimeException) {
+      false
+    }
+  }
+
+  override fun sendKey(key: TerminalSpecialKey, modifiers: Int): Boolean {
+    val handle = handleProvider()
+    if (handle == 0L) return false
+    return try {
+      MeetermNative.sendKey(handle, key.nativeCode, modifiers) >= 0
     } catch (_: RuntimeException) {
       false
     }

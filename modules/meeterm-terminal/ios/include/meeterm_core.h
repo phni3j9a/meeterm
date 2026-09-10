@@ -15,6 +15,18 @@ int32_t meeterm_resize_terminal(uint64_t terminal_id, uint16_t columns, uint16_t
 uint64_t meeterm_commit_utf8(uint64_t terminal_id, const uint8_t *bytes, size_t length);
 int32_t meeterm_paste_utf8(uint64_t terminal_id, const uint8_t *bytes, size_t length);
 int32_t meeterm_scroll_lines(uint64_t terminal_id, int32_t lines);
+/* Key codes: original 0..8, Home=9 End=10 Delete=11 Insert=12,
+ * PageUp=13 PageDown=14 F1..F12=15..26. Modifier bits Ctrl=1 Alt=2 Shift=4. */
+int32_t meeterm_send_key(uint64_t terminal_id, uint32_t key, uint32_t modifiers);
+int32_t meeterm_commit_modified_utf8(uint64_t terminal_id, const uint8_t *bytes, size_t length, uint32_t modifiers);
+int32_t meeterm_select_start(uint64_t terminal_id, uint32_t row, uint32_t column);
+int32_t meeterm_select_update(uint64_t terminal_id, uint32_t row, uint32_t column);
+int32_t meeterm_clear_selection(uint64_t terminal_id);
+/* Native clipboard only: required bytes, zero=no selection, SIZE_MAX=error. */
+size_t meeterm_selection_text(uint64_t terminal_id, uint8_t *output, size_t capacity);
+int32_t meeterm_set_theme(uint64_t terminal_id, uint8_t light);
+/* Applies to all live and future terminal states. */
+int32_t meeterm_set_scrollback_limit(uint32_t lines);
 int32_t meeterm_send_special_key(uint64_t terminal_id, uint32_t key);
 /* Native-only input; never expose terminal byte streams through JavaScript. */
 int32_t meeterm_send_bytes(uint64_t terminal_id, const uint8_t *bytes, size_t length);
@@ -90,6 +102,13 @@ int32_t meeterm_connect(
 
 int32_t meeterm_disconnect(uint64_t terminal_id);
 int32_t meeterm_reconnect(uint64_t terminal_id);
+/* 0=create window, 1=rename window, 2=close window, 3=create pane,
+ * 4=rename pane, 5=close pane, 6=redraw selected pane. Targets are numeric
+ * tmux identities; names are UTF-8 arguments, never executable shell text. */
+int32_t meeterm_tmux_command(uint64_t terminal_id, uint32_t operation, uint64_t target,
+  const uint8_t *name, size_t name_length);
+int32_t meeterm_set_foreground(uint64_t terminal_id, uint8_t foreground);
+int32_t meeterm_set_automatic_reconnect(uint64_t terminal_id, uint8_t enabled);
 int32_t meeterm_select_pane(uint64_t terminal_id, uint64_t pane_id);
 uint8_t meeterm_terminal_exists(uint64_t terminal_id);
 
@@ -103,6 +122,9 @@ typedef struct meeterm_tmux_pane {
   uint8_t active;
   uint8_t reserved[4];
   uint8_t window_name[256];
+  uint16_t pane_name_len;
+  uint8_t reserved_name[6];
+  uint8_t pane_name[256];
 } meeterm_tmux_pane_t;
 
 /* Returns required record count; copies only when capacity is sufficient.

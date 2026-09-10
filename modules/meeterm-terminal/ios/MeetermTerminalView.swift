@@ -21,6 +21,17 @@ final class MeetermTerminalView: ExpoView {
   private var lastRows = 0
   private var lastTerminalRevision: UInt64 = .max
   private var revisionTimer: Timer?
+  private var fontSize: CGFloat = 15
+  private var lightTheme = false
+  private var selectionStart: (row: Int, column: Int)?
+  private var selectionEnd: (row: Int, column: Int)?
+  private let selectionBar = UIStackView()
+  private let startHandle = UIButton(type: .system)
+  private let endHandle = UIButton(type: .system)
+
+  private var cellSize: CGSize {
+    TerminalRenderer.cellSize(fontSize: fontSize, scale: max(1, window?.screen.scale ?? contentScaleFactor))
+  }
 
   required init(appContext: AppContext? = nil) {
     let selectedView: UIView
@@ -75,8 +86,10 @@ final class MeetermTerminalView: ExpoView {
       alpha: 1
     )
     clipsToBounds = true
-    isAccessibilityElement = true
-    accessibilityLabel = "Terminal"
+    isAccessibilityElement = false
+    renderingView.isAccessibilityElement = true
+    renderingView.accessibilityLabel = "Terminal"
+    renderingView.accessibilityIdentifier = "native-terminal-surface"
 
     renderingView.backgroundColor = backgroundColor
     addSubview(renderingView)
@@ -89,6 +102,7 @@ final class MeetermTerminalView: ExpoView {
     }
     terminalInputView.onPaste = { [weak self] text in
       guard let self, self.terminalHandle != 0 else { return }
+      self.clearSelection()
       if MeetermCore.paste(terminalId: self.terminalHandle, text: text) {
         self.renderer.requestFrame()
       }
@@ -96,15 +110,37 @@ final class MeetermTerminalView: ExpoView {
     terminalInputView.onSpecialKey = { [weak self] key in
       self?.send(key)
     }
+    terminalInputView.onCopySelection = { [weak self] in self?.copySelection() }
+    terminalInputView.hasTerminalSelection = { [weak self] in self?.selectionStart != nil }
+    terminalInputView.onModifiedCommit = { [weak self] text, modifiers in
+      guard let self, self.terminalHandle != 0 else { return }
+      self.clearSelection()
+      if MeetermCore.commitModified(terminalId: self.terminalHandle, text: text, modifiers: modifiers) {
+        self.renderer.requestFrame()
+      }
+    }
+    terminalInputView.onModifiedSpecialKey = { [weak self] key, modifiers in
+      guard let self, self.terminalHandle != 0 else { return }
+      self.clearSelection()
+      if MeetermCore.sendKey(terminalId: self.terminalHandle, key: key, modifiers: modifiers) {
+        self.renderer.requestFrame()
+      }
+    }
     addSubview(terminalInputView)
+    configureSelectionControls()
 
     let focusGesture = UITapGestureRecognizer(target: self, action: #selector(focusTerminal))
     focusGesture.cancelsTouchesInView = false
-    addGestureRecognizer(focusGesture)
+    renderingView.addGestureRecognizer(focusGesture)
     let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(scrollTerminal(_:)))
     scrollGesture.maximumNumberOfTouches = 1
-    addGestureRecognizer(scrollGesture)
+    renderingView.addGestureRecognizer(scrollGesture)
     focusGesture.require(toFail: scrollGesture)
+    let selectionGesture = UILongPressGestureRecognizer(target: self, action: #selector(selectTerminal(_:)))
+    selectionGesture.minimumPressDuration = 0.45
+    renderingView.addGestureRecognizer(selectionGesture)
+    scrollGesture.require(toFail: selectionGesture)
+    focusGesture.require(toFail: selectionGesture)
 
     NotificationCenter.default.addObserver(
       self,
@@ -144,6 +180,7 @@ final class MeetermTerminalView: ExpoView {
       return
     }
 
+    clearSelection()
     terminalInputView.cancelCompositionForBinding()
     renderer.attachTerminal(0)
     terminalId = nextId
@@ -160,6 +197,7 @@ final class MeetermTerminalView: ExpoView {
     }
 
     renderer.attachTerminal(terminalHandle)
+    applyAppearance()
     lastTerminalRevision = MeetermCore.terminalRevision(terminalId: terminalHandle)
     NSLog("MEETERM_SMOKE_NATIVE_READY")
     onNativeReady([
@@ -188,6 +226,7 @@ final class MeetermTerminalView: ExpoView {
       // Leaving a screen is not a text commit. Cancel preedit while retaining
       // the Rust-owned pane so UIKit cannot submit it during responder teardown.
       terminalInputView.cancelCompositionForBinding()
+      clearSelection()
     }
   }
 
@@ -250,6 +289,38 @@ final class MeetermTerminalView: ExpoView {
       height: 1
     )
     reconcileResize(for: terminalFrame.size)
+    selectionBar.frame = CGRect(x: terminalFrame.midX - 92, y: max(terminalFrame.minY, terminalFrame.maxY - 52), width: 184, height: 44)
+    positionSelectionHandles()
+  }
+
+  func setFontSize(_ size: Double) {
+    guard size.isFinite, size >= 10, size <= 24, fontSize != CGFloat(size) else { return }
+    clearSelection()
+    fontSize = CGFloat(size)
+    applyAppearance()
+    setNeedsLayout()
+  }
+
+  func setTheme(_ theme: String) {
+    let next = theme == "light"
+    guard next != lightTheme else { return }
+    lightTheme = next
+    applyAppearance()
+  }
+
+  func setScrollbackLines(_ lines: Int) {
+    guard (1000...50000).contains(lines) else { return }
+    MeetermCore.setScrollbackLimit(lines)
+  }
+
+  private func applyAppearance() {
+    let color = lightTheme ? UIColor(red: 251/255, green: 247/255, blue: 239/255, alpha: 1)
+      : UIColor(red: 36/255, green: 33/255, blue: 29/255, alpha: 1)
+    backgroundColor = color
+    renderingView.backgroundColor = color
+    terminalInputView.keyboardAppearance = lightTheme ? .light : .dark
+    renderer.setAppearance(fontSize: fontSize, light: lightTheme)
+    if terminalHandle != 0 { MeetermCore.setTheme(terminalId: terminalHandle, light: lightTheme) }
   }
 
   override func safeAreaInsetsDidChange() {
@@ -272,6 +343,7 @@ final class MeetermTerminalView: ExpoView {
   }
 
   @objc private func focusTerminal() {
+    if selectionStart != nil { clearSelection(); return }
     terminalInputView.becomeFirstResponder()
   }
 
@@ -314,15 +386,16 @@ final class MeetermTerminalView: ExpoView {
 
     let columns = max(
       2,
-      Int((size.width / TerminalRenderer.cellWidthPoints).rounded(.down))
+      Int((size.width / cellSize.width).rounded(.down))
     )
     let rows = max(
       1,
-      Int((size.height / TerminalRenderer.cellHeightPoints).rounded(.down))
+      Int((size.height / cellSize.height).rounded(.down))
     )
     guard columns != lastColumns || rows != lastRows else {
       return
     }
+    clearSelection()
     guard MeetermCore.resize(terminalId: terminalHandle, columns: columns, rows: rows) else {
       return
     }
@@ -334,21 +407,25 @@ final class MeetermTerminalView: ExpoView {
       "terminalId": terminalId,
       "columns": columns,
       "rows": rows,
-      "cellWidthPx": Int((TerminalRenderer.cellWidthPoints * scale).rounded()),
-      "cellHeightPx": Int((TerminalRenderer.cellHeightPoints * scale).rounded())
+      "cellWidthPx": Int((cellSize.width * scale).rounded()),
+      "cellHeightPx": Int((cellSize.height * scale).rounded())
     ])
     renderer.requestFrame()
   }
 
   @objc private func scrollTerminal(_ gesture: UIPanGestureRecognizer) {
     guard terminalHandle != 0 else { return }
+    if selectionStart != nil {
+      updateSelection(at: gesture.location(in: renderingView))
+      return
+    }
     let translation = gesture.translation(in: self)
-    let lines = Int32((translation.y / TerminalRenderer.cellHeightPoints).rounded(.towardZero))
+    let lines = Int32((translation.y / cellSize.height).rounded(.towardZero))
     if lines != 0 {
       if MeetermCore.scroll(terminalId: terminalHandle, lines: lines) {
         renderer.requestFrame()
       }
-      gesture.setTranslation(CGPoint(x: 0, y: translation.y - CGFloat(lines) * TerminalRenderer.cellHeightPoints), in: self)
+      gesture.setTranslation(CGPoint(x: 0, y: translation.y - CGFloat(lines) * cellSize.height), in: self)
     }
   }
 
@@ -356,6 +433,7 @@ final class MeetermTerminalView: ExpoView {
     guard terminalHandle != 0 else {
       return
     }
+    clearSelection()
     if MeetermCore.commit(terminalId: terminalHandle, text: text) > 0 {
       renderer.requestFrame()
     }
@@ -365,8 +443,110 @@ final class MeetermTerminalView: ExpoView {
     guard terminalHandle != 0 else {
       return
     }
+    clearSelection()
     if MeetermCore.send(terminalId: terminalHandle, key: key) {
       renderer.requestFrame()
     }
+  }
+
+  private func configureSelectionControls() {
+    selectionBar.axis = .horizontal
+    selectionBar.spacing = 8
+    selectionBar.distribution = .fillEqually
+    selectionBar.isHidden = true
+    for (title, action) in [("コピー", #selector(copySelection)), ("解除", #selector(cancelSelection))] {
+      var configuration = UIButton.Configuration.filled()
+      configuration.title = title
+      configuration.baseBackgroundColor = UIColor(red: 0.57, green: 0.38, blue: 0.13, alpha: 1)
+      let button = UIButton(configuration: configuration)
+      button.accessibilityLabel = title == "コピー" ? "Copy selection" : "Cancel selection"
+      button.addTarget(self, action: action, for: .touchUpInside)
+      selectionBar.addArrangedSubview(button)
+    }
+    addSubview(selectionBar)
+    for (handle, name) in [(startHandle, "Selection start"), (endHandle, "Selection end")] {
+      handle.setTitle("●", for: .normal)
+      handle.titleLabel?.font = .systemFont(ofSize: 24)
+      handle.tintColor = UIColor(red: 0.57, green: 0.38, blue: 0.13, alpha: 1)
+      handle.accessibilityLabel = name
+      handle.isHidden = true
+      handle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragSelectionHandle(_:))))
+      addSubview(handle)
+    }
+  }
+
+  private func cell(at point: CGPoint) -> (row: Int, column: Int) {
+    (max(0, min(lastRows - 1, Int(floor(point.y / cellSize.height)))),
+     max(0, min(lastColumns - 1, Int(floor(point.x / cellSize.width)))))
+  }
+
+  @objc private func selectTerminal(_ gesture: UILongPressGestureRecognizer) {
+    guard terminalHandle != 0, lastColumns > 0, lastRows > 0 else { return }
+    let location = gesture.location(in: renderingView)
+    if gesture.state == .began {
+      let point = cell(at: location)
+      if MeetermCore.selectStart(terminalId: terminalHandle, row: point.row, column: point.column) {
+        selectionStart = point
+        selectionEnd = point
+        selectionBar.isHidden = false
+        startHandle.isHidden = false
+        endHandle.isHidden = false
+        UISelectionFeedbackGenerator().selectionChanged()
+        positionSelectionHandles()
+      }
+    } else if gesture.state == .changed { updateSelection(at: location) }
+    renderer.requestFrame()
+  }
+
+  private func updateSelection(at location: CGPoint) {
+    guard selectionStart != nil else { return }
+    let point = cell(at: location)
+    if MeetermCore.selectUpdate(terminalId: terminalHandle, row: point.row, column: point.column) {
+      selectionEnd = point
+      positionSelectionHandles()
+      renderer.requestFrame()
+    }
+  }
+
+  @objc private func dragSelectionHandle(_ gesture: UIPanGestureRecognizer) {
+    let point = cell(at: gesture.location(in: renderingView))
+    if gesture.view === startHandle, let end = selectionEnd {
+      if MeetermCore.selectStart(terminalId: terminalHandle, row: point.row, column: point.column) {
+        selectionStart = point
+        _ = MeetermCore.selectUpdate(terminalId: terminalHandle, row: end.row, column: end.column)
+      }
+    } else { updateSelection(at: gesture.location(in: renderingView)) }
+    positionSelectionHandles()
+    renderer.requestFrame()
+  }
+
+  private func positionSelectionHandles() {
+    for (handle, point, offset) in [(startHandle, selectionStart, CGFloat(0)), (endHandle, selectionEnd, CGFloat(1))] {
+      guard let point else { continue }
+      let x = renderingView.frame.minX + (CGFloat(point.column) + offset) * cellSize.width
+      let y = renderingView.frame.minY + (CGFloat(point.row) + 1) * cellSize.height
+      handle.frame = CGRect(x: min(max(0, x - 22), max(0, bounds.width - 44)),
+        y: min(max(0, y - 12), max(0, renderingView.frame.maxY - 44)), width: 44, height: 44)
+    }
+  }
+
+  @objc private func copySelection() {
+    guard let text = MeetermCore.selectionText(terminalId: terminalHandle), !text.isEmpty else { return }
+    UIPasteboard.general.string = text
+    clearSelection()
+    UIAccessibility.post(notification: .announcement, argument: "コピーしました")
+  }
+
+  @objc private func cancelSelection() { clearSelection() }
+
+  private func clearSelection() {
+    guard selectionStart != nil else { return }
+    if terminalHandle != 0 { MeetermCore.clearSelection(terminalId: terminalHandle) }
+    selectionStart = nil
+    selectionEnd = nil
+    selectionBar.isHidden = true
+    startHandle.isHidden = true
+    endHandle.isHidden = true
+    renderer.requestFrame()
   }
 }

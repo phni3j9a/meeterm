@@ -11,6 +11,16 @@ pub const SNAPSHOT_VERSION: u16 = 1;
 pub const SNAPSHOT_HEADER_SIZE: usize = 28;
 pub const SNAPSHOT_CELL_METADATA_SIZE: usize = 28;
 
+/// Theme controls only the fallback colors used for terminal cells that still
+/// refer to `NamedColor::Foreground`/`Background` (and their dim/bright
+/// variants). Explicit ANSI/OSC colors remain authoritative.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// Native-only serialized terminal viewport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -18,7 +28,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub(crate) fn from_term<T: EventListener>(term: &Term<T>) -> Result<Self, TerminalError> {
+    pub(crate) fn from_term_with_theme<T: EventListener>(
+        term: &Term<T>,
+        theme: Theme,
+    ) -> Result<Self, TerminalError> {
         let mut content = term.renderable_content();
         let display_offset = content.display_offset;
         let cursor = point_to_viewport(display_offset, content.cursor.point)
@@ -54,13 +67,36 @@ impl Snapshot {
             } else {
                 1
             };
+            // The terminal selection is already normalized to the leading
+            // cell of wide glyphs. Checking the range directly avoids the
+            // cursor-shape special case in alacritty's `contains_cell`,
+            // which can suppress a boundary cell while the cursor is block
+            // shaped. Combining marks remain attached to this same cell.
+            let selected = content
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.contains(indexed.point));
+            let mut flags = cell.flags;
+            let (foreground, background) = if selected {
+                // Selection is rendered through the existing color fields so
+                // older native renderers continue to work without a wire
+                // format change. Inverse is removed because otherwise a
+                // renderer would swap our themed highlight colors again.
+                flags.remove(Flags::INVERSE);
+                selection_colors(theme)
+            } else {
+                (
+                    color_to_rgba(cell.fg, colors, theme),
+                    color_to_rgba(cell.bg, colors, theme),
+                )
+            };
             cells.push(CellRecord {
                 row: point.line as u32,
                 column: point.column.0 as u32,
                 width,
-                flags: cell.flags.bits(),
-                foreground: color_to_rgba(cell.fg, colors),
-                background: color_to_rgba(cell.bg, colors),
+                flags: flags.bits(),
+                foreground,
+                background,
                 base,
                 combining,
             });
@@ -151,16 +187,67 @@ fn put_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-fn color_to_rgba(color: Color, colors: &alacritty_terminal::term::color::Colors) -> [u8; 4] {
+fn color_to_rgba(
+    color: Color,
+    colors: &alacritty_terminal::term::color::Colors,
+    theme: Theme,
+) -> [u8; 4] {
     let rgb = match color {
         Color::Spec(rgb) => rgb,
-        Color::Named(named) => colors[named].unwrap_or_else(|| named_color(named)),
+        Color::Named(named) => colors[named].unwrap_or_else(|| named_color(named, theme)),
         Color::Indexed(index) => colors[index as usize].unwrap_or_else(|| indexed_color(index)),
     };
     [rgb.r, rgb.g, rgb.b, 255]
 }
 
-fn named_color(color: NamedColor) -> Rgb {
+fn named_color(color: NamedColor, theme: Theme) -> Rgb {
+    let (foreground, background, bright_foreground, cursor) = match theme {
+        Theme::Dark => (
+            Rgb {
+                r: 208,
+                g: 208,
+                b: 208,
+            },
+            Rgb {
+                r: 36,
+                g: 33,
+                b: 29,
+            },
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            Rgb {
+                r: 208,
+                g: 208,
+                b: 208,
+            },
+        ),
+        Theme::Light => (
+            Rgb {
+                r: 53,
+                g: 43,
+                b: 34,
+            },
+            Rgb {
+                r: 251,
+                g: 247,
+                b: 239,
+            },
+            Rgb {
+                r: 30,
+                g: 23,
+                b: 17,
+            },
+            Rgb {
+                r: 53,
+                g: 43,
+                b: 34,
+            },
+        ),
+    };
+
     match color {
         NamedColor::Black
         | NamedColor::Red
@@ -178,26 +265,10 @@ fn named_color(color: NamedColor) -> Rgb {
         | NamedColor::BrightMagenta
         | NamedColor::BrightCyan
         | NamedColor::BrightWhite => indexed_color(color as u8),
-        NamedColor::Foreground => Rgb {
-            r: 208,
-            g: 208,
-            b: 208,
-        },
-        NamedColor::BrightForeground => Rgb {
-            r: 255,
-            g: 255,
-            b: 255,
-        },
-        NamedColor::Background => Rgb {
-            r: 36,
-            g: 33,
-            b: 29,
-        },
-        NamedColor::Cursor => Rgb {
-            r: 208,
-            g: 208,
-            b: 208,
-        },
+        NamedColor::Foreground => foreground,
+        NamedColor::BrightForeground => bright_foreground,
+        NamedColor::Background => background,
+        NamedColor::Cursor => cursor,
         NamedColor::DimBlack => dim_color(indexed_color(0)),
         NamedColor::DimRed => dim_color(indexed_color(1)),
         NamedColor::DimGreen => dim_color(indexed_color(2)),
@@ -206,11 +277,14 @@ fn named_color(color: NamedColor) -> Rgb {
         NamedColor::DimMagenta => dim_color(indexed_color(5)),
         NamedColor::DimCyan => dim_color(indexed_color(6)),
         NamedColor::DimWhite => dim_color(indexed_color(7)),
-        NamedColor::DimForeground => Rgb {
-            r: 128,
-            g: 128,
-            b: 128,
-        },
+        NamedColor::DimForeground => dim_color(foreground),
+    }
+}
+
+fn selection_colors(theme: Theme) -> ([u8; 4], [u8; 4]) {
+    match theme {
+        Theme::Dark => ([255, 255, 255, 255], [78, 105, 132, 255]),
+        Theme::Light => ([20, 30, 42, 255], [187, 211, 238, 255]),
     }
 }
 

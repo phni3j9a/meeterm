@@ -33,17 +33,17 @@ impl Drop for ControlClient {
             task.abort();
         }
         detach_all(&self.shared);
-        // Covers transport errors and task aborts that bypass the normal
-        // cancellation branch.  The generation guard keeps an old actor from
-        // clearing ownership established by a replacement connection.
-        self.shared.clear_owned_zoom();
+        // Zoom ownership is retained across a recoverable transport loss so
+        // the reconnecting actor can restore the mobile layout and its hooks.
+        // The outer connection lifecycle clears it only when retries stop or
+        // an explicit replacement takes ownership of the generation.
     }
 }
 
 pub(super) async fn run(
     shared: &Arc<ConnectionShared>,
     session: &mut client::Handle<HostKeyHandler>,
-    mut commands: mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::AttachingTmux);
     let channel = await_stage(
@@ -131,6 +131,106 @@ pub(super) async fn run(
                 match command {
                     Some(ControlCommand::SelectPane { window_id, pane_id }) => {
                         client.select(window_id, pane_id).await?;
+                        client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::CreateWorkspace { name }) => {
+                        let existing = client
+                            .shared
+                            .session
+                            .lock()
+                            .map_err(|_| FlowFailure::Stale)?
+                            .snapshot
+                            .clone();
+                        let command = tmux::create_workspace_command(&name)
+                            .map_err(|_| FlowFailure::TmuxProtocol)?;
+                        client.query(&command).await?;
+                        client.synchronize(false).await?;
+                        if let Some(window) = client.new_window_id_since(&existing)
+                            && let Some(pane) = client.first_pane_in_window(window)
+                        {
+                            client.select(window, pane).await?;
+                            client.synchronize(false).await?;
+                        }
+                    }
+                    Some(ControlCommand::RenameWorkspace { window_id, name }) => {
+                        let command = tmux::rename_workspace_command(window_id, &name)
+                            .map_err(|_| FlowFailure::TmuxProtocol)?;
+                        client.query(&command).await?;
+                        client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::CloseWorkspace { window_id }) => {
+                        let final_window = {
+                            let state = client
+                                .shared
+                                .session
+                                .lock()
+                                .map_err(|_| FlowFailure::Stale)?;
+                            state.snapshot.windows.len() == 1
+                                && state.snapshot.windows[0].window_id == window_id
+                        };
+                        let command = tmux::close_workspace_command(window_id);
+                        if final_window {
+                            return client.close_last_session(command).await;
+                        }
+                        client.query(&command).await?;
+                        client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::CreatePane { window_id }) => {
+                        let existing = client
+                            .shared
+                            .session
+                            .lock()
+                            .map_err(|_| FlowFailure::Stale)?
+                            .snapshot
+                            .clone();
+                        client.query(&tmux::create_pane_command(window_id)).await?;
+                        client.synchronize(false).await?;
+                        if let Some(pane_id) = client.new_pane_id_since(&existing, window_id) {
+                            client.select(window_id, pane_id).await?;
+                            client.synchronize(false).await?;
+                        }
+                    }
+                    Some(ControlCommand::RenamePane { pane_id, name }) => {
+                        let window_id = client
+                            .shared
+                            .session
+                            .lock()
+                            .map_err(|_| FlowFailure::Stale)?
+                            .snapshot
+                            .panes
+                            .iter()
+                            .find(|pane| pane.pane_id == pane_id)
+                            .map(|pane| pane.window_id)
+                            .ok_or(FlowFailure::Stale)?;
+                        let command = tmux::rename_pane_command(window_id, pane_id, &name)
+                            .map_err(|_| FlowFailure::TmuxProtocol)?;
+                        client.query(&command).await?;
+                        client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::ClosePane { pane_id }) => {
+                        let (window_id, final_pane) = {
+                            let state = client
+                                .shared
+                                .session
+                                .lock()
+                                .map_err(|_| FlowFailure::Stale)?;
+                            let pane = state
+                                .snapshot
+                                .panes
+                                .iter()
+                                .find(|pane| pane.pane_id == pane_id)
+                                .ok_or(FlowFailure::Stale)?;
+                            (pane.window_id, state.snapshot.panes.len() == 1)
+                        };
+                        let command = tmux::close_pane_command(window_id, pane_id);
+                        if final_pane {
+                            return client.close_last_session(command).await;
+                        }
+                        client.query(&command).await?;
+                        client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::RefreshTerminal) => {
+                        client.refresh_terminal().await?;
                         client.synchronize(false).await?;
                     }
                     None => return Err(FlowFailure::Stale),
@@ -295,6 +395,12 @@ impl ControlClient {
                         return Ok(blocks);
                     }
                     if block.error {
+                        // Mutations update the Rust snapshot only after a
+                        // complete tmux response and synchronization. Keep
+                        // the last coherent topology when tmux rejects a
+                        // command; the outer flow exposes the failure state
+                        // instead of showing an optimistic item that never
+                        // existed remotely.
                         return Err(FlowFailure::Tmux);
                     }
                     reply_bytes =
@@ -321,6 +427,92 @@ impl ControlClient {
         ))
         .await?;
         Ok(())
+    }
+
+    async fn refresh_terminal(&mut self) -> Result<(), FlowFailure> {
+        let pane = self
+            .shared
+            .session
+            .lock()
+            .map_err(|_| FlowFailure::Stale)?
+            .selected_pane;
+        let Some(pane) = pane else {
+            return Ok(());
+        };
+        if self.routes.contains_key(&pane) {
+            // capture() reconstructs the native Term from tmux's current
+            // screen, including alternate-screen/TUI mode and cursor state.
+            // It also replays output that arrived while the capture command
+            // was in flight, so an explicit redraw cannot lose keystrokes.
+            self.capture(pane).await?;
+        }
+        Ok(())
+    }
+
+    /// Apply an explicit final-pane/window close without allowing the normal
+    /// transport retry policy to recreate the managed session. tmux may close
+    /// the Control Mode channel as soon as the last window disappears, so no
+    /// response-bearing query can be required here. The user action itself is
+    /// the terminal lifecycle boundary; cancellation makes run_connection
+    /// finish as Disconnected even if the remote channel closes immediately.
+    async fn close_last_session(&mut self, command: String) -> Result<(), FlowFailure> {
+        let request = format!("{command}\n");
+        let _ = await_stage(
+            &self.shared,
+            self.writer.data_bytes(request.into_bytes()),
+            SSH_STAGE_TIMEOUT,
+            FlowFailure::Transport,
+        )
+        .await;
+        self.shared.cancel();
+        Err(FlowFailure::Stale)
+    }
+
+    fn new_window_id_since(&self, before: &SessionSnapshot) -> Option<u64> {
+        let state = self.shared.session.lock().ok()?;
+        state
+            .snapshot
+            .windows
+            .iter()
+            .find(|window| {
+                !before
+                    .windows
+                    .iter()
+                    .any(|old| old.window_id == window.window_id)
+            })
+            .map(|window| window.window_id)
+    }
+
+    fn first_pane_in_window(&self, window_id: u64) -> Option<u64> {
+        self.shared
+            .session
+            .lock()
+            .ok()?
+            .snapshot
+            .windows
+            .iter()
+            .find(|window| window.window_id == window_id)
+            .and_then(|window| {
+                window
+                    .panes
+                    .iter()
+                    .find(|pane| pane.active)
+                    .or_else(|| window.panes.first())
+            })
+            .map(|pane| pane.pane_id)
+    }
+
+    fn new_pane_id_since(&self, before: &SessionSnapshot, window_id: u64) -> Option<u64> {
+        let state = self.shared.session.lock().ok()?;
+        state
+            .snapshot
+            .panes
+            .iter()
+            .find(|pane| {
+                pane.window_id == window_id
+                    && !before.panes.iter().any(|old| old.pane_id == pane.pane_id)
+            })
+            .map(|pane| pane.pane_id)
     }
 
     async fn select(&mut self, window: u64, pane: u64) -> Result<(), FlowFailure> {
@@ -596,6 +788,7 @@ impl ControlClient {
                 columns: pane.columns,
                 rows: pane.rows,
                 title: pane.title.clone(),
+                pane_name: pane.pane_name.clone(),
             })
             .collect::<Vec<_>>();
         {
