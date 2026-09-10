@@ -11,21 +11,34 @@ jobs:
     steps:
       - name: Check out the disposable probe
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Check Xcode Mach-O section tool
+      - name: Record Xcode Mach-O section tool availability
         shell: bash
         run: |
-          set -euo pipefail
-          objcopy=$(xcrun --find llvm-objcopy)
-          test -x "$objcopy"
-          echo "PROBE llvm_objcopy=$objcopy"
-          "$objcopy" --version | head -n 1
+          set -u
+          if objcopy=$(xcrun --find llvm-objcopy 2>/tmp/meeterm-objcopy-error); then
+            echo "PROBE llvm_objcopy=available path=$objcopy"
+            "$objcopy" --version | head -n 1
+          else
+            echo 'PROBE llvm_objcopy=unavailable'
+            cat /tmp/meeterm-objcopy-error
+          fi
 
-      - name: Run unsigned XCTest runner entitlement probe
+      - name: Run app-hosted unsigned XCTest Keychain probe
         shell: bash
         run: |
           set -euo pipefail
-          derived_data=/tmp/meeterm-runner-probe-derived
-          rm -rf "$derived_data" /tmp/meeterm-runner-before.xcresult /tmp/meeterm-runner-after.xcresult
+          cat > runner-host-entitlements.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>application-identifier</key><string>MEETERMCI.dev.meeterm.runner-probe</string>
+          <key>keychain-access-groups</key><array><string>MEETERMCI.dev.meeterm.runner-probe</string></array>
+          </dict></plist>
+          PLIST
+          /usr/bin/derq query -f xml -i runner-host-entitlements.plist -o runner-host-entitlements.der --raw
+
+          derived_data=/tmp/meeterm-host-probe-derived
+          rm -rf "$derived_data" /tmp/meeterm-host-probe.xcresult
           xcodebuild \
             -project RunnerKeychainProbe.xcodeproj \
             -scheme RunnerKeychainProbe \
@@ -36,15 +49,26 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             ONLY_ACTIVE_ARCH=YES \
-            build-for-testing | tee /tmp/meeterm-runner-build.log
+            build-for-testing | tee /tmp/meeterm-host-probe-build.log
 
           products="$derived_data/Build/Products"
           xctestrun=$(find "$products" -maxdepth 1 -name '*.xctestrun' -type f -print -quit)
-          runner=$(find "$products" -path '*/RunnerKeychainTests-Runner.app/RunnerKeychainTests-Runner' -type f -print -quit)
+          host="$products/Release-iphonesimulator/RunnerHost.app/RunnerHost"
+          test_bundle="$products/Release-iphonesimulator/RunnerKeychainTests-Runner.app/PlugIns/RunnerKeychainTests.xctest/RunnerKeychainTests"
+          test_runner="$products/Release-iphonesimulator/RunnerKeychainTests-Runner.app/RunnerKeychainTests-Runner"
           test -n "$xctestrun"
-          test -n "$runner"
+          test -x "$host"
+          test -x "$test_bundle"
+          test -x "$test_runner"
           echo "PROBE xctestrun=$xctestrun"
-          echo "PROBE runner_before=$runner"
+          echo "PROBE host=$host"
+          echo "PROBE test_bundle=$test_bundle"
+          echo "PROBE test_runner=$test_runner"
+
+          xcrun otool -l "$host" > /tmp/meeterm-host-probe-host-otool.txt
+          grep -q 'sectname __entitlements' /tmp/meeterm-host-probe-host-otool.txt
+          grep -q 'sectname __ents_der' /tmp/meeterm-host-probe-host-otool.txt
+          echo 'PROBE host_sections=passed'
 
           probe_udid=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if x["isAvailable"] and x["name"].startswith("iPhone")))')
           xcrun simctl boot "$probe_udid" 2>/dev/null || true
@@ -55,51 +79,14 @@ jobs:
             test-without-building \
             -xctestrun "$xctestrun" \
             -destination "platform=iOS Simulator,id=$probe_udid" \
-            -resultBundlePath /tmp/meeterm-runner-before.xcresult \
+            -resultBundlePath /tmp/meeterm-host-probe.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            > /tmp/meeterm-runner-before.log 2>&1
-          before_status=$?
+            > /tmp/meeterm-host-probe-test.log 2>&1
+          test_status=$?
           set -e
-          rg 'PROBE runner_keychain_(add|delete)=' /tmp/meeterm-runner-before.log || true
-          echo "PROBE runner_before_status=$before_status"
-
-          cat > /tmp/runner-entitlements.plist <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-          <key>application-identifier</key><string>MEETERMCI.dev.meeterm.runner-probe</string>
-          <key>keychain-access-groups</key><array><string>MEETERMCI.dev.meeterm.runner-probe</string></array>
-          </dict></plist>
-          PLIST
-          /usr/bin/derq query -f xml -i /tmp/runner-entitlements.plist -o /tmp/runner-entitlements.der --raw
-
-          objcopy=$(xcrun --find llvm-objcopy)
-          patched="$runner.patched"
-          "$objcopy" \
-            --add-section "__TEXT,__entitlements=/tmp/runner-entitlements.plist" \
-            --add-section "__TEXT,__ents_der=/tmp/runner-entitlements.der" \
-            "$runner" "$patched"
-          mv "$patched" "$runner"
-          echo 'PROBE runner_objcopy=passed'
-          xcrun otool -l "$runner" > /tmp/meeterm-runner-otool.txt
-          rg -q 'sectname __entitlements' /tmp/meeterm-runner-otool.txt
-          rg -q 'sectname __ents_der' /tmp/meeterm-runner-otool.txt
-          echo 'PROBE runner_sections=passed'
-
-          set +e
-          xcodebuild \
-            test-without-building \
-            -xctestrun "$xctestrun" \
-            -destination "platform=iOS Simulator,id=$probe_udid" \
-            -resultBundlePath /tmp/meeterm-runner-after.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            > /tmp/meeterm-runner-after.log 2>&1
-          after_status=$?
-          set -e
-          cat /tmp/meeterm-runner-after.log
-          rg -q 'PROBE runner_keychain_add=0' /tmp/meeterm-runner-after.log
-          rg -q 'PROBE runner_keychain_delete=0' /tmp/meeterm-runner-after.log
-          test "$after_status" -eq 0
-          echo 'PROBE runner_keychain=passed'
+          cat /tmp/meeterm-host-probe-test.log
+          grep -q 'PROBE host_keychain_add=0' /tmp/meeterm-host-probe-test.log
+          grep -q 'PROBE host_keychain_delete=0' /tmp/meeterm-host-probe-test.log
+          test "$test_status" -eq 0
+          echo 'PROBE host_keychain=passed'

@@ -8,15 +8,30 @@
 
 /* Begin PBXBuildFile section */
 		A00000000000000000000001 /* RunnerKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000001 /* RunnerKeychainTests.swift */; };
+		A00000000000000000000002 /* RunnerHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000003 /* RunnerHost.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		P00000000000000000000001 /* Proxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = H00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E00000000000000000000002;
+			remoteInfo = RunnerHost;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		B00000000000000000000001 /* RunnerKeychainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerKeychainTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000002 /* RunnerKeychainTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerKeychainTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00000000000000000000003 /* RunnerHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerHost.swift; sourceTree = "<group>"; };
+		B00000000000000000000004 /* RunnerHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RunnerHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		C00000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (
+		C00000000000000000000001 /* Test Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (
+		); runOnlyForDeploymentPostprocessing = 0; };
+		C00000000000000000000002 /* Host Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (
 		); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
@@ -25,6 +40,7 @@
 			isa = PBXGroup;
 			children = (
 				B00000000000000000000001 /* RunnerKeychainTests.swift */,
+				B00000000000000000000003 /* RunnerHost.swift */,
 				D00000000000000000000002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -33,6 +49,7 @@
 			isa = PBXGroup;
 			children = (
 				B00000000000000000000002 /* RunnerKeychainTests.xctest */,
+				B00000000000000000000004 /* RunnerHost.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -42,21 +59,46 @@
 /* Begin PBXNativeTarget section */
 		E00000000000000000000001 /* RunnerKeychainTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F00000000000000000000002 /* Build configuration list for PBXNativeTarget "RunnerKeychainTests" */;
+			buildConfigurationList = F00000000000000000000003 /* Build configuration list for PBXNativeTarget "RunnerKeychainTests" */;
 			buildPhases = (
-				C00000000000000000000001 /* Frameworks */,
-				G00000000000000000000001 /* Sources */,
+				C00000000000000000000001 /* Test Frameworks */,
+				G00000000000000000000001 /* Test Sources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				Q00000000000000000000001 /* RunnerHost */,
 			);
 			name = RunnerKeychainTests;
 			productName = RunnerKeychainTests;
 			productReference = B00000000000000000000002 /* RunnerKeychainTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		E00000000000000000000002 /* RunnerHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F00000000000000000000004 /* Build configuration list for PBXNativeTarget "RunnerHost" */;
+			buildPhases = (
+				C00000000000000000000002 /* Host Frameworks */,
+				G00000000000000000000002 /* Host Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RunnerHost;
+			productName = RunnerHost;
+			productReference = B00000000000000000000004 /* RunnerHost.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXTargetDependency section */
+		Q00000000000000000000001 /* RunnerHost */ = {
+			isa = PBXTargetDependency;
+			target = E00000000000000000000002 /* RunnerHost */;
+			targetProxy = P00000000000000000000001 /* Proxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		H00000000000000000000001 /* Project object */ = {
@@ -78,19 +120,23 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				E00000000000000000000002 /* RunnerHost */,
 				E00000000000000000000001 /* RunnerKeychainTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
-		G00000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+		G00000000000000000000001 /* Test Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
 			A00000000000000000000001 /* RunnerKeychainTests.swift in Sources */,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		G00000000000000000000002 /* Host Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			A00000000000000000000002 /* RunnerHost.swift in Sources */,
 		); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		F00000000000000000000003 /* Debug */ = {
+		F00000000000000000000005 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -101,7 +147,7 @@
 			};
 			name = Debug;
 		};
-		F00000000000000000000004 /* Release */ = {
+		F00000000000000000000006 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -112,14 +158,68 @@
 			};
 			name = Release;
 		};
-		F00000000000000000000005 /* Debug */ = {
+		F00000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.meeterm.runner-probe.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RunnerHost.app/RunnerHost";
+			};
+			name = Debug;
+		};
+		F00000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.meeterm.runner-probe.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RunnerHost.app/RunnerHost";
+			};
+			name = Release;
+		};
+		F00000000000000000000009 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = RunnerHost;
+				INFOPLIST_KEY_LSRequiresIPhoneOS = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.meeterm.runner-probe.tests;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-Wl,-sectcreate,__TEXT,__entitlements,$(SRCROOT)/runner-host-entitlements.plist",
+					"-Wl,-sectcreate,__TEXT,__ents_der,$(SRCROOT)/runner-host-entitlements.der",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.meeterm.runner-probe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -127,14 +227,24 @@
 			};
 			name = Debug;
 		};
-		F00000000000000000000006 /* Release */ = {
+		F0000000000000000000000A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = RunnerHost;
+				INFOPLIST_KEY_LSRequiresIPhoneOS = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.meeterm.runner-probe.tests;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-Wl,-sectcreate,__TEXT,__entitlements,$(SRCROOT)/runner-host-entitlements.plist",
+					"-Wl,-sectcreate,__TEXT,__ents_der,$(SRCROOT)/runner-host-entitlements.der",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.meeterm.runner-probe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -148,17 +258,26 @@
 		F00000000000000000000001 /* Build configuration list for PBXProject "RunnerKeychainProbe" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				F00000000000000000000003 /* Debug */,
-				F00000000000000000000004 /* Release */,
+				F00000000000000000000005 /* Debug */,
+				F00000000000000000000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F00000000000000000000002 /* Build configuration list for PBXNativeTarget "RunnerKeychainTests" */ = {
+		F00000000000000000000003 /* Build configuration list for PBXNativeTarget "RunnerKeychainTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				F00000000000000000000005 /* Debug */,
-				F00000000000000000000006 /* Release */,
+				F00000000000000000000007 /* Debug */,
+				F00000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F00000000000000000000004 /* Build configuration list for PBXNativeTarget "RunnerHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F00000000000000000000009 /* Debug */,
+				F0000000000000000000000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
