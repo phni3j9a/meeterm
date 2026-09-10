@@ -197,7 +197,7 @@ final class MeetermSmokeUITests: XCTestCase {
 
     record("await_workspaces")
     let workspaceLabels = waitForWorkspaceLabels(minimum: 2)
-    XCTAssertGreaterThanOrEqual(workspaceLabels.count, 2, "The fixture workspaces were not discovered.")
+    XCTAssertEqual(workspaceLabels.count, 2, "The fixture must expose two workspace rows, excluding their options buttons.")
     record("capture_workspaces")
     capture("workspaces")
 
@@ -381,6 +381,7 @@ final class MeetermSmokeUITests: XCTestCase {
     button("Copy selection").tap()
     XCTAssertFalse(button("Copy selection").exists)
     XCTAssertTrue(UIPasteboard.general.string?.contains("COPY") == true)
+    capture("daily-selection-cleared")
     UIPasteboard.general.string = nil
 
     record("daily_settings")
@@ -812,7 +813,10 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func waitForWorkspaceLabels(minimum: Int) -> [String] {
-    let predicate = NSPredicate(format: "label BEGINSWITH 'Workspace '")
+    let predicate = NSPredicate(
+      format: "identifier BEGINSWITH %@ AND label BEGINSWITH %@",
+      "workspace-row-", "Workspace "
+    )
     let query = app.buttons.matching(predicate)
     let deadline = Date().addingTimeInterval(90)
     while Date() < deadline {

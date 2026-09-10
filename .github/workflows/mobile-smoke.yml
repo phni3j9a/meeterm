@@ -315,6 +315,36 @@ jobs:
             build-for-testing \
             2>&1 | tee artifacts/ios-simulator-observability/xcodebuild.log
 
+      - name: Verify Simulator Keychain entitlement sections
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          products = Path(os.environ["RUNNER_TEMP"]) / "meeterm-derived-data/Build/Products/Release-iphonesimulator"
+          executables = {
+              "app": products / "meeterm.app/meeterm",
+              "tests": products / "meetermTests-Runner.app/PlugIns/meetermTests.xctest/meetermTests",
+          }
+          lines = []
+          valid = True
+          for target, executable in executables.items():
+              result = subprocess.run(["xcrun", "otool", "-l", str(executable)],
+                                      capture_output=True, text=True, check=False, timeout=30)
+              for section in ("__entitlements", "__ents_der"):
+                  present = result.returncode == 0 and re.search(
+                      rf"sectname {section}\s+segname __TEXT(?:\s|$)", result.stdout) is not None
+                  lines.append(f"target={target} section={section} present={int(present)}")
+                  valid = valid and present
+          lines.append(f"result={'passed' if valid else 'failed'}")
+          Path("artifacts/ios-simulator-observability/ios-simulator-entitlements.txt").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8")
+          if not valid:
+              raise SystemExit("The unsigned Simulator app or test bundle lacks Keychain entitlement sections.")
+          PY
+
       - name: Run real SSH/tmux iOS UI smoke
         run: scripts/ci/ios-smoke.sh
 

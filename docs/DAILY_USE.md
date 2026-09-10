@@ -126,7 +126,7 @@ history-limit or persist terminal output to its own disk files.
   Android atlas exhaustion now resets bounded packing and uses region uploads;
   copy, ordinary taps and input clear the native selection. Regression tests
   cover atlas rollover and restoration of the unselected snapshot colors.
-  The iOS hardware-input test still requires the updated Hosted candidate.
+  Seven iOS native-input cases passed in both later Hosted candidates.
 
 General [Hosted CI](https://github.com/phni3j9a/meeterm/actions/runs/34423153261)
 passed on candidate `2f54449` (Rust, real OpenSSH, JavaScript, Expo and Android
@@ -169,7 +169,8 @@ a new call supplied a `timeout` keyword that the existing marker helper does not
 accept. A regression through the actual stress orchestration reproduced the
 `TypeError`; removing that keyword made the full 85-test Python suite pass.
 The native atlas stress and remaining CRUD/copy interaction gates still need
-a complete run. The third iOS job remains in progress.
+a complete run. The third iOS job failed at native storage; the focused
+reproduction below identifies missing Simulator Keychain entitlements.
 
 Physical full-flow Android attempts stopped before submitting the test profile
 when foreground/editor observations were unavailable. They do not establish
@@ -186,3 +187,27 @@ credential-entry UI is intentionally recorded.
 The independent integration review has no unresolved material code findings.
 Updated Hosted mobile checks and complete daily-use interaction evidence are
 still pending. This record is not yet a release acceptance declaration.
+
+### iOS Simulator Keychain reproduction
+
+The third iOS run passed all seven native-input cases but failed all four
+ClientStore tests and rejected the credential-saving form submission. A
+[focused unsigned reproduction](https://github.com/phni3j9a/meeterm/actions/runs/34433692618)
+on the Hosted Simulator passed the same Application Support / atomic protected
+file write / JSON roundtrip, but returned `-34018` from both `SecItemAdd` and
+`SecItemDelete`. This is Apple's
+[`errSecMissingEntitlement`](https://developer.apple.com/documentation/security/errsecmissingentitlement).
+Because an interrupted credential write leaves a pending-delete journal, the
+same unavailable Keychain cleanup also explains subsequent preference-read
+failures. The generic UI rejection alone does not distinguish save, connection
+preparation and SSH-start errors.
+
+A [second reproduction](https://github.com/phni3j9a/meeterm/actions/runs/34434314312)
+embedded Simulator entitlement XML and DER in the Mach-O `__TEXT,__entitlements`
+and `__TEXT,__ents_der` sections. The app remained unsigned, launched, and
+returned success (`0`) for both Keychain operations. The reproduction source is
+[the isolated probe workflow](https://github.com/phni3j9a/meeterm/blob/a61c44b/.github/workflows/probe.yml).
+The attempted host ad-hoc signature with iOS entitlements was launch-rejected;
+that approach is not used. No distribution certificate, provisioning profile,
+Apple account or signing secret is needed for the section-embedding approach.
+The app and XCTest integration still require a complete Hosted run.
