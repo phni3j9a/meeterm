@@ -401,7 +401,11 @@ def run_xcuitest(
                 stdin=subprocess.DEVNULL,
                 stdout=stream,
                 stderr=subprocess.STDOUT,
-                timeout=900,
+                # The suite now includes native storage/input cases, a cold
+                # saved-profile reconnect, settings, selection and tmux CRUD.
+                # The partial Hosted run already took 13m34s; allow the full
+                # sequence while retaining the shorter per-operation gates.
+                timeout=1800,
                 check=False,
             )
             exit_code = completed.returncode
