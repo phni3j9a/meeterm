@@ -90,7 +90,22 @@ shell received `print`. The same selection rectangle remains after the Copy
 attempt. Input diagnostics show 603 attempted bytes, 582 observed accepted bytes
 and zero explicit native rejections. These observations do not identify whether
 IME handling, input delivery or tap routing caused the remaining failures.
-A focused local-terminal Android probe is being prepared. The separate
+A [focused local-terminal Android probe](https://github.com/phni3j9a/meeterm/actions/runs/34448989559)
+subsequently showed a real Android clipboard overlay containing `scrollback-hist`
+and pasted exactly that selected text into the terminal; Main downloaded and
+viewed both images. Its Python sequence completed, but the workflow wrapper
+failed afterwards, so the overall job is not reported as passing. The selected
+row was existing demo history, not the intended marker: clearing a viewport does
+not clear scrollback, and expanding the viewport can reveal older rows.
+The probe's three literal-input cases observed all attempted bytes accepted.
+These observations do not establish the cause of the earlier missing `f`.
+
+Static review found that four toolbar listeners requested focus on their own
+TextView instead of the native terminal editor. The fix explicitly targets the
+outer terminal view. The daily driver keeps the focused IME open while preparing
+the marker and retrieves Copy's bounds after the screenshot. Independent review,
+the Android arm64 Release build and 24 native unit tests pass locally; behavior
+with this updated APK still requires Hosted validation. The separate
 fixture-preparation gate now requires a fresh command-success acknowledgment
 and an exact visible row before selection; its three new regression cases pass
 within the full 95-test Python suite, and independent review is clear.

@@ -715,7 +715,7 @@ class MeetermTerminalView(
       isClickable = true
       isFocusable = true
       setOnClickListener {
-        requestFocusFromTouch()
+        this@MeetermTerminalView.requestFocusFromTouch()
         inputSession.toggleModifier(modifier)
       }
     }
@@ -758,7 +758,7 @@ class MeetermTerminalView(
         isFocusable = true
         contentDescription = if (key == TerminalSpecialKey.Interrupt) "Ctrl-C" else label
         setOnClickListener {
-          requestFocusFromTouch()
+          this@MeetermTerminalView.requestFocusFromTouch()
           if (inputSession.sendSpecial(key)) surface.requestRender()
         }
       }
@@ -791,7 +791,7 @@ class MeetermTerminalView(
       isFocusable = true
       contentDescription = "Paste"
       setOnClickListener {
-        requestFocusFromTouch()
+        this@MeetermTerminalView.requestFocusFromTouch()
         performContextMenuAction(android.R.id.paste)
       }
     }
@@ -817,7 +817,7 @@ class MeetermTerminalView(
       isFocusable = true
       contentDescription = "Copy selection"
       setOnClickListener {
-        requestFocusFromTouch()
+        this@MeetermTerminalView.requestFocusFromTouch()
         copySelection()
       }
     }

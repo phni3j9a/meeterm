@@ -3166,11 +3166,9 @@ def exercise_daily_workspace_and_selection(
         timeout=RECONNECT_TIMEOUT,
     )
     focus_terminal(device, terminal, stage)
-    # Hide the IME before placing the marker. Its resize can reflow terminal
-    # history, so clearing first and then hiding would make row zero unstable.
+    # Keep the focused IME open while preparing the marker. Hiding it just
+    # before injected text can replace the input connection and resize the grid.
     terminal_line(device, "stty -echo")
-    device.dismiss_keyboard(stage)
-    time.sleep(0.5)
     prepare_and_select_daily_marker(
         device,
         tmux_socket,
@@ -3180,17 +3178,17 @@ def exercise_daily_workspace_and_selection(
         artifact_dir,
         completed,
     )
-    copy_selection = wait_for_node(
-        device,
-        stage,
-        content_description="Copy selection",
-        timeout=RECONNECT_TIMEOUT,
-    )
     capture_optional_screenshot(
         device,
         artifact_dir / "daily-selection.png",
         completed,
         "daily_selection",
+    )
+    copy_selection = wait_for_node(
+        device,
+        stage,
+        content_description="Copy selection",
+        timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, copy_selection, stage)
     time.sleep(0.5)
