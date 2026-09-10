@@ -519,11 +519,47 @@ final class MeetermSmokeUITests: XCTestCase {
     button("settings-submit").tap()
 
     record("daily_create_workspace")
-    XCTAssertTrue(button("Create workspace").waitForExistence(timeout: 15))
-    button("Create workspace").tap()
-    input("Workspace or terminal name").typeText("daily-smoke")
-    button("name-submit").tap()
-    XCTAssertTrue(button("Workspace daily-smoke").waitForExistence(timeout: 20))
+    let createWorkspace = button("Create workspace")
+    record("daily_create_workspace_action_wait")
+    XCTAssertTrue(createWorkspace.waitForExistence(timeout: 15))
+    record("daily_create_workspace_action_ready")
+    createWorkspace.tap()
+    record("daily_create_workspace_action_tapped")
+    record("daily_create_workspace_form")
+    fillTextField(label: "Workspace or terminal name", value: "daily-smoke")
+    record("daily_create_workspace_form_capture_guard")
+    if safeForPostFormScreenshot() {
+      capture("daily-workspace-create-form")
+      record("daily_create_workspace_form_captured")
+    } else {
+      record("daily_create_workspace_form_capture_blocked")
+    }
+    let nameSubmit = button("name-submit")
+    record("daily_create_workspace_submit_wait")
+    XCTAssertTrue(nameSubmit.waitForExistence(timeout: 10))
+    record("daily_create_workspace_submit_hittable_wait")
+    XCTAssertTrue(waitForHittable(nameSubmit, timeout: 10))
+    record("daily_create_workspace_submit_hittable")
+    nameSubmit.tap()
+    record("daily_create_workspace_submit_tapped")
+    let createdWorkspace = button("Workspace daily-smoke")
+    record("daily_create_workspace_row_wait")
+    guard createdWorkspace.waitForExistence(timeout: 20) else {
+      record("daily_create_workspace_row_timeout")
+      writeDailyWorkspaceCreateDiagnostics(
+        nameField: input("Workspace or terminal name"),
+        submit: nameSubmit,
+        expectedRow: createdWorkspace
+      )
+      if safeForPostFormScreenshot() {
+        capture("daily-workspace-create-failure")
+      } else {
+        record("daily_create_workspace_failure_capture_blocked")
+      }
+      XCTFail("The created workspace row did not appear.")
+      return
+    }
+    record("daily_create_workspace_row_ready")
     button("Workspace options daily-smoke").tap()
     button("名前を変更").tap()
     fillTextField(label: "Workspace or terminal name", value: "daily-renamed")
@@ -874,6 +910,7 @@ final class MeetermSmokeUITests: XCTestCase {
               phase: "clear_select_all_unavailable",
               attempt: attempt
             )
+            captureNameFieldFailureIfSafe()
             XCTFail("The name field Select All action is unavailable.")
             return
           }
@@ -896,6 +933,9 @@ final class MeetermSmokeUITests: XCTestCase {
             phase: "clear_mismatch",
             attempt: attempt
           )
+          if label == "Workspace or terminal name" {
+            captureNameFieldFailureIfSafe()
+          }
           XCTFail("The short field could not be cleared.")
           return
         }
@@ -1003,6 +1043,38 @@ final class MeetermSmokeUITests: XCTestCase {
         "case_insensitive_match=\(caseInsensitiveMatch)",
         "keyboard_exists=\(keyboard.exists ? 1 : 0)",
         "keyboard_hittable=\(keyboard.isHittable ? 1 : 0)",
+      ]
+    )
+  }
+
+  private func captureNameFieldFailureIfSafe() {
+    if safeForPostFormScreenshot() {
+      capture("daily-name-field-failure")
+    } else {
+      record("daily_name_field_failure_capture_blocked")
+    }
+  }
+
+  private func writeDailyWorkspaceCreateDiagnostics(
+    nameField: XCUIElement,
+    submit: XCUIElement,
+    expectedRow: XCUIElement
+  ) {
+    let observation = connectionStateObservation()
+    let appForeground = app.state == .runningForeground
+    let formGone = connectionFormIsGone()
+    writeFixedArtifact(
+      "ios-ui-daily-workspace-create-diagnostics.txt",
+      lines: [
+        "app_foreground=\(appForeground ? 1 : 0)",
+        "connection_form_gone=\(formGone ? 1 : 0)",
+        "safe_for_post_form_screenshot=\(appForeground && formGone ? 1 : 0)",
+        "name_field_exists=\(nameField.exists ? 1 : 0)",
+        "submit_exists=\(submit.exists ? 1 : 0)",
+        "submit_hittable=\(submit.exists && submit.isHittable ? 1 : 0)",
+        "expected_workspace_row_exists=\(expectedRow.exists ? 1 : 0)",
+        "connection_state=\(observation.key)",
+        "connection_state_label_present=\(observation.present ? 1 : 0)",
       ]
     )
   }
