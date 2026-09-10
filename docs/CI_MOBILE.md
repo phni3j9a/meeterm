@@ -87,6 +87,16 @@ run; a successful runner exit without those cases does not pass the gate.
 The XCUITest target drives the actual connection form, host trust, workspace/pane selection,
 native input, disconnect, and reconnect against the same disposable fixture.
 The Python driver then checks remote markers and ordinary desktop attach.
+The daily iOS flow also checks saved-credential cold restart, native selection
+and Copy, persisted settings, and workspace/pane management. After a real Copy
+and selection clear, XCTest requests a bounded host-side `simctl pbpaste` check
+through a fresh per-run marker. The host compares clipboard content in memory
+and returns only a fixed result; clipboard text is never logged or uploaded.
+Missing observations, content mismatch and command timeout fail the gate. The
+UI runner must not read another app's `UIPasteboard.general.string`, because
+iOS can block that synchronous read behind a paste permission alert. Production
+copy/paste and its permission behavior remain unchanged. Storage plus input/UI
+execution retain one shared 30-minute deadline.
 After the real SSH flow, XCUITest terminates the app and opens the explicit
 foundation URL with `XCUIApplication.open(_:)`. It requires the preview and
 native terminal to appear, then continuously observes the app in the foreground
@@ -126,7 +136,7 @@ Standard GitHub-hosted macOS runners do not guarantee Metal/GPU passthrough. The
 
 An update to Expo/React Native, `expo-build-properties` or `expo-dev-client`, Rust/`alacritty_terminal`, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, bundled fonts, or the iOS renderer backend is a cross-platform native dependency update. Pin or document the relevant versions, regenerate CNG output, and run both mobile jobs before merging it. Since generated iOS dependency output is not currently committed, the runner/Xcode/CocoaPods policy must be explicit rather than relying on a local `Podfile.lock`.
 
-The iOS renderer choice remains an implementation tradeoff. The architecture records ANGLE/OpenGL ES compatibility to Metal as a candidate direction, while direct Metal remains possible. Select the backend from a native prototype's evidence about snapshot throughput, text/CJK rendering, IME/lifecycle behavior, build cost, and maintenance; do not hide the decision in generated project files or bypass it with JavaScript rendering.
+The current iOS adapter uses direct Metal and the explicitly identified Simulator-only CoreGraphics fallback described above. Any future backend change must be supported by native evidence for snapshot throughput, text/CJK rendering, IME/lifecycle behavior, build cost and maintenance, and recorded in the architecture. Do not hide a backend change in generated project files or route rendering through JavaScript.
 
 ## Minimal job shape
 

@@ -14,6 +14,138 @@ smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
 
 
+class SelectionCopyObserverTests(unittest.TestCase):
+    @staticmethod
+    def wait_for_result(path: Path) -> str:
+        deadline = smoke.time.monotonic() + 2
+        while smoke.time.monotonic() < deadline:
+            try:
+                return path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                smoke.time.sleep(0.01)
+        raise AssertionError("selection copy observer did not write a result")
+
+    def test_success_reads_clipboard_only_after_fresh_request_and_cleans_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "marker"
+            request, result, request_token, passed_token = smoke.selection_copy_contract(
+                marker, "run-token"
+            )
+            completed = subprocess.CompletedProcess(
+                [], 0, stdout="COPY 日本語 selection\n".encode(), stderr=b"ignored-secret"
+            )
+            diagnostics = Path(directory) / "diagnostics.txt"
+            with mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                 mock.patch.object(smoke.subprocess, "run", return_value=completed) as run:
+                with smoke.observe_selection_copy("EXACT-UDID", marker, "run-token", diagnostics):
+                    self.assertFalse(run.called)
+                    smoke._write_atomic_result(request, request_token)
+                    self.assertEqual(self.wait_for_result(result), passed_token)
+                    self.assertEqual(self.wait_for_result(diagnostics), "result=passed\nreason=none\n")
+            run.assert_called_once_with(
+                ["/usr/bin/xcrun", "simctl", "pbpaste", "EXACT-UDID"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            self.assertFalse(request.exists())
+            self.assertFalse(result.exists())
+
+    def test_no_request_never_reads_clipboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "marker"
+            request, result, _, _ = smoke.selection_copy_contract(marker, "run-token")
+            diagnostics = Path(directory) / "diagnostics.txt"
+            with mock.patch.object(smoke.subprocess, "run") as run:
+                with smoke.observe_selection_copy("EXACT-UDID", marker, "run-token", diagnostics):
+                    smoke.time.sleep(0.15)
+                    self.assertFalse(result.exists())
+            run.assert_not_called()
+            self.assertEqual(diagnostics.read_text(), "result=unavailable\nreason=request_not_observed\n")
+            self.assertFalse(request.exists())
+            self.assertFalse(result.exists())
+
+    def test_stale_files_are_removed_and_cannot_trigger_clipboard_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "marker"
+            request, result, request_token, passed_token = smoke.selection_copy_contract(
+                marker, "run-token"
+            )
+            request.write_text(request_token, encoding="utf-8")
+            result.write_text(passed_token, encoding="utf-8")
+            diagnostics = Path(directory) / "diagnostics.txt"
+            diagnostics.write_text("result=passed\nreason=stale\nPRIVATE-KEY-SECRET\n")
+            with mock.patch.object(smoke.subprocess, "run") as run:
+                with smoke.observe_selection_copy("EXACT-UDID", marker, "run-token", diagnostics):
+                    smoke.time.sleep(0.15)
+                    self.assertFalse(request.exists())
+                    self.assertFalse(result.exists())
+            run.assert_not_called()
+            self.assertEqual(diagnostics.read_text(), "result=unavailable\nreason=request_not_observed\n")
+            self.assertNotIn("SECRET", diagnostics.read_text())
+
+    def test_wrong_request_fails_without_reading_clipboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "marker"
+            request, result, _, _ = smoke.selection_copy_contract(marker, "run-token")
+            diagnostics = Path(directory) / "diagnostics.txt"
+            with mock.patch.object(smoke.subprocess, "run") as run:
+                with smoke.observe_selection_copy("EXACT-UDID", marker, "run-token", diagnostics):
+                    smoke._write_atomic_result(request, "stale-or-wrong-token\n")
+                    observed = self.wait_for_result(result)
+                    self.assertEqual(observed, "run-token-selection-copy-request_rejected\n")
+                    self.assertNotIn("stale-or-wrong", observed)
+                    self.assertEqual(self.wait_for_result(diagnostics), "result=failed\nreason=request_rejected\n")
+            run.assert_not_called()
+
+    def test_empty_or_wrong_clipboard_fails_without_persisting_contents(self):
+        for stdout, status in (
+            (b"", "clipboard_empty"),
+            (b"PRIVATE-KEY-SECRET", "clipboard_mismatch"),
+        ):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / "marker"
+                request, result, request_token, _ = smoke.selection_copy_contract(
+                    marker, "run-token"
+                )
+                diagnostics = Path(directory) / "diagnostics.txt"
+                completed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr=b"")
+                with mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                     mock.patch.object(smoke.subprocess, "run", return_value=completed):
+                    with smoke.observe_selection_copy("EXACT-UDID", marker, "run-token", diagnostics):
+                        smoke._write_atomic_result(request, request_token)
+                        observed = self.wait_for_result(result)
+                        self.assertEqual(observed, f"run-token-selection-copy-{status}\n")
+                        self.assertNotIn("SECRET", observed)
+                        self.assertEqual(self.wait_for_result(diagnostics), f"result=failed\nreason={status}\n")
+                        self.assertNotIn("SECRET", diagnostics.read_text())
+
+    def test_clipboard_command_timeout_writes_only_fixed_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "marker"
+            request, result, request_token, _ = smoke.selection_copy_contract(
+                marker, "run-token"
+            )
+            diagnostics = Path(directory) / "diagnostics.txt"
+            with mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                 mock.patch.object(
+                     smoke.subprocess,
+                     "run",
+                     side_effect=subprocess.TimeoutExpired(
+                         ["xcrun", "simctl", "pbpaste", "EXACT-UDID"], 10, output=b"SECRET"
+                     ),
+                 ):
+                with smoke.observe_selection_copy("EXACT-UDID", marker, "run-token", diagnostics):
+                    smoke._write_atomic_result(request, request_token)
+                    observed = self.wait_for_result(result)
+                    self.assertEqual(observed, "run-token-selection-copy-command_timeout\n")
+                    self.assertNotIn("SECRET", observed)
+                    self.assertEqual(self.wait_for_result(diagnostics), "result=failed\nreason=command_timeout\n")
+                    self.assertNotIn("SECRET", diagnostics.read_text())
+
+
 class RunnerDiagnosticsTests(unittest.TestCase):
     @staticmethod
     def write_storage_success(root):

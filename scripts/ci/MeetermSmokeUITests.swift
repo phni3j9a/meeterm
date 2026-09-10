@@ -17,6 +17,12 @@ final class MeetermSmokeUITests: XCTestCase {
     case connectedTimeout = "connected_timeout"
   }
 
+  private enum HostSelectionCopyResult {
+    case passed
+    case rejected
+    case timedOut
+  }
+
   private let testStartedAt = ProcessInfo.processInfo.systemUptime
   private let app = XCUIApplication(bundleIdentifier: "dev.meeterm.app")
   private let artifactDirectory = URL(
@@ -35,6 +41,22 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private var markerValue: String {
     requiredEnvironment("MEETERM_IOS_MARKER_VALUE")
+  }
+
+  private var selectionCopyRequestPath: URL {
+    URL(fileURLWithPath: markerPath.path + ".selection-copy-request")
+  }
+
+  private var selectionCopyResultPath: URL {
+    URL(fileURLWithPath: markerPath.path + ".selection-copy-result")
+  }
+
+  private var selectionCopyRequestToken: String {
+    markerValue + "-selection-copy-request\n"
+  }
+
+  private var selectionCopyPassedToken: String {
+    markerValue + "-selection-copy-passed\n"
   }
 
   private var handoffValue: String {
@@ -435,13 +457,42 @@ final class MeetermSmokeUITests: XCTestCase {
     let surface = try terminalElement()
     let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.65))
     let end = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.8))
+    record("daily_selection_gesture")
     start.press(forDuration: 0.7, thenDragTo: end)
-    XCTAssertTrue(button("Copy selection").waitForExistence(timeout: 10))
+    record("daily_selection_copy_control_wait")
+    let copy = button("Copy selection")
+    XCTAssertTrue(copy.waitForExistence(timeout: 10))
+    record("daily_selection_copy_control_ready")
     capture("daily-selection")
-    button("Copy selection").tap()
+    record("daily_selection_clipboard_cleared")
+    UIPasteboard.general.string = nil
+    record("daily_selection_copy_tap")
+    copy.tap()
+    record("daily_selection_copy_tapped")
     XCTAssertFalse(button("Copy selection").exists)
-    XCTAssertTrue(UIPasteboard.general.string?.contains("COPY") == true)
+    record("daily_selection_copy_control_cleared")
+    record("daily_selection_copy_request")
+    do {
+      try Data(selectionCopyRequestToken.utf8).write(to: selectionCopyRequestPath, options: .atomic)
+    } catch {
+      XCTFail("The host clipboard validation request could not be written.")
+      return
+    }
+    record("daily_selection_copy_result_wait")
+    switch waitForSelectionCopyResult(timeout: 20) {
+    case .passed:
+      record("daily_selection_copy_result_verified")
+    case .rejected:
+      record("daily_selection_copy_result_rejected")
+      XCTFail("The copied native terminal selection did not match the public fixture text.")
+      return
+    case .timedOut:
+      record("daily_selection_copy_result_timeout")
+      XCTFail("The host clipboard validation result did not arrive.")
+      return
+    }
     capture("daily-selection-cleared")
+    record("daily_selection_clipboard_cleanup")
     UIPasteboard.general.string = nil
 
     record("daily_settings")
@@ -1304,6 +1355,18 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return false
+  }
+
+  private func waitForSelectionCopyResult(timeout: TimeInterval) -> HostSelectionCopyResult {
+    let deadline = Date().addingTimeInterval(timeout)
+    let expected = Data(selectionCopyPassedToken.utf8)
+    while Date() < deadline {
+      if let observed = try? Data(contentsOf: selectionCopyResultPath) {
+        return observed == expected ? .passed : .rejected
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return .timedOut
   }
 
   private func shellQuote(_ value: String) -> String {

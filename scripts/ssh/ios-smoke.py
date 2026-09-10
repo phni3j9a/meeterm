@@ -212,6 +212,110 @@ def write_text(path: Path, contents: str) -> None:
         pass
 
 
+def selection_copy_contract(marker_path: Path, marker_value: str) -> tuple[Path, Path, str, str]:
+    """Derive the per-run clipboard handshake without another environment contract."""
+
+    return (
+        Path(str(marker_path) + ".selection-copy-request"),
+        Path(str(marker_path) + ".selection-copy-result"),
+        f"{marker_value}-selection-copy-request\n",
+        f"{marker_value}-selection-copy-passed\n",
+    )
+
+
+def _write_atomic_result(path: Path, value: str) -> None:
+    temporary = Path(str(path) + ".tmp")
+    try:
+        temporary.write_text(value, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def observe_selection_copy(
+    simulator_udid: str,
+    marker_path: Path,
+    marker_value: str,
+    diagnostics_path: Path,
+):
+    """Validate the public copied text without reading it in the XCTest runner."""
+
+    request_path, result_path, request_token, passed_token = selection_copy_contract(
+        marker_path, marker_value
+    )
+    temporary_result = Path(str(result_path) + ".tmp")
+    for path in (request_path, result_path, temporary_result):
+        path.unlink(missing_ok=True)
+    diagnostics_path.unlink(missing_ok=True)
+    stopped = threading.Event()
+
+    def finish(status: str) -> None:
+        result = "passed" if status == "passed" else "failed"
+        reason = "none" if status == "passed" else status
+        write_text(diagnostics_path, f"result={result}\nreason={reason}\n")
+        try:
+            token = passed_token if status == "passed" else f"{marker_value}-selection-copy-{status}\n"
+            _write_atomic_result(result_path, token)
+        except OSError:
+            # A missing result makes the XCTest gate fail closed.
+            write_text(diagnostics_path, "result=failed\nreason=result_write_failed\n")
+
+    def monitor() -> None:
+        while not stopped.wait(0.1):
+            try:
+                request = request_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError):
+                finish("request_rejected")
+                return
+            if request != request_token:
+                finish("request_rejected")
+                return
+
+            xcrun = shutil.which("xcrun")
+            if xcrun is None:
+                finish("command_unavailable")
+                return
+            try:
+                completed = subprocess.run(
+                    [xcrun, "simctl", "pbpaste", simulator_udid],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                finish("command_timeout")
+                return
+            except OSError:
+                finish("command_failed")
+                return
+            if completed.returncode != 0:
+                finish("command_failed")
+            elif not completed.stdout:
+                finish("clipboard_empty")
+            elif b"COPY" not in completed.stdout or "日本語".encode() not in completed.stdout:
+                finish("clipboard_mismatch")
+            else:
+                finish("passed")
+            return
+
+    thread = threading.Thread(target=monitor, name="selection-copy-observer", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=15)
+        if not diagnostics_path.exists():
+            write_text(diagnostics_path, "result=unavailable\nreason=request_not_observed\n")
+        for path in (request_path, result_path, temporary_result):
+            path.unlink(missing_ok=True)
+
+
 def validation_lines(
     *,
     result: str,
@@ -555,7 +659,13 @@ def main() -> int:
         )
 
         stage = "xcuitest"
-        with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir):
+        with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir), \
+             observe_selection_copy(
+                 args.simulator_udid,
+                 marker_path,
+                 marker_value,
+                 args.artifact_dir / "ios-native-copy-validation.txt",
+             ):
             run_status = run_xcuitest(
                 derived_data=args.derived_data,
                 simulator_udid=args.simulator_udid,

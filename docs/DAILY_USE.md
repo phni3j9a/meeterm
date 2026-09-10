@@ -75,10 +75,34 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
+Candidate `b2e2b81` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34465426353)
+and the complete Android job in [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34465422908).
+Main downloaded and viewed its foundation, settings, selection and SSH-terminal
+screenshots, and verified the APK bundle and checksum now linked in `FIRST_APP.md`.
+iOS passed the unsigned build, entitlement checks, all four production storage
+cases, host trust, SSH input/reconnect and saved-credential cold restart. Main
+viewed its saved-server, reconnected-terminal and native Japanese range-selection
+screenshots. The UI suite then exhausted its shared 30-minute deadline near the
+copy verification, after `daily-selection.png` was captured. The last stage
+marker is `daily_selection_content_await_remote_marker` (390,541 ms); that helper
+only records a stage after Return and does not itself wait for a remote marker.
+The later selection screenshot proves progress beyond that marker. Main also viewed the 135.94-second recording: selection is visible at 21–22
+seconds, the highlight and Copy bar are cleared at 23 seconds, and at 24 seconds
+iOS asks whether `meetermTests-Runner` may paste from `meeterm`. That alert remains
+through the final frame. The UI runner's synchronous `UIPasteboard.general.string`
+read after Copy is therefore the blocking boundary. Native Copy and selection
+clear are observed; the runner's clipboard-content assertion did not finish.
+The next test revision observes the Simulator clipboard from the host, compares
+it in memory and returns only a per-run fixed result to XCTest. No product
+clipboard or permission behavior changes. iOS settings/CRUD/final foundation
+gates remain pending. This timed-out run did not produce the native-input
+validation file, so it does not establish the seven input-case results from
+prior runs.
+
 Candidate `180c525` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34459894012)
 and the complete Android job in [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34459888911).
 Main downloaded and viewed its foundation, settings, post-Copy and SSH-terminal
-screenshots. The evaluation APK in `FIRST_APP.md` points to this Android build.
+screenshots. Its evaluation APK has since been superseded by the candidate above.
 The iOS unsigned build, four production storage cases and seven native-input
 cases passed again. This time the UI test stopped earlier, at `await_connected`
 after the host-trust tap; Main viewed the actual host-trust screenshot. The
