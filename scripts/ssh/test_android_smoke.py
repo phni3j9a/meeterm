@@ -327,6 +327,13 @@ class UiDriverTests(unittest.TestCase):
                 mock.call("part-value", "host_input"),
             ],
         )
+        self.assertEqual(
+            device.input_keyevent.call_args_list,
+            [
+                mock.call(smoke.KEYCODE_F10, "host_input"),
+                mock.call(smoke.KEYCODE_F10, "host_input"),
+            ],
+        )
         device.input_keyevents.assert_called_once_with(
             (smoke.KEYCODE_MOVE_END, smoke.KEYCODE_DEL, smoke.KEYCODE_DEL, smoke.KEYCODE_DEL, smoke.KEYCODE_DEL),
             "host_input",
@@ -377,6 +384,10 @@ class UiDriverTests(unittest.TestCase):
         find.assert_called_once()
         readback.assert_called_once()
         device.input_text.assert_called_once_with("127.0.0.1", "host_input")
+        device.input_keyevent.assert_called_once_with(
+            smoke.KEYCODE_F10,
+            "host_input",
+        )
         device.input_keyevents.assert_not_called()
 
     def test_fill_field_stops_after_bounded_mismatch_retries(self) -> None:
@@ -400,6 +411,10 @@ class UiDriverTests(unittest.TestCase):
         self.assertEqual(find.call_count, smoke.FIELD_INPUT_MAX_ATTEMPTS)
         self.assertEqual(readback.call_count, smoke.FIELD_INPUT_MAX_ATTEMPTS)
         self.assertEqual(device.input_text.call_count, smoke.FIELD_INPUT_MAX_ATTEMPTS)
+        self.assertEqual(
+            device.input_keyevent.call_count,
+            smoke.FIELD_INPUT_MAX_ATTEMPTS,
+        )
 
     def test_fill_field_does_not_retry_non_mismatch_failure(self) -> None:
         node = smoke.Node(
@@ -421,6 +436,10 @@ class UiDriverTests(unittest.TestCase):
         find.assert_called_once()
         readback.assert_called_once()
         device.input_text.assert_called_once_with("127.0.0.1", "host_input")
+        device.input_keyevent.assert_called_once_with(
+            smoke.KEYCODE_F10,
+            "host_input",
+        )
         device.input_keyevents.assert_not_called()
 
     def test_missing_xml_classifies_only_known_diagnostics(self) -> None:
@@ -558,7 +577,12 @@ class UiDriverTests(unittest.TestCase):
         )
         self.assertEqual(
             device.input_keyevent_calls,
-            [(smoke.KEYCODE_ENTER, "private_key_input")],
+            [
+                (smoke.KEYCODE_F10, "private_key_input"),
+                (smoke.KEYCODE_F10, "private_key_input"),
+                (smoke.KEYCODE_ENTER, "private_key_input"),
+                (smoke.KEYCODE_F10, "private_key_input"),
+            ],
         )
         self.assertEqual(len(device.input_tap_calls), 1)
 
@@ -603,7 +627,10 @@ class UiDriverTests(unittest.TestCase):
             device.input_text_calls,
             [(expected[len(prefix):], "private_key_input")],
         )
-        self.assertEqual(device.input_keyevent_calls, [])
+        self.assertEqual(
+            device.input_keyevent_calls,
+            [(smoke.KEYCODE_F10, "private_key_input")],
+        )
 
     def test_enter_key_prefix_recovers_from_repeated_partial_prefixes(self) -> None:
         clock = _FakeClock()
@@ -624,7 +651,13 @@ class UiDriverTests(unittest.TestCase):
                 (expected[8:], "private_key_input"),
             ],
         )
-        self.assertEqual(device.input_keyevent_calls, [])
+        self.assertEqual(
+            device.input_keyevent_calls,
+            [
+                (smoke.KEYCODE_F10, "private_key_input"),
+                (smoke.KEYCODE_F10, "private_key_input"),
+            ],
+        )
 
     def test_enter_key_prefix_retries_a_dropped_newline_without_replaying_text(self) -> None:
         clock = _FakeClock()
@@ -668,7 +701,11 @@ class UiDriverTests(unittest.TestCase):
             device.input_text_calls,
             [(expected[:16], "private_key_input")] * smoke.KEY_INPUT_MAX_ATTEMPTS,
         )
-        self.assertEqual(device.input_keyevent_calls, [])
+        self.assertEqual(
+            device.input_keyevent_calls,
+            [(smoke.KEYCODE_F10, "private_key_input")]
+            * smoke.KEY_INPUT_MAX_ATTEMPTS,
+        )
         self.assertNotIn(expected, output.getvalue())
 
     def test_verify_key_readback_reports_unsettled_when_a_dump_crosses_deadline(self) -> None:
@@ -839,12 +876,21 @@ class UiDriverTests(unittest.TestCase):
             self.pages = pages
             self.page = 0
             self.swipes: list[tuple[int, int, int, int]] = []
+            self.swipe_options: list[tuple[int | None, bool]] = []
 
         def dump_ui(self) -> list[smoke.Node]:
             return self.pages[min(self.page, len(self.pages) - 1)]
 
-        def input_swipe(self, bounds: tuple[int, int, int, int], _stage: str) -> None:
+        def input_swipe(
+            self,
+            bounds: tuple[int, int, int, int],
+            _stage: str,
+            *,
+            x: int | None = None,
+            toward_start: bool = False,
+        ) -> None:
             self.swipes.append(bounds)
+            self.swipe_options.append((x, toward_start))
             self.page += 1
 
     def test_parse_ui_dump_preserves_scroll_and_accessibility_metadata(self) -> None:
@@ -915,6 +961,60 @@ UI dumped to: /dev/tty"""
 
         self.assertIs(found, target)
         self.assertEqual(device.swipes, [(0, 100, 1080, 1900)])
+        self.assertEqual(device.swipe_options, [(None, False)])
+
+    def test_form_gutter_uses_observed_padding_beside_editor(self) -> None:
+        scroll_bounds = (0, 100, 1080, 1900)
+        nodes = [
+            smoke.Node(
+                "",
+                "",
+                "android.widget.ScrollView",
+                scroll_bounds,
+                scrollable=True,
+            ),
+            smoke.Node(
+                "",
+                "Private OpenSSH key, Empty",
+                "android.widget.EditText",
+                (72, 900, 1008, 1250),
+            ),
+        ]
+
+        self.assertEqual(smoke.form_scroll_gutter_x(nodes, scroll_bounds), 36)
+
+    def test_private_key_wait_returns_from_form_end_through_gutter(self) -> None:
+        scroll = smoke.Node(
+            "",
+            "",
+            "android.widget.ScrollView",
+            (0, 100, 1080, 1900),
+            scrollable=True,
+        )
+        name = smoke.Node(
+            "",
+            "Server name",
+            "android.widget.EditText",
+            (72, 400, 1008, 560),
+        )
+        editor = smoke.Node(
+            "",
+            "Private OpenSSH key, Empty",
+            "android.widget.EditText",
+            (72, 400, 1008, 750),
+        )
+        device = self._ScrollingDevice([[scroll, name], [scroll, editor]])
+
+        found = smoke.wait_for_private_key_editor(
+            device,
+            "private_key_input",
+            scroll_gutter=True,
+            scroll_toward_start=True,
+            timeout=2.0,
+        )
+
+        self.assertIs(found, editor)
+        self.assertEqual(device.swipe_options, [(36, True)])
 
     def test_pane_labels_are_stable_runtime_identities(self) -> None:
         nodes = [

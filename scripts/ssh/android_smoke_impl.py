@@ -30,6 +30,7 @@ KEYCODE_DEL = 67
 KEYCODE_ENTER = 66
 KEYCODE_BACK = 4
 KEYCODE_MOVE_END = 123
+KEYCODE_F10 = 140
 DEFAULT_UI_TIMEOUT = 30.0
 REMOTE_MARKER_TIMEOUT = 15.0
 RECONNECT_TIMEOUT = 45.0
@@ -380,20 +381,31 @@ class AndroidDevice:
         self.assert_foreground(stage)
         self.run(("shell", "input", "tap", str(x), str(y)), stage, timeout=10.0)
 
-    def input_swipe(self, bounds: tuple[int, int, int, int], stage: str) -> None:
+    def input_swipe(
+        self,
+        bounds: tuple[int, int, int, int],
+        stage: str,
+        *,
+        x: int | None = None,
+        toward_start: bool = False,
+    ) -> None:
         self.assert_foreground(stage)
         left, top, right, bottom = bounds
-        center_x = (left + right) // 2
+        swipe_x = (left + right) // 2 if x is None else x
+        if not left < swipe_x < right:
+            raise SmokeFailure(stage, "invalid_scroll_gutter")
         start_y = top + (bottom - top) * 4 // 5
         end_y = top + (bottom - top) // 5
+        if toward_start:
+            start_y, end_y = end_y, start_y
         self.run(
             (
                 "shell",
                 "input",
                 "swipe",
-                str(center_x),
+                str(swipe_x),
                 str(start_y),
-                str(center_x),
+                str(swipe_x),
                 str(end_y),
                 "350",
             ),
@@ -1464,6 +1476,33 @@ def scroll_target_bounds(nodes: list[Node]) -> tuple[int, int, int, int] | None:
     return scroll_container_bounds(nodes)
 
 
+def form_scroll_gutter_x(
+    nodes: list[Node], bounds: tuple[int, int, int, int]
+) -> int:
+    """Choose the form padding beside editors for an outer ScrollView gesture."""
+
+    left, _top, right, _bottom = bounds
+    width = right - left
+    if width < 4:
+        return left
+    interactive_lefts = [
+        node.bounds[0]
+        for node in nodes
+        if node.visible_to_user
+        and node.enabled
+        and ("EditText" in node.class_name or "Switch" in node.class_name)
+        and left < node.bounds[0] < right
+    ]
+    if interactive_lefts:
+        # React Native's form content has horizontal padding. Staying halfway
+        # into that observed gap avoids a multiline TextInput consuming the
+        # vertical gesture while remaining inside the ScrollView.
+        gap = min(interactive_lefts) - left
+        if gap >= 4:
+            return left + gap // 2
+    return left + max(1, min(width - 1, width // 32))
+
+
 def wait_for_node(
     device: AndroidDevice,
     stage: str,
@@ -1473,6 +1512,8 @@ def wait_for_node(
     content_descriptions: tuple[str, ...] | None = None,
     class_fragment: str | None = None,
     scroll: bool = False,
+    scroll_gutter: bool = False,
+    scroll_toward_start: bool = False,
     timeout: float = DEFAULT_UI_TIMEOUT,
 ) -> Node:
     deadline = time.monotonic() + timeout
@@ -1509,7 +1550,15 @@ def wait_for_node(
             # applied. Spacing gestures gives the layout a chance to settle
             # before the next accessibility dump.
             if bounds is not None and now - last_swipe_at >= 0.8:
-                device.input_swipe(bounds, stage)
+                if scroll_gutter:
+                    device.input_swipe(
+                        bounds,
+                        stage,
+                        x=form_scroll_gutter_x(nodes, bounds),
+                        toward_start=scroll_toward_start,
+                    )
+                else:
+                    device.input_swipe(bounds, stage)
                 last_swipe_at = now
                 time.sleep(0.5)
             else:
@@ -1527,6 +1576,8 @@ def wait_for_text_input(
     label: str,
     *,
     scroll: bool = False,
+    scroll_gutter: bool = False,
+    scroll_toward_start: bool = False,
     timeout: float = DEFAULT_UI_TIMEOUT,
 ) -> Node:
     """Wait for a labeled TextInput without assuming its value is in a label."""
@@ -1550,7 +1601,15 @@ def wait_for_text_input(
             bounds = scroll_target_bounds(nodes)
             now = time.monotonic()
             if bounds is not None and now - last_swipe_at >= 0.8:
-                device.input_swipe(bounds, stage)
+                if scroll_gutter:
+                    device.input_swipe(
+                        bounds,
+                        stage,
+                        x=form_scroll_gutter_x(nodes, bounds),
+                        toward_start=scroll_toward_start,
+                    )
+                else:
+                    device.input_swipe(bounds, stage)
                 last_swipe_at = now
                 time.sleep(0.5)
             else:
@@ -1566,6 +1625,8 @@ def wait_for_private_key_editor(
     device: AndroidDevice,
     stage: str,
     *,
+    scroll_gutter: bool = False,
+    scroll_toward_start: bool = False,
     timeout: float = DEFAULT_UI_TIMEOUT,
 ) -> Node:
     """Wait for the labeled multiline editor while scrolling the form."""
@@ -1588,7 +1649,15 @@ def wait_for_private_key_editor(
         bounds = scroll_target_bounds(nodes)
         now = time.monotonic()
         if bounds is not None and now - last_swipe_at >= 0.8:
-            device.input_swipe(bounds, stage)
+            if scroll_gutter:
+                device.input_swipe(
+                    bounds,
+                    stage,
+                    x=form_scroll_gutter_x(nodes, bounds),
+                    toward_start=scroll_toward_start,
+                )
+            else:
+                device.input_swipe(bounds, stage)
             last_swipe_at = now
             time.sleep(0.5)
         else:
@@ -1660,6 +1729,8 @@ def set_toggle(
     stage: str,
     *,
     scroll: bool = True,
+    scroll_gutter: bool = False,
+    scroll_toward_start: bool = False,
 ) -> None:
     """Set one labeled native switch and verify its checked state."""
 
@@ -1668,6 +1739,8 @@ def set_toggle(
         stage,
         content_description=label,
         scroll=scroll,
+        scroll_gutter=scroll_gutter,
+        scroll_toward_start=scroll_toward_start,
     )
     if node.checked == desired:
         return
@@ -1746,6 +1819,8 @@ def fill_field(
     stage: str,
     *,
     scroll: bool = True,
+    scroll_gutter: bool = False,
+    scroll_toward_start: bool = False,
     clear_count: int = 0,
 ) -> None:
     for attempt in range(FIELD_INPUT_MAX_ATTEMPTS):
@@ -1754,6 +1829,8 @@ def fill_field(
             stage,
             label=content_description,
             scroll=scroll,
+            scroll_gutter=scroll_gutter,
+            scroll_toward_start=scroll_toward_start,
             timeout=DEFAULT_UI_TIMEOUT if attempt == 0 else FIELD_READBACK_TIMEOUT,
         )
         tap_node(device, node, stage)
@@ -1764,6 +1841,15 @@ def fill_field(
         clear_field(device, stage, retry_clear_count)
         if value:
             device.input_text(value, stage)
+            # ``adb input text`` is delivered through the device's active
+            # IME. Pixel 3 Japanese Gboard keeps ASCII-looking host/name input
+            # as a composition and can expose full-width digits, punctuation,
+            # or kana in the controlled TextInput. Android KEYCODE_F10 asks a
+            # Japanese IME to convert that current composition to half-width
+            # alphanumeric; Latin IMEs ignore it. Public fields retain the
+            # exact whole-value readback below; the key editor has its own
+            # secret-safe exact-prefix gate.
+            device.input_keyevent(KEYCODE_F10, stage)
         # Compare in memory only. In particular, do not report entered text in
         # a failure: this helper also protects against an incorrectly cleared
         # port.
@@ -1779,12 +1865,19 @@ def fill_field(
             time.sleep(FIELD_SETTLE_SECONDS)
 
 
-def fill_multiline_key(device: AndroidDevice, key: str) -> None:
+def fill_multiline_key(
+    device: AndroidDevice, key: str, *, return_from_form_end: bool = False
+) -> None:
     lines = key.splitlines()
     if not lines:
         raise SmokeFailure("private_key_input", "key_empty")
     stage = "private_key_input"
-    editor = wait_for_private_key_editor(device, stage)
+    editor = wait_for_private_key_editor(
+        device,
+        stage,
+        scroll_gutter=return_from_form_end,
+        scroll_toward_start=return_from_form_end,
+    )
 
     def tap_editor(nodes: list[Node], candidate: Node) -> None:
         left, top, right, bottom = candidate.bounds
@@ -1925,6 +2018,12 @@ def enter_key_prefix(device: AndroidDevice, expected: str, *, deadline: float) -
             device.input_keyevent(KEYCODE_ENTER, "private_key_input")
         else:
             device.input_text(missing.split("\n", 1)[0][:16], "private_key_input")
+            if time.monotonic() < deadline:
+                # Keep every secret chunk behind the same exact-prefix gate,
+                # while converting Japanese-IME composition to the literal
+                # half-width OpenSSH bytes before its readback. No key text is
+                # logged or copied out of the editor.
+                device.input_keyevent(KEYCODE_F10, "private_key_input")
         attempts += 1
     raise SmokeFailure("private_key_input", "entry_timeout")
 
@@ -2765,6 +2864,13 @@ def exercise_daily_workspace_and_selection(
         "daily_selection",
     )
     tap_node(device, copy_selection, stage)
+    time.sleep(0.5)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-selection-cleared.png",
+        completed,
+        "daily_selection_cleared",
+    )
     terminal = wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
     focus_terminal(device, terminal, stage)
     terminal_line(device, "IFS= read -r MEETERM_DAILY_COPIED")
@@ -2983,31 +3089,37 @@ def main(argv: list[str] | None = None) -> int:
         )
         tap_node(device, key_choice, stage)
         completed.append("authentication_selector_verified")
-        fill_multiline_key(device, key)
-        completed.append("form_filled")
 
-        # Configure persistence only after all public form controls have been
-        # exercised. From here until submission, accessibility dumps stay in
-        # memory and no screenshot or log artifact is captured.
+        # Configure persistence while every field is still public. Gestures
+        # stay in the form's observed outer padding so the empty multiline key
+        # editor cannot consume a ScrollView swipe. After this block the driver
+        # returns to the key editor, enters it with exact in-memory readback,
+        # and submits without searching or scrolling through credential UI.
         set_toggle(
             device,
             "Save server profile",
             True,
             "daily_profile_save_toggle",
+            scroll_gutter=True,
         )
         fill_field(
             device,
             "Server name",
             DAILY_PROFILE_NAME,
             "daily_profile_name",
+            scroll_gutter=True,
         )
+        device.dismiss_keyboard("daily_profile_name")
         set_toggle(
             device,
             "Save credentials securely",
             True,
             "daily_credential_save_toggle",
+            scroll_gutter=True,
         )
         completed.append("daily_profile_persistence_selected")
+        fill_multiline_key(device, key, return_from_form_end=True)
+        completed.append("form_filled")
 
         stage = "form_submit"
         submit_button = wait_for_node(device, stage, text="Connect")

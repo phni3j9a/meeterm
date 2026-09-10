@@ -105,11 +105,11 @@ history-limit or persist terminal output to its own disk files.
 
 ## Local evidence during implementation
 
-- Shared Rust library: 56 tests passed, along with formatting and Clippy.
+- Shared Rust library: 57 tests passed, along with formatting and Clippy.
 - Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
   recovery, name encoding, and closing the last pane/window.
-- TypeScript and 70 Python regression tests passed.
-- Android native JVM tests: 22 passed.
+- TypeScript and 72 Python regression tests passed.
+- Android native JVM tests: 24 passed.
 - Android arm64 Release built successfully and installed on the connected Pixel 3.
 - Pixel 3: changed font to 18 pt, history to 20,000 and theme to light through
   the actual settings UI, saved, terminated and relaunched the app, then verified
@@ -121,7 +121,25 @@ history-limit or persist terminal output to its own disk files.
 - Early independent storage/UI review found three material issues (interrupted
   iOS Keychain updates, destructive history application before durable settings,
   and Android store size overflow). All three were fixed and re-reviewed.
+- Integration review also corrected Android modal appearance, modifier lifetime
+  during local IME edits, modified F1–F4 encoding, and iOS Shift combinations.
+  Android atlas exhaustion now resets bounded packing and uses region uploads;
+  copy, ordinary taps and input clear the native selection. Regression tests
+  cover atlas rollover and restoration of the unselected snapshot colors.
+  The iOS hardware-input test still requires the updated Hosted candidate.
 
-General Hosted CI passed on candidate `2f54449` (Rust, real OpenSSH, JavaScript,
-Expo and Android native build/tests). Hosted mobile checks, full daily-use
-interaction evidence and the final review are still pending. The entries above are not a release acceptance declaration.
+General [Hosted CI](https://github.com/phni3j9a/meeterm/actions/runs/34423153261)
+passed on candidate `2f54449` (Rust, real OpenSSH, JavaScript, Expo and Android
+native build/tests). The first [Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34423153361)
+failed at Android's `daily_profile_save_toggle` UI lookup and at the iOS
+`commitModified` Swift wrapper's `Int32`/`Bool` return mismatch. Android's native
+first frame and empty password-form screenshots were downloaded and viewed;
+iOS correctly emitted unavailable diagnostics because the app build failed.
+The Swift wrapper is corrected. The Android driver now configures persistence before secret entry and scrolls
+in the observed outer form padding. Pixel 3 public-field probes verified the
+settings switches and return to the key editor. Japanese Gboard conversion is
+handled before the unchanged exact-value/prefix readback gates.
+
+The independent integration review has no unresolved material code findings.
+Updated Hosted mobile checks and complete daily-use interaction evidence are
+still pending. This record is not yet a release acceptance declaration.
