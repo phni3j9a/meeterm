@@ -83,14 +83,23 @@ rename. The Android copy exact-marker gate failed, and no selection highlight
 was observed in the captured image; selection/copy is therefore still open. Main viewed the latest
 Android settings, server, foundation, atlas and selection-cleared PNGs and the
 177.95-second video contact sheet; that video ends before the copy attempt.
-The iOS job is still running. Simulator DER entitlement injection passed, but
-there is not yet a complete iOS build, storage, daily-flow or screenshot claim.
+The iOS build, app/test-bundle entitlement-section gate, and seven native input
+cases passed. All four storage cases still failed with Keychain status -34018:
+the test code runs in a separate prebuilt XCTest runner, whose executable was
+not covered by that section gate. The UI test stopped at `fill_server_name_focus`;
+Main viewed both captured empty connection-form images. Storage and the iOS
+daily flow remain open. A disposable XCTest runner probe tests the actual
+process boundary before another full mobile run.
 
-Local follow-up `228d3fc` is not pushed. It contains the exact native terminal
-surface locator, drag-and-drop and structural-diagnostic fixes; its local checks
-are 89 passing Python tests and a successful arm64 Release build (45 seconds), with independent
-review clear. These checks do not replace the Hosted mobile run. The milestone
-remains a draft until the open mobile gates and both screenshot reviews finish.
+Local follow-up `228d3fc` contains the exact Android native terminal surface
+locator, drag-and-drop and structural diagnostics. Its local checks are 89 passing
+Python tests and a successful arm64 Release build (45 seconds), with independent
+review clear. Follow-up `4987cb6` moves the iOS form gesture into the outer scroll
+gutter, requires the control to fit above the keyboard, and records separate
+hittable/tap stages. Its focused review passed; Hosted Swift compilation and UI
+interaction remain pending. These checks do not replace the Hosted mobile run.
+The milestone remains a draft until the open mobile gates and both screenshot
+reviews finish.
 
 ## User behavior and storage boundary
 
