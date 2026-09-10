@@ -290,6 +290,10 @@ def copy_case(device: object, helpers: dict[str, object], output_dir: Path) -> s
     tap_node(device, copy_after, "foundation_copy_tap")
     time.sleep(0.8)
     getattr(device, "screenshot")(output_dir / "foundation-selection-after-copy.png")
+    # Observe settling without touching the terminal or submitting new input.
+    # A queued GL frame can lag behind clipboard publication on the emulator.
+    time.sleep(5.0)
+    getattr(device, "screenshot")(output_dir / "foundation-selection-settled.png")
 
     # Paste through the production toolbar into the same native loopback.  A
     # screenshot is the only copy-content evidence; no clipboard text leaves
