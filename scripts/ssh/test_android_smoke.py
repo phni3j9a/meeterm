@@ -114,6 +114,10 @@ class _ProbeEditorDevice:
         self.input_text_calls: list[tuple[str, str]] = []
         self.input_keyevent_calls: list[tuple[int, str]] = []
         self.input_tap_calls: list[tuple[int, int, str]] = []
+        self.foreground_checks: list[str] = []
+
+    def assert_foreground(self, stage: str) -> None:
+        self.foreground_checks.append(stage)
 
     def dump_ui(self) -> list[smoke.Node]:
         self.dump_calls += 1
@@ -832,7 +836,44 @@ class UiDriverTests(unittest.TestCase):
         self.assertEqual(device.input_text_calls, [])
         self.assertEqual(device.input_keyevent_calls, [])
 
-    def test_missing_editor_is_rejected_immediately_without_input(self) -> None:
+    def test_transient_missing_editor_is_retried_without_input(self) -> None:
+        clock = _FakeClock()
+        device = _ProbeEditorDevice(
+            clock,
+            [_EDITOR_UNAVAILABLE, "probe-value", "probe-value"],
+        )
+
+        with _patched_clock(clock):
+            observed = smoke.verify_key_readback(device, "probe-value", deadline=5.0)
+
+        self.assertEqual(observed, "probe-value")
+        self.assertEqual(device.dump_calls, 3)
+        self.assertEqual(device.foreground_checks, ["private_key_input"])
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_reappearing_editor_must_settle_again_after_missing_pass(self) -> None:
+        clock = _FakeClock()
+        prefix = "probe-"
+        device = _ProbeEditorDevice(
+            clock,
+            [prefix, _EDITOR_UNAVAILABLE, prefix, prefix],
+        )
+
+        with _patched_clock(clock):
+            observed = smoke.verify_key_readback(
+                device,
+                "probe-value",
+                deadline=5.0,
+            )
+
+        self.assertEqual(observed, prefix)
+        self.assertGreaterEqual(device.dump_calls, 4)
+        self.assertEqual(device.foreground_checks, ["private_key_input"])
+        self.assertEqual(device.input_text_calls, [])
+        self.assertEqual(device.input_keyevent_calls, [])
+
+    def test_persistently_missing_editor_is_rejected_without_input(self) -> None:
         clock = _FakeClock()
         device = _ProbeEditorDevice(clock, [_EDITOR_UNAVAILABLE])
 
@@ -841,8 +882,12 @@ class UiDriverTests(unittest.TestCase):
                 smoke.enter_key_prefix(device, "probe-value", deadline=5.0)
 
         self.assertEqual(error.exception.reason, "editor_unavailable")
-        self.assertEqual(device.dump_calls, 1)
-        self.assertEqual(clock.sleep_calls, [])
+        self.assertGreater(device.dump_calls, 1)
+        self.assertGreaterEqual(clock.now, 5.0)
+        self.assertEqual(
+            device.foreground_checks,
+            ["private_key_input"] * device.dump_calls,
+        )
         self.assertEqual(device.input_text_calls, [])
         self.assertEqual(device.input_keyevent_calls, [])
 

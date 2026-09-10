@@ -171,7 +171,7 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
     </View>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>履歴</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>保持する行数</Text><Text style={[styles.caption, { color: colors.muted }]}>1,000〜50,000 行</Text></View><TextInput accessibilityLabel="Scrollback lines" testID="scrollback-lines" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={5} value={scrollback} onChangeText={setScrollback} selectionColor={colors.accent} style={[numericStyle, { minWidth: 96 }]} /></View></View>
-      <Text style={[styles.helper, { color: colors.muted }]}>すべてのターミナルに適用します。行数を減らすと古い履歴は削除されます。アプリ終了後の履歴は、サーバーに残っている範囲から復元します。</Text>
+      <Text style={[styles.helper, { color: colors.muted }]}>すべてのターミナルに適用します。行数を減らすと古い履歴は削除されます。アプリ終了後は、サーバーに残る履歴を最大2,000行復元します。</Text>
     </View>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>接続</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>自動で再接続</Text></View><Switch accessibilityLabel="Automatic reconnect" testID="automatic-reconnect" value={automaticReconnect} onValueChange={setAutomaticReconnect} trackColor={{ true: colors.accentFill }} /></View></View>

@@ -1981,11 +1981,23 @@ def verify_key_readback(
     deadline = min(deadline, read_deadline) if deadline is not None else read_deadline
     previous: str | None = None
     unchanged_since = time.monotonic()
+    editor_missing = False
     while time.monotonic() < deadline:
         nodes = device.dump_ui()
         editor = find_private_key_editor(nodes, include_invisible=True)
         if editor is None:
-            raise SmokeFailure("private_key_input", "editor_unavailable")
+            # UIAutomator can omit a focused multiline editor for one pass as
+            # its internal caret scrolls across long wrapped key lines. Keep
+            # the exact identity/focus gate, but allow that transient layout
+            # pass to settle. A foreground replacement is still classified
+            # immediately and persistent absence remains a bounded failure.
+            device.assert_foreground("private_key_input")
+            editor_missing = True
+            previous = None
+            unchanged_since = time.monotonic()
+            time.sleep(KEY_INPUT_SETTLE_SECONDS)
+            continue
+        editor_missing = False
         if "EditText" in editor.class_name and not editor.focused:
             raise SmokeFailure("private_key_input", "editor_lost_focus")
         if not expected.startswith(editor.text):
@@ -1999,6 +2011,8 @@ def verify_key_readback(
         elif now - unchanged_since >= KEY_INPUT_SETTLE_SECONDS:
             return editor.text
         time.sleep(KEY_INPUT_SETTLE_SECONDS)
+    if editor_missing:
+        raise SmokeFailure("private_key_input", "editor_unavailable")
     raise SmokeFailure("private_key_input", "entry_not_settled")
 
 
