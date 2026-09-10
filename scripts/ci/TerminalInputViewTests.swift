@@ -179,6 +179,29 @@ final class TerminalInputViewTests: XCTestCase {
     if !recordedIssue { appendValidation("case=hardware_control result=passed") }
   }
 
+  @MainActor func testHardwareShiftCombinationsAreRegisteredAndCommitOnce() {
+    var modified: [(String, UInt32)] = []
+    var committed: [String] = []
+    inputView.onModifiedCommit = { modified.append(($0, $1)) }
+    inputView.onCommit = { committed.append($0) }
+    let combinations: [(UIKeyModifierFlags, UInt32)] = [
+      ([.control, .shift], 5), ([.alternate, .shift], 6),
+      ([.control, .alternate, .shift], 7)
+    ]
+    for (flags, expected) in combinations {
+      guard let command = inputView.keyCommands?.first(where: {
+        $0.input == "C" && $0.modifierFlags == flags
+      }) else { XCTFail("A hardware Shift combination is missing."); return }
+      let previous = modified.count
+      _ = inputView.perform(command.action, with: command)
+      XCTAssertEqual(modified.count, previous + 1)
+      XCTAssertEqual(modified.last?.0, "C")
+      XCTAssertEqual(modified.last?.1, expected)
+    }
+    XCTAssertTrue(committed.isEmpty)
+    if !recordedIssue { appendValidation("case=hardware_shift_combinations result=passed") }
+  }
+
   @MainActor func testMarkedCompositionIsLocalAndCommitsOnce() {
     var committed: [String] = []
     var preedit: [String] = []

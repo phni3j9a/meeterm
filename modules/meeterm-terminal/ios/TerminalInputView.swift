@@ -47,7 +47,8 @@ final class TerminalInputView: UITextView {
     for flags in combinations {
       for input in special { commands.append(UIKeyCommand(input: input, modifierFlags: flags, action: #selector(hardwareKey(_:)))) }
     }
-    let textCombinations: [UIKeyModifierFlags] = [.control, .alternate, [.control, .alternate]]
+    let textCombinations: [UIKeyModifierFlags] = [.control, .alternate, [.control, .alternate],
+      [.control, .shift], [.alternate, .shift], [.control, .alternate, .shift]]
     for flags in textCombinations {
       for scalar in 32...126 {
         let input = String(UnicodeScalar(scalar)!)
