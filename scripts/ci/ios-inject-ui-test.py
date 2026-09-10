@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import json
+import plistlib
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -13,6 +17,194 @@ project_path = Path(sys.argv[1])
 scheme_path = Path(sys.argv[2])
 source_path = Path(sys.argv[3])
 project = project_path.read_text(encoding="utf-8")
+
+
+SIMULATOR_ENTITLEMENTS_PREFIX = "MEETERMCI."
+NODE_PATCH_SCRIPT = r"""
+const fs = require("fs");
+const xcode = require("xcode");
+
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+const project = xcode.project(input.projectPath);
+project.parseSync();
+const objects = project.hash.project.objects;
+const setting = '"OTHER_LDFLAGS[sdk=iphonesimulator*]"';
+
+function targetConfigurationIds(targetId) {
+  const target = objects.PBXNativeTarget[targetId];
+  if (!target) throw new Error(`missing target ${targetId}`);
+  const list = objects.XCConfigurationList[target.buildConfigurationList];
+  if (!list) throw new Error(`missing configuration list for ${targetId}`);
+  return list.buildConfigurations.map((configuration) => configuration.value);
+}
+
+function pbxQuote(value) {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function addFlags(configurationId, xmlPath, derPath) {
+  const configuration = objects.XCBuildConfiguration[configurationId];
+  if (!configuration || !configuration.buildSettings) {
+    throw new Error(`missing build configuration ${configurationId}`);
+  }
+  const settings = configuration.buildSettings;
+  if (Object.prototype.hasOwnProperty.call(settings, setting)) {
+    throw new Error(`existing ${setting} in ${configurationId}`);
+  }
+  const existing = settings.OTHER_LDFLAGS;
+  const values = Array.isArray(existing)
+    ? existing.slice()
+    : existing
+      ? [existing]
+      : ['"$(inherited)"'];
+  values.push(pbxQuote(`-Wl,-sectcreate,__TEXT,__entitlements,${xmlPath}`));
+  values.push(pbxQuote(`-Wl,-sectcreate,__TEXT,__ents_der,${derPath}`));
+  settings[setting] = values;
+}
+
+const appConfigurations = targetConfigurationIds(input.appTargetId);
+const testConfigurations = targetConfigurationIds(input.testTargetId);
+if (testConfigurations.length === 0) throw new Error("meetermTests has no build configurations");
+for (const configurationId of appConfigurations) {
+  addFlags(configurationId, input.appXmlPath, input.appDerPath);
+}
+for (const configurationId of testConfigurations) {
+  addFlags(configurationId, input.testXmlPath, input.testDerPath);
+}
+fs.writeFileSync(input.projectPath, project.writeSync());
+"""
+
+
+def read_app_bundle_identifier(project_path: Path) -> str:
+    config_path = project_path.parent.parent.parent / "app.json"
+    try:
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        value = document["expo"]["ios"]["bundleIdentifier"]
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise SystemExit(f"iOS UI target injection could not read Expo iOS bundle identifier: {error}") from error
+    if not isinstance(value, str) or not value:
+        raise SystemExit("iOS UI target injection found an invalid Expo iOS bundle identifier")
+    return value
+
+
+def write_simulator_entitlements(
+    directory: Path,
+    target_label: str,
+    bundle_identifier: str,
+) -> tuple[str, str]:
+    """Create simulator-only XML and DER entitlement inputs, then fail closed."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    safe_label = re.sub(r"[^A-Za-z0-9_-]", "_", target_label)
+    xml_path = directory / f"{safe_label}-simulator-entitlements.plist"
+    der_path = directory / f"{safe_label}-simulator-entitlements.der"
+    app_identifier = f"{SIMULATOR_ENTITLEMENTS_PREFIX}{bundle_identifier}"
+    try:
+        with xml_path.open("wb") as stream:
+            plistlib.dump(
+                {
+                    "application-identifier": app_identifier,
+                    "keychain-access-groups": [app_identifier],
+                },
+                stream,
+                fmt=plistlib.FMT_XML,
+                sort_keys=True,
+            )
+    except OSError as error:
+        raise SystemExit(f"iOS simulator entitlement XML could not be written: {error}") from error
+
+    der_path.unlink(missing_ok=True)
+    derq = shutil.which("derq")
+    if derq is None:
+        fallback = Path("/usr/bin/derq")
+        if fallback.is_file():
+            derq = str(fallback)
+    if derq is None:
+        raise SystemExit("iOS simulator entitlement DER conversion requires Xcode derq")
+    try:
+        result = subprocess.run(
+            [
+                derq,
+                "query",
+                "-f",
+                "xml",
+                "-i",
+                str(xml_path),
+                "-o",
+                str(der_path),
+                "--raw",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as error:
+        raise SystemExit(f"iOS simulator entitlement DER conversion could not start: {error}") from error
+    if result.returncode != 0 or not der_path.is_file() or der_path.stat().st_size == 0:
+        raise SystemExit(
+            "iOS simulator entitlement DER conversion failed "
+            f"(exit={result.returncode})"
+        )
+    return str(xml_path), str(der_path)
+
+
+def patch_project_with_simulator_flags(
+    project_text: str,
+    project_path: Path,
+    app_target_id: str,
+    app_target_name: str,
+    app_entitlements: tuple[str, str],
+    test_entitlements: tuple[str, str],
+) -> str:
+    node = shutil.which("node")
+    if node is None:
+        raise SystemExit("iOS Simulator entitlement injection requires the project xcode parser")
+    repository_root = Path(__file__).resolve().parents[2]
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=project_path.parent,
+            prefix=f".{project_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            stream.write(project_text)
+            temporary_path = Path(stream.name)
+        payload = {
+            "projectPath": str(temporary_path),
+            "appTargetId": app_target_id,
+            "appXmlPath": f"$(SRCROOT)/{app_target_name}/{Path(app_entitlements[0]).name}",
+            "appDerPath": f"$(SRCROOT)/{app_target_name}/{Path(app_entitlements[1]).name}",
+            "testTargetId": target_id,
+            "testXmlPath": f"$(SRCROOT)/meetermTests/{Path(test_entitlements[0]).name}",
+            "testDerPath": f"$(SRCROOT)/meetermTests/{Path(test_entitlements[1]).name}",
+        }
+        try:
+            result = subprocess.run(
+                [node, "-e", NODE_PATCH_SCRIPT],
+                cwd=repository_root,
+                input=json.dumps(payload),
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as error:
+            raise SystemExit(f"iOS Simulator entitlement project update could not start: {error}") from error
+        if result.returncode != 0:
+            raise SystemExit(
+                "iOS Simulator entitlement project update failed "
+                f"(exit={result.returncode})"
+            )
+        return temporary_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise SystemExit(f"iOS Simulator entitlement project update failed: {error}") from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 # Expo CNG emits a scheme whose TestAction references this target, but does
 # not create the target in the generated project. Reusing that blueprint keeps
@@ -70,6 +262,9 @@ for match in re.finditer(
 if not app_target_id:
     raise SystemExit("iOS UI target injection could not find the application target")
 
+app_bundle_identifier = read_app_bundle_identifier(project_path)
+test_bundle_identifier = f"{app_bundle_identifier}.meetermTests"
+
 if re.search(
     rf"^\s*{re.escape(target_id)} /\* meetermTests \*/ = \{{",
     project,
@@ -82,6 +277,17 @@ if target_id in project:
 generated_tests_dir = project_path.parent.parent / "meetermTests"
 generated_tests_dir.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(source_path, generated_tests_dir / source_path.name)
+
+app_entitlements = write_simulator_entitlements(
+    project_path.parent.parent / app_target_name,
+    app_target_name,
+    app_bundle_identifier,
+)
+test_entitlements = write_simulator_entitlements(
+    generated_tests_dir,
+    "meetermTests",
+    test_bundle_identifier,
+)
 
 
 def insert_section(section: str, payload: str) -> None:
@@ -224,7 +430,7 @@ insert_section(
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "dev.meeterm.app.meetermTests";
+				PRODUCT_BUNDLE_IDENTIFIER = "{test_bundle_identifier}";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -245,7 +451,7 @@ insert_section(
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "dev.meeterm.app.meetermTests";
+				PRODUCT_BUNDLE_IDENTIFIER = "{test_bundle_identifier}";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -311,6 +517,15 @@ for index, argument in enumerate(sys.argv[4:]):
     )
     add_child(tests_group_id, f"{extra_ref_id} /* {extra_source.name} */")
     add_child(sources_phase_id, f"{extra_build_id} /* {extra_source.name} in Sources */")
+
+project = patch_project_with_simulator_flags(
+    project,
+    project_path,
+    app_target_id,
+    app_target_name,
+    app_entitlements,
+    test_entitlements,
+)
 
 project_object_pattern = re.compile(
     rf"(^\s*{re.escape(project_object_id)} /\* Project object \*/ = \{{.*?^\s*\}};\n/\* End PBXProject section \*/)",

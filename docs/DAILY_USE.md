@@ -109,6 +109,11 @@ history-limit or persist terminal output to its own disk files.
 - Real OpenSSH/tmux integration passed, including Vim reconnect and fresh-owner
   recovery, name encoding, and closing the last pane/window.
 - TypeScript and 85 Python regression tests passed, including atlas/selector checks.
+- Three Simulator configuration-generation tests passed. A freshly regenerated
+  Expo iOS project was also injected and parsed, confirming that the four app/test
+  configurations preserve their existing linker flags and other configurations
+  remain unchanged. Actual DER conversion and Keychain execution require Hosted
+  macOS; the local generation tests use a stand-in conversion command.
 - Android native JVM tests: 24 passed.
 - Android arm64 Release built successfully and installed on the connected Pixel 3.
 - Pixel 3: changed font to 18 pt, history to 20,000 and theme to light through

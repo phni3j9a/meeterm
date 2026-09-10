@@ -45,6 +45,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Check iOS Simulator entitlement generation
+        run: python3 scripts/ci/test_ios_simulator_entitlements.py
+
       - name: Validate Expo configuration
         run: npx expo config --type public >/tmp/meeterm-expo-config.json
 
