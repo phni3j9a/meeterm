@@ -1,9 +1,10 @@
 import Foundation
 import Security
 import XCTest
+@testable import MeetermTerminal
 
-/// Runs against the actual Simulator Keychain in the isolated XCTest runner.
-/// Only generated test profiles are removed; no production storage is shared.
+/// Runs in the entitled app host against the production native storage module.
+/// Only generated test profiles are removed; no secrets or raw errors are logged.
 final class ClientStoreTests: XCTestCase {
   private var recordedIssue = false
   private var currentCase = "unknown"

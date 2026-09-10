@@ -372,8 +372,6 @@ def run_xcuitest(
         str(bundles[0]),
         "-destination",
         f"platform=iOS Simulator,id={simulator_udid}",
-        "-resultBundlePath",
-        str(result_bundle),
         "-quiet",
         "CODE_SIGNING_ALLOWED=NO",
         "CODE_SIGNING_REQUIRED=NO",
@@ -392,30 +390,64 @@ def run_xcuitest(
         "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE",
     ):
         runner_environment.pop(secret_name, None)
-    exit_code = None
-    try:
-        with raw_log.open("w", encoding="utf-8") as stream:
-            completed = subprocess.run(
-                command,
-                env=runner_environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                # The suite now includes native storage/input cases, a cold
-                # saved-profile reconnect, settings, selection and tmux CRUD.
-                # The partial Hosted run already took 13m34s; allow the full
-                # sequence while retaining the shorter per-operation gates.
-                timeout=1800,
-                check=False,
-            )
-            exit_code = completed.returncode
-    except subprocess.TimeoutExpired as error:
-        raise SmokeFailure("xcuitest", "xcodebuild_timeout") from error
-    except OSError as error:
-        raise SmokeFailure("xcuitest", "xcodebuild_failed") from error
-    finally:
-        write_xcuitest_diagnostics(raw_log, diagnostics_path, exit_code)
-    return completed.returncode
+    # Storage runs inside the entitled app. Its cleanup must finish before the
+    # UI runner launches the same app. Separate invocations enforce that order
+    # and retain the existing 30-minute budget for both suites together.
+    deadline = time.monotonic() + 1800
+    suites = (
+        (
+            "xcuitest_storage",
+            "-only-testing:meetermStorageTests",
+            result_bundle.with_name(result_bundle.stem + "-storage.xcresult"),
+            raw_log.with_name(raw_log.stem + "-storage.log"),
+            diagnostics_path.with_name("ios-storage-xctest-runner-diagnostics.txt"),
+        ),
+        ("xcuitest", "-skip-testing:meetermStorageTests", result_bundle, raw_log, diagnostics_path),
+    )
+    storage_validation = diagnostics_path.parent / "ios-native-storage-validation.txt"
+    storage_validation.unlink(missing_ok=True)
+    for stage, selection, bundle, log_path, diagnostic_path in suites:
+        exit_code = None
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SmokeFailure(stage, "xcodebuild_timeout")
+            with log_path.open("w", encoding="utf-8") as stream:
+                completed = subprocess.run(
+                    [*command, selection, "-resultBundlePath", str(bundle)],
+                    env=runner_environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    timeout=remaining,
+                    check=False,
+                )
+                exit_code = completed.returncode
+        except subprocess.TimeoutExpired as error:
+            raise SmokeFailure(stage, "xcodebuild_timeout") from error
+        except OSError as error:
+            raise SmokeFailure(stage, "xcodebuild_failed") from error
+        finally:
+            write_xcuitest_diagnostics(log_path, diagnostic_path, exit_code)
+        if stage == "xcuitest_storage" and exit_code != 0:
+            raise SmokeFailure(stage, "storage_tests_failed")
+        if stage == "xcuitest_storage":
+            expected = {
+                f"case={case} result=passed"
+                for case in (
+                    "interrupted_write_cleanup",
+                    "credential_endpoint_binding",
+                    "remove_saved_credential",
+                    "preferences_validation",
+                )
+            }
+            try:
+                actual = set(storage_validation.read_text(encoding="utf-8").splitlines())
+            except OSError:
+                actual = set()
+            if actual != expected:
+                raise SmokeFailure(stage, "storage_cases_incomplete")
+    return exit_code
 
 
 def inject_test_environment(xctestrun_path: Path) -> None:

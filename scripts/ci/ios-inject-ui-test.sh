@@ -16,5 +16,4 @@ python3 "${GITHUB_WORKSPACE}/scripts/ci/ios-inject-ui-test.py" \
   "${GITHUB_WORKSPACE}/scripts/ci/TerminalInputViewTests.swift" \
   "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalInputView.swift" \
   "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalSpecialKey.swift" \
-  "${GITHUB_WORKSPACE}/scripts/ci/ClientStoreTests.swift" \
-  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/ClientStore.swift"
+  "${GITHUB_WORKSPACE}/scripts/ci/ClientStoreTests.swift"

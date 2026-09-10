@@ -181,6 +181,13 @@ SCHEME_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 </Scheme>
 """
 
+PODFILE_TEMPLATE = """platform :ios, '16.4'
+
+target 'meeterm' do
+  use_expo_modules!
+end
+"""
+
 
 def make_fake_derq(directory: Path, *, mode: str = "success") -> Path:
     directory.mkdir(parents=True, exist_ok=True)
@@ -217,12 +224,26 @@ class IOSSimulatorEntitlementInjectionTests(unittest.TestCase):
         project_path.write_text(PROJECT_TEMPLATE, encoding="utf-8")
         scheme_path.write_text(SCHEME_TEMPLATE, encoding="utf-8")
         source_path.write_text("final class Fixture {}\n", encoding="utf-8")
+        (root / "ios" / "Podfile").write_text(PODFILE_TEMPLATE, encoding="utf-8")
+        (root / "ClientStoreTests.swift").write_text(
+            "@testable import MeetermTerminal\nfinal class ClientStoreTests {}\n",
+            encoding="utf-8",
+        )
+        (root / "ClientStore.swift").write_text("enum ClientStore {}\n", encoding="utf-8")
         environment = os.environ.copy()
         environment["PATH"] = os.pathsep.join(
             [str(derq_directory), environment.get("PATH", "")]
         )
         return subprocess.run(
-            [sys.executable, str(INJECTOR), str(project_path), str(scheme_path), str(source_path)],
+            [
+                sys.executable,
+                str(INJECTOR),
+                str(project_path),
+                str(scheme_path),
+                str(source_path),
+                str(root / "ClientStoreTests.swift"),
+                str(root / "ClientStore.swift"),
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -230,7 +251,7 @@ class IOSSimulatorEntitlementInjectionTests(unittest.TestCase):
             env=environment,
         )
 
-    def test_app_and_test_targets_get_distinct_flags_and_preserve_existing_flags(self) -> None:
+    def test_app_host_and_storage_target_preserve_existing_flags(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ios-entitlements-") as directory:
             root = Path(directory)
             derq_directory = root / "bin"
@@ -239,12 +260,20 @@ class IOSSimulatorEntitlementInjectionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
             project = (root / "ios" / "meeterm.xcodeproj" / "project.pbxproj").read_text()
-            self.assertEqual(project.count("OTHER_LDFLAGS[sdk=iphonesimulator*]"), 4)
+            self.assertEqual(project.count("OTHER_LDFLAGS[sdk=iphonesimulator*]"), 2)
             self.assertIn('"OTHER_LDFLAGS[sdk=iphonesimulator*]"', project)
             self.assertEqual(project.count('"-ObjC",'), 4)
             self.assertEqual(project.count('"-lc++",'), 4)
             self.assertEqual(project.count("meeterm-simulator-entitlements.plist"), 2)
-            self.assertEqual(project.count("meetermTests-simulator-entitlements.plist"), 2)
+            self.assertNotIn("meetermTests-simulator-entitlements", project)
+            self.assertIn("meetermStorageTests", project)
+            self.assertIn("BUNDLE_LOADER = \"$(TEST_HOST)\";", project)
+            self.assertIn(
+                'TEST_HOST = "$(BUILT_PRODUCTS_DIR)/meeterm.app/meeterm";',
+                project,
+            )
+            scheme = (root / "ios" / "meeterm.xcodeproj" / "xcshareddata" / "xcschemes" / "meeterm.xcscheme").read_text()
+            self.assertEqual(scheme.count('parallelizable = "NO"'), 2)
             other_start = project.index(f"{OTHER_CONFIG} /* Other */")
             other_end = project.index(f"{OTHER_CONFIG_LIST} /* other configs */")
             self.assertNotIn(
@@ -254,34 +283,24 @@ class IOSSimulatorEntitlementInjectionTests(unittest.TestCase):
             self.assertNotIn("CODE_SIGNING_ALLOWED = YES", project)
 
             app_xml = root / "ios" / "meeterm" / "meeterm-simulator-entitlements.plist"
-            test_xml = root / "ios" / "meetermTests" / "meetermTests-simulator-entitlements.plist"
             app_der = app_xml.with_suffix(".der")
-            test_der = test_xml.with_suffix(".der")
             self.assertTrue(app_der.read_bytes())
-            self.assertTrue(test_der.read_bytes())
             app_entitlements = plistlib.loads(app_xml.read_bytes())
-            test_entitlements = plistlib.loads(test_xml.read_bytes())
             self.assertEqual(
                 app_entitlements["application-identifier"],
                 "MEETERMCI.dev.meeterm.app",
             )
             self.assertEqual(
-                test_entitlements["application-identifier"],
-                "MEETERMCI.dev.meeterm.app.meetermTests",
-            )
-            self.assertNotEqual(
-                app_entitlements["application-identifier"],
-                test_entitlements["application-identifier"],
-            )
-            self.assertEqual(
                 app_entitlements["keychain-access-groups"],
                 [app_entitlements["application-identifier"]],
             )
-            self.assertEqual(
-                test_entitlements["keychain-access-groups"],
-                [test_entitlements["application-identifier"]],
-            )
             self.assertTrue((root / "ios" / "meetermTests" / "fixture.swift").is_file())
+            self.assertTrue((root / "ios" / "meetermStorageTests" / "ClientStoreTests.swift").is_file())
+            self.assertFalse((root / "ios" / "meetermTests" / "ClientStoreTests.swift").exists())
+            self.assertFalse((root / "ios" / "meetermStorageTests" / "ClientStore.swift").exists())
+            podfile = (root / "ios" / "Podfile").read_text()
+            self.assertEqual(podfile.count("target 'meetermStorageTests' do"), 1)
+            self.assertIn("inherit! :search_paths", podfile)
 
     def test_derq_failure_is_fail_closed_before_project_write(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ios-entitlements-") as directory:
@@ -295,8 +314,9 @@ class IOSSimulatorEntitlementInjectionTests(unittest.TestCase):
             self.assertEqual(project_path.read_text(), PROJECT_TEMPLATE)
             self.assertNotIn("OTHER_LDFLAGS[sdk=iphonesimulator*]", project_path.read_text())
             self.assertFalse(
-                (root / "ios" / "meetermTests" / "meetermTests-simulator-entitlements.plist").exists()
+                (root / "ios" / "meeterm" / "meeterm-simulator-entitlements.der").exists()
             )
+            self.assertEqual((root / "ios" / "Podfile").read_text(), PODFILE_TEMPLATE)
 
     def test_derq_nonzero_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="meeterm-ios-entitlements-") as directory:

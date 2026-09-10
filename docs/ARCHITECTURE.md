@@ -500,7 +500,7 @@ On a standard hosted macOS runner, Metal availability is recorded rather than as
 
 There is no pixel-difference gate at this stage. For a native UI change, visual success is reported only after Codex downloads and actually views both the Android emulator screenshot and the iOS Simulator screenshot. Artifact existence, screenshot dimensions, or a successful process exit is not visual review. See [`docs/CI_MOBILE.md`](CI_MOBILE.md) for the runner, signing, CNG, and staged-job guide.
 
-iOS Simulator builds are unsigned simulator validation and must not require distribution certificates, provisioning profiles, or Apple secrets. Physical iOS devices and TestFlight are later signed workflows with separate credentials and acceptance criteria. Simulator-only app/test Keychain entitlements are embedded in Mach-O XML/DER sections while signing remains disabled; see [DAILY_USE.md](DAILY_USE.md) for the focused reproduction and validation scope.
+iOS Simulator builds are unsigned simulator validation and must not require distribution certificates, provisioning profiles, or Apple secrets. Physical iOS devices and TestFlight are later signed workflows with separate credentials and acceptance criteria. Simulator-only app Keychain entitlements are embedded in Mach-O XML/DER sections while signing remains disabled. Storage tests import the production pod in an app-hosted unit-test target; the separate UI test runner is not the Keychain test host. See [DAILY_USE.md](DAILY_USE.md) for the focused reproduction and validation scope.
 
 ## Architectural non-goals
 

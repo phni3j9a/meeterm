@@ -88,8 +88,14 @@ cases passed. All four storage cases still failed with Keychain status -34018:
 the test code runs in a separate prebuilt XCTest runner, whose executable was
 not covered by that section gate. The UI test stopped at `fill_server_name_focus`;
 Main viewed both captured empty connection-form images. Storage and the iOS
-daily flow remain open. A disposable XCTest runner probe tests the actual
-process boundary before another full mobile run.
+daily flow remain open. A minimal
+[app-hosted XCTest probe](https://github.com/phni3j9a/meeterm/actions/runs/34443153451)
+subsequently passed actual Keychain add and delete with status `0` in the
+unsigned app process. The next candidate uses a separate `meetermStorageTests`
+unit-test target hosted by the real app, importing the production
+`MeetermTerminal` pod through a nested CocoaPods `inherit! :search_paths` target.
+The four storage cases must pass before the UI suite starts. The minimal probe
+does not establish that the production-pod integration or full daily flow passes.
 
 Local follow-up `228d3fc` contains the exact Android native terminal surface
 locator, drag-and-drop and structural diagnostics. Its local checks are 89 passing
@@ -97,7 +103,14 @@ Python tests and a successful arm64 Release build (45 seconds), with independent
 review clear. Follow-up `4987cb6` moves the iOS form gesture into the outer scroll
 gutter, requires the control to fit above the keyboard, and records separate
 hittable/tap stages. Its focused review passed; Hosted Swift compilation and UI
-interaction remain pending. These checks do not replace the Hosted mobile run.
+interaction remain pending. The combined Python regression suite now passes
+92 tests, including sequential storage/UI execution and rejection of stale or
+incomplete storage success markers. Three generation tests also pass. The exact
+CI injection script was run against fresh Expo CNG output and its parsed source
+lists retain the seven native-input cases in the UI target while placing only
+`ClientStoreTests.swift` in the app-hosted storage target. Actual CocoaPods
+integration and Swift compilation still require Hosted macOS. These local
+checks do not replace the Hosted mobile run.
 The milestone remains a draft until the open mobile gates and both screenshot
 reviews finish.
 
@@ -248,4 +261,7 @@ returned success (`0`) for both Keychain operations. The reproduction source is
 The attempted host ad-hoc signature with iOS entitlements was launch-rejected;
 that approach is not used. No distribution certificate, provisioning profile,
 Apple account or signing secret is needed for the section-embedding approach.
-The app and XCTest integration still require a complete Hosted run.
+A later app-hosted XCTest probe also returned `0` for Keychain add and delete
+while remaining unsigned. The production app and pod integration still require
+a complete Hosted run; entitlement sections in a UI test bundle alone do not
+grant entitlements to the separate XCTest runner process.

@@ -287,12 +287,12 @@ jobs:
       - name: Generate iOS project with Expo CNG
         run: npx expo prebuild --platform ios --non-interactive --no-install
 
+      - name: Inject disposable iOS test targets
+        run: scripts/ci/ios-inject-ui-test.sh
+
       - name: Install CocoaPods dependencies
         working-directory: ios
         run: pod install
-
-      - name: Inject disposable iOS XCUITest target
-        run: scripts/ci/ios-inject-ui-test.sh
 
       - name: Build unsigned self-contained iOS smoke app and UI test
         env:
@@ -310,6 +310,7 @@ jobs:
             -derivedDataPath "${RUNNER_TEMP}/meeterm-derived-data" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            ENABLE_TESTABILITY=YES \
             ONLY_ACTIVE_ARCH=YES \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build-for-testing \
@@ -326,7 +327,6 @@ jobs:
           products = Path(os.environ["RUNNER_TEMP"]) / "meeterm-derived-data/Build/Products/Release-iphonesimulator"
           executables = {
               "app": products / "meeterm.app/meeterm",
-              "tests": products / "meetermTests-Runner.app/PlugIns/meetermTests.xctest/meetermTests",
           }
           lines = []
           valid = True
@@ -342,7 +342,7 @@ jobs:
           Path("artifacts/ios-simulator-observability/ios-simulator-entitlements.txt").write_text(
               "\n".join(lines) + "\n", encoding="utf-8")
           if not valid:
-              raise SystemExit("The unsigned Simulator app or test bundle lacks Keychain entitlement sections.")
+              raise SystemExit("The unsigned Simulator app host lacks Keychain entitlement sections.")
           PY
 
       - name: Run real SSH/tmux iOS UI smoke
