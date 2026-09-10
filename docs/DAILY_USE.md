@@ -82,18 +82,35 @@ CJK atlas stress, workspace/pane create/rename/confirmed close, and the exact
 `COPY29F7` native selection/copy/paste gate. Main downloaded and viewed the
 selection, post-Copy, created-pane, settings, servers, CJK atlas, foundation and
 SSH keyboard screenshots. The post-Copy screenshot still shows the highlight;
-clipboard success does not establish immediate visual selection clearing.
+clipboard success alone does not establish immediate visual selection clearing.
+A [focused follow-up](https://github.com/phni3j9a/meeterm/actions/runs/34453461196)
+using the same APK then passed. Main viewed the selected frame, the post-Copy
+frame with its clipboard overlay, and a further frame after five seconds without
+input. Both later frames show the selection cleared. This supports screenshot/
+render timing as the source of the earlier observation, not a persistent clear
+failure. No native implementation change was needed for this result.
+A [separate focus probe](https://github.com/phni3j9a/meeterm/actions/runs/34452697597)
+passed Esc followed by 19 literal input bytes without retapping the terminal:
+all 19 were accepted with zero unobserved bytes or rejected commits, and Main viewed the
+exact `FOCUS_ASCII_7B` frame with unchanged terminal bounds.
 The later PC-handoff interaction stopped at `handoff_action (ui_timeout)`.
 The failure image shows the longer server menu with the handoff item below the
 viewport; the driver had not scrolled that menu. This requires a driver fix,
 not a claim that the complete Android smoke passed.
 
-iOS passed actual CocoaPods integration and the new app/storage source-isolation
-gate on this candidate; compilation and the production storage/UI checks are
-still running. A separate acceptance audit also identified two missing mobile
+iOS passed actual CocoaPods integration, app/storage source isolation and storage
+Swift compilation, then failed when linking the test bundle: CocoaPods inherited
+`-l"meeterm_core"` without the production Pod library path. The app itself linked
+successfully. A CI-only helper now removes that exact inherited Rust link from
+the two generated storage configurations; the app host retains ownership of the
+production module and Rust library. The source/link gate verifies both boundaries.
+All six local iOS CI-helper regressions pass; production storage and UI execution
+still require a new Hosted run. A separate acceptance audit identified two missing mobile
 interaction paths: profile edit/delete/active switch and OS background/foreground
-return. Both are being added before credential-free recording starts. Completion
-still requires those paths, the remaining mobile gates and actual image review.
+return. Both have been added before credential-free recording starts, together with
+the handoff scroll fix. Main's 102 Python regressions and independent review
+pass; [the reused-APK full fixture](https://github.com/phni3j9a/meeterm/actions/runs/34453281079)
+is exercising these paths. Completion still requires those paths, the remaining mobile gates and actual image review.
 
 #### Previous candidate and its focused reproductions
 

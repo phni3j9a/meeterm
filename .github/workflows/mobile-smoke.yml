@@ -294,6 +294,9 @@ jobs:
         working-directory: ios
         run: pod install
 
+      - name: Keep storage tests linked through the app host
+        run: python3 scripts/ci/ios-strip-storage-rust-link.py
+
       - name: Verify app-hosted storage source isolation
         run: |
           node <<'JS'
@@ -319,8 +322,14 @@ jobs:
             const config = fs.readFileSync(
               `ios/Pods/Target Support Files/Pods-meetermStorageTests/Pods-meetermStorageTests.${configuration}.xcconfig`, 'utf8');
             const flags = config.split('\n').filter(line => /^OTHER_LDFLAGS\s*=/.test(line));
-            assert(!flags.some(line => line.includes('MeetermTerminal')),
+            assert.equal(flags.length, 1, 'Expected one storage linker flags definition');
+            assert(!flags.some(line => /MeetermTerminal|meeterm_core/.test(line)),
               'Storage tests must resolve the production module through their app host');
+            const appConfig = fs.readFileSync(
+              `ios/Pods/Target Support Files/Pods-meeterm/Pods-meeterm.${configuration}.xcconfig`, 'utf8');
+            assert(appConfig.split('\n').some(line => /^OTHER_LDFLAGS\s*=/.test(line)
+              && line.includes('-l"meeterm_core"')),
+              'The app host must retain the production Rust library link');
           }
           fs.writeFileSync('artifacts/ios-simulator-observability/ios-storage-source-isolation.txt',
             'app_provider=single\nstorage_sources=isolated\nstorage_direct_native_link=absent\n');

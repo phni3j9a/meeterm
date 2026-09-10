@@ -48,6 +48,9 @@ jobs:
       - name: Check iOS Simulator entitlement generation
         run: python3 scripts/ci/test_ios_simulator_entitlements.py
 
+      - name: Check iOS app-hosted storage linker isolation
+        run: python3 scripts/ci/test_ios_strip_storage_rust_link.py
+
       - name: Validate Expo configuration
         run: npx expo config --type public >/tmp/meeterm-expo-config.json
 
