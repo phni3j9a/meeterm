@@ -134,18 +134,18 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34343699940 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34343699940/artifacts/10101618354)
-から取得できます（commit `4ab4365`、Expo 57.0.21、SSHパスワード認証対応）。
+[run 34455886343 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34455886343/artifacts/10144730334)
+から取得できます（commit `c16821c`、Expo 57.0.21、日常利用9項目のAndroid操作検証を完走）。
 
 ```sh
-gh run download 34343699940 --repo phni3j9a/meeterm \
+gh run download 34455886343 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`61ffd68685ba52c744ea8802e9aaad4192ec137402c554ebb9ed0923c9592f88`
+`36dc76166be3968b472b2634d34988cc64a1ac773cc29fc573d718804334bcb2`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS

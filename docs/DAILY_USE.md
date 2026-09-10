@@ -75,6 +75,51 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
+The [complete Android daily-use fixture](https://github.com/phni3j9a/meeterm/actions/runs/34453281079)
+passed using the `8c35463` APK and the reviewed `54cb4f4` driver (diagnostic
+checkout `928e3eb`). This includes profile edit, a second saved server, switching
+in both directions, delete cancellation and confirmation, HOME/foreground return
+with the same app PID and remote shell, cold credential restoration, settings,
+workspace/pane CRUD, exact selection/copy/paste, PC handoff and final reconnect.
+Both foundation and full fixture exited successfully; the final input counters
+reported zero unobserved bytes and zero rejected commits. Main downloaded and
+actually viewed the saved-server, PC-handoff, selection, post-Copy, settings,
+SSH terminal and native foundation screenshots. Immediate post-Copy capture can
+still precede the clearing frame; the focused settled-capture evidence below
+establishes clearing on the same APK.
+
+The 178-second Android recording was also inspected: it covers settings edits
+and reopening, light terminal/glyph stress, workspace creation/rename and pane
+creation/rename. It ends while preparing the selection fixture, before selection,
+copy/paste and confirmed closing. Profile management and HOME/cold restart occur
+before recording starts. Those later/earlier operations are supported by the
+interaction gates and available screenshots, not by this video. No obvious
+layout, keyboard overlap or transition defect was observed in the recorded range.
+
+Candidate `c16821c` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34455886338).
+Its [fresh-CNG Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34455886343)
+passed the complete Android job, including all the daily-use gates above. Main
+viewed eight new Android screenshots: foundation, saved servers, settings, SSH
+terminal, selection, post-Copy, PC handoff and CJK atlas stress. The evaluation
+APK link and checksum in `FIRST_APP.md` now point to this successful Android build.
+
+iOS passed CocoaPods integration, source/link isolation, the unsigned app/test
+build and both Keychain entitlement-section checks. All four production storage
+cases and all seven native-input cases actually passed. The UI flow also passed
+host trust, SSH connection, workspace/pane switching, native input and reconnect
+with input to the original shell. Main downloaded and viewed the workspaces,
+terminal input and reconnected screenshots; sanitized logs report Metal frames
+in this real SSH interval. The final fresh-foundation gate was not reached.
+
+The iOS UI test then failed at `daily_cold_restart` with `multiple_matching`.
+The cold home exposes two buttons labelled `Saved servers`; a query created
+before those buttons load can become ambiguous. This is consistent with the
+failure category, although the exception did not include an exact source line.
+The updated driver targets a single matching button and adds stage-specific
+diagnostics. Cold
+credential restoration, iOS daily settings/CRUD/copy and the final foundation
+runtime gate remain pending. This is not a full iOS or release acceptance claim.
+
 Candidate `8c35463` passed all jobs in [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34450226608).
 Its [Android mobile job](https://github.com/phni3j9a/meeterm/actions/runs/34450222434)
 passed native readiness/frame, saved-credential cold reconnect, settings,
@@ -110,7 +155,7 @@ interaction paths: profile edit/delete/active switch and OS background/foregroun
 return. Both have been added before credential-free recording starts, together with
 the handoff scroll fix. Main's 102 Python regressions and independent review
 pass; [the reused-APK full fixture](https://github.com/phni3j9a/meeterm/actions/runs/34453281079)
-is exercising these paths. Completion still requires those paths, the remaining mobile gates and actual image review.
+has now passed these paths, as recorded above. Completion still requires the new iOS mobile gates and actual image review.
 
 #### Previous candidate and its focused reproductions
 
@@ -143,8 +188,9 @@ Static review found that four toolbar listeners requested focus on their own
 TextView instead of the native terminal editor. The fix explicitly targets the
 outer terminal view. The daily driver keeps the focused IME open while preparing
 the marker and retrieves Copy's bounds after the screenshot. Independent review,
-the Android arm64 Release build and 24 native unit tests pass locally; behavior
-with this updated APK still requires Hosted validation. The separate
+the Android arm64 Release build and 24 native unit tests passed locally. The
+updated APK subsequently passed the focused Hosted input check and full daily
+fixture recorded above. The separate
 fixture-preparation gate now requires a fresh command-success acknowledgment
 and an exact visible row before selection; its three new regression cases pass
 within the full 95-test Python suite, and independent review is clear.
@@ -315,8 +361,8 @@ a new call supplied a `timeout` keyword that the existing marker helper does not
 accept. A regression through the actual stress orchestration reproduced the
 `TypeError`; removing that keyword made the full 85-test Python suite pass.
 At that point the native atlas stress and remaining CRUD/copy interaction gates
-still needed a complete run. The latest candidate above supersedes the
-atlas-specific pending claim; copy remains unresolved. The third iOS job failed
+still needed a complete run. The latest Android full-fixture result above supersedes both the
+atlas and copy pending claims. The third iOS job failed
 at native storage; the focused reproduction below identifies missing Simulator
 Keychain entitlements.
 

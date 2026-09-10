@@ -61,14 +61,30 @@ mobile zoom. The PC-help screenshot documents the UI; ordinary desktop attach
 is covered separately by the shared Rust integration test and the iOS fixture.
 The remote-shell screenshot is separate from the foundation
 screenshot and is for human inspection; neither screenshot is a pixel gate.
+The daily-use extension also checks saved-profile management, native credential
+restoration after process restart, settings persistence, workspace/pane mutations,
+CJK atlas rollover, and exact native selection/copy/paste. Its deliberate HOME
+transition requires the configured launcher, the same app PID on return and a
+fresh acknowledgment from the original remote shell. Recording starts after
+credential entry and restoration; detected unexpected foreground loss discards
+the recording rather than capturing another app.
 Before the iOS build, the job installs fixture-only tmux if needed and runs
 `python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
 remote `tmux` resolution using the disposable host key. The fixture supplies
 its tmux binary directory through its own sshd environment; this preflight is
 environment validation and does not count as iOS terminal or SSH UI evidence.
 
-The iOS job now generates a temporary XCUITest target in the fresh CNG project
-and drives the actual connection form, host trust, workspace/pane selection,
+The iOS job generates a temporary app-hosted storage test target and an XCUITest
+target in the fresh CNG project. The storage target compiles only
+`ClientStoreTests.swift` and resolves the production module through `TEST_HOST`;
+it does not copy the storage implementation or link a second native runtime.
+After CocoaPods integration, the job removes the inherited Rust library flag
+from the storage target's generated Debug/Release configurations and verifies
+that the app retains it. It also checks that only the app generates an Expo
+provider. Four fresh storage-case success markers are required before UI tests
+run; a successful runner exit without those cases does not pass the gate.
+
+The XCUITest target drives the actual connection form, host trust, workspace/pane selection,
 native input, disconnect, and reconnect against the same disposable fixture.
 The Python driver then checks remote markers and ordinary desktop attach.
 After the real SSH flow, XCUITest terminates the app and opens the explicit
@@ -95,6 +111,12 @@ There is no screenshot-existence or pixel-difference machine gate at this stage.
 ## iOS signing boundary
 
 The Simulator job is an unsigned simulator build/install check. It must not require distribution certificates, provisioning profiles, an Apple Developer account, or signing secrets. Physical-device installation and TestFlight distribution are later signed workflows with protected credentials, provisioning decisions, and separate acceptance evidence.
+
+For production Keychain tests, the disposable Simulator app host embeds XML and
+DER entitlement sections in its Mach-O executable. The workflow verifies both
+sections before execution. This is a Simulator-only test configuration and does
+not provide device signing or distribution credentials. Storage tests run in
+that app host before the separate UI runner starts.
 
 The hosted runtime jobs use Release configuration to embed the JavaScript bundle and avoid depending on Metro or the Expo development launcher. This is still a local smoke binary, not an App Store/distribution build. Interactive local work and physical-device input testing use Expo Development Builds.
 

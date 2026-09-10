@@ -343,15 +343,31 @@ final class MeetermSmokeUITests: XCTestCase {
   private func verifyDailyUse(firstWorkspace: String, pane: String) throws {
     record("daily_cold_restart")
     app.terminate()
+    record("daily_cold_launch")
     app.launch()
+    record("daily_cold_launch_wait")
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
-    let servers = button("Saved servers")
+    record("daily_cold_servers_wait")
+    // Cold launch has two button controls with this label. Keep a typed,
+    // lazily evaluated query so launch-time absence cannot widen the lookup
+    // to descendants and later resolve as multiple matches.
+    let servers = app.buttons.matching(
+      NSPredicate(
+        format: "identifier == %@ OR label == %@",
+        "Saved servers", "Saved servers"
+      )
+    ).firstMatch
     XCTAssertTrue(servers.waitForExistence(timeout: 20))
+    record("daily_cold_servers_tap")
     servers.tap()
+    record("daily_cold_profile_wait")
     let saved = button("Connect saved server Daily fixture")
     XCTAssertTrue(saved.waitForExistence(timeout: 20), "The saved profile did not survive process restart.")
+    record("daily_cold_profile_capture")
     capture("daily-servers")
+    record("daily_cold_profile_connect")
     saved.tap()
+    record("daily_cold_connected_wait")
     XCTAssertTrue(app.staticTexts["Connected"].waitForExistence(timeout: 90), "The saved native credential could not reconnect.")
     XCTAssertFalse(input("Private OpenSSH key").exists, "Saved credentials must not be returned to the form.")
     XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 20))
