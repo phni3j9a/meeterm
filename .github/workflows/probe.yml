@@ -6,6 +6,8 @@ jobs:
   probe:
     runs-on: macos-26-intel
     timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Reproduce unsigned and local ad-hoc Keychain access
         shell: bash
@@ -56,7 +58,8 @@ jobs:
           xcrun simctl install "$probe_udid" /tmp/StorageProbe.app
           xcrun simctl launch --console "$probe_udid" dev.meeterm.storage-probe
           xcrun simctl uninstall "$probe_udid" dev.meeterm.storage-probe
-          codesign --force --sign - --entitlements /tmp/probe-entitlements.plist /tmp/StorageProbe.app
-          echo 'PROBE mode=local_adhoc'
+          /usr/bin/derq query -f xml -i /tmp/probe-entitlements.plist -o /tmp/probe-entitlements.der --raw
+          xcrun --sdk iphonesimulator swiftc -parse-as-library -target x86_64-apple-ios16.4-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" /tmp/Probe.swift -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker /tmp/probe-entitlements.plist -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker /tmp/probe-entitlements.der -o /tmp/StorageProbe.app/StorageProbe
+          echo 'PROBE mode=unsigned_simulator_entitlements' 
           xcrun simctl install "$probe_udid" /tmp/StorageProbe.app
           xcrun simctl launch --console "$probe_udid" dev.meeterm.storage-probe
