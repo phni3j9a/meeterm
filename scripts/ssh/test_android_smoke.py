@@ -43,6 +43,52 @@ class _FakeClock:
         self.now += seconds
 
 
+class ArtifactBoundaryTests(unittest.TestCase):
+    def test_screenshot_skips_capture_when_another_app_is_focused(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        device.run = mock.Mock(return_value=b"mCurrentFocus=Window{other.app/.Main}")
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "screen.png"
+            completed = []
+            reason = smoke.capture_optional_screenshot(device, output, completed, "daily")
+            self.assertEqual(reason, "app_not_foreground")
+            self.assertEqual(completed, ["daily_screenshot_unavailable"])
+            self.assertFalse(output.exists())
+            self.assertTrue(device.foreground_evidence_lost)
+        self.assertEqual(device.run.call_count, 1)
+
+    def test_screenshot_drops_pixels_if_focus_changes_during_capture(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        device.run = mock.Mock(side_effect=[
+            b"mCurrentFocus=Window{dev.meeterm.app/.MainActivity}",
+            smoke.PNG_SIGNATURE,
+            b"mCurrentFocus=Window{other.app/.Main}",
+        ])
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "screen.png"
+            completed = []
+            reason = smoke.capture_optional_screenshot(device, output, completed, "daily")
+            self.assertEqual(reason, "app_not_foreground")
+            self.assertFalse(output.exists())
+            self.assertTrue(device.foreground_evidence_lost)
+
+    def test_recording_is_removed_without_pull_after_detected_focus_loss(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.foreground_evidence_lost = True
+        device.run.side_effect = [b"", smoke.SmokeFailure("wait", "adb_failed"), b""]
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "daily.mp4"
+            self.assertEqual(smoke.start_optional_screenrecord(device, output), (None, "foreground_lost"))
+            device.run.assert_not_called()
+            recording = smoke.ScreenRecording(4312, smoke.SCREENRECORD_REMOTE_PATH, output)
+            self.assertEqual(smoke.finish_optional_screenrecord(device, recording), "foreground_lost")
+            self.assertFalse(output.exists())
+        arguments = [call.args[0] for call in device.run.call_args_list]
+        self.assertFalse(any(args[0] == "pull" for args in arguments))
+        self.assertIn(("shell", "kill", "-2", "4312"), arguments)
+        self.assertTrue(any(args[:3] == ("shell", "rm", "-f") for args in arguments))
+
+
 class _ProbeEditorDevice:
     """Deterministic accessibility/editor fake for credential-entry tests.
 
@@ -1219,7 +1265,7 @@ UI dumped to: /dev/tty"""
         )
 
     def test_screenrecord_owns_remote_pid_and_stops_only_that_process(self) -> None:
-        device = mock.Mock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
         device.adb_path = "adb"
         device.serial = "emulator-5554"
         device.run.side_effect = [b"", b"4312\n", b"", b""]

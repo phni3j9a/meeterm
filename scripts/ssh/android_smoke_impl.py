@@ -252,6 +252,7 @@ class AndroidDevice:
         # enter the artifact.
         self.terminal_input_chars = 0
         self.terminal_input_chunks = 0
+        self.foreground_evidence_lost = False
 
     def note_terminal_input(self, character_count: int) -> None:
         self.terminal_input_chars += max(0, character_count)
@@ -312,12 +313,17 @@ class AndroidDevice:
         raise AssertionError("unreachable")
 
     def assert_foreground(self, stage: str) -> None:
-        output = self.run(
-            ("shell", "dumpsys", "window"),
-            f"{stage}_foreground",
-            timeout=10.0,
-        ).decode("utf-8", errors="replace")
+        try:
+            output = self.run(
+                ("shell", "dumpsys", "window"),
+                f"{stage}_foreground",
+                timeout=10.0,
+            ).decode("utf-8", errors="replace")
+        except SmokeFailure:
+            self.foreground_evidence_lost = True
+            raise
         if f"Application Not Responding: {PACKAGE}" in output:
+            self.foreground_evidence_lost = True
             raise SmokeFailure(stage, "app_anr_window")
         current_focus_lines = [
             line for line in output.splitlines() if "mCurrentFocus" in line
@@ -325,6 +331,7 @@ class AndroidDevice:
         if current_focus_lines:
             if any(f"{PACKAGE}/" in line for line in current_focus_lines):
                 return
+            self.foreground_evidence_lost = True
             raise SmokeFailure(stage, "app_not_foreground")
 
         # Some Android versions omit mCurrentFocus while a window is settling;
@@ -335,6 +342,7 @@ class AndroidDevice:
             for line in output.splitlines()
         ):
             return
+        self.foreground_evidence_lost = True
         raise SmokeFailure(stage, "app_not_foreground")
 
     def input_text(self, value: str, stage: str) -> None:
@@ -444,7 +452,11 @@ class AndroidDevice:
         )
 
     def screenshot(self, output_path: Path) -> None:
+        self.assert_foreground("screenshot")
         image = self.run(("exec-out", "screencap", "-p"), "screenshot", timeout=20.0)
+        # Keep pixels in memory until the post-capture focus check succeeds.
+        # An observed app switch must never leave a third-party screen artifact.
+        self.assert_foreground("screenshot")
         if not image.startswith(PNG_SIGNATURE):
             raise SmokeFailure("screenshot", "png_unavailable")
         try:
@@ -2248,6 +2260,10 @@ def capture_optional_screenshot(
     try:
         device.screenshot(output_path)
     except SmokeFailure as error:
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         completed.append(f"{name}_screenshot_unavailable")
         return error.reason
     completed.append(f"{name}_screenshot")
@@ -2260,8 +2276,11 @@ def start_optional_screenrecord(
 ) -> tuple[ScreenRecording | None, str]:
     """Start bounded video evidence after all credential UI is dismissed."""
 
+    if getattr(device, "foreground_evidence_lost", False) is True:
+        return None, "foreground_lost"
     remote_pid: int | None = None
     try:
+        device.assert_foreground("daily_screenrecord_start")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             output_path.unlink()
@@ -2390,6 +2409,14 @@ def finish_optional_screenrecord(
             except SmokeFailure:
                 pass
             return "stop_timeout"
+        # Any detected foreground loss invalidates the whole recording, even
+        # if meeterm has returned by cleanup time. Do not pull those pixels.
+        if getattr(device, "foreground_evidence_lost", False) is True:
+            return "foreground_lost"
+        try:
+            device.assert_foreground("daily_screenrecord_finish")
+        except SmokeFailure:
+            return "foreground_lost"
         device.run(
             ("pull", recording.remote_path, str(recording.output_path)),
             "daily_screenrecord_pull",
