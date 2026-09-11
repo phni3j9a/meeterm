@@ -154,7 +154,7 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 
 - 安定したaccessibility IDで対象を特定し、表示・操作可能状態を確認する。
 - キーボードを除いた表示領域と現在の対象位置からスクロール方向・距離を決める。
-- 短い文字入力は正確な値を読み返してから送信する。値とplaceholderは1回のsnapshotから取り、待機は即時の完全一致確認から始める。長い名前の削除は全選択＋1回のDeleteを使う。すでに編集メニューが表示されていればそれを使い、不要な長押しでメニューを閉じない。
+- 短い文字入力は正確な値を読み返してから送信する。値は実動確認済みの要素属性から読み、待機は即時の完全一致確認から始める。長い名前の削除は全選択＋1回のDeleteを使う。すでに編集メニューが表示されていればそれを使い、不要な長押しでメニューを閉じない。
 - 固定sleepや闇雲な追加retryで成功させない。待機は状態条件と上限を持つ。
 - 失敗時の固定診断を先に保存し、画面取得の失敗で原因を隠さない。
 - 秘密の入力値やrawリモートエラーを診断へ出さない。フォーム撮影は秘密入力前だけ。
@@ -227,10 +227,19 @@ fixture準備は通過しました。表示済みSelect Allを使う分岐を実
 xcodebuildも900秒で終了できず失敗しました。`names_complete`は出ていません。
 この結果を名前変更全体やpane名変更の成功とは扱いません。
 
-次の修正では、[Appleのsnapshot API](https://developer.apple.com/documentation/xcuiautomation/xcuielementsnapshotproviding/snapshot())
-で値とplaceholderを同じ観測から読み、即時の完全一致判定と上限付きpollで待機します。
+`791bd01` では、[Appleのsnapshot API](https://developer.apple.com/documentation/xcuiautomation/xcuielementsnapshotproviding/snapshot())
+で値とplaceholderを同じ観測から読む方式と、即時の完全一致判定・上限付きpollを試しました。
 空文字・入力後の完全一致条件、再入力回数、suiteの上限は維持します。
 さらに同実行では、認証方式の切り替えから認証情報の保存設定まで約290.6秒かかっていました。
 namesではこの独立した確認を外し、実際の公開鍵入力・接続・ホスト鍵確認を経て名前操作へ進めます。
 fullでは認証方式の切り替え・保存設定・保存後の値確認を従来どおり実行します。
-これらの修正のHosted検証はまだ未完了です。
+[791bd01のnames実行](https://github.com/phni3j9a/meeterm/actions/runs/34559444838)は、
+一般CI・Swift/アプリビルドが成功した後、最初のHost欄で`initial_value_unavailable`となりました。
+新しいsnapshot経由では値を取得できず、namesの接続・名前操作には未到達です。
+xcodebuildは254秒でexit 65でした。Mainは秘密入力前の接続フォーム画像を実見しました。
+snapshot取得のthrowと値のnilはこの診断だけでは区別できません。
+
+次の修正では値の取得を実動実績のある`field.value`／placeholderの読み取りへ戻し、
+即時の完全一致判定・上限付きpollとnamesのscope短縮を維持します。
+新しいAPIの採用だけで改善を主張せず、実際のfixture画面での確認を必要とします。
+この修正のHosted検証はまだ未完了です。

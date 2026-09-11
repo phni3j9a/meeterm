@@ -1094,10 +1094,9 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func shortFieldValue(_ field: XCUIElement) -> String? {
-    guard let snapshot = try? field.snapshot(), let value = snapshot.value as? String else {
-      return nil
-    }
-    return value == snapshot.placeholderValue ? "" : value
+    guard let value = field.value as? String else { return nil }
+    guard !value.isEmpty else { return "" }
+    return value == field.placeholderValue ? "" : value
   }
 
   private func waitForShortFieldValue(_ field: XCUIElement, expected: String, timeout: TimeInterval) -> Bool {
@@ -1109,10 +1108,10 @@ final class MeetermSmokeUITests: XCTestCase {
     expected: String,
     timeout: TimeInterval
   ) -> XCTWaiter.Result {
-    // Read the value and placeholder from one live snapshot per sample. The
-    // previous helper made two live attribute reads; a delayed text update
-    // could then make the observation inconsistent. The immediate sample
-    // covers values already settled before the run loop is entered.
+    // Read the current value immediately, then poll in the run loop. Empty
+    // values return without a second placeholder query, which keeps the
+    // common clear case responsive while preserving the existing readback
+    // contract for non-empty text.
     let deadline = Date().addingTimeInterval(max(0, timeout))
     if shortFieldValue(field) == expected {
       return .completed

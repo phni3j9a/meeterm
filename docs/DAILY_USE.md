@@ -106,11 +106,16 @@ An exact-source diagnostic reuse on a new runner passed fixture setup and
 executed the existing-menu branch. Workspace-name deletion was visibly empty,
 but the field-value wait timed out; XCTest also failed to exit within 900 seconds.
 Main viewed the safe empty-field failure image. Neither names completion nor
-pane rename was reached. The next correction uses one field snapshot per sample
+pane rename was reached. Candidate `791bd01` attempted one field snapshot per sample
 and immediate exact readback with bounded polling. Focused names also omits
 password-form switching and credential-save setup (about 290.6 seconds in that
 run), while retaining real key entry, connection and host-key verification. Full
-keeps those separate form/save checks. Hosted validation is pending.
+keeps those separate form/save checks. Its general CI and app build passed,
+but the snapshot-based read failed at the first Host field with
+`initial_value_unavailable` (XCTest exit 65 after 254 seconds). Main viewed the
+pre-secret connection-form image; names operations were not reached. The next
+correction restores the previously working direct attribute read, keeping the
+immediate comparison, bounded poll and focused scope. Hosted validation is pending.
 Run links and the distinction between both failures are in `TESTING.md`.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
