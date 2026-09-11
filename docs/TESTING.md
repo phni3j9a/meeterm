@@ -1,29 +1,39 @@
 # 標準テスト手順
 
-meetermの修正は **短いチェック → 対象を絞った操作確認 → 最終の全体検証** の順に進めます。
-失敗した長いテストをそのまま繰り返すことを標準にしません。
-この手順は `CI` と `Mobile smoke` ワークフローに実装しています。
-製品の合格条件と実機検証の境界は [CI_MOBILE.md](CI_MOBILE.md) を維持します。
+2026-09-11、利用者の承認により **iOSの通常検証を簡略化**しました。
+長い全操作の自動テストを必須にする方針から、画面ごとの表示確認と短い動作テストを組み合わせる方針へ変更します。
+Androidの既存full、共有Rustの単体・実SSH/tmux統合テストは維持します。
 
-## 変更に合わせて選ぶ
+## 通常の合格条件
 
-| 変更 | 最初の確認 | 対象確認 | 最終確認 |
-| --- | --- | --- | --- |
-| Pythonのテストドライバ・成果物処理 | 対象Python回帰テスト | 該当OS・該当suite | 影響する全体テスト |
-| iOSの自動操作・Swift入力テスト | `ios-typecheck.sh` | `forms` / `native` / `names` | iOS `full` |
-| 接続フォームのUI | TypeScript・Swiftの該当チェック | iOS `forms`、Androidの操作確認 | 両OS `full` と画像の実見 |
-| Rust・native adapter・依存関係・CNG/build設定 | Rust/型/単体/生成設定の該当チェック | 対象native操作 | fresh CNGから両OS `full` |
-| ドキュメントのみ | 記述・リンク・実際のコマンドとの整合 | 不要 | nativeテストの再実行は不要 |
+| 対象 | 必須の確認 | 結果が意味する範囲 |
+| --- | --- | --- |
+| 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
+| Android | 既存のfull smokeと画像の実見 | Androidの自動操作とnative境界 |
+| iOS `standard` | production保存4件、native入力7件、各画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
-アプリ・nativeコードのpushは従来どおり自動の全体Mobile検証を起動します。
-テスト・スクリプト・CI設定だけの修正では自動の全体Mobile検証を起動せず、一般CIの短いチェックを
-先に確認して、対象suiteを明示して実行します。Mobileワークフローやbuild設定を変更した場合も、
-対象確認の後に手動でfresh CNG・両OSの全体検証を実行します。
-ドライバ変更でも、対象suiteが成功しただけで全体の受入を成功扱いにはしません。
+`standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
+今回の方針導入時は、fresh CNGでAndroid fullとiOS standardを確認し、同一ソースのiOS sshも確認します。
+`full`の全操作成功は、この新しい通常検証や日常利用マイルストーンの必須条件ではありません。
 
-## 1. 長いビルドの前に確認する
+スクリーンショットは実際に開いて確認します。画像の存在やpixel diffを新しい機械ゲートにはしません。
+画像だけから保存・接続・コピー・名前変更の成功を主張しません。seedされた画面と実操作の証拠を区別します。
+未確認の操作と既知の失敗は [DAILY_USE.md](DAILY_USE.md) に残します。
 
-Linuxでも実行できる例:
+## 変更に応じた実行範囲
+
+| 変更 | 最初の確認 | Mobile検証 |
+| --- | --- | --- |
+| 文書のみ | 記述・リンク・実コマンドとの整合 | 再実行不要 |
+| Python/成果物処理 | 対象Python回帰 | 影響するsuite |
+| iOSの撮影・自動操作 | Swift型チェック、該当回帰 | iOS standard、実接続への変更ならsshも |
+| UI・画面fixture | TypeScript、Swiftの該当チェック | Android fullとiOS standard、両OS画像の実見 |
+| Rust/native/接続入力 | 該当単体・統合・型チェック | Android full、iOS standardとssh |
+| 依存関係・CNG・Mobile workflow | 型・スクリプト・生成設定のチェック | fresh CNGからAndroid fullとiOS standard、接続への影響に応じssh |
+
+長いビルドの前に短いチェックを行います。成功済みで影響のないテストを理由なく繰り返しません。
+アプリ/native変更のpushはMobileの通常検証を起動します。テスト・スクリプトのみの変更では、一般CIの後に必要なsuiteを手動指定します。
 
 ```sh
 npm run typecheck
@@ -32,170 +42,108 @@ python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 git diff --check
 ```
 
-変更に無関係なテストを毎回すべて実行する必要はありません。
-例えば成果物の再利用処理だけなら `python3 scripts/ci/test_ios_test_products.py` を先に実行します。
+全コマンドを毎回実行する必要はありません。変更に関連するチェックを選びます。
+macOSでは `scripts/ci/ios-typecheck.sh` がCNG/build前にUI XCTestとnative入力関連Swiftを型チェックします。
+production moduleへ依存する保存テストのコンパイル・Keychain実行はアプリビルドとnativeテストで確認します。
 
-macOSでXcodeを選択した環境では:
+## 画面の撮影方法
 
-```sh
-scripts/ci/ios-typecheck.sh
-```
+通常のアプリでフォーム入力・接続・作成を順に実行してから撮影する方法を、表示確認の前提にしません。
+smoke buildと明示したテスト起動URLを組み合わせ、固定の公開データで対象画面を直接開きます。
+本番と同じ画面コンポーネントを使い、撮影用の画面を別実装しません。
 
-このチェックはUI XCTestとネイティブ入力関連のSwiftを型チェックします。
-Expo生成、CocoaPods、Rustビルド、Simulator起動は行いません。
-削除した引数が呼び出し側に残るようなコンパイルエラーを、長いアプリビルドの前に検出します。
-一般CIで自動実行し、MobileのiOSビルドもこの成功を前提に開始します。
+対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
+ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎの10画面です。
+`meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
+名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
+`settings`、`workspace-name`、`terminal-name`、`handoff` です。
+撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
-`ClientStoreTests.swift` は実アプリのproduction moduleへ依存するため、この短いチェックの
-対象ではありません。ストレージのコンパイル・Keychain動作はアプリビルドと `native` で確認します。
-短い型チェックの成功を、iOSアプリ全体のコンパイル成功と読み替えないでください。
+- 保存済みサーバーやworkspace/paneの情報は表示用fixtureです。実サーバーで作成した証拠にはしません。
+- 撮影準備で秘密鍵を入力したり、実ユーザーの保存情報を書き換えたりしません。
+- 端末の表示には既存のRust fixtureとnative TerminalViewを使います。JSで端末データや画像を模造しません。
+- 通常起動とsmoke無効のビルドでは撮影用経路を有効にしません。
+- 最後のnative foundationは新しい起動のreadiness/frameとforeground維持を確認します。
 
-## 2. 対象を絞って実行する
+各画面の到達記録を残します。撮影できなければ理由を残し、Mainの画像確認が済むまで視覚的な成功は報告しません。
 
-`Mobile smoke` の手動実行には次の入力があります。
+## suiteと実行例
 
-| 入力 | 値 | 用途 |
-| --- | --- | --- |
-| `platform` | `both` / `android` / `ios` | 調査するOSを選択。既定はboth |
-| `ios_suite` | `forms` | 公開フィールド入力、認証方式切り替え、保存設定のフォーム操作 |
-| `ios_suite` | `native` | production保存4件とネイティブ入力7件 |
-| `ios_suite` | `names` | 実SSH接続後のworkspace/pane作成・名前変更・終了操作 |
-| `ios_suite` | `full` | 実SSH/tmux、日常操作、handoff、再接続、最後のfresh foundation。既定値 |
-| `ios_build_run` | 空、または実行ID | 空ならfresh build。同一commitのビルド済み成果物を指定すると診断用に再利用 |
-
-例（現在のブランチでiOSフォームを確認）:
+| `ios_suite` | 用途 |
+| --- | --- |
+| `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
+| `ssh` | 実SSH接続と短いnative入出力の確認 |
+| `native` | 保存4件とnative入力7件だけの限定確認 |
+| `forms` | 接続フォームの実操作を調べる任意の診断 |
+| `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
+| `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |
 
 ```sh
 test_ref="$(git branch --show-current)"
-gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=ios -f ios_suite=forms
-gh run list --workflow mobile-smoke.yml --branch "$test_ref" --limit 5
+# 通常の両OS検証（Androidは従来full）
+gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=both -f ios_suite=standard
+# iOSだけを調べる場合
+gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=ios -f ios_suite=standard
+# 実SSHの確認
+gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=ios -f ios_suite=ssh
 ```
 
-`forms` と `native` はSSH fixtureを起動せず、秘密鍵・パスワードを入力しません。
-`forms` は本番画面と共通の操作helperを使い、固定の公開テスト値だけで操作後にキャンセルします。
-各suiteは明示したtest IDだけを実行し、新しい完了記録を要求します。
-XCTestの終了コードが0でも、期待するケースや完了記録が不足すれば失敗します。
-focused結果は `ios-forms-validation.txt` / `ios-native-validation.txt` へ保存し、
-全体受入の `ios-validation.txt` と区別します。フォームの画像は専用の3チェックポイントを
-確認し、`native` ではUI画像を要求しない理由を明示します。全体画面の欠落と誤分類しません。
+`standard`と`native`、`forms`はSSH fixtureを起動しません。
+`ssh`では実ホスト鍵を確認し、実入力がfixture内へ到達することを要求します。画像上の接続表示だけでは合格にしません。
+`full`は必要時に明示して実行し、失敗はそのまま記録します。任意の診断が未通過であることと通常検証の合否を分けます。
+既存のcopy observerのタイムアウトを、合格済み・修正済みへ書き換える変更ではありません。
 
-`names` は実SSH fixtureを使い、fullと同じ鍵入力・接続・ホスト鍵確認・名前操作helperを実行します。
-公開鍵方式から接続し、認証方式の切り替え・認証情報保存の確認はfullに残します。
-保存・入力の単体テストや、reconnect・copy・設定のシナリオはこのscopeでは実行しません。
-`names_complete` と新しい `case=names result=passed`、xcodebuild正常終了を要求し、
-`ios-names-validation.txt` に結果を残します。fullのdaily/foundation合格記録は出しません。
-長い生成名の編集問題はこのsuiteで先に確認し、その後fullを実行します。
+## ビルドと再利用
 
+iOSのSwift事前チェック、fresh CNG build、Simulator runtimeは別ジョブです。
+ビルド時間が操作テストの制限時間を消費しない構成を維持します。
+`standard`と`ssh`はそれぞれXCTest全体15分、`native`は10分、`forms`/`names`は15分、任意`full`は30分が上限です。
+Simulator起動等の時間はこのXCTest実行枠とは別です。実行時間は結果とともに記録し、短縮幅を推測で報告しません。
 
-## 3. ビルド済み成果物を再利用する
-
-iOSは次のジョブに分かれています。
-
-1. `iOS driver / fast typecheck` — 安価なSwiftチェック。
-2. `iOS / fresh CNG build` — 新しいcheckoutからCNG生成・アプリとテストをビルド。
-3. `iOS Simulator / <suite>` — 別runnerでSimulator起動・インストール・対象テスト。
-
-buildとruntimeの制限時間を分離し、長いビルドが操作テストの時間を消費しない構成です。
-全体テスト内の保存＋UIの合計30分という上限は延長しません。
-`forms` と `names` はテスト実行全体を15分、`native` は10分に制限します。
-フォームの初回実測ではUI操作だけで約448秒かかり、完了記録は出たものの、
-XCTestの起動準備・終了処理を含む10分ではプロセスが終了しませんでした。
-この実測を理由にformsのみ15分へ変更し、起動と終了の時間も記録します。
-完了記録だけでは成功扱いにせず、引き続きxcodebuildの正常終了を要求します。
-
-ビルド成功時に `ios-test-products` artifactを保存します。
-**同一commitの別suiteや環境要因の再現確認**では、その実行IDを指定できます。
-`BUILD_RUN_ID` は実際の数値IDに置き換えてください。
+同一commitの別suiteや原因調査では、ビルド済み成果物を再利用できます。
 
 ```sh
+# BUILD_RUN_IDを同一ソースのビルド成功runに置き換える
 gh workflow run mobile-smoke.yml --ref "$test_ref" \
-  -f platform=ios -f ios_suite=native -f ios_build_run=BUILD_RUN_ID
+  -f platform=ios -f ios_suite=ssh -f ios_build_run=BUILD_RUN_ID
 ```
 
-取得元は同じリポジトリの `Mobile smoke` に限定し、APIのcommitと現在のcheckout、manifestの
-commit・Xcode version/build・CPU構成・Release Simulator構成・SHA-256を照合します。
-合わなければ停止します。自動で「最新の成功した古いアプリ」を選ぶことはしません。
+GitHub runのcommitとmanifestのcommit・Xcode version/build・CPU・構成・SHA-256を照合します。
+Swift/アプリ/テストソースを変えたら新しいビルドが必要です。同一バイナリでsuiteを分けて確認する際の再ビルドを省きます。
+受入記録には元のfresh buildと再利用先の両runを記載します。再利用先で新たなCNG/buildを実行したとは記録しません。
 
-成果物はfixtureの環境変数を注入する前に作り、`.app` / `.xctest` の実行権限とsymlinkを
-保持するtarへ格納します。runtimeの環境注入は試行ごとの一時コピーだけに行います。
-秘密を含み得るraw XCTestログ・xcresult・fixtureファイルはartifactへ含めません。
-artifactの保持期間は7日です。期限切れなら新しくビルドします。
+`ios-test-products`はfixture環境変数注入前のpristine tar/manifestで、保持7日です。
+環境注入は実行ごとの一時コピーだけに行い、raw XCTest/xcresultや秘密情報を成果物へ含めません。
 
-**Swift・アプリ・テストコードを変更した場合は新しいビルドが必要です。**
-この仕組みは変更後のコードを古いバイナリで検証するものではありません。
-同一ソースの操作再実行と、ビルド成功後に別suiteを確認する際の再ビルドを省きます。
-変更のたびの待ち時間は、最初の型チェックと対象suiteによる早期発見で抑えます。
+## 失敗時の調べ方
 
-## 4. 失敗時の調べ方
-
-| Artifact | 確認するもの |
+| 成果物 | 内容 |
 | --- | --- |
-| `ios-build-observability` | CNG/buildログ、使用Xcode、起動前であることの診断 |
-| `ios-simulator-observability` | suite別の合否、段階・時間、安全な画像、sanitized nativeログ |
-| `ios-test-products` | 同一ソース再利用用のtarとmanifest。実行後のログは含まない |
-
-例えば `RUN_ID` を実行IDに置き換え、新しい保存先へ取得します。
+| `ios-build-observability` | CNG/buildログ、toolchain、起動前診断 |
+| `ios-simulator-observability` | suite別合否、段階・時刻、公開画面、sanitized nativeログ |
+| `ios-test-products` | 同一ソース再利用用のpristine成果物 |
 
 ```sh
 gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evidence-RUN_ID
 ```
 
-1. 最初に失敗した境界を特定します。型チェック、CNG/compile/link、Simulator起動、
-   保存/入力、画面操作、SSH、最後の描画を分けます。
-2. 対応するartifactの固定診断、`ios-ui-stages.txt`、`ios-ui-timing.txt` を読みます。
-   `ios-ui-clock.txt` の時刻アンカーとrunner診断の開始時刻・所要時間、
-   `teardown_started` / `teardown_complete` から、操作前後の待ちも切り分けます。
-   スクリーンショットや動画は実際に開き、撮影できた範囲だけを根拠にします。
-3. 原因の仮説を一つに絞り、具体的なログや小さな再現で確かめてから修正します。
-   証拠不足なら、次の一回で必要な状態が分かる診断を先に追加します。
-4. 同じ失敗を理由なく繰り返さず、修正に対応する短いチェック・suiteから再実行します。
+1. 最初の失敗をbuild、Simulator、保存/入力、撮影、実SSH、native描画に分けます。
+2. 固定診断、stage、時刻、画像を確認します。画像や動画は実際に開きます。
+3. 失敗した最小の処理を先に切り分け、長いfullへ戻ることを既定にしません。
+4. 原因に対応した修正と短い検証の後、影響するsuiteを実行します。
 
-`full` / `names` の接続失敗では `ios-ui-connection-diagnostics.txt` も確認します。
-保存済みprofileとfixtureの一致フラグ、および失敗後のstrict SSH probe結果を比較します。
-probe成功は事後のfixture認証が正常という証拠であり、UI入力した鍵の一致や失敗時点の
-応答速度までは証明しません。診断が取得できない場合も、元のUI失敗を維持します。
+選択したsuiteの必須テスト、正常終了、fresh完了記録は維持します。タイムアウトを成功へ変えません。
+固定sleep・盲目的なretry・汎用Continueの無条件tapを追加しません。
+OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
+端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
+実接続失敗では保存metadataの一致フラグとstrict SSH probeを確認できますが、事後probe成功だけでUI入力成功は証明できません。
+秘密欄の画像や入力値、rawリモートエラーを診断に残しません。
 
-端末の文字キー待機に失敗した場合は `ios-ui-terminal-keyboard-diagnostics.txt` で、
-terminal・keyboard・対象キーの存在と操作可能状態を比較します。安全な画面と確認できた場合は
-`terminal-keyboard-failure.png` も残します。失敗後の状態であるため、tapした瞬間の
-フォーカスや入力イベントが処理されたことまでは断定しません。
+## 受入記録と限界
 
-自動操作では次を標準にします。
+suite、commit、run URL、fresh build/再利用元、実行時間、実見した画像と未検証項目を記録します。
+MetalとSimulator専用CoreGraphics描画を区別します。実機GPU・日本語IME・フォントの同等性は、実機で確認するまで未検証です。
+スクリーンショット中心の通常検証は、iOSの全操作・OS clipboard・全ライフサイクル経路の保証にはしません。
 
-- 安定したaccessibility IDで対象を特定し、表示・操作可能状態を確認する。
-- OSの初回案内が操作を覆う場合は、固有の案内文と対象ボタンを確認して一度閉じ、消失を待つ。汎用のContinueを無条件に押さない。端末のslide-to-type案内は実入力前に処理し、通常の文字キー・Paste・Returnとremote markerの確認を維持する。
-- キーボードを除いた表示領域と現在の対象位置からスクロール方向・距離を決める。
-- 短い文字入力は正確な値を読み返してから送信する。値は実動確認済みの要素属性から読む。削除後の空欄確認は即時の完全一致確認から始める。長い名前の削除は全選択＋1回のDeleteを使う。すでに編集メニューが表示されていればそれを使い、不要な長押しでメニューを閉じない。
-- 固定sleepや闇雲な追加retryで成功させない。待機は状態条件と上限を持つ。
-- 失敗時の固定診断を先に保存し、画面取得の失敗で原因を隠さない。
-- 秘密の入力値やrawリモートエラーを診断へ出さない。フォーム撮影は秘密入力前だけ。
-- iOSのコピー内容はhost側の既存observerで検証し、Runnerからの読み取り許可ダイアログで止めない。
-
-終了コード・テスト選択・完了markerを弱めたり、失敗箇所を飛ばした結果を成功扱いにする変更はしません。
-タイムアウトやretry上限の変更は、実測と理由を記録して判断します。
-
-## 5. 最後の受け入れ
-
-製品/nativeの変更を完成と報告する前に、最新ソースをfresh CNGから両OSで検証します。
-
-```sh
-gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=both -f ios_suite=full
-```
-
-`ios_build_run` は指定しません。再利用でfullを実行できても、その結果は診断用です。
-両OSの画像をダウンロードして実際に確認し、native readiness・first frame・no-crash、
-実SSH/tmux操作など既存の合格条件が揃ったことを確認します。
-MetalとSimulator専用ソフトウェア描画を区別し、実機GPU・フォント・日本語IMEまで
-確認したとは扱いません。
-
-記録にはcommit、run URL、suite、fresh/reused、実行結果、実見した画像、残る制約を含めます。
-`forms` の成功、`native` の成功、全体の成功は別々に記載してください。
-
-実装の根拠: Appleの [build-for-testing / test-without-building](https://developer.apple.com/library/archive/technotes/tn2339/_index.html) と
-GitHubの [workflow artifact](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts) を利用しています。
-
-## 検証記録
-
-[導入時の結果と失敗調査の履歴](evidence/testing-method-validation-history.md) に、
-forms/nativeの分割・ビルド再利用の実証、入力操作の修正、各runの証拠を保存しています。
-最新の全体受入状況は [DAILY_USE.md](DAILY_USE.md)、評価APKは [FIRST_APP.md](FIRST_APP.md) を参照してください。
+最新の結果は [DAILY_USE.md](DAILY_USE.md)、評価APKは [FIRST_APP.md](FIRST_APP.md)、
+旧方針での結果と失敗調査は [検証履歴](evidence/testing-method-validation-history.md) に保存しています。

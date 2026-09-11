@@ -68,16 +68,27 @@ are applied to the Rust terminal registry, including hidden panes.
 ## Verification
 
 Implementation is present. Local deterministic tests, real SSH/tmux integration,
-Android native tests and TypeScript must pass. Both Hosted mobile jobs must run
-from fresh CNG output; their screenshots must be downloaded and actually viewed.
-New workflows need interaction evidence, not just a first frame. An independent
+Android native tests and TypeScript must pass. Under the user-approved policy
+of 2026-09-11, Android full and iOS standard validate a fresh CNG build and
+their screenshots must be downloaded and actually viewed. iOS standard combines
+production storage/input tests, seeded production-screen images and real native
+foundation gates. A separate short SSH round-trip validates connection/input.
+The long iOS full is optional; seeded images do not establish end-to-end behavior. An independent
 review follows integration. Physical-device-only claims require device evidence.
 
-### Latest candidate status
+### Current acceptance-policy change
 
-Work is paused at the user's requested checkpoint after the
+The user authorized replacing mandatory long iOS full acceptance with the
+standard/short-SSH policy described in [TESTING.md](TESTING.md). Implementation
+and validation of the new suites are in progress. The earlier full failure below
+is preserved as historical evidence, not a required rerun or a newly passing result.
+The original goal is not complete until the new agreed checks and review are done.
+
+### Previous checkpoint
+
+The previous user-requested checkpoint followed the
 [fresh iOS/full run on `b9c4e1d`](https://github.com/phni3j9a/meeterm/actions/runs/34581965584).
-The nine improvements are implemented, but full iOS acceptance remains incomplete.
+The nine improvements were implemented, but the then-required full iOS acceptance was incomplete.
 Both general CI runs and the fresh iOS build passed. No further code changes or
 mobile reruns were started after collecting this result.
 
@@ -103,9 +114,10 @@ QuickPath prompt/Continue/dismissed stages were absent, and the initial image
 shows a normal keyboard. Thus the new introduction-dismissal branch was not
 exercised; its successful execution is not claimed.
 
-On resumption, first isolate the host clipboard observer's `command_timeout`
-using this artifact, then decide the smallest justified correction and validation.
-The original nine-feature goal is not marked complete. OS evidence has separate
+The clipboard observer timeout remains unresolved and belongs to optional
+full diagnostics under the revised policy. OS clipboard behavior must not be
+reported as verified from this failed observation. The original nine-feature
+goal was not marked complete at this checkpoint. OS evidence has separate
 source commits and runs; this is not a same-commit both-OS pass.
 See [TESTING.md](TESTING.md) for the standard method,
 [testing-method history](evidence/testing-method-validation-history.md) for its

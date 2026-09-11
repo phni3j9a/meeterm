@@ -168,12 +168,21 @@ Only after both adapters and their meaningful mobile smoke gates are in place sh
 
 ## Standard testing workflow
 
-Read `docs/TESTING.md` before changing tests, CI, or native code. Use cheap
-checks, then the affected focused suite, then the required full acceptance run.
-The iOS UI/input Swift preflight runs before CNG/app compilation. Use explicit
-`forms`, `native`, or `full` scope; never report a focused pass as full acceptance.
-For identical-source diagnosis, reuse pristine iOS test products only through
-the workflow's commit/toolchain/hash checks. Source changes require a new build.
+Read `docs/TESTING.md` before changing tests, CI, or native code. The user-approved
+iOS policy uses `standard` as the normal gate: production storage/input tests,
+direct screen screenshots, and native launch/readiness/frame/no-crash checks.
+Use the small `ssh` round-trip for connection/input changes and before distribution.
+The long `full` flow and `forms`/`native`/`names` suites remain explicit diagnostics;
+`full` is not required for every iOS change or milestone acceptance. Android retains
+its existing full smoke. Keep UI fixtures behind the smoke build flag and an
+explicit test launch route; screenshots of seeded state verify presentation,
+not the user actions that would ordinarily create that state. Preserve real
+native terminal rendering and never send fixture terminal bytes/cells through JS.
+The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
+suite by its actual scope; never rename an old full failure into a passing result.
+For another suite or diagnosis on identical source, reuse pristine iOS test
+products only through the workflow's commit/toolchain/hash checks. Record the
+original fresh build and the reuse run. Source changes require a new build.
 Investigate the first failed stage before rerunning; retain bounded state waits,
 exact completion evidence, and sanitized artifacts. Do not fix failures by
 silently skipping assertions, adding blind retries, or extending deadlines.

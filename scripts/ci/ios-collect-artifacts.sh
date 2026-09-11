@@ -2,7 +2,7 @@
 set -u
 
 readonly artifact_dir="${GITHUB_WORKSPACE}/artifacts/ios-simulator-observability"
-readonly suite="${MEETERM_IOS_SUITE:-full}"
+readonly suite="${MEETERM_IOS_SUITE:-standard}"
 mkdir -p "${artifact_dir}"
 find "${artifact_dir}" -maxdepth 1 -type f \
   \( -iname 'meeterm*.crash' -o -iname 'meeterm*.ips' \) \
@@ -19,10 +19,26 @@ if [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" && ! -s "$
     > "${artifact_dir}/simulator.log" 2>&1 || true
 fi
 
-# Only full acceptance requests a fresh foundation frame. Focused suites
-# preserve their own safe checkpoints without reporting missing full-flow UI.
+# Standard and full request a fresh foundation frame. The standard suite also
+# preserves the ten direct seeded-screen checkpoints emitted by XCTest. These
+# files are human-review evidence; their presence never decides pass/fail.
 required_screenshots=()
 case "${suite}" in
+  standard)
+    if [[ -f "${artifact_dir}/terminal.png" ]]; then
+      scripts/ci/validate-png.sh \
+        "${artifact_dir}/terminal.png" \
+        "${artifact_dir}/screenshot-unavailable.txt"
+    elif [[ -f "${artifact_dir}/launch.txt" ]]; then
+      echo "XCTest did not capture the fresh native foundation; terminal screenshot unavailable" \
+        > "${artifact_dir}/screenshot-unavailable.txt"
+    fi
+    required_screenshots=(
+      standard-home standard-servers standard-connection standard-password
+      standard-workspaces standard-terminal standard-settings
+      standard-workspace-name standard-terminal-name standard-handoff
+    )
+    ;;
   full)
     if [[ -f "${artifact_dir}/terminal.png" ]]; then
       scripts/ci/validate-png.sh \
@@ -36,6 +52,11 @@ case "${suite}" in
       connection-form-keyboard host-trust workspaces workspace-switched
       pane-switched terminal-keyboard terminal-input disconnected reconnected
     )
+    ;;
+  ssh)
+    echo "suite=ssh; safe post-auth checkpoint screenshots are optional for the short SSH smoke" \
+      > "${artifact_dir}/screenshot-unavailable.txt"
+    required_screenshots=(ssh-terminal-input ssh-disconnected)
     ;;
   forms)
     echo "suite=forms; native foundation screenshot not requested; see focused form checkpoints" \

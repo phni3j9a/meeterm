@@ -112,6 +112,22 @@ final class MeetermSmokeUITests: XCTestCase {
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-timing.txt")
     )
+    for name in [
+      "ios-ui-standard-validation.txt",
+      "ios-ui-ssh-validation.txt",
+      "standard-home.png",
+      "standard-servers.png",
+      "standard-connection.png",
+      "standard-password.png",
+      "standard-workspaces.png",
+      "standard-terminal.png",
+      "standard-settings.png",
+      "standard-workspace-name.png",
+      "standard-terminal-name.png",
+      "standard-handoff.png",
+    ] {
+      try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(name))
+    }
     record("test_started")
 
     app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -457,6 +473,195 @@ final class MeetermSmokeUITests: XCTestCase {
     record("terminate_app_for_handoff")
     app.terminate()
     try verifyFoundationRelaunch()
+  }
+
+  /// Opens each production screen from public deterministic state. This is a
+  /// presentation contract only: no saved metadata or remote session is
+  /// created while preparing these screenshots.
+  func testStandardSeededScreensAndFoundation() throws {
+    let screens = [
+      "home", "servers", "connection", "password", "workspaces", "terminal",
+      "settings", "workspace-name", "terminal-name", "handoff",
+    ]
+    for screen in screens {
+      record("standard_screen_\(screen)_open")
+      guard let url = URL(string: "meeterm://smoke?screen=\(screen)") else {
+        XCTFail("The standard smoke URL could not be created.")
+        return
+      }
+      app.open(url)
+      XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30), "The app left the foreground while opening \(screen).")
+      guard waitForStandardScreen(screen) else {
+        XCTFail("The standard smoke screen did not open: \(screen).")
+        return
+      }
+      // NameForm and the connection forms can make the Simulator offer its
+      // one-time QuickPath prompt. Dismiss only that exact prompt before the
+      // safe, public screenshot; never tap a generic Continue action.
+      dismissQuickPathTutorialIfPresent(stage: "standard_\(screen)")
+      record("standard_screen_\(screen)_ready")
+      capture("standard-\(screen)")
+      record("standard_screen_\(screen)_captured")
+    }
+
+    // Keep the existing foundation check as a genuinely fresh process after
+    // the seeded screen pass. The foundation uses the Rust poc-main fixture.
+    app.terminate()
+    try verifyFoundationRelaunch()
+    writeFixedArtifact("ios-ui-standard-validation.txt", lines: ["case=standard result=passed"])
+    record("standard_complete")
+  }
+
+  /// A bounded real SSH round trip. The private key is entered through the
+  /// existing production form, host-key verification remains explicit, and
+  /// one command proves native terminal input reached the fixture shell.
+  func testShortSshInputAndDisconnect() throws {
+    record("ssh_open_connection_form")
+    openConnectionForm()
+    let host = requiredEnvironment("MEETERM_SSH_HOST")
+    let port = requiredEnvironment("MEETERM_SSH_PORT")
+    let username = requiredEnvironment("MEETERM_SSH_USERNAME")
+    fillTextField(label: "Host", value: host)
+    fillTextField(label: "Port", value: port)
+    fillTextField(label: "Username", value: username)
+    let key = try readPrivateKey()
+    XCTAssertTrue(
+      revealAuthenticationControl(input("Private OpenSSH key"), stage: "ssh_key"),
+      "Private-key authentication is unavailable."
+    )
+    fillPrivateKey(key)
+
+    record("ssh_submit_connect")
+    let submit = app.buttons["ssh-submit"]
+    XCTAssertTrue(submit.waitForExistence(timeout: 10), "The Connect action is unavailable.")
+    XCTAssertTrue(waitForHittable(submit, timeout: 10), "The Connect action is not hittable.")
+    submit.tap()
+    guard waitForConnectionFormDismissal(timeout: 30) else {
+      writeConnectionFormDiagnostics()
+      XCTFail("The SSH connection form did not dismiss.")
+      return
+    }
+    record("ssh_connection_form_dismissed")
+
+    guard acceptFixtureHostKey() else { return }
+    let workspaces = waitForWorkspaceLabels(minimum: 1)
+    guard let firstWorkspace = workspaces.first else {
+      XCTFail("The fixture did not expose a workspace.")
+      return
+    }
+    record("ssh_open_first_workspace")
+    let workspaceButton = button(firstWorkspace)
+    if workspaceButton.waitForExistence(timeout: 15) {
+      XCTAssertTrue(waitForHittable(workspaceButton, timeout: 10), "The first workspace is not hittable.")
+      workspaceButton.tap()
+    }
+    XCTAssertTrue(waitForTerminal(), "The first fixture workspace did not open a terminal.")
+
+    record("ssh_native_input")
+    let terminal = try terminalElement()
+    terminal.tap()
+    let markerCommand = "printf '%s\\n' '\(markerValue)' > \(shellQuote(markerPath.path))"
+    enterTerminalCommand(markerCommand, stage: "ssh_native_input")
+    XCTAssertTrue(waitForMarkerLines([markerValue]), "Native terminal input did not reach the fixture shell.")
+    record("ssh_remote_ack")
+    capture("ssh-terminal-input")
+
+    record("ssh_disconnect")
+    tapConnectionAction("Disconnect")
+    XCTAssertTrue(app.staticTexts["Not connected"].waitForExistence(timeout: 60), "The app did not complete the explicit disconnect.")
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5), "The app left the foreground during the SSH check.")
+    capture("ssh-disconnected")
+    writeFixedArtifact("ios-ui-ssh-validation.txt", lines: ["case=ssh result=passed"])
+    record("ssh_complete")
+    app.terminate()
+  }
+
+  private func waitForStandardScreen(_ screen: String) -> Bool {
+    switch screen {
+    case "home":
+      let title = app.staticTexts["ワークスペース"]
+      let profile = app.buttons.matching(
+        NSPredicate(format: "label == %@", "Connect saved server Smoke server")
+      ).firstMatch
+      return title.waitForExistence(timeout: 30)
+        && waitForHittable(profile, timeout: 30)
+    case "servers":
+      let title = app.staticTexts["保存済みサーバー"]
+      let profile = app.buttons.matching(
+        NSPredicate(format: "identifier == %@", "server-profile-smoke-profile")
+      ).firstMatch
+      return title.waitForExistence(timeout: 30)
+        && waitForHittable(profile, timeout: 30)
+    case "connection":
+      return app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30)
+        && waitForHittable(input("Host"), timeout: 30)
+    case "password":
+      guard app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30) else { return false }
+      // The password field is deliberately empty but can be below the fold
+      // on the iPhone simulator. Reuse the bounded, secret-free reveal path
+      // used by the focused form test before calling the screen ready.
+      return revealAuthenticationControl(app.secureTextFields["SSH password"], stage: "standard_password")
+    case "workspaces":
+      guard waitForWorkspaceLabels(minimum: 2).count >= 2 else { return false }
+      let firstRow = app.buttons.matching(
+        NSPredicate(format: "identifier == %@", "workspace-row-@smoke-main")
+      ).firstMatch
+      return waitForHittable(firstRow, timeout: 30)
+    case "terminal":
+      let terminal = app.otherElements["Terminal"]
+      return app.staticTexts["Connected"].waitForExistence(timeout: 30)
+        && waitForHittable(terminal, timeout: 30)
+    case "settings":
+      return app.staticTexts["ターミナル設定"].waitForExistence(timeout: 30)
+        && waitForHittable(app.buttons["settings-submit"], timeout: 30)
+    case "workspace-name":
+      return app.staticTexts["ワークスペースの名前"].waitForExistence(timeout: 30)
+        && waitForHittable(input("Workspace or terminal name"), timeout: 30)
+    case "terminal-name":
+      return app.staticTexts["ターミナルの名前"].waitForExistence(timeout: 30)
+        && waitForHittable(input("Workspace or terminal name"), timeout: 30)
+    case "handoff":
+      return app.staticTexts["PC で続きを"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Disconnect"), timeout: 30)
+    default:
+      return false
+    }
+  }
+
+  private func acceptFixtureHostKey() -> Bool {
+    record("ssh_await_host_trust_prompt")
+    let alert = app.alerts.firstMatch
+    guard alert.waitForExistence(timeout: 60) else {
+      writeHostTrustTimeoutDiagnostics()
+      XCTFail("The SSH host trust prompt did not appear.")
+      return false
+    }
+    let expectedFingerprint = requiredEnvironment("MEETERM_SSH_FINGERPRINT")
+    XCTAssertTrue(
+      alert.staticTexts.allElementsBoundByIndex.contains { $0.label.contains(expectedFingerprint) },
+      "The host trust prompt did not display the fixture fingerprint."
+    )
+    let trust = alert.buttons["Trust and connect"]
+    guard trust.waitForExistence(timeout: 10), waitForHittable(trust, timeout: 10) else {
+      writePostTrustDiagnostics(phase: .buttonNotHittable, alert: alert, trust: trust)
+      XCTFail("The host trust action is unavailable.")
+      return false
+    }
+    record("ssh_trust_host_key")
+    trust.tap()
+    guard waitForDisappearance(alert, timeout: 10) else {
+      writePostTrustDiagnostics(phase: .alertNotDismissed, alert: alert, trust: trust)
+      XCTFail("The host trust prompt did not dismiss.")
+      return false
+    }
+    let connected = app.staticTexts["Connected"]
+    guard connected.waitForExistence(timeout: 90) else {
+      writePostTrustDiagnostics(phase: .connectedTimeout, alert: alert, trust: trust)
+      XCTFail("The native SSH/tmux connection did not reach Connected.")
+      return false
+    }
+    record("ssh_connected")
+    return true
   }
 
   func testConnectionFormControlsWithoutSecrets() throws {

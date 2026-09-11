@@ -24,10 +24,10 @@ on:
         options: [both, android, ios]
         default: both
       ios_suite:
-        description: iOS scope (forms/native/names are focused diagnostics)
+        description: iOS scope (standard is the daily smoke; ssh is short optional input)
         type: choice
-        options: [full, forms, native, names]
-        default: full
+        options: [standard, ssh, full, forms, native, names]
+        default: standard
       ios_build_run:
         description: Optional exact-commit Mobile smoke run containing ios-test-products
         type: string
@@ -38,7 +38,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: mobile-smoke-${{ github.ref }}-${{ inputs.platform || 'both' }}-${{ inputs.ios_suite || 'full' }}
+  group: mobile-smoke-${{ github.ref }}-${{ inputs.platform || 'both' }}-${{ inputs.ios_suite || 'standard' }}
   cancel-in-progress: true
 
 env:
@@ -411,14 +411,14 @@ jobs:
           retention-days: 14
 
   ios-simulator:
-    name: iOS Simulator / ${{ inputs.ios_suite || 'full' }}
+    name: iOS Simulator / ${{ inputs.ios_suite || 'standard' }}
     needs: [ios-driver-check, ios-build]
     if: ${{ always() && !cancelled() && needs.ios-driver-check.result == 'success' && (needs.ios-build.result == 'success' || (needs.ios-build.result == 'skipped' && inputs.ios_build_run != '')) }}
     runs-on: macos-26-intel
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      MEETERM_IOS_SUITE: ${{ inputs.ios_suite || 'full' }}
+      MEETERM_IOS_SUITE: ${{ inputs.ios_suite || 'standard' }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -467,7 +467,7 @@ jobs:
           } >> artifacts/ios-simulator-observability/metadata.txt
 
       - name: Install fixture-only tmux
-        if: env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
+        if: env.MEETERM_IOS_SUITE == 'ssh' || env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
         run: |
           if ! command -v tmux >/dev/null 2>&1; then
             HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux
@@ -475,7 +475,7 @@ jobs:
           tmux -V
 
       - name: Verify real OpenSSH fixture before SSH runtime testing
-        if: env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
+        if: env.MEETERM_IOS_SUITE == 'ssh' || env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
         run: |
           test -x /usr/sbin/sshd
           command -v ssh-keygen
@@ -512,7 +512,7 @@ jobs:
           output_path.write_text(output or "preflight-produced-no-output\n", encoding="utf-8")
           PY
 
-      - name: Run real SSH/tmux iOS UI smoke
+      - name: Run selected iOS UI smoke
         run: scripts/ci/ios-smoke.sh
 
       - name: Collect iOS Simulator observability

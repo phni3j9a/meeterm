@@ -39,6 +39,103 @@ const INITIAL_CONNECTION: SshConnectionState = {
 type Workspace = { id: string; name: string; panes: TmuxPane[] };
 type SheetKind = 'server' | 'servers' | 'workspaces' | 'handoff' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: TmuxPane };
+type SmokeScreen = 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
+
+const SMOKE_PROFILE: ServerProfile = {
+  id: 'smoke-profile', name: 'Smoke server', host: 'fixture.invalid', port: 22,
+  username: 'fixture', authMethod: 'publicKey', credentialSaved: false,
+};
+const SMOKE_PASSWORD_PROFILE: ServerProfile = {
+  ...SMOKE_PROFILE, id: 'smoke-password-profile', name: 'Password server',
+  authMethod: 'password',
+};
+const SMOKE_PROFILES: ServerProfile[] = [
+  SMOKE_PROFILE,
+  SMOKE_PASSWORD_PROFILE,
+];
+const SMOKE_PANES: TmuxPane[] = [
+  { windowId: '@smoke-main', paneId: '%smoke-main-1', terminalId: CONNECTION_ID, windowName: 'Main workspace', paneName: 'Shell', active: true, selected: true },
+  { windowId: '@smoke-main', paneId: '%smoke-main-2', terminalId: 'smoke-terminal-2', windowName: 'Main workspace', paneName: 'Logs', active: false, selected: false },
+  { windowId: '@smoke-tools', paneId: '%smoke-tools-1', terminalId: 'smoke-terminal-3', windowName: 'Tools workspace', paneName: 'Console', active: true, selected: true },
+];
+
+type SmokeFixtureState = {
+  preferences: TerminalPreferences;
+  connection: SshConnectionState;
+  panes: TmuxPane[];
+  screen: 'workspaces' | 'terminal';
+  windowId: string;
+  selectedPaneIds: Record<string, string>;
+  formVisible: boolean;
+  formProfile?: ServerProfile;
+  formMode: 'connect' | 'save';
+  profiles: ServerProfile[];
+  profilesLoading: boolean;
+  preferencesLoaded: boolean;
+  settingsVisible: boolean;
+  nameRequest: NameRequest | null;
+  profileId: string;
+  sheet: SheetKind;
+  hasConnected: boolean;
+};
+
+function smokeReadyConnection(): SshConnectionState {
+  return { ...INITIAL_CONNECTION, state: 'Ready', host: SMOKE_PROFILE.host, port: SMOKE_PROFILE.port };
+}
+
+function smokePanes(): TmuxPane[] { return SMOKE_PANES.map(pane => ({ ...pane })); }
+
+function smokeWorkspace(panes: TmuxPane[], windowId: string): Workspace {
+  const first = panes.find(pane => pane.windowId === windowId);
+  return { id: windowId, name: first?.windowName ?? 'Smoke workspace', panes: panes.filter(pane => pane.windowId === windowId) };
+}
+
+function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
+  const panes = smokePanes();
+  const ready = ['workspaces', 'terminal', 'workspace-name', 'terminal-name', 'handoff'].includes(screen);
+  const mainWorkspace = smokeWorkspace(panes, '@smoke-main');
+  const selectedPaneIds = { '@smoke-main': '%smoke-main-1', '@smoke-tools': '%smoke-tools-1' };
+  const base: SmokeFixtureState = {
+    // Keep screenshot colors independent of the Simulator's appearance.
+    preferences: { ...DEFAULT_PREFERENCES, theme: 'light' },
+    connection: ready ? smokeReadyConnection() : { ...INITIAL_CONNECTION },
+    panes: ready ? panes : [],
+    screen: screen === 'terminal' || screen === 'terminal-name' || screen === 'handoff' ? 'terminal' : 'workspaces',
+    windowId: screen === 'terminal' || screen === 'terminal-name' || screen === 'handoff' ? '@smoke-main' : '',
+    selectedPaneIds,
+    formVisible: screen === 'connection' || screen === 'password',
+    formProfile: screen === 'password' ? { ...SMOKE_PASSWORD_PROFILE } : screen === 'connection' ? { ...SMOKE_PROFILE } : undefined,
+    formMode: 'connect',
+    profiles: SMOKE_PROFILES.map(profile => ({ ...profile })),
+    profilesLoading: false,
+    preferencesLoaded: true,
+    settingsVisible: screen === 'settings',
+    nameRequest: screen === 'workspace-name'
+      ? { kind: 'renameWorkspace', workspace: mainWorkspace }
+      : screen === 'terminal-name'
+        ? { kind: 'renamePane', pane: mainWorkspace.panes[0] }
+        : null,
+    profileId: ready ? SMOKE_PROFILE.id : '',
+    sheet: screen === 'servers' ? 'servers' : screen === 'handoff' ? 'handoff' : null,
+    hasConnected: ready,
+  };
+  return base;
+}
+
+const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
+  'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
+  'settings', 'workspace-name', 'terminal-name', 'handoff',
+];
+
+function smokeRouteForUrl(url: string | null): SmokeRoute | undefined {
+  if (!url || process.env.EXPO_PUBLIC_MEETERM_SMOKE !== '1') return undefined;
+  if (url === 'meeterm://foundation?foundation=1') return { kind: 'foundation' };
+  if (!url.startsWith('meeterm://smoke?')) return undefined;
+  const match = /^meeterm:\/\/smoke\?screen=([^&]+)$/.exec(url);
+  if (!match || !SMOKE_SCREEN_NAMES.includes(match[1] as SmokeScreen)) return undefined;
+  return { kind: 'screen', screen: match[1] as SmokeScreen };
+}
 
 function sameConnection(a: SshConnectionState, b: SshConnectionState) {
   return a.state === b.state && a.host === b.host && a.port === b.port
@@ -132,39 +229,42 @@ function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, childre
   </Modal>;
 }
 
-function AppContent() {
-  const [preferences, setPreferences] = useState<TerminalPreferences>(DEFAULT_PREFERENCES);
+function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
+  const smokeScreen = smokeRoute?.kind === 'screen' ? smokeRoute.screen : null;
+  const smokeFixtureActive = smokeScreen !== null;
+  const fixture = smokeScreen ? smokeFixture(smokeScreen) : undefined;
+  const [preferences, setPreferences] = useState<TerminalPreferences>(() => fixture?.preferences ?? DEFAULT_PREFERENCES);
   const homeColors = usePalette(preferences.theme);
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const [connection, setConnection] = useState<SshConnectionState>(INITIAL_CONNECTION);
-  const [panes, setPanes] = useState<TmuxPane[]>([]);
-  const [screen, setScreen] = useState<'workspaces' | 'terminal'>('workspaces');
-  const [windowId, setWindowId] = useState('');
-  const [selectedPaneIds, setSelectedPaneIds] = useState<Record<string, string>>({});
-  const [formVisible, setFormVisible] = useState(false);
+  const [connection, setConnection] = useState<SshConnectionState>(() => fixture?.connection ?? INITIAL_CONNECTION);
+  const [panes, setPanes] = useState<TmuxPane[]>(() => fixture?.panes ?? []);
+  const [screen, setScreen] = useState<'workspaces' | 'terminal'>(() => fixture?.screen ?? 'workspaces');
+  const [windowId, setWindowId] = useState(() => fixture?.windowId ?? '');
+  const [selectedPaneIds, setSelectedPaneIds] = useState<Record<string, string>>(() => fixture?.selectedPaneIds ?? {});
+  const [formVisible, setFormVisible] = useState(() => fixture?.formVisible ?? false);
   const [hostPromptDeferred, setHostPromptDeferred] = useState(false);
   const [modalPending, setModalPending] = useState(false);
-  const [formProfile, setFormProfile] = useState<ServerProfile>();
-  const [formMode, setFormMode] = useState<'connect' | 'save'>('connect');
-  const [profiles, setProfiles] = useState<ServerProfile[]>([]);
-  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [formProfile, setFormProfile] = useState<ServerProfile | undefined>(() => fixture?.formProfile);
+  const [formMode, setFormMode] = useState<'connect' | 'save'>(() => fixture?.formMode ?? 'connect');
+  const [profiles, setProfiles] = useState<ServerProfile[]>(() => fixture?.profiles ?? []);
+  const [profilesLoading, setProfilesLoading] = useState(() => fixture?.profilesLoading ?? true);
   const [profilesError, setProfilesError] = useState(false);
-  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
-  const [settingsVisible, setSettingsVisible] = useState(false);
-  const [nameRequest, setNameRequest] = useState<NameRequest | null>(null);
-  const [profileId, setProfileId] = useState('');
-  const [sheet, setSheet] = useState<SheetKind>(null);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(() => fixture?.preferencesLoaded ?? false);
+  const [settingsVisible, setSettingsVisible] = useState(() => fixture?.settingsVisible ?? false);
+  const [nameRequest, setNameRequest] = useState<NameRequest | null>(() => fixture?.nameRequest ?? null);
+  const [profileId, setProfileId] = useState(() => fixture?.profileId ?? '');
+  const [sheet, setSheet] = useState<SheetKind>(() => fixture?.sheet ?? null);
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState('');
   const [pickerQuery, setPickerQuery] = useState('');
   const [controlMessage, setControlMessage] = useState('');
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
-  const [hasConnected, setHasConnected] = useState(false);
+  const [hasConnected, setHasConnected] = useState(() => fixture?.hasConnected ?? false);
   const [commandBusy, setCommandBusy] = useState(false);
   const [appState, setAppState] = useState(AppState.currentState);
-  const [foundation, setFoundation] = useState(false);
+  const [foundation, setFoundation] = useState(() => smokeRoute?.kind === 'foundation');
   const commandPending = useRef(false);
   const commandVersion = useRef(0);
   const shownHostKey = useRef('');
@@ -178,13 +278,15 @@ function AppContent() {
   const foreground = useRef(AppState.currentState === 'active');
 
   const loadProfiles = useCallback(async () => {
+    if (smokeFixtureActive) return;
     setProfilesLoading(true);
     try { setProfiles(await MeetermTerminal.getProfiles()); setProfilesError(false); }
     catch { setProfilesError(true); }
     finally { setProfilesLoading(false); }
-  }, []);
+  }, [smokeFixtureActive]);
 
   const loadPreferences = useCallback(async () => {
+    if (smokeFixtureActive) return;
     try {
       const next = await MeetermTerminal.getPreferences();
       await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, next.automaticReconnect);
@@ -193,21 +295,16 @@ function AppContent() {
     } catch {
       setControlMessage('設定を読み込めませんでした。「設定」から読み込みをやり直せます。');
     }
-  }, []);
-
-  useEffect(() => { void loadProfiles(); void loadPreferences(); }, [loadPreferences, loadProfiles]);
+  }, [smokeFixtureActive]);
 
   useEffect(() => {
-    // This build flag and explicit launch URL are both required. Normal
-    // installed-app launches always start at the real workspace hub.
-    if (process.env.EXPO_PUBLIC_MEETERM_SMOKE !== '1') return;
-    const applyUrl = (url: string | null) => setFoundation(Boolean(url && /(?:\?|&)foundation=1(?:&|$)/.test(url)));
-    void Linking.getInitialURL().then(applyUrl);
-    const subscription = Linking.addEventListener('url', event => applyUrl(event.url));
-    return () => subscription.remove();
-  }, []);
+    if (smokeFixtureActive) return;
+    void loadProfiles();
+    void loadPreferences();
+  }, [loadPreferences, loadProfiles, smokeFixtureActive]);
 
   useEffect(() => {
+    if (smokeFixtureActive) return;
     const applyForeground = (isForeground: boolean) => {
       // Preserve OS event order. Rust owns reconnect policy and timers.
       foregroundCommands.current = foregroundCommands.current
@@ -221,9 +318,10 @@ function AppContent() {
       applyForeground(foreground.current);
     });
     return () => subscription.remove();
-  }, []);
+  }, [smokeFixtureActive]);
 
   useEffect(() => {
+    if (smokeFixtureActive) return;
     let mounted = true;
     let polling = false;
     const refresh = async () => {
@@ -247,9 +345,10 @@ function AppContent() {
     // Poll metadata only. Native owns reconnect, terminal bytes, and frames.
     const interval = setInterval(() => { void refresh(); }, 1000);
     return () => { mounted = false; clearInterval(interval); };
-  }, []);
+  }, [smokeFixtureActive]);
 
   useEffect(() => {
+    if (smokeFixtureActive) return;
     if (formVisible || hostPromptDeferred) return;
     if (connection.state !== 'HostKeyPending' || !connection.host || !connection.port || !connection.fingerprint) {
       if (connection.state !== 'HostKeyPending') shownHostKey.current = '';
@@ -268,7 +367,7 @@ function AppContent() {
       { text: 'Cancel', style: 'cancel', onPress: () => respond(false) },
       { text: 'Trust and connect', onPress: () => respond(true) },
     ], { cancelable: false });
-  }, [connection, formVisible, hostPromptDeferred]);
+  }, [connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
 
   const workspaces = useMemo(() => {
     const grouped = new Map<string, Workspace>();
@@ -299,6 +398,7 @@ function AppContent() {
   const pickerWorkspaces = useMemo(() => workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(pickerQuery))), [pickerQuery, workspaces]);
 
   const runCommand = useCallback(async (action: () => Promise<void>, errorMessage: string) => {
+    if (smokeFixtureActive) return false;
     if (commandPending.current) return false;
     commandPending.current = true;
     commandVersion.current += 1;
@@ -316,7 +416,7 @@ function AppContent() {
     }
     catch { setControlMessage(errorMessage); return false; }
     finally { commandPending.current = false; setCommandBusy(false); }
-  }, []);
+  }, [smokeFixtureActive]);
 
   const finishConnectionForm = useCallback(() => {
     if (Platform.OS === 'ios' && returnToServersAfterForm.current) setModalPending(true);
@@ -355,13 +455,14 @@ function AppContent() {
   }, [formVisible, sheet]);
 
   const prepareConnection = useCallback(async () => {
+    if (smokeFixtureActive) return;
     const currentPreferences = preferencesLoaded ? preferences : await MeetermTerminal.getPreferences();
     await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, currentPreferences.automaticReconnect);
     await foregroundCommands.current;
     await MeetermTerminal.setForeground(CONNECTION_ID, foreground.current);
     // Switching endpoints explicitly releases the previous connection owner.
     await MeetermTerminal.disconnect(CONNECTION_ID);
-  }, [preferences, preferencesLoaded]);
+  }, [preferences, preferencesLoaded, smokeFixtureActive]);
 
   const submitConnection = useCallback(async (submission: ConnectionSubmission) => {
     let savedProfile: ServerProfile | undefined;
@@ -514,6 +615,10 @@ function AppContent() {
 
   const openSettings = useCallback(() => {
     if (commandPending.current) return;
+    if (smokeFixtureActive) {
+      setSettingsVisible(true);
+      return;
+    }
     if (!preferencesLoaded) {
       void runCommand(async () => {
         const next = await MeetermTerminal.getPreferences();
@@ -525,7 +630,7 @@ function AppContent() {
       return;
     }
     showModal(() => setSettingsVisible(true));
-  }, [preferencesLoaded, runCommand, showModal]);
+  }, [preferencesLoaded, runCommand, showModal, smokeFixtureActive]);
 
   const savePreferences = useCallback(async (next: TerminalPreferences) => {
     const success = await runCommand(async () => {
@@ -800,7 +905,51 @@ function AppContent() {
   </SafeAreaView>;
 }
 
-export default function App() { return <SafeAreaProvider><AppContent /></SafeAreaProvider>; }
+export default function App() {
+  const smokeBuild = process.env.EXPO_PUBLIC_MEETERM_SMOKE === '1';
+  const [smokeRoute, setSmokeRoute] = useState<SmokeRoute>(null);
+  const [smokeRouteRevision, setSmokeRouteRevision] = useState(0);
+  const [smokeRouteResolved, setSmokeRouteResolved] = useState(!smokeBuild);
+
+  useEffect(() => {
+    // This build flag and explicit launch URL are both required. Normal
+    // installed-app launches always start at the real workspace hub.
+    if (!smokeBuild) return;
+    let launchEventReceived = false;
+    const applyUrl = (url: string | null) => {
+      const route = smokeRouteForUrl(url);
+      // Ignore unrelated deep links. A valid smoke URL always increments the
+      // key so reopening the same foundation or screen URL resets its state.
+      if (route !== undefined) {
+        setSmokeRoute(route);
+        setSmokeRouteRevision(value => value + 1);
+      }
+      setSmokeRouteResolved(true);
+    };
+    void Linking.getInitialURL().then(url => {
+      if (!launchEventReceived) applyUrl(url);
+    }).catch(() => {
+      if (!launchEventReceived) setSmokeRouteResolved(true);
+    });
+    const subscription = Linking.addEventListener('url', event => {
+      launchEventReceived = true;
+      applyUrl(event.url);
+    });
+    return () => subscription.remove();
+  }, [smokeBuild]);
+
+  if (!smokeRouteResolved) {
+    // Do not mount AppContent while the smoke build is still resolving its
+    // initial URL. This keeps profile/preferences/lifecycle effects out of a
+    // seeded screenshot launch entirely.
+    return <SafeAreaProvider><View style={styles.flex} /></SafeAreaProvider>;
+  }
+
+  const routeKey = smokeRoute?.kind === 'screen'
+    ? `smoke-${smokeRoute.screen}`
+    : smokeRoute?.kind === 'foundation' ? 'foundation' : 'normal';
+  return <SafeAreaProvider><AppContent key={`${routeKey}-${smokeRouteRevision}`} smokeRoute={smokeRoute} /></SafeAreaProvider>;
+}
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
