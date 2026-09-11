@@ -1078,11 +1078,12 @@ final class MeetermSmokeUITests: XCTestCase {
         record("\(stage)_clear_verified")
       }
       record("\(stage)_type")
-      if attempt == 0 {
+      if attempt == 0 && label != "Username" {
         field.typeText(value)
       } else {
-        // Settle each prefix on the sole retry so a fast synthetic burst
-        // cannot repeatedly outrun the controlled React Native field.
+        if attempt == 0 { record("\(stage)_initial_paced") }
+        // Settle each prefix so a fast synthetic burst cannot repeatedly
+        // outrun the controlled React Native field.
         var prefix = ""
         for character in value {
           prefix.append(character)
@@ -1092,7 +1093,7 @@ final class MeetermSmokeUITests: XCTestCase {
               label: label,
               field: field,
               expected: prefix,
-              phase: "retry_prefix_mismatch",
+              phase: attempt == 0 ? "initial_prefix_mismatch" : "retry_prefix_mismatch",
               attempt: attempt
             )
             break

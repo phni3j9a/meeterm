@@ -133,8 +133,20 @@ passed; `names_complete`, fresh names success and XCTest exit 0 were present
 (471.4 seconds including runner overhead). Main viewed all five safe checkpoints.
 No authentication/input code changed for this run, so the earlier intermittent
 authentication failure is not claimed fixed. Failure-only metadata diagnostics
-were not invoked on the successful run and remain unproven on Hosted Simulator.
-Fresh both-platform full acceptance is the next required check.
+were not invoked on that successful run.
+The subsequent [fresh both/full run on `516380f`](https://github.com/phni3j9a/meeterm/actions/runs/34570866987)
+passed Android completely (69 markers; Main viewed four images and verified the
+new APK in `FIRST_APP.md`). iOS passed fresh build, storage four and input seven,
+but authentication failed again before Connected (XCTest exit 65). This time the
+failure-only diagnostics ran successfully: saved metadata matched every expected
+field except username, and the strict fixture SSH probe passed. Main also viewed
+the authentication-error image and the pre-secret password form showing the
+expected username. The mismatch between native field readback and submitted
+React state is the strongest explanation; the exact event-loss mechanism is
+not established. The next driver-only change paces Username from the first
+attempt using the existing character/prefix checks. It does not change the
+product, key input, retry count or deadlines. Fresh iOS/full remains required;
+Android evidence stays on `516380f`, whose Android inputs are unchanged.
 Run links and the earlier failure details are in `TESTING.md`.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).

@@ -281,3 +281,17 @@ Mainは秘密入力前の接続フォーム、host trust、workspace一覧、名
 一般CIも両実行とも全項目成功しています。この実行では認証失敗が再現せず、失敗専用診断は
 起動していません。認証不安定の原因解明やHosted metadata診断の実証とは扱いません。
 次に、ビルド再利用を指定せずfresh CNGから両OSのfull受入を行います。
+
+`516380f` の[fresh両OS/full](https://github.com/phni3j9a/meeterm/actions/runs/34570866987)では、
+Androidは69記録と正常終了を確認し、Mainが4画像と評価APKを確認しました。iOSはbuild・保存4件・
+入力7件を通過後、host trustの承認後に認証失敗となりました（UI XCTest exit65、464.9秒）。
+新しい接続診断が実際に取得され、保存metadataはusernameだけがfixture期待値と不一致、
+他フィールドは一致、strict SSH probeは成功でした。送信前の画面側Usernameは一致しています。
+Mainは認証エラー画像と、期待するユーザー名が見える秘密入力前のpasswordフォームを実見しました。
+
+この証拠から、次はUsernameだけ初回から既存の1文字入力・prefix確認を使います。
+一括のsynthetic入力とReact state反映のずれが有力ですが、event欠落の機序は断定しません。
+prefix確認もnative/AX値なので、React stateそのものの証明とは扱いません。秘密欄・product・
+他の短い入力欄・retry数・制限時間は変更しません。Swift型チェック後にfresh iOS/fullを実行します。
+今回の差分はiOSテストドライバだけで、Androidのアプリ/native/workflowは`516380f`から不変のため、
+成功済みAndroid fullは再実行しません。最終証拠はOS別のcommit/runとして記録します。
