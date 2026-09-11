@@ -89,6 +89,12 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("ios-ui-short-field-diagnostics.txt")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-terminal-keyboard-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("terminal-keyboard-failure.png")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-connection-state.txt")
     )
     try? FileManager.default.removeItem(
@@ -1498,6 +1504,49 @@ final class MeetermSmokeUITests: XCTestCase {
     }
   }
 
+  private func writeTerminalKeyboardDiagnostics(
+    stage: String,
+    character: Character,
+    requestedKey: XCUIElement
+  ) {
+    let terminal = app.otherElements["Terminal"]
+    let keyboard = app.keyboards.firstMatch
+    let paste = button("Paste")
+    let hideKeyboard = button("Hide keyboard")
+    let uppercaseKey = app.keys[String(character).uppercased()]
+    let sameLabelButton = app.buttons.matching(
+      NSPredicate(format: "label ==[c] %@", String(character))
+    ).firstMatch
+    let appForeground = app.state == .runningForeground
+    let formGone = connectionFormIsGone()
+    let terminalExists = terminal.exists
+    writeFixedArtifact(
+      "ios-ui-terminal-keyboard-diagnostics.txt",
+      lines: [
+        "stage=\(stage)",
+        "app_foreground=\(appForeground ? 1 : 0)",
+        "connection_form_gone=\(formGone ? 1 : 0)",
+        "terminal_exists=\(terminalExists ? 1 : 0)",
+        "terminal_hittable=\(terminalExists && terminal.isHittable ? 1 : 0)",
+        "keyboard_exists=\(keyboard.exists ? 1 : 0)",
+        "keyboard_hittable=\(keyboard.exists && keyboard.isHittable ? 1 : 0)",
+        "paste_exists=\(paste.exists ? 1 : 0)",
+        "paste_hittable=\(paste.exists && paste.isHittable ? 1 : 0)",
+        "hide_keyboard_exists=\(hideKeyboard.exists ? 1 : 0)",
+        "hide_keyboard_hittable=\(hideKeyboard.exists && hideKeyboard.isHittable ? 1 : 0)",
+        "requested_key_exists=\(requestedKey.exists ? 1 : 0)",
+        "requested_key_hittable=\(requestedKey.exists && requestedKey.isHittable ? 1 : 0)",
+        "uppercase_key_exists=\(uppercaseKey.exists ? 1 : 0)",
+        "uppercase_key_hittable=\(uppercaseKey.exists && uppercaseKey.isHittable ? 1 : 0)",
+        "same_label_button_exists=\(sameLabelButton.exists ? 1 : 0)",
+        "same_label_button_hittable=\(sameLabelButton.exists && sameLabelButton.isHittable ? 1 : 0)",
+      ]
+    )
+    if appForeground && formGone && terminalExists {
+      capture("terminal-keyboard-failure")
+    }
+  }
+
   private func writeFixedArtifact(_ name: String, lines: [String]) {
     let contents = lines.joined(separator: "\n") + "\n"
     try? Data(contents.utf8).write(
@@ -1560,7 +1609,12 @@ final class MeetermSmokeUITests: XCTestCase {
     record("\(stage)_keyboard_letters")
     for character in prefix {
       let key = app.keys[String(character)]
-      XCTAssertTrue(key.waitForExistence(timeout: 10), "The terminal keyboard letter is unavailable.")
+      guard key.waitForExistence(timeout: 10) else {
+        record("\(stage)_keyboard_letter_unavailable")
+        writeTerminalKeyboardDiagnostics(stage: stage, character: character, requestedKey: key)
+        XCTFail("The terminal keyboard letter is unavailable.")
+        return
+      }
       key.tap()
     }
 

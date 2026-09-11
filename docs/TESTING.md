@@ -295,3 +295,17 @@ prefix確認もnative/AX値なので、React stateそのものの証明とは扱
 他の短い入力欄・retry数・制限時間は変更しません。Swift型チェック後にfresh iOS/fullを実行します。
 今回の差分はiOSテストドライバだけで、Androidのアプリ/native/workflowは`516380f`から不変のため、
 成功済みAndroid fullは再実行しません。最終証拠はOS別のcommit/runとして記録します。
+
+`b94ef2b` の[fresh iOS/full](https://github.com/phni3j9a/meeterm/actions/runs/34574408722)では、
+保存metadataがUsernameを含め全て一致し、strict SSH probeも成功しました。認証・実端末入力・
+切断と再接続・同一paneの復元まで進み、再接続後の最初の文字キー `t` の存在確認で失敗しました
+（UI XCTest exit65、1000.7秒）。保存4件・native入力7件は成功しましたが、daily完了と最後の
+fresh foundationには未到達です。Mainは初回keyboard・入力・切断後の3画像を実見しました。
+失敗した瞬間の画像がなく、keyboard非表示とlayout/AX queryの違いはまだ区別できません。
+
+この境界には、既存10秒待機の失敗時だけ `ios-ui-terminal-keyboard-diagnostics.txt` を追加します。
+foreground、フォーム消失、terminal/keyboard/Paste/Hide keyboard/要求キー/大文字キー/同labelの
+buttonの存在・hittableを固定フラグで保存し、入力値やコマンドは出力しません。
+foregroundかつ接続フォーム消失かつterminal存在のときだけ `terminal-keyboard-failure.png` を
+取得し、元の失敗を維持します。自動再tap・入力迂回・layout切替・制限時間延長は行いません。
+診断ファイルと画像は開始時に削除し、古い結果を混在させません。次のfresh iOS/fullで確認します。

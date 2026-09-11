@@ -147,6 +147,18 @@ not established. The next driver-only change paces Username from the first
 attempt using the existing character/prefix checks. It does not change the
 product, key input, retry count or deadlines. Fresh iOS/full remains required;
 Android evidence stays on `516380f`, whose Android inputs are unchanged.
+The [fresh iOS/full run on `b94ef2b`](https://github.com/phni3j9a/meeterm/actions/runs/34574408722)
+passed authentication, real terminal input, disconnect/reconnect and same-pane
+restoration. Failure diagnostics now show every saved metadata field matching,
+including username, and the strict SSH probe passed. It then failed waiting for
+the first keyboard letter after reconnect (XCTest exit 65, 1000.7 seconds).
+Main viewed the initial keyboard, input and disconnected images; no image of
+the failing keyboard state was captured, so missing keyboard versus layout or
+accessibility-query state remains unresolved. A failure-only driver diagnostic
+now records fixed keyboard/surface visibility and hittability flags and captures
+a terminal image only when foreground, the connection form is gone and the
+terminal exists. Input actions, retries and deadlines remain unchanged. Another
+fresh iOS/full run is required; daily completion and final foundation are pending.
 Run links and the earlier failure details are in `TESTING.md`.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
