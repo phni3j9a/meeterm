@@ -141,3 +141,26 @@ Mainが `terminal-keyboard.png` を実見したところ、iOSのslide-to-type�
 全5回の共通コマンド入力の冒頭で確認し、案内不在なら無操作です。各操作待機は10秒、
 再試行・キーボード設定変更・全体時間上限の変更はありません。Hosted検証は未実施です。
 `b94ef2b` では失敗時の画像がなく、同じ案内が原因だったとは断定しません。
+
+### 利用者指定のチェックポイント: `b9c4e1d`
+
+[最後のfresh iOS/full](https://github.com/phni3j9a/meeterm/actions/runs/34581965584)
+と一般CI両実行の結果を回収して停止しました。一般CI・Swift・fresh build・保存4件・native入力7件は
+成功し、実SSH認証・端末入力・handoff変数の保持・切断再接続・cold restart後の保存認証情報での
+接続と元のshell復帰まで通過しました。保存metadataは全一致、strict SSH probeも成功でした。
+
+最初の失敗は `daily_selection_copy_result_rejected`（UI583.2秒、source612）です。
+`ios-native-copy-validation.txt` は `result=failed reason=command_timeout` で、ホスト側の
+コピー結果確認コマンドが時間内に完了しませんでした。コピー操作とCopy controlの消失は確認済みですが、
+コピーされた値は未検証です。内容不一致や製品のコピー不具合とは断定しません。
+XCTestはexit65、831.5秒で終了し、実行枠1665.9秒のタイムアウトではありません。
+`daily_complete` と最後のfresh foundationは未到達です。動画は `capture_failed` で取得できませんでした。
+
+Mainは `terminal-keyboard.png`、`reconnected.png`、`daily-selection.png` の3枚を実見しました。
+最初の画像は通常のkeyboardで、QuickPath prompt/Continue/dismissedのstageもありません。
+初回案内が出ない経路は通りましたが、今回追加したContinue操作分岐は実行されていません。
+前回までのUsername・再接続後キー・Paste失敗が再現しなかったこととは区別して記録します。
+
+Androidは変更の影響がない `516380f` のfull成功を維持します。原goalは未完了のままとし、
+追加修正や再実行には進んでいません。再開時は、このrunのhost clipboard observerの
+`command_timeout` を先に切り分けてから、必要な修正と検証範囲を決めます。

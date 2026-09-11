@@ -75,34 +75,39 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
-Implementation and the standard testing method are present; full iOS acceptance
-is still pending. The [fresh iOS/full run on `ce75d8e`](https://github.com/phni3j9a/meeterm/actions/runs/34578966905)
-passed Swift preflight, fresh build, storage four, native input seven and real
-SSH authentication. Both general CI runs passed. UI execution failed at the
-initial native Paste action's hittability gate (exit 65, 449.2 seconds).
-Main viewed `terminal-keyboard.png`: the iOS first-use slide-to-type introduction
-and its Continue button cover the keyboard area. The driver now checks for that exact introduction before each terminal command,
-taps Continue once when present and requires the prompt to disappear. The
-original letter/Paste/Return and remote-marker gates remain. Hosted validation
-of this correction is pending.
+Work is paused at the user's requested checkpoint after the
+[fresh iOS/full run on `b9c4e1d`](https://github.com/phni3j9a/meeterm/actions/runs/34581965584).
+The nine improvements are implemented, but full iOS acceptance remains incomplete.
+Both general CI runs and the fresh iOS build passed. No further code changes or
+mobile reruns were started after collecting this result.
 
 | Evidence | Result and scope |
 | --- | --- |
 | [Android full / `516380f`](https://github.com/phni3j9a/meeterm/actions/runs/34570866987/job/103172478780) | Passed all 69 completion markers. Main viewed four images and verified the evaluation APK in `FIRST_APP.md`. Android app/native/workflow inputs are unchanged by subsequent iOS-driver/documentation changes. |
 | [iOS names / `bb64bae`](https://github.com/phni3j9a/meeterm/actions/runs/34568232442) | Fresh build and real SSH workspace/pane create, rename and confirmed-close passed, including both Select All branches and empty-field waits; XCTest exit 0. Main viewed five images. This focused result does not establish full acceptance. |
-| [iOS full / `b94ef2b`](https://github.com/phni3j9a/meeterm/actions/runs/34574408722) | Storage four, native input seven, authentication, real terminal input, disconnect/reconnect and same-pane restoration passed. Waiting for the first keyboard letter after reconnect failed (exit 65, 1000.7 seconds). Daily completion and final fresh foundation were not reached. |
+| [iOS full / `b9c4e1d`](https://github.com/phni3j9a/meeterm/actions/runs/34581965584/job/103212576212) | Storage four, native input seven, authentication, real terminal input, disconnect/reconnect and cold restart with saved credentials passed. Copy-result validation failed because its host command timed out. Daily completion and final fresh foundation were not reached. |
 
-The previous username mismatch did not recur on `b94ef2b`: saved metadata matched
-all fixture fields and the strict SSH probe passed. Main viewed the initial
-keyboard, input and disconnected images. No failure-state keyboard image was
-captured, so keyboard absence versus layout/accessibility-query state is still
-unresolved. The `ce75d8e` key-failure diagnostic did not run because letter-key queries
-succeeded and the later Paste gate failed. The first-use introduction is observed
-in this run; it is not proof of the earlier `b94ef2b` failure cause.
+The failure was `daily_selection_copy_result_rejected` at source line 612:
+`ios-native-copy-validation.txt` reports `reason=command_timeout`. The UI test
+exited 65 after 831.5 seconds, within its 1665.9-second execution budget. This is
+a clipboard-observer command timeout, not evidence of a copied-text mismatch or
+an overall XCTest timeout. Its cause has not been investigated at this checkpoint.
+Main viewed the normal terminal keyboard, reconnected terminal and Japanese
+selection images. The copy action was tapped and its control disappeared, but
+the clipboard result itself was not verified. The daily video was unavailable
+because capture failed; the final foundation image was not reached.
 
-The original nine-feature goal is not marked complete. OS evidence is recorded
-with separate source commits and runs; it is not a claim of a same-commit both-OS
-pass. See [TESTING.md](TESTING.md) for the standard method,
+Saved metadata again matched all fixture fields and the strict SSH probe passed.
+The prior username and reconnect-key failures did not recur in this run. The
+QuickPath prompt/Continue/dismissed stages were absent, and the initial image
+shows a normal keyboard. Thus the new introduction-dismissal branch was not
+exercised; its successful execution is not claimed.
+
+On resumption, first isolate the host clipboard observer's `command_timeout`
+using this artifact, then decide the smallest justified correction and validation.
+The original nine-feature goal is not marked complete. OS evidence has separate
+source commits and runs; this is not a same-commit both-OS pass.
+See [TESTING.md](TESTING.md) for the standard method,
 [testing-method history](evidence/testing-method-validation-history.md) for its
 measured results, and [earlier daily-use evidence](evidence/daily-use-validation-history.md)
 for the preserved investigation history.
