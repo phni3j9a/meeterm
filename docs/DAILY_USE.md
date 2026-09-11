@@ -75,23 +75,32 @@ review follows integration. Physical-device-only claims require device evidence.
 
 ### Latest candidate status
 
-Candidate `b2efd85` passed all [general CI jobs](https://github.com/phni3j9a/meeterm/actions/runs/34484122278)
-and Android's complete [fresh-CNG Mobile flow](https://github.com/phni3j9a/meeterm/actions/runs/34484118695).
-Main viewed the Android screenshots and verified the APK linked in `FIRST_APP.md`.
-iOS passed the unsigned build, four production storage cases and seven native
-input cases, then the UI driver overscrolled the authentication selector before
-connecting. Main inspected its geometry diagnostics and failure screenshot.
-Full iOS daily-use/fresh-foundation acceptance remains incomplete.
+Candidate `cb69a17` passed [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34548009401)
+and Android's complete [fresh-CNG full flow](https://github.com/phni3j9a/meeterm/actions/runs/34550694155).
+All 69 Android completion markers were present. Main viewed the foundation,
+settings, created-pane and SSH terminal screenshots and verified the APK linked
+in `FIRST_APP.md`.
 
-The user prioritized improving and standardizing the testing method before
-continuing that full acceptance. [TESTING.md](TESTING.md) defines the cheap Swift
-preflight, focused forms/native suites, separate iOS build/runtime jobs and
-exact-source diagnostic product reuse. Hosted preflight and separate build/artifact restoration have passed. A same-source
-native reuse run passed storage 4/input 7 cases; its collector then failed on a
-macOS Bash compatibility issue, which is being corrected. The focused forms run
-reached its completion marker (including the target-aware authentication scroll)
-but xcodebuild exceeded its original 600-second budget. These are not full-job
-passes. See TESTING.md for run links, timing adjustments and remaining acceptance.
+iOS in the same full run passed fresh build, separate-runner artifact restoration,
+four production storage cases, seven native input cases, SSH/reconnect, saved
+credential restoration, selection/copy, settings persistence, workspace creation
+and rename. It stopped during pane rename: the UI driver could not find the
+Select All action for a 67-character generated pane name (`source_line=987`).
+Main viewed the safe name-field failure screenshot and the settings, cleared
+selection and SSH terminal screenshots. The full daily completion and final
+fresh-foundation verification were not reached. Full iOS acceptance remains
+incomplete; this is an observed test interaction failure, not proof that the
+app's rename operation itself is broken.
+
+The user prioritized testing-method improvement and then requested a checkpoint.
+That method is implemented and documented in [TESTING.md](TESTING.md), with
+Swift/Python/macOS Bash preflight, focused forms/native suites, separate iOS
+build/runtime jobs and exact-source diagnostic product reuse. Focused forms
+and reused native runs both passed through normal exit and artifact collection.
+The standard and its evidence received independent review. Work is paused at
+this checkpoint; the next investigation is the pane-name selection interaction,
+using the captured diagnostic and video before changing the driver or rerunning.
+The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
 
 ## User behavior and storage boundary

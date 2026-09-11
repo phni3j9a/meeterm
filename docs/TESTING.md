@@ -176,8 +176,31 @@ GitHubの [workflow artifact](https://docs.github.com/en/actions/concepts/workfl
 
 ## 導入時の検証記録
 
+`cb69a17` では次の結果を確認しました。
+
+| 実行 | 結果 | 確認した範囲 |
+| --- | --- | --- |
+| [一般CI](https://github.com/phni3j9a/meeterm/actions/runs/34548009401) | 成功 | Rust/実SSH、JS/Expo、Android native、macOS Swift/collector事前チェック |
+| [forms・fresh build](https://github.com/phni3j9a/meeterm/actions/runs/34548011799) | 成功 | 別runnerへの復元、フォーム操作、xcodebuild正常終了、証拠収集、3枚の画像を実見 |
+| [native・同一ソース再利用](https://github.com/phni3j9a/meeterm/actions/runs/34549149649) | 成功 | build省略、復元、production保存4件、native入力7件、証拠収集 |
+| [Android full・fresh CNG](https://github.com/phni3j9a/meeterm/actions/runs/34550694155/job/103112788927) | 成功 | 日常操作69完了記録、native ready/first frame/no-crash、4枚の画像を実見 |
+| [iOS full・fresh CNG](https://github.com/phni3j9a/meeterm/actions/runs/34550694155/job/103115483648) | 未完了 | build・復元・保存4件・入力7件成功。pane名変更時のSelect All操作で失敗。証拠収集は成功 |
+
+同じ`cb69a17`の初回buildジョブは13分21秒でした。native再利用実行ではこの工程が
+省略されています。Simulatorの起動とテスト実行は毎回必要で、native runtimeジョブは
+17分32秒、forms runtimeジョブは23分6秒でした。15分/10分のsuite上限は
+xcodebuildテスト実行部分を対象とし、Simulator起動を含むruntimeジョブ全体とは異なります。
+
+formsのxcodebuild実行は805.4秒（15分枠内）でした。内訳はXCTest準備が約143.1秒、
+setupからteardown完了まで約645.8秒、終了までの残りが約16.4秒です。
+この実行では終了処理の停滞は見られません。runner条件による所要時間の変動があるため、
+初回の448秒という操作時間だけで全実行の上限を決めないようにします。
+
+以下は導入中に見つけて修正した問題の記録です。
+
 - `a398a68` の [Swift事前チェック](https://github.com/phni3j9a/meeterm/actions/runs/34544837219/job/103095111270) はmacOS上で成功しました。最初の試行で不足していたXCTestのSwift検索パスは、成功済みの実アプリビルドと同じ設定へ修正しています。
 - [最初のforms実行](https://github.com/phni3j9a/meeterm/actions/runs/34544845213) は、macOSの `/var` と `/private/var` の違いを成果物処理の回帰テストが検出し、アプリビルド前に停止しました。両表記を変換する修正と、シンボリックリンク経由のroundtripテストを追加しています。
 - `0e345c9` の [formsビルド・実行](https://github.com/phni3j9a/meeterm/actions/runs/34545053532) では事前チェック35秒、fresh buildジョブ11分44秒、別runnerへの復元が成功しました。フォームは認証切替・保存設定・キャンセルまで完了記録が出ましたが、xcodebuildの600秒上限で失敗しています。3枚のフォーム画像をダウンロードして実見しました。
-- 同じソースの [native再利用実行](https://github.com/phni3j9a/meeterm/actions/runs/34546054376) ではbuildが省略され、成果物復元・production保存4件・native入力7件が成功しました。その後、collectorがmacOS Bash 3.2の空配列展開で失敗しました。この互換修正に加え、collector回帰をmacOSの事前チェックにも組み込みます。ジョブ全体の成功とは区別します。
-- 最終fullの受入は未完了です。focusedの操作記録や再利用成功は、fullの合格を意味しません。
+- 同じソースの [native再利用実行](https://github.com/phni3j9a/meeterm/actions/runs/34546054376) ではbuildが省略され、成果物復元・production保存4件・native入力7件が成功しました。その後、collectorがmacOS Bash 3.2の空配列展開で失敗しました。この互換修正に加え、collector回帰をmacOSの事前チェックにも組み込み、修正後の実行で成功を確認しました。ジョブ全体の成功とは区別します。
+- iOS fullは67文字の生成pane名を全選択する操作で停止しました（`source_line=987`）。失敗画面と操作動画、固定stage/時刻診断を保存できており、次はこの操作を対象に調べます。`daily_complete` と最後のfresh foundationは未到達です。利用者からの区切りの依頼により、ここで新しい再実行を止めています。
+- テスト方法の導入・文書化と限定検証は完了していますが、日常利用全体の受入は未完了です。focusedの操作記録や再利用成功は、fullの合格を意味しません。
