@@ -79,7 +79,8 @@ focused結果は `ios-forms-validation.txt` / `ios-native-validation.txt` へ保
 全体受入の `ios-validation.txt` と区別します。フォームの画像は専用の3チェックポイントを
 確認し、`native` ではUI画像を要求しない理由を明示します。全体画面の欠落と誤分類しません。
 
-`names` は実SSH fixtureを使い、fullと同じ接続処理・名前操作helperを実行します。
+`names` は実SSH fixtureを使い、fullと同じ鍵入力・接続・ホスト鍵確認・名前操作helperを実行します。
+公開鍵方式から接続し、認証方式の切り替え・認証情報保存の確認はfullに残します。
 保存・入力の単体テストや、reconnect・copy・設定のシナリオはこのscopeでは実行しません。
 `names_complete` と新しい `case=names result=passed`、xcodebuild正常終了を要求し、
 `ios-names-validation.txt` に結果を残します。fullのdaily/foundation合格記録は出しません。
@@ -153,7 +154,7 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 
 - 安定したaccessibility IDで対象を特定し、表示・操作可能状態を確認する。
 - キーボードを除いた表示領域と現在の対象位置からスクロール方向・距離を決める。
-- 短い文字入力は正確な値を読み返してから送信する。長い名前の削除は全選択＋1回のDeleteを使う。すでに編集メニューが表示されていればそれを使い、不要な長押しでメニューを閉じない。
+- 短い文字入力は正確な値を読み返してから送信する。値とplaceholderは1回のsnapshotから取り、待機は即時の完全一致確認から始める。長い名前の削除は全選択＋1回のDeleteを使う。すでに編集メニューが表示されていればそれを使い、不要な長押しでメニューを閉じない。
 - 固定sleepや闇雲な追加retryで成功させない。待機は状態条件と上限を持つ。
 - 失敗時の固定診断を先に保存し、画面取得の失敗で原因を隠さない。
 - 秘密の入力値やrawリモートエラーを診断へ出さない。フォーム撮影は秘密入力前だけ。
@@ -210,5 +211,26 @@ setupからteardown完了まで約645.8秒、終了までの残りが約16.4秒�
 - [最初のforms実行](https://github.com/phni3j9a/meeterm/actions/runs/34544845213) は、macOSの `/var` と `/private/var` の違いを成果物処理の回帰テストが検出し、アプリビルド前に停止しました。両表記を変換する修正と、シンボリックリンク経由のroundtripテストを追加しています。
 - `0e345c9` の [formsビルド・実行](https://github.com/phni3j9a/meeterm/actions/runs/34545053532) では事前チェック35秒、fresh buildジョブ11分44秒、別runnerへの復元が成功しました。フォームは認証切替・保存設定・キャンセルまで完了記録が出ましたが、xcodebuildの600秒上限で失敗しています。3枚のフォーム画像をダウンロードして実見しました。
 - 同じソースの [native再利用実行](https://github.com/phni3j9a/meeterm/actions/runs/34546054376) ではbuildが省略され、成果物復元・production保存4件・native入力7件が成功しました。その後、collectorがmacOS Bash 3.2の空配列展開で失敗しました。この互換修正に加え、collector回帰をmacOSの事前チェックにも組み込み、修正後の実行で成功を確認しました。ジョブ全体の成功とは区別します。
-- iOS fullは67文字の生成pane名を全選択する操作で停止しました（`source_line=987`）。失敗画面と操作動画、固定stage/時刻診断を保存できており、次はこの操作を対象に調べます。`daily_complete` と最後のfresh foundationは未到達です。利用者からの区切りの依頼により、ここで新しい再実行を止めています。
+- iOS fullは67文字の生成pane名を全選択する操作で停止しました（`source_line=987`）。失敗画面と操作動画、固定stage/時刻診断を保存しました。`daily_complete` と最後のfresh foundationは未到達です。利用者の区切り依頼後、再開依頼を受けてnames限定suiteで調査を再開しました。
 - テスト方法の導入・文書化と限定検証は完了していますが、日常利用全体の受入は未完了です。focusedの操作記録や再利用成功は、fullの合格を意味しません。
+
+### 名前操作の限定検証
+
+`c37b046` の一般CIとSwift/native appビルドは成功しました。
+[最初のnames実行](https://github.com/phni3j9a/meeterm/actions/runs/34555370667)は、
+起動前の実SSHチェックが約1秒で成功した一方、Simulator起動後のfixture準備待ちで停止しました。
+XCTestには到達しておらず、画像は撮影できていません。fixture内部の停止箇所は未特定です。
+
+同じバイナリを[別runnerで一度再利用](https://github.com/phni3j9a/meeterm/actions/runs/34556929048)し、
+fixture準備は通過しました。表示済みSelect Allを使う分岐を実行し、workspace名の削除後は
+固定診断・実見した画像とも空欄でした。しかし5秒の値待機がtimed outとなり、その後の
+xcodebuildも900秒で終了できず失敗しました。`names_complete`は出ていません。
+この結果を名前変更全体やpane名変更の成功とは扱いません。
+
+次の修正では、[Appleのsnapshot API](https://developer.apple.com/documentation/xcuiautomation/xcuielementsnapshotproviding/snapshot())
+で値とplaceholderを同じ観測から読み、即時の完全一致判定と上限付きpollで待機します。
+空文字・入力後の完全一致条件、再入力回数、suiteの上限は維持します。
+さらに同実行では、認証方式の切り替えから認証情報の保存設定まで約290.6秒かかっていました。
+namesではこの独立した確認を外し、実際の公開鍵入力・接続・ホスト鍵確認を経て名前操作へ進めます。
+fullでは認証方式の切り替え・保存設定・保存後の値確認を従来どおり実行します。
+これらの修正のHosted検証はまだ未完了です。

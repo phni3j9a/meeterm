@@ -97,10 +97,21 @@ That method is implemented and documented in [TESTING.md](TESTING.md), with
 Swift/Python/macOS Bash preflight, focused forms/native suites, separate iOS
 build/runtime jobs and exact-source diagnostic product reuse. Focused forms
 and reused native runs both passed through normal exit and artifact collection.
-The standard and its evidence received independent review. Work resumed after this checkpoint. The recorded video shows Select All already
-visible before the driver's unconditional long press dismisses the menu. The
-next candidate uses the existing menu first and adds a focused names suite
-before repeating full acceptance. This correction is not yet Hosted-validated.
+The standard and its evidence received independent review. Work resumed after
+this checkpoint. The recorded video shows Select All already visible before the
+driver's unconditional long press dismisses the menu. Candidate `c37b046` uses
+the existing menu first and adds a focused names suite. Its fresh build passed,
+but the first runtime stopped before XCTest while preparing the SSH fixture.
+An exact-source diagnostic reuse on a new runner passed fixture setup and
+executed the existing-menu branch. Workspace-name deletion was visibly empty,
+but the field-value wait timed out; XCTest also failed to exit within 900 seconds.
+Main viewed the safe empty-field failure image. Neither names completion nor
+pane rename was reached. The next correction uses one field snapshot per sample
+and immediate exact readback with bounded polling. Focused names also omits
+password-form switching and credential-save setup (about 290.6 seconds in that
+run), while retaining real key entry, connection and host-key verification. Full
+keeps those separate form/save checks. Hosted validation is pending.
+Run links and the distinction between both failures are in `TESTING.md`.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
 

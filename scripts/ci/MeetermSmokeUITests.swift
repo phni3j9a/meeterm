@@ -182,17 +182,27 @@ final class MeetermSmokeUITests: XCTestCase {
     fillTextField(label: "Port", value: port)
     record("fill_username")
     fillTextField(label: "Username", value: username)
-    verifyPasswordForm()
-    configureSavedFixtureProfile()
+    if namesOnly {
+      record("names_public_key_auth")
+      XCTAssertTrue(
+        revealAuthenticationControl(input("Private OpenSSH key"), stage: "names_key"),
+        "Private-key authentication is unavailable."
+      )
+    } else {
+      verifyPasswordForm()
+      configureSavedFixtureProfile()
+    }
     record("fill_private_key")
     fillPrivateKey(key)
-    // A public-field check catches focus leaking back into the profile editor
-    // without publishing any field contents after secret entry.
-    let profileNameUnchanged = shortFieldValue(input("Server name")) == "Daily fixture"
-    appendFixedArtifact("ios-ui-form-diagnostics.txt", lines: [
-      "profile_name_unchanged_after_key=\(profileNameUnchanged ? 1 : 0)",
-    ])
-    XCTAssertTrue(profileNameUnchanged, "The saved-server name changed during private-key entry.")
+    if !namesOnly {
+      // A public-field check catches focus leaking back into the profile editor
+      // without publishing any field contents after secret entry.
+      let profileNameUnchanged = shortFieldValue(input("Server name")) == "Daily fixture"
+      appendFixedArtifact("ios-ui-form-diagnostics.txt", lines: [
+        "profile_name_unchanged_after_key=\(profileNameUnchanged ? 1 : 0)",
+      ])
+      XCTAssertTrue(profileNameUnchanged, "The saved-server name changed during private-key entry.")
+    }
 
     record("submit_connect")
     let submit = app.buttons["ssh-submit"]
@@ -1084,8 +1094,10 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func shortFieldValue(_ field: XCUIElement) -> String? {
-    guard let value = field.value as? String else { return nil }
-    return value == field.placeholderValue ? "" : value
+    guard let snapshot = try? field.snapshot(), let value = snapshot.value as? String else {
+      return nil
+    }
+    return value == snapshot.placeholderValue ? "" : value
   }
 
   private func waitForShortFieldValue(_ field: XCUIElement, expected: String, timeout: TimeInterval) -> Bool {
@@ -1097,9 +1109,24 @@ final class MeetermSmokeUITests: XCTestCase {
     expected: String,
     timeout: TimeInterval
   ) -> XCTWaiter.Result {
-    let predicate = NSPredicate { _, _ in self.shortFieldValue(field) == expected }
-    let matched = XCTNSPredicateExpectation(predicate: predicate, object: field)
-    return XCTWaiter.wait(for: [matched], timeout: timeout)
+    // Read the value and placeholder from one live snapshot per sample. The
+    // previous helper made two live attribute reads; a delayed text update
+    // could then make the observation inconsistent. The immediate sample
+    // covers values already settled before the run loop is entered.
+    let deadline = Date().addingTimeInterval(max(0, timeout))
+    if shortFieldValue(field) == expected {
+      return .completed
+    }
+    while true {
+      let remaining = deadline.timeIntervalSinceNow
+      guard remaining > 0 else { break }
+      RunLoop.current.run(until: Date().addingTimeInterval(min(0.25, remaining)))
+      guard Date() < deadline else { break }
+      if shortFieldValue(field) == expected {
+        return .completed
+      }
+    }
+    return .timedOut
   }
 
   private func waiterResultKey(_ result: XCTWaiter.Result) -> String {
