@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import pty
@@ -106,6 +107,16 @@ NAMES_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_ARTIFACT_DIR",
     "MEETERM_IOS_STAGE_PATH",
     "MEETERM_IOS_MARKER_PATH",
+)
+
+CONNECTION_FAILURE_DIAGNOSTICS_NAME = "ios-ui-connection-diagnostics.txt"
+SSH_PROBE_NONCE = "meeterm-ios-ssh-probe-v1"
+FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES = (
+    "MEETERM_SSH_HOST",
+    "MEETERM_SSH_PORT",
+    "MEETERM_SSH_USERNAME",
+    "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
+    "MEETERM_SSH_HOST_KEY_FILE",
 )
 
 
@@ -292,6 +303,278 @@ def write_text(path: Path, contents: str) -> None:
         # Keep artifact handling best-effort and avoid replacing a meaningful
         # XCUITest failure with a traceback containing environment paths.
         pass
+
+
+def _fixture_diagnostics_available(suite: str) -> bool:
+    return suite in ("full", "names") and all(
+        os.environ.get(name) for name in FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES
+    )
+
+
+def _simulator_data_container(
+    simulator_udid: str,
+    bundle_id: str,
+) -> tuple[str, Path | None]:
+    """Resolve the installed app's data container without exposing its path."""
+
+    xcrun = shutil.which("xcrun")
+    if xcrun is None:
+        return "unavailable", None
+    try:
+        completed = subprocess.run(
+            [xcrun, "simctl", "get_app_container", simulator_udid, bundle_id, "data"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout", None
+    except OSError:
+        return "unavailable", None
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        return "failed", None
+    candidate = completed.stdout.strip().splitlines()
+    if not candidate:
+        return "failed", None
+    value = candidate[-1].strip()
+    path = Path(value)
+    if not path.is_absolute():
+        return "failed", None
+    return "passed", path
+
+
+def _profile_metadata_lines(
+    container_status: str,
+    container: Path | None,
+    *,
+    suite: str,
+) -> list[str]:
+    metadata_file = "unavailable"
+    metadata_json = "unavailable"
+    profile_count = "unavailable"
+    count_match = 0
+    field_matches = {
+        "host": 0,
+        "port": 0,
+        "username": 0,
+        "name": 0,
+        "auth_method": 0,
+        "credential_saved": 0,
+    }
+    profile_match = 0
+
+    if container_status == "passed" and container is not None:
+        path = container / "Library" / "Application Support" / "meeterm" / "client-v1.json"
+        try:
+            if not path.is_file():
+                metadata_file = "missing"
+            elif path.stat().st_size > 16 * 1024 * 1024:
+                metadata_file = "present"
+                metadata_json = "invalid"
+            else:
+                metadata_file = "present"
+                document = json.loads(path.read_text(encoding="utf-8"))
+                profiles = document.get("profiles") if isinstance(document, dict) else None
+                if (
+                    not isinstance(document, dict)
+                    or document.get("version") != 1
+                    or not isinstance(profiles, list)
+                    or len(profiles) > 100
+                ):
+                    metadata_json = "invalid"
+                else:
+                    metadata_json = "valid"
+                    profile_count = str(len(profiles))
+                    count_match = int(len(profiles) == 1)
+                    expected_host = os.environ.get("MEETERM_SSH_HOST", "")
+                    expected_username = os.environ.get("MEETERM_SSH_USERNAME", "")
+                    try:
+                        expected_port = int(os.environ.get("MEETERM_SSH_PORT", ""))
+                    except ValueError:
+                        expected_port = -1
+                    expected_name = expected_host if suite == "names" else "Daily fixture"
+                    expected_credential_saved = suite == "full"
+                    profile = profiles[0] if len(profiles) == 1 else None
+                    if isinstance(profile, dict):
+                        field_matches["host"] = int(profile.get("host") == expected_host)
+                        field_matches["port"] = int(
+                            isinstance(profile.get("port"), int)
+                            and not isinstance(profile.get("port"), bool)
+                            and profile.get("port") == expected_port
+                        )
+                        field_matches["username"] = int(
+                            profile.get("username") == expected_username
+                        )
+                        field_matches["name"] = int(profile.get("name") == expected_name)
+                        field_matches["auth_method"] = int(
+                            profile.get("authMethod") == "publicKey"
+                        )
+                        field_matches["credential_saved"] = int(
+                            (
+                                isinstance(profile.get("credentialID"), str)
+                                and bool(profile.get("credentialID"))
+                            )
+                            == expected_credential_saved
+                        )
+                        profile_match = int(
+                            count_match == 1
+                            and all(value == 1 for value in field_matches.values())
+                        )
+        except (OSError, TypeError, ValueError, UnicodeError, RecursionError):
+            metadata_json = "invalid" if metadata_file == "present" else metadata_file
+
+    return [
+        f"metadata_container={container_status}",
+        f"metadata_file={metadata_file}",
+        f"metadata_json={metadata_json}",
+        f"metadata_profile_count={profile_count}",
+        f"metadata_profile_count_match={count_match}",
+        f"metadata_profile_host_match={field_matches['host']}",
+        f"metadata_profile_port_match={field_matches['port']}",
+        f"metadata_profile_username_match={field_matches['username']}",
+        f"metadata_profile_name_match={field_matches['name']}",
+        f"metadata_profile_auth_method_match={field_matches['auth_method']}",
+        f"metadata_profile_credential_saved_match={field_matches['credential_saved']}",
+        f"metadata_profile_match={profile_match}",
+    ]
+
+
+def _probe_fixture_ssh() -> str:
+    """Run a fixed, strict-host-key SSH health probe against the live fixture."""
+
+    host = os.environ.get("MEETERM_SSH_HOST", "")
+    port_text = os.environ.get("MEETERM_SSH_PORT", "")
+    username = os.environ.get("MEETERM_SSH_USERNAME", "")
+    client_key = os.environ.get("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE", "")
+    host_key = os.environ.get("MEETERM_SSH_HOST_KEY_FILE", "")
+    if not all((host, port_text, username, client_key, host_key)):
+        return "unavailable"
+    try:
+        port = int(port_text)
+        if not 1 <= port <= 65535:
+            return "unavailable"
+        public_key = Path(host_key).read_text(encoding="utf-8").strip()
+        if not public_key or "\n" in public_key or "\r" in public_key:
+            return "unavailable"
+        if not Path(client_key).is_file():
+            return "unavailable"
+    except (OSError, ValueError, UnicodeError):
+        return "unavailable"
+
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        return "unavailable"
+
+    known_hosts_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="meeterm-ios-known-hosts-",
+            delete=False,
+        ) as stream:
+            known_hosts_path = Path(stream.name)
+            os.chmod(known_hosts_path, 0o600)
+            stream.write(f"[{host}]:{port} {public_key}\n")
+        completed = subprocess.run(
+            [
+                ssh,
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "IdentityAgent=none",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=1",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                f"UserKnownHostsFile={known_hosts_path}",
+                "-i",
+                client_key,
+                "-p",
+                str(port),
+                "-l",
+                username,
+                host,
+                "tmux -V >/dev/null 2>&1 && printf '%s\\n' 'meeterm-ios-ssh-probe-v1'",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout == f"{SSH_PROBE_NONCE}\n":
+            return "passed"
+        return "failed"
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except OSError:
+        return "unavailable"
+    finally:
+        if known_hosts_path is not None:
+            try:
+                known_hosts_path.unlink()
+            except OSError:
+                pass
+
+
+def write_connection_failure_diagnostics(
+    artifact_dir: Path,
+    simulator_udid: str,
+    *,
+    suite: str,
+    bundle_id: str = "dev.meeterm.app",
+) -> None:
+    """Write fixed, failure-only endpoint and fixture-health observations."""
+
+    if not _fixture_diagnostics_available(suite):
+        return
+    try:
+        container_status, container = _simulator_data_container(simulator_udid, bundle_id)
+    except Exception:
+        container_status, container = "unavailable", None
+    try:
+        metadata_lines = _profile_metadata_lines(container_status, container, suite=suite)
+    except Exception:
+        metadata_lines = [
+            "metadata_container=unavailable",
+            "metadata_file=unavailable",
+            "metadata_json=unavailable",
+            "metadata_profile_count=unavailable",
+            "metadata_profile_count_match=0",
+            "metadata_profile_host_match=0",
+            "metadata_profile_port_match=0",
+            "metadata_profile_username_match=0",
+            "metadata_profile_name_match=0",
+            "metadata_profile_auth_method_match=0",
+            "metadata_profile_credential_saved_match=0",
+            "metadata_profile_match=0",
+        ]
+    lines = [f"suite={suite}", *metadata_lines]
+    try:
+        probe = _probe_fixture_ssh()
+    except Exception:
+        probe = "unavailable"
+    lines.append(f"ssh_probe={probe}")
+    write_text(
+        artifact_dir / CONNECTION_FAILURE_DIAGNOSTICS_NAME,
+        "\n".join(lines) + "\n",
+    )
 
 
 def selection_copy_contract(marker_path: Path, marker_value: str) -> tuple[Path, Path, str, str]:
@@ -925,6 +1208,12 @@ def main() -> int:
     )
     try:
         args.artifact_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (args.artifact_dir / CONNECTION_FAILURE_DIAGNOSTICS_NAME).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
         stage_path = args.artifact_dir / "ios-ui-stages.txt"
         try:
             stage_path.unlink()
@@ -1073,6 +1362,15 @@ def main() -> int:
         reason = error.reason
         if stage.startswith("xcuitest"):
             ui_stage = last_ui_stage(Path(os.environ.get("MEETERM_IOS_STAGE_PATH", "")))
+        if _fixture_diagnostics_available(suite):
+            try:
+                write_connection_failure_diagnostics(
+                    args.artifact_dir,
+                    args.simulator_udid,
+                    suite=suite,
+                )
+            except Exception:
+                pass
         print(f"iOS UI smoke failed at {stage}: {reason}", file=sys.stderr)
         write_text(
             validation_path,
@@ -1088,6 +1386,15 @@ def main() -> int:
         )
         return 1
     except (OSError, ValueError):
+        if _fixture_diagnostics_available(suite):
+            try:
+                write_connection_failure_diagnostics(
+                    args.artifact_dir,
+                    args.simulator_udid,
+                    suite=suite,
+                )
+            except Exception:
+                pass
         print(f"iOS UI smoke failed at {stage}: driver_error", file=sys.stderr)
         write_text(
             validation_path,

@@ -254,3 +254,16 @@ names操作には未到達で、名前欄の削除待ちの修正効果も未検
 次の修正では即時pollを問題が観測された空欄確認に限定し、非空値の待機は従来方式へ戻します。
 またConnect直前の公開フィールドを完全一致で検証し、不一致を接続失敗の前に検出します。
 秘密欄は読み返さず、診断は公開フィールドの一致フラグだけを記録します。
+
+`ae54875` の[names実行](https://github.com/phni3j9a/meeterm/actions/runs/34564459422)は、
+送信前のHost・Port・Username・空のprofile名がすべて一致しました。ホスト鍵のfingerprint照合と
+承認も通過しましたが、その後認証失敗となりConnectedへ進みませんでした。Mainは
+秘密フォーム終了後の認証エラー画像を実見しました。名前操作には未到達です。
+
+この段階では入力方法や認証処理をさらに変えず、失敗後の診断を追加します。
+Simulatorに保存されたprofile metadataをメモリ上で期待値と比較し、同じfixture鍵を使う
+通常のSSH認証も短い上限内で確認します。診断成功でUI失敗を合格へ変えることはありません。
+`ios-ui-connection-diagnostics.txt` に保存情報の一致フラグとSSH probeの結果を残します。
+metadata本文、秘密鍵、raw SSH出力はartifactへ保存しません。
+ローカルの実OpenSSH fixtureで追加したSSH probeが成功し、SSHドライバ回帰127件も成功しました。
+Simulator内の保存情報取得と、失敗時の診断artifact生成は次のHosted実行で確認します。

@@ -119,9 +119,14 @@ and key submission, but connection failed before host trust (XCTest exit 65,
 about 530 seconds). Main viewed the failure image: the profile label was "12",
 while earlier public-field readbacks had matched. Whether the host changed or
 the profile name received unintended input is unproven. Names was not reached.
-The next correction confines immediate polling to empty-field checks, restores
-the original nonempty wait, and checks public fields again before Connect.
-The empty-name fix and full acceptance still need Hosted validation.
+Candidate `ae54875` confined immediate polling to empty checks and restored
+the original nonempty wait. All pre-submit public-field comparisons passed,
+and host fingerprint verification/trust succeeded, but authentication then
+failed before Connected. Main viewed the safe authentication-error image;
+names operations remain untested. Failure-only diagnostics will compare saved
+profile metadata with the fixture and separately check ordinary SSH auth,
+without uploading metadata/credentials or converting UI failure into success.
+The diagnostics, empty-name fix and full acceptance need Hosted validation.
 Run links and the distinction between both failures are in `TESTING.md`.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).

@@ -1,10 +1,14 @@
 """Privacy and failure-path checks for the iOS XCTest runner diagnostics."""
 
+import contextlib
+import io
 import importlib.util
+import json
 import plistlib
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -712,6 +716,340 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertEqual(failure.exception.reason, "storage_cases_incomplete")
             self.assertFalse((root / "raw.log").exists())
+
+
+class ConnectionFailureDiagnosticsTests(unittest.TestCase):
+    @staticmethod
+    def fixture_environment(root: Path, *, suite: str) -> dict[str, str]:
+        host = "fixture-host-SECRET"
+        username = "fixture-user-SECRET"
+        client_key = root / "private-key-SECRET"
+        host_key = root / "host-key-SECRET.pub"
+        client_key.write_text("PRIVATE-KEY-SECRET\n", encoding="utf-8")
+        host_key.write_text(
+            "ssh-ed25519 AAAA-HOST-KEY-SECRET fixture-host\n", encoding="utf-8"
+        )
+        return {
+            "MEETERM_SSH_HOST": host,
+            "MEETERM_SSH_PORT": "43210",
+            "MEETERM_SSH_USERNAME": username,
+            "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE": str(client_key),
+            "MEETERM_SSH_HOST_KEY_FILE": str(host_key),
+            "MEETERM_IOS_SUITE": suite,
+        }
+
+    @staticmethod
+    def write_metadata(container: Path, document: object) -> None:
+        metadata = container / "Library" / "Application Support" / "meeterm" / "client-v1.json"
+        metadata.parent.mkdir(parents=True, exist_ok=True)
+        metadata.write_text(json.dumps(document), encoding="utf-8")
+
+    @staticmethod
+    def expected_profile(environment: dict[str, str], *, suite: str) -> dict[str, object]:
+        profile = {
+            "id": "PROFILE-ID-SECRET",
+            "name": environment["MEETERM_SSH_HOST"] if suite == "names" else "Daily fixture",
+            "host": environment["MEETERM_SSH_HOST"],
+            "port": int(environment["MEETERM_SSH_PORT"]),
+            "username": environment["MEETERM_SSH_USERNAME"],
+            "authMethod": "publicKey",
+        }
+        if suite == "full":
+            profile["credentialID"] = "CREDENTIAL-ID-SECRET"
+        return profile
+
+    def run_diagnostic(
+        self,
+        root: Path,
+        environment: dict[str, str],
+        container: Path | None,
+        *,
+        ssh_outcome: str = "passed",
+        xcrun_outcome: str = "passed",
+    ) -> tuple[str, list[tuple[list[str], dict[str, object]]], list[str]]:
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        known_hosts_contents: list[str] = []
+
+        def which(name: str) -> str | None:
+            if name == "ssh":
+                return "/usr/bin/ssh"
+            if name == "xcrun" and xcrun_outcome != "unavailable":
+                return "/usr/bin/xcrun"
+            return None
+
+        def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append((command, kwargs))
+            if command[:3] == ["/usr/bin/xcrun", "simctl", "get_app_container"]:
+                if xcrun_outcome == "timeout":
+                    raise subprocess.TimeoutExpired(command, 10, output=b"CONTAINER-SECRET")
+                if xcrun_outcome == "failed":
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="SIM-SECRET")
+                assert container is not None
+                return subprocess.CompletedProcess(command, 0, stdout=f"{container}\n", stderr="SIM-SECRET")
+            self.assertEqual(command[0], "/usr/bin/ssh")
+            known_hosts_option = next(
+                value for value in command if value.startswith("UserKnownHostsFile=")
+            )
+            known_hosts_contents.append(
+                Path(known_hosts_option.split("=", 1)[1]).read_text(encoding="utf-8")
+            )
+            if ssh_outcome == "timeout":
+                raise subprocess.TimeoutExpired(command, 15, output=b"PRIVATE-KEY-SECRET")
+            if ssh_outcome == "failed":
+                return subprocess.CompletedProcess(command, 255, stdout="", stderr="SSH-SECRET")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"{smoke.SSH_PROBE_NONCE}\n",
+                stderr="SSH-SECRET",
+            )
+
+        with mock.patch.dict(smoke.os.environ, environment, clear=False), \
+             mock.patch.object(smoke.shutil, "which", side_effect=which), \
+             mock.patch.object(smoke.subprocess, "run", side_effect=run):
+            smoke.write_connection_failure_diagnostics(
+                root,
+                "fixture-simulator",
+                suite=environment["MEETERM_IOS_SUITE"],
+            )
+        report_path = root / smoke.CONNECTION_FAILURE_DIAGNOSTICS_NAME
+        return report_path.read_text(encoding="utf-8"), calls, known_hosts_contents
+
+    def test_names_success_is_fixed_and_preserves_ui_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="names")
+            container = root / "simulator-data"
+            self.write_metadata(
+                container,
+                {"version": 1, "profiles": [self.expected_profile(environment, suite="names")]},
+            )
+            stages = root / "ios-ui-stages.txt"
+            validation = root / "ios-names-validation.txt"
+            stages.write_text("host_trust_dismissed\nconnected_timeout_after_host_trust\n", encoding="utf-8")
+            validation.write_text("case=names result=failed\n", encoding="utf-8")
+            report, calls, known_hosts = self.run_diagnostic(root, environment, container)
+
+            self.assertEqual(
+                report,
+                "\n".join(
+                    [
+                        "suite=names",
+                        "metadata_container=passed",
+                        "metadata_file=present",
+                        "metadata_json=valid",
+                        "metadata_profile_count=1",
+                        "metadata_profile_count_match=1",
+                        "metadata_profile_host_match=1",
+                        "metadata_profile_port_match=1",
+                        "metadata_profile_username_match=1",
+                        "metadata_profile_name_match=1",
+                        "metadata_profile_auth_method_match=1",
+                        "metadata_profile_credential_saved_match=1",
+                        "metadata_profile_match=1",
+                        "ssh_probe=passed",
+                        "",
+                    ]
+                ),
+            )
+            for secret in (
+                "fixture-host-SECRET",
+                "fixture-user-SECRET",
+                "private-key-SECRET",
+                "HOST-KEY-SECRET",
+                "PROFILE-ID-SECRET",
+                "PRIVATE-KEY-SECRET",
+                "SSH-SECRET",
+            ):
+                self.assertNotIn(secret, report)
+            self.assertEqual(stages.read_text(encoding="utf-8"), "host_trust_dismissed\nconnected_timeout_after_host_trust\n")
+            self.assertEqual(validation.read_text(encoding="utf-8"), "case=names result=failed\n")
+            self.assertEqual(len(calls), 2)
+            ssh_command, ssh_kwargs = calls[1]
+            self.assertIn("StrictHostKeyChecking=yes", ssh_command)
+            self.assertIn("GlobalKnownHostsFile=/dev/null", ssh_command)
+            self.assertIn("IdentitiesOnly=yes", ssh_command)
+            self.assertIn("IdentityAgent=none", ssh_command)
+            self.assertIn(environment["MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE"], ssh_command)
+            self.assertEqual(ssh_command[-1], "tmux -V >/dev/null 2>&1 && printf '%s\\n' 'meeterm-ios-ssh-probe-v1'")
+            self.assertEqual(ssh_kwargs["timeout"], 15)
+            self.assertEqual(
+                known_hosts,
+                [
+                    f"[{environment['MEETERM_SSH_HOST']}]:43210 "
+                    "ssh-ed25519 AAAA-HOST-KEY-SECRET fixture-host\n"
+                ],
+            )
+            self.assertFalse(any(
+                value.startswith("UserKnownHostsFile=")
+                and Path(value.split("=", 1)[1]).exists()
+                for value in ssh_command
+            ))
+
+    def test_full_profile_requires_saved_credential_id_and_expected_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="full")
+            container = root / "simulator-data"
+            self.write_metadata(
+                container,
+                {"version": 1, "profiles": [self.expected_profile(environment, suite="full")]},
+            )
+            report, _, _ = self.run_diagnostic(root, environment, container)
+            self.assertIn("metadata_profile_name_match=1\n", report)
+            self.assertIn("metadata_profile_credential_saved_match=1\n", report)
+            self.assertIn("metadata_profile_match=1\n", report)
+            self.assertIn("ssh_probe=passed\n", report)
+            self.assertNotIn("CREDENTIAL-ID-SECRET", report)
+
+    def test_mismatched_fields_and_multiple_profiles_cannot_be_combined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="names")
+            container = root / "simulator-data"
+            first = self.expected_profile(environment, suite="names")
+            second = {**first, "host": "other-host-SECRET", "id": "OTHER-ID-SECRET"}
+            self.write_metadata(container, {"version": 1, "profiles": [first, second]})
+            report, _, _ = self.run_diagnostic(root, environment, container)
+            self.assertIn("metadata_profile_count=2\n", report)
+            self.assertIn("metadata_profile_count_match=0\n", report)
+            self.assertIn("metadata_profile_host_match=0\n", report)
+            self.assertIn("metadata_profile_port_match=0\n", report)
+            self.assertIn("metadata_profile_username_match=0\n", report)
+            self.assertIn("metadata_profile_name_match=0\n", report)
+            self.assertIn("metadata_profile_auth_method_match=0\n", report)
+            self.assertIn("metadata_profile_credential_saved_match=0\n", report)
+            self.assertIn("metadata_profile_match=0\n", report)
+            self.assertNotIn("other-host-SECRET", report)
+            self.assertNotIn("OTHER-ID-SECRET", report)
+
+    def test_unavailable_and_corrupt_metadata_are_explicit_without_raw_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="names")
+            report, _, _ = self.run_diagnostic(
+                root,
+                environment,
+                None,
+                xcrun_outcome="unavailable",
+            )
+            self.assertIn("metadata_container=unavailable\n", report)
+            self.assertIn("metadata_file=unavailable\n", report)
+            self.assertIn("metadata_json=unavailable\n", report)
+            self.assertIn("ssh_probe=passed\n", report)
+
+            container = root / "corrupt-simulator-data"
+            metadata = container / "Library" / "Application Support" / "meeterm" / "client-v1.json"
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_bytes(b"BROKEN-METADATA-SECRET")
+            report, _, _ = self.run_diagnostic(root, environment, container)
+            self.assertIn("metadata_container=passed\n", report)
+            self.assertIn("metadata_file=present\n", report)
+            self.assertIn("metadata_json=invalid\n", report)
+            self.assertIn("metadata_profile_count=unavailable\n", report)
+            self.assertIn("metadata_profile_match=0\n", report)
+            self.assertNotIn("BROKEN-METADATA-SECRET", report)
+
+    def test_probe_timeout_does_not_change_metadata_or_emit_probe_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="names")
+            container = root / "simulator-data"
+            self.write_metadata(
+                container,
+                {"version": 1, "profiles": [self.expected_profile(environment, suite="names")]},
+            )
+            report, _, _ = self.run_diagnostic(
+                root,
+                environment,
+                container,
+                ssh_outcome="timeout",
+            )
+            self.assertIn("metadata_profile_match=1\n", report)
+            self.assertIn("ssh_probe=timeout\n", report)
+            self.assertNotIn("PRIVATE-KEY-SECRET", report)
+
+    def test_main_keeps_original_names_failure_when_diagnostics_raise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            stale_diagnostic = artifact_dir / smoke.CONNECTION_FAILURE_DIAGNOSTICS_NAME
+            stale_diagnostic.write_text("OLD-DIAGNOSTIC-SECRET\n", encoding="utf-8")
+            environment = self.fixture_environment(root, suite="names")
+            environment.update(
+                {
+                    "MEETERM_SSH_FINGERPRINT": "SHA256:fixture-fingerprint",
+                    "MEETERM_TMUX_SOCKET": str(root / "fixture" / "tmux" / "tmux-0" / "default"),
+                    "RUNNER_TEMP": str(root / "runner"),
+                }
+            )
+
+            with mock.patch.dict(smoke.os.environ, environment, clear=False), \
+                 mock.patch.object(sys, "argv", [
+                     "ios-smoke.py",
+                     "--artifact-dir",
+                     str(artifact_dir),
+                     "--derived-data",
+                     str(root / "derived-data"),
+                     "--simulator-udid",
+                     "fixture-simulator",
+                     "--suite",
+                     "names",
+                 ]), \
+                 mock.patch.object(smoke, "fixture_socket", return_value=Path("fixture-socket")), \
+                 mock.patch.object(smoke, "prepare_topology", return_value=(2, 3)), \
+                 mock.patch.object(smoke, "record_daily_interactions", return_value=contextlib.nullcontext()), \
+                 mock.patch.object(
+                     smoke,
+                     "run_xcuitest",
+                     side_effect=smoke.SmokeFailure("xcuitest_names", "names_tests_failed"),
+                 ), \
+                 mock.patch.object(smoke, "last_ui_stage", return_value="connected_timeout_after_host_trust"), \
+                 mock.patch.object(
+                     smoke,
+                     "write_connection_failure_diagnostics",
+                     side_effect=RuntimeError("DIAGNOSTIC-SECRET"),
+                 ) as write_diagnostics, \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = smoke.main()
+
+            self.assertEqual(status, 1)
+            validation = artifact_dir / "ios-names-validation.txt"
+            contents = validation.read_text(encoding="utf-8")
+            self.assertIn("result=failed\n", contents)
+            self.assertIn("stage=xcuitest_names\n", contents)
+            self.assertIn("reason=names_tests_failed\n", contents)
+            self.assertIn("ui_last_stage=connected_timeout_after_host_trust\n", contents)
+            self.assertNotIn("DIAGNOSTIC-SECRET", contents)
+            self.assertNotIn("DIAGNOSTIC-SECRET", stderr.getvalue())
+            self.assertNotIn("OLD-DIAGNOSTIC-SECRET", contents)
+            self.assertFalse(stale_diagnostic.exists())
+            write_diagnostics.assert_called_once_with(
+                artifact_dir,
+                "fixture-simulator",
+                suite="names",
+            )
+
+    def test_unexpected_metadata_error_becomes_fixed_unavailable_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="names")
+            with mock.patch.object(smoke, "_profile_metadata_lines", side_effect=RuntimeError("METADATA-SECRET")):
+                report, _, _ = self.run_diagnostic(root, environment, root / "unused")
+            self.assertIn("metadata_container=unavailable\n", report)
+            self.assertIn("metadata_json=unavailable\n", report)
+            self.assertIn("metadata_profile_match=0\n", report)
+            self.assertIn("ssh_probe=passed\n", report)
+            self.assertNotIn("METADATA-SECRET", report)
+
+    def test_non_fixture_suite_never_writes_connection_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = self.fixture_environment(root, suite="forms")
+            with mock.patch.dict(smoke.os.environ, environment, clear=False):
+                smoke.write_connection_failure_diagnostics(root, "fixture-simulator", suite="forms")
+            self.assertFalse((root / smoke.CONNECTION_FAILURE_DIAGNOSTICS_NAME).exists())
 
 
 if __name__ == "__main__":
