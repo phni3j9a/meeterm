@@ -147,3 +147,13 @@ MetalとSimulator専用CoreGraphics描画を区別します。実機GPU・日本
 
 最新の結果は [DAILY_USE.md](DAILY_USE.md)、評価APKは [FIRST_APP.md](FIRST_APP.md)、
 旧方針での結果と失敗調査は [検証履歴](evidence/testing-method-validation-history.md) に保存しています。
+
+### 導入時の実測
+
+`b82c226` の [初回実行](https://github.com/phni3j9a/meeterm/actions/runs/34590304287) では、
+iOSのfresh CNG/buildは17分13秒、standardの保存テストは65.4秒、入力・画面撮影・foundationは288.9秒でした。
+テスト本体は合計約5分54秒で成功し、10画面とfoundationの11枚を実見しました。
+初回ビルドとSimulator準備の時間は、この5分54秒に含みません。
+従来fullとは確認範囲が異なるため、同じ内容の単純な高速化として比較しません。
+同じビルドを再利用した [ssh実行](https://github.com/phni3j9a/meeterm/actions/runs/34591998968) は、
+XCTestが522.1秒（約8分42秒）で成功しました。実フォーム入力も含むため、通常の画面確認とは分けて実行します。

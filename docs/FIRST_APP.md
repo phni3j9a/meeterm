@@ -135,21 +135,24 @@ adb shell monkey -p dev.meeterm.app 1
 ```
 
 Androidの実SSH操作が通過した評価APKは
-[run 34570866987 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34570866987/artifacts/10188792521)
-から取得できます（commit `516380f`、Expo 57.0.21、日常利用版のAndroid操作検証を完走）。
+[run 34590304287 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34590304287/artifacts/10196515168)
+から取得できます（commit `b82c226`、Expo 57.0.21、日常利用版のAndroid操作検証を完走）。
 
 ```sh
-gh run download 34570866987 --repo phni3j9a/meeterm \
+gh run download 34590304287 --repo phni3j9a/meeterm \
   --name android-emulator-observability --dir artifacts/android-evaluation
 adb install -r artifacts/android-evaluation/app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
 このAPKのSHA-256は
-`6e3108ce49e04be2e40c32e17cfc90cf16df3989d05dccea0a0845cb76127873`
+`e15250068d288b4b372fc45422bd4df5fb700f4bb4bf4c6c3cc76dd794b960a1`
 です。JavaScript bundleとarm64 / x86_64の共有Rustライブラリの同梱を確認しています。
 
 ## iOS
+
+日常利用版 `b82c226` では、[標準テストと短い実SSH確認](DAILY_USE.md#accepted-candidate-under-the-revised-policy)が成功しています。
+通常の検証方法は [TESTING.md](TESTING.md) を参照してください。以下の詳細な初版受入記録は当時の検証範囲です。
 
 Hosted iPhone 17 Pro Simulator／Xcode 26.6で、実フォームからのSSH接続、
 window／pane選択、ネイティブキーボード・Paste・Return、切断・再接続と

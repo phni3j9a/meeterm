@@ -76,13 +76,50 @@ foundation gates. A separate short SSH round-trip validates connection/input.
 The long iOS full is optional; seeded images do not establish end-to-end behavior. An independent
 review follows integration. Physical-device-only claims require device evidence.
 
-### Current acceptance-policy change
+### Accepted candidate under the revised policy
 
-The user authorized replacing mandatory long iOS full acceptance with the
-standard/short-SSH policy described in [TESTING.md](TESTING.md). Implementation
-and validation of the new suites are in progress. The earlier full failure below
-is preserved as historical evidence, not a required rerun or a newly passing result.
-The original goal is not complete until the new agreed checks and review are done.
+Commit `b82c226e31c9faf32538c4a11f90570b9aea053f` satisfies the user-approved
+standard/short-SSH policy. The nine improvements are implemented, and the
+agreed Hosted checks and independent code review have completed.
+
+| Verification | Evidence | Result |
+| --- | --- | --- |
+| Shared/fast CI | [push](https://github.com/phni3j9a/meeterm/actions/runs/34590304087), [PR](https://github.com/phni3j9a/meeterm/actions/runs/34590307569) | All jobs passed |
+| Fresh Android full | [job 103233828148](https://github.com/phni3j9a/meeterm/actions/runs/34590304287/job/103233828148) | All 69 unique completion markers; native frame/process checks passed |
+| Fresh iOS standard | [job 103238335453](https://github.com/phni3j9a/meeterm/actions/runs/34590304287/job/103238335453) | Storage 4/4, native input 7/7, all 10 screen routes, fresh foundation passed |
+| iOS short SSH | [job 103239523791](https://github.com/phni3j9a/meeterm/actions/runs/34591998968/job/103239523791) | Actual host trust, native input/remote acknowledgment, explicit disconnect passed |
+
+Both mobile paths use the same source commit. iOS SSH reused the pristine
+products from fresh build run `34590304287`; it did not perform another CNG/build.
+The original commit/toolchain/architecture/hash checks remained in force.
+Its metadata retains the existing `reused-exact-source-diagnostic` label;
+the policy permits this same-source reuse to validate the separate SSH suite.
+
+Main downloaded the artifacts and actually viewed all ten `standard-*.png`
+images plus the fresh iOS `terminal.png`, both SSH checkpoint images, and the
+Android foundation, SSH terminal, settings and created-pane images. Screen
+presentation, Japanese text and native terminal rendering were visible. The
+fixture images establish presentation, not actual save/create/rename operations.
+The iOS foundation reported Metal on the same process as native readiness and
+survived a 10-second foreground observation. This is Simulator evidence, not
+physical iPhone GPU/IME/font parity.
+
+The iOS fresh build took 17m13s. Standard XCTest took 65.4s for production
+storage and 288.9s for native input/screens/foundation (about 5m54s total).
+The separate SSH XCTest took 522.1s (about 8m42s). Build and Simulator setup
+are excluded from those XCTest times. Each new suite stayed within its 900s budget.
+The standard run exercised the exact QuickPath prompt/Continue/dismissed branch
+before the workspace-name image, which shows the normal keyboard.
+
+The standard artifact also contains an XCTest diagnostic without a source location
+(`source_line=0`, `category=unknown`). Its type/cause cannot be recovered from
+the sanitized bundle; xcodebuild exited 0 and all required markers passed.
+Independent evidence review found no material visual defect or reason to rerun.
+
+The current Android APK and verified checksum are in [FIRST_APP.md](FIRST_APP.md).
+The old full clipboard-observer timeout below remains unresolved. Actual iOS OS
+clipboard contents, physical-device Japanese IME/font/GPU behavior and TestFlight
+remain unverified; the accepted reduced suite does not claim those results.
 
 ### Previous checkpoint
 
