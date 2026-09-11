@@ -194,15 +194,39 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     record("fill_private_key")
     fillPrivateKey(key)
+    record("pre_submit_public_fields")
+    let expectedProfileName = namesOnly ? "" : "Daily fixture"
+    let profileNameMatches = namesOnly
+      ? waitForShortFieldValue(input("Server name"), expected: expectedProfileName, timeout: 5)
+      : shortFieldValue(input("Server name")) == expectedProfileName
     if !namesOnly {
       // A public-field check catches focus leaking back into the profile editor
       // without publishing any field contents after secret entry.
-      let profileNameUnchanged = shortFieldValue(input("Server name")) == "Daily fixture"
       appendFixedArtifact("ios-ui-form-diagnostics.txt", lines: [
-        "profile_name_unchanged_after_key=\(profileNameUnchanged ? 1 : 0)",
+        "profile_name_unchanged_after_key=\(profileNameMatches ? 1 : 0)",
       ])
-      XCTAssertTrue(profileNameUnchanged, "The saved-server name changed during private-key entry.")
+      XCTAssertTrue(profileNameMatches, "The saved-server name changed during private-key entry.")
     }
+    let hostMatches = waitForShortFieldValue(input("Host"), expected: host, timeout: 5)
+    let portMatches = waitForShortFieldValue(input("Port"), expected: port, timeout: 5)
+    let usernameMatches = waitForShortFieldValue(input("Username"), expected: username, timeout: 5)
+    let publicFieldsVerified = hostMatches && portMatches && usernameMatches && profileNameMatches
+    var preSubmitLines = [
+      "pre_submit_host_matches=\(hostMatches ? 1 : 0)",
+      "pre_submit_port_matches=\(portMatches ? 1 : 0)",
+      "pre_submit_username_matches=\(usernameMatches ? 1 : 0)",
+      "pre_submit_public_fields_verified=\(publicFieldsVerified ? 1 : 0)",
+    ]
+    if namesOnly {
+      preSubmitLines.append("names_profile_name_blank=\(profileNameMatches ? 1 : 0)")
+    }
+    appendFixedArtifact("ios-ui-form-diagnostics.txt", lines: preSubmitLines)
+    guard publicFieldsVerified else {
+      record("pre_submit_public_fields_failed")
+      XCTFail("The connection form public fields changed before Connect.")
+      return
+    }
+    record("pre_submit_public_fields_verified")
 
     record("submit_connect")
     let submit = app.buttons["ssh-submit"]
@@ -1108,14 +1132,15 @@ final class MeetermSmokeUITests: XCTestCase {
     expected: String,
     timeout: TimeInterval
   ) -> XCTWaiter.Result {
-    // Read the current value immediately, then poll in the run loop. Empty
-    // values return without a second placeholder query, which keeps the
-    // common clear case responsive while preserving the existing readback
-    // contract for non-empty text.
-    let deadline = Date().addingTimeInterval(max(0, timeout))
-    if shortFieldValue(field) == expected {
-      return .completed
+    if !expected.isEmpty {
+      let predicate = NSPredicate { _, _ in self.shortFieldValue(field) == expected }
+      let matched = XCTNSPredicateExpectation(predicate: predicate, object: field)
+      return XCTWaiter.wait(for: [matched], timeout: timeout)
     }
+    // Use immediate readback for empty fields before bounded polling; non-empty
+    // fields retain the existing XCTest expectation.
+    let deadline = Date().addingTimeInterval(max(0, timeout))
+    if shortFieldValue(field) == expected { return .completed }
     while true {
       let remaining = deadline.timeIntervalSinceNow
       guard remaining > 0 else { break }
