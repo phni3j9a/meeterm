@@ -43,6 +43,7 @@ readonly sdk_version
 platform_path="$(xcrun --sdk iphonesimulator --show-sdk-platform-path)"
 readonly platform_path
 readonly xctest_frameworks_path="${platform_path}/Developer/Library/Frameworks"
+readonly xctest_swift_import_path="${platform_path}/Developer/usr/lib"
 
 if [[ ! -d "${sdk_path}" ]]; then
   echo "iOS Simulator SDK was not found: ${sdk_path}" >&2
@@ -50,6 +51,10 @@ if [[ ! -d "${sdk_path}" ]]; then
 fi
 if [[ ! -d "${xctest_frameworks_path}/XCTest.framework" ]]; then
   echo "XCTest.framework was not found: ${xctest_frameworks_path}" >&2
+  exit 1
+fi
+if [[ ! -d "${xctest_swift_import_path}" ]]; then
+  echo "XCTest Swift import path was not found: ${xctest_swift_import_path}" >&2
   exit 1
 fi
 
@@ -82,6 +87,7 @@ xcrun swiftc \
   -swift-version 5 \
   -module-name meeterm_ios_preflight \
   -module-cache-path "${temporary_directory}/module-cache" \
+  -Isystem "${xctest_swift_import_path}" \
   -F "${xctest_frameworks_path}" \
   "${driver_source}" \
   "${input_tests_source}" \
