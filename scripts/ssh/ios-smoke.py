@@ -30,7 +30,7 @@ import time
 IOS_SUITES = ("full", "forms", "native")
 SUITE_TIMEOUT_SECONDS = {
     "full": 1800.0,
-    "forms": 600.0,
+    "forms": 900.0,
     "native": 600.0,
 }
 FULL_TEST_SELECTOR = (
@@ -455,7 +455,15 @@ def last_ui_stage(path: Path) -> str:
     return "unavailable"
 
 
-def write_xcuitest_diagnostics(raw_log: Path, destination: Path, exit_code: int | None) -> None:
+def write_xcuitest_diagnostics(
+    raw_log: Path,
+    destination: Path,
+    exit_code: int | None,
+    *,
+    xcodebuild_started_at: float | None = None,
+    xcodebuild_elapsed_seconds: float | None = None,
+    xcodebuild_timeout_seconds: float | None = None,
+) -> None:
     """Keep runner failures observable without copying XCTest's credential text."""
     try:
         log = raw_log.read_text(encoding="utf-8", errors="replace").lower()
@@ -481,6 +489,14 @@ def write_xcuitest_diagnostics(raw_log: Path, destination: Path, exit_code: int 
         f"exit_code={exit_code if exit_code is not None else 'unavailable'}",
     ]
     lines.extend(f"{name}={int(re.search(pattern, log) is not None)}" for name, pattern in signals.items())
+    if xcodebuild_started_at is not None:
+        lines.extend(
+            (
+                f"xcodebuild_start_epoch_ms={int(xcodebuild_started_at * 1000)}",
+                f"xcodebuild_elapsed_ms={int(max(0.0, xcodebuild_elapsed_seconds or 0.0) * 1000)}",
+                f"xcodebuild_timeout_ms={int(max(0.0, xcodebuild_timeout_seconds or 0.0) * 1000)}",
+            )
+        )
     try:
         write_text(destination, "\n".join(lines) + "\n")
     except OSError:
@@ -717,10 +733,15 @@ def run_xcuitest(
     try:
         for stage, selections, bundle, log_path, diagnostic_path, validation_path, cases in steps:
             exit_code = None
+            xcodebuild_started_at = None
+            xcodebuild_elapsed_seconds = None
+            xcodebuild_timeout_seconds = None
             try:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise SmokeFailure(stage, "xcodebuild_timeout")
+                xcodebuild_started_at = time.time()
+                xcodebuild_timeout_seconds = remaining
                 with log_path.open("w", encoding="utf-8") as stream:
                     completed = subprocess.run(
                         [*command, *selections, "-resultBundlePath", str(bundle)],
@@ -737,7 +758,16 @@ def run_xcuitest(
             except OSError as error:
                 raise SmokeFailure(stage, "xcodebuild_failed") from error
             finally:
-                write_xcuitest_diagnostics(log_path, diagnostic_path, exit_code)
+                if xcodebuild_started_at is not None:
+                    xcodebuild_elapsed_seconds = time.time() - xcodebuild_started_at
+                write_xcuitest_diagnostics(
+                    log_path,
+                    diagnostic_path,
+                    exit_code,
+                    xcodebuild_started_at=xcodebuild_started_at,
+                    xcodebuild_elapsed_seconds=xcodebuild_elapsed_seconds,
+                    xcodebuild_timeout_seconds=xcodebuild_timeout_seconds,
+                )
             if exit_code != 0:
                 reason = {
                     "xcuitest_storage": "storage_tests_failed",

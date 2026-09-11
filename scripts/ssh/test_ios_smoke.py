@@ -333,8 +333,44 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertNotIn("MEETERM_SSH_HOST", environment)
             self.assertNotIn("MEETERM_SSH_PRIVATE_KEY_FILE", environment)
             self.assertNotIn("MEETERM_SSH_EXTRA_SENTINEL", environment)
-            self.assertEqual(run.call_args.kwargs["timeout"], 599.75)
+            self.assertEqual(run.call_args.kwargs["timeout"], 899.75)
             self.assertTrue(list(products.glob(".meeterm-*.xctestrun")) == [])
+
+    def test_forms_timeout_stays_failed_even_with_fresh_completion_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def timed_out_run(command, **kwargs):
+                self.write_forms_success(root)
+                (root / "ios-ui-stages.txt").write_text("forms_complete\n")
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run:
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="forms",
+                    )
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_forms", "xcodebuild_timeout"),
+            )
+            self.assertEqual(
+                (root / "ios-ui-forms-validation.txt").read_text(),
+                "case=forms result=passed\n",
+            )
+            self.assertIn("xcodebuild_start_epoch_ms=", (root / "ios-forms-xctest-runner-diagnostics.txt").read_text())
+            self.assertIn("xcodebuild_timeout_ms=", (root / "ios-forms-xctest-runner-diagnostics.txt").read_text())
 
     def test_native_runs_storage_then_input_and_requires_both_case_sets(self):
         with tempfile.TemporaryDirectory() as directory:

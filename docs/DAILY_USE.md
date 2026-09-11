@@ -86,8 +86,12 @@ Full iOS daily-use/fresh-foundation acceptance remains incomplete.
 The user prioritized improving and standardizing the testing method before
 continuing that full acceptance. [TESTING.md](TESTING.md) defines the cheap Swift
 preflight, focused forms/native suites, separate iOS build/runtime jobs and
-exact-source diagnostic product reuse. The implementation is being validated.
-The reviewed target-aware scroll correction is included in that validation.
+exact-source diagnostic product reuse. Hosted preflight and separate build/artifact restoration have passed. A same-source
+native reuse run passed storage 4/input 7 cases; its collector then failed on a
+macOS Bash compatibility issue, which is being corrected. The focused forms run
+reached its completion marker (including the target-aware authentication scroll)
+but xcodebuild exceeded its original 600-second budget. These are not full-job
+passes. See TESTING.md for run links, timing adjustments and remaining acceptance.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
 
 ## User behavior and storage boundary

@@ -229,6 +229,7 @@ jobs:
 
       - name: Check iOS driver and reusable product regressions
         run: |
+          scripts/ci/ios-collect-artifacts-test.sh
           python3 -m unittest discover -s scripts/ssh -p 'test_ios_smoke.py'
           python3 scripts/ci/test_ios_test_products.py
 

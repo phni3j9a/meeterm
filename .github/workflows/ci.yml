@@ -30,6 +30,8 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check evidence collector with the macOS system Bash
+        run: scripts/ci/ios-collect-artifacts-test.sh
       - name: Typecheck XCTest and native input sources without building the app
         run: scripts/ci/ios-typecheck.sh
 

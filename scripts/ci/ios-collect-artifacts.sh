@@ -56,7 +56,7 @@ printf 'suite=%s\n' "${suite}" > "${artifact_dir}/screenshot-scope.txt"
 # Check readability for human review, never as an image-existence acceptance
 # gate. No collector branch captures arbitrary UI after a test.
 missing_screenshots=()
-for screenshot_name in "${required_screenshots[@]}"; do
+for screenshot_name in "${required_screenshots[@]+"${required_screenshots[@]}"}"; do
   screenshot_path="${artifact_dir}/${screenshot_name}.png"
   diagnostic_path="${artifact_dir}/${screenshot_name}-unavailable.txt"
   if [[ -f "${screenshot_path}" ]]; then
@@ -66,7 +66,7 @@ for screenshot_name in "${required_screenshots[@]}"; do
     missing_screenshots+=("${screenshot_name}")
   fi
 done
-if (( ${#missing_screenshots[@]} > 0 )); then
+if [[ -n "${missing_screenshots[*]-}" ]]; then
   printf 'suite=%s; checkpoint screenshot unavailable: %s\n' "${suite}" "${missing_screenshots[*]}" \
     > "${artifact_dir}/ui-screenshots-unavailable.txt"
 else

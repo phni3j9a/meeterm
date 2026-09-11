@@ -88,7 +88,11 @@ iOSは次のジョブに分かれています。
 
 buildとruntimeの制限時間を分離し、長いビルドが操作テストの時間を消費しない構成です。
 全体テスト内の保存＋UIの合計30分という上限は延長しません。
-`forms` と `native` は、それぞれテスト実行全体を10分に制限します。
+`forms` はテスト実行全体を15分、`native` は10分に制限します。
+フォームの初回実測ではUI操作だけで約448秒かかり、完了記録は出たものの、
+XCTestの起動準備・終了処理を含む10分ではプロセスが終了しませんでした。
+この実測を理由にformsのみ15分へ変更し、起動と終了の時間も記録します。
+完了記録だけでは成功扱いにせず、引き続きxcodebuildの正常終了を要求します。
 
 ビルド成功時に `ios-test-products` artifactを保存します。
 **同一commitの別suiteや環境要因の再現確認**では、その実行IDを指定できます。
@@ -130,6 +134,8 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 1. 最初に失敗した境界を特定します。型チェック、CNG/compile/link、Simulator起動、
    保存/入力、画面操作、SSH、最後の描画を分けます。
 2. 対応するartifactの固定診断、`ios-ui-stages.txt`、`ios-ui-timing.txt` を読みます。
+   `ios-ui-clock.txt` の時刻アンカーとrunner診断の開始時刻・所要時間、
+   `teardown_started` / `teardown_complete` から、操作前後の待ちも切り分けます。
    スクリーンショットや動画は実際に開き、撮影できた範囲だけを根拠にします。
 3. 原因の仮説を一つに絞り、具体的なログや小さな再現で確かめてから修正します。
    証拠不足なら、次の一回で必要な状態が分かる診断を先に追加します。
@@ -172,4 +178,6 @@ GitHubの [workflow artifact](https://docs.github.com/en/actions/concepts/workfl
 
 - `a398a68` の [Swift事前チェック](https://github.com/phni3j9a/meeterm/actions/runs/34544837219/job/103095111270) はmacOS上で成功しました。最初の試行で不足していたXCTestのSwift検索パスは、成功済みの実アプリビルドと同じ設定へ修正しています。
 - [最初のforms実行](https://github.com/phni3j9a/meeterm/actions/runs/34544845213) は、macOSの `/var` と `/private/var` の違いを成果物処理の回帰テストが検出し、アプリビルド前に停止しました。両表記を変換する修正と、シンボリックリンク経由のroundtripテストを追加しています。
-- 別runnerへの成果物復元、forms/native操作、最終fullの実行結果は検証後に追記します。事前チェックの成功はこれらの成功を意味しません。
+- `0e345c9` の [formsビルド・実行](https://github.com/phni3j9a/meeterm/actions/runs/34545053532) では事前チェック35秒、fresh buildジョブ11分44秒、別runnerへの復元が成功しました。フォームは認証切替・保存設定・キャンセルまで完了記録が出ましたが、xcodebuildの600秒上限で失敗しています。3枚のフォーム画像をダウンロードして実見しました。
+- 同じソースの [native再利用実行](https://github.com/phni3j9a/meeterm/actions/runs/34546054376) ではbuildが省略され、成果物復元・production保存4件・native入力7件が成功しました。その後、collectorがmacOS Bash 3.2の空配列展開で失敗しました。この互換修正に加え、collector回帰をmacOSの事前チェックにも組み込みます。ジョブ全体の成功とは区別します。
+- 最終fullの受入は未完了です。focusedの操作記録や再利用成功は、fullの合格を意味しません。

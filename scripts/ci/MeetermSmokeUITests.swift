@@ -69,6 +69,15 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory,
       withIntermediateDirectories: true
     )
+    let setupEpochMilliseconds = Int(Date().timeIntervalSince1970 * 1000)
+    let setupElapsedMilliseconds = Int((ProcessInfo.processInfo.systemUptime - testStartedAt) * 1000)
+    writeFixedArtifact(
+      "ios-ui-clock.txt",
+      lines: [
+        "setup_epoch_ms=\(setupEpochMilliseconds)",
+        "setup_elapsed_ms=\(setupElapsedMilliseconds)",
+      ]
+    )
     try? FileManager.default.removeItem(at: markerPath)
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-failure.txt")
@@ -109,7 +118,9 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   override func tearDownWithError() throws {
+    record("teardown_started")
     UIPasteboard.general.string = nil
+    record("teardown_complete")
   }
 
   override func record(_ issue: XCTIssue) {
