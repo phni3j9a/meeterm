@@ -1,9 +1,99 @@
 # Daily-use validation history
 
-This is the historical investigation record through candidate `c9ddf4b`.
+This is the historical investigation record for earlier daily-use candidates.
 Pending and in-progress statements below describe those earlier runs, not the
 current milestone status. See [the current daily-use record](../DAILY_USE.md)
 for the latest acceptance result and user-facing behavior.
+
+## Testing-method candidates: `cb69a17` through `b94ef2b`
+
+Candidate `cb69a17` passed [general CI](https://github.com/phni3j9a/meeterm/actions/runs/34548009401)
+and Android's complete [fresh-CNG full flow](https://github.com/phni3j9a/meeterm/actions/runs/34550694155).
+All 69 Android completion markers were present. Main viewed the foundation,
+settings, created-pane and SSH terminal screenshots and verified the APK linked
+in `FIRST_APP.md`.
+
+iOS in the same full run passed fresh build, separate-runner artifact restoration,
+four production storage cases, seven native input cases, SSH/reconnect, saved
+credential restoration, selection/copy, settings persistence, workspace creation
+and rename. It stopped during pane rename: the UI driver could not find the
+Select All action for a 67-character generated pane name (`source_line=987`).
+Main viewed the safe name-field failure screenshot and the settings, cleared
+selection and SSH terminal screenshots. The full daily completion and final
+fresh-foundation verification were not reached. Full iOS acceptance remains
+incomplete; this is an observed test interaction failure, not proof that the
+app's rename operation itself is broken.
+
+The user prioritized testing-method improvement and then requested a checkpoint.
+That method is implemented and documented in [TESTING.md](../TESTING.md), with
+Swift/Python/macOS Bash preflight, focused forms/native suites, separate iOS
+build/runtime jobs and exact-source diagnostic product reuse. Focused forms
+and reused native runs both passed through normal exit and artifact collection.
+The standard and its evidence received independent review. Work resumed after
+this checkpoint. The recorded video shows Select All already visible before the
+driver's unconditional long press dismisses the menu. Candidate `c37b046` uses
+the existing menu first and adds a focused names suite. Its fresh build passed,
+but the first runtime stopped before XCTest while preparing the SSH fixture.
+An exact-source diagnostic reuse on a new runner passed fixture setup and
+executed the existing-menu branch. Workspace-name deletion was visibly empty,
+but the field-value wait timed out; XCTest also failed to exit within 900 seconds.
+Main viewed the safe empty-field failure image. Neither names completion nor
+pane rename was reached. Candidate `791bd01` attempted one field snapshot per sample
+and immediate exact readback with bounded polling. Focused names also omits
+password-form switching and credential-save setup (about 290.6 seconds in that
+run), while retaining real key entry, connection and host-key verification. Full
+keeps those separate form/save checks. Its general CI and app build passed,
+but the snapshot-based read failed at the first Host field with
+`initial_value_unavailable` (XCTest exit 65 after 254 seconds). Main viewed the
+pre-secret connection-form image; names operations were not reached. The next
+correction `e6cd2fe` restored direct attributes and passed public-field entry
+and key submission, but connection failed before host trust (XCTest exit 65,
+about 530 seconds). Main viewed the failure image: the profile label was "12",
+while earlier public-field readbacks had matched. Whether the host changed or
+the profile name received unintended input is unproven. Names was not reached.
+Candidate `ae54875` confined immediate polling to empty checks and restored
+the original nonempty wait. All pre-submit public-field comparisons passed,
+and host fingerprint verification/trust succeeded, but authentication then
+failed before Connected. Main viewed the safe authentication-error image;
+names operations were not reached in that run. Failure-only diagnostics were
+added to compare saved profile metadata with the fixture and check ordinary SSH auth,
+without uploading metadata/credentials or converting UI failure into success.
+Candidate `bb64bae` then passed [fresh names](https://github.com/phni3j9a/meeterm/actions/runs/34568232442):
+real SSH authentication and all workspace/pane create, rename and confirmed-close
+operations completed. Both existing Select All branches and empty-field waits
+passed; `names_complete`, fresh names success and XCTest exit 0 were present
+(471.4 seconds including runner overhead). Main viewed all five safe checkpoints.
+No authentication/input code changed for this run, so the earlier intermittent
+authentication failure is not claimed fixed. Failure-only metadata diagnostics
+were not invoked on that successful run.
+The subsequent [fresh both/full run on `516380f`](https://github.com/phni3j9a/meeterm/actions/runs/34570866987)
+passed Android completely (69 markers; Main viewed four images and verified the
+new APK in `FIRST_APP.md`). iOS passed fresh build, storage four and input seven,
+but authentication failed again before Connected (XCTest exit 65). This time the
+failure-only diagnostics ran successfully: saved metadata matched every expected
+field except username, and the strict fixture SSH probe passed. Main also viewed
+the authentication-error image and the pre-secret password form showing the
+expected username. The mismatch between native field readback and submitted
+React state is the strongest explanation; the exact event-loss mechanism is
+not established. The next driver-only change paces Username from the first
+attempt using the existing character/prefix checks. It does not change the
+product, key input, retry count or deadlines. Fresh iOS/full remains required;
+Android evidence stays on `516380f`, whose Android inputs are unchanged.
+The [fresh iOS/full run on `b94ef2b`](https://github.com/phni3j9a/meeterm/actions/runs/34574408722)
+passed authentication, real terminal input, disconnect/reconnect and same-pane
+restoration. Failure diagnostics now show every saved metadata field matching,
+including username, and the strict SSH probe passed. It then failed waiting for
+the first keyboard letter after reconnect (XCTest exit 65, 1000.7 seconds).
+Main viewed the initial keyboard, input and disconnected images; no image of
+the failing keyboard state was captured, so missing keyboard versus layout or
+accessibility-query state remains unresolved. A failure-only driver diagnostic
+now records fixed keyboard/surface visibility and hittability flags and captures
+a terminal image only when foreground, the connection form is gone and the
+terminal exists. Input actions, retries and deadlines remain unchanged. Another
+fresh iOS/full run is required; daily completion and final foundation are pending.
+Run links and the earlier failure details are in `TESTING.md`.
+The nine-feature goal is not marked complete.
+Earlier candidate evidence continues below.
 
 ## Candidate b2efd85: authentication-control overscroll
 

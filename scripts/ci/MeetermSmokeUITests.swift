@@ -1600,6 +1600,7 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func enterTerminalCommand(_ value: String, stage: String) {
+    dismissQuickPathTutorialIfPresent(stage: stage)
     // Tap real keyboard keys so letter commits and Enter are exercised even
     // though the native preedit-only UITextView is hidden from accessibility.
     // Paste the remainder through the native toolbar, then require the remote
@@ -1657,6 +1658,30 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     enter.tap()
     record("\(stage)_await_remote_marker")
+  }
+
+  private func dismissQuickPathTutorialIfPresent(stage: String) {
+    let prompt = app.staticTexts[
+      "Speed up your typing by sliding your finger across the letters to compose a word."
+    ]
+    guard prompt.exists else { return }
+    record("\(stage)_quickpath_prompt")
+
+    let continueButton = app.buttons["Continue"]
+    guard continueButton.waitForExistence(timeout: 10),
+          waitForHittable(continueButton, timeout: 10) else {
+      record("\(stage)_quickpath_continue_unavailable")
+      XCTFail("The QuickPath tutorial Continue action is unavailable.")
+      return
+    }
+    record("\(stage)_quickpath_continue")
+    continueButton.tap()
+    guard waitForDisappearance(prompt, timeout: 10) else {
+      record("\(stage)_quickpath_not_dismissed")
+      XCTFail("The QuickPath tutorial did not dismiss.")
+      return
+    }
+    record("\(stage)_quickpath_dismissed")
   }
 
   private func waitForDisconnected() -> Bool {
