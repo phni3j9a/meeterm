@@ -150,6 +150,11 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
    証拠不足なら、次の一回で必要な状態が分かる診断を先に追加します。
 4. 同じ失敗を理由なく繰り返さず、修正に対応する短いチェック・suiteから再実行します。
 
+`full` / `names` の接続失敗では `ios-ui-connection-diagnostics.txt` も確認します。
+保存済みprofileとfixtureの一致フラグ、および失敗後のstrict SSH probe結果を比較します。
+probe成功は事後のfixture認証が正常という証拠であり、UI入力した鍵の一致や失敗時点の
+応答速度までは証明しません。診断が取得できない場合も、元のUI失敗を維持します。
+
 自動操作では次を標準にします。
 
 - 安定したaccessibility IDで対象を特定し、表示・操作可能状態を確認する。
@@ -267,3 +272,12 @@ Simulatorに保存されたprofile metadataをメモリ上で期待値と比較�
 metadata本文、秘密鍵、raw SSH出力はartifactへ保存しません。
 ローカルの実OpenSSH fixtureで追加したSSH probeが成功し、SSHドライバ回帰127件も成功しました。
 Simulator内の保存情報取得と、失敗時の診断artifact生成は次のHosted実行で確認します。
+
+`bb64bae` の[fresh names実行](https://github.com/phni3j9a/meeterm/actions/runs/34568232442)は成功しました。
+実SSH接続とworkspace/paneの作成・名前変更・確認付き終了を完走し、`names_complete`、
+新しい `case=names result=passed`、xcodebuild終了コード0を確認しました（471.4秒）。
+workspace/paneの両方で表示済みSelect Allを使い、削除後の空欄確認も通過しました。
+Mainは秘密入力前の接続フォーム、host trust、workspace一覧、名前入力フォーム、作成paneの5画像を実見しました。
+一般CIも両実行とも全項目成功しています。この実行では認証失敗が再現せず、失敗専用診断は
+起動していません。認証不安定の原因解明やHosted metadata診断の実証とは扱いません。
+次に、ビルド再利用を指定せずfresh CNGから両OSのfull受入を行います。

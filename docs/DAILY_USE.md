@@ -123,11 +123,19 @@ Candidate `ae54875` confined immediate polling to empty checks and restored
 the original nonempty wait. All pre-submit public-field comparisons passed,
 and host fingerprint verification/trust succeeded, but authentication then
 failed before Connected. Main viewed the safe authentication-error image;
-names operations remain untested. Failure-only diagnostics will compare saved
-profile metadata with the fixture and separately check ordinary SSH auth,
+names operations were not reached in that run. Failure-only diagnostics were
+added to compare saved profile metadata with the fixture and check ordinary SSH auth,
 without uploading metadata/credentials or converting UI failure into success.
-The diagnostics, empty-name fix and full acceptance need Hosted validation.
-Run links and the distinction between both failures are in `TESTING.md`.
+Candidate `bb64bae` then passed [fresh names](https://github.com/phni3j9a/meeterm/actions/runs/34568232442):
+real SSH authentication and all workspace/pane create, rename and confirmed-close
+operations completed. Both existing Select All branches and empty-field waits
+passed; `names_complete`, fresh names success and XCTest exit 0 were present
+(471.4 seconds including runner overhead). Main viewed all five safe checkpoints.
+No authentication/input code changed for this run, so the earlier intermittent
+authentication failure is not claimed fixed. Failure-only metadata diagnostics
+were not invoked on the successful run and remain unproven on Hosted Simulator.
+Fresh both-platform full acceptance is the next required check.
+Run links and the earlier failure details are in `TESTING.md`.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
 
@@ -168,6 +176,14 @@ they do not establish physical-device GPU, font fallback or Japanese IME parity.
 Earlier Pixel 3 testing in this milestone verified settings persistence across
 restart and light/dark modal appearance. The latest complete daily-use flow has
 not been run on that physical device, and no physical iPhone was available.
+
+Same-process background/foreground return was exercised on Android; iOS
+Simulator evidence covers cold restart and saved-credential reconnect. The
+shared AppState bridge and Rust foreground-aware retry policy have separate
+coverage, but iOS same-process return and physical-device background network
+behavior have not been demonstrated. Shared profile-management UI is exercised
+on Android; iOS covers production storage mutations and the real save/restart/
+reconnect boundary, rather than repeating every profile-management UI operation.
 
 Real Vim reconnect and fresh-owner recovery are covered by the shared Rust SSH
 integration test. Arbitrary full-screen TUIs are not guaranteed to reconstruct

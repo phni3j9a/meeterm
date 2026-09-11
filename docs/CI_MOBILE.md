@@ -85,7 +85,7 @@ The remote-shell screenshot is separate from the foundation
 screenshot and is for human inspection; neither screenshot is a pixel gate.
 The daily-use extension also checks saved-profile management, native credential
 restoration after process restart, settings persistence, workspace/pane mutations,
-CJK atlas rollover, and exact native selection/copy/paste. Its deliberate HOME
+CJK atlas rollover, and exact native selection/copy/paste. Android’s deliberate HOME
 transition requires the configured launcher, the same app PID on return and a
 fresh acknowledgment from the original remote shell. Recording starts after
 credential entry and restoration; detected unexpected foreground loss discards
