@@ -167,3 +167,9 @@ MetalとSimulator専用ソフトウェア描画を区別し、実機GPU・フォ
 
 実装の根拠: Appleの [build-for-testing / test-without-building](https://developer.apple.com/library/archive/technotes/tn2339/_index.html) と
 GitHubの [workflow artifact](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts) を利用しています。
+
+## 導入時の検証記録
+
+- `a398a68` の [Swift事前チェック](https://github.com/phni3j9a/meeterm/actions/runs/34544837219/job/103095111270) はmacOS上で成功しました。最初の試行で不足していたXCTestのSwift検索パスは、成功済みの実アプリビルドと同じ設定へ修正しています。
+- [最初のforms実行](https://github.com/phni3j9a/meeterm/actions/runs/34544845213) は、macOSの `/var` と `/private/var` の違いを成果物処理の回帰テストが検出し、アプリビルド前に停止しました。両表記を変換する修正と、シンボリックリンク経由のroundtripテストを追加しています。
+- 別runnerへの成果物復元、forms/native操作、最終fullの実行結果は検証後に追記します。事前チェックの成功はこれらの成功を意味しません。

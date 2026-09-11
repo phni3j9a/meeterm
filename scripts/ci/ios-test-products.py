@@ -25,7 +25,11 @@ def portable_plist(value: object, products: Path) -> object:
     if isinstance(value, list):
         return [portable_plist(item, products) for item in value]
     if isinstance(value, str):
-        return value.replace(str(products.resolve()), '__TESTROOT__')
+        # macOS temporary directories can be spelled /var/... or /private/var/....
+        # Xcode may preserve either spelling; relocate both, longest first.
+        for root in sorted({str(products.absolute()), str(products.resolve())}, key=len, reverse=True):
+            value = value.replace(root, '__TESTROOT__')
+        return value
     return value
 
 

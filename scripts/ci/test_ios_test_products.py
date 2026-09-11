@@ -55,6 +55,20 @@ class TestProducts(unittest.TestCase):
                 self.restore(**change)
             self.assertFalse((self.root / 'restored').exists())
 
+    def test_relocates_both_spellings_of_symlinked_build_directory(self):
+        alias = self.root / 'build-alias'
+        alias.symlink_to(self.built.parent, target_is_directory=True)
+        self.built = alias / 'Products'
+        self.config.write_bytes(plistlib.dumps({'Tests': {
+            'TestBundlePath': str(self.built / 'test.xctest'),
+            'TestHostPath': str(self.built.resolve() / 'meeterm.app'),
+        }}))
+        self.pack()
+        self.restore()
+        config = plistlib.loads((self.root / 'restored/Products/meeterm.xctestrun').read_bytes())
+        self.assertEqual(config['Tests']['TestBundlePath'], '__TESTROOT__/test.xctest')
+        self.assertEqual(config['Tests']['TestHostPath'], '__TESTROOT__/meeterm.app')
+
     def test_rejects_other_architecture(self):
         self.pack()
         path = self.package / 'manifest.json'
