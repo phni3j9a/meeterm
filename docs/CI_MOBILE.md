@@ -35,8 +35,8 @@ GitHub-hosted runners provide the required OS split: Android jobs can run on Ubu
 
 ## Focused execution and product reuse
 
-`Mobile smoke` accepts `platform=both|android|ios` and `ios_suite=full|forms|native`.
-Forms and native runs are focused diagnostics with their own completion records;
+`Mobile smoke` accepts `platform=both|android|ios` and `ios_suite=full|forms|native|names`.
+Forms, native and names runs are focused diagnostics with their own completion records;
 they do not satisfy the full SSH/tmux, daily-use or fresh-foundation gates.
 The iOS build and runtime jobs have separate budgets. Full storage plus UI tests
 retain their shared 30-minute deadline.
@@ -90,7 +90,7 @@ transition requires the configured launcher, the same app PID on return and a
 fresh acknowledgment from the original remote shell. Recording starts after
 credential entry and restoration; detected unexpected foreground loss discards
 the recording rather than capturing another app.
-Before full iOS runtime testing, the runtime job installs fixture-only tmux if needed and runs
+Before full or names iOS runtime testing, the runtime job installs fixture-only tmux if needed and runs
 `python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
 remote `tmux` resolution using the disposable host key. The fixture supplies
 its tmux binary directory through its own sshd environment; this preflight is

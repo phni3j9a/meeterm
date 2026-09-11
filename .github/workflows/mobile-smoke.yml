@@ -24,9 +24,9 @@ on:
         options: [both, android, ios]
         default: both
       ios_suite:
-        description: iOS scope (forms/native are focused diagnostics)
+        description: iOS scope (forms/native/names are focused diagnostics)
         type: choice
-        options: [full, forms, native]
+        options: [full, forms, native, names]
         default: full
       ios_build_run:
         description: Optional exact-commit Mobile smoke run containing ios-test-products
@@ -467,15 +467,15 @@ jobs:
           } >> artifacts/ios-simulator-observability/metadata.txt
 
       - name: Install fixture-only tmux
-        if: env.MEETERM_IOS_SUITE == 'full'
+        if: env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
         run: |
           if ! command -v tmux >/dev/null 2>&1; then
             HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux
           fi
           tmux -V
 
-      - name: Verify real OpenSSH fixture before full runtime testing
-        if: env.MEETERM_IOS_SUITE == 'full'
+      - name: Verify real OpenSSH fixture before SSH runtime testing
+        if: env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
         run: |
           test -x /usr/sbin/sshd
           command -v ssh-keygen

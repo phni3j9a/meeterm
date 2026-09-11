@@ -46,6 +46,11 @@ case "${suite}" in
     echo "suite=native; UI screenshots not requested for storage/input unit cases" \
       > "${artifact_dir}/screenshot-unavailable.txt"
     ;;
+  names)
+    echo "suite=names; native foundation screenshot not requested; see SSH name-operation checkpoints" \
+      > "${artifact_dir}/screenshot-unavailable.txt"
+    required_screenshots=(connection-form-keyboard host-trust workspaces daily-workspace-create-form daily-created-pane)
+    ;;
   *)
     echo "unsupported iOS evidence suite" > "${artifact_dir}/screenshot-unavailable.txt"
     exit 2

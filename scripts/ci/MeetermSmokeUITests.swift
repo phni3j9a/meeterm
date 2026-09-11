@@ -154,6 +154,14 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   func testRealSshWorkspacePaneInputDisconnectReconnectAndHandoff() throws {
+    try runRealSshWorkflow(namesOnly: false)
+  }
+
+  func testRealSshNameOperations() throws {
+    try runRealSshWorkflow(namesOnly: true)
+  }
+
+  private func runRealSshWorkflow(namesOnly: Bool) throws {
     record("open_connection_form")
     openConnectionForm()
     record("focus_connection_form_keyboard")
@@ -272,6 +280,18 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertEqual(workspaceLabels.count, 2, "The fixture must expose two workspace rows, excluding their options buttons.")
     record("capture_workspaces")
     capture("workspaces")
+
+    if namesOnly {
+      if button("Back to workspaces").exists {
+        button("Back to workspaces").tap()
+      }
+      record("names_started")
+      verifyNameOperations()
+      writeFixedArtifact("ios-ui-names-validation.txt", lines: ["case=names result=passed"])
+      record("names_complete")
+      app.terminate()
+      return
+    }
 
     // The app may keep the workspace list visible or may open a workspace
     // automatically. Support both product presentations through the same
@@ -583,6 +603,11 @@ final class MeetermSmokeUITests: XCTestCase {
     app.buttons["ダーク"].tap()
     button("settings-submit").tap()
 
+    verifyNameOperations()
+    record("daily_complete")
+  }
+
+  private func verifyNameOperations() {
     record("daily_create_workspace")
     let createWorkspace = button("Create workspace")
     record("daily_create_workspace_action_wait")
@@ -662,7 +687,6 @@ final class MeetermSmokeUITests: XCTestCase {
     confirm.buttons["終了"].tap()
     let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == NO"), object: button("Workspace daily-renamed"))
     XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 20), .completed)
-    record("daily_complete")
   }
 
   private func verifyPasswordForm() {
@@ -970,11 +994,16 @@ final class MeetermSmokeUITests: XCTestCase {
           // sending one delete avoids queuing one controlled-input update per
           // UTF-16 code unit through React Native.
           record("\(stage)_clear_select_all")
-          field.press(forDuration: 1.0)
-          guard let selectAll = waitForHittableElement(
-            [app.menuItems["Select All"], app.buttons["Select All"]],
-            timeout: 5
-          ) else {
+          let selectAllCandidates = [app.menuItems["Select All"], app.buttons["Select All"]]
+          var selectAll = selectAllCandidates.first(where: { $0.exists && $0.isHittable })
+          if selectAll == nil {
+            record("\(stage)_clear_select_all_reveal")
+            field.press(forDuration: 1.0)
+            selectAll = waitForHittableElement(selectAllCandidates, timeout: 5)
+          } else {
+            record("\(stage)_clear_select_all_existing")
+          }
+          guard let selectAll = selectAll else {
             record("\(stage)_clear_select_all_unavailable")
             writeShortFieldDiagnostics(
               label: label,

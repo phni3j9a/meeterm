@@ -10,7 +10,7 @@ meetermの修正は **短いチェック → 対象を絞った操作確認 → 
 | 変更 | 最初の確認 | 対象確認 | 最終確認 |
 | --- | --- | --- | --- |
 | Pythonのテストドライバ・成果物処理 | 対象Python回帰テスト | 該当OS・該当suite | 影響する全体テスト |
-| iOSの自動操作・Swift入力テスト | `ios-typecheck.sh` | `forms` または `native` | iOS `full` |
+| iOSの自動操作・Swift入力テスト | `ios-typecheck.sh` | `forms` / `native` / `names` | iOS `full` |
 | 接続フォームのUI | TypeScript・Swiftの該当チェック | iOS `forms`、Androidの操作確認 | 両OS `full` と画像の実見 |
 | Rust・native adapter・依存関係・CNG/build設定 | Rust/型/単体/生成設定の該当チェック | 対象native操作 | fresh CNGから両OS `full` |
 | ドキュメントのみ | 記述・リンク・実際のコマンドとの整合 | 不要 | nativeテストの再実行は不要 |
@@ -59,6 +59,7 @@ Expo生成、CocoaPods、Rustビルド、Simulator起動は行いません。
 | `platform` | `both` / `android` / `ios` | 調査するOSを選択。既定はboth |
 | `ios_suite` | `forms` | 公開フィールド入力、認証方式切り替え、保存設定のフォーム操作 |
 | `ios_suite` | `native` | production保存4件とネイティブ入力7件 |
+| `ios_suite` | `names` | 実SSH接続後のworkspace/pane作成・名前変更・終了操作 |
 | `ios_suite` | `full` | 実SSH/tmux、日常操作、handoff、再接続、最後のfresh foundation。既定値 |
 | `ios_build_run` | 空、または実行ID | 空ならfresh build。同一commitのビルド済み成果物を指定すると診断用に再利用 |
 
@@ -78,6 +79,13 @@ focused結果は `ios-forms-validation.txt` / `ios-native-validation.txt` へ保
 全体受入の `ios-validation.txt` と区別します。フォームの画像は専用の3チェックポイントを
 確認し、`native` ではUI画像を要求しない理由を明示します。全体画面の欠落と誤分類しません。
 
+`names` は実SSH fixtureを使い、fullと同じ接続処理・名前操作helperを実行します。
+保存・入力の単体テストや、reconnect・copy・設定のシナリオはこのscopeでは実行しません。
+`names_complete` と新しい `case=names result=passed`、xcodebuild正常終了を要求し、
+`ios-names-validation.txt` に結果を残します。fullのdaily/foundation合格記録は出しません。
+長い生成名の編集問題はこのsuiteで先に確認し、その後fullを実行します。
+
+
 ## 3. ビルド済み成果物を再利用する
 
 iOSは次のジョブに分かれています。
@@ -88,7 +96,7 @@ iOSは次のジョブに分かれています。
 
 buildとruntimeの制限時間を分離し、長いビルドが操作テストの時間を消費しない構成です。
 全体テスト内の保存＋UIの合計30分という上限は延長しません。
-`forms` はテスト実行全体を15分、`native` は10分に制限します。
+`forms` と `names` はテスト実行全体を15分、`native` は10分に制限します。
 フォームの初回実測ではUI操作だけで約448秒かかり、完了記録は出たものの、
 XCTestの起動準備・終了処理を含む10分ではプロセスが終了しませんでした。
 この実測を理由にformsのみ15分へ変更し、起動と終了の時間も記録します。
@@ -145,7 +153,7 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 
 - 安定したaccessibility IDで対象を特定し、表示・操作可能状態を確認する。
 - キーボードを除いた表示領域と現在の対象位置からスクロール方向・距離を決める。
-- 短い文字入力は正確な値を読み返してから送信する。長い名前の削除は全選択＋1回のDeleteを使う。
+- 短い文字入力は正確な値を読み返してから送信する。長い名前の削除は全選択＋1回のDeleteを使う。すでに編集メニューが表示されていればそれを使い、不要な長押しでメニューを閉じない。
 - 固定sleepや闇雲な追加retryで成功させない。待機は状態条件と上限を持つ。
 - 失敗時の固定診断を先に保存し、画面取得の失敗で原因を隠さない。
 - 秘密の入力値やrawリモートエラーを診断へ出さない。フォーム撮影は秘密入力前だけ。

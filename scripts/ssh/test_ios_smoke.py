@@ -174,8 +174,16 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         (root / "ios-ui-forms-validation.txt").write_text("case=forms result=passed\n")
 
     @staticmethod
+    def write_names_success(root):
+        (root / "ios-ui-names-validation.txt").write_text("case=names result=passed\n")
+
+    @staticmethod
     def write_full_stages(root):
         (root / "ios-ui-stages.txt").write_text("daily_complete\nfoundation_verified\n")
+
+    @staticmethod
+    def write_names_stages(root):
+        (root / "ios-ui-stages.txt").write_text("names_complete\n")
 
     def test_runner_failure_reports_only_fixed_flags_and_actual_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -371,6 +379,144 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             )
             self.assertIn("xcodebuild_start_epoch_ms=", (root / "ios-forms-xctest-runner-diagnostics.txt").read_text())
             self.assertIn("xcodebuild_timeout_ms=", (root / "ios-forms-xctest-runner-diagnostics.txt").read_text())
+
+    def test_names_runs_only_ssh_name_selector_with_fresh_marker_and_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            names_validation = root / "ios-ui-names-validation.txt"
+            names_validation.write_text("case=names result=passed\n")
+
+            def successful_run(command, **kwargs):
+                self.assertFalse(names_validation.exists(), "the names marker must be fresh")
+                self.write_names_success(root)
+                self.write_names_stages(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
+                status = smoke.run_xcuitest(
+                    derived_data=root,
+                    simulator_udid="fixture-simulator",
+                    result_bundle=root / "result.xcresult",
+                    raw_log=root / "raw.log",
+                    diagnostics_path=root / "diagnostics.txt",
+                    suite="names",
+                )
+            self.assertEqual(status, 0)
+            self.assertEqual(run.call_count, 1)
+            command = run.call_args.args[0]
+            self.assertIn(smoke.NAMES_TEST_SELECTOR, command)
+            self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
+            self.assertNotIn(smoke.NATIVE_TEST_SELECTOR, command)
+            self.assertNotIn(smoke.FULL_TEST_SELECTOR, command)
+            self.assertNotIn(smoke.FORMS_TEST_SELECTOR, command)
+            self.assertEqual(run.call_args.kwargs["timeout"], 899.75)
+            self.assertEqual(names_validation.read_text(), "case=names result=passed\n")
+            self.assertEqual((root / "ios-ui-stages.txt").read_text(), "names_complete\n")
+
+    def test_names_zero_exit_without_fresh_marker_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            # A prior marker and completion stage must not satisfy this run.
+            (root / "ios-ui-names-validation.txt").write_text("case=names result=passed\n")
+            self.write_names_stages(root)
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="names",
+                    )
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_names", "names_cases_incomplete"),
+            )
+            self.assertFalse((root / "ios-ui-names-validation.txt").exists())
+
+    def test_names_timeout_stays_failed_even_with_fresh_marker_and_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def timed_out_run(command, **kwargs):
+                self.write_names_success(root)
+                self.write_names_stages(root)
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run:
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="names",
+                    )
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_names", "xcodebuild_timeout"),
+            )
+            diagnostics = root / "ios-names-xctest-runner-diagnostics.txt"
+            self.assertIn("xcodebuild_start_epoch_ms=", diagnostics.read_text())
+            self.assertIn("xcodebuild_timeout_ms=", diagnostics.read_text())
+
+    def test_names_injects_fixture_allowlist_without_inheriting_extra_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            xctestrun = root / "fixture.xctestrun"
+            xctestrun.write_bytes(plistlib.dumps({
+                "Tests": {
+                    "TestBundlePath": "meetermTests.xctest",
+                    "EnvironmentVariables": {
+                        "MEETERM_SSH_HOST": "stale-fixture-host",
+                        "UNRELATED_TEST_FLAG": "preserved",
+                    },
+                },
+            }))
+            fixture_environment = {
+                name: f"allowed-{name}"
+                for name in smoke.NAMES_TEST_ENVIRONMENT_NAMES
+            }
+            inherited_environment = {
+                "MEETERM_SSH_PRIVATE_KEY_FILE": "private-key-secret",
+                "MEETERM_SSH_PASSPHRASE": "passphrase-secret",
+                "MEETERM_SSH_KNOWN_HOSTS_FILE": "known-hosts-secret",
+                "MEETERM_IOS_HANDOFF_VALUE": "handoff-secret",
+                "MEETERM_SSH_EXTRA_SENTINEL": "extra-secret",
+            }
+            with mock.patch.dict(
+                smoke.os.environ,
+                {**fixture_environment, **inherited_environment},
+                clear=False,
+            ):
+                smoke.inject_test_environment(xctestrun, suite="names")
+            document = plistlib.loads(xctestrun.read_bytes())
+            environment = document["Tests"]["EnvironmentVariables"]
+            for name, value in fixture_environment.items():
+                self.assertEqual(environment[name], value)
+            for name in inherited_environment:
+                self.assertNotIn(name, environment)
+            self.assertEqual(environment["UNRELATED_TEST_FLAG"], "preserved")
 
     def test_native_runs_storage_then_input_and_requires_both_case_sets(self):
         with tempfile.TemporaryDirectory() as directory:

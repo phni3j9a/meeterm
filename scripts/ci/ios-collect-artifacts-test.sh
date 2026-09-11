@@ -108,4 +108,18 @@ if grep -Fq 'simctl io' "${xcrun_log}"; then
   exit 1
 fi
 
+run_collector names
+grep -Fq 'suite=names' "${artifact_root}/ui-screenshots-unavailable.txt"
+grep -Fq 'daily-created-pane' "${artifact_root}/ui-screenshots-unavailable.txt"
+for checkpoint in connection-form-keyboard host-trust workspaces daily-workspace-create-form daily-created-pane; do
+  cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
+done
+run_collector names
+test ! -e "${artifact_root}/ui-screenshots-unavailable.txt"
+grep -Fq 'suite=names; native foundation screenshot not requested' "${artifact_root}/screenshot-unavailable.txt"
+if grep -Fq 'simctl io' "${xcrun_log}"; then
+  echo "name-operation collector captured arbitrary UI" >&2
+  exit 1
+fi
+
 echo "iOS artifact screenshot boundary and focused scope regressions passed."

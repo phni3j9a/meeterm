@@ -10,7 +10,7 @@ readonly suite="${MEETERM_IOS_SUITE:-full}"
 
 : "${IOS_SIMULATOR_UDID:?IOS_SIMULATOR_UDID was not exported}"
 case "${suite}" in
-  full|forms|native) ;;
+  full|forms|native|names) ;;
   *) echo "Unsupported iOS smoke suite: ${suite}" >&2; exit 2 ;;
 esac
 mkdir -p "${artifact_dir}"
@@ -18,6 +18,8 @@ test -d "${app_path}"
 rm -f \
   "${artifact_dir}/ios-foundation-observation.json" \
   "${artifact_dir}/ios-foundation-validation.txt" \
+  "${artifact_dir}/ios-ui-names-validation.txt" \
+  "${artifact_dir}/ios-names-validation.txt" \
   "${artifact_dir}/terminal.png" \
   "${artifact_dir}/simulator.log"
 
@@ -39,7 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [[ "${suite}" == "full" ]]; then
+if [[ "${suite}" == "full" || "${suite}" == "names" ]]; then
   rm -f "${fixture_env}"
   python3 "${GITHUB_WORKSPACE}/scripts/ssh/fixture.py" --env-file "${fixture_env}" &
   fixture_pid=$!
@@ -62,7 +64,7 @@ if [[ "${suite}" == "full" ]]; then
   # shellcheck disable=SC1090
   source "${fixture_env}"
 else
-  # Focused suites are deliberately independent of the disposable SSH fixture.
+  # Forms/native suites are deliberately independent of the disposable SSH fixture.
   # Remove any inherited fixture contract before xcodebuild can pass it on.
   unset MEETERM_SSH_HOST MEETERM_SSH_PORT MEETERM_SSH_USERNAME \
     MEETERM_SSH_FINGERPRINT MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE \

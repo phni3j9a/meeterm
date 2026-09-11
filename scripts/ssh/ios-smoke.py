@@ -27,11 +27,12 @@ import threading
 import time
 
 
-IOS_SUITES = ("full", "forms", "native")
+IOS_SUITES = ("full", "forms", "native", "names")
 SUITE_TIMEOUT_SECONDS = {
     "full": 1800.0,
     "forms": 900.0,
     "native": 600.0,
+    "names": 900.0,
 }
 FULL_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
@@ -42,6 +43,10 @@ FORMS_TEST_SELECTOR = (
     "MeetermSmokeUITests/testConnectionFormControlsWithoutSecrets"
 )
 NATIVE_TEST_SELECTOR = "-only-testing:meetermTests/TerminalInputViewTests"
+NAMES_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testRealSshNameOperations"
+)
 STORAGE_TEST_SELECTOR = "-only-testing:meetermStorageTests"
 STORAGE_CASES = (
     "interrupted_write_cleanup",
@@ -91,6 +96,16 @@ FULL_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_MARKER_PATH",
     "MEETERM_IOS_MARKER_VALUE",
     "MEETERM_IOS_HANDOFF_VALUE",
+)
+NAMES_TEST_ENVIRONMENT_NAMES = (
+    "MEETERM_SSH_HOST",
+    "MEETERM_SSH_PORT",
+    "MEETERM_SSH_USERNAME",
+    "MEETERM_SSH_FINGERPRINT",
+    "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
+    "MEETERM_IOS_ARTIFACT_DIR",
+    "MEETERM_IOS_STAGE_PATH",
+    "MEETERM_IOS_MARKER_PATH",
 )
 
 
@@ -520,10 +535,10 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                     stages = stage_path.read_text(encoding="utf-8").splitlines()
                 except OSError:
                     continue
-                # This marker is emitted after the cold-restart saved-credential
-                # reconnect, with the native terminal already visible. No later
-                # daily-use operation opens an authentication form.
-                if "daily_selection" not in stages:
+                # These markers are emitted after authentication, with the
+                # native terminal/workspace UI already visible. No later
+                # focused operation opens an authentication form.
+                if not any(marker in stages for marker in ("daily_selection", "names_started")):
                     continue
                 xcrun = shutil.which("xcrun")
                 if xcrun is None:
@@ -538,7 +553,8 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                     if recorder.poll() is not None:
                         break
                     try:
-                        if "daily_complete" in stage_path.read_text(encoding="utf-8").splitlines():
+                        completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
+                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete")):
                             break
                     except OSError:
                         pass
@@ -652,6 +668,18 @@ def _test_steps(
                 ("forms",),
             ),
         )
+    if suite == "names":
+        return (
+            (
+                "xcuitest_names",
+                (NAMES_TEST_SELECTOR,),
+                result_bundle.with_name(result_bundle.stem + "-names.xcresult"),
+                raw_log.with_name(raw_log.stem + "-names.log"),
+                diagnostics_path.with_name("ios-names-xctest-runner-diagnostics.txt"),
+                diagnostics_path.parent / "ios-ui-names-validation.txt",
+                ("names",),
+            ),
+        )
     if suite == "native":
         return (storage, native)
     return (
@@ -727,7 +755,8 @@ def run_xcuitest(
     storage_validation = diagnostics_path.parent / "ios-native-storage-validation.txt"
     native_validation = diagnostics_path.parent / "ios-native-input-validation.txt"
     forms_validation = diagnostics_path.parent / "ios-ui-forms-validation.txt"
-    for path in (storage_validation, native_validation, forms_validation):
+    names_validation = diagnostics_path.parent / "ios-ui-names-validation.txt"
+    for path in (storage_validation, native_validation, forms_validation, names_validation):
         path.unlink(missing_ok=True)
     exit_code = 0
     try:
@@ -773,6 +802,7 @@ def run_xcuitest(
                     "xcuitest_storage": "storage_tests_failed",
                     "xcuitest_native": "native_tests_failed",
                     "xcuitest_forms": "forms_tests_failed",
+                    "xcuitest_names": "names_tests_failed",
                 }.get(stage, "ui_test_failed")
                 raise SmokeFailure(stage, reason)
             if validation_path is not None:
@@ -783,6 +813,7 @@ def run_xcuitest(
                         "xcuitest_storage": "storage_cases_incomplete",
                         "xcuitest_native": "native_cases_incomplete",
                         "xcuitest_forms": "forms_cases_incomplete",
+                        "xcuitest_names": "names_cases_incomplete",
                         "xcuitest": "native_cases_incomplete",
                     }.get(stage, "cases_incomplete")
                     raise SmokeFailure(stage, reason) from error
@@ -791,6 +822,12 @@ def run_xcuitest(
                 diagnostics_path.parent / "ios-ui-stages.txt",
                 ("forms_complete",),
                 "xcuitest_forms",
+            )
+        elif suite == "names":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("names_complete",),
+                "xcuitest_names",
             )
         elif suite == "full":
             _require_stage_markers(
@@ -815,7 +852,12 @@ def inject_test_environment(xctestrun_path: Path, *, suite: str = "full") -> Non
 
     if suite not in IOS_SUITES:
         raise SmokeFailure("xcuitest_setup", "unknown_suite")
-    names = FULL_TEST_ENVIRONMENT_NAMES if suite == "full" else COMMON_TEST_ENVIRONMENT_NAMES
+    if suite == "full":
+        names = FULL_TEST_ENVIRONMENT_NAMES
+    elif suite == "names":
+        names = NAMES_TEST_ENVIRONMENT_NAMES
+    else:
+        names = COMMON_TEST_ENVIRONMENT_NAMES
     environment = {
         name: os.environ[name]
         for name in names
@@ -893,14 +935,15 @@ def main() -> int:
         os.environ["MEETERM_IOS_ARTIFACT_DIR"] = str(args.artifact_dir)
         os.environ["MEETERM_IOS_STAGE_PATH"] = str(stage_path)
         os.environ["MEETERM_IOS_MARKER_PATH"] = str(marker_path)
-        if suite == "full":
+        if suite in ("full", "names"):
             socket_path = fixture_socket()
             required("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE")
             required("MEETERM_SSH_FINGERPRINT")
-            marker_value = f"ios-input-{secrets.token_hex(8)}"
-            handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
-            os.environ["MEETERM_IOS_MARKER_VALUE"] = marker_value
-            os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
+            if suite == "full":
+                marker_value = f"ios-input-{secrets.token_hex(8)}"
+                handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
+                os.environ["MEETERM_IOS_MARKER_VALUE"] = marker_value
+                os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
 
             stage = "tmux_fixture"
             workspaces, panes = prepare_topology(socket_path)
@@ -910,45 +953,77 @@ def main() -> int:
             )
 
             stage = "xcuitest"
-            with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir), \
-                 observe_selection_copy(
-                     args.simulator_udid,
-                     marker_path,
-                     marker_value,
-                     args.artifact_dir / "ios-native-copy-validation.txt",
-                 ):
+            if suite == "full":
+                with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir), \
+                     observe_selection_copy(
+                         args.simulator_udid,
+                         marker_path,
+                         marker_value,
+                         args.artifact_dir / "ios-native-copy-validation.txt",
+                     ):
+                    run_status = run_xcuitest(
+                        derived_data=args.derived_data,
+                        simulator_udid=args.simulator_udid,
+                        result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                        / "meeterm-ios-ui.xcresult",
+                        raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                        / "meeterm-ios-ui-xcodebuild.log",
+                        diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
+                        suite=suite,
+                    )
+                if run_status != 0:
+                    ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
+                    raise SmokeFailure("xcuitest", "ui_test_failed")
+
+                stage = "handoff"
+                ordinary_desktop_attach(socket_path)
+                write_text(
+                    args.artifact_dir / "handoff-validation.txt",
+                    "desktop_attach=passed\nsession=meeterm\n",
+                )
+
+                stage = "marker"
+                if marker_path is None or not marker_path.is_file():
+                    raise SmokeFailure(stage, "marker_unavailable")
+                marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
+                if marker_lines != [marker_value, handoff_value, handoff_value]:
+                    raise SmokeFailure(stage, "marker_sequence_invalid")
+
+                write_text(
+                    validation_path,
+                    validation_lines(
+                        result="passed",
+                        workspaces=workspaces,
+                        panes=panes,
+                        stage="complete",
+                        reason="none",
+                        ui_stage="complete",
+                    ),
+                )
+                print("iOS real SSH UI smoke passed.")
+                return 0
+
+            # The names suite shares only the real SSH fixture and topology
+            # setup. It deliberately has no desktop handoff or copy observer.
+            with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir):
                 run_status = run_xcuitest(
                     derived_data=args.derived_data,
                     simulator_udid=args.simulator_udid,
                     result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-                    / "meeterm-ios-ui.xcresult",
+                    / "meeterm-ios-names.xcresult",
                     raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-                    / "meeterm-ios-ui-xcodebuild.log",
-                    diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
+                    / "meeterm-ios-names-xcodebuild.log",
+                    diagnostics_path=args.artifact_dir / "ios-names-xctest-runner-diagnostics.txt",
                     suite=suite,
                 )
             if run_status != 0:
                 ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
-                raise SmokeFailure("xcuitest", "ui_test_failed")
-
-            stage = "handoff"
-            ordinary_desktop_attach(socket_path)
-            write_text(
-                args.artifact_dir / "handoff-validation.txt",
-                "desktop_attach=passed\nsession=meeterm\n",
-            )
-
-            stage = "marker"
-            if marker_path is None or not marker_path.is_file():
-                raise SmokeFailure(stage, "marker_unavailable")
-            marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
-            if marker_lines != [marker_value, handoff_value, handoff_value]:
-                raise SmokeFailure(stage, "marker_sequence_invalid")
-
+                raise SmokeFailure("xcuitest_names", "names_tests_failed")
             write_text(
                 validation_path,
-                validation_lines(
+                suite_validation_lines(
                     result="passed",
+                    suite=suite,
                     workspaces=workspaces,
                     panes=panes,
                     stage="complete",
@@ -956,7 +1031,7 @@ def main() -> int:
                     ui_stage="complete",
                 ),
             )
-            print("iOS real SSH UI smoke passed.")
+            print("iOS names UI smoke passed.")
             return 0
 
         # Focused forms/native runs intentionally have no fixture contract.

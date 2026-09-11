@@ -97,9 +97,10 @@ That method is implemented and documented in [TESTING.md](TESTING.md), with
 Swift/Python/macOS Bash preflight, focused forms/native suites, separate iOS
 build/runtime jobs and exact-source diagnostic product reuse. Focused forms
 and reused native runs both passed through normal exit and artifact collection.
-The standard and its evidence received independent review. Work is paused at
-this checkpoint; the next investigation is the pane-name selection interaction,
-using the captured diagnostic and video before changing the driver or rerunning.
+The standard and its evidence received independent review. Work resumed after this checkpoint. The recorded video shows Select All already
+visible before the driver's unconditional long press dismisses the menu. The
+next candidate uses the existing menu first and adds a focused names suite
+before repeating full acceptance. This correction is not yet Hosted-validated.
 The nine-feature goal is not marked complete.
 Earlier evidence is preserved in the [validation history](evidence/daily-use-validation-history.md).
 
