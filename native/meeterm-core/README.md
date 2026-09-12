@@ -76,6 +76,26 @@ approximately every 33 ms while visible and request a frame only on change;
 this polling compromise is not a permanent high-frequency render loop. Hidden
 views stop polling without destroying the SSH session or terminal ID.
 
+## Issue #17 backend status
+
+The production crate currently implements the tmux backend only. The approved
+target reuses its SSH lifecycle, terminal registry, `Term`, native snapshot,
+and bounded input/resize transport for `Workspace → TerminalGroup → Terminal`;
+tmux keeps its existing window/pane mapping with a virtual group per window.
+No production Herdr actor or mobile UI is present, and no meeterm gateway or
+daemon is allowed.
+
+The ignored `herdr_probe_tests::replay_live_frames` test is a diagnostic
+endpoint, not a backend. Run it with a captured directory using:
+
+```sh
+MEETERM_HERDR_REPLAY_DIR=/path/to/replay cargo test --lib \
+  herdr_probe_tests::replay_live_frames -- --ignored --exact
+```
+
+The remaining input gate and live evidence are maintained in [`HERDR.md`](../../docs/HERDR.md)
+and the [Issue #17 evidence](../../docs/evidence/issue-17-herdr-feasibility.md).
+
 ## Snapshot format
 
 Snapshots are native-only Rust-to-Kotlin bytes. They must never be forwarded

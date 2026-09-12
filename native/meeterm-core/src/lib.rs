@@ -48,4 +48,6 @@ pub use terminal::{
 pub use tmux::{PaneSnapshot, SESSION_NAME, SessionSnapshot, WindowSnapshot};
 
 #[cfg(test)]
+mod herdr_probe_tests;
+#[cfg(test)]
 mod tests;

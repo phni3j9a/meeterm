@@ -48,6 +48,37 @@ tmux attach -t meeterm
 
 and see the same windows and panes in their ordinary tmux layout. For example, Codex and nvim can appear side by side within the same window while app-a and app-b remain separate tmux windows.
 
+## Issue #17 common model (approved target, pending)
+
+Issue #17 defines one semantic hierarchy for the current tmux backend and a
+future Herdr backend:
+
+| Common concept | tmux backend | Herdr backend |
+| --- | --- | --- |
+| Workspace | tmux window | Herdr workspace |
+| TerminalGroup | one virtual mobile group per window | Herdr tab |
+| Terminal | tmux pane | Herdr pane |
+
+The tmux virtual group is presentation state. It must not create a remote
+window, flatten a tmux layout, or break `tmux attach -t meeterm`. A backend is
+selected explicitly for a saved profile/runtime; a profile without a backend
+continues to use tmux. An additional backend may use ordinary SSH to a
+user-selected remote runtime, while meeterm itself still requires no gateway,
+daemon, hosted relay, HTTP API, or WebSocket terminal transport.
+
+The common model, mobile UI, and production Herdr backend remain pending the
+live protocol feasibility gate. The issue is still open; current tmux behavior
+and desktop handoff remain the product baseline.
+
+The remaining input gate is a logical-key operation bound to the active control
+lease. A complete bracketed-paste envelope has been validated on the same
+control stream, so paste is not an upstream feasibility blocker.
+
+See [`HERDR.md`](HERDR.md) and the
+[Issue #17 feasibility record](evidence/issue-17-herdr-feasibility.md) for the
+probe contract and evidence. Until that gate passes, no Herdr mobile UI or
+production backend is implied by this target section.
+
 ## Product principles
 
 ### 1. tmux is the durable workspace
@@ -84,6 +115,10 @@ Simultaneous interactive use from phone and PC is not an initial product require
 The remote host should require only ordinary SSH access and tmux.
 
 meeterm must not require a dedicated gateway, daemon, HTTP API, WebSocket service, or self-hosted meeterm backend for the core product.
+
+That rule concerns a meeterm-owned relay. It does not prohibit connecting over
+ordinary SSH to a user-selected Herdr server/runtime when the Herdr backend is
+explicitly selected.
 
 ### 5. Native terminal quality is a core product requirement
 

@@ -37,6 +37,46 @@ Control bridge              Native Terminal View
 
 There is no meeterm server-side component in the core architecture.
 
+## Issue #17 backend boundary (approved target, pending)
+
+The current production path in this document is tmux-only and remains the
+reference implementation. Issue #17 adds a small backend boundary around the
+same Rust SSH lifecycle, terminal registry, `alacritty_terminal::Term`,
+native snapshot format, and bounded input/resize transport:
+
+```text
+Workspace → TerminalGroup → Terminal
+
+tmux:  window → virtual group → pane
+Herdr: workspace → tab           → pane
+```
+
+The tmux group is local presentation state and must never create a second
+window or mutate the ordinary tmux desktop layout. Herdr groups represent
+remote tabs. Backend/runtime selection is explicit; missing legacy profile
+fields default to the existing tmux path, and a missing Herdr capability is an
+explicit error rather than a silent tmux fallback. Remote identifiers remain
+opaque and scoped by connection, backend, and runtime. Local native terminal
+IDs remain separate because a Herdr pane ID may change when it moves.
+
+The backend actor may differ, but terminal bytes, ANSI/VT parsing, cells,
+scrollback, render frames, and IME composition remain native. Only hierarchy,
+selection, lifecycle, and errors cross the low-frequency control bridge. A
+future backend may connect over ordinary SSH to its selected remote runtime;
+this does not add a meeterm gateway, daemon, HTTP API, or WebSocket terminal
+transport.
+
+Issue #17 is still open and this target is not a Herdr implementation claim.
+The UI/backend/common-model work is gated on the live protocol result recorded
+in [`HERDR.md`](HERDR.md) and
+[`evidence/issue-17-herdr-feasibility.md`](evidence/issue-17-herdr-feasibility.md).
+
+The remaining input gate is a logical-key operation bound to the active control
+lease. A complete bracketed-paste envelope has been validated on the same
+control stream, so paste is not an upstream feasibility blocker. Detailed live
+protocol results belong in [`HERDR.md`](HERDR.md) and the
+[`Issue #17 evidence record`](evidence/issue-17-herdr-feasibility.md).
+
 ## Architectural rule: JavaScript is not the terminal data plane
 
 React Native owns app chrome and product interaction. Rust/native owns terminal transport, terminal state, input composition, and rendering.
@@ -146,10 +186,11 @@ Example conceptual API:
 connectServer(...)
 disconnectServer(serverId)
 listWorkspaces(serverId)
+listTerminalGroups(workspaceId)
 createWorkspace(serverId, name)
 renameWorkspace(workspaceId, name)
 closeWorkspace(workspaceId)
-createTerminal(workspaceId)
+createTerminal(groupId)
 closeTerminal(terminalId)
 selectTerminal(terminalId)
 respondToHostKeyPrompt(...)
@@ -278,6 +319,9 @@ Do not create a separate tmux server/socket with `tmux -L meeterm` for the core 
 ```bash
 tmux attach -t meeterm
 ```
+
+The tmux mapping above is the current implementation contract. The common
+TerminalGroup is virtual for tmux and is not a new remote object.
 
 ## tmux Control Mode
 

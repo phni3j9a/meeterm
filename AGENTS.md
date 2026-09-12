@@ -16,6 +16,30 @@ Read `docs/PRODUCT.md` and `docs/ARCHITECTURE.md` before making architectural or
 
 Do not change the session/window/pane mapping merely because another mapping simplifies mobile implementation.
 
+## Issue #17 target (pending feasibility gate)
+
+The invariants above describe the current, working tmux backend and remain in
+force. Issue #17 adds an approved common model without changing that mapping:
+
+```text
+Workspace → TerminalGroup → Terminal
+```
+
+For tmux, a Workspace remains a tmux window, a Terminal remains a tmux pane,
+and TerminalGroup is one virtual mobile group per window. The virtual group
+must not create a remote tmux window or otherwise change the desktop layout.
+For a future Herdr backend, Workspace maps to a Herdr workspace, Group maps to
+a Herdr tab, and Terminal maps to a Herdr pane. Backend selection is explicit
+per profile/runtime; a missing legacy backend continues to mean tmux.
+
+Issue #17 remains open. Do not implement the common UI or a production Herdr
+backend until the live protocol gate is satisfied and recorded in
+[`docs/HERDR.md`](docs/HERDR.md) and
+[`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
+An additional backend may connect to a user-selected remote runtime over SSH.
+The prohibition on a meeterm gateway or daemon does not prohibit that selected
+remote backend server; it prohibits adding meeterm's own required relay.
+
 ## Architecture invariants
 
 The intended data path is:
@@ -61,6 +85,11 @@ Do not introduce, for the core product:
 
 The remote host should require ordinary SSH access and tmux only.
 
+For an explicitly selected future backend, the remote host may expose that
+backend's own runtime over ordinary SSH. This still must not introduce a
+meeterm gateway, daemon, HTTP terminal transport, WebSocket terminal
+transport, or hosted relay.
+
 ### No WebView terminal fallback
 
 Do not replace the native terminal architecture with xterm.js/WebView as a shortcut unless a task explicitly changes the architecture after documenting the tradeoff.
@@ -91,6 +120,12 @@ Use tmux Control Mode as the structured mobile integration boundary.
 - Do not install global tmux hooks or mutate user configuration without a demonstrated need and narrowly scoped design.
 
 Avoid shell command construction from untrusted or user-visible names. Prefer typed command/argument encoding and explicit tmux targets.
+
+The common backend target must keep remote identifiers opaque and scoped by
+connection, backend, and runtime. A Herdr pane identifier may change when a
+pane moves between workspaces; do not use it as an immutable local terminal
+handle. Reuse the shared Rust registry, `alacritty_terminal::Term`, native
+snapshot format, and bounded input/resize transport for every backend.
 
 ## Rust / native structure
 
@@ -129,6 +164,9 @@ Do not route IME composition through a JavaScript `TextInput` merely because it 
 ## State and lifecycle
 
 - SSH is transport; tmux is durable state.
+- For a selected additional backend, its remote runtime/session is the durable
+  state; the selected backend must own reconnect and resynchronization in the
+  Rust core just as the tmux path does.
 - Connection/reconnect behavior belongs in the Rust core, not scattered React hooks/timers.
 - A React Native view unmount must not imply pane destruction.
 - Backgrounding and transport loss should be recoverable through reconnect/resynchronization.

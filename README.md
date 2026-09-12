@@ -13,6 +13,26 @@ The core idea is simple: the phone is not a separate development environment. It
 
 On mobile, panes are presented as tabs and the active pane is expanded for a phone-sized viewport. On desktop, `tmux attach -t meeterm` exposes the same windows and panes using their normal tmux layout.
 
+## Issue #17 target (pending)
+
+The approved common model is `Workspace → TerminalGroup → Terminal`.
+The existing tmux backend keeps `Workspace = window` and `Terminal = pane`,
+with one virtual mobile group per window. A future Herdr backend maps a Herdr
+workspace to Workspace, a Herdr tab to TerminalGroup, and a Herdr pane to
+Terminal. Backend selection is explicit per saved profile/runtime; missing
+legacy fields continue to select tmux. The target permits an additional
+backend reached over ordinary SSH and does not add a meeterm gateway, daemon,
+HTTP API, WebSocket transport, or hosted relay.
+
+Issue #17 remains open. No production Herdr backend or mobile UI is shipped;
+the common-model work is gated on the live protocol result in
+[`docs/HERDR.md`](docs/HERDR.md) and
+[`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
+
+The remaining input gate is a logical-key operation bound to the active
+control lease. A complete bracketed-paste envelope has been validated on the
+same control stream.
+
 ## Architecture direction
 
 ```text
@@ -61,6 +81,7 @@ npx expo run:android --device
 
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Herdr feasibility gate](docs/HERDR.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Standard testing workflow](docs/TESTING.md)
 - [First-app evaluation, installation, and evidence](docs/FIRST_APP.md)
@@ -71,6 +92,7 @@ npx expo run:android --device
 - [Android PoC runbook](docs/POC_ANDROID.md)
 - [Issue #1 Android device validation](docs/evidence/issue-1-android-device.md)
 - [Issue #13 iOS SSH and native smoke acceptance](docs/evidence/issue-13-ios-acceptance.md)
+- [Issue #17 Herdr feasibility evidence](docs/evidence/issue-17-herdr-feasibility.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [ADR 0001: native terminal first](docs/decisions/0001-native-terminal-first.md)
 - [Agent instructions](AGENTS.md)
