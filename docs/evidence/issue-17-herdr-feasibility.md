@@ -6,6 +6,10 @@
 特殊キーの入力互換性を満たさないことを再現しました。tmuxの本番接続経路は変更していません。
 今後の設計と未完了項目は[HERDR.md](../HERDR.md)に記載しています。
 
+**結論の訂正:** この結果は、描画frameを既存のbyte入力経路へそのまま接続する候補の不一致です。
+Herdr本体の変更が必要だという以前の結論は撤回しました。Herdrは変更せず、既存の公開機能に
+meeterm側を適応させる範囲で再検討します。以下の実測結果はそのまま保持します。
+
 ## 対象と検証境界
 
 - Linux x86_64、ユーザー権限の隔離OpenSSH fixture。
@@ -55,7 +59,7 @@ frameを受けたnative pasteは`first\rsecond`で、bracketed pasteのラッパ
 同じcontrol streamに元のUTF-8文字列`first\n日本語`を完全なbracketed pasteとして一括で渡す適応では、
 TUIがLF・日本語・ラッパーを含めた期待どおりのbytesを受信しました。modeなしnative出力へ後から
 ラッパーを足す方法はLFを既にCRへ変えているため、この適応には使用しません。
-貼り付け自体はupstreamの未解決点ではありません。
+貼り付けはmeeterm側で適応可能な点として、特殊キーの未解決点と区別します。
 
 計11確認のうち9件が成功、既存入力経路へ単にframeを与える場合の特殊キーとpaste mode復元の2件が不一致でした。
 通常シェル、日本語のnativeセル、実PTYの40×16から52×20へのresize、全画面TUIのnative snapshot、
@@ -83,14 +87,16 @@ Herdrの実接続は上のコマンドで別途実行しました。`cargo fmt`�
 
 [`pane.send_keys`](https://github.com/herdrdev/herdr/blob/b99002ac99b09e00b4ca692436cb15a6b0d676f1/src/app/api/panes.rs#L1917-L1939)は
 リモートruntimeの論理key encoderを利用しますが、direct controller ownerを確認しません。
-現controllerが有効な間にも別automation接続から入力できることを実測し、所有権を保つ対話入力経路の代替には採用していません。
+現controllerが有効な間にも別automation接続から入力できることを実測しました。
+これだけでIssueの無断takeover禁止を満たせないとは断定せず、操作権の取得・喪失と
+meeterm側の入力停止を含む代替経路の検証に使います。まだ代替経路の合格を示す記録ではありません。
 
 private protocolを直接実装する案も検討しました。Kitty/modifyOtherKeysの通知はありますが、
 直接NDJSON wrapperはそれを転送せず、さらにDECCKM等の完全なモード情報にはなっていません。
 今回のために非公開wire protocolのクライアント全体を再実装する方針にはしていません。
 
-最小の提案は、同じ直接controller接続に論理キー入力を追加し、既存のリモートencoderとowner checkを使うことです。
-meeterm専用daemon、WebView、別APIからの所有権を迂回する入力へ切り替えません。
+HerdrへのAPI追加案は今回の範囲から撤回しました。既存の公開機能を利用するmeeterm側の適応を検討し、
+入力対象と競合を検証します。meeterm専用daemonやWebViewへの変更は行いません。
 
 ## 未検証と後片付け
 

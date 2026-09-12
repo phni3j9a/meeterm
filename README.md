@@ -29,9 +29,11 @@ the common-model work is gated on the live protocol result in
 [`docs/HERDR.md`](docs/HERDR.md) and
 [`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
 
-The remaining input gate is a logical-key operation bound to the active
-control lease. A complete bracketed-paste envelope has been validated on the
-same control stream.
+The remaining input work is a meeterm-side adaptation to existing Herdr public
+interfaces. Herdr itself must remain unchanged. The initial frame-to-byte-input
+candidate did not preserve special-key modes; this is not proof that every
+existing integration path is unusable. A complete bracketed-paste envelope has
+been validated on the control stream.
 
 ## Architecture direction
 

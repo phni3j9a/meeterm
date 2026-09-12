@@ -70,9 +70,10 @@ The common model, mobile UI, and production Herdr backend remain pending the
 live protocol feasibility gate. The issue is still open; current tmux behavior
 and desktop handoff remain the product baseline.
 
-The remaining input gate is a logical-key operation bound to the active control
-lease. A complete bracketed-paste envelope has been validated on the same
-control stream, so paste is not an upstream feasibility blocker.
+Herdr is an existing external application and must remain unchanged. Input
+adaptation belongs in meeterm using existing public interfaces; an upstream API
+addition is not a prerequisite of this issue. The initial candidate loses
+special-key modes, while an explicit bracketed-paste envelope has been verified.
 
 See [`HERDR.md`](HERDR.md) and the
 [Issue #17 feasibility record](evidence/issue-17-herdr-feasibility.md) for the

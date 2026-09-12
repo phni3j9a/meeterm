@@ -71,9 +71,11 @@ The UI/backend/common-model work is gated on the live protocol result recorded
 in [`HERDR.md`](HERDR.md) and
 [`evidence/issue-17-herdr-feasibility.md`](evidence/issue-17-herdr-feasibility.md).
 
-The remaining input gate is a logical-key operation bound to the active control
-lease. A complete bracketed-paste envelope has been validated on the same
-control stream, so paste is not an upstream feasibility blocker. Detailed live
+Input adaptation belongs in meeterm and must use existing Herdr public
+interfaces. Do not require a modified Herdr or an upstream API addition.
+The initial frame-to-byte-input candidate loses special-key modes; alternatives
+must be checked against the actual conflict and handoff requirements. A complete
+bracketed-paste envelope has been validated on the control stream. Detailed live
 protocol results belong in [`HERDR.md`](HERDR.md) and the
 [`Issue #17 evidence record`](evidence/issue-17-herdr-feasibility.md).
 

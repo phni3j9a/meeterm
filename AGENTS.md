@@ -39,6 +39,11 @@ backend until the live protocol gate is satisfied and recorded in
 An additional backend may connect to a user-selected remote runtime over SSH.
 The prohibition on a meeterm gateway or daemon does not prohibit that selected
 remote backend server; it prohibits adding meeterm's own required relay.
+Herdr is an existing external application. Integrate with its existing public
+interfaces from meeterm; do not modify or fork Herdr, or make an upstream API
+addition a prerequisite of this issue. Record observed compatibility limits
+without treating one failed candidate path as proof that all integration is
+impossible.
 
 ## Architecture invariants
 
