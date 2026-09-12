@@ -1,5 +1,8 @@
 # Development
 
+Follow [the standard testing workflow](TESTING.md) for selecting cheap checks,
+focused mobile suites, and final acceptance.
+
 ## Current phase
 
 The shared native terminal and Rust-owned SSH/tmux session loop are implemented. The current work brings the workspace-first HTML mock into the real React Native app for personal evaluation on both platforms. [First-app usage and evidence](FIRST_APP.md) separates implemented behavior from completed validation. The first-milestone contract below remains a historical foundation and regression boundary; its deliberate omissions do not describe the current app scope.

@@ -166,6 +166,27 @@ Before broad UI or SSH/tmux features, prove:
 
 Only after both adapters and their meaningful mobile smoke gates are in place should the project add `russh`, tmux Control Mode, pane routing, reconnect/resync, and full product UI.
 
+## Standard testing workflow
+
+Read `docs/TESTING.md` before changing tests, CI, or native code. The user-approved
+iOS policy uses `standard` as the normal gate: production storage/input tests,
+direct screen screenshots, and native launch/readiness/frame/no-crash checks.
+Use the small `ssh` round-trip for connection/input changes and before distribution.
+The long `full` flow and `forms`/`native`/`names` suites remain explicit diagnostics;
+`full` is not required for every iOS change or milestone acceptance. Android retains
+its existing full smoke. Keep UI fixtures behind the smoke build flag and an
+explicit test launch route; screenshots of seeded state verify presentation,
+not the user actions that would ordinarily create that state. Preserve real
+native terminal rendering and never send fixture terminal bytes/cells through JS.
+The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
+suite by its actual scope; never rename an old full failure into a passing result.
+For another suite or diagnosis on identical source, reuse pristine iOS test
+products only through the workflow's commit/toolchain/hash checks. Record the
+original fresh build and the reuse run. Source changes require a new build.
+Investigate the first failed stage before rerunning; retain bounded state waits,
+exact completion evidence, and sanitized artifacts. Do not fix failures by
+silently skipping assertions, adding blind retries, or extending deadlines.
+
 ## CI and visual evidence boundary
 
 For both mobile jobs, the machine-gated acceptance boundary is: generated project/build succeeds, the app installs, the app launches, the expected native module is ready, a first native terminal frame is reported, and the process does not crash. These gates do not claim physical-device GPU, font fallback, rotation, or IME parity.
@@ -174,7 +195,7 @@ Standard GitHub-hosted macOS runners do not guarantee Metal. The iOS job must di
 
 The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review.
 
-The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria.
+The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
 
 Treat updates to Expo/React Native, the Rust terminal stack, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, fonts, or the chosen iOS renderer backend as cross-platform native dependency changes. Regenerate CNG output on a fresh checkout and run both mobile jobs; do not patch ignored generated directories to accommodate a dependency update.
 

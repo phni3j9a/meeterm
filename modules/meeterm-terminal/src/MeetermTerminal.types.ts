@@ -12,8 +12,9 @@ type SshConnectEndpoint = {
 
 /**
  * Authentication credentials are submitted transiently. Rust retains only
- * the parsed credential needed for an in-process reconnect; this module never
- * persists either form.
+ * the parsed credential needed for an in-process reconnect. Optional saved
+ * credentials use the separate native secure-storage API and are never read
+ * back into JavaScript.
  *
  * `authMethod` is optional on the public-key branch for compatibility with
  * callers that predate password authentication.
@@ -28,6 +29,29 @@ export type SshConnectOptions =
       authMethod: 'password';
       password: string;
     });
+
+/** Non-secret local metadata. Remote tmux remains the workspace authority. */
+export type ServerProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: 'publicKey' | 'password';
+  credentialSaved: boolean;
+};
+
+/** Write-only secure-storage request; no API returns this shape. */
+export type SavedCredential =
+  | { authMethod: 'publicKey'; privateKey: string; passphrase: string }
+  | { authMethod: 'password'; password: string };
+
+export type TerminalPreferences = {
+  fontSize: number;
+  theme: 'system' | 'light' | 'dark';
+  scrollbackLines: number;
+  automaticReconnect: boolean;
+};
 
 export type SshConnectionPhase =
   | 'Disconnected'
@@ -60,6 +84,7 @@ export type TmuxPane = {
   paneId: string;
   terminalId: string;
   windowName: string;
+  paneName: string;
   /** Active pane within this pane's window, including non-selected windows. */
   active: boolean;
   selected: boolean;
@@ -85,6 +110,9 @@ export type TerminalMetricsEvent = {
 /** Low-frequency control-plane props/events only; terminal data stays native. */
 export type MeetermTerminalViewProps = ViewProps & {
   terminalId?: string;
+  fontSize?: number;
+  theme?: 'light' | 'dark';
+  scrollbackLines?: number;
   onNativeReady?: (event: NativeSyntheticEvent<NativeReadyEvent>) => void;
   onMetrics?: (event: NativeSyntheticEvent<TerminalMetricsEvent>) => void;
 };

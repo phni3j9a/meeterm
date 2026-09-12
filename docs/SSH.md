@@ -47,13 +47,14 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 The test covers password success, wrong-password rejection, in-process
 password reconnect, and changed-host-key rejection before authentication.
 
-The selected credential is retained only in Rust process memory for explicit
-reconnect. The form clears private-key, passphrase, and password text on
+The selected credential is retained in Rust process memory for reconnect. The form clears private-key, passphrase, and password text on
 submission, cancellation, unmount, or authentication-method changes. Credentials
-are never saved to disk. Approved host identities are stored separately in
-app-private storage and checked again during reconnect. Password authentication
-uses only the SSH `password` method; keyboard-interactive prompts, MFA, SSH-agent,
-server profiles, and platform credential storage are outside this slice.
+may optionally be saved through Android Keystore-backed encryption or iOS
+Keychain. Saved profiles load credentials natively; no secret getter is exposed
+to JavaScript. Approved host identities are stored separately in app-private
+storage and checked again during reconnect. Password authentication uses only
+the SSH `password` method; keyboard-interactive prompts, MFA and SSH-agent remain
+outside this slice. See [DAILY_USE.md](DAILY_USE.md) for the daily-use additions.
 
 ## Native data and lifecycle boundary
 

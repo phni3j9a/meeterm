@@ -60,21 +60,27 @@ protocol TerminalFrameRendering: AnyObject {
   func attachTerminal(_ handle: UInt64)
   func setPreedit(_ value: String)
   func requestFrame()
+  func setAppearance(fontSize: CGFloat, light: Bool)
 }
 
 /// A demand-driven Metal renderer. Rust owns the terminal grid; this object
 /// pulls a native snapshot, rasterizes terminal cells with CoreText, uploads
 /// the resulting native texture, and submits it directly to the GPU.
 final class TerminalRenderer: NSObject, MTKViewDelegate, TerminalFrameRendering {
-  static let cellWidthPoints: CGFloat = 9
-  static let cellHeightPoints: CGFloat = 20
-  fileprivate static let fontSizePoints: CGFloat = 15
+  static func cellSize(fontSize: CGFloat, scale: CGFloat) -> CGSize {
+    let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+    let width = ("M" as NSString).size(withAttributes: [.font: font]).width
+    return CGSize(width: ceil(width * scale) / scale,
+      height: ceil((font.lineHeight + 2) * scale) / scale)
+  }
 
   private let device: MTLDevice
   private let commandQueue: MTLCommandQueue
   private let pipeline: MTLRenderPipelineState
   private var terminalHandle: UInt64 = 0
   private var preedit = ""
+  private var fontSize: CGFloat = 15
+  private var light = false
   private var emittedFirstFrameMarker = false
   weak var view: MTKView?
 
@@ -115,6 +121,12 @@ final class TerminalRenderer: NSObject, MTKViewDelegate, TerminalFrameRendering 
       return
     }
     preedit = value
+    requestFrame()
+  }
+
+  func setAppearance(fontSize: CGFloat, light: Bool) {
+    self.fontSize = fontSize
+    self.light = light
     requestFrame()
   }
 
@@ -180,7 +192,9 @@ final class TerminalRenderer: NSObject, MTKViewDelegate, TerminalFrameRendering 
       preedit: preedit,
       width: width,
       height: height,
-      scale: max(1, scale)
+      scale: max(1, scale),
+      fontSizePoints: fontSize,
+      light: light
     ) else {
       return nil
     }
@@ -220,6 +234,8 @@ final class TerminalRenderer: NSObject, MTKViewDelegate, TerminalFrameRendering 
 final class TerminalSoftwareView: UIView, TerminalFrameRendering {
   private var terminalHandle: UInt64 = 0
   private var preedit = ""
+  private var fontSize: CGFloat = 15
+  private var light = false
   private var emittedFirstFrameMarker = false
 
   override init(frame: CGRect) {
@@ -247,6 +263,12 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
     requestFrame()
   }
 
+  func setAppearance(fontSize: CGFloat, light: Bool) {
+    self.fontSize = fontSize
+    self.light = light
+    requestFrame()
+  }
+
   func requestFrame() {
     setNeedsDisplay()
   }
@@ -254,7 +276,9 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
   override func draw(_ rect: CGRect) {
     autoreleasepool {
       guard let context = UIGraphicsGetCurrentContext() else { return }
-      context.setFillColor(UIColor(red: 36.0 / 255, green: 33.0 / 255, blue: 29.0 / 255, alpha: 1).cgColor)
+      let background = light ? UIColor(red: 251.0 / 255, green: 247.0 / 255, blue: 239.0 / 255, alpha: 1)
+        : UIColor(red: 36.0 / 255, green: 33.0 / 255, blue: 29.0 / 255, alpha: 1)
+      context.setFillColor(background.cgColor)
       context.fill(bounds)
       let scale = max(1, window?.screen.scale ?? contentScaleFactor)
       let width = Int((bounds.width * scale).rounded(.up))
@@ -269,7 +293,9 @@ final class TerminalSoftwareView: UIView, TerminalFrameRendering {
               preedit: preedit,
               width: width,
               height: height,
-              scale: scale
+              scale: scale,
+              fontSizePoints: fontSize,
+              light: light
             ),
             let image = TerminalRasterizer.makeImage(
               pixels: pixels,
@@ -310,7 +336,9 @@ private enum TerminalRasterizer {
     preedit: String,
     width: Int,
     height: Int,
-    scale: CGFloat
+    scale: CGFloat,
+    fontSizePoints: CGFloat,
+    light: Bool
   ) -> [UInt8]? {
     let byteCount = width.multipliedReportingOverflow(by: height)
     guard !byteCount.overflow else {
@@ -339,12 +367,13 @@ private enum TerminalRasterizer {
 
       context.setShouldAntialias(true)
       context.setAllowsAntialiasing(true)
-      context.setFillColor(background.cgColor)
+      context.setFillColor((light ? TerminalColor(red: 251, green: 247, blue: 239, alpha: 255) : background).cgColor)
       context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
 
-      let cellWidth = max(1, Int((TerminalRenderer.cellWidthPoints * scale).rounded()))
-      let cellHeight = max(1, Int((TerminalRenderer.cellHeightPoints * scale).rounded()))
-      let fontSize = TerminalRenderer.fontSizePoints * scale
+      let cellSize = TerminalRenderer.cellSize(fontSize: fontSizePoints, scale: scale)
+      let cellWidth = max(1, Int((cellSize.width * scale).rounded()))
+      let cellHeight = max(1, Int((cellSize.height * scale).rounded()))
+      let fontSize = fontSizePoints * scale
       let regularFont = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
       let boldFont = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
 

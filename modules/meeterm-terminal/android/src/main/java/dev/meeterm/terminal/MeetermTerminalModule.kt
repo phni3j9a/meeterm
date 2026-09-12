@@ -7,27 +7,41 @@ class MeetermTerminalModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("MeetermTerminal")
 
+    AsyncFunction("getProfiles") { ClientStore.profiles(storageContext()) }
+    AsyncFunction("saveProfile") { profile: Map<String, Any?>, credential: Map<String, Any?>?, keepCredential: Boolean ->
+      ClientStore.saveProfile(storageContext(), profile, credential, keepCredential)
+    }
+    AsyncFunction("deleteProfile") { profileId: String -> ClientStore.deleteProfile(storageContext(), profileId) }
+    AsyncFunction("connectProfile") { terminalId: String, profileId: String ->
+      connectOptions(terminalId, ClientStore.connectionOptions(storageContext(), profileId))
+    }
+    AsyncFunction("getPreferences") {
+      ClientStore.preferences(storageContext()).also {
+        check(MeetermNative.setScrollbackLimit((it["scrollbackLines"] as Number).toInt()) == 0) { "The history preference could not be applied." }
+      }
+    }
+    AsyncFunction("setPreferences") { preferences: Map<String, Any?> ->
+      val validated = ClientStore.validatePreferences(preferences)
+      ClientStore.setPreferences(storageContext(), validated)
+      check(MeetermNative.setScrollbackLimit((validated["scrollbackLines"] as Number).toInt()) == 0) { "The history preference could not be applied." }
+    }
+
+    AsyncFunction("setForeground") { terminalId: String, foreground: Boolean ->
+      check(MeetermNative.setForeground(ensureHandle(normalizeTerminalId(terminalId)), foreground) == 0) { "The app lifecycle could not be updated." }
+    }
+    AsyncFunction("setAutomaticReconnect") { terminalId: String, enabled: Boolean ->
+      check(MeetermNative.setAutomaticReconnect(ensureHandle(normalizeTerminalId(terminalId)), enabled) == 0) { "The reconnect preference could not be updated." }
+    }
+    AsyncFunction("createWorkspace") { terminalId: String, name: String -> tmuxCommand(terminalId, 0, 0, name) }
+    AsyncFunction("renameWorkspace") { terminalId: String, windowId: String, name: String -> tmuxCommand(terminalId, 1, targetId(windowId, '@'), name) }
+    AsyncFunction("closeWorkspace") { terminalId: String, windowId: String -> tmuxCommand(terminalId, 2, targetId(windowId, '@')) }
+    AsyncFunction("createPane") { terminalId: String, windowId: String -> tmuxCommand(terminalId, 3, targetId(windowId, '@')) }
+    AsyncFunction("renamePane") { terminalId: String, paneId: String, name: String -> tmuxCommand(terminalId, 4, targetId(paneId, '%'), name) }
+    AsyncFunction("closePane") { terminalId: String, paneId: String -> tmuxCommand(terminalId, 5, targetId(paneId, '%')) }
+    AsyncFunction("refreshTerminal") { terminalId: String -> tmuxCommand(terminalId, 6, 0) }
+
     AsyncFunction("connect") { terminalId: String, options: Map<String, Any?> ->
-      val normalizedId = normalizeTerminalId(terminalId)
-      val nativeOptions = SshOptions.from(options)
-      val handle = ensureHandle(normalizedId)
-      val context = requireNotNull(appContext.reactContext?.applicationContext) {
-        "Native application context is unavailable."
-      }
-      val result = MeetermNative.sshConnect(
-        handle,
-        nativeOptions.host,
-        nativeOptions.port,
-        nativeOptions.username,
-        nativeOptions.privateKey,
-        nativeOptions.passphrase,
-        KnownHostsStore.path(context),
-        nativeOptions.authMethod,
-        nativeOptions.password,
-      )
-      if (result != 0) {
-        throw IllegalStateException("The SSH connection could not be started.")
-      }
+      connectOptions(terminalId, options)
     }
 
     AsyncFunction("disconnect") { terminalId: String ->
@@ -60,8 +74,8 @@ class MeetermTerminalModule : Module() {
       val handle = ensureHandle(normalizeTerminalId(terminalId))
       val fields = MeetermNative.tmuxSessionState(handle)
         ?: throw IllegalStateException("Native session state is unavailable.")
-      check(fields.size % 6 == 0) { "Native session state is unavailable." }
-      mapOf("panes" to fields.toList().chunked(6).map { pane ->
+      check(fields.size % 7 == 0) { "Native session state is unavailable." }
+      mapOf("panes" to fields.toList().chunked(7).map { pane ->
         mapOf(
           "windowId" to "@${pane[0]}",
           "paneId" to "%${pane[1]}",
@@ -69,6 +83,7 @@ class MeetermTerminalModule : Module() {
           "windowName" to sanitize(pane[3], 256),
           "selected" to (pane[4] == "1"),
           "active" to (pane[5] == "1"),
+          "paneName" to sanitize(pane[6], 256),
         )
       })
     }
@@ -107,6 +122,9 @@ class MeetermTerminalModule : Module() {
     }
 
     View(MeetermTerminalView::class) {
+      Prop("fontSize", 15.0) { view: MeetermTerminalView, value: Double -> view.setFontSize(value) }
+      Prop("theme", "dark") { view: MeetermTerminalView, value: String -> view.setTheme(value) }
+      Prop("scrollbackLines", 10000) { view: MeetermTerminalView, value: Int -> view.setScrollbackLines(value) }
       Prop("terminalId", "poc-main") { view: MeetermTerminalView, terminalId: String ->
         view.bindTerminal(terminalId)
       }
@@ -115,6 +133,34 @@ class MeetermTerminalModule : Module() {
       OnViewDestroys { view: MeetermTerminalView ->
         view.releaseBindingForLifecycle()
       }
+    }
+  }
+
+  private fun storageContext() = requireNotNull(appContext.reactContext?.applicationContext) {
+    "Native application context is unavailable."
+  }
+
+  private fun targetId(value: String, prefix: Char): Long {
+    require(value.length > 1 && value.first() == prefix && value.drop(1).all { it in '0'..'9' }) { "The tmux target is invalid." }
+    return value.drop(1).toLongOrNull() ?: throw IllegalArgumentException("The tmux target is invalid.")
+  }
+
+  private fun tmuxCommand(terminalId: String, operation: Int, target: Long, name: String = "") {
+    check(MeetermNative.tmuxCommand(ensureHandle(normalizeTerminalId(terminalId)), operation, target, name) == 0) {
+      "The workspace operation could not be started. Check the connection and try again."
+    }
+  }
+
+  private fun connectOptions(terminalId: String, options: Map<String, Any?>) {
+    val nativeOptions = SshOptions.from(options)
+    val handle = ensureHandle(normalizeTerminalId(terminalId))
+    val preferences = ClientStore.preferences(storageContext())
+    check(MeetermNative.setScrollbackLimit((preferences["scrollbackLines"] as Number).toInt()) == 0)
+    check(MeetermNative.setAutomaticReconnect(handle, preferences["automaticReconnect"] as Boolean) == 0)
+    check(MeetermNative.sshConnect(handle, nativeOptions.host, nativeOptions.port,
+      nativeOptions.username, nativeOptions.privateKey, nativeOptions.passphrase,
+      KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password) == 0) {
+      "The SSH connection could not be started."
     }
   }
 

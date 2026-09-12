@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Run the real iOS Simulator SSH/tmux UI smoke.
+"""Run a selected iOS Simulator UI smoke suite.
 
-The fixture owns the host, keys, trust store, and ordinary tmux server. This
-driver only prepares a disposable topology, invokes the generated XCUITest,
-checks the same fixture through an ordinary tmux attach, and writes sanitized
-evidence. XCTest's raw log and xcresult remain under RUNNER_TEMP.
+The optional SSH suites use a fixture that owns the host, keys, trust store,
+and ordinary tmux server. This driver prepares its disposable topology,
+invokes the generated XCUITest, and writes sanitized evidence. XCTest's raw
+log and xcresult remain under RUNNER_TEMP.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import pty
@@ -22,7 +24,114 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+
+
+IOS_SUITES = ("standard", "ssh", "full", "forms", "native", "names")
+SUITE_TIMEOUT_SECONDS = {
+    "standard": 900.0,
+    "ssh": 900.0,
+    "full": 1800.0,
+    "forms": 900.0,
+    "native": 600.0,
+    "names": 900.0,
+}
+STANDARD_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testStandardSeededScreensAndFoundation"
+)
+SSH_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testShortSshInputAndDisconnect"
+)
+FULL_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testRealSshWorkspacePaneInputDisconnectReconnectAndHandoff"
+)
+FORMS_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testConnectionFormControlsWithoutSecrets"
+)
+NATIVE_TEST_SELECTOR = "-only-testing:meetermTests/TerminalInputViewTests"
+NAMES_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testRealSshNameOperations"
+)
+STORAGE_TEST_SELECTOR = "-only-testing:meetermStorageTests"
+STORAGE_CASES = (
+    "interrupted_write_cleanup",
+    "credential_endpoint_binding",
+    "remove_saved_credential",
+    "preferences_validation",
+)
+NATIVE_INPUT_CASES = (
+    "multiline",
+    "rebind",
+    "unmount",
+    "control_one_shot",
+    "hardware_control",
+    "hardware_shift_combinations",
+    "marked_commit",
+)
+RUNTIME_ENVIRONMENT_NAMES = (
+    "MEETERM_SSH_HOST",
+    "MEETERM_SSH_PORT",
+    "MEETERM_SSH_USERNAME",
+    "MEETERM_SSH_FINGERPRINT",
+    "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
+    "MEETERM_SSH_PRIVATE_KEY_FILE",
+    "MEETERM_SSH_PASSPHRASE",
+    "MEETERM_SSH_KNOWN_HOSTS_FILE",
+    "MEETERM_SSH_HOST_KEY_FILE",
+    "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE",
+    "MEETERM_IOS_ARTIFACT_DIR",
+    "MEETERM_IOS_STAGE_PATH",
+    "MEETERM_IOS_MARKER_PATH",
+    "MEETERM_IOS_MARKER_VALUE",
+    "MEETERM_IOS_HANDOFF_VALUE",
+)
+COMMON_TEST_ENVIRONMENT_NAMES = (
+    "MEETERM_IOS_ARTIFACT_DIR",
+    "MEETERM_IOS_STAGE_PATH",
+    "MEETERM_IOS_MARKER_PATH",
+)
+FULL_TEST_ENVIRONMENT_NAMES = (
+    "MEETERM_SSH_HOST",
+    "MEETERM_SSH_PORT",
+    "MEETERM_SSH_USERNAME",
+    "MEETERM_SSH_FINGERPRINT",
+    "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
+    "MEETERM_IOS_ARTIFACT_DIR",
+    "MEETERM_IOS_STAGE_PATH",
+    "MEETERM_IOS_MARKER_PATH",
+    "MEETERM_IOS_MARKER_VALUE",
+    "MEETERM_IOS_HANDOFF_VALUE",
+)
+NAMES_TEST_ENVIRONMENT_NAMES = (
+    "MEETERM_SSH_HOST",
+    "MEETERM_SSH_PORT",
+    "MEETERM_SSH_USERNAME",
+    "MEETERM_SSH_FINGERPRINT",
+    "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
+    "MEETERM_IOS_ARTIFACT_DIR",
+    "MEETERM_IOS_STAGE_PATH",
+    "MEETERM_IOS_MARKER_PATH",
+)
+SSH_TEST_ENVIRONMENT_NAMES = (
+    *NAMES_TEST_ENVIRONMENT_NAMES,
+    "MEETERM_IOS_MARKER_VALUE",
+)
+
+CONNECTION_FAILURE_DIAGNOSTICS_NAME = "ios-ui-connection-diagnostics.txt"
+SSH_PROBE_NONCE = "meeterm-ios-ssh-probe-v1"
+FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES = (
+    "MEETERM_SSH_HOST",
+    "MEETERM_SSH_PORT",
+    "MEETERM_SSH_USERNAME",
+    "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
+    "MEETERM_SSH_HOST_KEY_FILE",
+)
 
 
 class SmokeFailure(RuntimeError):
@@ -210,6 +319,382 @@ def write_text(path: Path, contents: str) -> None:
         pass
 
 
+def _fixture_diagnostics_available(suite: str) -> bool:
+    return suite in ("full", "ssh", "names") and all(
+        os.environ.get(name) for name in FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES
+    )
+
+
+def _simulator_data_container(
+    simulator_udid: str,
+    bundle_id: str,
+) -> tuple[str, Path | None]:
+    """Resolve the installed app's data container without exposing its path."""
+
+    xcrun = shutil.which("xcrun")
+    if xcrun is None:
+        return "unavailable", None
+    try:
+        completed = subprocess.run(
+            [xcrun, "simctl", "get_app_container", simulator_udid, bundle_id, "data"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout", None
+    except OSError:
+        return "unavailable", None
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        return "failed", None
+    candidate = completed.stdout.strip().splitlines()
+    if not candidate:
+        return "failed", None
+    value = candidate[-1].strip()
+    path = Path(value)
+    if not path.is_absolute():
+        return "failed", None
+    return "passed", path
+
+
+def _profile_metadata_lines(
+    container_status: str,
+    container: Path | None,
+    *,
+    suite: str,
+) -> list[str]:
+    metadata_file = "unavailable"
+    metadata_json = "unavailable"
+    profile_count = "unavailable"
+    count_match = 0
+    field_matches = {
+        "host": 0,
+        "port": 0,
+        "username": 0,
+        "name": 0,
+        "auth_method": 0,
+        "credential_saved": 0,
+    }
+    profile_match = 0
+
+    if container_status == "passed" and container is not None:
+        path = container / "Library" / "Application Support" / "meeterm" / "client-v1.json"
+        try:
+            if not path.is_file():
+                metadata_file = "missing"
+            elif path.stat().st_size > 16 * 1024 * 1024:
+                metadata_file = "present"
+                metadata_json = "invalid"
+            else:
+                metadata_file = "present"
+                document = json.loads(path.read_text(encoding="utf-8"))
+                profiles = document.get("profiles") if isinstance(document, dict) else None
+                if (
+                    not isinstance(document, dict)
+                    or document.get("version") != 1
+                    or not isinstance(profiles, list)
+                    or len(profiles) > 100
+                ):
+                    metadata_json = "invalid"
+                else:
+                    metadata_json = "valid"
+                    profile_count = str(len(profiles))
+                    count_match = int(len(profiles) == 1)
+                    expected_host = os.environ.get("MEETERM_SSH_HOST", "")
+                    expected_username = os.environ.get("MEETERM_SSH_USERNAME", "")
+                    try:
+                        expected_port = int(os.environ.get("MEETERM_SSH_PORT", ""))
+                    except ValueError:
+                        expected_port = -1
+                    expected_name = expected_host if suite == "names" else "Daily fixture"
+                    expected_credential_saved = suite == "full"
+                    profile = profiles[0] if len(profiles) == 1 else None
+                    if isinstance(profile, dict):
+                        field_matches["host"] = int(profile.get("host") == expected_host)
+                        field_matches["port"] = int(
+                            isinstance(profile.get("port"), int)
+                            and not isinstance(profile.get("port"), bool)
+                            and profile.get("port") == expected_port
+                        )
+                        field_matches["username"] = int(
+                            profile.get("username") == expected_username
+                        )
+                        field_matches["name"] = int(profile.get("name") == expected_name)
+                        field_matches["auth_method"] = int(
+                            profile.get("authMethod") == "publicKey"
+                        )
+                        field_matches["credential_saved"] = int(
+                            (
+                                isinstance(profile.get("credentialID"), str)
+                                and bool(profile.get("credentialID"))
+                            )
+                            == expected_credential_saved
+                        )
+                        profile_match = int(
+                            count_match == 1
+                            and all(value == 1 for value in field_matches.values())
+                        )
+        except (OSError, TypeError, ValueError, UnicodeError, RecursionError):
+            metadata_json = "invalid" if metadata_file == "present" else metadata_file
+
+    return [
+        f"metadata_container={container_status}",
+        f"metadata_file={metadata_file}",
+        f"metadata_json={metadata_json}",
+        f"metadata_profile_count={profile_count}",
+        f"metadata_profile_count_match={count_match}",
+        f"metadata_profile_host_match={field_matches['host']}",
+        f"metadata_profile_port_match={field_matches['port']}",
+        f"metadata_profile_username_match={field_matches['username']}",
+        f"metadata_profile_name_match={field_matches['name']}",
+        f"metadata_profile_auth_method_match={field_matches['auth_method']}",
+        f"metadata_profile_credential_saved_match={field_matches['credential_saved']}",
+        f"metadata_profile_match={profile_match}",
+    ]
+
+
+def _probe_fixture_ssh() -> str:
+    """Run a fixed, strict-host-key SSH health probe against the live fixture."""
+
+    host = os.environ.get("MEETERM_SSH_HOST", "")
+    port_text = os.environ.get("MEETERM_SSH_PORT", "")
+    username = os.environ.get("MEETERM_SSH_USERNAME", "")
+    client_key = os.environ.get("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE", "")
+    host_key = os.environ.get("MEETERM_SSH_HOST_KEY_FILE", "")
+    if not all((host, port_text, username, client_key, host_key)):
+        return "unavailable"
+    try:
+        port = int(port_text)
+        if not 1 <= port <= 65535:
+            return "unavailable"
+        public_key = Path(host_key).read_text(encoding="utf-8").strip()
+        if not public_key or "\n" in public_key or "\r" in public_key:
+            return "unavailable"
+        if not Path(client_key).is_file():
+            return "unavailable"
+    except (OSError, ValueError, UnicodeError):
+        return "unavailable"
+
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        return "unavailable"
+
+    known_hosts_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="meeterm-ios-known-hosts-",
+            delete=False,
+        ) as stream:
+            known_hosts_path = Path(stream.name)
+            os.chmod(known_hosts_path, 0o600)
+            stream.write(f"[{host}]:{port} {public_key}\n")
+        completed = subprocess.run(
+            [
+                ssh,
+                "-F",
+                "/dev/null",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "IdentityAgent=none",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=1",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                f"UserKnownHostsFile={known_hosts_path}",
+                "-i",
+                client_key,
+                "-p",
+                str(port),
+                "-l",
+                username,
+                host,
+                "tmux -V >/dev/null 2>&1 && printf '%s\\n' 'meeterm-ios-ssh-probe-v1'",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout == f"{SSH_PROBE_NONCE}\n":
+            return "passed"
+        return "failed"
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except OSError:
+        return "unavailable"
+    finally:
+        if known_hosts_path is not None:
+            try:
+                known_hosts_path.unlink()
+            except OSError:
+                pass
+
+
+def write_connection_failure_diagnostics(
+    artifact_dir: Path,
+    simulator_udid: str,
+    *,
+    suite: str,
+    bundle_id: str = "dev.meeterm.app",
+) -> None:
+    """Write fixed, failure-only endpoint and fixture-health observations."""
+
+    if not _fixture_diagnostics_available(suite):
+        return
+    try:
+        container_status, container = _simulator_data_container(simulator_udid, bundle_id)
+    except Exception:
+        container_status, container = "unavailable", None
+    try:
+        metadata_lines = _profile_metadata_lines(container_status, container, suite=suite)
+    except Exception:
+        metadata_lines = [
+            "metadata_container=unavailable",
+            "metadata_file=unavailable",
+            "metadata_json=unavailable",
+            "metadata_profile_count=unavailable",
+            "metadata_profile_count_match=0",
+            "metadata_profile_host_match=0",
+            "metadata_profile_port_match=0",
+            "metadata_profile_username_match=0",
+            "metadata_profile_name_match=0",
+            "metadata_profile_auth_method_match=0",
+            "metadata_profile_credential_saved_match=0",
+            "metadata_profile_match=0",
+        ]
+    lines = [f"suite={suite}", *metadata_lines]
+    try:
+        probe = _probe_fixture_ssh()
+    except Exception:
+        probe = "unavailable"
+    lines.append(f"ssh_probe={probe}")
+    write_text(
+        artifact_dir / CONNECTION_FAILURE_DIAGNOSTICS_NAME,
+        "\n".join(lines) + "\n",
+    )
+
+
+def selection_copy_contract(marker_path: Path, marker_value: str) -> tuple[Path, Path, str, str]:
+    """Derive the per-run clipboard handshake without another environment contract."""
+
+    return (
+        Path(str(marker_path) + ".selection-copy-request"),
+        Path(str(marker_path) + ".selection-copy-result"),
+        f"{marker_value}-selection-copy-request\n",
+        f"{marker_value}-selection-copy-passed\n",
+    )
+
+
+def _write_atomic_result(path: Path, value: str) -> None:
+    temporary = Path(str(path) + ".tmp")
+    try:
+        temporary.write_text(value, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def observe_selection_copy(
+    simulator_udid: str,
+    marker_path: Path,
+    marker_value: str,
+    diagnostics_path: Path,
+):
+    """Validate the public copied text without reading it in the XCTest runner."""
+
+    request_path, result_path, request_token, passed_token = selection_copy_contract(
+        marker_path, marker_value
+    )
+    temporary_result = Path(str(result_path) + ".tmp")
+    for path in (request_path, result_path, temporary_result):
+        path.unlink(missing_ok=True)
+    diagnostics_path.unlink(missing_ok=True)
+    stopped = threading.Event()
+
+    def finish(status: str) -> None:
+        result = "passed" if status == "passed" else "failed"
+        reason = "none" if status == "passed" else status
+        write_text(diagnostics_path, f"result={result}\nreason={reason}\n")
+        try:
+            token = passed_token if status == "passed" else f"{marker_value}-selection-copy-{status}\n"
+            _write_atomic_result(result_path, token)
+        except OSError:
+            # A missing result makes the XCTest gate fail closed.
+            write_text(diagnostics_path, "result=failed\nreason=result_write_failed\n")
+
+    def monitor() -> None:
+        while not stopped.wait(0.1):
+            try:
+                request = request_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError):
+                finish("request_rejected")
+                return
+            if request != request_token:
+                finish("request_rejected")
+                return
+
+            xcrun = shutil.which("xcrun")
+            if xcrun is None:
+                finish("command_unavailable")
+                return
+            try:
+                completed = subprocess.run(
+                    [xcrun, "simctl", "pbpaste", simulator_udid],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                finish("command_timeout")
+                return
+            except OSError:
+                finish("command_failed")
+                return
+            if completed.returncode != 0:
+                finish("command_failed")
+            elif not completed.stdout:
+                finish("clipboard_empty")
+            elif b"COPY" not in completed.stdout or "日本語".encode() not in completed.stdout:
+                finish("clipboard_mismatch")
+            else:
+                finish("passed")
+            return
+
+    thread = threading.Thread(target=monitor, name="selection-copy-observer", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=15)
+        if not diagnostics_path.exists():
+            write_text(diagnostics_path, "result=unavailable\nreason=request_not_observed\n")
+        for path in (request_path, result_path, temporary_result):
+            path.unlink(missing_ok=True)
+
+
 def validation_lines(
     *,
     result: str,
@@ -230,6 +715,44 @@ def validation_lines(
     )
 
 
+def focused_validation_lines(*, result: str, suite: str, stage: str, reason: str, ui_stage: str) -> str:
+    return (
+        f"result={result}\n"
+        f"suite={suite}\n"
+        f"stage={stage}\n"
+        f"reason={reason}\n"
+        f"ui_last_stage={ui_stage}\n"
+    )
+
+
+def suite_validation_lines(
+    *,
+    suite: str,
+    result: str,
+    workspaces: int,
+    panes: int,
+    stage: str,
+    reason: str,
+    ui_stage: str,
+) -> str:
+    if suite == "full":
+        return validation_lines(
+            result=result,
+            workspaces=workspaces,
+            panes=panes,
+            stage=stage,
+            reason=reason,
+            ui_stage=ui_stage,
+        )
+    return focused_validation_lines(
+        result=result,
+        suite=suite,
+        stage=stage,
+        reason=reason,
+        ui_stage=ui_stage,
+    )
+
+
 def last_ui_stage(path: Path) -> str:
     """Return only the final allowlisted XCTest stage for a failed run."""
 
@@ -244,7 +767,15 @@ def last_ui_stage(path: Path) -> str:
     return "unavailable"
 
 
-def write_xcuitest_diagnostics(raw_log: Path, destination: Path, exit_code: int | None) -> None:
+def write_xcuitest_diagnostics(
+    raw_log: Path,
+    destination: Path,
+    exit_code: int | None,
+    *,
+    xcodebuild_started_at: float | None = None,
+    xcodebuild_elapsed_seconds: float | None = None,
+    xcodebuild_timeout_seconds: float | None = None,
+) -> None:
     """Keep runner failures observable without copying XCTest's credential text."""
     try:
         log = raw_log.read_text(encoding="utf-8", errors="replace").lower()
@@ -270,11 +801,218 @@ def write_xcuitest_diagnostics(raw_log: Path, destination: Path, exit_code: int 
         f"exit_code={exit_code if exit_code is not None else 'unavailable'}",
     ]
     lines.extend(f"{name}={int(re.search(pattern, log) is not None)}" for name, pattern in signals.items())
+    if xcodebuild_started_at is not None:
+        lines.extend(
+            (
+                f"xcodebuild_start_epoch_ms={int(xcodebuild_started_at * 1000)}",
+                f"xcodebuild_elapsed_ms={int(max(0.0, xcodebuild_elapsed_seconds or 0.0) * 1000)}",
+                f"xcodebuild_timeout_ms={int(max(0.0, xcodebuild_timeout_seconds or 0.0) * 1000)}",
+            )
+        )
     try:
         write_text(destination, "\n".join(lines) + "\n")
     except OSError:
         # Diagnostics must not replace the original test failure.
         pass
+
+
+@contextmanager
+def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_dir: Path):
+    """Record only the post-authentication daily-use section, never the form."""
+    stopped = threading.Event()
+
+    def monitor() -> None:
+        recorder = None
+        result = "unavailable"
+        reason = "daily_section_not_reached"
+        video = artifact_dir / "daily-interactions.mp4"
+        try:
+            while not stopped.wait(0.5):
+                try:
+                    stages = stage_path.read_text(encoding="utf-8").splitlines()
+                except OSError:
+                    continue
+                # These markers are emitted after authentication, with the
+                # native terminal/workspace UI already visible. No later
+                # focused operation opens an authentication form.
+                if not any(marker in stages for marker in ("daily_selection", "names_started")):
+                    continue
+                xcrun = shutil.which("xcrun")
+                if xcrun is None:
+                    reason = "xcrun_unavailable"
+                    break
+                recorder = subprocess.Popen(
+                    [xcrun, "simctl", "io", simulator_udid, "recordVideo", "--codec=h264", str(video)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                deadline = time.monotonic() + 180
+                while not stopped.wait(0.5) and time.monotonic() < deadline:
+                    if recorder.poll() is not None:
+                        break
+                    try:
+                        completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
+                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete")):
+                            break
+                    except OSError:
+                        pass
+                reason = "capture_failed"
+                break
+        except OSError:
+            reason = "capture_unavailable"
+        finally:
+            if recorder is not None:
+                if recorder.poll() is None:
+                    try:
+                        recorder.send_signal(signal.SIGINT)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    recorder.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    recorder.kill()
+                    recorder.wait(timeout=5)
+                if recorder.returncode == 0 and video.is_file() and video.stat().st_size > 0:
+                    result, reason = "captured", "none"
+                else:
+                    video.unlink(missing_ok=True)
+            write_text(artifact_dir / "daily-recording.txt", f"recording={result}\nreason={reason}\n")
+
+    thread = threading.Thread(target=monitor, name="daily-interaction-evidence", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=25)
+
+
+def _copy_xctestrun(source: Path) -> Path:
+    """Copy the pristine test configuration before adding per-run variables."""
+
+    temporary_path: Path | None = None
+    try:
+        descriptor, name = tempfile.mkstemp(
+            prefix=".meeterm-",
+            suffix=".xctestrun",
+            dir=source.parent,
+        )
+        os.close(descriptor)
+        temporary_path = Path(name)
+        shutil.copyfile(source, temporary_path)
+        return temporary_path
+    except OSError as error:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise SmokeFailure("xcuitest_setup", "xctestrun_copy_failed") from error
+
+
+def _require_case_markers(path: Path, cases: tuple[str, ...], stage: str) -> None:
+    expected = {f"case={case} result=passed" for case in cases}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        lines = []
+    # Length matters as well as membership: duplicate success lines must not
+    # hide a repeated test or a missing case.
+    if len(lines) != len(expected) or set(lines) != expected:
+        raise SmokeFailure(stage, "cases_incomplete")
+
+
+def _require_stage_markers(path: Path, required: tuple[str, ...], stage: str) -> None:
+    try:
+        observed = set(path.read_text(encoding="utf-8").splitlines())
+    except (OSError, UnicodeError):
+        observed = set()
+    if not set(required).issubset(observed):
+        raise SmokeFailure(stage, "completion_marker_missing")
+
+
+def _test_steps(
+    suite: str,
+    result_bundle: Path,
+    raw_log: Path,
+    diagnostics_path: Path,
+) -> tuple[tuple[str, tuple[str, ...], Path, Path, Path, Path | None, tuple[str, ...]], ...]:
+    """Return ordered selectors and their fixed completion contracts."""
+
+    storage = (
+        "xcuitest_storage",
+        (STORAGE_TEST_SELECTOR,),
+        result_bundle.with_name(result_bundle.stem + "-storage.xcresult"),
+        raw_log.with_name(raw_log.stem + "-storage.log"),
+        diagnostics_path.with_name("ios-storage-xctest-runner-diagnostics.txt"),
+        diagnostics_path.parent / "ios-native-storage-validation.txt",
+        STORAGE_CASES,
+    )
+    native = (
+        "xcuitest_native",
+        (NATIVE_TEST_SELECTOR,),
+        result_bundle.with_name(result_bundle.stem + "-native.xcresult"),
+        raw_log.with_name(raw_log.stem + "-native.log"),
+        diagnostics_path.with_name("ios-native-xctest-runner-diagnostics.txt"),
+        diagnostics_path.parent / "ios-native-input-validation.txt",
+        NATIVE_INPUT_CASES,
+    )
+    standard = (
+        "xcuitest_standard",
+        (STANDARD_TEST_SELECTOR, NATIVE_TEST_SELECTOR),
+        result_bundle,
+        raw_log,
+        diagnostics_path,
+        diagnostics_path.parent / "ios-ui-standard-validation.txt",
+        ("standard",),
+    )
+    ssh = (
+        "xcuitest_ssh",
+        (SSH_TEST_SELECTOR,),
+        result_bundle,
+        raw_log,
+        diagnostics_path,
+        diagnostics_path.parent / "ios-ui-ssh-validation.txt",
+        ("ssh",),
+    )
+    if suite == "standard":
+        return (storage, standard)
+    if suite == "ssh":
+        return (ssh,)
+    if suite == "forms":
+        return (
+            (
+                "xcuitest_forms",
+                (FORMS_TEST_SELECTOR,),
+                result_bundle.with_name(result_bundle.stem + "-forms.xcresult"),
+                raw_log.with_name(raw_log.stem + "-forms.log"),
+                diagnostics_path.with_name("ios-forms-xctest-runner-diagnostics.txt"),
+                diagnostics_path.parent / "ios-ui-forms-validation.txt",
+                ("forms",),
+            ),
+        )
+    if suite == "names":
+        return (
+            (
+                "xcuitest_names",
+                (NAMES_TEST_SELECTOR,),
+                result_bundle.with_name(result_bundle.stem + "-names.xcresult"),
+                raw_log.with_name(raw_log.stem + "-names.log"),
+                diagnostics_path.with_name("ios-names-xctest-runner-diagnostics.txt"),
+                diagnostics_path.parent / "ios-ui-names-validation.txt",
+                ("names",),
+            ),
+        )
+    if suite == "native":
+        return (storage, native)
+    return (
+        storage,
+        (
+            "xcuitest",
+            (FULL_TEST_SELECTOR, NATIVE_TEST_SELECTOR),
+            result_bundle,
+            raw_log,
+            diagnostics_path,
+            diagnostics_path.parent / "ios-native-input-validation.txt",
+            NATIVE_INPUT_CASES,
+        ),
+    )
 
 
 def run_xcuitest(
@@ -284,25 +1022,30 @@ def run_xcuitest(
     result_bundle: Path,
     raw_log: Path,
     diagnostics_path: Path,
+    suite: str = "full",
 ) -> int:
+    if suite not in IOS_SUITES:
+        raise SmokeFailure("xcuitest_setup", "unknown_suite")
     products = derived_data / "Build" / "Products"
-    bundles = sorted(products.glob("*.xctestrun"))
+    bundles = sorted(
+        path for path in products.glob("*.xctestrun")
+        if not path.name.startswith(".")
+    )
     if len(bundles) != 1:
         raise SmokeFailure("xcuitest_setup", "xctestrun_unavailable")
-    inject_test_environment(bundles[0])
+    xctestrun_path = _copy_xctestrun(bundles[0])
     xcodebuild = shutil.which("xcodebuild")
     if xcodebuild is None:
+        xctestrun_path.unlink(missing_ok=True)
         raise SmokeFailure("xcuitest_setup", "xcodebuild_unavailable")
 
     command = [
         xcodebuild,
         "test-without-building",
         "-xctestrun",
-        str(bundles[0]),
+        str(xctestrun_path),
         "-destination",
         f"platform=iOS Simulator,id={simulator_udid}",
-        "-resultBundlePath",
-        str(result_bundle),
         "-quiet",
         "CODE_SIGNING_ALLOWED=NO",
         "CODE_SIGNING_REQUIRED=NO",
@@ -312,38 +1055,143 @@ def run_xcuitest(
     # The UI test receives only the explicit, non-secret fixture contract via
     # the xctestrun plist. Do not let xcodebuild inherit the fixture's
     # passphrase or alternate private-key paths from the sourced env file.
-    for secret_name in (
-        "MEETERM_SSH_PRIVATE_KEY_FILE",
-        "MEETERM_SSH_PASSPHRASE",
-        "MEETERM_SSH_KNOWN_HOSTS_FILE",
-        "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
-        "MEETERM_SSH_HOST_KEY_FILE",
-        "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE",
-    ):
-        runner_environment.pop(secret_name, None)
-    exit_code = None
+    for environment_name in list(runner_environment):
+        if (
+            environment_name.startswith("MEETERM_SSH_")
+            or environment_name in RUNTIME_ENVIRONMENT_NAMES
+        ):
+            runner_environment.pop(environment_name, None)
     try:
-        with raw_log.open("w", encoding="utf-8") as stream:
-            completed = subprocess.run(
-                command,
-                env=runner_environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                timeout=900,
-                check=False,
+        inject_test_environment(xctestrun_path, suite=suite)
+    except BaseException:
+        xctestrun_path.unlink(missing_ok=True)
+        raise
+    # Storage runs inside the entitled app. Its cleanup must finish before the
+    # UI runner launches the same app. Separate invocations enforce that order
+    # while the selected suite retains its own bounded execution budget.
+    deadline = time.monotonic() + SUITE_TIMEOUT_SECONDS[suite]
+    steps = _test_steps(suite, result_bundle, raw_log, diagnostics_path)
+    storage_validation = diagnostics_path.parent / "ios-native-storage-validation.txt"
+    native_validation = diagnostics_path.parent / "ios-native-input-validation.txt"
+    standard_validation = diagnostics_path.parent / "ios-ui-standard-validation.txt"
+    ssh_validation = diagnostics_path.parent / "ios-ui-ssh-validation.txt"
+    forms_validation = diagnostics_path.parent / "ios-ui-forms-validation.txt"
+    names_validation = diagnostics_path.parent / "ios-ui-names-validation.txt"
+    for path in (
+        storage_validation,
+        native_validation,
+        standard_validation,
+        ssh_validation,
+        forms_validation,
+        names_validation,
+    ):
+        path.unlink(missing_ok=True)
+    # Completion records are per invocation. Do not let a previous focused or
+    # full run satisfy the current suite's stage contract.
+    (diagnostics_path.parent / "ios-ui-stages.txt").unlink(missing_ok=True)
+    exit_code = 0
+    try:
+        for stage, selections, bundle, log_path, diagnostic_path, validation_path, cases in steps:
+            exit_code = None
+            xcodebuild_started_at = None
+            xcodebuild_elapsed_seconds = None
+            xcodebuild_timeout_seconds = None
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SmokeFailure(stage, "xcodebuild_timeout")
+                xcodebuild_started_at = time.time()
+                xcodebuild_timeout_seconds = remaining
+                with log_path.open("w", encoding="utf-8") as stream:
+                    completed = subprocess.run(
+                        [*command, *selections, "-resultBundlePath", str(bundle)],
+                        env=runner_environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        timeout=remaining,
+                        check=False,
+                    )
+                    exit_code = completed.returncode
+            except subprocess.TimeoutExpired as error:
+                raise SmokeFailure(stage, "xcodebuild_timeout") from error
+            except OSError as error:
+                raise SmokeFailure(stage, "xcodebuild_failed") from error
+            finally:
+                if xcodebuild_started_at is not None:
+                    xcodebuild_elapsed_seconds = time.time() - xcodebuild_started_at
+                write_xcuitest_diagnostics(
+                    log_path,
+                    diagnostic_path,
+                    exit_code,
+                    xcodebuild_started_at=xcodebuild_started_at,
+                    xcodebuild_elapsed_seconds=xcodebuild_elapsed_seconds,
+                    xcodebuild_timeout_seconds=xcodebuild_timeout_seconds,
+                )
+            if exit_code != 0:
+                reason = {
+                    "xcuitest_storage": "storage_tests_failed",
+                    "xcuitest_native": "native_tests_failed",
+                    "xcuitest_forms": "forms_tests_failed",
+                    "xcuitest_names": "names_tests_failed",
+                }.get(stage, "ui_test_failed")
+                raise SmokeFailure(stage, reason)
+            if validation_path is not None:
+                try:
+                    _require_case_markers(validation_path, cases, stage)
+                except SmokeFailure as error:
+                    reason = {
+                        "xcuitest_storage": "storage_cases_incomplete",
+                        "xcuitest_native": "native_cases_incomplete",
+                        "xcuitest_forms": "forms_cases_incomplete",
+                        "xcuitest_names": "names_cases_incomplete",
+                        "xcuitest": "native_cases_incomplete",
+                    }.get(stage, "cases_incomplete")
+                    raise SmokeFailure(stage, reason) from error
+        if suite == "standard":
+            # The standard UI invocation also selects the native input suite.
+            # Keep its seven-case contract separate from the UI route marker so
+            # a test that only launches the screen flow cannot satisfy input
+            # coverage accidentally.
+            try:
+                _require_case_markers(native_validation, NATIVE_INPUT_CASES, "xcuitest_standard")
+            except SmokeFailure as error:
+                raise SmokeFailure("xcuitest_standard", "native_cases_incomplete") from error
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("standard_complete", "foundation_verified"),
+                "xcuitest_standard",
             )
-            exit_code = completed.returncode
-    except subprocess.TimeoutExpired as error:
-        raise SmokeFailure("xcuitest", "xcodebuild_timeout") from error
-    except OSError as error:
-        raise SmokeFailure("xcuitest", "xcodebuild_failed") from error
+        elif suite == "ssh":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("ssh_complete",),
+                "xcuitest_ssh",
+            )
+        elif suite == "forms":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("forms_complete",),
+                "xcuitest_forms",
+            )
+        elif suite == "names":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("names_complete",),
+                "xcuitest_names",
+            )
+        elif suite == "full":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("daily_complete", "foundation_verified"),
+                "xcuitest",
+            )
+        return exit_code if exit_code is not None else 0
     finally:
-        write_xcuitest_diagnostics(raw_log, diagnostics_path, exit_code)
-    return completed.returncode
+        xctestrun_path.unlink(missing_ok=True)
 
 
-def inject_test_environment(xctestrun_path: Path) -> None:
+def inject_test_environment(xctestrun_path: Path, *, suite: str = "full") -> None:
     """Pass fixture paths and sanitized stage locations into the test runner.
 
     `xcodebuild test-without-building -xctestrun` does not consistently pass
@@ -353,18 +1201,16 @@ def inject_test_environment(xctestrun_path: Path) -> None:
     artifact or command line.
     """
 
-    names = (
-        "MEETERM_SSH_HOST",
-        "MEETERM_SSH_PORT",
-        "MEETERM_SSH_USERNAME",
-        "MEETERM_SSH_FINGERPRINT",
-        "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
-        "MEETERM_IOS_ARTIFACT_DIR",
-        "MEETERM_IOS_STAGE_PATH",
-        "MEETERM_IOS_MARKER_PATH",
-        "MEETERM_IOS_MARKER_VALUE",
-        "MEETERM_IOS_HANDOFF_VALUE",
-    )
+    if suite not in IOS_SUITES:
+        raise SmokeFailure("xcuitest_setup", "unknown_suite")
+    if suite == "full":
+        names = FULL_TEST_ENVIRONMENT_NAMES
+    elif suite == "ssh":
+        names = SSH_TEST_ENVIRONMENT_NAMES
+    elif suite == "names":
+        names = NAMES_TEST_ENVIRONMENT_NAMES
+    else:
+        names = COMMON_TEST_ENVIRONMENT_NAMES
     environment = {
         name: os.environ[name]
         for name in names
@@ -396,6 +1242,12 @@ def inject_test_environment(xctestrun_path: Path) -> None:
             existing = target.get(variable_key)
             if not isinstance(existing, dict):
                 existing = {}
+            for name in list(existing):
+                if (
+                    name.startswith("MEETERM_SSH_")
+                    or name in RUNTIME_ENVIRONMENT_NAMES
+                ):
+                    existing.pop(name, None)
             existing.update(environment)
             target[variable_key] = existing
     try:
@@ -406,12 +1258,18 @@ def inject_test_environment(xctestrun_path: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the iOS real-SSH Simulator UI smoke.")
+    parser = argparse.ArgumentParser(description="Run a selected iOS Simulator UI smoke suite.")
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--derived-data", type=Path, required=True)
     parser.add_argument("--simulator-udid", required=True)
+    parser.add_argument(
+        "--suite",
+        choices=IOS_SUITES,
+        default=os.environ.get("MEETERM_IOS_SUITE", "standard"),
+    )
     args = parser.parse_args()
 
+    suite = args.suite
     workspaces = 0
     panes = 0
     stage = "startup"
@@ -419,66 +1277,199 @@ def main() -> int:
     ui_stage = "unavailable"
     socket_path: Path | None = None
     marker_path: Path | None = None
-    validation_path = args.artifact_dir / "ios-validation.txt"
+    validation_filename = {
+        "full": "ios-validation.txt",
+        "standard": "ios-standard-validation.txt",
+        "ssh": "ios-ssh-validation.txt",
+    }.get(suite, f"ios-{suite}-validation.txt")
+    validation_path = args.artifact_dir / validation_filename
     try:
         args.artifact_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (args.artifact_dir / CONNECTION_FAILURE_DIAGNOSTICS_NAME).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
         stage_path = args.artifact_dir / "ios-ui-stages.txt"
         try:
             stage_path.unlink()
         except FileNotFoundError:
             pass
-        socket_path = fixture_socket()
-        required("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE")
-        required("MEETERM_SSH_FINGERPRINT")
         marker_root = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
         marker_path = marker_root / f"meeterm-ios-marker-{os.getpid()}-{secrets.token_hex(6)}"
-        marker_value = f"ios-input-{secrets.token_hex(8)}"
-        handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
         os.environ["MEETERM_IOS_ARTIFACT_DIR"] = str(args.artifact_dir)
         os.environ["MEETERM_IOS_STAGE_PATH"] = str(stage_path)
         os.environ["MEETERM_IOS_MARKER_PATH"] = str(marker_path)
-        os.environ["MEETERM_IOS_MARKER_VALUE"] = marker_value
-        os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
+        if suite in ("full", "ssh", "names"):
+            socket_path = fixture_socket()
+            required("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE")
+            required("MEETERM_SSH_FINGERPRINT")
+            if suite in ("full", "ssh"):
+                marker_value = (
+                    f"ios-input-{secrets.token_hex(8)}"
+                    if suite == "full"
+                    else f"ios-ssh-input-{secrets.token_hex(8)}"
+                )
+                os.environ["MEETERM_IOS_MARKER_VALUE"] = marker_value
+                if suite == "full":
+                    handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
+                    os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
 
-        stage = "tmux_fixture"
-        workspaces, panes = prepare_topology(socket_path)
-        write_text(
-            args.artifact_dir / "fixture-validation.txt",
-            "fixture=ready\nworkspace_count=2\npane_count=3\n",
-        )
+            stage = "tmux_fixture"
+            workspaces, panes = prepare_topology(socket_path)
+            write_text(
+                args.artifact_dir / "fixture-validation.txt",
+                "fixture=ready\nworkspace_count=2\npane_count=3\n",
+            )
 
+            stage = "xcuitest"
+            if suite == "full":
+                with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir), \
+                     observe_selection_copy(
+                         args.simulator_udid,
+                         marker_path,
+                         marker_value,
+                         args.artifact_dir / "ios-native-copy-validation.txt",
+                     ):
+                    run_status = run_xcuitest(
+                        derived_data=args.derived_data,
+                        simulator_udid=args.simulator_udid,
+                        result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                        / "meeterm-ios-ui.xcresult",
+                        raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                        / "meeterm-ios-ui-xcodebuild.log",
+                        diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
+                        suite=suite,
+                    )
+                if run_status != 0:
+                    ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
+                    raise SmokeFailure("xcuitest", "ui_test_failed")
+
+                stage = "handoff"
+                ordinary_desktop_attach(socket_path)
+                write_text(
+                    args.artifact_dir / "handoff-validation.txt",
+                    "desktop_attach=passed\nsession=meeterm\n",
+                )
+
+                stage = "marker"
+                if marker_path is None or not marker_path.is_file():
+                    raise SmokeFailure(stage, "marker_unavailable")
+                marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
+                if marker_lines != [marker_value, handoff_value, handoff_value]:
+                    raise SmokeFailure(stage, "marker_sequence_invalid")
+
+                write_text(
+                    validation_path,
+                    validation_lines(
+                        result="passed",
+                        workspaces=workspaces,
+                        panes=panes,
+                        stage="complete",
+                        reason="none",
+                        ui_stage="complete",
+                    ),
+                )
+                print("iOS real SSH UI smoke passed.")
+                return 0
+
+            if suite == "ssh":
+                # The short SSH suite keeps only connection, one native input
+                # acknowledgement, and explicit disconnect. It deliberately
+                # omits full-flow handoff, copy, reconnect, and daily CRUD.
+                run_status = run_xcuitest(
+                    derived_data=args.derived_data,
+                    simulator_udid=args.simulator_udid,
+                    result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                    / "meeterm-ios-ssh.xcresult",
+                    raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                    / "meeterm-ios-ssh-xcodebuild.log",
+                    diagnostics_path=args.artifact_dir / "ios-ssh-xctest-runner-diagnostics.txt",
+                    suite=suite,
+                )
+                if run_status != 0:
+                    ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
+                    raise SmokeFailure("xcuitest_ssh", "ssh_tests_failed")
+
+                stage = "marker"
+                if marker_path is None or not marker_path.is_file():
+                    raise SmokeFailure(stage, "marker_unavailable")
+                marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
+                if marker_lines != [marker_value]:
+                    raise SmokeFailure(stage, "marker_sequence_invalid")
+
+                write_text(
+                    validation_path,
+                    suite_validation_lines(
+                        result="passed",
+                        suite=suite,
+                        workspaces=workspaces,
+                        panes=panes,
+                        stage="complete",
+                        reason="none",
+                        ui_stage="complete",
+                    ),
+                )
+                print("iOS short SSH UI smoke passed.")
+                return 0
+
+            # The names suite shares only the real SSH fixture and topology
+            # setup. It deliberately has no desktop handoff or copy observer.
+            with record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir):
+                run_status = run_xcuitest(
+                    derived_data=args.derived_data,
+                    simulator_udid=args.simulator_udid,
+                    result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                    / "meeterm-ios-names.xcresult",
+                    raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                    / "meeterm-ios-names-xcodebuild.log",
+                    diagnostics_path=args.artifact_dir / "ios-names-xctest-runner-diagnostics.txt",
+                    suite=suite,
+                )
+            if run_status != 0:
+                ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
+                raise SmokeFailure("xcuitest_names", "names_tests_failed")
+            write_text(
+                validation_path,
+                suite_validation_lines(
+                    result="passed",
+                    suite=suite,
+                    workspaces=workspaces,
+                    panes=panes,
+                    stage="complete",
+                    reason="none",
+                    ui_stage="complete",
+                ),
+            )
+            print("iOS names UI smoke passed.")
+            return 0
+
+        # Standard/forms/native runs intentionally have no fixture contract.
+        # They still receive a fresh marker path because the UI test setup uses
+        # it as a per-run cleanup anchor; no SSH values are injected.
+        for environment_name in RUNTIME_ENVIRONMENT_NAMES:
+            if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
+                os.environ.pop(environment_name, None)
         stage = "xcuitest"
         run_status = run_xcuitest(
             derived_data=args.derived_data,
             simulator_udid=args.simulator_udid,
             result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / "meeterm-ios-ui.xcresult",
+            / f"meeterm-ios-{suite}.xcresult",
             raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / "meeterm-ios-ui-xcodebuild.log",
-            diagnostics_path=args.artifact_dir / "ios-xctest-runner-diagnostics.txt",
+            / f"meeterm-ios-{suite}-xcodebuild.log",
+            diagnostics_path=args.artifact_dir / f"ios-{suite}-xctest-runner-diagnostics.txt",
+            suite=suite,
         )
         if run_status != 0:
             ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
-            raise SmokeFailure("xcuitest", "ui_test_failed")
-
-        stage = "handoff"
-        ordinary_desktop_attach(socket_path)
-        write_text(
-            args.artifact_dir / "handoff-validation.txt",
-            "desktop_attach=passed\nsession=meeterm\n",
-        )
-
-        stage = "marker"
-        if marker_path is None or not marker_path.is_file():
-            raise SmokeFailure(stage, "marker_unavailable")
-        marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
-        if marker_lines != [marker_value, handoff_value, handoff_value]:
-            raise SmokeFailure(stage, "marker_sequence_invalid")
-
+            raise SmokeFailure("xcuitest", "focused_tests_failed")
         write_text(
             validation_path,
-            validation_lines(
+            suite_validation_lines(
                 result="passed",
+                suite=suite,
                 workspaces=workspaces,
                 panes=panes,
                 stage="complete",
@@ -486,17 +1477,27 @@ def main() -> int:
                 ui_stage="complete",
             ),
         )
-        print("iOS real SSH UI smoke passed.")
+        print(f"iOS {suite} UI smoke passed.")
         return 0
     except SmokeFailure as error:
         stage = error.stage
         reason = error.reason
-        if stage == "xcuitest":
+        if stage.startswith("xcuitest"):
             ui_stage = last_ui_stage(Path(os.environ.get("MEETERM_IOS_STAGE_PATH", "")))
+        if _fixture_diagnostics_available(suite):
+            try:
+                write_connection_failure_diagnostics(
+                    args.artifact_dir,
+                    args.simulator_udid,
+                    suite=suite,
+                )
+            except Exception:
+                pass
         print(f"iOS UI smoke failed at {stage}: {reason}", file=sys.stderr)
         write_text(
             validation_path,
-            validation_lines(
+            suite_validation_lines(
+                suite=suite,
                 result="failed",
                 workspaces=workspaces,
                 panes=panes,
@@ -507,10 +1508,20 @@ def main() -> int:
         )
         return 1
     except (OSError, ValueError):
+        if _fixture_diagnostics_available(suite):
+            try:
+                write_connection_failure_diagnostics(
+                    args.artifact_dir,
+                    args.simulator_udid,
+                    suite=suite,
+                )
+            except Exception:
+                pass
         print(f"iOS UI smoke failed at {stage}: driver_error", file=sys.stderr)
         write_text(
             validation_path,
-            validation_lines(
+            suite_validation_lines(
+                suite=suite,
                 result="failed",
                 workspaces=workspaces,
                 panes=panes,
@@ -522,12 +1533,17 @@ def main() -> int:
         return 1
     finally:
         if marker_path is not None:
-            try:
-                marker_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
+            for path in (
+                marker_path,
+                Path(str(marker_path) + ".selection-copy-request"),
+                Path(str(marker_path) + ".selection-copy-result"),
+            ):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":

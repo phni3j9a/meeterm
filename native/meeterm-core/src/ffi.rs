@@ -170,6 +170,99 @@ pub extern "C" fn meeterm_scroll_lines(id: u64, lines: i32) -> i32 {
         .unwrap_or_else(terminal_error_code)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_send_key(id: u64, key: u32, modifiers: u32) -> i32 {
+    registry::send_key(id, key, modifiers)
+        .map(|length| i32::try_from(length).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
+/// # Safety
+/// For nonzero length, bytes must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_commit_modified_utf8(
+    id: u64,
+    bytes: *const u8,
+    length: usize,
+    modifiers: u32,
+) -> i32 {
+    if length > 65536 || (length != 0 && bytes.is_null()) {
+        return FFI_ERROR;
+    }
+    let bytes = if length == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(bytes, length) }
+    };
+    registry::commit_modified_utf8(id, bytes, modifiers)
+        .map(|length| i32::try_from(length).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
+/// Viewport coordinates, never pixel coordinates or JavaScript terminal data.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_select_start(id: u64, row: u32, column: u32) -> i32 {
+    registry::select_start(id, row, column)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_select_update(id: u64, row: u32, column: u32) -> i32 {
+    registry::select_update(id, row, column)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_clear_selection(id: u64) -> i32 {
+    registry::clear_selection(id)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
+/// Native clipboard copy. Returns required UTF-8 bytes, zero for no selection,
+/// or SIZE_MAX for an invalid terminal/oversized selection. No partial copy.
+///
+/// # Safety
+/// A non-null output must be writable for capacity bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_selection_text(id: u64, out: *mut u8, capacity: usize) -> usize {
+    let Ok(text) = registry::selection_text(id) else {
+        return usize::MAX;
+    };
+    let Some(text) = text else {
+        return 0;
+    };
+    if text.len() > 4 * 1024 * 1024 {
+        return usize::MAX;
+    }
+    if out.is_null() || capacity < text.len() {
+        return text.len();
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len());
+    }
+    text.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_set_theme(id: u64, light: u8) -> i32 {
+    if light > 1 {
+        return FFI_ERROR;
+    }
+    registry::set_theme(id, light != 0)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_set_scrollback_limit(lines: u32) -> i32 {
+    registry::set_scrollback_limit(lines as usize)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
 /// Send one of the stable `SpecialKey` enum values. The return value is the
 /// number of encoded bytes, or a negative error code.
 #[unsafe(no_mangle)]
@@ -192,6 +285,57 @@ pub extern "C" fn meeterm_input_commit_count(id: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_destroy_terminal(id: u64) -> i32 {
     i32::from(registry::destroy_terminal(id))
+}
+
+/// Low-frequency typed tmux operation. No shell text is accepted here.
+///
+/// # Safety
+/// For nonzero length, name must point to that many readable UTF-8 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_tmux_command(
+    id: u64,
+    operation: u32,
+    target: u64,
+    name: *const u8,
+    name_length: usize,
+) -> i32 {
+    if name_length > 1024 {
+        return FFI_ERROR;
+    }
+    let Ok(name) = (unsafe { utf8_argument(name, name_length) }) else {
+        return FFI_ERROR;
+    };
+    let result = match operation {
+        0 => crate::ssh::create_workspace(id, &name),
+        1 => crate::ssh::rename_workspace(id, target, &name),
+        2 if name.is_empty() => crate::ssh::close_workspace(id, target),
+        3 if name.is_empty() => crate::ssh::create_pane(id, target),
+        4 => crate::ssh::rename_pane(id, target, &name),
+        5 if name.is_empty() => crate::ssh::close_pane(id, target),
+        6 if name.is_empty() => crate::ssh::refresh_terminal(id),
+        _ => return FFI_ERROR,
+    };
+    result.map(|()| 0).unwrap_or_else(connection_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_set_foreground(id: u64, foreground: u8) -> i32 {
+    if foreground > 1 {
+        return FFI_ERROR;
+    }
+    crate::ssh::set_foreground(id, foreground != 0)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_set_automatic_reconnect(id: u64, enabled: u8) -> i32 {
+    if enabled > 1 {
+        return FFI_ERROR;
+    }
+    crate::ssh::set_automatic_reconnect(id, enabled != 0)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
 }
 
 /// Start an SSH connection. All string arguments are UTF-8 byte slices; the
@@ -343,6 +487,9 @@ pub struct TmuxPaneRecord {
     pub active: u8,
     pub reserved: [u8; 4],
     pub window_name: [u8; 256],
+    pub pane_name_len: u16,
+    pub reserved_name: [u8; 6],
+    pub pane_name: [u8; 256],
 }
 
 #[unsafe(no_mangle)]
@@ -379,6 +526,9 @@ pub unsafe extern "C" fn meeterm_session_panes(
             active: u8::from(pane.active),
             reserved: [0; 4],
             window_name: [0; 256],
+            pane_name_len: 0,
+            reserved_name: [0; 6],
+            pane_name: [0; 256],
         };
         let mut length = pane.window_name.len().min(record.window_name.len());
         while !pane.window_name.is_char_boundary(length) {
@@ -386,6 +536,12 @@ pub unsafe extern "C" fn meeterm_session_panes(
         }
         record.window_name[..length].copy_from_slice(&pane.window_name.as_bytes()[..length]);
         record.window_name_len = length as u16;
+        let mut length = pane.pane_name.len().min(record.pane_name.len());
+        while !pane.pane_name.is_char_boundary(length) {
+            length -= 1;
+        }
+        record.pane_name[..length].copy_from_slice(&pane.pane_name.as_bytes()[..length]);
+        record.pane_name_len = length as u16;
         // The caller provides space for all records; padding is explicit.
         unsafe {
             out.add(index).write(record);
@@ -483,7 +639,9 @@ mod session_abi_tests {
 
     #[test]
     fn pane_record_matches_c_header_layout() {
-        assert_eq!(std::mem::size_of::<TmuxPaneRecord>(), 288);
+        assert_eq!(std::mem::size_of::<TmuxPaneRecord>(), 552);
+        assert_eq!(std::mem::offset_of!(TmuxPaneRecord, pane_name_len), 288);
+        assert_eq!(std::mem::offset_of!(TmuxPaneRecord, pane_name), 296);
         assert_eq!(std::mem::offset_of!(TmuxPaneRecord, window_name_len), 24);
         assert_eq!(std::mem::offset_of!(TmuxPaneRecord, selected), 26);
         assert_eq!(std::mem::offset_of!(TmuxPaneRecord, active), 27);

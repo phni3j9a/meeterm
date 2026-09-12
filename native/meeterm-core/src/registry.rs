@@ -2,9 +2,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::input::SpecialKey;
+use crate::input::{KeyCode, Modifiers, SpecialKey};
 use crate::snapshot::Snapshot;
-use crate::terminal::{InputSender, ResizeSender, Terminal, TerminalError};
+use crate::terminal::{
+    InputSender, ResizeSender, Terminal, TerminalError, configured_scrollback_lines,
+    set_configured_scrollback_lines, validate_scrollback_lines,
+};
 
 pub type TerminalId = u64;
 pub type SharedTerminal = Arc<Mutex<Terminal>>;
@@ -17,10 +20,13 @@ fn registry() -> &'static Mutex<HashMap<TerminalId, SharedTerminal>> {
 }
 
 pub fn create_terminal(columns: u16, rows: u16) -> Result<TerminalId, TerminalError> {
-    let terminal = Arc::new(Mutex::new(Terminal::new(columns, rows)?));
     let mut terminals = registry()
         .lock()
         .map_err(|_| TerminalError::RegistryPoisoned)?;
+    // Construct while holding the registry lock so a terminal cannot observe
+    // the old global scrollback setting in the small window between a
+    // settings update and insertion into the registry.
+    let terminal = Arc::new(Mutex::new(Terminal::new(columns, rows)?));
 
     loop {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -143,8 +149,87 @@ pub fn send_special_key(id: TerminalId, key: SpecialKey) -> Result<usize, Termin
     with_terminal(id, |terminal| terminal.send_special_key(key))
 }
 
+/// Send a generic ABI key. The raw values are parsed here so platform code
+/// cannot smuggle unknown key or modifier bits into the terminal encoder.
+pub fn send_key(id: TerminalId, key: u32, modifiers: u32) -> Result<usize, TerminalError> {
+    let key = KeyCode::try_from(key).map_err(|_| TerminalError::InvalidKey)?;
+    let modifiers = Modifiers::from_bits(modifiers).ok_or(TerminalError::InvalidModifiers)?;
+    with_terminal(id, |terminal| terminal.send_key(key, modifiers))
+}
+
 pub fn paste_utf8(id: TerminalId, bytes: &[u8]) -> Result<usize, TerminalError> {
     with_terminal(id, |terminal| terminal.paste_utf8(bytes))
+}
+
+pub fn commit_modified_utf8(
+    id: TerminalId,
+    bytes: &[u8],
+    modifiers: u32,
+) -> Result<usize, TerminalError> {
+    let modifiers = Modifiers::from_bits(modifiers).ok_or(TerminalError::InvalidModifiers)?;
+    with_terminal(id, |terminal| {
+        terminal.commit_modified_utf8(bytes, modifiers)
+    })
+}
+
+pub fn select_start(
+    id: TerminalId,
+    viewport_row: u32,
+    viewport_column: u32,
+) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.select_start(viewport_row, viewport_column)
+    })
+}
+
+pub fn select_update(
+    id: TerminalId,
+    viewport_row: u32,
+    viewport_column: u32,
+) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.select_update(viewport_row, viewport_column)
+    })
+}
+
+pub fn clear_selection(id: TerminalId) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.clear_selection();
+        Ok(())
+    })
+}
+
+pub fn selection_text(id: TerminalId) -> Result<Option<String>, TerminalError> {
+    with_terminal(id, |terminal| Ok(terminal.selection_text()))
+}
+
+pub fn set_theme(id: TerminalId, light: bool) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| {
+        terminal.set_theme(light);
+        Ok(())
+    })
+}
+
+pub fn scrollback_lines() -> usize {
+    configured_scrollback_lines()
+}
+
+pub fn set_scrollback_limit(lines: usize) -> Result<(), TerminalError> {
+    validate_scrollback_lines(lines)?;
+    let terminals = registry()
+        .lock()
+        .map_err(|_| TerminalError::RegistryPoisoned)?;
+    if configured_scrollback_lines() == lines {
+        return Ok(());
+    }
+    set_configured_scrollback_lines(lines)?;
+    for terminal in terminals.values() {
+        terminal
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?
+            .apply_scrollback_limit(lines)?;
+    }
+    Ok(())
 }
 
 pub fn scroll_lines(id: TerminalId, lines: i32) -> Result<(), TerminalError> {
@@ -183,7 +268,7 @@ fn with_terminal<R>(
 #[cfg(test)]
 pub(crate) fn with_terminal_for_test<R>(
     id: TerminalId,
-    operation: impl FnOnce(&Terminal) -> R,
+    operation: impl FnOnce(&mut Terminal) -> R,
 ) -> Result<R, TerminalError> {
     let terminal = {
         let terminals = registry()
@@ -192,8 +277,8 @@ pub(crate) fn with_terminal_for_test<R>(
         terminals.get(&id).cloned()
     }
     .ok_or(TerminalError::UnknownTerminal)?;
-    let terminal = terminal
+    let mut terminal = terminal
         .lock()
         .map_err(|_| TerminalError::RegistryPoisoned)?;
-    Ok(operation(&terminal))
+    Ok(operation(&mut terminal))
 }

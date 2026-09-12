@@ -44,6 +44,10 @@ pub struct PaneSnapshot {
     pub index: u32,
     pub columns: u16,
     pub rows: u16,
+    /// The tmux pane title (`select-pane -T`) exposed as the terminal-tab
+    /// name in the native control plane.
+    pub pane_name: String,
+    /// Backwards-compatible alias retained for older native callers.
     pub title: String,
 }
 
@@ -61,6 +65,7 @@ pub(crate) struct PaneInfo {
     pub(crate) active: bool,
     pub(crate) columns: u16,
     pub(crate) rows: u16,
+    pub(crate) pane_name: String,
     pub(crate) title: String,
     pub(crate) zoomed: bool,
     pub(crate) window_active: bool,
@@ -122,6 +127,64 @@ pub enum DecodeError {
     InvalidPaneId,
     InvalidOctalEscape,
     BufferTooLarge,
+}
+
+/// Errors returned while encoding a user-visible tmux name as one command
+/// argument. Names are bounded and cannot contain control characters because
+/// the Control Mode command stream is line-oriented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandArgumentError {
+    Empty,
+    TooLong,
+    ControlCharacter,
+}
+
+impl fmt::Display for CommandArgumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "tmux name is empty",
+            Self::TooLong => "tmux name is too long",
+            Self::ControlCharacter => "tmux name contains a control character",
+        })
+    }
+}
+
+impl std::error::Error for CommandArgumentError {}
+
+/// Quote one tmux command argument without allowing parser metacharacters to
+/// become command separators or expansions. tmux's command parser expands
+/// `$VAR` and `#()`/`#{...}` after tokenization, including inside double
+/// quotes. A single-quoted argument suppresses `$` expansion; `##` is tmux's
+/// documented literal-`#` format escape. The standard `'<quote>'` splice
+/// keeps apostrophes inside the same argument.
+pub fn quote_tmux_argument(value: &str) -> Result<String, CommandArgumentError> {
+    const MAX_NAME_BYTES: usize = 4096;
+    if value.is_empty() {
+        return Err(CommandArgumentError::Empty);
+    }
+    if value.len() > MAX_NAME_BYTES {
+        return Err(CommandArgumentError::TooLong);
+    }
+    if value
+        .bytes()
+        .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
+        return Err(CommandArgumentError::ControlCharacter);
+    }
+
+    let mut quoted = String::with_capacity(value.len().saturating_add(2));
+    quoted.push('\'');
+    for character in value.chars() {
+        match character {
+            '\'' => quoted.push_str("'\\''"),
+            // `##` is reduced to one literal `#` by tmux's format parser and
+            // prevents both `#{...}` lookup and `#()` command substitution.
+            '#' => quoted.push_str("##"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('\'');
+    Ok(quoted)
 }
 
 impl fmt::Display for DecodeError {
@@ -443,39 +506,70 @@ pub(crate) fn parse_pane_line(line: &[u8]) -> Result<PaneInfo, DecodeError> {
         active: parse_flag(fields[3])?,
         columns: parse_u16(fields[4])?,
         rows: parse_u16(fields[5])?,
+        pane_name: decode_tmux_quoted(fields[6]),
         title: decode_tmux_quoted(fields[6]),
         zoomed: parse_flag(fields[7])?,
         window_active: fields.get(8).map_or(Ok(true), |field| parse_flag(field))?,
     })
 }
 
-/// Decode the backslash quoting emitted by tmux's `q:` format modifier. It
-/// keeps unknown escapes losslessly enough for display while decoding the
-/// whitespace and octal forms used for names and titles.
+/// Decode the backslash quoting emitted by tmux's `q:` format modifier. The
+/// format result has already passed through tmux's format-output escaping.
+/// tmux 3.3 and 3.4 differ by one escaping layer for some fields, so a
+/// literal backslash may be represented by two or four backslashes (and a
+/// backslash before an escaped space by three or five). Decode runs as a
+/// unit instead of consuming pairs independently so either form does not
+/// leave spurious backslashes in a user-visible workspace name.
 fn decode_tmux_quoted(value: &[u8]) -> String {
     let mut decoded = Vec::with_capacity(value.len());
     let mut index = 0;
     while index < value.len() {
-        if value[index] != b'\\' || index + 1 == value.len() {
+        if value[index] != b'\\' {
             decoded.push(value[index]);
             index += 1;
             continue;
         }
-        if index + 3 < value.len()
+
+        let run_start = index;
+        while index < value.len() && value[index] == b'\\' {
+            index += 1;
+        }
+        let slash_count = index - run_start;
+
+        // Keep compatibility with the octal form used by older tmux format
+        // output and by the parser fixture. It is an escape only when one
+        // backslash introduces the three octal digits; a doubled run is a
+        // literal backslash followed by ordinary digits.
+        if slash_count == 1
+            && index + 2 < value.len()
+            && (b'0'..=b'7').contains(&value[index])
             && (b'0'..=b'7').contains(&value[index + 1])
             && (b'0'..=b'7').contains(&value[index + 2])
-            && (b'0'..=b'7').contains(&value[index + 3])
         {
             decoded.push(
-                ((value[index + 1] - b'0') << 6)
-                    | ((value[index + 2] - b'0') << 3)
-                    | (value[index + 3] - b'0'),
+                ((value[index] - b'0') << 6)
+                    | ((value[index + 1] - b'0') << 3)
+                    | (value[index + 2] - b'0'),
             );
-            index += 4;
+            index += 3;
             continue;
         }
-        decoded.push(value[index + 1]);
-        index += 2;
+
+        let next = value.get(index).copied();
+        // `$` has one extra format-output escape group when it is followed by
+        // a variable-like word. A bare dollar and the first one or two format
+        // groups are the dollar itself; further groups represent literal
+        // backslashes before it.
+        let literal_slashes = if next == Some(b'$') {
+            slash_count.saturating_sub(4).saturating_add(3) / 4
+        } else {
+            slash_count.saturating_add(2) / 4
+        };
+        decoded.extend(std::iter::repeat_n(b'\\', literal_slashes));
+        if let Some(next) = next {
+            decoded.push(next);
+            index += 1;
+        }
     }
     String::from_utf8_lossy(&decoded).into_owned()
 }
@@ -542,6 +636,50 @@ pub fn list_windows_command() -> &'static [u8] {
 
 pub fn list_panes_command() -> &'static [u8] {
     b"list-panes -s -t =meeterm -F '#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{q:pane_title}\t#{window_zoomed_flag}\t#{window_active}'"
+}
+
+/// Create a detached workspace window in the managed session. The exact
+/// session target prevents a similarly named session from receiving it.
+pub fn create_workspace_command(name: &str) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "new-window -d -t =meeterm -n {}",
+        quote_tmux_argument(name)?
+    ))
+}
+
+pub fn rename_workspace_command(
+    window_id: u64,
+    name: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "rename-window -t =meeterm:@{window_id} {}",
+        quote_tmux_argument(name)?
+    ))
+}
+
+pub fn close_workspace_command(window_id: u64) -> String {
+    format!("kill-window -t =meeterm:@{window_id}")
+}
+
+/// Create a detached pane in a numeric target window. Using `-d` keeps the
+/// currently selected mobile pane and the desktop layout stable.
+pub fn create_pane_command(window_id: u64) -> String {
+    format!("split-window -d -t =meeterm:@{window_id}")
+}
+
+pub fn rename_pane_command(
+    window_id: u64,
+    pane_id: u64,
+    name: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "select-pane -t =meeterm:@{window_id}.%{pane_id} -T {}",
+        quote_tmux_argument(name)?
+    ))
+}
+
+pub fn close_pane_command(window_id: u64, pane_id: u64) -> String {
+    format!("kill-pane -t =meeterm:@{window_id}.%{pane_id}")
 }
 
 pub fn refresh_client_command(columns: u16, rows: u16) -> String {
@@ -887,8 +1025,67 @@ mod tests {
         assert_eq!(pane.window_id, 4);
         assert_eq!(pane.pane_id, 8);
         assert_eq!(pane.title, "tab\tline\\q");
+        assert_eq!(pane.pane_name, "tab\tline\\q");
         assert!(pane.zoomed);
         assert!(!pane.window_active);
+    }
+
+    #[test]
+    fn q_quoted_names_collapse_format_escapes_without_losing_backslashes() {
+        // This is the byte shape emitted by tmux 3.4 for the name
+        // `daily ; # $HOME \\ \" 日本語`. The four slashes before `$HOME`
+        // are tmux's format-output escape layers, while the five before the
+        // space are one literal backslash plus q:'s escaped space.
+        let encoded = r##"daily\ \;\ \#\ \\\\$HOME\ \\\\\ \"\ 日本語"##.as_bytes();
+        assert_eq!(decode_tmux_quoted(encoded), "daily ; # $HOME \\ \" 日本語");
+
+        assert_eq!(decode_tmux_quoted(br"$"), "$");
+        assert_eq!(decode_tmux_quoted(br"\$HOME"), "$HOME");
+        assert_eq!(decode_tmux_quoted(br"\\$HOME"), "$HOME");
+        assert_eq!(decode_tmux_quoted(br"\\\ "), "\\ ");
+        assert_eq!(decode_tmux_quoted(br"\\\\$HOME"), "$HOME");
+        assert_eq!(decode_tmux_quoted(br"\\\\\\\\$HOME"), "\\$HOME");
+        assert_eq!(decode_tmux_quoted(br"\\\\"), "\\");
+    }
+
+    #[test]
+    fn user_names_are_quoted_as_one_tmux_argument() {
+        let name = "desk; # comment $HOME ~root \\\\ \" ' 日本語";
+        let quoted = quote_tmux_argument(name).unwrap();
+        assert!(quoted.starts_with('\'') && quoted.ends_with('\''));
+        assert!(quoted.contains("$HOME"));
+        assert!(quoted.contains("## comment"));
+        assert!(quoted.contains("'\\''"));
+        assert!(quoted.contains("日本語"));
+        assert!(
+            !create_workspace_command(name)
+                .unwrap()
+                .contains("; # comment $HOME")
+        );
+        assert_eq!(
+            rename_workspace_command(42, name).unwrap(),
+            format!("rename-window -t =meeterm:@42 {quoted}")
+        );
+        assert_eq!(
+            rename_pane_command(42, 7, name).unwrap(),
+            format!("select-pane -t =meeterm:@42.%7 -T {quoted}")
+        );
+        assert_eq!(close_workspace_command(42), "kill-window -t =meeterm:@42");
+        assert_eq!(create_pane_command(42), "split-window -d -t =meeterm:@42");
+        assert_eq!(close_pane_command(42, 7), "kill-pane -t =meeterm:@42.%7");
+    }
+
+    #[test]
+    fn user_names_reject_line_controls_and_unbounded_values() {
+        assert_eq!(quote_tmux_argument(""), Err(CommandArgumentError::Empty));
+        assert_eq!(
+            quote_tmux_argument("line\nfeed"),
+            Err(CommandArgumentError::ControlCharacter)
+        );
+        assert_eq!(
+            quote_tmux_argument(&"x".repeat(4097)),
+            Err(CommandArgumentError::TooLong)
+        );
     }
 
     #[test]
