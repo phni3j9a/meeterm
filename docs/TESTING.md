@@ -57,6 +57,8 @@ git diff --check
 置き換えます。通常の画面操作とsnapshot更新を通して、選択端末の外部移動、移動元Workspaceの
 消失、Groupと空のGroup、画面のnative端末IDと表示状態の通知を確認します。React Nativeの
 host viewとnative bridgeはテスト用なので、実機の描画やHerdr controller自体の検証とは分けます。
+空のGroupの選択はnative側でキューに入るため、選択要求の直後は古いsnapshotが返り、
+後続の更新で選択が完了するケースも確認します。
 macOSでは `scripts/ci/ios-typecheck.sh` がCNG/build前にUI XCTestとnative入力関連Swiftを型チェックします。
 production moduleへ依存する保存テストのコンパイル・Keychain実行はアプリビルドとnativeテストで確認します。
 

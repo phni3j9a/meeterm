@@ -419,10 +419,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   // moved by another client keeps its native handle and input controller.
   const workspaceId = screen === 'terminal' ? selectedWorkspaceId ?? rememberedWorkspaceId : rememberedWorkspaceId;
   useEffect(() => {
-    // Retain the last displayed workspace when an empty Group clears pane
-    // selection. Group.selected is per-workspace, not a global active Group.
-    if (screen === 'terminal' && selectedWorkspaceId !== undefined) setWorkspaceId(selectedWorkspaceId);
-  }, [screen, selectedWorkspaceId]);
+    // Track native workspace changes only: an empty-Group selection can still
+    // be queued when navigation opens the terminal screen. Group.selected is
+    // per-workspace, not a global active Group.
+    if (selectedWorkspaceId !== undefined) setWorkspaceId(selectedWorkspaceId);
+  }, [selectedWorkspaceId]);
   const workspaces = useMemo(() => session.workspaces.map(workspace => ({ ...workspace, panes: panes.filter(pane => pane.workspaceId === workspace.id) })), [session.workspaces, panes]);
   const workspace = workspaces.find(item => item.id === workspaceId);
   const groups = session.groups.filter(group => group.workspaceId === workspaceId);

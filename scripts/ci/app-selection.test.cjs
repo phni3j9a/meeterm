@@ -599,6 +599,48 @@ test('manual empty-group navigation preserves workspace with per-workspace selec
   assert.ok(fixture.environment.calls.some(call => call.method === 'selectGroup' && call.groupId === 'G-empty'));
 });
 
+test('manual empty-workspace navigation survives a stale native selection snapshot', async t => {
+  const fixture = await mountForTest(t, makeSnapshot({
+    workspaces: [workspace('W1', 'Workspace One'), workspace('W2', 'Workspace Two')],
+    groups: [
+      group('G1', 'W1', 'Group One', true),
+      group('G-empty', 'W2', 'Empty Group', true),
+    ],
+    terminals: [pane('P1', 'W1', 'G1', 'native:P1', true, true, 'P1')],
+  }));
+  fixture.native.selectGroup = async (_connectionId, groupId) => {
+    fixture.environment.calls.push({ method: 'selectGroup', groupId });
+  };
+  let resolveCommandSnapshot;
+  const commandSnapshot = new Promise(resolve => { resolveCommandSnapshot = resolve; });
+  const getWorkspaceState = fixture.native.getWorkspaceState;
+  fixture.native.getWorkspaceState = async (...args) => {
+    const state = await getWorkspaceState(...args);
+    resolveCommandSnapshot();
+    return state;
+  };
+
+  await press(fixture.root, findTestId(fixture.root, 'workspace-row-W2'));
+  assert.ok(fixture.environment.calls.some(call => call.method === 'selectGroup' && call.groupId === 'G-empty'));
+  await act(async () => { await commandSnapshot; });
+  const visibilityBeforeSnapshot = fixture.environment.visibility.length;
+
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    selectedPane: null,
+    workspaces: [workspace('W1', 'Workspace One'), workspace('W2', 'Workspace Two')],
+    groups: [
+      group('G1', 'W1', 'Group One', true),
+      group('G-empty', 'W2', 'Empty Group', true),
+    ],
+    terminals: [pane('P1', 'W1', 'G1', 'native:P1', false, true, 'P1')],
+  }));
+
+  assert.equal(workspaceTitle(fixture.root), 'Workspace Two');
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(fixture.environment.visibility.slice(visibilityBeforeSnapshot).includes(false), true);
+  assert.equal(fixture.environment.visibility.at(-1), false);
+});
+
 test('empty selected group after a moved terminal keeps the last native workspace', async t => {
   const fixture = await mountForTest(t, makeSnapshot());
   await openWorkspace(fixture.root, 'W1');
