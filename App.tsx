@@ -284,7 +284,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-')) : EMPTY_WORKSPACES);
   const panes = session.terminals;
   const [screen, setScreen] = useState<'workspaces' | 'terminal'>(() => fixture?.screen ?? 'workspaces');
-  const [workspaceId, setWorkspaceId] = useState(() => fixture?.workspaceId ?? '');
+  const [rememberedWorkspaceId, setWorkspaceId] = useState(() => fixture?.workspaceId ?? '');
   const [selectedPaneIds, setSelectedPaneIds] = useState<Record<string, string>>(() => fixture?.selectedPaneIds ?? {});
   const [formVisible, setFormVisible] = useState(() => fixture?.formVisible ?? false);
   const [hostPromptDeferred, setHostPromptDeferred] = useState(false);
@@ -413,30 +413,41 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     ], { cancelable: false });
   }, [connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
 
+  const nativeSelectedPane = panes.find(pane => pane.selected);
+  const selectedWorkspaceId = nativeSelectedPane?.workspaceId;
+  // Follow the native selection in the same render as its snapshot. A pane
+  // moved by another client keeps its native handle and input controller.
+  const workspaceId = screen === 'terminal' ? selectedWorkspaceId ?? rememberedWorkspaceId : rememberedWorkspaceId;
+  useEffect(() => {
+    // Retain the last displayed workspace when an empty Group clears pane
+    // selection. Group.selected is per-workspace, not a global active Group.
+    if (screen === 'terminal' && selectedWorkspaceId !== undefined) setWorkspaceId(selectedWorkspaceId);
+  }, [screen, selectedWorkspaceId]);
   const workspaces = useMemo(() => session.workspaces.map(workspace => ({ ...workspace, panes: panes.filter(pane => pane.workspaceId === workspace.id) })), [session.workspaces, panes]);
   const workspace = workspaces.find(item => item.id === workspaceId);
   const groups = session.groups.filter(group => group.workspaceId === workspaceId);
-  const group = groups.find(group => group.selected) ?? groups[0];
+  const group = groups.find(group => group.id === nativeSelectedPane?.groupId)
+    ?? groups.find(group => group.selected) ?? groups[0];
   const groupPanes = workspace?.panes.filter(pane => pane.groupId === group?.id) ?? [];
-  const chosenPaneId = selectedPaneIds[group?.id ?? ''];
-  const selectedPane = groupPanes.find(pane => pane.selected)
-      ?? groupPanes.find(pane => pane.id === chosenPaneId)
-      ?? groupPanes.find(pane => pane.active)
-      ?? groupPanes[0];
-  const activeWorkspaceId = panes.find(pane => pane.selected)?.workspaceId
+  // Remembered/active panes are candidates for explicit selectPane commands,
+  // never alternate surfaces for a controller still bound to another pane.
+  const selectedPane = groupPanes.find(pane => pane.selected);
+  const activeWorkspaceId = selectedWorkspaceId
     ?? session.groups.find(group => group.workspaceId === workspaceId && group.selected)?.workspaceId;
   const colors = homeColors;
   const resolvedTheme = homeColors === DARK ? 'dark' : 'light';
   const currentProfile = profiles.find(profile => profile.id === profileId);
   const presentation = connectionPresentation(connection);
   const ready = connection.state === 'Ready';
+  const terminalVisible = Boolean(ready && workspace && selectedPane)
+    && screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible
+    && !nameRequest && appState === 'active';
   useEffect(() => {
     if (smokeFixtureActive) return;
-    const visible = screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active';
     foregroundCommands.current = foregroundCommands.current
-      .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, visible))
+      .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, terminalVisible))
       .catch(() => setControlMessage('ターミナルの表示状態を接続へ反映できませんでした。再接続してください。'));
-  }, [screen, sheet, modalPending, formVisible, settingsVisible, nameRequest, appState, smokeFixtureActive]);
+  }, [terminalVisible, smokeFixtureActive]);
   const closing = connection.state === 'Closing';
   const active = !['Disconnected', 'Failed', 'Closing'].includes(connection.state);
   const attempted = Boolean(connection.host);

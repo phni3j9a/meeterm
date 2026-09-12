@@ -129,9 +129,18 @@ operation に分けます。
 controller lease を持つ選択 pane だけが input を送信します。別 controller の競合は明示的な
 error とし、release・disconnect・hidden view では新しい input を停止します。通常の PC
 client と direct controller が同時に存在できることと、同時編集を順序付ける保証は別です。
+競合時は、別の接続で操作権を解放したあとに再接続します。スマホ側の「操作を引き継ぐ」
+ボタンや、専用の閲覧モードへ切り替えるUIはありません。
 Issue の初期 product scope は simultaneous phone/PC editing の保証ではなく、hand-off です。
 
 ## lifecycle と PC handoff
+
+Terminal画面はnative snapshotの選択端末を表示します。PCなどから端末が別のWorkspaceや
+Groupへ移動した場合、表示するWorkspace/Groupも同じ更新で移動先へ追従し、同じnative
+端末IDを保持します。移動元のWorkspaceがなくなっても、生存する選択端末を表示します。
+操作対象の選択はRustが管理し、画面だけ別端末へ切り替えるfallbackは行いません。
+選択端末がなくなった場合はnative terminal viewを閉じ、表示状態をnativeへ通知します。
+空のGroupは現在のWorkspace内の選択を維持し、Workspace一覧からの自動遷移は行いません。
 
 画面を hidden にすると `set_terminal_visible(false)` が現在の controller を release し、
 SSH と metadata subscription は維持します。release は Herdr stream を closed/EOF まで

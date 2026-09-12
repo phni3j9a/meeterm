@@ -58,6 +58,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Check App snapshot and terminal selection transitions
+        run: npm run test:app
+
       - name: Check iOS Simulator entitlement generation
         run: python3 scripts/ci/test_ios_simulator_entitlements.py
 

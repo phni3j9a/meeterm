@@ -46,12 +46,17 @@ session を変更しません。ローカル成功とGitHub CIの結果は区別
 
 ```sh
 npm run typecheck
+npm run test:app
 python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 git diff --check
 ```
 
 全コマンドを毎回実行する必要はありません。変更に関連するチェックを選びます。
+`test:app`は実際の`App.tsx`をReactで動かし、native bridgeの状態取得をテスト用snapshotに
+置き換えます。通常の画面操作とsnapshot更新を通して、選択端末の外部移動、移動元Workspaceの
+消失、Groupと空のGroup、画面のnative端末IDと表示状態の通知を確認します。React Nativeの
+host viewとnative bridgeはテスト用なので、実機の描画やHerdr controller自体の検証とは分けます。
 macOSでは `scripts/ci/ios-typecheck.sh` がCNG/build前にUI XCTestとnative入力関連Swiftを型チェックします。
 production moduleへ依存する保存テストのコンパイル・Keychain実行はアプリビルドとnativeテストで確認します。
 
