@@ -54,3 +54,93 @@ buttonなので、この問い合わせは行の実装と一致していませ�
 Herdr選択とsession欄、Group chooserとその一覧、選択Group内のTerminal tabs、Agent名と
 作業中表示、nativeの日本語/CJK・代表emojiが読めることを確認しました。Herdr一覧の画像は
 未取得であり、この実行を4画面全体の表示成功とは扱いません。
+
+## 中間候補の確認範囲
+
+- `39cf3ff` の[実行34678742945](https://github.com/phni3j9a/meeterm/actions/runs/34678742945)は、
+  nativeの画面切り替え不具合を修正した次の候補により中止されました。Androidはfoundation
+  (`smoke_exit=0`)が成功し、Herdr connection/groups/terminalの3画面まで取得しました。
+  foundationと3画面を実際に開き、余白、日本語/CJK、GroupとTerminalの表示を確認しました。
+  Herdr一覧と既存full操作は未完了です。この実行では先のANRは発生していませんが、
+  e117b06のANRの直接原因が解決したという証拠にはしません。
+- `8329ad8` の[一般CI34679263995](https://github.com/phni3j9a/meeterm/actions/runs/34679263995)は成功しました。
+  Rust jobで実Herdr統合が16.51秒、実OpenSSH/tmux統合が15.85秒で成功しています。
+  [モバイル34679261885](https://github.com/phni3j9a/meeterm/actions/runs/34679261885)は、
+  関連Git workspaceへの終了波及を防ぐ修正のため中止されました。
+  Androidはfoundation (`smoke_exit=0`)が成功し、この実行にANR/crashはありません。
+  Herdr 4画面を取得し、4枚とも実際に開きました。Main workspaceの4ターミナルと
+  確認待ち1・作業中1・応答完了1、Tools workspaceの1ターミナルと状態未確認1を確認しました。
+  Group chooser、Group内のpane tabs、Agent表示、日本語/CJKが読めています。
+  Androidの代表emojiは以前からの単色の輪郭表示で、カラーemojiの再現成功とは扱いません。
+  既存fullのpassword formの撮影まで進みましたが、full全体の完了記録はなく、
+  jobは新しい候補の実行によって中止されています。
+  iOSはproduction保存4件が成功し、standardの名前変更まで9画面を取得、handoff画面を
+  開く途中で中止されました。Herdr 4画面や最後のfoundationの合格には読み替えません。
+- `2934f8e` と `0d7eab8` の中間実行は、利用手順の整理と共有の名前変更画面の説明修正で
+  最終候補へ置き換えました。途中の実行は最終候補の合格証拠に使いません。
+
+## 最終候補
+
+対象は `62a5ce6e50e3bbf83ca0719b09f3a086017e7b76` です。
+[PR側一般CI34680787435](https://github.com/phni3j9a/meeterm/actions/runs/34680787435)の
+全jobが成功しました。Rust library79件、SSH driver132件、先行Herdr診断6件、Clippyが成功し、
+実OpenSSH/tmuxは15.32秒、実Herdrは20.87秒で成功しました。Herdrのケースは
+`confirm_close=false` の親pane/group/workspace終了拒否と関連先保持も含みます。
+JavaScript/Expo、iOSの事前チェック、Androidのbuild/native unit testsも成功しています。
+
+[Mobile smoke34680785274](https://github.com/phni3j9a/meeterm/actions/runs/34680785274)で
+iOS standardとAndroid fullは成功しました。iOS fresh buildは07:29:07–07:45:33 UTCに
+成功しました。iOS sshは[再利用実行34681595592](https://github.com/phni3j9a/meeterm/actions/runs/34681595592)で
+失敗しました。元のfresh buildと同じcommit/toolchain/hashのpristine test productsを、
+専用の再利用経路で復元した実行です。詳細は以下に残します。
+
+### iOS standard: 成功、画像確認済み
+
+production保存4件・native入力7件が成功し、14画面を撮影しました。UI側の
+`standard_complete` は287.068秒です。新しいprocessのnative readiness、Metal first frame、
+no-crashも成功しています。`ios-foundation-validation.txt` は `result=passed`、
+`renderer_backend=metal` です。
+
+`standard-herdr-connection.png`、`standard-herdr-groups.png`、
+`standard-herdr-terminal.png`、`standard-herdr-workspaces.png`、foundationの`terminal.png`を
+実際に開きました。接続画面のHerdr/session欄、2つのGroupと各2ターミナル、選択Group内の
+Code/Shell tabs、Agent名と作業中表示が読めます。Workspace一覧はMainが4ターミナルで
+確認待ち1・作業中1・応答完了1、Toolsが1ターミナルで状態未確認1です。日本語/CJK、
+結合文字、代表カラーemojiとnative端末が表示され、操作欄と本文の重なりはありません。
+これらは明示的なsmoke routeの表示確認であり、実Herdrに接続する操作の実測とは分けます。
+
+### Android full: 成功、画像確認済み
+
+job `103518963006` は39分41秒で成功しました。foundationは `smoke_exit=0` で、
+今回のapp ANRはありません。実OpenSSH/tmuxのfullは `result=passed`、
+`stage=disconnect_after_resume`、`reason=ok` です。完了markerは69個で、重複はありません。
+保存済みprofileと認証情報の復元、background/foreground、process再起動後の再接続、
+Workspace/Paneの作成・改名・終了、selection/copy、CJK/ANSI・size、複数paneへの実入力、
+PC handoffのlayout、切断・再接続後の入力まで含みます。
+
+Herdr 4画面とfoundationの`terminal.png`を実際に開き、接続欄、Group一覧と選択、
+Terminal tabs、Agent名・状態、Main/Tools workspaceの件数を確認しました。日本語/CJKと
+native端末は読め、操作欄との重なりはありません。代表emojiは既存の単色表示です。
+`ssh-terminal-keyboard.png`と`daily-created-pane.png`も実見し、実SSHの日本語出力、
+keyboard/toolbar、改名したWorkspaceとPaneの表示を確認しました。
+
+iOSの`standard-workspace-name.png`も実見し、共有の名前変更画面の説明が
+「PC 側にも同じ名前が表示されます。」になっていることを確認しました。
+
+### iOS ssh: marker失敗、入力到達の診断を追加
+
+`34681595592` は `stage=xcuitest_ssh / reason=ui_test_failed` で失敗しました。
+ホスト鍵確認とSSH接続は成功し、キーボードの文字入力、Pasteの完了、Returnまで進み、
+Swift 570行のmarker待機が失敗しました。これはXcode全体のtimeoutではありません。
+最終UI stageは後片付けの `teardown_complete` です。Metal first frameは文字入力開始前に
+出ています。入力成功後の撮影には到達せず、画像はありません。
+
+先に成功したe117b06と比べて、この短いSSH testとtmux側のnative入力経路に実装変更は
+ありません。今回のHerdr controllerはこのtmux接続テストの入力経路ではありません。
+現ログにはremote echoがなく、手入力・貼り付け・Returnのどこで伝達が欠けたかは未確定です。
+原因不明のままアプリの入力方法や判定を変えず、Python driverに隔離fixtureの入力到達を
+調べる診断を追加します。認証後の該当stageに限り3つのfixture paneを読み取り、期待する
+command/貼り付け部分の有無、keyboard prefixの一致文字数、marker結果だけを記録します。
+生の端末内容・認証情報・pathは公開せず、入力の再送・assertionの省略・deadline変更も行いません。
+テストソース変更のためiOS sshはfresh buildで確認します。アプリとnativeソースは62a5ce6から
+変わらないため、上記Android fullとiOS standardの結果・画像確認はそのまま対応します。

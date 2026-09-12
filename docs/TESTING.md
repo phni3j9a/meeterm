@@ -149,6 +149,9 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
 端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
 実接続失敗では保存metadataの一致フラグとstrict SSH probeを確認できますが、事後probe成功だけでUI入力成功は証明できません。
+短いSSH入力のmarker待機まで進んだ実行では、`ios-ssh-input-diagnostics.json`に隔離fixtureの
+command echo、手入力とpasteの到達、markerの一致をbooleanと件数で残します。生の端末内容は
+保存しません。この事後診断は入力を再送せず、元のXCTestの成否を変えません。
 秘密欄の画像や入力値、rawリモートエラーを診断に残しません。
 
 ## 受入記録と限界
