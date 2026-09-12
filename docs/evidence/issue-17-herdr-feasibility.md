@@ -52,7 +52,9 @@ native helperのビルドはリモート入力の待機開始前に行います�
 
 frameを受けたnative pasteは`first\rsecond`で、bracketed pasteのラッパーがありません。
 これは通常のraw出力ではmodeを受け取る既存native経路へ、モードのない描画用frameを与えた結果です。
-同じcontrol streamに完全なbracketed pasteを一括で渡す適応では、TUIがラッパーを含めた正しいbytesを受信しました。
+同じcontrol streamに元のUTF-8文字列`first\n日本語`を完全なbracketed pasteとして一括で渡す適応では、
+TUIがLF・日本語・ラッパーを含めた期待どおりのbytesを受信しました。modeなしnative出力へ後から
+ラッパーを足す方法はLFを既にCRへ変えているため、この適応には使用しません。
 貼り付け自体はupstreamの未解決点ではありません。
 
 計11確認のうち9件が成功、既存入力経路へ単にframeを与える場合の特殊キーとpaste mode復元の2件が不一致でした。

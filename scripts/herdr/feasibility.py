@@ -368,10 +368,16 @@ def probe(fixture: HerdrFixture, output: Path, report: dict) -> None:
         "direct_controller_still_connected": stream.process.poll() is None,
         "meaning": "Correct logical-key encoding is available, but this API does not enforce the direct controller lease.",
     }]
-    wrapped = b"\x1b[200~" + paste + b"\x1b[201~"
+    # Preserve the original paste's LF and UTF-8. Wrapping the mode-less native
+    # output above would already have converted LF to CR and would only test a
+    # self-defined byte sequence, not multiline clipboard semantics.
+    paste_source = "first\n日本語".encode()
+    wrapped = b"\x1b[200~" + paste_source + b"\x1b[201~"
     stream.input(wrapped)
     stream.until("PASTE_RESULT_READY")
-    check("explicit_control_paste_envelope", json.loads(result_path.read_text())["paste_hex"] == wrapped.hex())
+    actual_paste = json.loads(result_path.read_text())["paste_hex"]
+    check("explicit_control_paste_envelope", actual_paste == wrapped.hex(),
+          expected_hex=wrapped.hex(), remote_hex=actual_paste)
     # Terminating the SSH client simulates losing the mobile process. Keep the
     # full-screen process waiting for q; attempt a new controller only once.
     # Headless Herdr may retain the last PTY size until a desktop client joins.

@@ -39,7 +39,9 @@
     },
     {
       "name": "explicit_control_paste_envelope",
-      "passed": true
+      "passed": true,
+      "expected_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e",
+      "remote_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e"
     },
     {
       "name": "ssh_loss_and_fullscreen_reconnect",
@@ -51,9 +53,9 @@
     }
   ],
   "scope": "Linux OpenSSH CLI + shared Rust terminal; no mobile UI/GPU/IME evidence",
-  "started_at": "2026-09-12T03:25:45.680434+00:00",
+  "started_at": "2026-09-12T03:29:56.955745+00:00",
   "source_sha256": {
-    "scripts/herdr/feasibility.py": "9db1d538596c4c671b3da47e759390f9b496f3b0b42e9e9733d66f3252c35d2e",
+    "scripts/herdr/feasibility.py": "e57cf827b0391187e8a23986f5fe55c459618de665bb5bcceda9a61ed02e897b",
     "native/meeterm-core/src/herdr_probe_tests.rs": "2958a2672ad7d2615bb90fbdee284af242c634b2ef802ceb98094ba75fa1f1ac",
     "native/meeterm-core/src/terminal.rs": "c334ac9e7077187a1bd7d723acad29fe2155b151c240ac92194e91ab06bde055",
     "native/meeterm-core/src/input.rs": "93e7b6d29269f4b47be6d5effeb1dafc05a470cf1434309629a2827ffa8e5082",
