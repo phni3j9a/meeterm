@@ -125,6 +125,10 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-workspace-name.png",
       "standard-terminal-name.png",
       "standard-handoff.png",
+      "standard-herdr-connection.png",
+      "standard-herdr-groups.png",
+      "standard-herdr-terminal.png",
+      "standard-herdr-workspaces.png",
     ] {
       try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(name))
     }
@@ -482,6 +486,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let screens = [
       "home", "servers", "connection", "password", "workspaces", "terminal",
       "settings", "workspace-name", "terminal-name", "handoff",
+      "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
     ]
     for screen in screens {
       record("standard_screen_\(screen)_open")
@@ -623,6 +628,48 @@ final class MeetermSmokeUITests: XCTestCase {
     case "handoff":
       return app.staticTexts["PC で続きを"].waitForExistence(timeout: 30)
         && waitForHittable(button("Disconnect"), timeout: 30)
+    case "herdr-connection":
+      let backend = button("herdr backend")
+      let runtime = input("Herdr session name")
+      return app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30)
+        && waitForHittable(backend, timeout: 30)
+        && waitForSelected(backend)
+        && runtime.waitForExistence(timeout: 30)
+        && waitForShortFieldValue(runtime, expected: "dev", timeout: 30)
+    case "herdr-groups":
+      let title = app.staticTexts["Groupを切り替える"]
+      let development = button("Group Development")
+      let tests = button("Group Tests & review")
+      return title.waitForExistence(timeout: 30)
+        && development.waitForExistence(timeout: 30)
+        && tests.waitForExistence(timeout: 30)
+    case "herdr-terminal":
+      let groupPicker = button("Switch terminal group")
+      let terminal = app.otherElements["Terminal"]
+      return waitForHittable(groupPicker, timeout: 30)
+        && terminal.waitForExistence(timeout: 30)
+        && app.staticTexts["Claude Code"].waitForExistence(timeout: 30)
+        && app.staticTexts["作業中"].waitForExistence(timeout: 30)
+    case "herdr-workspaces":
+      let total = app.staticTexts.matching(
+        NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "すべて", "2")
+      ).firstMatch
+      // WorkspaceRow is one accessible button with an explicit label. Its
+      // count/Agent Text children are grouped into that element on iOS, so
+      // querying them as independent staticTexts cannot establish readiness.
+      // Require both exact production rows and their visible tap targets;
+      // pane counts and Agent summaries remain part of screenshot review.
+      let expected = Set(["Workspace Main workspace", "Workspace Tools workspace"])
+      guard Set(waitForWorkspaceLabels(minimum: 2)) == expected else { return false }
+      let main = app.buttons.matching(
+        NSPredicate(format: "identifier == %@", "workspace-row-@smoke-main")
+      ).firstMatch
+      let tools = app.buttons.matching(
+        NSPredicate(format: "identifier == %@", "workspace-row-@smoke-tools")
+      ).firstMatch
+      return total.waitForExistence(timeout: 30)
+        && waitForHittable(main, timeout: 30)
+        && waitForHittable(tools, timeout: 30)
     default:
       return false
     }

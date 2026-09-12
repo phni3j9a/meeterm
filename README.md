@@ -1,17 +1,36 @@
 # meeterm
 
-**meeterm** is a smartphone-first SSH and tmux client for carrying the same development environment between phone and desktop.
+**meeterm** is a smartphone-first SSH client for carrying the same development environment between phone and desktop. It supports the ordinary tmux backend and an explicitly selected Herdr backend.
 
 The core idea is simple: the phone is not a separate development environment. It is another viewport into the same tmux workspace you can later attach to from a PC.
 
 ## Product model
 
-- **Server** = SSH host
-- **Managed session** = tmux session `meeterm`
-- **Workspace** = tmux window
-- **Terminal** = tmux pane
+- **Connection** = SSH host
+- **Runtime** = tmux session `meeterm`, or a Herdr `default`/named session
+- **Workspace** = tmux window, or Herdr workspace
+- **TerminalGroup** = one virtual group for a tmux window, or a Herdr tab
+- **Terminal** = tmux pane, or Herdr pane
 
-On mobile, panes are presented as tabs and the active pane is expanded for a phone-sized viewport. On desktop, `tmux attach -t meeterm` exposes the same windows and panes using their normal tmux layout.
+On mobile, panes are presented as tabs and the active pane is expanded for a phone-sized viewport. A profile selects its backend and runtime explicitly; profiles saved before backend support continue to use tmux. On desktop, `tmux attach -t meeterm` exposes the tmux windows and panes using their normal layout, while a Herdr runtime remains available to the normal Herdr client.
+
+## Issue #17 implementation status
+
+The common model is `Workspace → TerminalGroup → Terminal`. The Rust/native
+backend boundary maps tmux to `window → virtual group → pane` and Herdr to
+`workspace → tab → pane`. Herdr support uses the existing 0.9.0 public protocol
+(protocol 22, schema 1) over direct SSH stream-local control. Terminal frames,
+input, scroll, resize, lifecycle, stable terminal IDs, and native rendering
+remain below the JavaScript boundary; Herdr itself is unchanged.
+
+The [production native integration](docs/evidence/issue-17-herdr-native.md)
+exercises real Herdr 0.9.0 through an isolated russh endpoint, including normal
+PC client handoff and safe handling of related Git workspaces. The prior
+OpenSSH public CLI proof remains historical evidence. The
+[mobile acceptance record](docs/evidence/issue-17-herdr-mobile.md) tracks exact
+source revisions, suite results, actual screenshot review, and remaining limits.
+See [`docs/HERDR.md`](docs/HERDR.md) for setup, input semantics, handoff behavior,
+close-scope restrictions, and verification commands.
 
 ## Architecture direction
 
@@ -22,17 +41,20 @@ React Native / Expo
         ▼
 Rust native core
 ├── russh
-├── tmux Control Mode
+├── backend selector
+│   ├── tmux Control Mode
+│   └── Herdr direct stream-local control
 ├── connection / terminal lifecycle
 ├── alacritty_terminal
 └── native GPU renderer
         │
-        │ SSH
+        │ ordinary SSH
         ▼
 OpenSSH server
-└── tmux session: meeterm
-    ├── window = Workspace
-    └── pane   = Terminal
+├── tmux session: meeterm
+│   ├── window = Workspace
+│   └── pane   = Terminal
+└── existing Herdr 0.9.0 session/socket
 ```
 
 Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME composition, and rendering frames must stay out of JavaScript. React Native owns app chrome and product state; the native core owns terminal data and rendering.
@@ -43,7 +65,7 @@ The first evaluation app has passed real SSH connection, workspace/pane selectio
 
 The shared Rust terminal foundation has Android and iOS native adapters, with GLES on Android and Metal on iOS. Hosted iOS Simulators without Metal use an explicitly identified native CoreGraphics fallback. Both platforms have build/install/launch/first-frame smoke jobs. The original Android foundation was also exercised on a physical Pixel 3, including Japanese IME composition/commit and resize; that historical device evidence remains separate from later SSH validation.
 
-The session path uses a Rust-owned `russh` connection and tmux Control Mode to attach to or create the ordinary `meeterm` session. Use **Connect** to enter a host and username, then choose OpenSSH private-key authentication (with an optional passphrase) or the SSH `password` authentication method. Explicitly verify the host key. Keyboard-interactive prompts and MFA are not added. Workspaces represent tmux windows; terminal tabs select their panes. **Disconnect** leaves the remote workspace running, and **Reconnect** uses the process-local authentication credential to resume it. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, and resize stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace search, pane tabs, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
+The session path uses a Rust-owned `russh` connection and an explicit backend. The tmux path attaches to or creates the ordinary `meeterm` session through Control Mode; the Herdr path connects to the selected existing `default` or named session through its direct public stream-local API. Use **Connect** to enter a host and username, select the backend/runtime, then choose OpenSSH private-key authentication (with an optional passphrase) or the SSH `password` authentication method. Explicitly verify the host key. Keyboard-interactive prompts and MFA are not added. **Disconnect** leaves the selected remote runtime running, and **Reconnect** uses the process-local authentication credential to resume it. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, resize, scroll, and rendering stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace/group/pane selection, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
 
 ## Quick start
 
@@ -61,6 +83,7 @@ npx expo run:android --device
 
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Herdr backend and usage](docs/HERDR.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Standard testing workflow](docs/TESTING.md)
 - [First-app evaluation, installation, and evidence](docs/FIRST_APP.md)
@@ -71,6 +94,7 @@ npx expo run:android --device
 - [Android PoC runbook](docs/POC_ANDROID.md)
 - [Issue #1 Android device validation](docs/evidence/issue-1-android-device.md)
 - [Issue #13 iOS SSH and native smoke acceptance](docs/evidence/issue-13-ios-acceptance.md)
+- [Issue #17 Herdr feasibility evidence](docs/evidence/issue-17-herdr-feasibility.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [ADR 0001: native terminal first](docs/decisions/0001-native-terminal-first.md)
 - [Agent instructions](AGENTS.md)

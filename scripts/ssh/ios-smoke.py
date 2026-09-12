@@ -124,6 +124,7 @@ SSH_TEST_ENVIRONMENT_NAMES = (
 )
 
 CONNECTION_FAILURE_DIAGNOSTICS_NAME = "ios-ui-connection-diagnostics.txt"
+INPUT_DIAGNOSTICS_NAME = "ios-ssh-input-diagnostics.json"
 SSH_PROBE_NONCE = "meeterm-ios-ssh-probe-v1"
 FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -255,6 +256,67 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
     if set(workspaces) != {"ios-main", "ios-side"} or len(panes) != 3:
         raise SmokeFailure("tmux_fixture", "topology_invalid")
     return len(workspaces), len(panes)
+
+
+def write_short_ssh_input_diagnostics(
+    artifact_dir: Path, socket_path: Path, marker_path: Path
+) -> None:
+    """Observe only the disposable, post-auth SSH fixture; never publish its text.
+
+    The keyboard prefix, pasted suffix and Return have separate native paths.
+    Echo evidence helps locate a missing command without sending more input or
+    turning a failed marker assertion into a pass. Unexpected clipboard/terminal
+    contents may contain credentials, so the artifact contains only fixed keys,
+    booleans and counts, including on a successful run for comparison.
+    """
+    stages = (artifact_dir / "ios-ui-stages.txt").read_text().splitlines()
+    if not {"ssh_connected", "ssh_native_input_await_remote_marker"}.issubset(stages):
+        return
+    if socket_path != fixture_socket():
+        raise SmokeFailure("input_diagnostics", "socket_path_invalid")
+    marker = required("MEETERM_IOS_MARKER_VALUE")
+    if not re.fullmatch(r"ios-ssh-input-[0-9a-f]{16}", marker):
+        raise SmokeFailure("input_diagnostics", "marker_invalid")
+    quoted_path = "'" + str(marker_path).replace("'", "'\\''") + "'"
+    suffix = f" '%s\\n' '{marker}' > {quoted_path}"
+    command = "printf" + suffix
+    pane_ids = run_tmux(
+        socket_path, ("list-panes", "-s", "-t", "=meeterm", "-F", "#{pane_id}"),
+        "input_diagnostics",
+    ).stdout.splitlines()
+    if len(pane_ids) != 3 or any(not re.fullmatch(r"%[0-9]+", pane) for pane in pane_ids):
+        raise SmokeFailure("input_diagnostics", "topology_invalid")
+    evidence = []
+    for pane in pane_ids:
+        capture = run_tmux(
+            socket_path, ("capture-pane", "-p", "-J", "-S", "-30", "-t", pane),
+            "input_diagnostics",
+        ).stdout
+        before_suffix = capture.split(suffix, 1)[0] if suffix in capture else ""
+        prefix_length = max(
+            (length for length in range(1, 7) if before_suffix.endswith("printf"[-length:])),
+            default=0,
+        )
+        evidence.append({
+            "capture_char_count": len(capture),
+            "capture_line_count": len(capture.splitlines()),
+            "command_echo_seen": command in capture,
+            "keyboard_word_seen": "printf" in capture,
+            "paste_body_seen": suffix in capture,
+            "keyboard_prefix_suffix_length": prefix_length,
+            "marker_echo_seen": marker in capture,
+            "marker_path_echo_seen": str(marker_path) in capture,
+            "shell_command_not_found": "not found" in capture,
+            "shell_permission_denied": "Permission denied" in capture,
+            "shell_syntax_error": "syntax error" in capture.lower(),
+        })
+    marker_exists = marker_path.is_file()
+    marker_matches = marker_exists and marker_path.read_text() == marker + "\n"
+    write_text(artifact_dir / INPUT_DIAGNOSTICS_NAME, json.dumps({
+        "marker_file_exists": marker_exists,
+        "marker_file_matches": marker_matches,
+        "panes": evidence,
+    }, indent=2) + "\n")
 
 
 def ordinary_desktop_attach(socket_path: Path) -> None:
@@ -1285,6 +1347,7 @@ def main() -> int:
     validation_path = args.artifact_dir / validation_filename
     try:
         args.artifact_dir.mkdir(parents=True, exist_ok=True)
+        (args.artifact_dir / INPUT_DIAGNOSTICS_NAME).unlink(missing_ok=True)
         try:
             (args.artifact_dir / CONNECTION_FAILURE_DIAGNOSTICS_NAME).unlink()
         except FileNotFoundError:
@@ -1532,6 +1595,13 @@ def main() -> int:
         )
         return 1
     finally:
+        if suite == "ssh" and socket_path is not None and marker_path is not None:
+            try:
+                write_short_ssh_input_diagnostics(args.artifact_dir, socket_path, marker_path)
+            except Exception:
+                # Diagnostic failures must preserve the original test outcome.
+                write_text(args.artifact_dir / INPUT_DIAGNOSTICS_NAME,
+                           '{"unavailable": true}\n')
         if marker_path is not None:
             for path in (
                 marker_path,

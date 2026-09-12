@@ -84,12 +84,15 @@ test ! -e "${artifact_root}/terminal.png"
 grep -Fq 'screenshot capture produced no image data' \
   "${artifact_root}/screenshot-unavailable.txt"
 
-# Standard keeps its ten direct seeded-screen checkpoints as evidence and
+# Standard keeps its direct seeded-screen checkpoints, including the four
+# Herdr presentation fixtures, as evidence and
 # never captures a replacement screenshot from the collector.
 for checkpoint in \
   standard-home standard-servers standard-connection standard-password \
   standard-workspaces standard-terminal standard-settings \
-  standard-workspace-name standard-terminal-name standard-handoff; do
+  standard-workspace-name standard-terminal-name standard-handoff \
+  standard-herdr-connection standard-herdr-groups standard-herdr-terminal \
+  standard-herdr-workspaces; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
 done
 : > "${xcrun_log}"
@@ -104,8 +107,10 @@ grep -Fq 'XCTest did not capture the fresh native foundation' \
   "${artifact_root}/screenshot-unavailable.txt"
 cmp "${artifact_root}/standard-terminal-name.png" "${temporary_root}/expected.png"
 : > "${artifact_root}/standard-handoff.png"
+: > "${artifact_root}/standard-herdr-workspaces.png"
 run_collector standard
 grep -Fq 'standard-handoff' "${artifact_root}/ui-screenshots-unavailable.txt"
+grep -Fq 'standard-herdr-workspaces' "${artifact_root}/ui-screenshots-unavailable.txt"
 if grep -Eq 'host-trust|reconnected|forms-controls' "${artifact_root}/ui-screenshots-unavailable.txt"; then
   echo "standard evidence incorrectly requires old full or form checkpoints" >&2
   exit 1

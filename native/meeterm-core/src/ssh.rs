@@ -5,6 +5,7 @@
 //! queues; callers poll the fixed connection snapshot and terminal revision.
 
 mod control;
+mod herdr_control;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -29,6 +30,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
 use crate::tmux::{self, PaneSnapshot, SessionSnapshot, WindowSnapshot};
+use crate::workspace::{self, Backend, RuntimeSnapshot};
 
 /// Maximum number of bytes used by each fixed-size string in the C snapshot.
 pub const HOST_CAPACITY: usize = 256;
@@ -169,6 +171,8 @@ pub struct ConnectOptions {
     pub username: String,
     pub credentials: AuthOptions,
     pub known_hosts_path: PathBuf,
+    pub backend: Backend,
+    pub runtime: Option<String>,
 }
 
 impl ConnectOptions {
@@ -182,7 +186,25 @@ impl ConnectOptions {
             return Err(ConnectionError::InvalidArgument);
         }
         self.credentials.validate()?;
-        Ok(Self { host, ..self })
+        let runtime = self.runtime.filter(|value| {
+            !(value.is_empty() || self.backend == Backend::Herdr && value == "default")
+        });
+        if let Some(name) = runtime.as_deref()
+            && (self.backend != Backend::Herdr
+                || name.len() > 64
+                || name == "."
+                || name == ".."
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')))
+        {
+            return Err(ConnectionError::InvalidArgument);
+        }
+        Ok(Self {
+            host,
+            runtime,
+            ..self
+        })
     }
 }
 
@@ -252,6 +274,8 @@ struct ConnectionProfile {
     username: String,
     known_hosts_path: PathBuf,
     credentials: StoredCredentials,
+    backend: Backend,
+    runtime: Option<String>,
 }
 
 /// The last explicitly requested endpoint.  This remains after credentials
@@ -264,6 +288,8 @@ struct SessionEndpoint {
     port: u16,
     username: String,
     known_hosts_path: PathBuf,
+    backend: Backend,
+    runtime: Option<String>,
 }
 
 impl SessionEndpoint {
@@ -273,6 +299,8 @@ impl SessionEndpoint {
             port: options.port,
             username: options.username.clone(),
             known_hosts_path: options.known_hosts_path.clone(),
+            backend: options.backend,
+            runtime: options.runtime.clone(),
         }
     }
 
@@ -281,6 +309,8 @@ impl SessionEndpoint {
             && self.port == options.port
             && self.username == options.username
             && self.known_hosts_path == options.known_hosts_path
+            && self.backend == options.backend
+            && self.runtime == options.runtime
     }
 }
 
@@ -298,6 +328,7 @@ struct SessionState {
     viewport: Option<(u16, u16)>,
     generation: u64,
     snapshot: SessionSnapshot,
+    herdr: herdr_control::Metadata,
     pane_terminals: HashMap<u64, TerminalId>,
     endpoint: Option<SessionEndpoint>,
     profile: Option<ConnectionProfile>,
@@ -308,6 +339,7 @@ struct SessionState {
     meeterm_zoomed_pane: Option<u64>,
     foreground: bool,
     automatic_reconnect: bool,
+    terminal_visible: bool,
 }
 
 impl Default for SessionState {
@@ -316,6 +348,7 @@ impl Default for SessionState {
             viewport: None,
             generation: 0,
             snapshot: SessionSnapshot::default(),
+            herdr: herdr_control::Metadata::default(),
             pane_terminals: HashMap::new(),
             endpoint: None,
             profile: None,
@@ -324,6 +357,7 @@ impl Default for SessionState {
             meeterm_zoomed_pane: None,
             foreground: true,
             automatic_reconnect: true,
+            terminal_visible: true,
         }
     }
 }
@@ -758,6 +792,11 @@ enum ControlCommand {
     RenamePane { pane_id: u64, name: String },
     ClosePane { pane_id: u64 },
     RefreshTerminal,
+    CreateGroup { window_id: u64, name: String },
+    RenameGroup { group_id: u64, name: String },
+    CloseGroup { group_id: u64 },
+    SelectGroup { group_id: u64 },
+    SetTerminalVisible { visible: bool },
 }
 
 struct ConnectionEntry {
@@ -836,6 +875,16 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
     }
     state.selected_pane = Some(pane_id);
     mark_selected(&mut state.snapshot, pane_id);
+    if state
+        .endpoint
+        .as_ref()
+        .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
+    {
+        for id in state.pane_terminals.values() {
+            registry::detach_transport(*id, state.generation);
+        }
+        state.herdr.select(pane_id);
+    }
     Ok(())
 }
 
@@ -897,6 +946,120 @@ pub fn rename_pane(
 pub fn close_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), ConnectionError> {
     ensure_pane_target(terminal_id, pane_id)?;
     enqueue_control(terminal_id, ControlCommand::ClosePane { pane_id })
+}
+
+pub fn create_group(
+    terminal_id: TerminalId,
+    window_id: u64,
+    name: &str,
+) -> Result<(), ConnectionError> {
+    validate_tmux_name(name)?;
+    ensure_window_target(terminal_id, window_id)?;
+    ensure_group_backend(terminal_id, None)?;
+    enqueue_control(
+        terminal_id,
+        ControlCommand::CreateGroup {
+            window_id,
+            name: name.to_owned(),
+        },
+    )
+}
+
+pub fn rename_group(
+    terminal_id: TerminalId,
+    group_id: u64,
+    name: &str,
+) -> Result<(), ConnectionError> {
+    validate_tmux_name(name)?;
+    ensure_group_backend(terminal_id, Some(group_id))?;
+    enqueue_control(
+        terminal_id,
+        ControlCommand::RenameGroup {
+            group_id,
+            name: name.to_owned(),
+        },
+    )
+}
+
+pub fn close_group(terminal_id: TerminalId, group_id: u64) -> Result<(), ConnectionError> {
+    ensure_group_backend(terminal_id, Some(group_id))?;
+    enqueue_control(terminal_id, ControlCommand::CloseGroup { group_id })
+}
+
+pub fn select_group(terminal_id: TerminalId, group_id: u64) -> Result<(), ConnectionError> {
+    ensure_group_backend(terminal_id, Some(group_id))?;
+    let pane = {
+        let state = session_state(terminal_id);
+        let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+        state
+            .herdr
+            .snapshot
+            .terminals
+            .iter()
+            .find(|terminal| terminal.group_id == group_id.to_string() && terminal.active)
+            .or_else(|| {
+                state
+                    .herdr
+                    .snapshot
+                    .terminals
+                    .iter()
+                    .find(|terminal| terminal.group_id == group_id.to_string())
+            })
+            .and_then(|terminal| terminal.id.parse().ok())
+    };
+    if let Some(pane) = pane {
+        return select_pane(terminal_id, pane);
+    }
+    enqueue_control(terminal_id, ControlCommand::SelectGroup { group_id })
+}
+
+pub fn set_terminal_visible(terminal_id: TerminalId, visible: bool) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    {
+        let state = session_state(terminal_id);
+        let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+        state.terminal_visible = visible;
+        if !visible
+            && state
+                .endpoint
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
+        {
+            for id in state.pane_terminals.values() {
+                registry::detach_transport(*id, state.generation);
+            }
+        }
+    }
+    if let Ok(shared) = current_connection(terminal_id)
+        && let Some(sender) = shared.command_sender()
+    {
+        sender
+            .try_send(ControlCommand::SetTerminalVisible { visible })
+            .map_err(|_| ConnectionError::Internal)?;
+    }
+    Ok(())
+}
+
+fn ensure_group_backend(owner: TerminalId, group_id: Option<u64>) -> Result<(), ConnectionError> {
+    registry::shared_terminal(owner).map_err(map_terminal_error)?;
+    let state = session_state(owner);
+    let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    if !state
+        .endpoint
+        .as_ref()
+        .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
+        || group_id.is_some_and(|id| {
+            !state
+                .herdr
+                .snapshot
+                .groups
+                .iter()
+                .any(|group| group.id == id.to_string())
+        })
+    {
+        return Err(ConnectionError::InvalidArgument);
+    }
+    Ok(())
 }
 
 /// Ask the native Control Mode actor to recapture the selected pane. This is
@@ -1007,6 +1170,29 @@ pub fn session_snapshot(terminal_id: TerminalId) -> Result<SessionSnapshot, Conn
         .map_err(|_| ConnectionError::Internal)
 }
 
+pub fn workspace_snapshot_json(terminal_id: TerminalId) -> Result<String, ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let state = session_state(terminal_id);
+    let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    let snapshot = if let Some(endpoint) = state
+        .endpoint
+        .as_ref()
+        .filter(|endpoint| endpoint.backend == Backend::Herdr)
+    {
+        let mut snapshot = state.herdr.snapshot.clone();
+        snapshot.backend = Backend::Herdr;
+        snapshot.runtime = endpoint
+            .runtime
+            .clone()
+            .unwrap_or_else(|| "default".to_owned());
+        snapshot.groups_supported = true;
+        snapshot
+    } else {
+        RuntimeSnapshot::tmux(&state.snapshot)
+    };
+    serde_json::to_string(&snapshot).map_err(|_| ConnectionError::Internal)
+}
+
 fn prepare_session_endpoint(
     terminal_id: TerminalId,
     options: &ConnectOptions,
@@ -1037,6 +1223,7 @@ fn prepare_session_endpoint(
         .collect::<Vec<_>>();
     state.generation = 0;
     state.snapshot = SessionSnapshot::default();
+    state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
     state.meeterm_zoomed_pane = None;
@@ -1467,6 +1654,15 @@ enum FlowFailure {
     RemoteClosed,
     Tmux,
     TmuxProtocol,
+    HerdrMissing,
+    HerdrSessionMissing,
+    HerdrIncompatible,
+    HerdrUnsupported,
+    HerdrForwarding,
+    HerdrProtocol,
+    HerdrController,
+    HerdrOperation,
+    HerdrWorkspaceGroup,
     Stale,
 }
 
@@ -1488,6 +1684,42 @@ impl FlowFailure {
                 "The tmux Control Mode stream was malformed.",
             ),
             Self::Stale => ("stale_connection", "The SSH connection was replaced."),
+            Self::HerdrMissing => (
+                "herdr_missing",
+                "Herdr was not found in the remote SSH command path.",
+            ),
+            Self::HerdrSessionMissing => (
+                "herdr_session_missing",
+                "The selected Herdr session is not running. Open it on your PC first.",
+            ),
+            Self::HerdrIncompatible => (
+                "herdr_incompatible",
+                "This Herdr client/server does not support the verified terminal protocol (22).",
+            ),
+            Self::HerdrUnsupported => (
+                "herdr_unsupported",
+                "This Herdr runtime does not provide the required public API or event subscription.",
+            ),
+            Self::HerdrForwarding => (
+                "herdr_forwarding",
+                "SSH access to the Herdr Unix socket was refused. AllowStreamLocalForwarding is required.",
+            ),
+            Self::HerdrProtocol => (
+                "herdr_protocol",
+                "The Herdr response was malformed or exceeded the supported bounds.",
+            ),
+            Self::HerdrController => (
+                "herdr_controller_busy",
+                "Another controller owns this terminal. Release it there, then reconnect here.",
+            ),
+            Self::HerdrOperation => (
+                "herdr_operation",
+                "Herdr rejected the operation. Reconnect to refresh the current workspace state.",
+            ),
+            Self::HerdrWorkspaceGroup => (
+                "herdr_workspace_group",
+                "This parent workspace has linked worktree workspaces. Close its panes or groups in the ordinary Herdr client after checking the affected workspaces.",
+            ),
         }
     }
 }
@@ -1926,6 +2158,8 @@ async fn run_connection_flow(
             username,
             credentials,
             known_hosts_path,
+            backend,
+            runtime,
         }) => {
             let credentials = match credentials {
                 AuthOptions::PublicKey {
@@ -1959,6 +2193,8 @@ async fn run_connection_flow(
                 username,
                 known_hosts_path,
                 credentials,
+                backend,
+                runtime,
             };
             shared.set_profile(profile.clone());
             profile
@@ -2083,7 +2319,10 @@ async fn run_tmux_authenticated_session(
         return Err(FlowFailure::Stale);
     }
 
-    control::run(shared, session, commands).await
+    match profile.backend {
+        Backend::Tmux => control::run(shared, session, commands).await,
+        Backend::Herdr => herdr_control::run(shared, profile, session, commands).await,
+    }
 }
 
 fn detach_all(shared: &ConnectionShared) {
@@ -2409,6 +2648,43 @@ mod tests {
     }
 
     #[test]
+    fn backend_runtime_validation_and_endpoint_scope() {
+        let options = |backend, runtime: Option<&str>| ConnectOptions {
+            host: "EXAMPLE.test".into(),
+            port: 22,
+            username: "fixture".into(),
+            credentials: AuthOptions::password("fixture-only".into()),
+            known_hosts_path: PathBuf::from("/tmp/fixture-known-hosts"),
+            backend,
+            runtime: runtime.map(str::to_owned),
+        };
+        let tmux = options(Backend::Tmux, None).validate().unwrap();
+        let endpoint = SessionEndpoint::from_options(&tmux);
+        assert!(endpoint.matches(&tmux));
+        let herdr = options(Backend::Herdr, None).validate().unwrap();
+        assert!(!endpoint.matches(&herdr));
+        let herdr_endpoint = SessionEndpoint::from_options(&herdr);
+        assert!(
+            herdr_endpoint.matches(&options(Backend::Herdr, Some("default")).validate().unwrap())
+        );
+        assert!(!herdr_endpoint.matches(&options(Backend::Herdr, Some("dev")).validate().unwrap()));
+        assert!(options(Backend::Tmux, Some("dev")).validate().is_err());
+        for name in ["../other", "..", ".", "a/b", "a b", "x;exit", "$(id)"] {
+            assert!(options(Backend::Herdr, Some(name)).validate().is_err());
+        }
+        assert!(
+            options(Backend::Herdr, Some(&"x".repeat(65)))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            options(Backend::Herdr, Some("dev-session_1.0"))
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn disconnect_cancels_selected_generation_before_replacement() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2545,6 +2821,8 @@ mod tests {
             port: 22,
             username: "meeterm".to_owned(),
             known_hosts_path: known_hosts_path.clone(),
+            backend: Backend::Tmux,
+            runtime: None,
             credentials: StoredCredentials::Password {
                 password: Arc::new(Zeroizing::new("old secret".to_owned())),
             },
@@ -2560,6 +2838,8 @@ mod tests {
                 port: 22,
                 username: "meeterm".to_owned(),
                 known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: None,
             });
             state.profile = Some(old_profile);
             state.pane_terminals.insert(42, stale_pane);
@@ -2572,6 +2852,8 @@ mod tests {
             username: "meeterm".to_owned(),
             credentials: AuthOptions::public_key("definitely-not-a-private-key".to_owned(), None),
             known_hosts_path: known_hosts_path.clone(),
+            backend: Backend::Tmux,
+            runtime: None,
         };
 
         // The key is non-empty and passes synchronous argument validation, so

@@ -1,0 +1,92 @@
+{
+  "checks": [
+    {
+      "name": "direct_controller_initial_frame",
+      "passed": true
+    },
+    {
+      "name": "public_send_keys_normal_up",
+      "passed": true,
+      "expected_hex": "1b5b41",
+      "remote_hex": "1b5b41"
+    },
+    {
+      "name": "public_send_keys_decckm_up",
+      "passed": true,
+      "expected_hex": "1b4f41",
+      "remote_hex": "1b4f41"
+    },
+    {
+      "name": "direct_control_cjk_multiline_paste",
+      "passed": true,
+      "expected_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e",
+      "remote_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e"
+    },
+    {
+      "name": "public_target_survives_other_workspace_focus",
+      "passed": true,
+      "target_workspace": "w1",
+      "focused_workspace": "w2"
+    },
+    {
+      "name": "public_send_text_explicit_target",
+      "passed": true,
+      "expected_hex": "5441524745545f4f4b",
+      "remote_hex": "5441524745545f4f4b"
+    },
+    {
+      "name": "second_direct_controller_rejected_without_takeover",
+      "passed": true,
+      "reason": "terminal attach failed: terminal term_65b4170c1319e1 already has an attached client; retry with --takeover"
+    },
+    {
+      "name": "explicit_rival_takeover_closes_old_controller",
+      "passed": true,
+      "reason": "terminal attach taken over"
+    },
+    {
+      "name": "stale_client_disables_subsequent_public_writes",
+      "passed": true,
+      "requests_written": 3
+    },
+    {
+      "name": "release_reconnect_preserves_remote_tui_and_terminal_id",
+      "passed": true,
+      "terminal_id": "term_65b4170c1319e1"
+    }
+  ],
+  "inputs": {
+    "normal_up": {
+      "expected_hex": "1b5b41",
+      "remote_hex": "1b5b41"
+    },
+    "decckm_up": {
+      "expected_hex": "1b4f41",
+      "remote_hex": "1b4f41"
+    },
+    "cjk_multiline_paste": {
+      "expected_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e",
+      "remote_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e"
+    },
+    "explicit_target": {
+      "expected_hex": "5441524745545f4f4b",
+      "remote_hex": "5441524745545f4f4b"
+    }
+  },
+  "scope": "Linux OpenSSH CLI + Herdr public key/text API + direct control paste + shared Rust snapshot; sequential Python diagnostic only, no Rust input actor or mobile UI/GPU/IME evidence",
+  "started_at": "2026-09-12T04:14:41.793020+00:00",
+  "reference_source_commit": "b99002ac99b09e00b4ca692436cb15a6b0d676f1",
+  "source_sha256": {
+    "scripts/herdr/public_input.py": "79ca5c935e0731eab82ab793c7f633d681e269b0f3777221526aba419c635293",
+    "scripts/herdr/feasibility.py": "e57cf827b0391187e8a23986f5fe55c459618de665bb5bcceda9a61ed02e897b",
+    "native/meeterm-core/src/herdr_probe_tests.rs": "2958a2672ad7d2615bb90fbdee284af242c634b2ef802ceb98094ba75fa1f1ac",
+    "native/meeterm-core/src/terminal.rs": "c334ac9e7077187a1bd7d723acad29fe2155b151c240ac92194e91ab06bde055",
+    "native/meeterm-core/src/input.rs": "93e7b6d29269f4b47be6d5effeb1dafc05a470cf1434309629a2827ffa8e5082",
+    "native/meeterm-core/Cargo.lock": "93f1a2cd6d2bc941b2b58fa9f233549039b891dd33e9330f3f172672c5b5f31c"
+  },
+  "herdr_binary_sha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f",
+  "herdr_version": "0.9.0",
+  "protocol": 22,
+  "target_terminal_id": "term_65b4170c1319e1",
+  "passed": true
+}

@@ -2,20 +2,29 @@
 
 2026-09-11、利用者の承認により **iOSの通常検証を簡略化**しました。
 長い全操作の自動テストを必須にする方針から、画面ごとの表示確認と短い動作テストを組み合わせる方針へ変更します。
-Androidの既存full、共有Rustの単体・実SSH/tmux統合テストは維持します。
+Androidの既存full、共有Rustの単体・実SSH/tmux統合テストは維持します。Herdr は公開 protocol
+parser/unit test と、実 Herdr 0.9.0 を隔離 russh endpoint から接続する ignored integration
+test を追加しています。ローカルの[実Herdr native検証](evidence/issue-17-herdr-native.md)は
+成功しています。一般CIと両モバイルの結果は別に記録します。
 
 ## 通常の合格条件
 
 | 対象 | 必須の確認 | 結果が意味する範囲 |
 | --- | --- | --- |
-| 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
-| Android | 既存のfull smokeと画像の実見 | Androidの自動操作とnative境界 |
-| iOS `standard` | production保存4件、native入力7件、各画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
+| Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
+| Android | 既存のfull smokeと画像の実見。Herdr 4画面はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
+| iOS `standard` | production保存4件、native入力7件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
 今回の方針導入時は、fresh CNGでAndroid fullとiOS standardを確認し、同一ソースのiOS sshも確認します。
 `full`の全操作成功は、この新しい通常検証や日常利用マイルストーンの必須条件ではありません。
+
+一般CIのRust jobは公式 Herdr v0.9.0 binary を `RUNNER_TEMP` にだけ取得し、SHA-256
+`4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f` を検証してから、
+`native/meeterm-core/tests/herdr.rs` の ignored test を実行します。ユーザー環境や Herdr
+session を変更しません。ローカル成功とGitHub CIの結果は区別して記録します。
 
 スクリーンショットは実際に開いて確認します。画像の存在やpixel diffを新しい機械ゲートにはしません。
 画像だけから保存・接続・コピー・名前変更の成功を主張しません。seedされた画面と実操作の証拠を区別します。
@@ -37,12 +46,19 @@ Androidの既存full、共有Rustの単体・実SSH/tmux統合テストは維持
 
 ```sh
 npm run typecheck
+npm run test:app
 python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 git diff --check
 ```
 
 全コマンドを毎回実行する必要はありません。変更に関連するチェックを選びます。
+`test:app`は実際の`App.tsx`をReactで動かし、native bridgeの状態取得をテスト用snapshotに
+置き換えます。通常の画面操作とsnapshot更新を通して、選択端末の外部移動、移動元Workspaceの
+消失、Groupと空のGroup、画面のnative端末IDと表示状態の通知を確認します。React Nativeの
+host viewとnative bridgeはテスト用なので、実機の描画やHerdr controller自体の検証とは分けます。
+空のGroupの選択はnative側でキューに入るため、選択要求の直後は古いsnapshotが返り、
+後続の更新で選択が完了するケースも確認します。
 macOSでは `scripts/ci/ios-typecheck.sh` がCNG/build前にUI XCTestとnative入力関連Swiftを型チェックします。
 production moduleへ依存する保存テストのコンパイル・Keychain実行はアプリビルドとnativeテストで確認します。
 
@@ -53,13 +69,16 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 本番と同じ画面コンポーネントを使い、撮影用の画面を別実装しません。
 
 対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
-ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎの10画面です。
+ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎに加え、
+Herdr connection、groups、terminal、workspaces の14画面です。
 `meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
 名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
-`settings`、`workspace-name`、`terminal-name`、`handoff` です。
+`settings`、`workspace-name`、`terminal-name`、`handoff`、
+`herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces` です。
 撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
 - 保存済みサーバーやworkspace/paneの情報は表示用fixtureです。実サーバーで作成した証拠にはしません。
+- Herdr fixture は backend/runtimes、group、Agent metadata、native terminal の表示を確認します。画面上のseed状態は group作成や接続操作の成功を証明しません。
 - 撮影準備で秘密鍵を入力したり、実ユーザーの保存情報を書き換えたりしません。
 - 端末の表示には既存のRust fixtureとnative TerminalViewを使います。JSで端末データや画像を模造しません。
 - 通常起動とsmoke無効のビルドでは撮影用経路を有効にしません。
@@ -73,7 +92,7 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 | --- | --- |
 | `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
 | `ssh` | 実SSH接続と短いnative入出力の確認 |
-| `native` | 保存4件とnative入力7件だけの限定確認 |
+| `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件だけの限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |
@@ -137,6 +156,9 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
 端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
 実接続失敗では保存metadataの一致フラグとstrict SSH probeを確認できますが、事後probe成功だけでUI入力成功は証明できません。
+短いSSH入力のmarker待機まで進んだ実行では、`ios-ssh-input-diagnostics.json`に隔離fixtureの
+command echo、手入力とpasteの到達、markerの一致をbooleanと件数で残します。生の端末内容は
+保存しません。この事後診断は入力を再送せず、元のXCTestの成否を変えません。
 秘密欄の画像や入力値、rawリモートエラーを診断に残しません。
 
 ## 受入記録と限界

@@ -2,7 +2,7 @@
 
 ## What meeterm is
 
-meeterm is a smartphone-first client for an existing SSH + tmux development environment.
+meeterm is a smartphone-first client for an existing SSH development environment. The default backend is ordinary tmux; an explicitly selected profile may use an existing Herdr runtime.
 
 It is not intended to create a second, mobile-only development environment. A developer should be able to work from a phone, stop, then later sit at a PC and continue by attaching to the same tmux session without rebuilding context.
 
@@ -48,13 +48,53 @@ tmux attach -t meeterm
 
 and see the same windows and panes in their ordinary tmux layout. For example, Codex and nvim can appear side by side within the same window while app-a and app-b remain separate tmux windows.
 
+## Issue #17 common model and implementation
+
+Issue #17 defines one semantic hierarchy shared by the implemented tmux and
+Herdr backends:
+
+| Common concept | tmux backend | Herdr backend |
+| --- | --- | --- |
+| Workspace | tmux window | Herdr workspace |
+| TerminalGroup | one virtual mobile group per window | Herdr tab |
+| Terminal | tmux pane | Herdr pane |
+
+The tmux virtual group is presentation state. It must not create a remote
+window, flatten a tmux layout, or break `tmux attach -t meeterm`. A backend is
+selected explicitly for a saved profile/runtime; a profile without a backend
+continues to use tmux. An additional backend may use ordinary SSH to a
+user-selected remote runtime, while meeterm itself still requires no gateway,
+daemon, hosted relay, HTTP API, or WebSocket terminal transport.
+
+The Rust/native backend boundary, profile/runtime fields, common snapshots,
+group operations, and Herdr mobile routes are implemented. The production native
+integration has passed against real Herdr, including ordinary PC client handoff
+and linked-workspace close safety. See the [native evidence](evidence/issue-17-herdr-native.md)
+and [mobile acceptance record](evidence/issue-17-herdr-mobile.md) for measured
+results, exact source revisions, and validation limits.
+
+Herdr is an existing external application and must remain unchanged. Input
+adaptation belongs in meeterm using existing public interfaces; an upstream API
+addition is not a prerequisite of this issue. Mode-aware special keys and
+Japanese/LF bracketed paste are verified through existing public operations.
+
+Herdr 0.9.0 / protocol 22 / schema 1 is the fixed compatibility target. It is
+connected through the public direct stream-local API over ordinary SSH. See
+[`HERDR.md`](HERDR.md) for the input, scroll, resize, lease, and handoff
+contract, and the [Issue #17 feasibility record](evidence/issue-17-herdr-feasibility.md)
+for historical probe evidence. Herdr remains unchanged.
+
 ## Product principles
 
-### 1. tmux is the durable workspace
+### 1. The selected backend is the durable workspace
 
-SSH connections are transport and may disappear. The tmux session is the durable development environment.
+SSH connections are transport and may disappear. For tmux, session `meeterm`
+is the durable development environment; for Herdr, the selected `default` or
+named session is durable.
 
-The app must tolerate backgrounding, network loss, and process restart by reconnecting to the remote tmux state instead of treating the SSH connection as the source of truth.
+The app must tolerate backgrounding, network loss, and process restart by
+reconnecting to the selected remote runtime instead of treating the SSH
+connection as the source of truth.
 
 ### 2. Mobile presentation must not redefine the remote model
 
@@ -81,9 +121,14 @@ Simultaneous interactive use from phone and PC is not an initial product require
 
 ### 4. No meeterm server component
 
-The remote host should require only ordinary SSH access and tmux.
+The remote host should require ordinary SSH access and the selected runtime:
+tmux or an existing Herdr 0.9.0 session/socket.
 
 meeterm must not require a dedicated gateway, daemon, HTTP API, WebSocket service, or self-hosted meeterm backend for the core product.
+
+That rule concerns a meeterm-owned relay. It does not prohibit connecting over
+ordinary SSH to a user-selected Herdr server/runtime when the Herdr backend is
+explicitly selected.
 
 ### 5. Native terminal quality is a core product requirement
 
@@ -104,14 +149,14 @@ Japanese input and CJK rendering are first-class acceptance requirements, not op
 
 1. Add an SSH server.
 2. Connect and verify the server host key.
-3. Ensure or attach to tmux session `meeterm`.
-4. View tmux windows as workspaces.
-5. Open a workspace.
-6. View its panes as terminal tabs.
+3. Select tmux/session `meeterm`, or Herdr/runtime `default` or a named session.
+4. View the selected runtime's workspaces.
+5. Open a workspace and select its group when it has more than one.
+6. View the group's panes as terminal tabs.
 7. Work in one pane at phone-friendly size.
-8. Switch panes without losing the other panes' terminal state.
-9. Leave the phone; tmux continues running remotely.
-10. Later, on a PC, run `tmux attach -t meeterm` and continue in the normal tmux layout.
+8. Switch panes without losing the other panes' native terminal state.
+9. Leave the phone; the selected remote runtime continues running.
+10. Later, attach with the ordinary tmux client or Herdr client and continue in the runtime's normal layout.
 
 ## Non-goals for the first product
 

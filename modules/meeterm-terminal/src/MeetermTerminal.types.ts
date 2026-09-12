@@ -8,6 +8,8 @@ type SshConnectEndpoint = {
   host: string;
   port: number;
   username: string;
+  backend?: 'tmux' | 'herdr';
+  runtime?: string;
 };
 
 /**
@@ -39,6 +41,8 @@ export type ServerProfile = {
   username: string;
   authMethod: 'publicKey' | 'password';
   credentialSaved: boolean;
+  backend?: 'tmux' | 'herdr';
+  runtime?: string;
 };
 
 /** Write-only secure-storage request; no API returns this shape. */
@@ -92,6 +96,30 @@ export type TmuxPane = {
 
 export type TmuxSessionState = {
   panes: TmuxPane[];
+};
+
+/** Opaque IDs are resolved within the owning connection/backend/runtime. */
+export type RemoteWorkspace = { id: string; name: string };
+export type TerminalGroup = { id: string; workspaceId: string; name: string; selected: boolean };
+export type AgentInfo = { name: string; status: 'working' | 'blocked' | 'done' | 'idle' | 'unknown' };
+export type RemoteTerminal = {
+  id: string;
+  workspaceId: string;
+  groupId: string;
+  /** Borrowed native registry view binding, formatted by Rust as native:<id>. */
+  terminalId: string;
+  name: string;
+  active: boolean;
+  selected: boolean;
+  agent: AgentInfo | null;
+};
+export type WorkspaceState = {
+  backend: 'tmux' | 'herdr';
+  runtime: string;
+  groupsSupported: boolean;
+  workspaces: RemoteWorkspace[];
+  groups: TerminalGroup[];
+  terminals: RemoteTerminal[];
 };
 
 export type NativeReadyEvent = {

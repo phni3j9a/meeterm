@@ -49,6 +49,7 @@ internal object MeetermNative {
   external fun sshReconnect(handle: Long): Int
   external fun tmuxCommand(handle: Long, operation: Int, target: Long, name: String): Int
   external fun setForeground(handle: Long, foreground: Boolean): Int
+  external fun setTerminalVisible(handle: Long, visible: Boolean): Int
   external fun setAutomaticReconnect(handle: Long, enabled: Boolean): Int
   external fun tmuxSelectPane(handle: Long, pane: Long): Int
   /** One row per pane: window ID, pane ID, terminal handle, window name, selected, active, pane name. */
@@ -66,6 +67,24 @@ internal object MeetermNative {
     authMethod: String,
     password: String,
   ): Int
+
+  /** Queue an SSH connect request for an explicit backend/runtime. */
+  external fun sshConnectBackend(
+    handle: Long,
+    host: String,
+    port: Int,
+    username: String,
+    privateKey: String,
+    passphrase: String,
+    knownHostsPath: String,
+    authMethod: String,
+    password: String,
+    backend: String,
+    runtime: String,
+  ): Int
+
+  /** Bounded low-frequency workspace metadata; terminal bytes stay native. */
+  external fun workspaceState(handle: Long): String?
 
   /** Queue an SSH close request; zero means accepted/already closed. */
   external fun sshDisconnect(handle: Long): Int

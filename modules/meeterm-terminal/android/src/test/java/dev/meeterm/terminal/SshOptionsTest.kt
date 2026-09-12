@@ -17,6 +17,8 @@ class SshOptionsTest {
     )
 
     assertEquals("publicKey", options.authMethod)
+    assertEquals("tmux", options.backend)
+    assertEquals("", options.runtime)
     assertEquals("-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----", options.privateKey)
     assertEquals("", options.password)
   }
@@ -37,6 +39,45 @@ class SshOptionsTest {
     assertEquals("  pass phrase  ", options.password)
     assertEquals("", options.privateKey)
     assertEquals("", options.passphrase)
+  }
+
+  @Test
+  fun herdrRuntimeIsPreserved() {
+    val options = MeetermTerminalModule.SshOptions.from(
+      mapOf(
+        "host" to "server.example.com", "port" to 22, "username" to "developer",
+        "backend" to "herdr", "runtime" to "mobile-1",
+        "privateKey" to "key", "passphrase" to "",
+      ),
+    )
+    assertEquals("herdr", options.backend)
+    assertEquals("mobile-1", options.runtime)
+  }
+
+  @Test(expected = IllegalArgumentException::class)
+  fun malformedBackendDoesNotSilentlySelectTmux() {
+    MeetermTerminalModule.SshOptions.from(mapOf(
+      "host" to "fixture.invalid", "port" to 22, "username" to "fixture",
+      "backend" to 1, "privateKey" to "key", "passphrase" to "",
+    ))
+  }
+
+  @Test(expected = IllegalArgumentException::class)
+  fun malformedRuntimeDoesNotSilentlySelectDefaultSession() {
+    MeetermTerminalModule.SshOptions.from(mapOf(
+      "host" to "fixture.invalid", "port" to 22, "username" to "fixture",
+      "backend" to "herdr", "runtime" to 1, "privateKey" to "key", "passphrase" to "",
+    ))
+  }
+
+  @Test(expected = IllegalArgumentException::class)
+  fun tmuxNamedRuntimeIsRejected() {
+    MeetermTerminalModule.SshOptions.from(
+      mapOf(
+        "host" to "server.example.com", "port" to 22, "username" to "developer",
+        "runtime" to "named", "privateKey" to "key", "passphrase" to "",
+      ),
+    )
   }
 
   @Test(expected = IllegalArgumentException::class)

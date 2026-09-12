@@ -58,6 +58,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Check App snapshot and terminal selection transitions
+        run: npm run test:app
+
       - name: Check iOS Simulator entitlement generation
         run: python3 scripts/ci/test_ios_simulator_entitlements.py
 
@@ -90,6 +93,7 @@ jobs:
       - name: Check SSH smoke driver regressions
         run: |
           python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
+          python3 -m unittest discover -s scripts/herdr -p 'test_*.py'
           scripts/ci/ios-collect-artifacts-test.sh
           command -v tmux
           tmux -V
@@ -111,6 +115,19 @@ jobs:
       - name: Clippy
         working-directory: native/meeterm-core
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Real Herdr native integration through the test SSH endpoint
+        env:
+          MEETERM_HERDR_INTEGRATION: "1"
+        run: |
+          export MEETERM_HERDR_BINARY="${RUNNER_TEMP}/herdr-0.9.0-fixture"
+          curl --fail --location --silent --show-error \
+            https://github.com/herdrdev/herdr/releases/download/v0.9.0/herdr-linux-x86_64 \
+            --output "${MEETERM_HERDR_BINARY}"
+          echo "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f  ${MEETERM_HERDR_BINARY}" | sha256sum --check
+          chmod 700 "${MEETERM_HERDR_BINARY}"
+          cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
+            --test herdr -- --ignored --nocapture
 
   android:
     name: Android native build

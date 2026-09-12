@@ -947,6 +947,71 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertFalse((root / "raw.log").exists())
 
 
+class InputDiagnosticsFailureTests(unittest.TestCase):
+    def test_main_preserves_ssh_failure_when_input_diagnostics_raise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            fixture_socket = root / "meeterm-ssh-fixture-test" / "tmux" / "tmux-0" / "default"
+            private_key = root / "private-key-SECRET"
+            host_key = root / "host-key-SECRET.pub"
+            private_key.write_text("PRIVATE-KEY-SECRET\n", encoding="utf-8")
+            host_key.write_text("ssh-ed25519 AAAA-HOST-KEY-SECRET fixture\n", encoding="utf-8")
+            environment = {
+                "MEETERM_TMUX_SOCKET": str(fixture_socket),
+                "MEETERM_SSH_HOST": "fixture-host-SECRET",
+                "MEETERM_SSH_PORT": "43210",
+                "MEETERM_SSH_USERNAME": "fixture-user-SECRET",
+                "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE": str(private_key),
+                "MEETERM_SSH_FINGERPRINT": "SHA256:fixture-fingerprint",
+                "MEETERM_SSH_HOST_KEY_FILE": str(host_key),
+                "RUNNER_TEMP": str(root / "runner"),
+            }
+
+            with mock.patch.dict(smoke.os.environ, environment, clear=False), \
+                 mock.patch.object(sys, "argv", [
+                     "ios-smoke.py",
+                     "--artifact-dir",
+                     str(artifact_dir),
+                     "--derived-data",
+                     str(root / "derived-data"),
+                     "--simulator-udid",
+                     "fixture-simulator",
+                     "--suite",
+                     "ssh",
+                 ]), \
+                 mock.patch.object(smoke, "fixture_socket", return_value=fixture_socket), \
+                 mock.patch.object(smoke, "prepare_topology", return_value=(2, 3)), \
+                 mock.patch.object(
+                     smoke,
+                     "run_xcuitest",
+                     side_effect=smoke.SmokeFailure("xcuitest_ssh", "ssh_tests_failed"),
+                 ), \
+                 mock.patch.object(smoke, "last_ui_stage", return_value="ssh_native_input_await_remote_marker"), \
+                 mock.patch.object(smoke, "write_connection_failure_diagnostics"), \
+                 mock.patch.object(
+                     smoke,
+                     "write_short_ssh_input_diagnostics",
+                     side_effect=RuntimeError("DIAGNOSTIC-SECRET"),
+                 ), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = smoke.main()
+
+            self.assertEqual(status, 1)
+            validation = (artifact_dir / "ios-ssh-validation.txt").read_text(encoding="utf-8")
+            self.assertIn("result=failed\n", validation)
+            self.assertIn("stage=xcuitest_ssh\n", validation)
+            self.assertIn("reason=ssh_tests_failed\n", validation)
+            self.assertIn("ui_last_stage=ssh_native_input_await_remote_marker\n", validation)
+            self.assertEqual(
+                (artifact_dir / smoke.INPUT_DIAGNOSTICS_NAME).read_text(encoding="utf-8"),
+                '{"unavailable": true}\n',
+            )
+            self.assertNotIn("DIAGNOSTIC-SECRET", validation)
+            self.assertNotIn("DIAGNOSTIC-SECRET", stderr.getvalue())
+
+
 class ConnectionFailureDiagnosticsTests(unittest.TestCase):
     @staticmethod
     def fixture_environment(root: Path, *, suite: str) -> dict[str, str]:
@@ -1279,6 +1344,76 @@ class ConnectionFailureDiagnosticsTests(unittest.TestCase):
             with mock.patch.dict(smoke.os.environ, environment, clear=False):
                 smoke.write_connection_failure_diagnostics(root, "fixture-simulator", suite="forms")
             self.assertFalse((root / smoke.CONNECTION_FAILURE_DIAGNOSTICS_NAME).exists())
+
+
+class ShortSshInputDiagnosticsTests(unittest.TestCase):
+    def test_pre_auth_never_reads_terminal_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "ios-ui-stages.txt").write_text("ssh_submit_connect\n")
+            with mock.patch.object(smoke, "run_tmux") as run:
+                smoke.write_short_ssh_input_diagnostics(root, root / "socket", root / "marker")
+            run.assert_not_called()
+            self.assertFalse((root / smoke.INPUT_DIAGNOSTICS_NAME).exists())
+
+    def test_ordinary_user_socket_is_rejected_before_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "ios-ui-stages.txt").write_text(
+                "ssh_connected\nssh_native_input_await_remote_marker\n"
+            )
+            user_socket = root / f"tmux-{smoke.os.getuid()}" / "default"
+            with mock.patch.dict(smoke.os.environ, {"MEETERM_TMUX_SOCKET": str(user_socket)}), \
+                 mock.patch.object(smoke, "run_tmux") as run:
+                with self.assertRaises(smoke.SmokeFailure):
+                    smoke.write_short_ssh_input_diagnostics(root, user_socket, root / "marker")
+            run.assert_not_called()
+
+    def test_echo_distinguishes_missing_prefix_and_missing_paste_without_exposing_text(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            socket = root / "tmux" / f"tmux-{smoke.os.getuid()}" / "default"
+            marker_path = root / "private-marker-path"
+            marker = "ios-ssh-input-0123456789abcdef"
+            (root / "ios-ui-stages.txt").write_text(
+                "ssh_connected\nssh_native_input_await_remote_marker\nteardown_complete\n"
+            )
+            suffix = f" '%s\\n' '{marker}' > '{marker_path}'"
+            captures = [
+                "PRIVATE-KEY-SECRET\n$ printf" + suffix + "\n$ ",
+                "$ rintf" + suffix + "\n/bin/sh: rintf: not found\n$ ",
+                "$ printf",
+            ]
+            for marker_exists in (False, True):
+                with self.subTest(marker_exists=marker_exists):
+                    if marker_exists:
+                        marker_path.write_text(marker + "\n")
+                    responses = [subprocess.CompletedProcess([], 0, "%0\n%1\n%2\n", "")]
+                    responses += [subprocess.CompletedProcess([], 0, value, "") for value in captures]
+                    with mock.patch.dict(smoke.os.environ, {
+                        "MEETERM_TMUX_SOCKET": str(socket), "MEETERM_IOS_MARKER_VALUE": marker,
+                    }), mock.patch.object(smoke, "run_tmux", side_effect=responses) as run:
+                        smoke.write_short_ssh_input_diagnostics(root, socket, marker_path)
+                    output = (root / smoke.INPUT_DIAGNOSTICS_NAME).read_text()
+                    report = json.loads(output)
+                    self.assertEqual(report["marker_file_exists"], marker_exists)
+                    self.assertEqual(report["marker_file_matches"], marker_exists)
+                    complete, missing_prefix, missing_paste = report["panes"]
+                    self.assertTrue(complete["command_echo_seen"])
+                    self.assertEqual(complete["keyboard_prefix_suffix_length"], 6)
+                    self.assertFalse(missing_prefix["command_echo_seen"])
+                    self.assertTrue(missing_prefix["paste_body_seen"])
+                    self.assertEqual(missing_prefix["keyboard_prefix_suffix_length"], 5)
+                    self.assertTrue(missing_prefix["shell_command_not_found"])
+                    self.assertTrue(missing_paste["keyboard_word_seen"])
+                    self.assertFalse(missing_paste["paste_body_seen"])
+                    for secret in ("PRIVATE-KEY-SECRET", str(marker_path), marker, "rintf"):
+                        self.assertNotIn(secret, output)
+                    self.assertTrue(all(type(value) in (bool, int)
+                                        for pane in report["panes"] for value in pane.values()))
+                    self.assertTrue(all(call.args[0] == socket for call in run.call_args_list))
+                    self.assertTrue(all(call.args[1][0] in ("list-panes", "capture-pane")
+                                        for call in run.call_args_list))
 
 
 if __name__ == "__main__":

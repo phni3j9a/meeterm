@@ -100,14 +100,41 @@ int32_t meeterm_connect(
   size_t password_length
 );
 
+/* Explicit backend/runtime variant. The legacy meeterm_connect ABI above
+ * remains the tmux/default path for existing native callers. */
+int32_t meeterm_connect_backend(
+  uint64_t terminal_id,
+  const uint8_t *host,
+  size_t host_length,
+  uint16_t port,
+  const uint8_t *username,
+  size_t username_length,
+  const uint8_t *private_key,
+  size_t private_key_length,
+  const uint8_t *passphrase,
+  size_t passphrase_length,
+  const uint8_t *known_hosts_path,
+  size_t known_hosts_path_length,
+  const uint8_t *auth_method,
+  size_t auth_method_length,
+  const uint8_t *password,
+  size_t password_length,
+  const uint8_t *backend,
+  size_t backend_length,
+  const uint8_t *runtime,
+  size_t runtime_length
+);
+
 int32_t meeterm_disconnect(uint64_t terminal_id);
 int32_t meeterm_reconnect(uint64_t terminal_id);
 /* 0=create window, 1=rename window, 2=close window, 3=create pane,
- * 4=rename pane, 5=close pane, 6=redraw selected pane. Targets are numeric
- * tmux identities; names are UTF-8 arguments, never executable shell text. */
+ * 4=rename pane, 5=close pane, 6=redraw selected pane, 7=create group,
+ * 8=rename group, 9=close group, 10=select group. Targets are numeric
+ * identities; names are UTF-8 arguments, never executable shell text. */
 int32_t meeterm_tmux_command(uint64_t terminal_id, uint32_t operation, uint64_t target,
   const uint8_t *name, size_t name_length);
 int32_t meeterm_set_foreground(uint64_t terminal_id, uint8_t foreground);
+int32_t meeterm_set_terminal_visible(uint64_t terminal_id, uint8_t visible);
 int32_t meeterm_set_automatic_reconnect(uint64_t terminal_id, uint8_t enabled);
 int32_t meeterm_select_pane(uint64_t terminal_id, uint64_t pane_id);
 uint8_t meeterm_terminal_exists(uint64_t terminal_id);
@@ -132,6 +159,13 @@ typedef struct meeterm_tmux_pane {
 size_t meeterm_session_panes(uint64_t terminal_id, meeterm_tmux_pane_t *output, size_t capacity);
 size_t meeterm_pane_record_size(void);
 size_t meeterm_connection_snapshot_size(void);
+
+/* Bounded backend-independent workspace metadata JSON. A size query can
+ * become stale when the topology changes; the copy call returns the current
+ * required length without copying if capacity is insufficient. */
+size_t meeterm_workspace_state_size(uint64_t terminal_id);
+size_t meeterm_workspace_state(uint64_t terminal_id, uint8_t *output, size_t capacity);
+enum { MEETERM_WORKSPACE_STATE_MAX_BYTES = 4 * 1024 * 1024 };
 
 /* Fill one complete, sanitized low-frequency lifecycle snapshot. */
 int32_t meeterm_connection_snapshot(

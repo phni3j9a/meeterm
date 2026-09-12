@@ -6,6 +6,8 @@ readonly launcher_package_name="com.google.android.apps.nexuslauncher"
 readonly artifact_dir="${GITHUB_WORKSPACE}/artifacts/android-emulator-observability"
 readonly apk_path="${artifact_dir}/app-release.apk"
 readonly foundation_url="meeterm://foundation?foundation=1"
+readonly anr_trace_max_bytes=262144
+readonly anr_trace_command_timeout_seconds=15
 
 launcher_stabilizer_status="not_run"
 launcher_anr_recovery_status="not_observed"
@@ -36,6 +38,7 @@ collect_artifacts() {
   adb shell dumpsys activity processes \
     | grep -A 16 -B 4 "${package_name}" \
     > "${artifact_dir}/process.txt"
+  capture_app_anr_trace
   {
     echo "api=$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
     echo "abi=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
@@ -69,6 +72,104 @@ launcher_anr_window_present() {
 
 app_anr_window_present() {
   window_anr_present_for "${package_name}"
+}
+
+extract_app_anr_section() {
+  awk -v package_name="${package_name}" '
+    $0 == ("Cmd line: " package_name) { keep = 1; print; next }
+    keep && /^----- pid / { keep = 0 }
+    keep { print }
+  '
+}
+
+capture_app_anr_trace() {
+  local trace_path="${artifact_dir}/anr-trace.txt"
+  local latest_trace raw_trace filtered_trace dropbox_filtered app_process_id
+
+  # The system has already written an ANR record by the time the concrete
+  # dialog is visible. Read only the newest record and retain the section for
+  # this package; do not include other applications' stacks in the artifact.
+  if ! app_anr_window_present; then
+    printf 'capture=not_requested\nreason=app_anr_window_not_present\n' > "${trace_path}"
+    return 0
+  fi
+
+  app_process_id="$(app_pid || true)"
+  latest_trace="$(adb shell 'ls -t /data/anr/anr_* 2>/dev/null | head -n 1' 2>/dev/null | tr -d '\r' || true)"
+  {
+    echo "capture=requested"
+    echo "package=${package_name}"
+    echo "pid=${app_process_id:-unavailable}"
+    echo "source=${latest_trace:-unavailable}"
+    echo "max_bytes=${anr_trace_max_bytes}"
+  } > "${trace_path}"
+
+  if [[ -n "${latest_trace}" && "${latest_trace}" == /data/anr/anr_* ]]; then
+    raw_trace="$(adb shell cat "${latest_trace}" 2>/dev/null | tr -d '\r' || true)"
+    filtered_trace="$(printf '%s\n' "${raw_trace}" | extract_app_anr_section | head -c "${anr_trace_max_bytes}" || true)"
+    if [[ -n "${filtered_trace}" ]]; then
+      echo "trace=app_section" >> "${trace_path}"
+      printf '%s\n' "${filtered_trace}" >> "${trace_path}"
+      return 0
+    fi
+  fi
+
+  if [[ -z "${latest_trace}" || "${latest_trace}" != /data/anr/anr_* ]]; then
+    echo "trace=unavailable" >> "${trace_path}"
+  else
+    echo "trace=unavailable_or_unreadable" >> "${trace_path}"
+  fi
+
+  # Shell normally cannot read /data/anr on production-like images.  The
+  # shell dumpsys path is the non-root fallback; retain only the newest
+  # data_app_anr entry containing this package and then only its stack section.
+  dropbox_filtered="$(
+    timeout "${anr_trace_command_timeout_seconds}s" \
+      adb shell dumpsys dropbox --print data_app_anr 2>/dev/null \
+      | tr -d '\r' \
+      | awk -v package_name="${package_name}" '
+        function finish_block() {
+          if (found) {
+            last = block
+          }
+        }
+        /^========================================$/ {
+          if (started) {
+            finish_block()
+          }
+          started = 1
+          block = $0 "\n"
+          found = 0
+          next
+        }
+        started {
+          block = block $0 "\n"
+          if ($0 == ("Cmd line: " package_name)) {
+            found = 1
+          }
+        }
+        END {
+          if (started) {
+            finish_block()
+          }
+          if (last != "") {
+            printf "%s", last
+          }
+        }
+      ' \
+      | extract_app_anr_section \
+      | head -c "${anr_trace_max_bytes}" \
+      || true
+  )"
+  if [[ -z "${dropbox_filtered}" ]]; then
+    echo "dropbox_fallback=unavailable_or_unreadable" >> "${trace_path}"
+  else
+    {
+      echo "dropbox_fallback=app_section"
+      echo "dropbox_source=data_app_anr"
+      printf '%s\n' "${dropbox_filtered}"
+    } >> "${trace_path}"
+  fi
 }
 
 app_is_foreground() {

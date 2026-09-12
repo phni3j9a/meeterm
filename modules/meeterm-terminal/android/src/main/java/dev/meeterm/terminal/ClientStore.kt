@@ -93,6 +93,8 @@ internal object ClientStore {
     "id" to profile.getString("id"), "name" to profile.getString("name"),
     "host" to profile.getString("host"), "port" to profile.getInt("port"),
     "username" to profile.getString("username"), "authMethod" to profile.getString("authMethod"),
+    "backend" to profile.optString("backend", "tmux"),
+    "runtime" to profile.optString("runtime", ""),
     "credentialSaved" to profile.has("credential"),
   )
 
@@ -186,7 +188,22 @@ internal object ClientStore {
     require(port != null && port in 1..65535) { "The SSH port is invalid." }
     val method = values["authMethod"]
     require(method == "publicKey" || method == "password") { "The authentication method is invalid." }
+    require(!values.containsKey("backend") || values["backend"] is String) { "The backend is invalid." }
+    require(!values.containsKey("runtime") || values["runtime"] is String) { "The runtime is invalid." }
+    val backend = values["backend"] as? String ?: "tmux"
+    require(backend == "tmux" || backend == "herdr") { "The backend is invalid." }
+    val runtime = values["runtime"] as? String ?: ""
+    requireRuntime(backend, runtime)
     return profile.put("port", port).put("authMethod", method)
+      .put("backend", backend).put("runtime", runtime)
+  }
+
+  private fun requireRuntime(backend: String, runtime: String) {
+    require(runtime.toByteArray(Charsets.UTF_8).size <= 64 && runtime != "." && runtime != ".." &&
+      runtime.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '_' || it == '-' }) {
+      "The Herdr runtime is invalid."
+    }
+    require(backend == "herdr" || runtime.isEmpty()) { "The tmux backend does not accept a named runtime." }
   }
 
   private fun validateCredential(profile: JSONObject, values: Map<String, Any?>): JSONObject {

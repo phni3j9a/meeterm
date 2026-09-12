@@ -20,7 +20,8 @@ if [[ -n "${IOS_SIMULATOR_UDID:-}" && -f "${artifact_dir}/launch.txt" && ! -s "$
 fi
 
 # Standard and full request a fresh foundation frame. The standard suite also
-# preserves the ten direct seeded-screen checkpoints emitted by XCTest. These
+# preserves the direct seeded-screen checkpoints emitted by XCTest, including
+# the four Herdr presentation fixtures. These
 # files are human-review evidence; their presence never decides pass/fail.
 required_screenshots=()
 case "${suite}" in
@@ -37,6 +38,8 @@ case "${suite}" in
       standard-home standard-servers standard-connection standard-password
       standard-workspaces standard-terminal standard-settings
       standard-workspace-name standard-terminal-name standard-handoff
+      standard-herdr-connection standard-herdr-groups standard-herdr-terminal
+      standard-herdr-workspaces
     )
     ;;
   full)

@@ -109,6 +109,20 @@ final class ClientStoreTests: XCTestCase {
     XCTAssertEqual(saved["credentialSaved"] as? Bool, true)
     XCTAssertNil(saved["password"])
     XCTAssertNil(saved["credentialID"])
+    stage("read_legacy_profile_without_backend")
+    let support = try XCTUnwrap(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+    let file = support.appendingPathComponent("meeterm/client-v1.json")
+    var state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+    var stored = try XCTUnwrap(state["profiles"] as? [[String: Any]])
+    let index = try XCTUnwrap(stored.firstIndex { $0["id"] as? String == id })
+    stored[index].removeValue(forKey: "backend")
+    stored[index].removeValue(forKey: "runtime")
+    state["profiles"] = stored
+    try JSONSerialization.data(withJSONObject: state).write(to: file, options: .atomic)
+    let legacy = try ClientStore.connectionOptions(id)
+    XCTAssertEqual(legacy["backend"] as? String, "tmux")
+    XCTAssertEqual(legacy["runtime"] as? String, "")
+    XCTAssertEqual(legacy["password"] as? String, "  fixture-only  ")
     stage("list_profile")
     let listed = try XCTUnwrap(ClientStore.profiles().first { $0["id"] as? String == id })
     XCTAssertNil(listed["password"])
@@ -118,9 +132,24 @@ final class ClientStoreTests: XCTestCase {
     XCTAssertEqual(connection["password"] as? String, "  fixture-only  ")
     var renamed = profile
     renamed["name"] = "Renamed fixture"
+    renamed["backend"] = "herdr"
+    renamed["runtime"] = "dev-session"
     stage("rename_profile")
     let retained = try ClientStore.saveProfile(renamed, credential: nil, keepCredential: true)
     XCTAssertEqual(retained["credentialSaved"] as? Bool, true)
+    stage("herdr_runtime_preserves_same_ssh_credential")
+    let herdr = try ClientStore.connectionOptions(id)
+    XCTAssertEqual(herdr["backend"] as? String, "herdr")
+    XCTAssertEqual(herdr["runtime"] as? String, "dev-session")
+    XCTAssertEqual(herdr["password"] as? String, "  fixture-only  ")
+    var invalidRuntime = renamed
+    invalidRuntime["runtime"] = "../../invalid"
+    XCTAssertThrowsError(try ClientStore.saveProfile(invalidRuntime, credential: nil, keepCredential: true))
+    invalidRuntime["runtime"] = 1
+    XCTAssertThrowsError(try ClientStore.saveProfile(invalidRuntime, credential: nil, keepCredential: true))
+    invalidRuntime["runtime"] = ""
+    invalidRuntime["backend"] = 1
+    XCTAssertThrowsError(try ClientStore.saveProfile(invalidRuntime, credential: nil, keepCredential: true))
     renamed["host"] = "different.invalid"
     stage("reject_endpoint_change")
     let changed = try ClientStore.saveProfile(renamed, credential: nil, keepCredential: true)

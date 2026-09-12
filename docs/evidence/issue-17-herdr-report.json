@@ -1,0 +1,92 @@
+{
+  "checks": [
+    {
+      "name": "native_raw_mode_baseline",
+      "passed": true
+    },
+    {
+      "name": "default_and_named_runtime_isolation",
+      "passed": true,
+      "colliding_public_pane_id": "w1:p1"
+    },
+    {
+      "name": "initial_native_frame",
+      "passed": true
+    },
+    {
+      "name": "shell_cjk_and_actual_pty_resize",
+      "passed": true
+    },
+    {
+      "name": "second_direct_controller_rejected_without_takeover",
+      "passed": true
+    },
+    {
+      "name": "fullscreen_native_snapshot",
+      "passed": true
+    },
+    {
+      "name": "application_cursor_key_round_trip",
+      "passed": false,
+      "expected_hex": "1b4f41",
+      "native_hex": "1b5b41",
+      "remote_hex": "1b5b41"
+    },
+    {
+      "name": "native_bracketed_paste_mode",
+      "passed": false,
+      "native_hex": "66697273740d7365636f6e64"
+    },
+    {
+      "name": "explicit_control_paste_envelope",
+      "passed": true,
+      "expected_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e",
+      "remote_hex": "1b5b3230307e66697273740ae697a5e69cace8aa9e1b5b3230317e"
+    },
+    {
+      "name": "ssh_loss_and_fullscreen_reconnect",
+      "passed": true
+    },
+    {
+      "name": "release_and_reconnect_same_remote_terminal",
+      "passed": true
+    }
+  ],
+  "scope": "Linux OpenSSH CLI + shared Rust terminal; no mobile UI/GPU/IME evidence",
+  "started_at": "2026-09-12T03:29:56.955745+00:00",
+  "source_sha256": {
+    "scripts/herdr/feasibility.py": "e57cf827b0391187e8a23986f5fe55c459618de665bb5bcceda9a61ed02e897b",
+    "native/meeterm-core/src/herdr_probe_tests.rs": "2958a2672ad7d2615bb90fbdee284af242c634b2ef802ceb98094ba75fa1f1ac",
+    "native/meeterm-core/src/terminal.rs": "c334ac9e7077187a1bd7d723acad29fe2155b151c240ac92194e91ab06bde055",
+    "native/meeterm-core/src/input.rs": "93e7b6d29269f4b47be6d5effeb1dafc05a470cf1434309629a2827ffa8e5082",
+    "native/meeterm-core/Cargo.lock": "93f1a2cd6d2bc941b2b58fa9f233549039b891dd33e9330f3f172672c5b5f31c"
+  },
+  "herdr_binary_sha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f",
+  "herdr_version": "0.9.0",
+  "protocol": 22,
+  "observations": [
+    {
+      "name": "automation_key_bypasses_direct_controller_lease",
+      "api_accepted": true,
+      "remote_hex": "1b4f41",
+      "direct_controller_still_connected": true,
+      "meaning": "Correct logical-key encoding is available, but this API does not enforce the direct controller lease."
+    },
+    {
+      "name": "headless_geometry_after_ssh_loss",
+      "viewport_rows": 20,
+      "meaning": "No desktop client is attached; this is not desktop handoff evidence."
+    }
+  ],
+  "native_replay": {
+    "count": 6,
+    "dimensions": {
+      "columns": 52,
+      "rows": 20
+    },
+    "up_hex": "1b5b41",
+    "paste_hex": "66697273740d7365636f6e64",
+    "app_cursor": false
+  },
+  "passed": false
+}

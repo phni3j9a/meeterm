@@ -200,6 +200,7 @@ jobs:
           disable-animations: true
           script: |
             scripts/ci/android-smoke.sh
+            python3 scripts/ci/android-screen-fixtures.py --artifact-dir artifacts/android-emulator-observability
             python3 scripts/ssh/fixture.py -- python3 scripts/ssh/android-smoke.py --artifact-dir artifacts/android-emulator-observability
 
       - name: Record unavailable Android evidence

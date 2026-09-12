@@ -2,6 +2,8 @@ package dev.meeterm.terminal
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MeetermTerminalModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -29,6 +31,9 @@ class MeetermTerminalModule : Module() {
     AsyncFunction("setForeground") { terminalId: String, foreground: Boolean ->
       check(MeetermNative.setForeground(ensureHandle(normalizeTerminalId(terminalId)), foreground) == 0) { "The app lifecycle could not be updated." }
     }
+    AsyncFunction("setTerminalVisible") { terminalId: String, visible: Boolean ->
+      check(MeetermNative.setTerminalVisible(ensureHandle(normalizeTerminalId(terminalId)), visible) == 0) { "The terminal visibility could not be updated." }
+    }
     AsyncFunction("setAutomaticReconnect") { terminalId: String, enabled: Boolean ->
       check(MeetermNative.setAutomaticReconnect(ensureHandle(normalizeTerminalId(terminalId)), enabled) == 0) { "The reconnect preference could not be updated." }
     }
@@ -39,6 +44,24 @@ class MeetermTerminalModule : Module() {
     AsyncFunction("renamePane") { terminalId: String, paneId: String, name: String -> tmuxCommand(terminalId, 4, targetId(paneId, '%'), name) }
     AsyncFunction("closePane") { terminalId: String, paneId: String -> tmuxCommand(terminalId, 5, targetId(paneId, '%')) }
     AsyncFunction("refreshTerminal") { terminalId: String -> tmuxCommand(terminalId, 6, 0) }
+    AsyncFunction("createGroup") { terminalId: String, workspaceId: String, name: String ->
+      tmuxCommand(terminalId, 7, numericId(workspaceId), name)
+    }
+    AsyncFunction("renameGroup") { terminalId: String, groupId: String, name: String ->
+      tmuxCommand(terminalId, 8, numericId(groupId), name)
+    }
+    AsyncFunction("closeGroup") { terminalId: String, groupId: String ->
+      tmuxCommand(terminalId, 9, numericId(groupId))
+    }
+    AsyncFunction("selectGroup") { terminalId: String, groupId: String ->
+      tmuxCommand(terminalId, 10, numericId(groupId))
+    }
+    AsyncFunction("getWorkspaceState") { terminalId: String ->
+      val handle = ensureHandle(normalizeTerminalId(terminalId))
+      val json = MeetermNative.workspaceState(handle)
+        ?: throw IllegalStateException("Native workspace state is unavailable.")
+      jsonObjectValue(JSONObject(json))
+    }
 
     AsyncFunction("connect") { terminalId: String, options: Map<String, Any?> ->
       connectOptions(terminalId, options)
@@ -63,9 +86,7 @@ class MeetermTerminalModule : Module() {
     }
 
     AsyncFunction("selectPane") { terminalId: String, paneId: String ->
-      require(paneId.matches(Regex("%[0-9]+"))) { "The pane ID is invalid." }
-      val pane = paneId.drop(1).toLongOrNull()
-        ?: throw IllegalArgumentException("The pane ID is invalid.")
+      val pane = targetId(paneId, '%')
       val handle = ensureHandle(normalizeTerminalId(terminalId))
       check(MeetermNative.tmuxSelectPane(handle, pane) == 0) { "The terminal could not be selected." }
     }
@@ -141,8 +162,16 @@ class MeetermTerminalModule : Module() {
   }
 
   private fun targetId(value: String, prefix: Char): Long {
-    require(value.length > 1 && value.first() == prefix && value.drop(1).all { it in '0'..'9' }) { "The tmux target is invalid." }
-    return value.drop(1).toLongOrNull() ?: throw IllegalArgumentException("The tmux target is invalid.")
+    val normalized = value.trim()
+    val digits = if (normalized.firstOrNull() == prefix) normalized.drop(1) else normalized
+    require(digits.isNotEmpty() && digits.all { it in '0'..'9' }) { "The tmux target is invalid." }
+    return digits.toLongOrNull() ?: throw IllegalArgumentException("The tmux target is invalid.")
+  }
+
+  private fun numericId(value: String): Long {
+    val normalized = value.trim()
+    require(normalized.isNotEmpty() && normalized.all { it in '0'..'9' }) { "The workspace group ID is invalid." }
+    return normalized.toLongOrNull() ?: throw IllegalArgumentException("The workspace group ID is invalid.")
   }
 
   private fun tmuxCommand(terminalId: String, operation: Int, target: Long, name: String = "") {
@@ -157,9 +186,10 @@ class MeetermTerminalModule : Module() {
     val preferences = ClientStore.preferences(storageContext())
     check(MeetermNative.setScrollbackLimit((preferences["scrollbackLines"] as Number).toInt()) == 0)
     check(MeetermNative.setAutomaticReconnect(handle, preferences["automaticReconnect"] as Boolean) == 0)
-    check(MeetermNative.sshConnect(handle, nativeOptions.host, nativeOptions.port,
+    check(MeetermNative.sshConnectBackend(handle, nativeOptions.host, nativeOptions.port,
       nativeOptions.username, nativeOptions.privateKey, nativeOptions.passphrase,
-      KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password) == 0) {
+      KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password,
+      nativeOptions.backend, nativeOptions.runtime) == 0) {
       "The SSH connection could not be started."
     }
   }
@@ -208,6 +238,8 @@ class MeetermTerminalModule : Module() {
     val privateKey: String,
     val passphrase: String,
     val password: String,
+    val backend: String,
+    val runtime: String,
   ) {
     companion object {
       fun from(values: Map<String, Any?>): SshOptions {
@@ -228,6 +260,15 @@ class MeetermTerminalModule : Module() {
           else -> throw IllegalArgumentException("The SSH connection options are invalid.")
         }
 
+        require(!values.containsKey("backend") || values["backend"] is String) { "The backend is invalid." }
+        require(!values.containsKey("runtime") || values["runtime"] is String) { "The runtime is invalid." }
+        val backend = values["backend"] as? String ?: MeetermTerminalModule.DEFAULT_BACKEND
+        require(backend == MeetermTerminalModule.TMUX_BACKEND || backend == MeetermTerminalModule.HERDR_BACKEND) {
+          "The SSH connection options are invalid."
+        }
+        val runtime = values["runtime"] as? String ?: ""
+        requireValidRuntime(backend, runtime)
+
         return when (authMethod) {
           PUBLIC_KEY_AUTH_METHOD -> {
             val privateKey = values["privateKey"] as? String
@@ -237,14 +278,14 @@ class MeetermTerminalModule : Module() {
             ) {
               throw IllegalArgumentException("The SSH connection options are invalid.")
             }
-            SshOptions(host, port, username, authMethod, privateKey, passphrase, "")
+            SshOptions(host, port, username, authMethod, privateKey, passphrase, "", backend, runtime)
           }
           PASSWORD_AUTH_METHOD -> {
             val password = values["password"] as? String
             if (password.isNullOrEmpty() || password.any { it == '\u0000' }) {
               throw IllegalArgumentException("The SSH connection options are invalid.")
             }
-            SshOptions(host, port, username, authMethod, "", "", password)
+            SshOptions(host, port, username, authMethod, "", "", password, backend, runtime)
           }
           else -> error("unreachable authentication method")
         }
@@ -256,12 +297,27 @@ class MeetermTerminalModule : Module() {
         if (!double.isFinite() || double != double.toInt().toDouble()) return null
         return double.toInt()
       }
+
+      private fun requireValidRuntime(backend: String, runtime: String) {
+        require(runtime.toByteArray(Charsets.UTF_8).size <= MeetermTerminalModule.HERDR_RUNTIME_MAX_BYTES &&
+          runtime != "." && runtime != ".." &&
+          runtime.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '_' || it == '-' }) {
+          "The SSH connection options are invalid."
+        }
+        require(backend == MeetermTerminalModule.HERDR_BACKEND || runtime.isEmpty()) {
+          "The SSH connection options are invalid."
+        }
+      }
     }
   }
 
   private companion object {
     const val PUBLIC_KEY_AUTH_METHOD = "publicKey"
     const val PASSWORD_AUTH_METHOD = "password"
+    const val TMUX_BACKEND = "tmux"
+    const val HERDR_BACKEND = "herdr"
+    const val DEFAULT_BACKEND = TMUX_BACKEND
+    const val HERDR_RUNTIME_MAX_BYTES = 64
     const val DEFAULT_COLUMNS = 80
     const val DEFAULT_ROWS = 24
     const val STATE_FIELD_COUNT = 8
@@ -315,6 +371,19 @@ class MeetermTerminalModule : Module() {
           "native_error"
         }
       }
+    }
+
+    private fun jsonObjectValue(value: JSONObject): Map<String, Any?> =
+      value.keys().asSequence().associateWith { jsonValue(value.get(it)) }
+
+    private fun jsonArrayValue(value: JSONArray): List<Any?> =
+      (0 until value.length()).map { jsonValue(value.get(it)) }
+
+    private fun jsonValue(value: Any?): Any? = when (value) {
+      JSONObject.NULL -> null
+      is JSONObject -> jsonObjectValue(value)
+      is JSONArray -> jsonArrayValue(value)
+      else -> value
     }
   }
 }
