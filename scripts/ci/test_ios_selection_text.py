@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -58,8 +59,18 @@ print("Swift clipboard reader: 8 fault-injection cases passed")
         with tempfile.TemporaryDirectory(prefix="meeterm-selection-test-") as directory:
             path = Path(directory)
             (path / "main.swift").write_text(program)
+            target_flags = []
+            if platform.system() == "Darwin":
+                sdk = subprocess.check_output(
+                    ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                    text=True, timeout=10,
+                ).strip()
+                # This executable runs on the macOS host, not the iOS SDK
+                # selected by the preceding Simulator typecheck.
+                target_flags = ["-sdk", sdk, "-target",
+                                f"{platform.machine()}-apple-macosx15.0"]
             build = subprocess.run(
-                [SWIFTC, str(path / "main.swift"), "-o", str(path / "test")],
+                [SWIFTC, *target_flags, str(path / "main.swift"), "-o", str(path / "test")],
                 capture_output=True, text=True, timeout=60,
             )
             self.assertEqual(build.returncode, 0, build.stderr)
