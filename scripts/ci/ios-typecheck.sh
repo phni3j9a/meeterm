@@ -95,3 +95,7 @@ xcrun swiftc \
   "${staged_source_directory}/TerminalSpecialKey.swift"
 
 echo "iOS Swift typecheck passed."
+
+# Execute the production clipboard reader against a fault-injected C boundary.
+# This catches a pane disappearing between its length query and byte copy.
+MEETERM_SWIFTC="$(xcrun --find swiftc)" python3 "${script_directory}/test_ios_selection_text.py"

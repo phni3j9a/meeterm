@@ -356,6 +356,9 @@ enum MeetermCore {
       guard capacity > 0, capacity <= 4 * 1024 * 1024 else { return nil }
       var bytes = [UInt8](repeating: 0, count: capacity)
       let copied = bytes.withUnsafeMutableBufferPointer { meeterm_selection_text(terminalId, $0.baseAddress, $0.count) }
+      // The pane can disappear between the size query and the copy. C size_t
+      // imports as Int here, so Rust's SIZE_MAX error sentinel is negative.
+      guard copied >= 0, copied <= 4 * 1024 * 1024 else { return nil }
       if copied > capacity { capacity = copied; continue }
       return String(bytes: bytes.prefix(copied), encoding: .utf8)
     }
