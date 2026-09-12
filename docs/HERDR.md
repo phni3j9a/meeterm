@@ -1,8 +1,10 @@
 # Herdr backend
 
 Issue #17 の Herdr backend は、meeterm の Rust/native 経路に実装済みです。
-この文書は実装契約と検証範囲を記録します。Issue 全体の受入完了はまだ宣言していません。
-実 Herdr のnative統合テストは成功しました。CIと両モバイルの画像確認を含む受入証拠は保留中です。
+この文書は実装契約と検証範囲を記録します。実 Herdr のnative統合、一般CI、Android full、
+iOS standardと短いSSH入力テストが成功し、両OSの画面を実際に開いて確認しました。
+対象source、途中の失敗、未検証の範囲は [モバイル受入記録](evidence/issue-17-herdr-mobile.md)
+と [native検証記録](evidence/issue-17-herdr-native.md) に残しています。
 以前の失敗を含む公開 CLI の実測記録は [feasibility evidence](evidence/issue-17-herdr-feasibility.md)
 に保存してあり、書き換えていません。
 

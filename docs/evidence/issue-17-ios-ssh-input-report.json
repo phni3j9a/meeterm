@@ -1,0 +1,60 @@
+{
+  "source_commit": "fe3b7f74879d2b2f3fcaa22423188874a3a5ae01",
+  "app_native_source_commit": "62a5ce6e50e3bbf83ca0719b09f3a086017e7b76",
+  "run_url": "https://github.com/phni3j9a/meeterm/actions/runs/34683723390",
+  "suite": "ssh",
+  "backend": "tmux",
+  "build_mode": "fresh-cng",
+  "result": "passed",
+  "ui_completion_seconds": 272.044,
+  "renderer": "metal",
+  "screenshots_viewed": [
+    "ssh-terminal-input.png",
+    "ssh-disconnected.png"
+  ],
+  "input_diagnostics": {
+    "marker_file_exists": true,
+    "marker_file_matches": true,
+    "panes": [
+      {
+        "capture_char_count": 143,
+        "capture_line_count": 14,
+        "command_echo_seen": true,
+        "keyboard_word_seen": true,
+        "paste_body_seen": true,
+        "keyboard_prefix_suffix_length": 6,
+        "marker_echo_seen": true,
+        "marker_path_echo_seen": true,
+        "shell_command_not_found": false,
+        "shell_permission_denied": false,
+        "shell_syntax_error": false
+      },
+      {
+        "capture_char_count": 24,
+        "capture_line_count": 16,
+        "command_echo_seen": false,
+        "keyboard_word_seen": false,
+        "paste_body_seen": false,
+        "keyboard_prefix_suffix_length": 0,
+        "marker_echo_seen": false,
+        "marker_path_echo_seen": false,
+        "shell_command_not_found": false,
+        "shell_permission_denied": false,
+        "shell_syntax_error": false
+      },
+      {
+        "capture_char_count": 24,
+        "capture_line_count": 16,
+        "command_echo_seen": false,
+        "keyboard_word_seen": false,
+        "paste_body_seen": false,
+        "keyboard_prefix_suffix_length": 0,
+        "marker_echo_seen": false,
+        "marker_path_echo_seen": false,
+        "shell_command_not_found": false,
+        "shell_permission_denied": false,
+        "shell_syntax_error": false
+      }
+    ]
+  }
+}

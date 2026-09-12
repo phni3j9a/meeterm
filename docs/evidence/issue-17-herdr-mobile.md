@@ -144,3 +144,33 @@ command/貼り付け部分の有無、keyboard prefixの一致文字数、marker
 生の端末内容・認証情報・pathは公開せず、入力の再送・assertionの省略・deadline変更も行いません。
 テストソース変更のためiOS sshはfresh buildで確認します。アプリとnativeソースは62a5ce6から
 変わらないため、上記Android fullとiOS standardの結果・画像確認はそのまま対応します。
+
+### 診断追加後のiOS ssh: 成功、画像確認済み
+
+Pythonの診断と回帰テスト、文書だけを変更した `fe3b7f74879d2b2f3fcaa22423188874a3a5ae01` の
+[実行34683723390](https://github.com/phni3j9a/meeterm/actions/runs/34683723390)は成功しました。
+この実行でfresh CNG buildを08:37:55–08:51:26 UTC（13分31秒）に行い、同じ実行のpristine
+productsをSimulator jobへ渡しました。以前のsourceのbuildは再利用していません。
+アプリとnativeは62a5ce6と同一です。
+
+`ios-ssh-validation.txt` は `result=passed / stage=complete`、`ssh_complete` は272.044秒です。
+ホスト鍵確認、実SSH接続、キーボードの6文字、native Paste、Return、remote marker、明示切断が
+成功しました。Metal first frameも記録されています。追加診断では1つのpaneだけに完全な
+command echoとpaste本文があり、keyboard prefixは6文字一致、markerファイルは完全一致でした。
+他の2つのpaneにはcommand/markerのechoがありません。生の端末内容を含まない
+[到達記録](issue-17-ios-ssh-input-report.json) を保存しています。
+
+`ssh-terminal-input.png`と`ssh-disconnected.png`を実際に開きました。入力後のshell prompt、
+native keyboard/toolbar、pane tabsが読め、切断後は未接続状態と再接続案内を表示しています。
+秘密欄の画像はありません。この成功は既存tmux経路の実SSH入力確認です。
+
+先の62a5ce6での入力失敗はこの実行では再現しませんでした。診断の追加は本番入力経路を
+変えておらず、過去の失敗原因を修正したとは主張しません。失敗時の情報不足とその結果は
+上に残しています。assertion、入力方法、再試行回数、deadlineは変更していません。
+
+fe3b7f7の[一般CI34683722369](https://github.com/phni3j9a/meeterm/actions/runs/34683722369)も全job成功です。
+新しいiOS driver回帰40件が成功し、実OpenSSH/tmuxは15.53秒、実Herdrは20.71秒で成功しました。
+Android fullとiOS standardは、アプリ/nativeが同じ62a5ce6の成功と上記の画像実見を採用します。
+実機IME/GPU、HerdrでのモバイルOSによるprocess kill、スマホとPCの同時編集保証、iOSの長い
+fullはこの記録の検証範囲外です。Herdrのclient状態喪失はnative owner/registryの再作成で
+確認し、AndroidのOS process再起動は既存tmuxのfullで確認しています。
