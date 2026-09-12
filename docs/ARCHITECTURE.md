@@ -607,7 +607,8 @@ terminal data plane native. Continue to verify:
 
 A simulator/emulator smoke result does not replace physical-device GPU, font,
 or IME validation. The [live native Herdr test](evidence/issue-17-herdr-native.md)
-has passed locally. CI and mobile visual evidence remain pending.
+has passed locally. The [mobile acceptance record](evidence/issue-17-herdr-mobile.md)
+records CI results and actual screen review for each source revision.
 
 ## CI and mobile evidence
 

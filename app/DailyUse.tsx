@@ -116,7 +116,7 @@ export function NameForm({ visible, title, initialName, colors, onClose, onSave 
     <View style={styles.field}><Text style={[styles.body, { color: colors.text }]}>名前</Text><TextInput accessibilityLabel="Workspace or terminal name" testID="workspace-terminal-name" value={name} onChangeText={setName} autoFocus autoComplete="off" autoCorrect={false} returnKeyType="done" onSubmitEditing={submit} placeholder="例: 開発用" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]} />
       {error ? <Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>{error}</Text> : null}
     </View>
-    <Text style={[styles.helper, { color: colors.muted }]}>PC の tmux にも同じ名前が表示されます。</Text>
+    <Text style={[styles.helper, { color: colors.muted }]}>PC 側にも同じ名前が表示されます。</Text>
   </FormModal>;
 }
 
