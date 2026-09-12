@@ -23,13 +23,14 @@ backend boundary maps tmux to `window → virtual group → pane` and Herdr to
 input, scroll, resize, lifecycle, stable terminal IDs, and native rendering
 remain below the JavaScript boundary; Herdr itself is unchanged.
 
-Issue #17 implementation is present, but the full acceptance record is still
-pending. The [production native integration](docs/evidence/issue-17-herdr-native.md)
-passed against an isolated russh endpoint and real Herdr 0.9.0, including normal
-PC client handoff. The prior OpenSSH public CLI proof remains historical evidence.
-The new Rust CI job and mobile screen evidence remain pending, so this status does not claim
-that Issue #17 is complete. See [`docs/HERDR.md`](docs/HERDR.md) for the exact
-protocol, input semantics, handoff behavior, and verification commands.
+The [production native integration](docs/evidence/issue-17-herdr-native.md)
+exercises real Herdr 0.9.0 through an isolated russh endpoint, including normal
+PC client handoff and safe handling of related Git workspaces. The prior
+OpenSSH public CLI proof remains historical evidence. The
+[mobile acceptance record](docs/evidence/issue-17-herdr-mobile.md) tracks exact
+source revisions, suite results, actual screenshot review, and remaining limits.
+See [`docs/HERDR.md`](docs/HERDR.md) for setup, input semantics, handoff behavior,
+close-scope restrictions, and verification commands.
 
 ## Architecture direction
 

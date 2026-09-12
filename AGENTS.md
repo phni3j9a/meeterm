@@ -31,10 +31,9 @@ must not create a remote tmux window or otherwise change the desktop layout.
 Herdr maps Workspace to a Herdr workspace, Group to a Herdr tab, and Terminal
 to a Herdr pane. Backend selection is explicit per profile/runtime; a missing
 legacy backend continues to mean tmux. The Rust/native path targets Herdr 0.9.0,
-protocol 22, schema 1 through its existing direct public API. The complete
-Issue #17 acceptance record remains pending the real integration test, CI, and
-mobile evidence; that pending evidence does not make the production boundary a
-future-only design. See [`docs/HERDR.md`](docs/HERDR.md) and the historical
+protocol 22, schema 1 through its existing direct public API. Keep acceptance
+evidence scoped to the tested source and suites in
+[`docs/evidence/issue-17-herdr-mobile.md`](docs/evidence/issue-17-herdr-mobile.md). See [`docs/HERDR.md`](docs/HERDR.md) and the historical
 record [`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
 
 An additional backend connects to a user-selected remote runtime over ordinary
@@ -217,8 +216,8 @@ real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
 OpenSSH fixture. The normal mobile gate remains iOS `standard` (14 screenshots
 including four Herdr routes) plus Android full; Android's four Herdr routes are
 observational evidence and do not replace the machine gate. No test result may
-claim Issue #17 complete until the pending integration/CI evidence and required
-visual review are recorded.
+claim acceptance without the applicable integration/CI evidence and required
+visual review.
 
 ## Standard testing workflow
 
@@ -247,7 +246,7 @@ For both mobile jobs, the machine-gated acceptance boundary is: generated projec
 
 Standard GitHub-hosted macOS runners do not guarantee Metal. The iOS job must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
 
-The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; that new run is pending until CI evidence exists.
+The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; record the exact run and result in the acceptance evidence.
 
 The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
 

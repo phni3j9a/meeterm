@@ -67,10 +67,11 @@ user-selected remote runtime, while meeterm itself still requires no gateway,
 daemon, hosted relay, HTTP API, or WebSocket terminal transport.
 
 The Rust/native backend boundary, profile/runtime fields, common snapshots,
-group operations, and Herdr mobile routes are implemented. Issue #17 remains
-open until CI and mobile visual evidence are recorded. The production native
-integration has passed against real Herdr, including ordinary PC client handoff;
-see the [native evidence](evidence/issue-17-herdr-native.md).
+group operations, and Herdr mobile routes are implemented. The production native
+integration has passed against real Herdr, including ordinary PC client handoff
+and linked-workspace close safety. See the [native evidence](evidence/issue-17-herdr-native.md)
+and [mobile acceptance record](evidence/issue-17-herdr-mobile.md) for measured
+results, exact source revisions, and validation limits.
 
 Herdr is an existing external application and must remain unchanged. Input
 adaptation belongs in meeterm using existing public interfaces; an upstream API

@@ -91,7 +91,10 @@ backend in an old saved profile defaults to tmux; an empty Herdr runtime means
 and group operations (`create_group`, `rename_group`, `close_group`,
 `select_group`) as well as `set_terminal_visible`. On Herdr, `close_group`
 maps to `tab.close`; `close_workspace` maps to `workspace.close` with
-`close_group: false`, so tab deletion and workspace cascade remain distinct.
+`close_group: false`. Pane/group closes in a parent with related Git workspaces
+are refused because Herdr 0.9.0 can implicitly close the related workspaces when
+its confirmation setting is disabled. Ordinary workspaces and linked children
+remain operable; see [close scope](../../docs/HERDR.md#共通モデルと識別子).
 The JSON snapshot is bounded and opaque to the terminal data plane; terminal
 bytes, cells, scrollback, and render frames stay in Rust/native code.
 
@@ -121,7 +124,9 @@ separate from the existing OpenSSH/tmux fixture; the older
 `scripts/herdr/feasibility.py` remain historical diagnostics. The general CI
 job downloads the official binary only into `RUNNER_TEMP` and verifies its
 pinned digest before running this test. The [local production native run](../../docs/evidence/issue-17-herdr-native.md)
-passed, including ordinary PC client handoff. CI and mobile acceptance remain pending.
+passed, including ordinary PC client handoff and linked-workspace close-scope checks.
+See the [mobile acceptance record](../../docs/evidence/issue-17-herdr-mobile.md)
+for exact source revisions, suite results, screenshot review, and remaining limits.
 
 ## Snapshot format
 

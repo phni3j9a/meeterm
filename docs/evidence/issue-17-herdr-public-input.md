@@ -1,5 +1,10 @@
 # Issue #17: 既存Herdrの公開入力機能による再検証
 
+これはアプリ統合前の診断記録です。以下の「未実装・未完了」は当時の状態を表します。
+現在の実装と制約は[HERDR.md](../HERDR.md)、その後の結果は
+[native統合検証](issue-17-herdr-native.md)と[モバイル受入記録](issue-17-herdr-mobile.md)を参照してください。
+当時の失敗・測定値は保存しています。
+
 2026-09-12、Herdr **0.9.0 / protocol 22**を変更せず、公開CLIの論理キー入力で通常モードと
 application cursor modeの両方に正しいUpが届くことを実接続で確認しました。
 「Herdr本体へのAPI追加が必要」という以前の結論は誤りでした。

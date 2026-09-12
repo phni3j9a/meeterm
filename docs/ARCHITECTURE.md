@@ -54,8 +54,10 @@ Herdr: workspace → tab           → pane
 The tmux group is local presentation state and must never create a second
 window or mutate the ordinary tmux desktop layout. Herdr groups represent
 remote tabs. Herdr group deletion uses `tab.close`; workspace deletion uses
-`workspace.close` with `close_group: false`, so final-pane/tab closure and
-workspace cascade are distinct protocol operations. Backend/runtime selection
+`workspace.close` with `close_group: false`. Because Herdr 0.9.0 can implicitly
+close a Git workspace group from its parent when confirmation is disabled,
+pane/group closes in a parent with related workspaces are refused after a fresh
+snapshot. Normal workspaces and linked children remain operable. Backend/runtime selection
 is explicit; missing legacy profile fields default to the existing tmux path,
 and a missing Herdr capability is an explicit error rather than a silent tmux
 fallback. Remote identifiers remain opaque and scoped by connection, backend,
@@ -71,8 +73,8 @@ does not add a meeterm gateway, daemon, HTTP API, or WebSocket terminal
 transport.
 
 The fixed Herdr compatibility target is 0.9.0 / protocol 22 / schema 1. The
-live Rust integration has passed; CI and mobile evidence remain pending, so
-Issue #17 is not marked accepted. Input adaptation uses Herdr's existing `send_text`,
+live Rust integration has passed; the [mobile acceptance record](evidence/issue-17-herdr-mobile.md)
+tracks CI source revisions, actual screen review, and remaining limits. Input adaptation uses Herdr's existing `send_text`,
 `send_keys`, and `send_input` operations; a modified Herdr or upstream API
 addition is not required. See [`HERDR.md`](HERDR.md) and the
 [`Issue #17 evidence record`](evidence/issue-17-herdr-feasibility.md).
@@ -613,7 +615,7 @@ The mobile CI contract is intentionally split between machine gates and human in
 
 On a standard hosted macOS runner, Metal availability is recorded rather than assumed. If Metal is unavailable, the iOS Simulator may render the same Rust snapshot and CoreText raster through an explicitly marked native CoreGraphics fallback. That validates the non-JavaScript terminal path and yields reviewable CI evidence, but it does not satisfy the outstanding iOS Metal execution check. A physical device or GPU-capable runner must supply that evidence later.
 
-There is no pixel-difference gate at this stage. For a native UI change, visual success is reported only after Codex downloads and actually views both the Android emulator screenshot and the iOS Simulator screenshot. Artifact existence, screenshot dimensions, or a successful process exit is not visual review. The general Rust workflow downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies SHA-256 `4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f`, and runs the ignored russh integration; no result is recorded here until that workflow runs. See [`docs/CI_MOBILE.md`](CI_MOBILE.md) for the runner, signing, CNG, and staged-job guide.
+There is no pixel-difference gate at this stage. For a native UI change, visual success is reported only after Codex downloads and actually views both the Android emulator screenshot and the iOS Simulator screenshot. Artifact existence, screenshot dimensions, or a successful process exit is not visual review. The general Rust workflow downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies SHA-256 `4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f`, and runs the ignored russh integration; record the workflow result with its source revision in the acceptance evidence. See [`docs/CI_MOBILE.md`](CI_MOBILE.md) for the runner, signing, CNG, and staged-job guide.
 
 iOS Simulator builds are unsigned simulator validation and must not require distribution certificates, provisioning profiles, or Apple secrets. Physical iOS devices and TestFlight are later signed workflows with separate credentials and acceptance criteria. Simulator-only app Keychain entitlements are embedded in Mach-O XML/DER sections while signing remains disabled. Storage tests import the production pod in an app-hosted unit-test target; the separate UI test runner is not the Keychain test host. See [DAILY_USE.md](DAILY_USE.md) for the focused reproduction and validation scope.
 

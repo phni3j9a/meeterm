@@ -11,6 +11,22 @@ Herdr は既存の外部アプリです。meeterm は公開 API に適応し、H
 起動済みの対象 session、SSH stream-local forwarding の許可が必要です。meeterm 用 gateway、daemon、
 HTTP/WebSocket relay、追加のリモートツールはありません。
 
+## 接続して使う
+
+1. PCで、使いたいHerdrのセッションを開いておきます。SSHでログインした環境からも
+   `herdr --session default status --json` を実行できる必要があります。
+2. meetermの接続画面でSSHの接続先・ユーザー・認証方法を入力し、バックエンドを
+   **Herdr** にします。通常はセッション名を空欄にします。named sessionを使う場合だけ、
+   PCで使っている名前を入力します。
+3. 初めての接続ではホスト鍵を確認します。接続後、ワークスペースを選びます。
+   HerdrのTabが複数ある場合だけGroupの選択が表示され、その中のターミナルを開けます。
+4. 作業を残してPCへ戻るときは **切断** を使います。PCでは同じセッションを通常の
+   `herdr --session default`、または指定したセッション名で開きます。
+
+SSHのUnix socket転送が許可されていない場合は、転送設定を確認する案内が出ます。
+Herdr未導入、セッション未起動、対応機能・バージョンの不一致、入力権限の競合も
+それぞれ別のエラーで案内します。以前の保存済み設定はtmuxとして読み込みます。
+
 ## 対応する公開プロトコル
 
 現在の互換性ターゲットは **Herdr 0.9.0 / protocol 22 / schema 1** です。
@@ -151,7 +167,8 @@ stable identity を一つの bounded ケースで確認します。公式 binary
 `RUNNER_TEMP` にだけ pinned digest で取得し、既存環境やユーザーの Herdr session を変更
 しません。ローカルのproduction native統合テストは成功しています。通常のPC clientとの
 入力・引き継ぎも含む[実測結果と限界](evidence/issue-17-herdr-native.md)を参照してください。
-一般CIでの新しいtestの結果は別途記録します。
+一般CIと両OSの結果は[モバイル受入記録](evidence/issue-17-herdr-mobile.md)で、
+対象sourceと検証範囲を分けて記録します。
 
 モバイルでは iOS `standard` の 14 screen に Herdr connection、groups、terminal、workspaces
 を含め、Android でも同じ 4 route を fresh process ごとの observational fixture として
