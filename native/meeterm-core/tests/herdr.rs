@@ -699,10 +699,10 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
-fn wait_revision(id: u64, previous: u64, label: &str) -> u64 {
+fn wait_revision(owner: u64, id: u64, previous: u64, label: &str) -> u64 {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
-        let state = connection_snapshot(id).expect("connection snapshot");
+        let state = connection_snapshot(owner).expect("connection snapshot");
         if state.state == ConnectionState::Failed as u32 {
             panic!(
                 "{label} failed: {} {}",
@@ -714,7 +714,12 @@ fn wait_revision(id: u64, previous: u64, label: &str) -> u64 {
         if revision > previous {
             return revision;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label}; state={} revision={revision}/{previous} workspace={}",
+            state.state,
+            workspace_snapshot_json(owner).unwrap_or_default()
+        );
         thread::sleep(POLL_INTERVAL);
     }
 }
@@ -1193,6 +1198,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
             .any(|workspace| entity_id(&workspace["id"]) == extra_id)
     });
     wait_revision(
+        default_id,
         root.terminal_id,
         before_extra_close,
         "root controller reactivation after workspace close",
@@ -1280,22 +1286,28 @@ fn real_herdr_native_backend_over_russh_fixture() {
         "DECCKM_READY",
         "full-screen Herdr TUI readiness",
     );
-    let before_visibility = terminal_revision(root.terminal_id).expect("visibility baseline");
-    assert_eq!(
-        meeterm_set_terminal_visible(default_id, 0),
-        0,
-        "release Herdr controller on rapid visibility transition"
-    );
-    assert_eq!(
-        meeterm_set_terminal_visible(default_id, 1),
-        0,
-        "reacquire Herdr controller on rapid visibility transition"
-    );
-    wait_revision(
-        root.terminal_id,
-        before_visibility,
-        "rapid visibility false-to-true frame",
-    );
+    // Every transition must release/reacquire and produce a fresh frame.
+    // Repeated transitions exercise the resize-sender-close/lifecycle race;
+    // a failure ends the test, rather than retrying a failed transition.
+    for transition in 0..8 {
+        let before_visibility = terminal_revision(root.terminal_id).expect("visibility baseline");
+        assert_eq!(
+            meeterm_set_terminal_visible(default_id, 0),
+            0,
+            "release Herdr controller on rapid visibility transition {transition}"
+        );
+        assert_eq!(
+            meeterm_set_terminal_visible(default_id, 1),
+            0,
+            "reacquire Herdr controller on rapid visibility transition {transition}"
+        );
+        wait_revision(
+            default_id,
+            root.terminal_id,
+            before_visibility,
+            &format!("rapid visibility false-to-true frame {transition}"),
+        );
+    }
     assert_eq!(
         meeterm_send_special_key(root.terminal_id, SpecialKey::Up as u32),
         1
@@ -1480,6 +1492,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
     set_foreground(default_id, true).expect("foreground Herdr connection");
     wait_ready_with_host_key(default_id, "Herdr foreground reconnect");
     wait_revision(
+        default_id,
         root.terminal_id,
         before_foreground,
         "fresh foreground frame",
@@ -1555,6 +1568,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
     let before_return = terminal_revision(fresh_pane.terminal_id).unwrap();
     assert_eq!(meeterm_set_terminal_visible(fresh_id, 1), 0);
     wait_revision(
+        fresh_id,
         fresh_pane.terminal_id,
         before_return,
         "phone return after ordinary PC handoff",

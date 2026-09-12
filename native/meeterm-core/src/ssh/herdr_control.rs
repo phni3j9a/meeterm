@@ -328,7 +328,7 @@ pub(super) async fn run(
         let (stream, sizes, input) = match client.controller.as_mut() {
             Some(controller) => (
                 Some(&mut controller.stream),
-                Some(&mut controller.sizes),
+                controller.ready.then_some(&mut controller.sizes),
                 controller.ready.then_some(&mut controller.input),
             ),
             None => (None, None, None),
@@ -362,11 +362,24 @@ pub(super) async fn run(
             },
             size = async {
                 match sizes {
-                    Some(sizes) => { sizes.changed().await.map_err(|_| FlowFailure::Stale)?; Ok(*sizes.borrow_and_update()) },
+                    Some(sizes) => match sizes.changed().await {
+                        Ok(()) => Some(*sizes.borrow_and_update()),
+                        Err(_) => None,
+                    },
                     None => std::future::pending().await,
                 }
             } => {
-                let (cols, rows) = size?;
+                let Some((cols, rows)) = size else {
+                    // Public visibility/selection changes revoke the native
+                    // binding before their queued command reaches this actor.
+                    // Its resize sender can close first. Stop watching that
+                    // binding while the lifecycle command releases/reacquires
+                    // the controller; this is not a stale SSH connection.
+                    if let Some(controller) = client.controller.as_mut() {
+                        controller.ready = false;
+                    }
+                    continue;
+                };
                 client.viewport = (cols, rows);
                 client.shared.session.lock().map_err(|_| FlowFailure::Stale)?.viewport = Some((cols, rows));
                 if let Some(controller) = &client.controller {

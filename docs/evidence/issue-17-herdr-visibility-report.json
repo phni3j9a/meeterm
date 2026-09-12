@@ -1,0 +1,27 @@
+{
+  "base_commit": "39cf3ff5768e338f977b0989a151f34c3396d736",
+  "source_sha256": {
+    "native/meeterm-core/src/ssh/herdr_control.rs": "ad2056937ca8cc4e559ebdec19f555b76c26d0e4685737c451559628de7a341d",
+    "native/meeterm-core/tests/herdr.rs": "39a8a4c1e7daf2145fcab9e89a2af35d97b004bfcc758d3f270113088fc86c40",
+    "scripts/herdr/native_integration.py": "7a7a4e7f9533812b3157bb479ce3aaa60aa57221dba262d2de78915d198c061b"
+  },
+  "regression": "native resize sender closes before queued visibility/selection command",
+  "before_fix": {
+    "ci_run": "https://github.com/phni3j9a/meeterm/actions/runs/34678745062",
+    "stage": "phone return after ordinary PC handoff",
+    "result": "failed",
+    "local_log": "/tmp/meeterm-17-native-r7-diagnostic.log",
+    "local_result": "failed: stale_connection during Herdr pane close"
+  },
+  "after_fix": {
+    "log": "/tmp/meeterm-17-native-r9-visibility-regression.log",
+    "result": "passed",
+    "elapsed_seconds": 20.69,
+    "visibility_transitions": 8,
+    "every_transition_requires_new_frame": true,
+    "pc_handoff_and_phone_input": "passed",
+    "rust_library": "78 passed; 1 ignored",
+    "clippy_all_targets": "passed"
+  },
+  "herdr_modified": false
+}

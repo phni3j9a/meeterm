@@ -66,3 +66,22 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 frame更新を要求していた待機条件を修正しました。最終ケースは`Disconnected`の明示確認、
 echoに現れないshell出力、move後の実入力を確認します。失敗を成功へ読み替えたり、
 本番のassertionを飛ばしたりしていません。
+
+## 追加回帰: 画面切り替え時の入力経路終了
+
+production候補39cf3ffの[PR側CI](https://github.com/phni3j9a/meeterm/actions/runs/34678745062)は、
+PCからスマホ側へ戻る最終frame待機で失敗しました。同じcommitの
+[push側CI](https://github.com/phni3j9a/meeterm/actions/runs/34678742947)では成功したため、
+タイミングに依存する問題として調べました。診断を接続ownerの状態へ修正したローカル実行では、
+Pane終了の途中で`stale_connection`を再現しました。
+
+nativeの入力経路を同期的に閉じるとresize通知のsenderも閉じます。旧actorはその終了を
+SSH接続の世代不一致へ変換していたため、画面切り替えのcommandを読む前に接続を終了する
+場合がありました。修正では、そのcontrollerの入力・resize監視を止め、続くlifecycle
+commandで通常の解放・再取得を処理します。
+
+修正後、8回連続のhide/showで毎回新しいframeを要求し、その後のTUI入力、通常PC client
+への引き継ぎ、スマホ側での実入力まで含むケースが20.69秒で成功しました。失敗した操作を
+再試行して合格にするループではなく、8回すべてにassertionを置いています。Rust library
+78件とClippyも成功しました。[追加レポート](issue-17-herdr-visibility-report.json)に
+ソースhashと前後の結果を記録しています。初回の18.34秒の記録は上書きしていません。
