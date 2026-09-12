@@ -654,12 +654,22 @@ final class MeetermSmokeUITests: XCTestCase {
       let total = app.staticTexts.matching(
         NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "すべて", "2")
       ).firstMatch
-      let mainCount = app.staticTexts["4 ターミナル"]
-      let toolsCount = app.staticTexts["1 ターミナル"]
-      guard waitForWorkspaceLabels(minimum: 2).count >= 2 else { return false }
+      // WorkspaceRow is one accessible button with an explicit label. Its
+      // count/Agent Text children are grouped into that element on iOS, so
+      // querying them as independent staticTexts cannot establish readiness.
+      // Require both exact production rows and their visible tap targets;
+      // pane counts and Agent summaries remain part of screenshot review.
+      let expected = Set(["Workspace Main workspace", "Workspace Tools workspace"])
+      guard Set(waitForWorkspaceLabels(minimum: 2)) == expected else { return false }
+      let main = app.buttons.matching(
+        NSPredicate(format: "identifier == %@", "workspace-row-@smoke-main")
+      ).firstMatch
+      let tools = app.buttons.matching(
+        NSPredicate(format: "identifier == %@", "workspace-row-@smoke-tools")
+      ).firstMatch
       return total.waitForExistence(timeout: 30)
-        && mainCount.waitForExistence(timeout: 30)
-        && toolsCount.waitForExistence(timeout: 30)
+        && waitForHittable(main, timeout: 30)
+        && waitForHittable(tools, timeout: 30)
     default:
       return false
     }
