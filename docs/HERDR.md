@@ -2,7 +2,7 @@
 
 Issue #17 の Herdr backend は、meeterm の Rust/native 経路に実装済みです。
 この文書は実装契約と検証範囲を記録します。Issue 全体の受入完了はまだ宣言していません。
-新しい実 Herdr integration test と CI、両モバイルの画像確認を含む受入証拠は保留中です。
+実 Herdr のnative統合テストは成功しました。CIと両モバイルの画像確認を含む受入証拠は保留中です。
 以前の失敗を含む公開 CLI の実測記録は [feasibility evidence](evidence/issue-17-herdr-feasibility.md)
 に保存してあり、書き換えていません。
 
@@ -142,7 +142,9 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 resize、semantic input、CJK paste、controller conflict、release/reacquire、外部 move と
 stable identity を一つの bounded ケースで確認します。公式 binary の CI job は
 `RUNNER_TEMP` にだけ pinned digest で取得し、既存環境やユーザーの Herdr session を変更
-しません。新しい test/CI の実行結果はまだこの文書に記録していません。
+しません。ローカルのproduction native統合テストは成功しています。通常のPC clientとの
+入力・引き継ぎも含む[実測結果と限界](evidence/issue-17-herdr-native.md)を参照してください。
+一般CIでの新しいtestの結果は別途記録します。
 
 モバイルでは iOS `standard` の 14 screen に Herdr connection、groups、terminal、workspaces
 を含め、Android でも同じ 4 route を fresh process ごとの observational fixture として

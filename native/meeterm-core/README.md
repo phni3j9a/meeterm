@@ -120,8 +120,8 @@ separate from the existing OpenSSH/tmux fixture; the older
 `herdr_probe_tests::replay_live_frames` test and
 `scripts/herdr/feasibility.py` remain historical diagnostics. The general CI
 job downloads the official binary only into `RUNNER_TEMP` and verifies its
-pinned digest before running this test. The new live run is still pending, so
-this README does not mark Issue #17 accepted.
+pinned digest before running this test. The [local production native run](../../docs/evidence/issue-17-herdr-native.md)
+passed, including ordinary PC client handoff. CI and mobile acceptance remain pending.
 
 ## Snapshot format
 

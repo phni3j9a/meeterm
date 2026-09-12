@@ -68,13 +68,14 @@ daemon, hosted relay, HTTP API, or WebSocket terminal transport.
 
 The Rust/native backend boundary, profile/runtime fields, common snapshots,
 group operations, and Herdr mobile routes are implemented. Issue #17 remains
-open until the new real Herdr integration, CI, and mobile visual evidence are
-recorded; this document does not claim those checks have passed.
+open until CI and mobile visual evidence are recorded. The production native
+integration has passed against real Herdr, including ordinary PC client handoff;
+see the [native evidence](evidence/issue-17-herdr-native.md).
 
 Herdr is an existing external application and must remain unchanged. Input
 adaptation belongs in meeterm using existing public interfaces; an upstream API
-addition is not a prerequisite of this issue. The initial candidate loses
-special-key modes, while an explicit bracketed-paste envelope has been verified.
+addition is not a prerequisite of this issue. Mode-aware special keys and
+Japanese/LF bracketed paste are verified through existing public operations.
 
 Herdr 0.9.0 / protocol 22 / schema 1 is the fixed compatibility target. It is
 connected through the public direct stream-local API over ordinary SSH. See

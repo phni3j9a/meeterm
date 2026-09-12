@@ -422,7 +422,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ?? groupPanes.find(pane => pane.id === chosenPaneId)
       ?? groupPanes.find(pane => pane.active)
       ?? groupPanes[0];
-  const activeWorkspaceId = panes.find(pane => pane.selected)?.workspaceId;
+  const activeWorkspaceId = panes.find(pane => pane.selected)?.workspaceId
+    ?? session.groups.find(group => group.workspaceId === workspaceId && group.selected)?.workspaceId;
   const colors = homeColors;
   const resolvedTheme = homeColors === DARK ? 'dark' : 'light';
   const currentProfile = profiles.find(profile => profile.id === profileId);

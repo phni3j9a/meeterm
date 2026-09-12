@@ -24,10 +24,10 @@ input, scroll, resize, lifecycle, stable terminal IDs, and native rendering
 remain below the JavaScript boundary; Herdr itself is unchanged.
 
 Issue #17 implementation is present, but the full acceptance record is still
-pending. The new ignored integration test uses an isolated russh endpoint and a
-real Herdr 0.9.0 binary; the prior public CLI proof used an OpenSSH fixture and
-is retained as historical evidence. The new Rust CI job and the mobile Herdr
-screen evidence have not yet been run/reviewed, so this status does not claim
+pending. The [production native integration](docs/evidence/issue-17-herdr-native.md)
+passed against an isolated russh endpoint and real Herdr 0.9.0, including normal
+PC client handoff. The prior OpenSSH public CLI proof remains historical evidence.
+The new Rust CI job and mobile screen evidence remain pending, so this status does not claim
 that Issue #17 is complete. See [`docs/HERDR.md`](docs/HERDR.md) for the exact
 protocol, input semantics, handoff behavior, and verification commands.
 
@@ -82,7 +82,7 @@ npx expo run:android --device
 
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Herdr feasibility gate](docs/HERDR.md)
+- [Herdr backend and usage](docs/HERDR.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Standard testing workflow](docs/TESTING.md)
 - [First-app evaluation, installation, and evidence](docs/FIRST_APP.md)

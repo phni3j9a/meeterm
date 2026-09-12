@@ -1,0 +1,47 @@
+{
+  "scope": "production Rust Herdr backend through a test-only russh SSH endpoint and isolated official Herdr; ordinary PC client uses a local PTY",
+  "herdr_version": "0.9.0",
+  "protocol": 22,
+  "binary_sha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f",
+  "production_commit": "e117b06f09338c299fdcb201ce0f49be18e0e4ff",
+  "test_source_sha256": {
+    "native/meeterm-core/tests/herdr.rs": "979d940ffd2ca5c84bedccb7b4f3675c1b356047e59d03c6bb6394a9d91cf7d3",
+    "scripts/herdr/native_integration.py": "7a7a4e7f9533812b3157bb479ce3aaa60aa57221dba262d2de78915d198c061b",
+    "native/meeterm-core/src/ssh/herdr_control.rs": "491ceca207f8e3eb58745cc8192d0e777bb6bf0e4fc34f016cc168cf57a1798b",
+    "native/meeterm-core/src/herdr.rs": "b82afdc8997f4fe81ddfa6ffe1464cd22953cb651cb352db277ab2c9d752487a",
+    "native/meeterm-core/src/terminal.rs": "c53d8ea9b41bd1a16890fc151ebcc0db4fa0f1a599bfbf03a9b6a55f5ee86071"
+  },
+  "command": "MEETERM_HERDR_INTEGRATION=1 MEETERM_HERDR_BINARY=/home/server/.local/bin/herdr cargo test --locked --offline --manifest-path native/meeterm-core/Cargo.toml --test herdr -- --ignored --nocapture",
+  "result": "passed",
+  "test_cases": 1,
+  "elapsed_seconds": 18.34,
+  "log": "/tmp/meeterm-17-native-r6.log",
+  "checks": [
+    "default and named runtime isolation",
+    "wrong owner and wrong runtime rejected",
+    "workspace/group/pane create, rename, close; one initial pane",
+    "new pane working/blocked/unknown subscription",
+    "native shell output marker absent from input echo",
+    "actual PTY resize to 52x20",
+    "remote scrollback up and input resets bottom",
+    "DECCKM Up receives ESC O A",
+    "exact bracketed UTF-8/LF paste received",
+    "rapid hide/show reacquires input",
+    "rival controller rejected without takeover",
+    "explicit external takeover stops controller",
+    "same fullscreen TUI and mode-aware input after reconnect",
+    "external rename/move retains native terminal and input target",
+    "background suspension and foreground native input",
+    "server-side SSH disconnection triggers automatic reconnect",
+    "fresh connection owner retains remote shell variable",
+    "ordinary PC client restores 100x40 viewport, receives keyboard input in same shell, retains topology",
+    "phone reacquires after ordinary PC handoff"
+  ],
+  "limits": [
+    "test SSH endpoint is russh, not an OpenSSH daemon",
+    "fresh owner simulates lost client registry; not an OS process kill",
+    "server sends SSH disconnect; not arbitrary packet-loss simulation",
+    "PC input is injected into the ordinary Herdr client PTY, not physical keyboard hardware",
+    "mobile screenshots and iOS/Android platform acceptance tracked separately"
+  ]
+}

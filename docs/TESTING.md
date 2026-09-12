@@ -4,14 +4,15 @@
 長い全操作の自動テストを必須にする方針から、画面ごとの表示確認と短い動作テストを組み合わせる方針へ変更します。
 Androidの既存full、共有Rustの単体・実SSH/tmux統合テストは維持します。Herdr は公開 protocol
 parser/unit test と、実 Herdr 0.9.0 を隔離 russh endpoint から接続する ignored integration
-test を追加しています。新しい Herdr integration/CI はこの記録時点では未実行です。
+test を追加しています。ローカルの[実Herdr native検証](evidence/issue-17-herdr-native.md)は
+成功しています。一般CIと両モバイルの結果は別に記録します。
 
 ## 通常の合格条件
 
 | 対象 | 必須の確認 | 結果が意味する範囲 |
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
-| Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期。実行結果は未記録 |
+| Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
 | Android | 既存のfull smokeと画像の実見。Herdr 4画面はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
 | iOS `standard` | production保存4件、native入力7件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
@@ -23,8 +24,7 @@ test を追加しています。新しい Herdr integration/CI はこの記録�
 一般CIのRust jobは公式 Herdr v0.9.0 binary を `RUNNER_TEMP` にだけ取得し、SHA-256
 `4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f` を検証してから、
 `native/meeterm-core/tests/herdr.rs` の ignored test を実行します。ユーザー環境や Herdr
-session を変更しません。job の新しい実行結果が記録されるまでは Herdr integration の合格を
-主張しません。
+session を変更しません。ローカル成功とGitHub CIの結果は区別して記録します。
 
 スクリーンショットは実際に開いて確認します。画像の存在やpixel diffを新しい機械ゲートにはしません。
 画像だけから保存・接続・コピー・名前変更の成功を主張しません。seedされた画面と実操作の証拠を区別します。

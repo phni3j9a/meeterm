@@ -71,8 +71,8 @@ does not add a meeterm gateway, daemon, HTTP API, or WebSocket terminal
 transport.
 
 The fixed Herdr compatibility target is 0.9.0 / protocol 22 / schema 1. The
-live Rust integration and mobile evidence are still pending, so Issue #17 is
-not marked accepted. Input adaptation uses Herdr's existing `send_text`,
+live Rust integration has passed; CI and mobile evidence remain pending, so
+Issue #17 is not marked accepted. Input adaptation uses Herdr's existing `send_text`,
 `send_keys`, and `send_input` operations; a modified Herdr or upstream API
 addition is not required. See [`HERDR.md`](HERDR.md) and the
 [`Issue #17 evidence record`](evidence/issue-17-herdr-feasibility.md).
@@ -604,8 +604,8 @@ terminal data plane native. Continue to verify:
    Android captures the same four Herdr routes as observational evidence.
 
 A simulator/emulator smoke result does not replace physical-device GPU, font,
-or IME validation. The new Herdr Rust/CI run and mobile visual evidence are
-pending and must not be described as Issue #17 acceptance.
+or IME validation. The [live native Herdr test](evidence/issue-17-herdr-native.md)
+has passed locally. CI and mobile visual evidence remain pending.
 
 ## CI and mobile evidence
 
