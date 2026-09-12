@@ -85,3 +85,21 @@ commandで通常の解放・再取得を処理します。
 再試行して合格にするループではなく、8回すべてにassertionを置いています。Rust library
 78件とClippyも成功しました。[追加レポート](issue-17-herdr-visibility-report.json)に
 ソースhashと前後の結果を記録しています。初回の18.34秒の記録は上書きしていません。
+
+## 追加回帰: 関連 workspace の終了範囲
+
+既存 Herdr 0.9.0 の公開実装を確認したところ、`[ui].confirm_close = false` の場合、
+親 Git workspace の最後の pane/tab の終了から、関連 workspace も終了する経路がありました。
+meeterm の pane/group 終了は最新の worktree metadata を取得し、関連 workspace を持つ
+親なら拒否します。workspace 終了は従来どおり `close_group: false` を送り、Herdr の拒否を
+表示します。Herdr の source、binary、ユーザー設定は変更していません。
+
+通常の runtime/CRUD/入力/PC 引き継ぎの後に、隔離した Git repository と linked worktree を
+実 Herdr へ追加しました。終了確認は専用 Herdr の起動時から無効です。親の pane、group、
+workspace 終了がそれぞれ明示的に拒否され、その都度 remote terminal/workspace/tab の
+組み合わせが同一であることを確認しました。linked 側の workspace は終了でき、関連先が
+なくなった親の最後の pane も終了できます。元の PC/phone shell と、両 Git checkout の
+ディレクトリは残りました。ケース全体が24.09秒で成功し、Rust library79件、Clippy、
+TypeScript型検査も成功しました。[終了範囲のレポート](issue-17-herdr-close-scope-report.json)
+に変更対象のhashと実測条件を記録しています。これは同時に別clientが新しいworktreeを
+作る操作との原子的な排他保証を示すテストではありません。

@@ -50,8 +50,15 @@ group chooser を隠し、複数なら
 chooser と pane tabs を表示します。group の作成・改名・選択・削除は native control bridge
 から行います。Herdr の TerminalGroup を削除するときは `tab.close` を使います。workspace
 削除は `workspace.close` の `close_group: false` とし、workspace と group の cascade を
-明示的に分けます。0.9.0 では final pane の終了から tab close、workspace cascade までの
-結果を snapshot/event で再同期します。
+明示的に分けます。0.9.0 は Herdr 側の終了確認を無効にすると、親 workspace の最後の
+pane/tab の終了で、同じ Git repository の関連 workspace まで終了する場合があります。
+そのため関連 workspace を持つ親では、meeterm からの pane/group 終了を拒否し、PC の
+Herdr で終了対象を確認するよう案内します。操作直前に最新の関連情報を取得し、pane/tab
+数の確認後に別 pane が終了する競合も避けるため、この親内の pane/group 終了を一律に
+制限します。通常の workspace、関連先のない親、linked worktree 側は操作できます。
+workspace 自体の終了は常に `close_group: false` を送り、Herdr の一括終了拒否を維持します。
+meeterm は Herdr の終了確認設定や Git worktree のディレクトリを変更・削除しません。
+許可された終了操作の結果は snapshot/event で再同期します。
 
 remote ID は SSH、backend、runtime の scope に閉じた opaque 値です。Rust の registry が
 `native:<registry>` を安定した terminal ID として native view に渡します。Herdr の外部

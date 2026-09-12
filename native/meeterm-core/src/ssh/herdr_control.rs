@@ -18,6 +18,9 @@ pub(super) struct Metadata {
     workspaces: HashMap<u64, String>,
     groups: HashMap<u64, String>,
     panes: HashMap<u64, RemotePane>,
+    /// Herdr 0.9.0 pane/tab close may cascade from these parents when its
+    /// confirm_close setting is disabled. No per-close no-cascade flag exists.
+    linked_worktree_parents: HashSet<u64>,
     /// The selected group is independent of terminal selection so an empty
     /// group remains selectable across snapshot rebuilds.
     selected_groups: HashMap<u64, u64>,
@@ -588,6 +591,7 @@ impl HerdrClient<'_> {
         metadata.workspaces.clear();
         metadata.groups.clear();
         metadata.panes.clear();
+        metadata.linked_worktree_parents.clear();
         metadata.selected_groups.clear();
         metadata.active_group = None;
         let mut live_ids = HashSet::new();
@@ -595,8 +599,26 @@ impl HerdrClient<'_> {
         let mut flat = Vec::new();
         let mut windows = Vec::new();
         let mut focused_groups = HashMap::new();
+        let mut worktree_members = HashMap::<String, usize>::new();
+        for workspace in &snapshot.workspaces {
+            if let Some(worktree) = &workspace.worktree {
+                *worktree_members
+                    .entry(worktree.repo_key.clone())
+                    .or_default() += 1;
+            }
+        }
         for workspace in snapshot.workspaces {
             let wid = metadata.id(b'w', &workspace.workspace_id);
+            if workspace.worktree.as_ref().is_some_and(|worktree| {
+                !worktree.is_linked_worktree
+                    && worktree_members
+                        .get(&worktree.repo_key)
+                        .copied()
+                        .unwrap_or(0)
+                        > 1
+            }) {
+                metadata.linked_worktree_parents.insert(wid);
+            }
             live_ids.insert((b'w', workspace.workspace_id.clone()));
             metadata.workspaces.insert(wid, workspace.workspace_id);
             metadata.snapshot.workspaces.push(workspace::Workspace {
@@ -880,6 +902,15 @@ impl HerdrClient<'_> {
             }
             _ => {}
         }
+        if matches!(
+            command,
+            ControlCommand::CloseGroup { .. } | ControlCommand::ClosePane { .. }
+        ) {
+            // Closing a last pane/tab can implicitly close a worktree group.
+            // Re-read its current membership at the explicit action boundary,
+            // including workspace-created events still queued for this actor.
+            self.synchronize().await?;
+        }
         let (method, params) = {
             let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
             let workspace = |id| {
@@ -931,6 +962,17 @@ impl HerdrClient<'_> {
                     json!({"tab_id":group(group_id)?,"label":name}),
                 ),
                 ControlCommand::CloseGroup { group_id } => {
+                    let workspace = state
+                        .herdr
+                        .snapshot
+                        .groups
+                        .iter()
+                        .find(|item| item.id == group_id.to_string())
+                        .and_then(|item| item.workspace_id.parse::<u64>().ok())
+                        .ok_or(FlowFailure::HerdrOperation)?;
+                    if state.herdr.linked_worktree_parents.contains(&workspace) {
+                        return Err(FlowFailure::HerdrWorkspaceGroup);
+                    }
                     ("tab.close", json!({"tab_id":group(group_id)?}))
                 }
                 ControlCommand::CreatePane { window_id } => {
@@ -961,7 +1003,15 @@ impl HerdrClient<'_> {
                     json!({"pane_id":pane(pane_id)?.pane_id,"label":name}),
                 ),
                 ControlCommand::ClosePane { pane_id } => {
-                    ("pane.close", json!({"pane_id":pane(pane_id)?.pane_id}))
+                    let pane = pane(pane_id)?;
+                    if state
+                        .herdr
+                        .linked_worktree_parents
+                        .contains(&pane.workspace)
+                    {
+                        return Err(FlowFailure::HerdrWorkspaceGroup);
+                    }
+                    ("pane.close", json!({"pane_id":pane.pane_id}))
                 }
             }
         };
@@ -1313,6 +1363,9 @@ impl HerdrClient<'_> {
 
 fn api_failure(code: &str) -> FlowFailure {
     match code {
+        "workspace_group_close_required" | "confirmation_required" => {
+            FlowFailure::HerdrWorkspaceGroup
+        }
         "unsupported_method" | "method_not_found" | "unsupported_in_app_mode" => {
             FlowFailure::HerdrUnsupported
         }

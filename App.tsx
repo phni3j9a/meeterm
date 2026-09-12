@@ -206,6 +206,7 @@ function connectionError(connection: SshConnectionState) {
     herdr_controller_busy: 'このターミナルは別の接続で操作中です。そちらの操作権を解放してから、再接続してください。',
     herdr_protocol: 'Herdrの応答を読み取れませんでした。接続先のバージョンとセッションを確認してください。',
     herdr_operation: 'Herdrが操作を受け付けませんでした。再接続して、現在のワークスペースを確認してください。',
+    herdr_workspace_group: '関連するワークスペースも終了する可能性があるため、この親ワークスペースの終了操作はPCのHerdrで対象を確認して行ってください。',
   };
   if (herdrErrors[connection.errorCode]) return herdrErrors[connection.errorCode];
   if (connection.errorCode === 'host_key_changed') return '保存したホスト鍵と一致しません。サーバーの本人確認が必要です。';

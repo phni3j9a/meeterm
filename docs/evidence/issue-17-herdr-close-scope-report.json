@@ -1,0 +1,31 @@
+{
+  "base_commit": "8329ad8b2c7f098ccb72977d51b3da8fe5e041ed",
+  "source_sha256": {
+    "native/meeterm-core/src/herdr.rs": "d7cebb81557a4c3f24650a0c4f24b5b4969a0acb226ac6156160d16014734121",
+    "native/meeterm-core/src/ssh/herdr_control.rs": "296c2f09065b246c6c0dda8bd328b1b18003e0d65de77087592375aad3ca6a9f",
+    "native/meeterm-core/tests/herdr.rs": "02cb51c2d62c635ac978d4b796e0efe07e0467581deea62a30887e56eb5b8e4d",
+    "scripts/herdr/native_integration.py": "e93e6ba128a601381d97043d536dfed62d012e3de83dbacb08e9c87fdd51a921",
+    "App.tsx": "0ee3bc4630164741a95c1d4bca872fd4c6878389decb5e359ee0510795b3a112"
+  },
+  "herdr_version": "0.9.0",
+  "herdr_sha256": "4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f",
+  "private_fixture_config": {
+    "ui.confirm_close": false
+  },
+  "local_log": "/tmp/meeterm-17-native-r10-close-scope.log",
+  "elapsed_seconds": 24.09,
+  "result": "passed",
+  "checks": [
+    "ordinary runtime/CRUD/input/resize/8 visibility transitions/reconnect/PC handoff still pass",
+    "parent pane/group/workspace close each rejected with herdr_workspace_group",
+    "remote terminal/workspace/tab identity tuples unchanged after each refusal",
+    "linked child workspace can close",
+    "parent final pane can close after linked child is gone",
+    "original PC/phone shell remains alive",
+    "both Git checkout directories remain intact"
+  ],
+  "rust_library": "79 passed; 1 ignored",
+  "clippy_all_targets": "passed",
+  "typescript": "passed",
+  "herdr_modified": false
+}

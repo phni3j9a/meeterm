@@ -1578,4 +1578,169 @@ fn real_herdr_native_backend_over_russh_fixture() {
         "PHONE_RETURNED_FROM_PC_3B84",
         "phone input after PC handoff",
     );
+
+    // Herdr's implicit last-pane/tab close can include related workspaces
+    // when [ui].confirm_close=false. Create this Git fixture only after the
+    // ordinary runtime/CRUD/PC flow, and prove every rejection preserves it.
+    let linked = Command::new("python3")
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/herdr/native_integration.py"),
+        )
+        .arg("--linked-close-fixture")
+        .arg("--root")
+        .arg(&driver.manifest.root)
+        .arg("--manifest")
+        .arg(driver.base.join("manifest.json"))
+        .output()
+        .expect("create isolated linked-worktree close fixture");
+    assert!(
+        linked.status.success(),
+        "linked fixture failed: {}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    let linked: Value = serde_json::from_slice(&linked.stdout).unwrap();
+    assert_eq!(linked["confirm_close"], false);
+    assert!(Path::new(linked["checkout_path"].as_str().unwrap()).is_dir());
+    assert!(Path::new(linked["linked_checkout_path"].as_str().unwrap()).is_dir());
+    let topology = || {
+        let snapshot = driver.cli("default", &["api", "snapshot"]);
+        let mut panes: Vec<_> = snapshot["result"]["snapshot"]["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pane| {
+                (
+                    pane["terminal_id"].as_str().unwrap().to_owned(),
+                    pane["workspace_id"].as_str().unwrap().to_owned(),
+                    pane["tab_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        panes.sort();
+        panes
+    };
+    let before_guard = topology();
+    assert_eq!(
+        before_guard.len(),
+        3,
+        "original shell, parent and linked child"
+    );
+    for operation in ["pane", "group", "workspace"] {
+        let current = wait_json(fresh_id, "linked-worktree metadata", |value| {
+            value["workspaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|workspace| workspace["name"] == "guard-parent")
+                && value["workspaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|workspace| workspace["name"] == "guard-child")
+        });
+        let parent = &current["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|workspace| workspace["name"] == "guard-parent")
+            .unwrap()["id"];
+        let group = &current["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["workspaceId"] == *parent)
+            .unwrap()["id"];
+        let pane = &current["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["workspaceId"] == *parent)
+            .unwrap()["id"];
+        match operation {
+            "pane" => close_pane(fresh_id, entity_id(pane)).unwrap(),
+            "group" => close_group(fresh_id, entity_id(group)).unwrap(),
+            "workspace" => close_workspace(fresh_id, entity_id(parent)).unwrap(),
+            _ => unreachable!(),
+        }
+        let rejected = wait_state(
+            fresh_id,
+            ConnectionState::Failed,
+            "parent close must fail without closing related workspaces",
+        );
+        assert_eq!(
+            field(&rejected.error_code, rejected.error_code_len),
+            "herdr_workspace_group",
+            "{operation} close scope"
+        );
+        assert_eq!(
+            topology(),
+            before_guard,
+            "{operation} close changed remote topology"
+        );
+        reconnect_terminal(fresh_id).unwrap();
+        wait_ready_with_host_key(fresh_id, "reconnect after refused parent close");
+    }
+    // The child is not a cascading parent and remains closable. Once it is
+    // gone, closing the parent's last pane is safe and is allowed again.
+    let current = wait_json(fresh_id, "linked child before explicit close", |value| {
+        value["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| workspace["name"] == "guard-child")
+    });
+    let child = entity_id(
+        &current["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|workspace| workspace["name"] == "guard-child")
+            .unwrap()["id"],
+    );
+    close_workspace(fresh_id, child).unwrap();
+    let remaining = wait_json(fresh_id, "only linked child closed", |value| {
+        !value["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| workspace["name"] == "guard-child")
+    });
+    let parent = &remaining["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["name"] == "guard-parent")
+        .unwrap()["id"];
+    let pane = entity_id(
+        &remaining["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["workspaceId"] == *parent)
+            .unwrap()["id"],
+    );
+    close_pane(fresh_id, pane).unwrap();
+    wait_json(
+        fresh_id,
+        "parent without linked members closes normally",
+        |value| {
+            !value["workspaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|workspace| workspace["name"] == "guard-parent")
+        },
+    );
+    let after_guard = topology();
+    assert_eq!(after_guard.len(), 1);
+    assert_eq!(
+        after_guard[0].0, driver.manifest.sessions["default"].terminal_id,
+        "original PC/phone shell must survive close-scope checks"
+    );
+    assert!(Path::new(linked["checkout_path"].as_str().unwrap()).is_dir());
+    assert!(Path::new(linked["linked_checkout_path"].as_str().unwrap()).is_dir());
+    println!(
+        "HERDR_LINKED_CLOSE_SCOPE_OK confirm_close=false pane/group/workspace_refused child_and_unlinked_parent_closed git_paths_preserved"
+    );
 }

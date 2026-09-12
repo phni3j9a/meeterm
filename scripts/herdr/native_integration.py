@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 
 
 TIMEOUT = 15.0
@@ -69,6 +70,9 @@ class HerdrFixture:
         self.logs: list[object] = []
         self.host_key = root / "host_ed25519"
         self.client_key = root / "client_ed25519"
+        self.repo = root / "fixture-repo"
+        self.linked_worktrees: dict[str, Path] = {}
+        self.config_path = root / "config.toml"
         home = root / "home"
         home.mkdir(parents=True, exist_ok=True)
         self.environment = {
@@ -86,13 +90,17 @@ class HerdrFixture:
                 "HERDR_CONFIG_PATH": str(root / "config.toml"),
             }
         )
-        (root / "config.toml").write_text(
+        self.config_path.write_text(
             "onboarding = false\n"
             '[terminal]\ndefault_shell = "/bin/sh"\n'
             "[update]\nversion_check = false\nmanifest_check = false\n"
+            "[ui]\nconfirm_close = false\n"
             "[ui.sound]\nenabled = false\n",
             encoding="utf-8",
         )
+        config = tomllib.loads(self.config_path.read_text(encoding="utf-8"))
+        if config.get("ui", {}).get("confirm_close") is not False:
+            raise FixtureError("isolated fixture must set [ui].confirm_close = false")
 
     def socket_path(self, session: str) -> Path:
         base = self.root / "config" / "herdr"
@@ -110,6 +118,110 @@ class HerdrFixture:
         if not isinstance(value, dict):
             raise FixtureError(f"fixture CLI returned a non-object for {args[0]}")
         return value
+
+    def git(self, *args: str) -> str:
+        return run_checked(["git", *args], self.environment)
+
+    def create_git_fixture(self) -> None:
+        self.repo.mkdir()
+        self.git("-C", str(self.repo), "init", "--quiet")
+        self.git("-C", str(self.repo), "config", "user.email", "herdr-fixture@example.invalid")
+        self.git("-C", str(self.repo), "config", "user.name", "Herdr native fixture")
+        (self.repo / "README.md").write_text("isolated Herdr native fixture\n", encoding="utf-8")
+        self.git("-C", str(self.repo), "add", "README.md")
+        self.git("-C", str(self.repo), "commit", "--quiet", "-m", "fixture root")
+
+    def linked_worktree_path(self, session: str) -> Path:
+        path = self.root / f"linked-{session}"
+        self.linked_worktrees[session] = path
+        return path
+
+    def create_worktree_workspace(self, session: str) -> dict:
+        linked_path = self.linked_worktree_path(session)
+        label = "guard-parent"
+        self.cli(
+            session,
+            "workspace",
+            "create",
+            "--cwd",
+            str(self.repo),
+            "--label",
+            label,
+            "--focus",
+        )
+        created = self.cli(
+            session,
+            "worktree",
+            "create",
+            "--cwd",
+            str(self.repo),
+            "--branch",
+            f"fixture/{session}-linked",
+            "--path",
+            str(linked_path),
+            "--no-focus",
+            "--json",
+        )
+        result = created.get("result")
+        if not isinstance(result, dict) or result.get("type") != "worktree_created":
+            raise FixtureError(f"Herdr {session} did not create the linked worktree")
+
+        snapshot = self.cli(session, "api", "snapshot").get("result", {}).get("snapshot")
+        if not isinstance(snapshot, dict):
+            raise FixtureError(f"Herdr {session} worktree snapshot is missing")
+        workspaces = snapshot.get("workspaces")
+        if not isinstance(workspaces, list):
+            raise FixtureError(f"Herdr {session} worktree snapshot has no workspaces")
+        members = [workspace for workspace in workspaces if isinstance(workspace, dict) and workspace.get("worktree")]
+        parents = [
+            workspace
+            for workspace in members
+            if workspace["worktree"].get("is_linked_worktree") is False
+        ]
+        children = [
+            workspace
+            for workspace in members
+            if workspace["worktree"].get("is_linked_worktree") is True
+        ]
+        if len(parents) != 1 or len(children) != 1:
+            raise FixtureError(
+                f"Herdr {session} did not expose one parent and one linked worktree: "
+                f"{[(workspace.get('workspace_id'), workspace.get('worktree')) for workspace in members]}"
+            )
+        parent = parents[0]
+        child = children[0]
+        parent_worktree = parent["worktree"]
+        child_worktree = child["worktree"]
+        if parent_worktree.get("repo_key") != child_worktree.get("repo_key"):
+            raise FixtureError(f"Herdr {session} parent/child repo_key values differ")
+        if Path(parent_worktree.get("checkout_path", "")).resolve() != self.repo.resolve():
+            raise FixtureError(f"Herdr {session} parent checkout_path is not the fixture repo")
+        if Path(child_worktree.get("checkout_path", "")).resolve() != linked_path.resolve():
+            raise FixtureError(f"Herdr {session} child checkout_path is not the fixture worktree")
+        self.cli(session, "workspace", "rename", child["workspace_id"], "guard-child")
+        parent_id = parent.get("workspace_id")
+        if not isinstance(parent_id, str):
+            raise FixtureError(f"Herdr {session} parent workspace id is missing")
+        parent_panes = [
+            pane
+            for pane in snapshot.get("panes", [])
+            if isinstance(pane, dict) and pane.get("workspace_id") == parent_id
+        ]
+        if not parent_panes:
+            raise FixtureError(f"Herdr {session} parent workspace has no root pane")
+        pane = parent_panes[0]
+        if not all(isinstance(pane.get(key), str) for key in ("pane_id", "terminal_id")):
+            raise FixtureError(f"Herdr {session} parent pane identity is invalid")
+        return {
+            "workspace_id": parent_id,
+            "linked_workspace_id": child.get("workspace_id"),
+            "repo_key": parent_worktree.get("repo_key"),
+            "repo_root": parent_worktree.get("repo_root"),
+            "checkout_path": parent_worktree.get("checkout_path"),
+            "linked_checkout_path": child_worktree.get("checkout_path"),
+            "pane_id": pane["pane_id"],
+            "terminal_id": pane["terminal_id"],
+        }
 
     def start(self) -> dict:
         self.generate_key(self.host_key)
@@ -304,14 +416,29 @@ def pc_handoff(root: Path, manifest_path: Path) -> int:
                 process.wait(timeout=3)
 
 
+def linked_close_fixture(root: Path, manifest: Path) -> int:
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    if Path(value["root"]).resolve() != root:
+        raise FixtureError("fixture root does not match manifest")
+    fixture = HerdrFixture(root, Path(value["binary"]))
+    fixture.create_git_fixture()
+    result = fixture.create_worktree_workspace("default")
+    result["confirm_close"] = False
+    print(json.dumps(result), flush=True)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--herdr", default=shutil.which("herdr"))
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--pc-handoff", action="store_true")
+    parser.add_argument("--linked-close-fixture", action="store_true")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args()
+    if args.linked_close_fixture:
+        return linked_close_fixture(args.root.resolve(), args.manifest.resolve())
     if args.pc_handoff:
         return pc_handoff(args.root.resolve(), args.manifest.resolve())
     if not args.serve:

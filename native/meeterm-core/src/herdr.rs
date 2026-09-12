@@ -182,6 +182,13 @@ pub(crate) struct HerdrWorkspace {
     pub(crate) focused: bool,
     pub(crate) agent_status: AgentStatus,
     pub(crate) groups: Vec<HerdrGroup>,
+    pub(crate) worktree: Option<HerdrWorktree>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HerdrWorktree {
+    pub(crate) repo_key: String,
+    pub(crate) is_linked_worktree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +266,20 @@ pub(crate) fn decode_session_snapshot(value: &Value) -> Result<HerdrSessionSnaps
             focused: required_bool(object, "focused", "workspace")?,
             agent_status: optional_status(object, "agent_status", "workspace")?,
             groups: Vec::new(),
+            worktree: match object.get("worktree") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let worktree = as_object(value, "workspace.worktree")?;
+                    Some(HerdrWorktree {
+                        repo_key: required_id(worktree, "repo_key", "workspace.worktree")?,
+                        is_linked_worktree: required_bool(
+                            worktree,
+                            "is_linked_worktree",
+                            "workspace.worktree",
+                        )?,
+                    })
+                }
+            },
         };
         // This remains present even for an empty workspace; validate its wire
         // type without using it as a hierarchy edge.
@@ -937,6 +958,32 @@ mod tests {
         assert_eq!(
             decoded.workspaces[1].groups[1].agent_status,
             AgentStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn worktree_metadata_is_validated_for_close_scope() {
+        let mut snapshot = json!({
+            "version":"0.9.0", "protocol":22,
+            "workspaces":[
+                {"workspace_id":"parent","number":1,"label":"Parent","focused":false,"active_tab_id":"", "worktree":{"repo_key":"repo","is_linked_worktree":false}},
+                {"workspace_id":"child","number":2,"label":"Child","focused":false,"active_tab_id":"", "worktree":{"repo_key":"repo","is_linked_worktree":true}}
+            ],
+            "tabs":[], "panes":[], "layouts":[], "agents":[]
+        });
+        let decoded = decode_session_snapshot(&snapshot).unwrap();
+        let parent = decoded.workspaces[0].worktree.as_ref().unwrap();
+        let child = decoded.workspaces[1].worktree.as_ref().unwrap();
+        assert_eq!(parent.repo_key, child.repo_key);
+        assert!(!parent.is_linked_worktree);
+        assert!(child.is_linked_worktree);
+        snapshot["workspaces"][0]["worktree"]["is_linked_worktree"] = json!("false");
+        assert!(decode_session_snapshot(&snapshot).is_err());
+        snapshot["workspaces"][0]["worktree"] = Value::Null;
+        assert!(
+            decode_session_snapshot(&snapshot).unwrap().workspaces[0]
+                .worktree
+                .is_none()
         );
     }
 

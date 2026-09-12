@@ -1662,6 +1662,7 @@ enum FlowFailure {
     HerdrProtocol,
     HerdrController,
     HerdrOperation,
+    HerdrWorkspaceGroup,
     Stale,
 }
 
@@ -1714,6 +1715,10 @@ impl FlowFailure {
             Self::HerdrOperation => (
                 "herdr_operation",
                 "Herdr rejected the operation. Reconnect to refresh the current workspace state.",
+            ),
+            Self::HerdrWorkspaceGroup => (
+                "herdr_workspace_group",
+                "This parent workspace has linked worktree workspaces. Close its panes or groups in the ordinary Herdr client after checking the affected workspaces.",
             ),
         }
     }
