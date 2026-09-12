@@ -1,110 +1,154 @@
-# Herdr対応の設計と成立性ゲート（Issue #17）
+# Herdr backend
 
-**Herdrバックエンドは未提供です。** 現在のアプリは従来のSSH + tmuxを使います。
-[Issue #17](https://github.com/phni3j9a/meeterm/issues/17)で合意した追加バックエンドの実装に先立ち、
-実Herdrのライブ端末経路を検証しています。設計やフレーム表示だけでIssueを完了にしません。
-検証結果と再現コマンドは[成立性の記録](evidence/issue-17-herdr-feasibility.md)を参照してください。
-その後の[公開入力機能による再検証](evidence/issue-17-herdr-public-input.md)では、Herdrを変更せずに
-特殊キー・日本語の貼り付け・明示したPaneへの入力・競合通知を確認しました。本番バックエンドの実装は残っています。
+Issue #17 の Herdr backend は、meeterm の Rust/native 経路に実装済みです。
+この文書は実装契約と検証範囲を記録します。Issue 全体の受入完了はまだ宣言していません。
+新しい実 Herdr integration test と CI、両モバイルの画像確認を含む受入証拠は保留中です。
+以前の失敗を含む公開 CLI の実測記録は [feasibility evidence](evidence/issue-17-herdr-feasibility.md)
+に保存してあり、書き換えていません。
 
-Herdrは既存の外部アプリです。**変更するのはmeeterm側だけ**とし、既存の公開機能へ適応します。
-Herdr本体の変更・fork・新APIの追加をIssueの前提にしません。最初の候補経路で見つかった不一致と、
-既存機能全体で実現不可能だという判断は区別します。
+Herdr は既存の外部アプリです。meeterm は公開 API に適応し、Herdr 本体の変更・fork・
+自動導入・更新を行いません。リモートには、SSH から実行できる既存の Herdr 0.9.0、
+起動済みの対象 session、SSH stream-local forwarding の許可が必要です。meeterm 用 gateway、daemon、
+HTTP/WebSocket relay、追加のリモートツールはありません。
 
-## 採用するモデル
+## 対応する公開プロトコル
 
-| アプリ内の概念 | tmux | Herdr |
+現在の互換性ターゲットは **Herdr 0.9.0 / protocol 22 / schema 1** です。
+これは下位互換の最低バージョン宣言ではなく、実装と integration test が照合する固定の
+公開契約です。公式の [v0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0)
+と [v0.9.0 source](https://github.com/herdrdev/herdr/tree/v0.9.0) を参照します。
+tag の dereferenced source commit は `b99002ac99b09e00b4ca692436cb15a6b0d676f1` です。
+
+- `herdr --session default status --json` または指定した named session を明示的に実行し、
+  protocol、session、socket を確認します。runtime 名は Herdr の session 名として扱い、
+  default は `default` です。
+- 接続は SSH の direct stream-local public API です。1 channel につき 1 request を順番に
+  処理します。購読は subscribe ack の後に snapshot を繰り返し受け、pane set が期待値と
+  一致して安定するまで snapshot を確定状態へ適用しません。その後は event と resync で
+  追従します。
+- terminal 表示は raw PTY を転送せず、`terminal.frame` の ANSI/VT 差分を Base64 で受けます。
+  frame の `width`、`height`、`full`、`seq` を使って native `alacritty_terminal::Term` を
+  更新します。frame の有無をもってアプリケーションの入力 mode を推測しません。
+- direct control は外側の PTY なし、`--takeover` なしで行い、remote の stable `terminal_id`
+  を追跡します。Pane の表示用 `pane_id` は move で変わるため、native terminal handle の
+  identity にはしません。
+
+## 共通モデルと識別子
+
+| meeterm | tmux | Herdr |
 | --- | --- | --- |
-| Connection | SSH接続先 | SSH接続先 |
-| Runtime | 通常のサーバー上のsession `meeterm` | defaultまたは指定したnamed session |
+| Connection | SSH host | SSH host |
+| Runtime | session `meeterm` | `default` または named session |
 | Workspace | window | workspace |
-| TerminalGroup | window内の仮想Group 1個 | tab |
+| TerminalGroup | window 内の仮想 group 1 個 | tab |
 | Terminal | pane | pane |
 
-tmuxの仮想Groupのためにリモートwindow/sessionを増やしません。HerdrのTabをWorkspaceへ平坦化せず、
-同じWorkspaceでも別GroupのPaneを無条件に混ぜません。UIではGroupが1個なら選択UIを隠し、
-複数の場合に限ってGroup選択とその中のTerminal選択を分けます。
+tmux の仮想 group は remote object を増やしません。Herdr の tab は TerminalGroup として
+保持します。Herdr workspace の cascade/group option は別の remote concept であり、
+TerminalGroup に読み替えません。別 group の pane を無条件に混ぜません。group が 1 個なら
+group chooser を隠し、複数なら
+chooser と pane tabs を表示します。group の作成・改名・選択・削除は native control bridge
+から行います。Herdr の TerminalGroup を削除するときは `tab.close` を使います。workspace
+削除は `workspace.close` の `close_group: false` とし、workspace と group の cascade を
+明示的に分けます。0.9.0 では final pane の終了から tab close、workspace cascade までの
+結果を snapshot/event で再同期します。
 
-backend指定のない保存済み接続はtmuxとして扱う設計です。今回は保存形式も接続フォームも変更していません。
-Herdrの標準接続先は既存default sessionであり、接続のたびにモバイル専用sessionを作りません。
-選択したバックエンド以外への自動切り替え、Herdrの自動導入・更新・再起動は行いません。
+remote ID は SSH、backend、runtime の scope に閉じた opaque 値です。Rust の registry が
+`native:<registry>` を安定した terminal ID として native view に渡します。Herdr の外部
+`pane_id` が移動で変わっても、stable `terminal_id` に同じ Term と view を結びます。
 
-識別子はConnection・backend・Runtimeのスコープを含めて扱います。検証ではdefaultとnamed sessionの
-両方に同じ公開Pane ID `w1:p1` が発生しました。表示名を操作対象にせず、公開Pane IDとローカルの
-native Terminal handleを混同しません。HerdrではWorkspaceをまたぐ移動で公開Pane IDが変わるため、
-再同期で対応を更新する必要があります。移動UIは今回の必須範囲ではありません。
+保存済み profile に backend がない場合は tmux、Herdr runtime が空の場合は `default` です。
+既存の SSH credential は SSH/auth/profile の identity として維持し、backend と runtime は
+暗号化 credential の AAD identity に含めません。したがって旧 profile の credential を
+無効化しません。tmux profile の named runtime は受け付けず、Herdr runtime は upstream の
+session 名規則で検証します。
 
-## 検証した接続候補
+## Native data path
 
 ```text
-OpenSSH exec channel（外側のPTYなし）
-  → herdr --session <session> terminal session control <pane-id>
-  → terminal.frame（NDJSON / Base64の描画用ANSI）
-  → Rustでdecode、frameのwidth/heightにresize
-  → 既存alacritty_terminal::Term / native snapshot
-  → 既存Android / iOS native renderer（統合は未実装）
+React Native / Expo
+  └─ commands, hierarchy, errors, low-frequency metadata snapshots
+       ↓
+Rust native core
+  ├─ backend selector (tmux Control Mode / Herdr direct control)
+  ├─ SSH + lifecycle/controller lease
+  ├─ stable terminal registry + alacritty_terminal::Term
+  └─ Android/iOS native renderer and IME
+       ↓ ordinary SSH
+remote host
+  ├─ tmux session `meeterm`
+  └─ existing Herdr 0.9.0 session/socket
 ```
 
-`terminal.frame`はHerdrが描画した画面の差分です。子プロセスのraw VT出力や全scrollbackではありません。
-初回・再接続・サイズ変更時のfull frameと、その後の差分を順番に扱う必要があります。
-描画データ、入力、IME compositionをJSへ移しません。既存の単一Rust runtime/registryを再利用する方針です。
+ANSI bytes、cells、scrollback、render frame、cursor、IME composition は JavaScript の
+streaming path に出しません。React Native は navigation、forms、dialogs、group/pane
+selection、接続状態、Agent metadata の snapshot を担当し、native view は stable terminal
+ID に bind します。Agent status は API metadata を `working`、`blocked`、`done`、`idle`、
+`unknown` として保持します。切断・未知状態・offline は成功として表示しません。
 
-構造・Agent状態は`session.snapshot`と`events.subscribe`の候補があります。購読ackを受けてから
-snapshotを取得し、その間のイベントを適用する方式を検討します。公式CLIにはsnapshotコマンドがありますが、
-イベント購読はSocket APIです。OpenSSHのstream-local転送が利用可能かを含め、購読経路の実接続検証は残っています。
-高頻度の`pane read`や全件snapshot pollingを通常のライブ端末の代替にはしません。
+## 入力、scroll、resize
 
-リモートに必要なものは通常のSSHと選択したバックエンドです。Herdr自身の通常サーバーはHerdrバックエンドの一部です。
-meeterm専用daemon、gateway、HTTP/WebSocketサービス、追加の外部公開ポートは導入しません。
+表示 frame は入力 mode を表さないため、入力は native 側で意味を保ったまま Herdr 公開
+operation に分けます。
 
-## 入力互換性の未解決点
+- 確定文字列は `pane.send_text`。
+- 特殊キーは `pane.send_keys`。Home、End、Insert、Delete、PageUp、PageDown は、0.9.0
+  parser が名前を持たないため xterm normal-mode の固定 bytes fallback を使います。
+- 貼り付けは UTF-8 と LF をまとめて `pane.send_input` へ送り、必要な complete bracketed
+  paste envelope を native 側で明示します。
+- remote の表示を入力前に bottom へ戻すため、対象 pane の `pane.scroll` に
+  `offset_from_bottom: 0` を送ってから input operation を送ります。
+- native view の columns/rows は Herdr の resize operation に伝えます。frame の寸法だけを
+  画面へ引き伸ばしません。
 
-Herdr **0.9.0 / protocol 22** の直接制御CLIは、`terminal.input`で渡されたbytesを原則そのままPTYへ送ります。
-一方、描画用frameはDECCKMなどの子プロセスの入力モードを伝えません。画面を既存`Term`へ描画できても、
-その`Term`が子プロセスの入力モードを把握したことにはなりません。
+controller lease を持つ選択 pane だけが input を送信します。別 controller の競合は明示的な
+error とし、release・disconnect・hidden view では新しい input を停止します。通常の PC
+client と direct controller が同時に存在できることと、同時編集を順序付ける保証は別です。
+Issue の初期 product scope は simultaneous phone/PC editing の保証ではなく、hand-off です。
 
-実接続検証では、DECCKMを有効にしたフルスクリーンTUIに対し、native Upの出力とリモート受信値が
-`1b5b41`（`ESC [ A`）でした。必要な値は`1b4f41`（`ESC O A`）です。
-同じRust端末へ元のモード設定を直接渡す対照実験では正しい値を生成します。
+## lifecycle と PC handoff
 
-`pane.send_keys`にはリモート側のモードを使う論理キーの符号化があります。ただし、このautomation APIは
-直接controllerの所有権を検証しません。別経路を使う場合は、明示したPaneへの入力、競合の表示、
-操作権喪失後の送信停止をmeeterm側でどう扱えるか確認が必要です。現時点では代替経路の採否は未確定です。
-Issueが求める無断takeoverの禁止と、全入力を単一leaseで原子的に処理する新たな条件は区別します。
+画面を hidden にすると `set_terminal_visible(false)` が現在の controller を release し、
+SSH と metadata subscription は維持します。release は Herdr stream を closed/EOF まで
+drain してから終えます。foreground では stable `terminal_id` を使って再取得し、remote
+process を終了させずに snapshot/frame を resync します。background の transport loss は
+Rust が bounded reconnect します。
 
-貼り付けもnativeのmodeだけに任せるとラッパーが付きません。ただしHerdrは一つの`terminal.input`に入った
-完全なbracketed pasteを認識するため、貼り付けはnative側で明示的に区別して一括送信する適応が可能です。
-元のUTF-8文字列とLFを保ったままラッパーを付け、モードなし入力経路でLFをCRへ変換した後のbytesは使いません。
-特殊キーの問題と、貼り付けの適応で解消できる問題を混同しません。
+tmux は従来どおり PC から `tmux attach -t meeterm` で同じ window/pane layout を使えます。
+Herdr は選択した session を通常の Herdr client から開けます。mobile が phone viewport 用に
+保持していた lease/size を graceful release で解放し、ungraceful EOF の後も次の attach が
+remote process を再利用できることを handoff の要件にします。PC と phone の完全な同時
+操作成功はこの設計の主張ではありません。
 
-既存の論理キー入力APIと端末接続機能を組み合わせた小さな実SSH診断は成功しました。
-次は、入力順序・対象Pane・競合・解放を扱う本番Rust経路と、通常PCでの入力再開を含めて検証する必要があります。
-以前の「Herdrへの論理キーAPI追加が必要」という結論は撤回しました。候補経路の不一致から
-外部アプリの変更を必須と判断した点が誤りであり、Herdr本体への変更・提案・公開は行っていません。
-新しい診断の成功をIssue全体の受け入れへ拡大せず、検証していない最低対応バージョンも設定しません。
+## 実装と検証
 
-再検証の候補は、表示・resizeに直接制御ストリームを使い、確定文字列を`pane.send_text`、
-特殊キーを`pane.send_keys`、貼り付けを`pane.send_input`へ送る方法です。公開APIは1接続につき
-1要求であり、同じSocketへ続けて要求を送る方式ではありません。meeterm側で要求と応答を直列に処理します。
-入力を許可するのは対象の操作権を取得した間だけとし、競合・解放・接続終了後の新規入力を止める検証が必要です。
-明示的な外部takeoverと処理中のAPI要求が競合した場合、送信済みの要求までは取り消せません。
-通常のHerdr PC画面もdirect controllerとの完全排他ではなく、同時編集の保証と区別します。
+production Rust code は `Backend::Tmux` と `Backend::Herdr` を共通 `ConnectOptions` から
+選び、workspace snapshot、group CRUD、pane selection、visibility、terminal snapshot を
+同じ native bridge に公開します。既存の OpenSSH/tmux integration はその backend の検証で
+あり、Herdr の公開 API を代用しません。
 
-公式クライアントのstable client-shell endpointも調べました。semantic inputはありますが、
-第三者クライアント向けの公開Socket APIより実装・検証範囲が広く、選択Paneを一時的に全サイズへ
-resizeする直接制御経路とも異なります。現段階では採用せず、既存公開APIの候補を先に検証します。
+新しい live integration は次の test です。
 
-## 残る実装・受け入れ
+```sh
+MEETERM_HERDR_INTEGRATION=1 \
+MEETERM_HERDR_BINARY=/path/to/herdr-0.9.0 \
+cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
+  --test herdr -- --ignored --nocapture
+```
 
-Issue #17の全受け入れ条件は維持します。現時点では次が未完了です。
+`native/meeterm-core/tests/herdr.rs` は test-only の russh SSH endpoint と、隔離 XDG state
+で起動する real Herdr 0.9.0 driver を組み合わせます。普通の OpenSSH server fixture では
+ありません。default/named runtime、snapshot/subscribe、workspace/group CRUD、ANSI frame、
+resize、semantic input、CJK paste、controller conflict、release/reacquire、外部 move と
+stable identity を一つの bounded ケースで確認します。公式 binary の CI job は
+`RUNNER_TEMP` にだけ pinned digest で取得し、既存環境やユーザーの Herdr session を変更
+しません。新しい test/CI の実行結果はまだこの文書に記録していません。
 
-- 入力互換性を解消した実Herdr端末経路と、controller競合・解放・PC引き継ぎの確定。
-- 共通モデル、最小限のTmuxBackend / HerdrBackend相当の分離、設定の後方互換処理。
-- backend/session設定、Workspace/Group/Terminal操作、必要時だけのGroup UI。
-- 外部での作成・終了・改名・移動を含む購読/再同期と、安全な選択先・空状態。
-- Agentメタデータと集計。`working / blocked / done / idle / unknown`を保持し、切断やunknownを成功として表示しない。
-- 複数Workspace/Group/Terminal、scrollback、端末応答、破壊的操作の影響の検証。
-- Android full、iOS standard + ssh、両OS画像の実見、実機IME/CJK/GPUなどの確認。
+モバイルでは iOS `standard` の 14 screen に Herdr connection、groups、terminal、workspaces
+を含め、Android でも同じ 4 route を fresh process ごとの observational fixture として
+撮影します。これらは seeded presentation の確認で、group 作成操作や pixel-diff の gate
+ではありません。iOS/Android の画像を実際に review するまで visual success と報告しません。
 
-現在のPoCはLinux上の共有Rust terminal snapshotまでです。アプリの接続UI、ネイティブGPUの画像、
-Android/iOSのIME成功、PCとの完全な同時編集を示すものではありません。
+旧 `scripts/herdr/feasibility.py` の public CLI proof は OpenSSH 経由の先行診断です。新しい
+russh integration の代わりにはしません。過去の frame/input の失敗や CI failure は、元の
+[evidence files](evidence/issue-17-herdr-feasibility.md) に残したまま扱います。

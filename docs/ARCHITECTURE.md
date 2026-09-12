@@ -19,30 +19,30 @@ Control bridge              Native Terminal View
         Rust native core
         ├── Tokio runtime
         ├── SSH lifecycle / russh
-        ├── tmux Control Mode
+        ├── backend selector
+        │   ├── tmux Control Mode
+        │   └── Herdr direct stream-local control
         ├── terminal registry
         ├── alacritty_terminal
         └── native GPU renderer
                │
-               │ SSH
+               │ ordinary SSH
 ═══════════════╪════════════════════
                ▼
           OpenSSH server
-               │
-               ▼
-       tmux session: meeterm
-       ├── window = Workspace
-       └── pane   = Terminal
+          ├── tmux session: meeterm
+          │   ├── window = Workspace
+          │   └── pane   = Terminal
+          └── existing Herdr 0.9.0 session/socket
 ```
 
 There is no meeterm server-side component in the core architecture.
 
-## Issue #17 backend boundary (approved target, pending)
+## Issue #17 backend boundary
 
-The current production path in this document is tmux-only and remains the
-reference implementation. Issue #17 adds a small backend boundary around the
-same Rust SSH lifecycle, terminal registry, `alacritty_terminal::Term`,
-native snapshot format, and bounded input/resize transport:
+Issue #17 adds a backend boundary around the same Rust SSH lifecycle, terminal
+registry, `alacritty_terminal::Term`, native snapshot format, and bounded
+input/resize transport. Both paths are implemented:
 
 ```text
 Workspace → TerminalGroup → Terminal
@@ -53,30 +53,28 @@ Herdr: workspace → tab           → pane
 
 The tmux group is local presentation state and must never create a second
 window or mutate the ordinary tmux desktop layout. Herdr groups represent
-remote tabs. Backend/runtime selection is explicit; missing legacy profile
-fields default to the existing tmux path, and a missing Herdr capability is an
-explicit error rather than a silent tmux fallback. Remote identifiers remain
-opaque and scoped by connection, backend, and runtime. Local native terminal
-IDs remain separate because a Herdr pane ID may change when it moves.
+remote tabs. Herdr group deletion uses `tab.close`; workspace deletion uses
+`workspace.close` with `close_group: false`, so final-pane/tab closure and
+workspace cascade are distinct protocol operations. Backend/runtime selection
+is explicit; missing legacy profile fields default to the existing tmux path,
+and a missing Herdr capability is an explicit error rather than a silent tmux
+fallback. Remote identifiers remain opaque and scoped by connection, backend,
+and runtime. Local native terminal IDs remain separate because a Herdr pane ID
+may change when it moves.
 
 The backend actor may differ, but terminal bytes, ANSI/VT parsing, cells,
 scrollback, render frames, and IME composition remain native. Only hierarchy,
-selection, lifecycle, and errors cross the low-frequency control bridge. A
-future backend may connect over ordinary SSH to its selected remote runtime;
-this does not add a meeterm gateway, daemon, HTTP API, or WebSocket terminal
+selection, lifecycle, group operations, visibility, metadata, and errors cross
+the low-frequency control bridge. Herdr connects over ordinary SSH to its
+selected existing runtime through direct stream-local public operations; this
+does not add a meeterm gateway, daemon, HTTP API, or WebSocket terminal
 transport.
 
-Issue #17 is still open and this target is not a Herdr implementation claim.
-The UI/backend/common-model work is gated on the live protocol result recorded
-in [`HERDR.md`](HERDR.md) and
-[`evidence/issue-17-herdr-feasibility.md`](evidence/issue-17-herdr-feasibility.md).
-
-Input adaptation belongs in meeterm and must use existing Herdr public
-interfaces. Do not require a modified Herdr or an upstream API addition.
-The initial frame-to-byte-input candidate loses special-key modes; alternatives
-must be checked against the actual conflict and handoff requirements. A complete
-bracketed-paste envelope has been validated on the control stream. Detailed live
-protocol results belong in [`HERDR.md`](HERDR.md) and the
+The fixed Herdr compatibility target is 0.9.0 / protocol 22 / schema 1. The
+live Rust integration and mobile evidence are still pending, so Issue #17 is
+not marked accepted. Input adaptation uses Herdr's existing `send_text`,
+`send_keys`, and `send_input` operations; a modified Herdr or upstream API
+addition is not required. See [`HERDR.md`](HERDR.md) and the
 [`Issue #17 evidence record`](evidence/issue-17-herdr-feasibility.md).
 
 ## Architectural rule: JavaScript is not the terminal data plane
@@ -110,9 +108,9 @@ React Native owns app chrome and product interaction. Rust/native owns terminal 
 The target path is:
 
 ```text
-SSH bytes
+SSH bytes / Herdr terminal.frame
   ↓
-Rust tmux decoder
+Rust selected-backend decoder
   ↓
 alacritty_terminal::Term
   ↓
@@ -187,14 +185,18 @@ Example conceptual API:
 ```text
 connectServer(...)
 disconnectServer(serverId)
-listWorkspaces(serverId)
-listTerminalGroups(workspaceId)
+workspaceSnapshot(serverId)
 createWorkspace(serverId, name)
 renameWorkspace(workspaceId, name)
 closeWorkspace(workspaceId)
+createGroup(workspaceId, name)
+renameGroup(groupId, name)
+closeGroup(groupId)
+selectGroup(groupId)
 createTerminal(groupId)
 closeTerminal(terminalId)
 selectTerminal(terminalId)
+setTerminalVisible(serverId, visible)
 respondToHostKeyPrompt(...)
 ```
 
@@ -227,7 +229,7 @@ A HybridView-style native component is the preferred direction for this view bou
 
 ## SSH layer
 
-`russh` is the preferred SSH implementation.
+`russh` is the SSH implementation used by the native core.
 
 The SSH layer owns:
 
@@ -236,7 +238,8 @@ The SSH layer owns:
 - authentication;
 - keepalive policy;
 - reconnect coordination;
-- SSH channels used for tmux control;
+- backend control channels: tmux Control Mode or Herdr direct stream-local
+  public requests;
 - transport errors.
 
 Security requirements:
@@ -250,6 +253,28 @@ Security requirements:
 - do not log private keys, passwords, passphrases, or raw authentication material.
 
 SSH is transport, not durable application state.
+
+### Herdr direct control
+
+When `Backend::Herdr` is selected, the Rust actor verifies the existing
+`herdr --session <runtime>` status contract and opens the public stream-local
+socket through SSH. It does not allocate an outer PTY or pass `--takeover`.
+Each request uses one channel and the actor serializes requests; subscribe
+acknowledgement, repeated snapshots until the pane set agrees, stable events,
+and resync remain in the actor; unstable snapshots are not committed to the
+low-frequency model.
+Terminal frames are ANSI bytes from Herdr, not a raw PTY stream. The actor maps
+stable `terminal_id` to the local native terminal and treats a changed
+`pane_id` after a move as a metadata update.
+
+Herdr input is semantic at the public API boundary: committed text uses
+`pane.send_text`, special keys use `pane.send_keys`, and paste uses
+`pane.send_input` with an explicit complete bracketed-paste envelope where
+needed. Before input, `pane.scroll` is sent with `offset_from_bottom: 0`.
+The 0.9.0 parser has no names for Home/End/Insert/Delete/PageUp/PageDown, so
+the native adapter supplies fixed xterm normal-mode bytes. A controller release
+closes/EOFs the stream before a later stable-ID reacquire; the remote process
+continues to run.
 
 ### Issue #3: historical direct SSH shell slice
 
@@ -361,32 +386,43 @@ The Rust core is the source of truth for live terminal objects.
 Conceptually:
 
 ```text
-ServerRuntime
+ConnectionRuntime (SSH + backend + runtime)
 ├── SSH connection
-├── tmux controller
+├── selected backend controller
 └── TerminalRegistry
-    ├── pane %1 → Term
-    ├── pane %2 → Term
-    └── pane %3 → Term
+    ├── opaque remote identity → Term
+    ├── tmux pane/window aliases → Term
+    └── Herdr stable terminal_id / mutable pane_id → Term
 ```
 
-Each tmux pane maps to its own `alacritty_terminal::Term` state. Switching React Native tabs changes which native Term is displayed; it must not recreate terminal state or reconnect SSH.
+Each remote terminal maps to its own `alacritty_terminal::Term` state. Local
+IDs are scoped by SSH connection, backend, and runtime. Switching React Native
+tabs changes which native Term is displayed; it must not recreate terminal
+state or reconnect SSH. Herdr move events update the pane alias while retaining
+the stable terminal ID and native registry entry.
 
 While the app process remains alive, hidden panes should retain their terminal state and scrollback.
 
-## Mobile pane presentation and tmux zoom
+## Mobile pane presentation and backend resize
 
-A phone presents panes in the active window as tabs, but the remote tmux model remains a multi-pane window.
+A phone presents panes in the selected group as tabs. Tmux remains a
+multi-pane window; Herdr remains its workspace/tab/pane hierarchy.
 
-The selected mobile pane should use tmux zoom semantics when necessary so the remote TUI receives a phone-appropriate PTY size. Purely stretching a locally rendered half-width pane is not sufficient because applications such as nvim and Codex react to the actual terminal dimensions.
+The selected mobile pane should receive a phone-appropriate remote size. The
+tmux backend uses its zoom/client-size operations; the Herdr backend sends its
+direct resize operation. Purely stretching a locally rendered half-width pane
+is not sufficient because applications such as nvim and Codex react to actual
+terminal dimensions.
 
 Requirements:
 
-- selecting a terminal tab selects the corresponding pane;
-- the mobile-selected pane is expanded using tmux zoom behavior;
-- switching tabs should preserve the window's underlying multi-pane layout;
-- graceful mobile detach should restore the normal layout;
-- reconnect/desktop handoff logic must recover from mobile termination that occurs while a pane is zoomed.
+- selecting a terminal tab selects the corresponding remote terminal;
+- the tmux mobile-selected pane is expanded using tmux zoom behavior;
+- the Herdr selected pane is resized through its direct controller;
+- switching tabs preserves the remote layout and each native Term;
+- graceful mobile detach releases the controller and restores the normal layout;
+- reconnect/desktop handoff recovers from mobile termination during either
+  backend's phone-sized view.
 
 The exact recovery mechanism must be tested against real tmux behavior before being encoded as a permanent hook/configuration. Do not install global tmux hooks without a demonstrated need and a narrowly scoped design.
 
@@ -398,7 +434,8 @@ The native view computes terminal columns and rows from:
 - font metrics;
 - safe-area / terminal chrome constraints.
 
-The Rust tmux controller propagates the resulting logical terminal size to tmux through the Control Mode client-size mechanism and/or pane/window operations required by the final verified design.
+The selected Rust controller propagates the resulting logical terminal size to
+tmux through Control Mode or to Herdr through its direct resize operation.
 
 Rotation, fold/unfold, keyboard appearance, and font-size changes must trigger deterministic terminal resize behavior.
 
@@ -419,10 +456,19 @@ native TerminalView
           ↓
       Rust input encoder
           ↓
-      tmux target pane
+      selected backend target terminal
 ```
 
 Special keys, modifiers, bracketed paste, Unicode text, and terminal-generated responses must be modeled explicitly. Avoid shell-string concatenation for user input.
+
+For Herdr, the adapter sends committed text, special keys, and paste through
+`pane.send_text`, `pane.send_keys`, and `pane.send_input`. It sends
+`pane.scroll` with offset zero before input so a stale remote viewport does not
+consume the operation. The adapter uses fixed xterm normal-mode bytes for
+Home/End/Insert/Delete/PageUp/PageDown because Herdr 0.9.0 does not expose
+those names in its parser. A hidden view releases the controller through the
+shared visibility operation; it does not destroy the native terminal or remote
+process.
 
 ## Terminal core
 
@@ -477,7 +523,7 @@ Disconnected
 → HostKeyPending
 → Authenticating
 → SSHConnected
-→ AttachingTmux
+→ AttachingSelectedBackend
 → Synchronizing
 → Ready
 → Reconnecting
@@ -487,11 +533,19 @@ React Native observes a low-frequency snapshot of this state; React Native must 
 
 ## Backgrounding and process death
 
-The durable state is remote tmux, not the SSH socket.
+The durable state is the selected remote runtime, not the SSH socket. This is
+tmux session `meeterm` for the default backend and Herdr `default`/named
+session for Herdr.
 
 When the app backgrounds or loses transport, meeterm may reconnect and resynchronize rather than attempt to keep a fragile mobile connection alive indefinitely.
 
-If the mobile process is killed, in-memory `Term` scrollback disappears while tmux continues running. Reconstructing a useful terminal view after reconnect may require tmux capture/resynchronization. Alternate-screen applications such as nvim and full-screen TUIs must be explicitly tested because naive scrollback reconstruction may not reproduce their current state accurately.
+If the mobile process is killed, in-memory `Term` scrollback disappears while
+the selected remote runtime continues running. Reconstructing a useful
+terminal view after reconnect requires backend snapshot/resynchronization.
+Alternate-screen applications such as nvim and full-screen TUIs must be
+explicitly tested because naive scrollback reconstruction may not reproduce
+their current state accurately. Herdr controller streams are closed/EOFed on
+release and reacquired by stable `terminal_id`.
 
 This is an early technical-risk item and must be validated before broad feature work.
 
@@ -499,13 +553,16 @@ This is an early technical-risk item and must be validated before broad feature 
 
 Desktop handoff is a first-class requirement; simultaneous interactive multi-client use is not.
 
-A normal PC attach must be able to use:
+A normal PC attach must be able to use the selected backend's ordinary client.
+For tmux:
 
 ```bash
 tmux attach -t meeterm
 ```
 
-and see the same windows/panes in their ordinary layout.
+and see the same windows/panes in their ordinary layout. For Herdr, the normal
+Herdr client opens the selected session; meeterm does not require a PC
+companion application.
 
 The mobile client must avoid leaving the session in a phone-specific layout state after graceful detach and should have a recovery strategy for ungraceful termination.
 
@@ -513,20 +570,24 @@ Do not add meeterm-specific software to the PC path merely to make handoff work.
 
 ## Persistence
 
-Remote workspace state comes from tmux.
+Remote workspace state comes from the selected backend runtime.
 
 Local persistence is for client concerns only, such as:
 
-- saved server profiles;
+- saved server profiles, including backend and optional runtime;
 - trusted host-key fingerprints;
 - user preferences;
 - non-secret UI settings.
 
-Secrets belong in platform secure storage. Do not introduce a local database as a shadow source of truth for windows/panes unless a concrete later requirement demands it.
+Secrets belong in platform secure storage. Credential identity remains scoped to
+SSH/auth/profile; backend and runtime are connection selectors rather than
+credential AAD. Do not introduce a local database as a shadow source of truth
+for windows/panes unless a concrete later requirement demands it.
 
-## Initial technical milestone
+## Current native milestone and verification boundary
 
-Before broad product UI, prove a dual-platform native-terminal foundation while keeping the terminal data plane native:
+The dual-platform native-terminal foundation and backend control paths keep the
+terminal data plane native. Continue to verify:
 
 1. Shared Rust `alacritty_terminal::Term` semantics, fixed ANSI/VT fixtures, input encoding, snapshots, and deterministic resize behavior are covered below the renderer.
 2. Expo Development Builds mount one native `TerminalView` contract on both Android and iOS, with each view binding a stable terminal ID.
@@ -536,7 +597,15 @@ Before broad product UI, prove a dual-platform native-terminal foundation while 
 6. Portrait/landscape, keyboard, and relevant window-size changes produce deterministic terminal resize behavior where the platform permits the check.
 7. GitHub-hosted Android emulator and iOS Simulator jobs provide machine gates for build, install, launch, native readiness, first native frame, and no crash. Each job always uploads an observability bundle containing the available screenshot/log evidence or explicit capture-unavailable diagnostics; screenshots are not pixel-diff assertions.
 
-SSH and tmux should be added only after both native adapters demonstrate that the shared renderer/input foundation is viable. A simulator/emulator smoke result does not replace physical-device GPU, font, or IME validation.
+8. The ignored real Herdr integration test runs through an isolated russh
+   endpoint with an official Herdr 0.9.0 binary. Its OpenSSH/tmux integration
+   remains a separate check; one does not substitute for the other.
+9. iOS `standard` includes 14 direct screen fixtures (four Herdr routes) and
+   Android captures the same four Herdr routes as observational evidence.
+
+A simulator/emulator smoke result does not replace physical-device GPU, font,
+or IME validation. The new Herdr Rust/CI run and mobile visual evidence are
+pending and must not be described as Issue #17 acceptance.
 
 ## CI and mobile evidence
 
@@ -544,7 +613,7 @@ The mobile CI contract is intentionally split between machine gates and human in
 
 On a standard hosted macOS runner, Metal availability is recorded rather than assumed. If Metal is unavailable, the iOS Simulator may render the same Rust snapshot and CoreText raster through an explicitly marked native CoreGraphics fallback. That validates the non-JavaScript terminal path and yields reviewable CI evidence, but it does not satisfy the outstanding iOS Metal execution check. A physical device or GPU-capable runner must supply that evidence later.
 
-There is no pixel-difference gate at this stage. For a native UI change, visual success is reported only after Codex downloads and actually views both the Android emulator screenshot and the iOS Simulator screenshot. Artifact existence, screenshot dimensions, or a successful process exit is not visual review. See [`docs/CI_MOBILE.md`](CI_MOBILE.md) for the runner, signing, CNG, and staged-job guide.
+There is no pixel-difference gate at this stage. For a native UI change, visual success is reported only after Codex downloads and actually views both the Android emulator screenshot and the iOS Simulator screenshot. Artifact existence, screenshot dimensions, or a successful process exit is not visual review. The general Rust workflow downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies SHA-256 `4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f`, and runs the ignored russh integration; no result is recorded here until that workflow runs. See [`docs/CI_MOBILE.md`](CI_MOBILE.md) for the runner, signing, CNG, and staged-job guide.
 
 iOS Simulator builds are unsigned simulator validation and must not require distribution certificates, provisioning profiles, or Apple secrets. Physical iOS devices and TestFlight are later signed workflows with separate credentials and acceptance criteria. Simulator-only app Keychain entitlements are embedded in Mach-O XML/DER sections while signing remains disabled. Storage tests import the production pod in an app-hosted unit-test target; the separate UI test runner is not the Keychain test host. See [DAILY_USE.md](DAILY_USE.md) for the focused reproduction and validation scope.
 

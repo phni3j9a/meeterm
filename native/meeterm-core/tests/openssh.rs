@@ -1119,6 +1119,8 @@ impl PasswordFixtureConfig {
             username: self.username.clone(),
             credentials: AuthOptions::password(password.to_owned()),
             known_hosts_path: known_hosts,
+            backend: meeterm_core::workspace::Backend::Tmux,
+            runtime: None,
         }
     }
 }
@@ -1170,6 +1172,8 @@ impl FixtureConfig {
                 Some(passphrase.to_owned()),
             ),
             known_hosts_path: self.known_hosts.clone(),
+            backend: meeterm_core::workspace::Backend::Tmux,
+            runtime: None,
         }
     }
 }

@@ -35,6 +35,10 @@ rm -f \
   "${artifact_dir}/standard-workspace-name.png" \
   "${artifact_dir}/standard-terminal-name.png" \
   "${artifact_dir}/standard-handoff.png" \
+  "${artifact_dir}/standard-herdr-connection.png" \
+  "${artifact_dir}/standard-herdr-groups.png" \
+  "${artifact_dir}/standard-herdr-terminal.png" \
+  "${artifact_dir}/standard-herdr-workspaces.png" \
   "${artifact_dir}/ssh-terminal-input.png" \
   "${artifact_dir}/ssh-disconnected.png" \
   "${artifact_dir}/simulator.log"

@@ -161,6 +161,8 @@ enum ClientStore {
   private static func record(_ profile: [String: Any]) -> [String: Any] {
     var result = profile
     result.removeValue(forKey: "credentialID")
+    result["backend"] = profile["backend"] as? String ?? "tmux"
+    result["runtime"] = profile["runtime"] as? String ?? ""
     result["credentialSaved"] = hasCredential(profile)
     return result
   }
@@ -226,6 +228,8 @@ enum ClientStore {
       guard let profile = profiles.first(where: { $0["id"] as? String == id }) else { throw Failure.invalid }
       var result = profile
       result.removeValue(forKey: "credentialID")
+      if result["backend"] == nil { result["backend"] = "tmux" }
+      if result["runtime"] == nil { result["runtime"] = "" }
       result.merge(try credential(profile)) { _, secret in secret }
       return result
     }
@@ -264,7 +268,19 @@ enum ClientStore {
     guard UUID(uuidString: id) != nil,
           let port = integer(values["port"]), (1...65535).contains(port),
           let method = values["authMethod"] as? String, ["publicKey", "password"].contains(method) else { throw Failure.invalid }
-    var profile: [String: Any] = ["id": id, "port": port, "authMethod": method]
+    guard (!values.keys.contains("backend") || values["backend"] is String),
+          (!values.keys.contains("runtime") || values["runtime"] is String) else { throw Failure.invalid }
+    let backend = values["backend"] as? String ?? "tmux"
+    let runtime = values["runtime"] as? String ?? ""
+    guard ["tmux", "herdr"].contains(backend),
+          validRuntime(backend: backend, runtime: runtime) else { throw Failure.invalid }
+    var profile: [String: Any] = [
+      "id": id,
+      "port": port,
+      "authMethod": method,
+      "backend": backend,
+      "runtime": runtime
+    ]
     for field in ["name", "host", "username"] {
       guard let string = values[field] as? String else { throw Failure.invalid }
       let value = string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -273,6 +289,17 @@ enum ClientStore {
       profile[field] = value
     }
     return profile
+  }
+
+  private static func validRuntime(backend: String, runtime: String) -> Bool {
+    let validCharacters = runtime.unicodeScalars.allSatisfy { scalar in
+      (scalar.value >= 0x41 && scalar.value <= 0x5A) ||
+      (scalar.value >= 0x61 && scalar.value <= 0x7A) ||
+      (scalar.value >= 0x30 && scalar.value <= 0x39) ||
+      scalar.value == 0x2E || scalar.value == 0x5F || scalar.value == 0x2D
+    }
+    return runtime.utf8.count <= 64 && runtime != "." && runtime != ".." && validCharacters &&
+      (backend == "herdr" || runtime.isEmpty)
   }
 
   private static func validateCredential(_ values: [String: Any], profile: [String: Any]) throws -> [String: Any] {

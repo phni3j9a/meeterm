@@ -22,7 +22,7 @@ import {
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
-import type { ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, TmuxPane } from './modules/meeterm-terminal';
+import type { ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import type { ConnectionSubmission } from './app/ConnectionForm';
 import { DEFAULT_PREFERENCES, itemActions, NameForm, ProfileList, SettingsForm } from './app/DailyUse';
@@ -36,10 +36,10 @@ const INITIAL_CONNECTION: SshConnectionState = {
   state: 'Disconnected', host: '', port: 0, fingerprint: '', algorithm: '',
   knownFingerprint: '', errorCode: '', errorMessage: '',
 };
-type Workspace = { id: string; name: string; panes: TmuxPane[] };
-type SheetKind = 'server' | 'servers' | 'workspaces' | 'handoff' | null;
-type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: TmuxPane };
-type SmokeScreen = 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type Workspace = { id: string; name: string; panes: RemoteTerminal[] };
+type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | null;
+type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
+type SmokeScreen = 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 const SMOKE_PROFILE: ServerProfile = {
@@ -54,18 +54,18 @@ const SMOKE_PROFILES: ServerProfile[] = [
   SMOKE_PROFILE,
   SMOKE_PASSWORD_PROFILE,
 ];
-const SMOKE_PANES: TmuxPane[] = [
-  { windowId: '@smoke-main', paneId: '%smoke-main-1', terminalId: CONNECTION_ID, windowName: 'Main workspace', paneName: 'Shell', active: true, selected: true },
-  { windowId: '@smoke-main', paneId: '%smoke-main-2', terminalId: 'smoke-terminal-2', windowName: 'Main workspace', paneName: 'Logs', active: false, selected: false },
-  { windowId: '@smoke-tools', paneId: '%smoke-tools-1', terminalId: 'smoke-terminal-3', windowName: 'Tools workspace', paneName: 'Console', active: true, selected: true },
+const SMOKE_PANES: RemoteTerminal[] = [
+  { workspaceId: '@smoke-main', id: '%smoke-main-1', terminalId: CONNECTION_ID, groupId: '@smoke-main', agent: null, name: 'Shell', active: true, selected: true },
+  { workspaceId: '@smoke-main', id: '%smoke-main-2', terminalId: 'smoke-terminal-2', groupId: '@smoke-main', agent: null, name: 'Logs', active: false, selected: false },
+  { workspaceId: '@smoke-tools', id: '%smoke-tools-1', terminalId: 'smoke-terminal-3', groupId: '@smoke-tools', agent: null, name: 'Console', active: true, selected: true },
 ];
 
 type SmokeFixtureState = {
   preferences: TerminalPreferences;
   connection: SshConnectionState;
-  panes: TmuxPane[];
+  panes: RemoteTerminal[];
   screen: 'workspaces' | 'terminal';
-  windowId: string;
+  workspaceId: string;
   selectedPaneIds: Record<string, string>;
   formVisible: boolean;
   formProfile?: ServerProfile;
@@ -84,14 +84,27 @@ function smokeReadyConnection(): SshConnectionState {
   return { ...INITIAL_CONNECTION, state: 'Ready', host: SMOKE_PROFILE.host, port: SMOKE_PROFILE.port };
 }
 
-function smokePanes(): TmuxPane[] { return SMOKE_PANES.map(pane => ({ ...pane })); }
+function smokePanes(): RemoteTerminal[] { return SMOKE_PANES.map(pane => ({ ...pane })); }
 
-function smokeWorkspace(panes: TmuxPane[], windowId: string): Workspace {
-  const first = panes.find(pane => pane.windowId === windowId);
-  return { id: windowId, name: first?.windowName ?? 'Smoke workspace', panes: panes.filter(pane => pane.windowId === windowId) };
+function smokeWorkspace(panes: RemoteTerminal[], workspaceId: string): Workspace {
+  return { id: workspaceId, name: workspaceId === '@smoke-main' ? 'Main workspace' : 'Tools workspace', panes: panes.filter(pane => pane.workspaceId === workspaceId) };
 }
 
 function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
+  if (screen.startsWith('herdr-')) {
+    const base = smokeFixture(screen === 'herdr-connection' ? 'connection' : screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
+    base.formProfile = { ...SMOKE_PROFILE, backend: 'herdr', runtime: 'dev' };
+    base.panes = [
+      { ...SMOKE_PANES[0], groupId: 'smoke-code', name: 'Code', agent: { name: 'Claude Code', status: 'working' } },
+      { ...SMOKE_PANES[1], groupId: 'smoke-code', name: 'Shell' },
+      { ...SMOKE_PANES[1], id: 'smoke-test-1', groupId: 'smoke-tests', name: 'Tests', agent: { name: 'Codex', status: 'blocked' } },
+      { ...SMOKE_PANES[1], id: 'smoke-test-2', groupId: 'smoke-tests', name: 'Review', agent: { name: 'Codex', status: 'done' } },
+      { ...SMOKE_PANES[2], groupId: 'smoke-logs', agent: { name: 'Claude Code', status: 'unknown' } },
+    ];
+    base.selectedPaneIds = { 'smoke-code': base.panes[0].id };
+    base.sheet = screen === 'herdr-groups' ? 'groups' : null;
+    return base;
+  }
   const panes = smokePanes();
   const ready = ['workspaces', 'terminal', 'workspace-name', 'terminal-name', 'handoff'].includes(screen);
   const mainWorkspace = smokeWorkspace(panes, '@smoke-main');
@@ -102,7 +115,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     connection: ready ? smokeReadyConnection() : { ...INITIAL_CONNECTION },
     panes: ready ? panes : [],
     screen: screen === 'terminal' || screen === 'terminal-name' || screen === 'handoff' ? 'terminal' : 'workspaces',
-    windowId: screen === 'terminal' || screen === 'terminal-name' || screen === 'handoff' ? '@smoke-main' : '',
+    workspaceId: screen === 'terminal' || screen === 'terminal-name' || screen === 'handoff' ? '@smoke-main' : '',
     selectedPaneIds,
     formVisible: screen === 'connection' || screen === 'password',
     formProfile: screen === 'password' ? { ...SMOKE_PASSWORD_PROFILE } : screen === 'connection' ? { ...SMOKE_PROFILE } : undefined,
@@ -126,6 +139,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
+  'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
 ];
 
 function smokeRouteForUrl(url: string | null): SmokeRoute | undefined {
@@ -143,16 +157,20 @@ function sameConnection(a: SshConnectionState, b: SshConnectionState) {
     && a.knownFingerprint === b.knownFingerprint && a.errorCode === b.errorCode
     && a.errorMessage === b.errorMessage;
 }
-function samePanes(a: TmuxPane[], b: TmuxPane[]) {
-  return a.length === b.length && a.every((pane, index) => {
-    const other = b[index];
-    return pane.windowId === other.windowId && pane.paneId === other.paneId
-      && pane.terminalId === other.terminalId && pane.windowName === other.windowName
-      && pane.paneName === other.paneName
-      && pane.active === other.active
-      && pane.selected === other.selected;
-  });
+const EMPTY_WORKSPACES: WorkspaceState = { backend: 'tmux', runtime: 'meeterm', groupsSupported: false, workspaces: [], groups: [], terminals: [] };
+function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false): WorkspaceState {
+  const ids = [...new Set(panes.map(pane => pane.workspaceId))];
+  return { ...EMPTY_WORKSPACES, terminals: panes,
+    workspaces: ids.map(id => ({ id, name: id === '@smoke-main' ? 'Main workspace' : 'Tools workspace' })),
+    backend: herdr ? 'herdr' : 'tmux', runtime: herdr ? 'dev' : 'meeterm', groupsSupported: herdr,
+    groups: herdr ? [
+      { id: 'smoke-code', workspaceId: '@smoke-main', name: 'Development', selected: true },
+      { id: 'smoke-tests', workspaceId: '@smoke-main', name: 'Tests & review', selected: false },
+      { id: 'smoke-logs', workspaceId: '@smoke-tools', name: 'Logs', selected: true },
+    ] : ids.map(id => ({ id, workspaceId: id, name: '', selected: true })),
+  };
 }
+function sameSession(a: WorkspaceState, b: WorkspaceState) { return JSON.stringify(a) === JSON.stringify(b); }
 function normalizeSearch(value: string) { return value.normalize('NFKC').trim().toLocaleLowerCase(); }
 function endpoint(connection: SshConnectionState) {
   const host = connection.host.includes(':') ? `[${connection.host}]` : connection.host;
@@ -179,6 +197,17 @@ function connectionPresentation(connection: SshConnectionState) {
   }
 }
 function connectionError(connection: SshConnectionState) {
+  const herdrErrors: Record<string, string> = {
+    herdr_missing: 'SSHの接続先でHerdrが見つかりません。PCで使っているHerdrを、SSHからも実行できるか確認してください。',
+    herdr_session_missing: '指定したHerdrセッションが起動していません。PCでそのセッションを開いてから、接続し直してください。',
+    herdr_incompatible: 'このHerdrは対応する接続機能を確認できませんでした。検証済みはHerdr 0.9.0（protocol 22）です。',
+    herdr_unsupported: 'このHerdrでは、接続に必要な公開APIまたは状態の通知機能を利用できません。接続先のHerdrの機能を確認してください。',
+    herdr_forwarding: 'SSH経由でHerdrにアクセスできません。SSHサーバーでUnix socket転送（AllowStreamLocalForwarding）が許可されているか確認してください。',
+    herdr_controller_busy: 'このターミナルは別の接続で操作中です。そちらの操作権を解放してから、再接続してください。',
+    herdr_protocol: 'Herdrの応答を読み取れませんでした。接続先のバージョンとセッションを確認してください。',
+    herdr_operation: 'Herdrが操作を受け付けませんでした。再接続して、現在のワークスペースを確認してください。',
+  };
+  if (herdrErrors[connection.errorCode]) return herdrErrors[connection.errorCode];
   if (connection.errorCode === 'host_key_changed') return '保存したホスト鍵と一致しません。サーバーの本人確認が必要です。';
   if (connection.errorCode === 'host_key_rejected') return 'ホスト鍵の確認をキャンセルしました。接続するには、もう一度確認してください。';
   if (connection.errorCode.includes('private_key')) return '秘密鍵を読み込めませんでした。鍵の形式とパスフレーズを確認してください。';
@@ -194,6 +223,18 @@ function ConnectionStatus({ connection, colors }: { connection: SshConnectionSta
   </View>;
 }
 
+const AGENT_LABELS = { working: '作業中', blocked: '確認待ち', done: '応答完了', idle: '待機中', unknown: '状態未確認' };
+function agentSummary(panes: RemoteTerminal[], connected: boolean) {
+  const agents = panes.flatMap(pane => pane.agent ? [pane.agent] : []);
+  if (!agents.length) return '';
+  if (!connected) return `状態未確認 ${agents.length}`;
+  const statuses = ['blocked', 'working', 'done', 'idle', 'unknown'] as const;
+  return statuses.flatMap(status => {
+    const count = agents.filter(agent => agent.status === status).length;
+    return count ? [`${AGENT_LABELS[status]} ${count}`] : [];
+  }).join(' · ');
+}
+
 function SearchField({ value, onChange, colors, label = 'Search workspaces', autoFocus = false }: { value: string; onChange: (value: string) => void; colors: Palette; label?: string; autoFocus?: boolean }) {
   return <View style={[styles.searchField, { backgroundColor: colors.surface, borderColor: colors.border }]}>
     <Icon name="search" color={colors.muted} size={18} />
@@ -202,12 +243,13 @@ function SearchField({ value, onChange, colors, label = 'Search workspaces', aut
   </View>;
 }
 
-function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker = false, disabled = false, optionsDisabled = false }: { workspace: Workspace; selected: boolean; colors: Palette; onPress: () => void; onOptions?: () => void; picker?: boolean; disabled?: boolean; optionsDisabled?: boolean }) {
+function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker = false, disabled = false, optionsDisabled = false, connected = false }: { workspace: Workspace; selected: boolean; colors: Palette; onPress: () => void; onOptions?: () => void; picker?: boolean; disabled?: boolean; optionsDisabled?: boolean; connected?: boolean }) {
   return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={`Workspace ${workspace.name}`} accessibilityHint={`${workspace.panes.length} terminals`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
     <Icon name="terminal" color={colors.muted} size={23} />
     <View style={styles.rowCopy}>
       <Text numberOfLines={picker ? undefined : 2} style={[styles.rowTitle, { color: colors.text }]}>{workspace.name}</Text>
       <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{workspace.panes.length} ターミナル</Text>
+      {agentSummary(workspace.panes, connected) ? <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{agentSummary(workspace.panes, connected)}</Text> : null}
     </View>
     <Icon name={selected ? 'check' : 'chevron'} color={selected ? colors.accent : colors.muted} size={18} />
   </Pressable>{onOptions ? <IconButton icon="menu" label={`Workspace options ${workspace.name}`} onPress={onOptions} disabled={disabled || optionsDisabled} colors={colors} /> : null}</View>;
@@ -238,9 +280,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [connection, setConnection] = useState<SshConnectionState>(() => fixture?.connection ?? INITIAL_CONNECTION);
-  const [panes, setPanes] = useState<TmuxPane[]>(() => fixture?.panes ?? []);
+  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-')) : EMPTY_WORKSPACES);
+  const panes = session.terminals;
   const [screen, setScreen] = useState<'workspaces' | 'terminal'>(() => fixture?.screen ?? 'workspaces');
-  const [windowId, setWindowId] = useState(() => fixture?.windowId ?? '');
+  const [workspaceId, setWorkspaceId] = useState(() => fixture?.workspaceId ?? '');
   const [selectedPaneIds, setSelectedPaneIds] = useState<Record<string, string>>(() => fixture?.selectedPaneIds ?? {});
   const [formVisible, setFormVisible] = useState(() => fixture?.formVisible ?? false);
   const [hostPromptDeferred, setHostPromptDeferred] = useState(false);
@@ -330,10 +373,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const version = commandVersion.current;
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        const session = await MeetermTerminal.getSessionState(CONNECTION_ID);
+        const session = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
         if (mounted && version === commandVersion.current && !commandPending.current) {
           setConnection(current => sameConnection(current, next) ? current : next);
-          setPanes(current => samePanes(current, session.panes) ? current : session.panes);
+          setSession(current => sameSession(current, session) ? current : session);
           if (next.state === 'Ready') setHasConnected(true);
           setPollProblem(false);
         }
@@ -369,27 +412,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     ], { cancelable: false });
   }, [connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
 
-  const workspaces = useMemo(() => {
-    const grouped = new Map<string, Workspace>();
-    for (const pane of panes) {
-      const workspace = grouped.get(pane.windowId);
-      if (workspace) workspace.panes.push(pane);
-      else grouped.set(pane.windowId, { id: pane.windowId, name: pane.windowName || '名前のない作業', panes: [pane] });
-    }
-    return [...grouped.values()];
-  }, [panes]);
-  const workspace = workspaces.find(item => item.id === windowId);
-  const chosenPaneId = selectedPaneIds[windowId];
-  const selectedPane = workspace?.panes.find(pane => pane.paneId === chosenPaneId)
-      ?? workspace?.panes.find(pane => pane.active)
-      ?? workspace?.panes.find(pane => pane.selected)
-      ?? workspace?.panes[0];
-  const activeWindowId = panes.find(pane => pane.selected)?.windowId;
+  const workspaces = useMemo(() => session.workspaces.map(workspace => ({ ...workspace, panes: panes.filter(pane => pane.workspaceId === workspace.id) })), [session.workspaces, panes]);
+  const workspace = workspaces.find(item => item.id === workspaceId);
+  const groups = session.groups.filter(group => group.workspaceId === workspaceId);
+  const group = groups.find(group => group.selected) ?? groups[0];
+  const groupPanes = workspace?.panes.filter(pane => pane.groupId === group?.id) ?? [];
+  const chosenPaneId = selectedPaneIds[group?.id ?? ''];
+  const selectedPane = groupPanes.find(pane => pane.selected)
+      ?? groupPanes.find(pane => pane.id === chosenPaneId)
+      ?? groupPanes.find(pane => pane.active)
+      ?? groupPanes[0];
+  const activeWorkspaceId = panes.find(pane => pane.selected)?.workspaceId;
   const colors = homeColors;
   const resolvedTheme = homeColors === DARK ? 'dark' : 'light';
   const currentProfile = profiles.find(profile => profile.id === profileId);
   const presentation = connectionPresentation(connection);
   const ready = connection.state === 'Ready';
+  useEffect(() => {
+    if (smokeFixtureActive) return;
+    const visible = screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active';
+    foregroundCommands.current = foregroundCommands.current
+      .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, visible))
+      .catch(() => setControlMessage('ターミナルの表示状態を接続へ反映できませんでした。再接続してください。'));
+  }, [screen, sheet, modalPending, formVisible, settingsVisible, nameRequest, appState, smokeFixtureActive]);
   const closing = connection.state === 'Closing';
   const active = !['Disconnected', 'Failed', 'Closing'].includes(connection.state);
   const attempted = Boolean(connection.host);
@@ -408,8 +453,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       await action();
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        const session = await MeetermTerminal.getSessionState(CONNECTION_ID);
-        setConnection(next); setPanes(session.panes); setPollProblem(false);
+        const session = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+        setConnection(next); setSession(session); setPollProblem(false);
         if (next.state === 'Ready') setHasConnected(true);
       } catch { setPollProblem(true); }
       return true;
@@ -436,16 +481,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
   }, []);
 
-  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port'>) => {
+  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>) => {
     if (Platform.OS === 'ios' && (formVisible || sheet !== null)) setHostPromptDeferred(true);
     returnToServersAfterForm.current = false;
     setFormVisible(false);
     setSheet(null);
     setScreen('workspaces');
     setFoundation(false);
-    setPanes([]);
+    setSession({ ...EMPTY_WORKSPACES, backend: profile.backend ?? 'tmux', runtime: profile.runtime || (profile.backend === 'herdr' ? 'default' : 'meeterm') });
     setSelectedPaneIds({});
-    setWindowId('');
+    setWorkspaceId('');
     setSearching(false);
     setQuery('');
     listOffsets.current = { normal: 0, search: 0 };
@@ -471,18 +516,18 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         savedProfile = await MeetermTerminal.saveProfile({ ...submission.profile, id: submission.profile.id || formSavedProfile.current?.id || '' }, submission.saveCredential ? submission.credential : null, submission.keepCredential);
         formSavedProfile.current = savedProfile;
         setProfiles(current => [...current.filter(item => item.id !== savedProfile!.id), savedProfile!]);
-        if (savedProfile.id === profileId && connectedIdentity.current !== JSON.stringify([savedProfile.host, savedProfile.port, savedProfile.username, savedProfile.authMethod])) setProfileId('');
+        if (savedProfile.id === profileId && connectedIdentity.current !== JSON.stringify([savedProfile.host, savedProfile.port, savedProfile.username, savedProfile.authMethod, savedProfile.backend ?? 'tmux', savedProfile.runtime ?? ''])) setProfileId('');
       }
       if (!submission.connect) return;
       await prepareConnection();
       if (submission.credential) {
-        const options: SshConnectOptions = { host: submission.profile.host, port: submission.profile.port, username: submission.profile.username, ...submission.credential };
+        const options: SshConnectOptions = { host: submission.profile.host, port: submission.profile.port, username: submission.profile.username, backend: submission.profile.backend ?? 'tmux', runtime: submission.profile.runtime ?? '', ...submission.credential };
         await MeetermTerminal.connect(CONNECTION_ID, options);
       } else if (savedProfile?.credentialSaved) {
         await MeetermTerminal.connectProfile(CONNECTION_ID, savedProfile.id);
       } else { throw new Error('Credential required'); }
       resetForConnection(submission.profile);
-      connectedIdentity.current = JSON.stringify([submission.profile.host, submission.profile.port, submission.profile.username, submission.profile.authMethod]);
+      connectedIdentity.current = JSON.stringify([submission.profile.host, submission.profile.port, submission.profile.username, submission.profile.authMethod, submission.profile.backend ?? 'tmux', submission.profile.runtime ?? '']);
       setProfileId(savedProfile?.id ?? '');
     }, 'サーバーの保存または接続を開始できませんでした。接続先と認証情報を確認してください。');
     if (success) finishConnectionForm();
@@ -510,17 +555,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     });
   }, [connection, runCommand]);
 
-  const choosePane = useCallback(async (pane: TmuxPane) => {
+  const choosePane = useCallback(async (pane: RemoteTerminal) => {
     if (commandPending.current || !['Ready', 'Disconnected', 'Failed'].includes(connection.state)) return false;
     Keyboard.dismiss();
-    const previous = selectedPaneIds[pane.windowId];
-    setSelectedPaneIds(current => ({ ...current, [pane.windowId]: pane.paneId }));
+    const previous = selectedPaneIds[pane.groupId];
+    setSelectedPaneIds(current => ({ ...current, [pane.groupId]: pane.id }));
     // Rust also retains a desired pane while disconnected, so reconnect's
-    // restored tmux selection and zoom follow an offline workspace choice.
-    const success = await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.paneId), 'ターミナルを選択できませんでした。一覧を確認して、もう一度選んでください。');
+    // restored selection follows an offline workspace choice.
+    const success = await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'ターミナルを選択できませんでした。一覧を確認して、もう一度選んでください。');
     if (!success) setSelectedPaneIds(current => {
         const next = { ...current };
-        if (previous) next[pane.windowId] = previous; else delete next[pane.windowId];
+        if (previous) next[pane.groupId] = previous; else delete next[pane.groupId];
         return next;
       });
     return success;
@@ -529,20 +574,27 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const openWorkspace = useCallback((item: Workspace) => {
     if (commandPending.current) return;
     Keyboard.dismiss();
-    const pane = item.panes.find(candidate => candidate.paneId === selectedPaneIds[item.id])
-      ?? item.panes.find(candidate => candidate.active)
-      ?? item.panes.find(candidate => candidate.selected)
-      ?? item.panes[0];
+    const chosenGroup = session.groups.find(candidate => candidate.workspaceId === item.id && candidate.selected)
+      ?? session.groups.find(candidate => candidate.workspaceId === item.id);
+    const candidates = item.panes.filter(candidate => candidate.groupId === chosenGroup?.id);
+    const pane = candidates.find(candidate => candidate.id === selectedPaneIds[chosenGroup?.id ?? ''])
+      ?? candidates.find(candidate => candidate.active)
+      ?? candidates.find(candidate => candidate.selected)
+      ?? candidates[0];
     if (pane) {
       void choosePane(pane).then(success => {
         if (!success) return;
-        setWindowId(item.id);
+        setWorkspaceId(item.id);
         setScreen('terminal');
         setSheet(null);
         setPickerQuery('');
       });
-    }
-  }, [choosePane, connection.state, selectedPaneIds]);
+    } else if (chosenGroup && session.groupsSupported) {
+      void runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, chosenGroup.id), 'Groupを選択できませんでした。').then(success => {
+        if (success) { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
+      });
+    } else { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
+  }, [choosePane, selectedPaneIds, session.groups, session.groupsSupported, runCommand]);
 
   const backToWorkspaces = useCallback(() => {
     Keyboard.dismiss();
@@ -587,7 +639,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         await prepareConnection();
         await MeetermTerminal.connectProfile(CONNECTION_ID, profile.id);
         resetForConnection(profile);
-        connectedIdentity.current = JSON.stringify([profile.host, profile.port, profile.username, profile.authMethod]);
+        connectedIdentity.current = JSON.stringify([profile.host, profile.port, profile.username, profile.authMethod, profile.backend ?? 'tmux', profile.runtime ?? '']);
         setProfileId(profile.id);
       }, '保存済みサーバーに接続できませんでした。「編集」から接続先と認証情報を確認してください。');
     };
@@ -654,7 +706,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ? MeetermTerminal.createWorkspace(CONNECTION_ID, name)
       : request.kind === 'renameWorkspace'
         ? MeetermTerminal.renameWorkspace(CONNECTION_ID, request.workspace.id, name)
-        : MeetermTerminal.renamePane(CONNECTION_ID, request.pane.paneId, name), '名前を反映できませんでした。接続状態を確認して、もう一度試してください。');
+        : request.kind === 'createGroup'
+          ? MeetermTerminal.createGroup(CONNECTION_ID, request.workspace.id, name)
+          : request.kind === 'renameGroup'
+            ? MeetermTerminal.renameGroup(CONNECTION_ID, request.group.id, name)
+            : MeetermTerminal.renamePane(CONNECTION_ID, request.pane.id, name), '名前を反映できませんでした。接続状態を確認して、もう一度試してください。');
     if (success) setNameRequest(null);
     return success;
   }, [nameRequest, ready, runCommand]);
@@ -664,11 +720,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       { text: 'キャンセル', style: 'cancel' },
       { text: '終了', style: 'destructive', onPress: () => {
         void runCommand(() => MeetermTerminal.closeWorkspace(CONNECTION_ID, item.id), 'ワークスペースを終了できませんでした。接続状態を確認してください。').then(success => {
-          if (success) { setSheet(null); if (windowId === item.id) backToWorkspaces(); }
+          if (success) { setSheet(null); if (workspaceId === item.id) backToWorkspaces(); }
         });
       } },
     ]);
-  }, [backToWorkspaces, runCommand, windowId]);
+  }, [backToWorkspaces, runCommand, workspaceId]);
 
   const workspaceOptions = useCallback((item: Workspace) => {
     itemActions(item.name, () => openName({ kind: 'renameWorkspace', workspace: item }), () => closeWorkspace(item), 'workspace');
@@ -676,30 +732,56 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const createPane = useCallback(() => {
     if (!workspace || !ready) return;
+    if (session.groupsSupported && groupPanes.length === 0) {
+      setControlMessage('このGroupには追加の元になるターミナルがありません。メニューから新しいGroupを作成してください。');
+      return;
+    }
     void runCommand(() => MeetermTerminal.createPane(CONNECTION_ID, workspace.id), 'ターミナルを作成できませんでした。接続状態を確認してください。').then(success => {
       if (success) {
-        setSelectedPaneIds(current => { const next = { ...current }; delete next[workspace.id]; return next; });
+        setSelectedPaneIds(current => { const next = { ...current }; if (group) delete next[group.id]; return next; });
         setSheet(null);
       }
     });
-  }, [ready, runCommand, workspace]);
+  }, [ready, runCommand, workspace, group, session.groupsSupported, groupPanes.length]);
 
   const closePane = useCallback(() => {
     if (!selectedPane || !workspace) return;
     const pane = selectedPane;
-    Alert.alert('ターミナルを終了しますか？', `${pane.paneName || pane.paneId}\n\n実行中のプロセスを終了します。保存していない作業は失われます。${workspace.panes.length === 1 ? '最後のターミナルのため、ワークスペースも終了します。' : ''}`, [
+    const consequence = workspace.panes.length === 1 ? '最後のターミナルのため、ワークスペースも終了します。'
+      : session.groupsSupported && groupPanes.length === 1 ? 'このGroupの最後のターミナルのため、Groupも終了します。' : '';
+    Alert.alert('ターミナルを終了しますか？', `${pane.name || pane.id}\n\n実行中のプロセスを終了します。保存していない作業は失われます。${consequence}`, [
       { text: 'キャンセル', style: 'cancel' },
       { text: '終了', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closePane(CONNECTION_ID, pane.paneId), 'ターミナルを終了できませんでした。接続状態を確認してください。').then(success => {
+        void runCommand(() => MeetermTerminal.closePane(CONNECTION_ID, pane.id), 'ターミナルを終了できませんでした。接続状態を確認してください。').then(success => {
           if (success) {
-            setSelectedPaneIds(current => { const next = { ...current }; delete next[pane.windowId]; return next; });
+            setSelectedPaneIds(current => { const next = { ...current }; delete next[pane.groupId]; return next; });
             setSheet(null);
             if (workspace.panes.length === 1) backToWorkspaces();
           }
         });
       } },
     ]);
-  }, [backToWorkspaces, runCommand, selectedPane, workspace]);
+  }, [backToWorkspaces, runCommand, selectedPane, workspace, session.groupsSupported, groupPanes.length]);
+
+  const chooseGroup = useCallback((item: TerminalGroup) => {
+    if (!ready || commandPending.current) return;
+    const remembered = panes.find(pane => pane.groupId === item.id && pane.id === selectedPaneIds[item.id]);
+    const selection = remembered ? choosePane(remembered) : runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, item.id), 'Groupを選択できませんでした。一覧を確認してください。');
+    void selection.then(success => { if (success) setSheet(null); });
+  }, [ready, runCommand, panes, selectedPaneIds, choosePane]);
+
+  const closeGroup = useCallback((item: TerminalGroup) => {
+    const terminals = panes.filter(pane => pane.groupId === item.id);
+    const last = session.groups.filter(group => group.workspaceId === item.workspaceId).length === 1;
+    Alert.alert('Groupを終了しますか？', `${item.name}\n\n${terminals.length}個のターミナルと、その中のプロセスを終了します。保存していない作業は失われます。${last ? '最後のGroupのため、ワークスペースも終了します。' : ''}`, [
+      { text: 'キャンセル', style: 'cancel' },
+      { text: '終了', style: 'destructive', onPress: () => {
+        void runCommand(() => MeetermTerminal.closeGroup(CONNECTION_ID, item.id), 'Groupを終了できませんでした。接続状態を確認してください。').then(success => {
+          if (success) { setSheet(null); if (last) backToWorkspaces(); }
+        });
+      } },
+    ]);
+  }, [panes, session.groups, runCommand, backToWorkspaces]);
 
   const refreshTerminal = useCallback(() => {
     void runCommand(() => MeetermTerminal.refreshTerminal(CONNECTION_ID), '画面の再描画を要求できませんでした。接続状態を確認してください。').then(success => { if (success) setSheet(null); });
@@ -821,7 +903,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ref={workspaceList}
       data={filteredWorkspaces}
       keyExtractor={item => item.id}
-      renderItem={({ item }) => <View style={styles.horizontal}><WorkspaceRow workspace={item} selected={item.id === activeWindowId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>}
+      renderItem={({ item }) => <View style={styles.horizontal}><WorkspaceRow connected={ready} workspace={item} selected={item.id === activeWorkspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>}
       ListHeaderComponent={listHeader}
       ListEmptyComponent={emptyList}
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 24 }}
@@ -840,9 +922,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         </View>
         <IconButton icon="menu" label="Terminal menu" colors={colors} onPress={() => openSheet('server')} />
       </View>
-      {workspace && workspace.panes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: colors.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {workspace.panes.map((pane, index) => <Pressable key={pane.paneId} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.paneId}`} accessibilityHint={pane.paneName || `ターミナル ${index + 1}`} accessibilityState={{ selected: pane.paneId === selectedPane?.paneId, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.paneId === selectedPane?.paneId ? colors.accent : 'transparent' }, pressed && { backgroundColor: colors.surface }]}><Icon name="terminal" color={pane.paneId === selectedPane?.paneId ? colors.accent : colors.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.paneId === selectedPane?.paneId ? colors.accent : colors.muted }]}>{pane.paneName || `ターミナル ${index + 1}`}</Text></Pressable>)}
+      {groups.length > 1 ? <View style={styles.groupBar}>
+        <Text style={[styles.groupLabel, { color: colors.muted }]}>Group</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!ready || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: colors.surface }, pressed && { opacity: .65 }]}>
+          <Text numberOfLines={1} style={[styles.groupName, { color: colors.text }]}>{group?.name || 'Groupを選択'}</Text><Icon name="down" color={colors.muted} size={12} />
+        </Pressable>
+      </View> : null}
+      {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: colors.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
+        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `ターミナル ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? colors.accent : 'transparent' }, pressed && { backgroundColor: colors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? colors.accent : colors.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? colors.accent : colors.muted }]}>{pane.name || `ターミナル ${index + 1}`}</Text></Pressable>)}
       </ScrollView><IconButton icon="plus" label="Create terminal" colors={colors} disabled={!ready || commandBusy} onPress={createPane} /></View> : null}
+      {selectedPane?.agent ? <View style={styles.agentLine}>
+        <Text numberOfLines={1} style={[styles.agentName, { color: colors.muted }]}>{selectedPane.agent.name}</Text>
+        <Text accessibilityHint="Herdrが報告した状態です。タスクの正しさやテスト成功を保証するものではありません。" style={[styles.agentStatus, { color: ready && selectedPane.agent.status === 'blocked' ? colors.accent : colors.muted }]}>{AGENT_LABELS[ready ? selectedPane.agent.status : 'unknown']}</Text>
+      </View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {ready && workspace && selectedPane ? (
         // Unmounting a surface cancels composition; the shared native registry
@@ -861,19 +953,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={colors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={colors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
-    <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'ワークスペースを作成' : nameRequest?.kind === 'renameWorkspace' ? 'ワークスペースの名前' : 'ターミナルの名前'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.paneName : ''} colors={colors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'workspaces' ? '作業を切り替える' : sheet === 'handoff' ? 'PC で続きを' : sheet === 'servers' ? '保存済みサーバー' : 'サーバー'} visible={sheet !== null} onClose={() => setSheet(null)} busy={commandBusy} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={colors}>
+    <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'ワークスペースを作成' : nameRequest?.kind === 'renameWorkspace' ? 'ワークスペースの名前' : nameRequest?.kind === 'createGroup' ? 'Groupを作成' : nameRequest?.kind === 'renameGroup' ? 'Groupの名前' : 'ターミナルの名前'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={colors} onClose={() => setNameRequest(null)} onSave={saveName} />
+    <NativeSheet title={sheet === 'groups' ? 'Groupを切り替える' : sheet === 'workspaces' ? '作業を切り替える' : sheet === 'handoff' ? 'PC で続きを' : sheet === 'servers' ? '保存済みサーバー' : 'サーバー'} visible={sheet !== null} onClose={() => setSheet(null)} busy={commandBusy} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={colors}>
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={colors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
         <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={colors} /> : null}<Button label="Create workspace" colors={colors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>ワークスペースを作成</Button></View>
-        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow workspace={item} selected={item.id === windowId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={colors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: colors.muted }]}>該当するワークスペースがありません。</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" />
-      </View> : sheet === 'handoff' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={ready} workspace={item} selected={item.id === workspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={colors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: colors.muted }]}>該当するワークスペースがありません。</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" />
+      </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+        <Text style={[styles.emptyBody, { color: colors.muted }]}>Groupごとに、まとまったターミナルを切り替えます。</Text>
+        {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: colors.border }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name}`} accessibilityState={{ selected: item.id === group?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
+            <Text style={[styles.groupName, { color: item.id === group?.id ? colors.accent : colors.text }]}>{item.name || '名前のないGroup'}</Text>
+            <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} ターミナル{item.id === group?.id ? ' · 選択中' : ''}</Text>
+          </Pressable>
+          <IconButton icon="menu" label={`Group options ${item.name}`} colors={colors} disabled={!ready || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
+        </View>)}
+        {workspace ? <Button label="Create group" colors={colors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Groupを追加</Button> : null}
+      </ScrollView> : sheet === 'handoff' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.handoffTitle, { color: colors.text }]}>同じ作業を、大きな画面で。</Text>
         <Text style={[styles.emptyBody, { color: colors.muted }]}>スマートフォンの接続を切っても、サーバー上の作業は続きます。</Text>
         <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: colors.accent }]}>1</Text><Text style={[styles.emptyBody, { color: colors.text, flex: 1 }]}>このスマートフォンの接続を切断します。</Text></View>
         <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: colors.accent }]}>2</Text><Text style={[styles.emptyBody, { color: colors.text, flex: 1 }]}>PC から同じサーバー・同じユーザーで SSH 接続します。</Text></View>
-        <Text selectable style={[styles.command, { backgroundColor: colors.surface, color: colors.text }]}>tmux attach -t meeterm</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>このコマンドで、同じウィンドウとペインを開けます。</Text>
+        <Text selectable style={[styles.command, { backgroundColor: colors.surface, color: colors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : 'tmux attach -t meeterm'}</Text>
+        <Text style={[styles.emptyBody, { color: colors.muted }]}>このコマンドで、同じワークスペースとターミナルを開けます。</Text>
         {active ? <Button label="Disconnect" colors={colors} disabled={commandBusy} onPress={disconnect}>切断して PC へ</Button> : <Button label="Close sheet" colors={colors} secondary onPress={() => setSheet(null)}>閉じる</Button>}
       </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <View style={styles.serverDetails}>
@@ -889,7 +991,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" disabled={commandBusy} onPress={() => setSheet('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: colors.border }, pressed && { backgroundColor: colors.surface }]}><Text style={[styles.actionText, { color: colors.text }]}>保存済みサーバー・切り替え</Text><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: colors.border }, pressed && { backgroundColor: colors.surface }]}><Text style={[styles.actionText, { color: colors.text }]}>ターミナル設定</Text><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
         {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: colors.border }]}>
-          <Text numberOfLines={2} style={[styles.sectionLabel, { color: colors.muted }]}>{selectedPane.paneName || selectedPane.paneId}</Text>
+          <Text numberOfLines={2} style={[styles.sectionLabel, { color: colors.muted }]}>{selectedPane.name || selectedPane.id}</Text>
           <Button label="Refresh terminal" colors={colors} secondary disabled={!ready || commandBusy} onPress={refreshTerminal}>画面を再描画</Button>
           <Text style={[styles.noticeBody, { color: colors.muted }]}>再接続後に表示が崩れたとき、アプリに画面の再描画を要求します。</Text>
           <View style={styles.noticeActions}>
@@ -897,6 +999,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!ready || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>ターミナルを終了</Text></Pressable>
           </View>
           <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!ready || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>ワークスペースの名前・終了</Text></Pressable>
+        </View> : null}
+        {screen === 'terminal' && workspace && session.groupsSupported ? <View style={[styles.terminalActions, { borderColor: colors.border }]}>
+          <Text style={[styles.sectionLabel, { color: colors.muted }]}>Group</Text>
+          <Button label="Create group" colors={colors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Groupを追加</Button>
+          {group ? <View style={styles.noticeActions}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Rename group" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renameGroup', group })} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Groupの名前を変更</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close group" disabled={!ready || commandBusy} onPress={() => closeGroup(group)} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Groupを終了</Text></Pressable>
+          </View> : null}
         </View> : null}
         <Pressable accessibilityRole="button" accessibilityLabel="PC handoff help" onPress={() => setSheet('handoff')} style={({ pressed }) => [styles.menuRow, { borderColor: colors.border }, pressed && { backgroundColor: colors.surface }]}><Text style={[styles.actionText, { color: colors.text }]}>PC で続きを</Text><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
         {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>ホスト鍵の変更を確認</Text></Pressable> : null}
@@ -953,6 +1063,15 @@ export default function App() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  groupBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingBottom: 4 },
+  groupLabel: { fontSize: 12, fontWeight: '500' },
+  groupPicker: { flexShrink: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, borderRadius: 10, borderCurve: 'continuous' },
+  groupName: { fontSize: 15, lineHeight: 22, fontWeight: '500', flexShrink: 1 },
+  groupRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth },
+  groupChoice: { flex: 1, minHeight: 64, paddingVertical: 12, gap: 4 },
+  agentLine: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 20, paddingVertical: 5 },
+  agentName: { fontSize: 12, lineHeight: 18, flexShrink: 1 },
+  agentStatus: { fontSize: 12, lineHeight: 18 },
   horizontal: { paddingHorizontal: 24 },
   brandRow: { minHeight: 56, paddingHorizontal: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
   topActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },

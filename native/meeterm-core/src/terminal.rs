@@ -121,13 +121,47 @@ pub(crate) fn set_configured_scrollback_lines(lines: usize) -> Result<(), Termin
 /// same queue as committed user input, so platform code never has to shuttle
 /// terminal protocol bytes through JavaScript.
 pub(crate) type InputSender = mpsc::Sender<Vec<u8>>;
+pub(crate) type SemanticInputSender = mpsc::Sender<SemanticInput>;
 pub(crate) type ResizeSender = watch::Sender<(u16, u16)>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SemanticInput {
+    Text(String, Modifiers),
+    Key(KeyCode, Modifiers),
+    Paste(String),
+    Scroll(i32),
+}
+
 #[derive(Clone)]
-pub(crate) struct TransportBinding {
-    pub(crate) generation: u64,
-    pub(crate) input: InputSender,
-    pub(crate) resize: ResizeSender,
+pub(crate) enum TransportBinding {
+    Bytes {
+        generation: u64,
+        input: InputSender,
+        resize: ResizeSender,
+    },
+    Semantic {
+        generation: u64,
+        input: SemanticInputSender,
+        resize: ResizeSender,
+    },
+}
+
+impl TransportBinding {
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Bytes { generation, .. } | Self::Semantic { generation, .. } => *generation,
+        }
+    }
+
+    fn resize_sender(&self) -> &ResizeSender {
+        match self {
+            Self::Bytes { resize, .. } | Self::Semantic { resize, .. } => resize,
+        }
+    }
+
+    fn is_semantic(&self) -> bool {
+        matches!(self, Self::Semantic { .. })
+    }
 }
 
 type TransportSlot = Arc<Mutex<Option<TransportBinding>>>;
@@ -144,18 +178,24 @@ impl EventListener for TerminalEventListener {
             return;
         };
 
-        let sender = self
+        let binding = self
             .outbound
             .lock()
             .ok()
-            .and_then(|binding| binding.as_ref().map(|binding| binding.input.clone()));
-        if let Some(sender) = sender {
-            // EventListener is synchronous.  Never block the terminal mutex;
-            // mark a full or closed queue so the SSH actor can fail the
-            // transport instead of silently waiting for a lost reply.
-            if sender.try_send(text.into_bytes()).is_err() {
-                self.overloaded.store(true, Ordering::Release);
+            .and_then(|binding| binding.as_ref().cloned());
+        match binding {
+            Some(TransportBinding::Bytes { input, .. }) => {
+                // EventListener is synchronous.  Never block the terminal mutex;
+                // mark a full or closed queue so the SSH actor can fail the
+                // transport instead of silently waiting for a lost reply.
+                if input.try_send(text.into_bytes()).is_err() {
+                    self.overloaded.store(true, Ordering::Release);
+                }
             }
+            // Herdr's remote child owns terminal query replies.  A semantic
+            // client receives display state, not a raw PTY, so forwarding a
+            // locally generated DA/DSR reply would fabricate a second owner.
+            Some(TransportBinding::Semantic { .. }) | None => {}
         }
     }
 }
@@ -303,11 +343,11 @@ impl Terminal {
         }
 
         if self.remote_mode && notify {
-            let resize_sender = self
-                .outbound
-                .lock()
-                .ok()
-                .and_then(|binding| binding.as_ref().map(|binding| binding.resize.clone()));
+            let resize_sender = self.outbound.lock().ok().and_then(|binding| {
+                binding
+                    .as_ref()
+                    .map(|binding| binding.resize_sender().clone())
+            });
             if let Some(resize_sender) = resize_sender {
                 // `watch` retains only the latest size and therefore naturally
                 // coalesces rotations and pre-ready layout changes.
@@ -401,7 +441,29 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?;
-        *binding = Some(TransportBinding {
+        *binding = Some(TransportBinding::Bytes {
+            generation,
+            input,
+            resize,
+        });
+        self.transport_overloaded.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn attach_semantic_transport(
+        &mut self,
+        generation: u64,
+        input: SemanticInputSender,
+        resize: ResizeSender,
+    ) -> Result<(), TerminalError> {
+        if !self.remote_mode || self.remote_generation != Some(generation) {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        let mut binding = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?;
+        *binding = Some(TransportBinding::Semantic {
             generation,
             input,
             resize,
@@ -439,7 +501,7 @@ impl Terminal {
             self.feed(bytes);
             // A pane zoom/resize rebuilds its viewport from tmux. Retain the
             // reader's history position, bounded by the captured history.
-            self.scroll_lines(i32::try_from(display_offset).unwrap_or(i32::MAX));
+            self.scroll_local(i32::try_from(display_offset).unwrap_or(i32::MAX));
         }
         // From this point on the terminal owns a captured remote viewport.
         // Keep using the history-preserving path for every subsequent capture
@@ -453,6 +515,45 @@ impl Terminal {
             .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
         // Rebuilding a viewport must not reject live input while other panes
         // are still being captured. Initial/offline panes remain unready.
+        self.transport_ready = transport_ready;
+        Ok(())
+    }
+
+    /// Replace the native display with a full frame owned by a semantic
+    /// remote backend.  Herdr owns the real scrollback and sends the current
+    /// display, so replaying the frame through tmux capture reconciliation
+    /// would fabricate local history and stale parser state.
+    pub(crate) fn restore_remote_display(
+        &mut self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+        bytes: &[u8],
+    ) -> Result<(), TerminalError> {
+        if self.remote_generation != Some(generation) {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        validate_dimensions(columns, rows)?;
+        let binding = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?
+            .clone();
+        let commits = self.input_commit_count;
+        let transport_ready = self.transport_ready;
+
+        self.replace_term(columns, rows);
+        self.remote_mode = true;
+        self.remote_generation = Some(generation);
+        self.preserve_history_on_capture = false;
+        self.screen_initialized = true;
+        self.content_revision = self.content_revision.saturating_add(1);
+        self.feed(bytes);
+        self.input_commit_count = commits;
+        *self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
         self.transport_ready = transport_ready;
         Ok(())
     }
@@ -505,7 +606,7 @@ impl Terminal {
         let viewport = capture_viewport_tail(bytes, usize::from(rows));
         let viewport = viewport.strip_prefix(b"\x1b[?1049h").unwrap_or(viewport);
         self.feed(viewport);
-        self.scroll_lines(i32::try_from(display_offset).unwrap_or(i32::MAX));
+        self.scroll_local(i32::try_from(display_offset).unwrap_or(i32::MAX));
         Ok(())
     }
 
@@ -516,7 +617,7 @@ impl Terminal {
         if let Ok(mut binding) = self.outbound.lock()
             && binding
                 .as_ref()
-                .is_some_and(|binding| binding.generation == generation)
+                .is_some_and(|binding| binding.generation() == generation)
         {
             *binding = None;
             self.transport_ready = false;
@@ -546,15 +647,106 @@ impl Terminal {
         self.transport_overloaded.load(Ordering::Acquire)
     }
 
+    fn semantic_sender(&self) -> Result<Option<SemanticInputSender>, TerminalError> {
+        if !self.remote_mode {
+            return Ok(None);
+        }
+        let binding = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?
+            .clone();
+        match binding {
+            Some(TransportBinding::Semantic {
+                generation, input, ..
+            }) => {
+                if self.remote_generation != Some(generation) {
+                    return Err(TerminalError::RemoteGenerationMismatch);
+                }
+                Ok(Some(input))
+            }
+            Some(TransportBinding::Bytes { .. }) | None => Ok(None),
+        }
+    }
+
+    fn semantic_transport_bound(&self) -> bool {
+        self.remote_mode
+            && self
+                .outbound
+                .lock()
+                .ok()
+                .and_then(|binding| binding.as_ref().map(TransportBinding::is_semantic))
+                .unwrap_or(false)
+    }
+
+    fn send_semantic(
+        &mut self,
+        input: SemanticInput,
+        reported_size: usize,
+    ) -> Result<usize, TerminalError> {
+        if reported_size > MAX_INPUT_BYTES {
+            return Err(TerminalError::InputTooLarge);
+        }
+        if !self.remote_mode {
+            return Err(TerminalError::InputNotReady);
+        }
+        if !self.transport_ready {
+            return Err(TerminalError::InputNotReady);
+        }
+        let binding = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?
+            .clone()
+            .ok_or(TerminalError::InputNotReady)?;
+        let sender = match binding {
+            TransportBinding::Semantic {
+                generation, input, ..
+            } => {
+                if self.remote_generation != Some(generation) {
+                    return Err(TerminalError::RemoteGenerationMismatch);
+                }
+                input
+            }
+            // The public byte API must not guess a semantic key from an
+            // arbitrary byte sequence, and this branch also protects callers
+            // that accidentally retain a byte-oriented handle after a mode
+            // switch.
+            TransportBinding::Bytes { .. } => return Err(TerminalError::InvalidKey),
+        };
+        sender.try_send(input).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => TerminalError::InputQueueFull,
+            mpsc::error::TrySendError::Closed(_) => TerminalError::TransportClosed,
+        })?;
+        Ok(reported_size)
+    }
+
+    fn reset_viewport_after_input(&mut self) {
+        if !self.semantic_transport_bound() {
+            self.scroll_local(i32::MIN);
+        }
+    }
+
     /// Commit already UTF-8 encoded text once.  Local terminals loop input
     /// back for the demo; SSH terminals enqueue it and wait for remote echo.
     pub fn commit_utf8(&mut self, bytes: &[u8]) -> Result<u64, TerminalError> {
         if bytes.is_empty() {
             return Ok(self.input_commit_count);
         }
-        std::str::from_utf8(bytes).map_err(|_| TerminalError::InvalidUtf8)?;
+        let text = std::str::from_utf8(bytes).map_err(|_| TerminalError::InvalidUtf8)?;
+        if bytes.len() > MAX_INPUT_BYTES {
+            return Err(TerminalError::InputTooLarge);
+        }
 
-        self.send_bytes(bytes)?;
+        if self.semantic_sender()?.is_some() {
+            self.send_semantic(
+                SemanticInput::Text(text.to_owned(), Modifiers::NONE),
+                bytes.len(),
+            )?;
+        } else {
+            self.send_bytes(bytes)?;
+        }
+
         self.input_commit_count = self.input_commit_count.saturating_add(1);
         Ok(self.input_commit_count)
     }
@@ -568,6 +760,17 @@ impl Terminal {
         modifiers: Modifiers,
     ) -> Result<usize, TerminalError> {
         let text = std::str::from_utf8(bytes).map_err(|_| TerminalError::InvalidUtf8)?;
+        if self.semantic_sender()?.is_some() {
+            if bytes.len() > MAX_INPUT_BYTES {
+                return Err(TerminalError::InputTooLarge);
+            }
+            if text.is_empty() {
+                return Ok(0);
+            }
+            self.send_semantic(SemanticInput::Text(text.to_owned(), modifiers), bytes.len())?;
+            self.input_commit_count = self.input_commit_count.saturating_add(1);
+            return Ok(bytes.len());
+        }
         let encoded = encode_text(text, modifiers);
         if encoded.len() > MAX_INPUT_BYTES {
             return Err(TerminalError::InputTooLarge);
@@ -581,7 +784,8 @@ impl Terminal {
     }
 
     /// Paste is distinct from IME commitment. Strip terminal control characters
-    /// that could escape a paste envelope; normalize newlines for terminal input.
+    /// that could escape a paste envelope; semantic transports retain LF while
+    /// byte transports apply the existing PTY newline/bracketed-paste rules.
     pub fn paste_utf8(&mut self, bytes: &[u8]) -> Result<usize, TerminalError> {
         let text = std::str::from_utf8(bytes).map_err(|_| TerminalError::InvalidUtf8)?;
         if bytes.len() > MAX_INPUT_BYTES {
@@ -594,6 +798,9 @@ impl Terminal {
             .collect();
         if text.is_empty() {
             return Ok(0);
+        }
+        if self.semantic_sender()?.is_some() {
+            return self.send_semantic(SemanticInput::Paste(text.clone()), text.len());
         }
         let bytes = if self
             .term
@@ -609,6 +816,33 @@ impl Terminal {
 
     /// Move the native viewport, retaining an independent offset per pane.
     pub fn scroll_lines(&mut self, lines: i32) {
+        if self.semantic_transport_bound() {
+            if !self.transport_ready {
+                return;
+            }
+            let sender = self
+                .outbound
+                .lock()
+                .ok()
+                .and_then(|binding| match binding.as_ref() {
+                    Some(TransportBinding::Semantic {
+                        generation, input, ..
+                    }) if self.remote_generation == Some(*generation) => Some(input.clone()),
+                    _ => None,
+                });
+            if let Some(sender) = sender
+                && sender
+                    .try_send(SemanticInput::Scroll(lines.clamp(-10000, 10000)))
+                    .is_err()
+            {
+                self.transport_overloaded.store(true, Ordering::Release);
+            }
+            return;
+        }
+        self.scroll_local(lines);
+    }
+
+    fn scroll_local(&mut self, lines: i32) {
         let before = self.term.grid().display_offset();
         self.term
             .scroll_display(alacritty_terminal::grid::Scroll::Delta(
@@ -621,6 +855,9 @@ impl Terminal {
 
     /// Send a special key through the current native transport.
     pub fn send_special_key(&mut self, key: SpecialKey) -> Result<usize, TerminalError> {
+        if self.semantic_sender()?.is_some() {
+            return self.send_semantic(SemanticInput::Key(key.into(), Modifiers::NONE), 1);
+        }
         let application_cursor = self
             .term
             .mode()
@@ -631,6 +868,9 @@ impl Terminal {
 
     /// Send a generic key with Ctrl/Alt/Shift modifiers.
     pub fn send_key(&mut self, key: KeyCode, modifiers: Modifiers) -> Result<usize, TerminalError> {
+        if self.semantic_sender()?.is_some() {
+            return self.send_semantic(SemanticInput::Key(key, modifiers), 1);
+        }
         let application_cursor = self.term.mode().contains(TermMode::APP_CURSOR);
         let bytes = encode_key(key, modifiers, application_cursor);
         self.send_bytes(&bytes)
@@ -648,13 +888,24 @@ impl Terminal {
             if !self.transport_ready {
                 return Err(TerminalError::InputNotReady);
             }
-            let sender = self
+            let binding = self
                 .outbound
                 .lock()
                 .map_err(|_| TerminalError::RegistryPoisoned)?
                 .as_ref()
-                .map(|binding| binding.input.clone())
+                .cloned()
                 .ok_or(TerminalError::InputNotReady)?;
+            let sender = match binding {
+                TransportBinding::Bytes {
+                    generation, input, ..
+                } => {
+                    if self.remote_generation != Some(generation) {
+                        return Err(TerminalError::RemoteGenerationMismatch);
+                    }
+                    input
+                }
+                TransportBinding::Semantic { .. } => return Err(TerminalError::InvalidKey),
+            };
             sender
                 .try_send(bytes.to_vec())
                 .map_err(|error| match error {
@@ -665,7 +916,7 @@ impl Terminal {
             self.feed(bytes);
         }
 
-        self.scroll_lines(i32::MIN);
+        self.reset_viewport_after_input();
         #[cfg(test)]
         self.input_log.extend_from_slice(bytes);
         Ok(bytes.len())

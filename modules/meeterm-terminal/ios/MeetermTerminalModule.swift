@@ -29,6 +29,12 @@ public final class MeetermTerminalModule: Module {
         throw Self.error("The app lifecycle could not be updated.")
       }
     }
+    AsyncFunction("setTerminalVisible") { (terminalId: String, visible: Bool) throws in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.setTerminalVisible(terminalId: handle, visible: visible) == 0 else {
+        throw Self.error("The terminal visibility could not be updated.")
+      }
+    }
     AsyncFunction("setAutomaticReconnect") { (terminalId: String, enabled: Bool) throws in
       let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
       guard MeetermCore.setAutomaticReconnect(terminalId: handle, enabled: enabled) == 0 else {
@@ -52,6 +58,27 @@ public final class MeetermTerminalModule: Module {
       try Self.tmuxCommand(terminalId, operation: 5, target: Self.targetId(paneId, prefix: "%"))
     }
     AsyncFunction("refreshTerminal") { (terminalId: String) throws in try Self.tmuxCommand(terminalId, operation: 6) }
+    AsyncFunction("createGroup") { (terminalId: String, workspaceId: String, name: String) throws in
+      try Self.tmuxCommand(terminalId, operation: 7, target: Self.numericId(workspaceId), name: name)
+    }
+    AsyncFunction("renameGroup") { (terminalId: String, groupId: String, name: String) throws in
+      try Self.tmuxCommand(terminalId, operation: 8, target: Self.numericId(groupId), name: name)
+    }
+    AsyncFunction("closeGroup") { (terminalId: String, groupId: String) throws in
+      try Self.tmuxCommand(terminalId, operation: 9, target: Self.numericId(groupId))
+    }
+    AsyncFunction("selectGroup") { (terminalId: String, groupId: String) throws in
+      try Self.tmuxCommand(terminalId, operation: 10, target: Self.numericId(groupId))
+    }
+    AsyncFunction("getWorkspaceState") { (terminalId: String) throws -> [String: Any] in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard let json = MeetermCore.workspaceStateJSON(terminalId: handle),
+            let data = json.data(using: .utf8),
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw Self.error("Native workspace state is unavailable.")
+      }
+      return value
+    }
 
     AsyncFunction("connect") { (terminalId: String, options: [String: Any]) throws in
       try Self.connectOptions(terminalId, options: options)
@@ -82,11 +109,7 @@ public final class MeetermTerminalModule: Module {
     }
 
     AsyncFunction("selectPane") { (terminalId: String, paneId: String) throws in
-      guard paneId.first == "%", !paneId.dropFirst().isEmpty,
-            paneId.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
-            let pane = UInt64(paneId.dropFirst()) else {
-        throw Self.error("The pane ID is invalid.")
-      }
+      let pane = try Self.targetId(paneId, prefix: "%")
       let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
       guard MeetermCore.selectPane(terminalId: handle, paneId: pane) == 0 else {
         throw Self.error("The terminal could not be selected.")
@@ -160,16 +183,25 @@ public final class MeetermTerminalModule: Module {
     let knownHostsPath: String
     do { knownHostsPath = try KnownHostsStore.path() }
     catch { throw Self.error("SSH trust storage is unavailable.") }
-    let result = MeetermCore.connect(terminalId: handle, host: connection.host, port: connection.port,
+    let result = MeetermCore.connectBackend(terminalId: handle, host: connection.host, port: connection.port,
       username: connection.username, privateKey: connection.privateKey, passphrase: connection.passphrase,
-      knownHostsPath: knownHostsPath, authMethod: connection.authMethod, password: connection.password)
+      knownHostsPath: knownHostsPath, authMethod: connection.authMethod, password: connection.password,
+      backend: connection.backend, runtime: connection.runtime)
     guard result == 0 else { throw Self.error("The SSH connection could not be started.") }
   }
 
   private static func targetId(_ value: String, prefix: Character) throws -> UInt64 {
-    guard value.first == prefix, !value.dropFirst().isEmpty,
-          value.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
-          let id = UInt64(value.dropFirst()) else { throw error("The tmux target is invalid.") }
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let digits = normalized.first == prefix ? String(normalized.dropFirst()) : normalized
+    guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+          let id = UInt64(digits) else { throw error("The tmux target is invalid.") }
+    return id
+  }
+
+  private static func numericId(_ value: String) throws -> UInt64 {
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty, normalized.allSatisfy({ $0.isASCII && $0.isNumber }),
+          let id = UInt64(normalized) else { throw error("The workspace group ID is invalid.") }
     return id
   }
 
@@ -188,6 +220,8 @@ public final class MeetermTerminalModule: Module {
     let privateKey: String
     let passphrase: String
     let password: String
+    let backend: String
+    let runtime: String
   }
 
   private static func decodeOptions(_ values: [String: Any]) throws -> SshOptions {
@@ -213,6 +247,15 @@ public final class MeetermTerminalModule: Module {
       authMethod = "publicKey"
     }
 
+    guard (!values.keys.contains("backend") || values["backend"] is String),
+          (!values.keys.contains("runtime") || values["runtime"] is String) else { throw error("The backend or runtime is invalid.") }
+    let backend = values["backend"] as? String ?? "tmux"
+    guard backend == "tmux" || backend == "herdr" else {
+      throw error("The SSH connection options are invalid.")
+    }
+    let runtime = values["runtime"] as? String ?? ""
+    try validateRuntime(backend: backend, runtime: runtime)
+
     switch authMethod {
     case "publicKey":
       guard let privateKey = values["privateKey"] as? String,
@@ -229,7 +272,9 @@ public final class MeetermTerminalModule: Module {
         authMethod: authMethod,
         privateKey: privateKey,
         passphrase: passphrase,
-        password: ""
+        password: "",
+        backend: backend,
+        runtime: runtime
       )
     case "password":
       guard let password = values["password"] as? String,
@@ -244,9 +289,24 @@ public final class MeetermTerminalModule: Module {
         authMethod: authMethod,
         privateKey: "",
         passphrase: "",
-        password: password
+        password: password,
+        backend: backend,
+        runtime: runtime
       )
     default:
+      throw error("The SSH connection options are invalid.")
+    }
+  }
+
+  private static func validateRuntime(backend: String, runtime: String) throws {
+    let validCharacters = runtime.unicodeScalars.allSatisfy { scalar in
+      (scalar.value >= 0x41 && scalar.value <= 0x5A) ||
+      (scalar.value >= 0x61 && scalar.value <= 0x7A) ||
+      (scalar.value >= 0x30 && scalar.value <= 0x39) ||
+      scalar.value == 0x2E || scalar.value == 0x5F || scalar.value == 0x2D
+    }
+    guard runtime.utf8.count <= 64, runtime != ".", runtime != "..", validCharacters,
+          backend == "herdr" || runtime.isEmpty else {
       throw error("The SSH connection options are invalid.")
     }
   }

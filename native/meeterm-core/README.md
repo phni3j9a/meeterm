@@ -76,25 +76,52 @@ approximately every 33 ms while visible and request a frame only on change;
 this polling compromise is not a permanent high-frequency render loop. Hidden
 views stop polling without destroying the SSH session or terminal ID.
 
-## Issue #17 backend status
+## Issue #17 backend
 
-The production crate currently implements the tmux backend only. The approved
-target reuses its SSH lifecycle, terminal registry, `Term`, native snapshot,
-and bounded input/resize transport for `Workspace → TerminalGroup → Terminal`;
-tmux keeps its existing window/pane mapping with a virtual group per window.
-No production Herdr actor or mobile UI is present, and no meeterm gateway or
-daemon is allowed.
+The production crate implements the common `Workspace → TerminalGroup →
+Terminal` model for `Backend::Tmux` and `Backend::Herdr`. Tmux keeps its
+window/pane mapping with one virtual group per window. Herdr maps workspace,
+tab, and pane from its public 0.9.0 protocol 22/schema 1 API. Both backends
+reuse the SSH lifecycle, terminal registry, `alacritty_terminal::Term`, native
+snapshot format, input/resize transport, and native visibility lifecycle.
 
-The ignored `herdr_probe_tests::replay_live_frames` test is a diagnostic
-endpoint, not a backend. Run it with a captured directory using:
+`ConnectOptions` carries the selected backend and an optional runtime. A missing
+backend in an old saved profile defaults to tmux; an empty Herdr runtime means
+`default`. The control bridge exposes the backend-independent workspace snapshot
+and group operations (`create_group`, `rename_group`, `close_group`,
+`select_group`) as well as `set_terminal_visible`. On Herdr, `close_group`
+maps to `tab.close`; `close_workspace` maps to `workspace.close` with
+`close_group: false`, so tab deletion and workspace cascade remain distinct.
+The JSON snapshot is bounded and opaque to the terminal data plane; terminal
+bytes, cells, scrollback, and render frames stay in Rust/native code.
+
+Herdr control uses direct SSH stream-local requests, stable remote
+`terminal_id` values, and mutable `pane_id` aliases. Display frames are ANSI
+`terminal.frame` data. Semantic text, key, and paste input uses the corresponding
+public `pane.send_text`, `pane.send_keys`, and `pane.send_input` operations;
+`pane.scroll` is sent with offset zero before input. Home/End/Insert/Delete/
+PageUp/PageDown use fixed xterm normal-mode bytes because the 0.9.0 parser does
+not expose those names. Controller release drains closed/EOF and reacquires the
+same remote process by stable ID.
+
+The live integration test is intentionally ignored because it needs a real
+Herdr 0.9.0 binary:
 
 ```sh
-MEETERM_HERDR_REPLAY_DIR=/path/to/replay cargo test --lib \
-  herdr_probe_tests::replay_live_frames -- --ignored --exact
+MEETERM_HERDR_INTEGRATION=1 \
+MEETERM_HERDR_BINARY=/path/to/herdr-0.9.0 \
+cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
+  --test herdr -- --ignored --exact real_herdr_native_backend_over_russh_fixture
 ```
 
-The remaining input gate and live evidence are maintained in [`HERDR.md`](../../docs/HERDR.md)
-and the [Issue #17 evidence](../../docs/evidence/issue-17-herdr-feasibility.md).
+`tests/herdr.rs` starts an isolated XDG Herdr driver and a test-only `russh`
+SSH endpoint implementing the production direct stream-local operations. It is
+separate from the existing OpenSSH/tmux fixture; the older
+`herdr_probe_tests::replay_live_frames` test and
+`scripts/herdr/feasibility.py` remain historical diagnostics. The general CI
+job downloads the official binary only into `RUNNER_TEMP` and verifies its
+pinned digest before running this test. The new live run is still pending, so
+this README does not mark Issue #17 accepted.
 
 ## Snapshot format
 

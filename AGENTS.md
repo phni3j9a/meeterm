@@ -1,25 +1,25 @@
 # AGENTS.md
 
-This repository is a greenfield implementation of **meeterm**, a smartphone-first SSH + tmux client.
+This repository is a greenfield implementation of **meeterm**, a smartphone-first SSH client with ordinary tmux and an explicitly selected Herdr backend.
 
 Read `docs/PRODUCT.md` and `docs/ARCHITECTURE.md` before making architectural or product changes. Treat them as the current source of truth unless the task explicitly changes the product direction.
 
 ## Product invariants
 
-- Remote tmux is the durable workspace source of truth.
-- The managed tmux session is named `meeterm`.
-- **Workspace = tmux window.**
-- **Terminal = tmux pane.**
+- The selected remote runtime is the durable workspace source of truth.
+- The default tmux runtime is session `meeterm`; Herdr uses `default` or a named session.
+- **Workspace = tmux window or Herdr workspace.**
+- **Terminal = tmux pane or Herdr pane.**
 - On mobile, panes are presented as tabs and the selected pane receives a phone-appropriate full-size experience.
-- On desktop, the same environment must remain usable through ordinary `tmux attach -t meeterm`.
+- On desktop, tmux remains usable through ordinary `tmux attach -t meeterm`, and Herdr remains usable through its normal client.
 - Smooth phone-to-PC handoff is required. Simultaneous interactive phone+PC use is not an initial requirement.
 
 Do not change the session/window/pane mapping merely because another mapping simplifies mobile implementation.
 
-## Issue #17 target (pending feasibility gate)
+## Issue #17 common backend contract
 
 The invariants above describe the current, working tmux backend and remain in
-force. Issue #17 adds an approved common model without changing that mapping:
+force. Issue #17 adds an implemented common model without changing that mapping:
 
 ```text
 Workspace → TerminalGroup → Terminal
@@ -28,22 +28,21 @@ Workspace → TerminalGroup → Terminal
 For tmux, a Workspace remains a tmux window, a Terminal remains a tmux pane,
 and TerminalGroup is one virtual mobile group per window. The virtual group
 must not create a remote tmux window or otherwise change the desktop layout.
-For a future Herdr backend, Workspace maps to a Herdr workspace, Group maps to
-a Herdr tab, and Terminal maps to a Herdr pane. Backend selection is explicit
-per profile/runtime; a missing legacy backend continues to mean tmux.
+Herdr maps Workspace to a Herdr workspace, Group to a Herdr tab, and Terminal
+to a Herdr pane. Backend selection is explicit per profile/runtime; a missing
+legacy backend continues to mean tmux. The Rust/native path targets Herdr 0.9.0,
+protocol 22, schema 1 through its existing direct public API. The complete
+Issue #17 acceptance record remains pending the real integration test, CI, and
+mobile evidence; that pending evidence does not make the production boundary a
+future-only design. See [`docs/HERDR.md`](docs/HERDR.md) and the historical
+record [`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
 
-Issue #17 remains open. Do not implement the common UI or a production Herdr
-backend until the live protocol gate is satisfied and recorded in
-[`docs/HERDR.md`](docs/HERDR.md) and
-[`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
-An additional backend may connect to a user-selected remote runtime over SSH.
-The prohibition on a meeterm gateway or daemon does not prohibit that selected
-remote backend server; it prohibits adding meeterm's own required relay.
-Herdr is an existing external application. Integrate with its existing public
-interfaces from meeterm; do not modify or fork Herdr, or make an upstream API
-addition a prerequisite of this issue. Record observed compatibility limits
-without treating one failed candidate path as proof that all integration is
-impossible.
+An additional backend connects to a user-selected remote runtime over ordinary
+SSH. The prohibition on a meeterm gateway or daemon prohibits meeterm's own
+relay; it does not prohibit the selected remote Herdr server. Herdr is an
+existing external application. Integrate with its existing public interfaces;
+do not modify, fork, install, or update Herdr, and do not make an upstream API
+addition a prerequisite of this issue. Keep compatibility limits explicit.
 
 ## Architecture invariants
 
@@ -55,13 +54,17 @@ React Native / Expo
         ▼
 Rust native core
 ├── russh
-├── tmux Control Mode
+├── backend selector
+│   ├── tmux Control Mode
+│   └── Herdr direct stream-local control
 ├── terminal lifecycle/registry
 ├── alacritty_terminal
 └── native GPU renderer
         │
         ▼
-OpenSSH + tmux
+ordinary SSH
+├── tmux session `meeterm`
+└── existing Herdr session/socket
 ```
 
 ### Keep the terminal data plane native
@@ -88,12 +91,10 @@ Do not introduce, for the core product:
 - WebSocket terminal transport;
 - a hosted relay as a required component.
 
-The remote host should require ordinary SSH access and tmux only.
-
-For an explicitly selected future backend, the remote host may expose that
-backend's own runtime over ordinary SSH. This still must not introduce a
-meeterm gateway, daemon, HTTP terminal transport, WebSocket terminal
-transport, or hosted relay.
+The remote host should require ordinary SSH access and the selected runtime:
+tmux for the default backend, or an existing Herdr session/socket for Herdr.
+This still must not introduce a meeterm gateway, daemon, HTTP terminal
+transport, WebSocket terminal transport, or hosted relay.
 
 ### No WebView terminal fallback
 
@@ -115,9 +116,11 @@ without meeterm-specific desktop software.
 
 ## tmux integration
 
-Use tmux Control Mode as the structured mobile integration boundary.
+Use the selected backend's structured public boundary as the mobile integration
+boundary: tmux Control Mode for tmux and Herdr's direct stream-local API for
+Herdr.
 
-- Treat pane IDs (`%...`) and window IDs (`@...`) as stable runtime identities where appropriate.
+- Treat tmux pane IDs (`%...`) and window IDs (`@...`) as stable runtime identities where appropriate; Herdr pane IDs are mutable aliases and stable `terminal_id` is the remote identity.
 - Decode Control Mode output as bytes; do not assume pane output is ordinary UTF-8 text.
 - Route each pane's output to its own native terminal state.
 - Preserve the underlying tmux window/pane layout while adapting presentation for mobile.
@@ -168,10 +171,11 @@ Do not route IME composition through a JavaScript `TextInput` merely because it 
 
 ## State and lifecycle
 
-- SSH is transport; tmux is durable state.
-- For a selected additional backend, its remote runtime/session is the durable
-  state; the selected backend must own reconnect and resynchronization in the
-  Rust core just as the tmux path does.
+- SSH is transport; the selected remote runtime is durable state. tmux uses
+  session `meeterm`; Herdr uses its selected `default` or named session.
+- Each backend owns reconnect and resynchronization in the Rust core. Herdr
+  release closes/EOFs the direct controller stream before a later stable-ID
+  reacquire, while the remote process remains alive.
 - Connection/reconnect behavior belongs in the Rust core, not scattered React hooks/timers.
 - A React Native view unmount must not imply pane destruction.
 - Backgrounding and transport loss should be recoverable through reconnect/resynchronization.
@@ -193,11 +197,12 @@ Initial non-goals include:
 
 Prefer the smallest implementation that proves the current milestone. Avoid speculative extensibility and over-engineering.
 
-## Initial engineering sequence
+## Current engineering sequence and acceptance
 
 The first implementation milestone is a dual-platform native terminal foundation. Prove shared Rust terminal semantics first, keep Android and iOS as thin native adapters, and establish both GitHub-hosted mobile jobs early. An environment-only iOS check must not be reported as iOS terminal verification.
 
-Before broad UI or SSH/tmux features, prove:
+The dual-platform native foundation and the selected-backend control boundary
+are implemented together. Keep verifying:
 
 1. Shared Rust-owned `alacritty_terminal::Term` semantics, deterministic resize, input encoding, and native-only snapshot fixtures.
 2. One native package contract in which both platform views bind stable terminal IDs and retain one shared registry/runtime.
@@ -207,7 +212,13 @@ Before broad UI or SSH/tmux features, prove:
 6. Japanese/CJK/font behavior, native Japanese IME composition and committed input, and deterministic resize behavior on the applicable platform paths.
 7. GitHub-hosted Android emulator and iOS Simulator jobs that build, install, launch, signal native readiness and a first frame, and detect crashes while always uploading an observability bundle.
 
-Only after both adapters and their meaningful mobile smoke gates are in place should the project add `russh`, tmux Control Mode, pane routing, reconnect/resync, and full product UI.
+The Herdr live case is an opt-in ignored Rust integration test because it needs a
+real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
+OpenSSH fixture. The normal mobile gate remains iOS `standard` (14 screenshots
+including four Herdr routes) plus Android full; Android's four Herdr routes are
+observational evidence and do not replace the machine gate. No test result may
+claim Issue #17 complete until the pending integration/CI evidence and required
+visual review are recorded.
 
 ## Standard testing workflow
 
@@ -236,7 +247,7 @@ For both mobile jobs, the machine-gated acceptance boundary is: generated projec
 
 Standard GitHub-hosted macOS runners do not guarantee Metal. The iOS job must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
 
-The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review.
+The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; that new run is pending until CI evidence exists.
 
 The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
 

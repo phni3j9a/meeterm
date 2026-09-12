@@ -218,6 +218,19 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setForeground(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setTerminalVisible(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    visible: jboolean,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ffi::meeterm_set_terminal_visible(handle, u8::from(visible))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setAutomaticReconnect(
     _env: EnvUnowned<'_>,
     _this: JObject<'_>,
@@ -581,11 +594,131 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnect<'calle
             username,
             credentials,
             known_hosts_path: known_hosts_path.into(),
+            backend: crate::workspace::Backend::Tmux,
+            runtime: None,
         };
         Ok(crate::ssh::connect_terminal(handle, options)
             .map(|()| 0)
             .unwrap_or_else(|error| error.code()))
     }))
+}
+
+/// Start an SSH connection for an explicit backend/runtime while preserving
+/// the legacy `sshConnect` entry point above for existing Android callers.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnectBackend<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    host: JString<'caller>,
+    port: jint,
+    username: JString<'caller>,
+    private_key: JString<'caller>,
+    passphrase: JString<'caller>,
+    known_hosts_path: JString<'caller>,
+    auth_method: JString<'caller>,
+    password: JString<'caller>,
+    backend: JString<'caller>,
+    runtime: JString<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -2;
+    };
+    let Some(port) = u16::try_from(port).ok() else {
+        return -1;
+    };
+
+    code_from_outcome(unowned_env.with_env(|env| {
+        let host = string_from_java(env, &host)?;
+        let username = string_from_java(env, &username)?;
+        let private_key = Zeroizing::new(string_from_java(env, &private_key)?);
+        let passphrase = Zeroizing::new(string_from_java(env, &passphrase)?);
+        let known_hosts_path = string_from_java(env, &known_hosts_path)?;
+        let auth_method = string_from_java(env, &auth_method)?;
+        let password = Zeroizing::new(string_from_java(env, &password)?);
+        let backend = string_from_java(env, &backend)?;
+        let runtime = string_from_java(env, &runtime)?;
+        let credentials = match auth_method.as_str() {
+            "" | "publicKey" => {
+                if !password.is_empty() {
+                    return Ok(ConnectionError::InvalidArgument.code());
+                }
+                AuthOptions::PublicKey {
+                    private_key,
+                    passphrase: (!passphrase.is_empty()).then_some(passphrase),
+                }
+            }
+            "password" => {
+                if !private_key.is_empty() || !passphrase.is_empty() {
+                    return Ok(ConnectionError::InvalidArgument.code());
+                }
+                AuthOptions::Password { password }
+            }
+            _ => return Ok(ConnectionError::InvalidArgument.code()),
+        };
+        let backend = crate::workspace::Backend::parse(&backend)
+            .ok_or_else(|| JniError::ParseFailed("invalid backend".into()))?;
+        let options = ConnectOptions {
+            host,
+            port,
+            username,
+            credentials,
+            known_hosts_path: known_hosts_path.into(),
+            backend,
+            runtime: (!runtime.is_empty()).then_some(runtime),
+        };
+        Ok(crate::ssh::connect_terminal(handle, options)
+            .map(|()| 0)
+            .unwrap_or_else(|error| error.code()))
+    }))
+}
+
+fn workspace_json(handle: u64) -> Option<String> {
+    let mut capacity = crate::ffi::meeterm_workspace_state_size(handle);
+    // A topology snapshot is low-frequency and bounded. Retry a bounded
+    // number of times when the remote topology changes between size/copy.
+    for _ in 0..4 {
+        if capacity == 0 || capacity > crate::ffi::MAX_WORKSPACE_STATE_BYTES {
+            return None;
+        }
+        let mut bytes = vec![0_u8; capacity];
+        let copied =
+            unsafe { crate::ffi::meeterm_workspace_state(handle, bytes.as_mut_ptr(), bytes.len()) };
+        if copied > bytes.len() {
+            capacity = copied;
+            continue;
+        }
+        if copied == 0 || copied > crate::ffi::MAX_WORKSPACE_STATE_BYTES {
+            return None;
+        }
+        bytes.truncate(copied);
+        return String::from_utf8(bytes).ok();
+    }
+    None
+}
+
+/// Return the bounded backend-independent workspace metadata JSON. The
+/// Android adapter parses this low-frequency object; terminal bytes/cells
+/// never cross JNI.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_workspaceState<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JString::default();
+    };
+    let outcome = unowned_env.with_env(|env| -> Result<JString<'caller>, JniError> {
+        match workspace_json(handle) {
+            Some(json) => env.new_string(json),
+            None => Ok(JString::default()),
+        }
+    });
+    match outcome.into_outcome() {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
 }
 
 /// Cancel the SSH lifecycle for a terminal.  The terminal remains registered

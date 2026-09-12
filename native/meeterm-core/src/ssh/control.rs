@@ -233,6 +233,9 @@ pub(super) async fn run(
                         client.refresh_terminal().await?;
                         client.synchronize(false).await?;
                     }
+                    Some(ControlCommand::CreateGroup { .. } | ControlCommand::RenameGroup { .. }
+                        | ControlCommand::CloseGroup { .. } | ControlCommand::SelectGroup { .. }) => return Err(FlowFailure::TmuxProtocol),
+                    Some(ControlCommand::SetTerminalVisible { .. }) => {},
                     None => return Err(FlowFailure::Stale),
                 }
             }

@@ -8,10 +8,12 @@ use crate::ssh::{
     connection_snapshot, disconnect_terminal, forget_host_key, respond_to_host_key,
     terminal_revision,
 };
+use crate::workspace::Backend;
 use zeroize::Zeroizing;
 
 const FFI_ERROR: i32 = -1;
 const FFI_INVALID_KEY: i32 = -2;
+pub const MAX_WORKSPACE_STATE_BYTES: usize = 4 * 1024 * 1024;
 
 fn terminal_error_code(error: crate::terminal::TerminalError) -> i32 {
     match error {
@@ -313,6 +315,10 @@ pub unsafe extern "C" fn meeterm_tmux_command(
         4 => crate::ssh::rename_pane(id, target, &name),
         5 if name.is_empty() => crate::ssh::close_pane(id, target),
         6 if name.is_empty() => crate::ssh::refresh_terminal(id),
+        7 => crate::ssh::create_group(id, target, &name),
+        8 => crate::ssh::rename_group(id, target, &name),
+        9 if name.is_empty() => crate::ssh::close_group(id, target),
+        10 if name.is_empty() => crate::ssh::select_group(id, target),
         _ => return FFI_ERROR,
     };
     result.map(|()| 0).unwrap_or_else(connection_error_code)
@@ -328,6 +334,19 @@ pub extern "C" fn meeterm_set_foreground(id: u64, foreground: u8) -> i32 {
         .unwrap_or_else(connection_error_code)
 }
 
+/// Mark whether the terminal is currently visible in the native workspace
+/// view. Herdr uses this lifecycle edge to release a controller lease when a
+/// pane is hidden; tmux keeps its existing foreground behavior.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_set_terminal_visible(id: u64, visible: u8) -> i32 {
+    if visible > 1 {
+        return FFI_ERROR;
+    }
+    crate::ssh::set_terminal_visible(id, visible != 0)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_set_automatic_reconnect(id: u64, enabled: u8) -> i32 {
     if enabled > 1 {
@@ -338,7 +357,7 @@ pub extern "C" fn meeterm_set_automatic_reconnect(id: u64, enabled: u8) -> i32 {
         .unwrap_or_else(connection_error_code)
 }
 
-/// Start an SSH connection. All string arguments are UTF-8 byte slices; the
+/// Start the legacy tmux SSH connection. All string arguments are UTF-8 byte slices; the
 /// platform supplies the app-private known-hosts path. The authentication
 /// arguments are appended after the original endpoint/key/trust-store
 /// arguments, keeping the original arguments in their existing order. All
@@ -379,6 +398,67 @@ pub unsafe extern "C" fn meeterm_connect(
     password: *const u8,
     password_length: usize,
 ) -> i32 {
+    // SAFETY: the caller of this legacy ABI supplied the same pointers and
+    // lengths that this forwarding call receives. The static backend and
+    // empty runtime have valid lifetimes for the duration of the call.
+    unsafe {
+        meeterm_connect_backend(
+            id,
+            host,
+            host_length,
+            port,
+            username,
+            username_length,
+            private_key,
+            private_key_length,
+            passphrase,
+            passphrase_length,
+            known_hosts_path,
+            known_hosts_path_length,
+            auth_method,
+            auth_method_length,
+            password,
+            password_length,
+            b"tmux".as_ptr(),
+            4,
+            std::ptr::null(),
+            0,
+        )
+    }
+}
+
+/// Start an SSH connection for the selected backend/runtime.
+///
+/// The original `meeterm_connect` ABI remains available and supplies the
+/// default `tmux` backend with no named runtime. Backend and runtime are
+/// copied and validated before any connection task is spawned.
+///
+/// # Safety
+/// Every non-empty pointer must point to the stated number of readable UTF-8
+/// bytes for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_connect_backend(
+    id: u64,
+    host: *const u8,
+    host_length: usize,
+    port: u16,
+    username: *const u8,
+    username_length: usize,
+    private_key: *const u8,
+    private_key_length: usize,
+    passphrase: *const u8,
+    passphrase_length: usize,
+    known_hosts_path: *const u8,
+    known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
+    backend: *const u8,
+    backend_length: usize,
+    runtime: *const u8,
+    runtime_length: usize,
+) -> i32 {
     let Ok(host) = (unsafe { utf8_argument(host, host_length) }) else {
         return ConnectionError::InvalidArgument.code();
     };
@@ -407,6 +487,19 @@ pub unsafe extern "C" fn meeterm_connect(
     };
     let Ok(password) = (unsafe { utf8_argument(password, password_length) }).map(Zeroizing::new)
     else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(backend) = (unsafe { utf8_argument(backend, backend_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(runtime) = (unsafe { utf8_argument(runtime, runtime_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let backend = if backend.is_empty() {
+        Backend::Tmux
+    } else if let Some(backend) = Backend::parse(&backend) {
+        backend
+    } else {
         return ConnectionError::InvalidArgument.code();
     };
 
@@ -439,6 +532,8 @@ pub unsafe extern "C" fn meeterm_connect(
             username,
             credentials,
             known_hosts_path: known_hosts_path.into(),
+            backend,
+            runtime: (!runtime.is_empty()).then_some(runtime),
         },
     )
     .map(|()| 0)
@@ -548,6 +643,54 @@ pub unsafe extern "C" fn meeterm_session_panes(
         }
     }
     count
+}
+
+/// Return the byte length of the current backend-independent workspace
+/// metadata snapshot, or zero when the session is unavailable or the snapshot
+/// exceeds the bounded native bridge limit. The result is only a sizing hint:
+/// the snapshot can change between this call and `meeterm_workspace_state`.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_workspace_state_size(id: u64) -> usize {
+    let Ok(json) = crate::ssh::workspace_snapshot_json(id) else {
+        return 0;
+    };
+    if json.len() > MAX_WORKSPACE_STATE_BYTES {
+        0
+    } else {
+        json.len()
+    }
+}
+
+/// Copy the current backend-independent workspace metadata JSON into a native
+/// caller-owned buffer. If `output` is null or too small, no bytes are copied
+/// and the required length is returned. Returning the required length on a
+/// size change lets adapters retry without an unbounded allocation.
+///
+/// # Safety
+/// When `output` is non-null and `capacity` is at least the returned length,
+/// it must point to writable storage for that many bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_workspace_state(
+    id: u64,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    let Ok(json) = crate::ssh::workspace_snapshot_json(id) else {
+        return 0;
+    };
+    let bytes = json.as_bytes();
+    if bytes.len() > MAX_WORKSPACE_STATE_BYTES {
+        return 0;
+    }
+    if output.is_null() || capacity < bytes.len() {
+        return bytes.len();
+    }
+    if !bytes.is_empty() {
+        // SAFETY: the caller promises writable storage for `capacity` bytes;
+        // the branch above proves it contains the complete JSON payload.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()) };
+    }
+    bytes.len()
 }
 
 /// Return the fixed C snapshot size.
@@ -661,6 +804,21 @@ mod session_abi_tests {
         assert_eq!(
             unsafe { meeterm_session_panes(id, std::ptr::null_mut(), 0) },
             usize::MAX
+        );
+    }
+
+    #[test]
+    fn visibility_and_workspace_state_abi_reject_invalid_or_unknown_handles() {
+        assert_eq!(
+            meeterm_set_terminal_visible(0, 2),
+            ConnectionError::InvalidArgument.code()
+        );
+        assert_eq!(meeterm_workspace_state_size(0), 0);
+        // SAFETY: a null output is explicitly accepted for the sizing/error
+        // path and no bytes may be copied for an unknown terminal.
+        assert_eq!(
+            unsafe { meeterm_workspace_state(0, std::ptr::null_mut(), 0) },
+            0
         );
     }
 

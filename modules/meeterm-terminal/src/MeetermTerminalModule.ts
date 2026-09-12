@@ -7,6 +7,7 @@ import type {
   SshConnectionState,
   TerminalPreferences,
   TmuxSessionState,
+  WorkspaceState,
 } from './MeetermTerminal.types';
 
 declare class MeetermTerminalModule extends NativeModule<{}> {
@@ -29,6 +30,12 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   disconnect(terminalId: string): Promise<void>;
   reconnect(terminalId: string): Promise<void>;
   getSessionState(terminalId: string): Promise<TmuxSessionState>;
+  getWorkspaceState(terminalId: string): Promise<WorkspaceState>;
+  createGroup(terminalId: string, workspaceId: string, name: string): Promise<void>;
+  renameGroup(terminalId: string, groupId: string, name: string): Promise<void>;
+  closeGroup(terminalId: string, groupId: string): Promise<void>;
+  selectGroup(terminalId: string, groupId: string): Promise<void>;
+  setTerminalVisible(terminalId: string, visible: boolean): Promise<void>;
   selectPane(terminalId: string, paneId: string): Promise<void>;
   getConnectionState(terminalId: string): Promise<SshConnectionState>;
   respondToHostKey(
