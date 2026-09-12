@@ -105,5 +105,13 @@ HerdrへのAPI追加案は今回の範囲から撤回しました。既存の公
 実機IME、GPU、フォントfallback、scrollback、端末応答、イベント購読、全CRUD操作、
 複数Workspace/Tab/Pane切り替え、通常PC clientとの競合と引き継ぎの全条件は未完了です。
 
+既存機能の回帰確認では、`a59910b`の[通常CI](https://github.com/phni3j9a/meeterm/actions/runs/34670685069)は全ジョブ成功しました。
+`a42ce9d`の[Mobile smoke](https://github.com/phni3j9a/meeterm/actions/runs/34670382545)はiOS `standard`が成功し、
+Android fullは`daily_foreground_return`の`marker_timeout`で失敗しました。復帰後のnative readinessと
+first frameは記録されていますが、送信したshell命令のリモート完了を確認できていません。
+Herdr helperは`cfg(test)`のみでAPKには入らず、今回の変更との因果関係や下位原因は未確定です。
+再実行で置き換えず、Android fullは失敗として残します。両OSのfoundation画像は実見しましたが、
+これらは既存デモ画面であり、Herdrの描画・入力成功の証拠ではありません。iOSはこのrunではMetalを報告しました。
+
 試験のsession/processとSSH鍵はfixture所有物だけを停止・削除します。Herdrバイナリの導入・更新、
 既存serverの停止・再起動、既存接続の設定移行は行っていません。
