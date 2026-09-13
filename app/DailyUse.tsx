@@ -12,20 +12,20 @@ import { Button, DARK, Icon, IconButton, MONO } from './ui';
 import type { Palette } from './ui';
 
 export const DEFAULT_PREFERENCES: TerminalPreferences = {
-  fontSize: 15, theme: 'system', scrollbackLines: 10000, automaticReconnect: true,
+  fontSize: 15, theme: 'light', scrollbackLines: 10000, automaticReconnect: true,
 };
 
 export function itemActions(title: string, edit: () => void, remove: () => void, kind: 'profile' | 'workspace' = 'profile') {
-  const editLabel = kind === 'profile' ? '名前・情報を編集' : '名前を変更';
-  const removeLabel = kind === 'profile' ? '削除' : '終了';
+  const editLabel = kind === 'profile' ? 'Edit server' : 'Rename';
+  const removeLabel = kind === 'profile' ? 'Remove' : 'Close';
   if (Platform.OS === 'ios') {
-    ActionSheetIOS.showActionSheetWithOptions({ title, options: [editLabel, removeLabel, 'キャンセル'], cancelButtonIndex: 2, destructiveButtonIndex: 1 }, index => {
+    ActionSheetIOS.showActionSheetWithOptions({ title, options: [editLabel, removeLabel, 'Cancel'], cancelButtonIndex: 2, destructiveButtonIndex: 1 }, index => {
       if (index === 0) edit();
       if (index === 1) remove();
     });
   } else {
     Alert.alert(title, undefined, [
-      { text: 'キャンセル', style: 'cancel' },
+      { text: 'Cancel', style: 'cancel' },
       { text: editLabel, onPress: edit },
       { text: removeLabel, style: 'destructive', onPress: remove },
     ]);
@@ -47,22 +47,22 @@ export function ProfileList({ profiles, selectedId, loading, error, busy, colors
 }) {
   return <FlatList data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.list}
     ListHeaderComponent={<View style={styles.listHeader}>
-      <Text style={[styles.helper, { color: colors.muted }]}>サーバーを選んで、いつもの作業へ。接続先はこの端末に保存されます。</Text>
-      <Button label="Add server" colors={colors} onPress={onAdd} disabled={busy}>サーバーを追加</Button>
-      {error ? <View style={styles.errorBlock}><Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>保存済みサーバーを読み込めませんでした。</Text><Button label="Reload saved servers" colors={colors} secondary onPress={onRetry} disabled={loading}>再読み込み</Button></View> : null}
+      <Text style={[styles.helper, { color: colors.muted }]}>Your servers, saved on this device.</Text>
+      <Button label="Add server" colors={colors} onPress={onAdd} disabled={busy}>Add server</Button>
+      {error ? <View style={styles.errorBlock}><Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>Could not load saved servers.</Text><Button label="Reload saved servers" colors={colors} secondary onPress={onRetry} disabled={loading}>Reload</Button></View> : null}
     </View>}
-    ListEmptyComponent={loading ? <ActivityIndicator color={colors.accent} /> : !error ? <View style={styles.empty}><Icon name="server" color={colors.muted} size={32} /><Text style={[styles.body, { color: colors.text }]}>保存済みサーバーはありません</Text><Text style={[styles.helper, { color: colors.muted }]}>接続先を追加すると、ここから選べます。</Text></View> : null}
+    ListEmptyComponent={loading ? <ActivityIndicator color={colors.accent} /> : !error ? <View style={styles.empty}><Icon name="server" color={colors.muted} size={32} /><Text style={[styles.body, { color: colors.text }]}>No saved servers yet</Text><Text style={[styles.helper, { color: colors.muted }]}>Add a server to connect from here.</Text></View> : null}
     renderItem={({ item }) => <View style={[styles.profileRow, { borderBottomColor: colors.border }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Connect saved server ${item.name}`} accessibilityState={{ selected: item.id === selectedId, disabled: busy }} testID={`server-profile-${item.id}`} disabled={busy} onPress={() => onConnect(item)} style={({ pressed }) => [styles.profileTarget, pressed && { backgroundColor: colors.surface }]}>
         <Icon name="server" color={item.id === selectedId ? colors.accent : colors.muted} size={22} />
-        <View style={styles.copy}><Text numberOfLines={2} style={[styles.rowTitle, { color: colors.text }]}>{item.name}</Text><Text numberOfLines={2} style={[styles.helper, { color: colors.muted }]}>{item.username}@{item.host.includes(':') ? `[${item.host}]` : item.host}{item.port !== 22 ? `:${item.port}` : ''}</Text><Text style={[styles.caption, { color: colors.muted }]}>{item.credentialSaved ? '認証情報を保存済み' : '接続時に認証情報を入力'}{item.id === selectedId ? ' · 選択中' : ''}</Text></View>
+        <View style={styles.copy}><Text numberOfLines={2} style={[styles.rowTitle, { color: colors.text }]}>{item.name}</Text><Text numberOfLines={2} style={[styles.helper, { color: colors.muted }]}>{item.username}@{item.host.includes(':') ? `[${item.host}]` : item.host}{item.port !== 22 ? `:${item.port}` : ''}</Text><Text style={[styles.caption, { color: colors.muted }]}>{item.credentialSaved ? 'Credentials saved' : 'Ask for credentials'}{item.id === selectedId ? ' · Selected' : ''}</Text></View>
       </Pressable>
       <IconButton icon="menu" label={`Server options ${item.name}`} disabled={busy} colors={colors} onPress={() => itemActions(item.name, () => onEdit(item), () => onDelete(item))} />
     </View>}
   />;
 }
 
-function FormModal({ visible, title, submitLabel, submitId, submitText = '保存', busy, colors, onClose, onSubmit, children }: {
+function FormModal({ visible, title, submitLabel, submitId, submitText = 'Save', busy, colors, onClose, onSubmit, children }: {
   visible: boolean; title: string; submitLabel: string; submitId: string; submitText?: string;
   busy: boolean; colors: Palette; onClose: () => void; onSubmit: () => void; children: ReactNode;
 }) {
@@ -73,7 +73,7 @@ function FormModal({ visible, title, submitLabel, submitId, submitText = '保存
       <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <View style={[styles.formHeader, { borderBottomColor: colors.border }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={busy} onPress={onClose} style={styles.headerAction}><Text style={[styles.actionText, { color: colors.accent, opacity: busy ? .45 : 1 }]}>キャンセル</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={busy} onPress={onClose} style={styles.headerAction}><Text style={[styles.actionText, { color: colors.accent, opacity: busy ? .45 : 1 }]}>Cancel</Text></Pressable>
           <Text accessibilityRole="header" style={[styles.formTitle, { color: colors.text }]}>{title}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel={submitLabel} accessibilityState={{ disabled: busy, busy }} testID={submitId} disabled={busy} onPress={onSubmit} style={[styles.headerAction, styles.headerEnd]}>{busy ? <ActivityIndicator color={colors.accent} /> : <Text style={[styles.actionText, { color: colors.accent, fontWeight: '600' }]}>{submitText}</Text>}</Pressable>
         </View>
@@ -85,9 +85,9 @@ function FormModal({ visible, title, submitLabel, submitId, submitText = '保存
 
 function confirmDiscard(dirty: boolean, close: () => void) {
   if (!dirty) { Keyboard.dismiss(); close(); return; }
-  Alert.alert('変更を破棄しますか？', '入力した変更は保存されません。', [
-    { text: '編集を続ける', style: 'cancel' },
-    { text: '破棄', style: 'destructive', onPress: () => { Keyboard.dismiss(); close(); } },
+  Alert.alert('Discard changes?', 'Your changes have not been saved.', [
+    { text: 'Keep editing', style: 'cancel' },
+    { text: 'Discard', style: 'destructive', onPress: () => { Keyboard.dismiss(); close(); } },
   ]);
 }
 
@@ -103,24 +103,24 @@ export function NameForm({ visible, title, initialName, colors, onClose, onSave 
   const submit = async () => {
     if (pending.current) return;
     const next = name.trim();
-    if (!next || next.length > 80 || /[\x00-\x1f\x7f]/.test(next)) { setError('制御文字を含まない1〜80文字の名前を入力してください。'); return; }
+    if (!next || next.length > 80 || /[\x00-\x1f\x7f]/.test(next)) { setError('Enter 1–80 characters without control characters.'); return; }
     pending.current = true;
     setBusy(true);
     setError('');
     Keyboard.dismiss();
-    try { if (!await onSave(next)) setError('変更できませんでした。接続状態を確認して、もう一度試してください。'); }
-    catch { setError('変更できませんでした。接続状態を確認して、もう一度試してください。'); }
+    try { if (!await onSave(next)) setError('Could not save the change. Check your connection and try again.'); }
+    catch { setError('Could not save the change. Check your connection and try again.'); }
     finally { pending.current = false; setBusy(false); }
   };
-  return <FormModal visible={visible} title={title} submitLabel="Save name" submitId="name-submit" submitText={title.includes('作成') ? '作成' : '保存'} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(name !== initialName, onClose); }} onSubmit={() => { void submit(); }}>
-    <View style={styles.field}><Text style={[styles.body, { color: colors.text }]}>名前</Text><TextInput accessibilityLabel="Workspace or terminal name" testID="workspace-terminal-name" value={name} onChangeText={setName} autoFocus autoComplete="off" autoCorrect={false} returnKeyType="done" onSubmitEditing={submit} placeholder="例: 開発用" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]} />
+  return <FormModal visible={visible} title={title} submitLabel="Save name" submitId="name-submit" submitText={title.includes('Create') ? 'Create' : 'Save'} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(name !== initialName, onClose); }} onSubmit={() => { void submit(); }}>
+    <View style={styles.field}><Text style={[styles.body, { color: colors.text }]}>Name</Text><TextInput accessibilityLabel="Workspace or terminal name" testID="workspace-terminal-name" value={name} onChangeText={setName} autoFocus autoComplete="off" autoCorrect={false} returnKeyType="done" onSubmitEditing={submit} placeholder="e.g. Development" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]} />
       {error ? <Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>{error}</Text> : null}
     </View>
-    <Text style={[styles.helper, { color: colors.muted }]}>PC 側にも同じ名前が表示されます。</Text>
+    <Text style={[styles.helper, { color: colors.muted }]}>This name also appears on your computer.</Text>
   </FormModal>;
 }
 
-const THEME_LABELS = { system: 'システムに合わせる', light: 'ライト', dark: 'ダーク' };
+const THEME_LABELS = { system: 'System', light: 'Light', dark: 'Dark' };
 
 export function SettingsForm({ visible, preferences, colors, onClose, onSave }: {
   visible: boolean; preferences: TerminalPreferences; colors: Palette;
@@ -145,37 +145,41 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
     Keyboard.dismiss();
     const themes = ['system', 'light', 'dark'] as const;
     if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions({ title: 'テーマ', options: [...themes.map(item => THEME_LABELS[item]), 'キャンセル'], cancelButtonIndex: 3 }, index => { if (index < 3) setTheme(themes[index]); });
+      ActionSheetIOS.showActionSheetWithOptions({ title: 'Appearance', options: [...themes.map(item => THEME_LABELS[item]), 'Cancel'], cancelButtonIndex: 3 }, index => { if (index < 3) setTheme(themes[index]); });
     } else {
-      Alert.alert('テーマ', undefined, themes.map(value => ({ text: THEME_LABELS[value], onPress: () => setTheme(value) })), { cancelable: true });
+      Alert.alert('Appearance', undefined, themes.map(value => ({ text: THEME_LABELS[value], onPress: () => setTheme(value) })), { cancelable: true });
     }
   };
   const submit = async () => {
     if (pending.current) return;
     const size = Number(fontSize), lines = Number(scrollback);
-    if (!/^\d+$/.test(fontSize) || size < 10 || size > 24) { setError('文字サイズは10〜24の整数で入力してください。'); return; }
-    if (!/^\d+$/.test(scrollback) || lines < 1000 || lines > 50000) { setError('履歴の行数は1,000〜50,000の整数で入力してください。'); return; }
+    if (!/^\d+$/.test(fontSize) || size < 10 || size > 24) { setError('Enter a whole number from 10 to 24 for text size.'); return; }
+    if (!/^\d+$/.test(scrollback) || lines < 1000 || lines > 50000) { setError('Enter a whole number from 1,000 to 50,000 for scrollback.'); return; }
     pending.current = true; setBusy(true); setError(''); Keyboard.dismiss();
-    try { if (!await onSave({ fontSize: size, theme, scrollbackLines: lines, automaticReconnect })) setError('設定を保存できませんでした。もう一度試してください。'); }
-    catch { setError('設定を保存できませんでした。もう一度試してください。'); }
+    try { if (!await onSave({ fontSize: size, theme, scrollbackLines: lines, automaticReconnect })) setError('Could not save settings. Please try again.'); }
+    catch { setError('Could not save settings. Please try again.'); }
     finally { pending.current = false; setBusy(false); }
   };
   const numericStyle = [styles.numericInput, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }];
-  return <FormModal visible={visible} title="ターミナル設定" submitLabel="Save settings" submitId="settings-submit" busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(dirty, onClose); }} onSubmit={() => { void submit(); }}>
-    <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>表示</Text>
+  return <FormModal visible={visible} title="Settings" submitLabel="Save settings" submitId="settings-submit" busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(dirty, onClose); }} onSubmit={() => { void submit(); }}>
+    <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>DISPLAY</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}>
-        <View style={[styles.settingRow, { borderBottomColor: colors.border }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>文字サイズ</Text><Text style={[styles.caption, { color: colors.muted }]}>10〜24 pt</Text></View><TextInput accessibilityLabel="Terminal font size" testID="terminal-font-size" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={2} value={fontSize} onChangeText={setFontSize} selectionColor={colors.accent} style={numericStyle} /></View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Terminal theme" testID="terminal-theme" onPress={chooseTheme} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>テーマ</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
+        <View style={[styles.settingRow, { borderBottomColor: colors.border }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Text size</Text><Text style={[styles.caption, { color: colors.muted }]}>10〜24 pt</Text></View><TextInput accessibilityLabel="Terminal font size" testID="terminal-font-size" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={2} value={fontSize} onChangeText={setFontSize} selectionColor={colors.accent} style={numericStyle} /></View>
+        <Pressable accessibilityRole="button" accessibilityLabel="Terminal theme" testID="terminal-theme" onPress={chooseTheme} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Appearance</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
       </View>
-      <Text style={[styles.preview, { color: colors.text, fontSize: Math.min(24, Math.max(10, Number(fontSize) || 15)) }]}>Aa 0123 日本語</Text>
+      <View style={[styles.previewCard, { backgroundColor: DARK.terminal }]}>
+        <Text style={[styles.caption, { color: DARK.muted }]}>Text size preview</Text>
+        <Text style={[styles.preview, { color: DARK.text, fontSize: Math.min(24, Math.max(10, Number(fontSize) || 15)) }]}>Aa 0123 日本語</Text>
+      </View>
+      <Text style={[styles.helper, { color: colors.muted }]}>Appearance applies to the app. Terminals keep a dark background for consistent command-line colors.</Text>
     </View>
-    <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>履歴</Text>
-      <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>保持する行数</Text><Text style={[styles.caption, { color: colors.muted }]}>1,000〜50,000 行</Text></View><TextInput accessibilityLabel="Scrollback lines" testID="scrollback-lines" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={5} value={scrollback} onChangeText={setScrollback} selectionColor={colors.accent} style={[numericStyle, { minWidth: 96 }]} /></View></View>
-      <Text style={[styles.helper, { color: colors.muted }]}>すべてのターミナルに適用します。行数を減らすと古い履歴は削除されます。アプリ終了後は、サーバーに残る履歴を最大2,000行復元します。</Text>
+    <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>HISTORY</Text>
+      <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Scrollback lines</Text><Text style={[styles.caption, { color: colors.muted }]}>1,000–50,000 lines</Text></View><TextInput accessibilityLabel="Scrollback lines" testID="scrollback-lines" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={5} value={scrollback} onChangeText={setScrollback} selectionColor={colors.accent} style={[numericStyle, { minWidth: 96 }]} /></View></View>
+      <Text style={[styles.helper, { color: colors.muted }]}>Applies to every terminal. Reducing this removes older history. After an app restart, up to 2,000 lines are restored from the server.</Text>
     </View>
-    <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>接続</Text>
-      <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>自動で再接続</Text></View><Switch accessibilityLabel="Automatic reconnect" testID="automatic-reconnect" value={automaticReconnect} onValueChange={setAutomaticReconnect} trackColor={{ true: colors.accentFill }} /></View></View>
-      <Text style={[styles.helper, { color: colors.muted }]}>通信が途切れたときやアプリへ戻ったときに再接続します。自分で切断した接続は再開しません。</Text>
+    <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>CONNECTION</Text>
+      <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Reconnect automatically</Text></View><Switch accessibilityLabel="Automatic reconnect" testID="automatic-reconnect" value={automaticReconnect} onValueChange={setAutomaticReconnect} trackColor={{ true: colors.accentFill }} /></View></View>
+      <Text style={[styles.helper, { color: colors.muted }]}>Reconnect after a network interruption or when you return to the app. Manual disconnects stay disconnected.</Text>
     </View>
     {error ? <Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>{error}</Text> : null}
   </FormModal>;
@@ -208,5 +212,6 @@ const styles = StyleSheet.create({
   settingRow: { minHeight: 72, padding: 16, gap: 12, flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth },
   noBorder: { borderBottomWidth: 0 },
   numericInput: { minWidth: 64, minHeight: 44, paddingHorizontal: 12, paddingVertical: 8, textAlign: 'right', fontSize: 16, fontVariant: ['tabular-nums'], borderWidth: 1, borderRadius: 8, borderCurve: 'continuous' },
-  preview: { paddingHorizontal: 16, fontFamily: MONO, lineHeight: 32 },
+  previewCard: { padding: 16, gap: 8, borderRadius: 12, borderCurve: 'continuous' },
+  preview: { fontFamily: MONO, lineHeight: 32 },
 });

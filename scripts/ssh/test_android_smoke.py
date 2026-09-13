@@ -429,24 +429,24 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             ("action", "daily_profile_add", "Save server")
         )
         first_switch_index = events.index(
-            ("action", "daily_profile_switch_second", "切り替える")
+            ("action", "daily_profile_switch_second", "Switch server")
         )
         self.assertLess(credential_index, second_save_index)
         self.assertLess(second_save_index, first_switch_index)
         self.assertEqual(
-            [event for event in events if event[0] == "action" and event[2] == "切り替える"],
+            [event for event in events if event[0] == "action" and event[2] == "Switch server"],
             [
-                ("action", "daily_profile_switch_second", "切り替える"),
-                ("action", "daily_profile_switch_primary", "切り替える"),
+                ("action", "daily_profile_switch_second", "Switch server"),
+                ("action", "daily_profile_switch_primary", "Switch server"),
             ],
         )
-        self.assertIn(("action", "daily_profile_delete_cancel", "キャンセル"), events)
+        self.assertIn(("action", "daily_profile_delete_cancel", "Cancel"), events)
         self.assertEqual(
-            [event for event in events if event[0] == "action" and event[2] == "削除"],
+            [event for event in events if event[0] == "action" and event[2] == "Remove"],
             [
-                ("action", "daily_profile_delete_cancel", "削除"),
-                ("action", "daily_profile_delete_confirm", "削除"),
-                ("action", "daily_profile_delete_confirm", "削除"),
+                ("action", "daily_profile_delete_cancel", "Remove"),
+                ("action", "daily_profile_delete_confirm", "Remove"),
+                ("action", "daily_profile_delete_confirm", "Remove"),
             ],
         )
         set_toggle.assert_called_once_with(

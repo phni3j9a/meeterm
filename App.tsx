@@ -183,37 +183,37 @@ function keyChangeId(connection: SshConnectionState) {
 }
 function connectionPresentation(connection: SshConnectionState) {
   switch (connection.state) {
-    case 'Ready': return { label: '接続中', accessibility: 'Connected', pending: false };
-    case 'Connecting': return { label: '接続しています…', accessibility: 'Connecting…', pending: true };
-    case 'HostKeyPending': return { label: 'ホスト鍵を確認', accessibility: 'Verify host key', pending: true };
-    case 'Authenticating': return { label: '認証しています…', accessibility: 'Authenticating…', pending: true };
-    case 'OpeningPty': return { label: 'ターミナルを準備中…', accessibility: 'Opening terminal…', pending: true };
-    case 'AttachingTmux': return { label: 'ワークスペースに接続中…', accessibility: 'Opening workspace…', pending: true };
-    case 'Synchronizing': return { label: 'ターミナルを復元中…', accessibility: 'Restoring terminals…', pending: true };
-    case 'Reconnecting': return { label: '再接続しています…', accessibility: 'Reconnecting…', pending: true };
-    case 'Closing': return { label: '切断しています…', accessibility: 'Disconnecting…', pending: true };
-    case 'Failed': return { label: '接続できませんでした', accessibility: 'Connection failed', pending: false };
-    default: return { label: '未接続', accessibility: 'Not connected', pending: false };
+    case 'Ready': return { label: 'Connected', accessibility: 'Connected', pending: false };
+    case 'Connecting': return { label: 'Connecting…', accessibility: 'Connecting…', pending: true };
+    case 'HostKeyPending': return { label: 'Verify host key', accessibility: 'Verify host key', pending: true };
+    case 'Authenticating': return { label: 'Authenticating…', accessibility: 'Authenticating…', pending: true };
+    case 'OpeningPty': return { label: 'Opening terminal…', accessibility: 'Opening terminal…', pending: true };
+    case 'AttachingTmux': return { label: 'Opening workspace…', accessibility: 'Opening workspace…', pending: true };
+    case 'Synchronizing': return { label: 'Restoring terminals…', accessibility: 'Restoring terminals…', pending: true };
+    case 'Reconnecting': return { label: 'Reconnecting…', accessibility: 'Reconnecting…', pending: true };
+    case 'Closing': return { label: 'Disconnecting…', accessibility: 'Disconnecting…', pending: true };
+    case 'Failed': return { label: 'Connection failed', accessibility: 'Connection failed', pending: false };
+    default: return { label: 'Not connected', accessibility: 'Not connected', pending: false };
   }
 }
 function connectionError(connection: SshConnectionState) {
   const herdrErrors: Record<string, string> = {
-    herdr_missing: 'SSHの接続先でHerdrが見つかりません。PCで使っているHerdrを、SSHからも実行できるか確認してください。',
-    herdr_session_missing: '指定したHerdrセッションが起動していません。PCでそのセッションを開いてから、接続し直してください。',
-    herdr_incompatible: 'このHerdrは対応する接続機能を確認できませんでした。検証済みはHerdr 0.9.0（protocol 22）です。',
-    herdr_unsupported: 'このHerdrでは、接続に必要な公開APIまたは状態の通知機能を利用できません。接続先のHerdrの機能を確認してください。',
-    herdr_forwarding: 'SSH経由でHerdrにアクセスできません。SSHサーバーでUnix socket転送（AllowStreamLocalForwarding）が許可されているか確認してください。',
-    herdr_controller_busy: 'このターミナルは別の接続で操作中です。そちらの操作権を解放してから、再接続してください。',
-    herdr_protocol: 'Herdrの応答を読み取れませんでした。接続先のバージョンとセッションを確認してください。',
-    herdr_operation: 'Herdrが操作を受け付けませんでした。再接続して、現在のワークスペースを確認してください。',
-    herdr_workspace_group: '関連するワークスペースも終了する可能性があるため、この親ワークスペースの終了操作はPCのHerdrで対象を確認して行ってください。',
+    herdr_missing: 'Herdr was not found. Check that the Herdr you use on your computer is also available over SSH.',
+    herdr_session_missing: 'This Herdr session is not running. Open it on your computer, then reconnect.',
+    herdr_incompatible: 'This Herdr version is not supported. meeterm supports Herdr 0.9.0, protocol 22.',
+    herdr_unsupported: 'This Herdr instance does not provide the required connection or state updates. Check its available features.',
+    herdr_forwarding: 'Herdr is unreachable over SSH. Check that your SSH server allows Unix socket forwarding (AllowStreamLocalForwarding).',
+    herdr_controller_busy: 'Another connection is controlling this terminal. Release it there, then reconnect.',
+    herdr_protocol: 'The Herdr response could not be read. Check the remote version and session.',
+    herdr_operation: 'Herdr could not complete this action. Reconnect to refresh your workspaces.',
+    herdr_workspace_group: 'Closing this parent may also close related workspaces. Review and close it in Herdr on your computer.',
   };
   if (herdrErrors[connection.errorCode]) return herdrErrors[connection.errorCode];
-  if (connection.errorCode === 'host_key_changed') return '保存したホスト鍵と一致しません。サーバーの本人確認が必要です。';
-  if (connection.errorCode === 'host_key_rejected') return 'ホスト鍵の確認をキャンセルしました。接続するには、もう一度確認してください。';
-  if (connection.errorCode.includes('private_key')) return '秘密鍵を読み込めませんでした。鍵の形式とパスフレーズを確認してください。';
-  if (connection.errorCode.includes('auth')) return '認証できませんでした。ユーザー名と、選択した認証方式のパスワードまたは秘密鍵を確認してください。';
-  return connection.errorMessage || 'サーバーに接続できませんでした。接続先とネットワークを確認してください。';
+  if (connection.errorCode === 'host_key_changed') return 'The host key differs from the saved key. Verify the identity of this server before connecting.';
+  if (connection.errorCode === 'host_key_rejected') return 'Host verification was canceled. Connect again when you are ready to verify the key.';
+  if (connection.errorCode.includes('private_key')) return 'The private key could not be read. Check its format and passphrase.';
+  if (connection.errorCode.includes('auth')) return 'Authentication failed. Check your username and the password or private key for your chosen sign-in method.';
+  return connection.errorMessage || 'Could not connect. Check the server address and your network, then try again.';
 }
 
 function ConnectionStatus({ connection, colors }: { connection: SshConnectionState; colors: Palette }) {
@@ -224,11 +224,11 @@ function ConnectionStatus({ connection, colors }: { connection: SshConnectionSta
   </View>;
 }
 
-const AGENT_LABELS = { working: '作業中', blocked: '確認待ち', done: '応答完了', idle: '待機中', unknown: '状態未確認' };
+const AGENT_LABELS = { working: 'Working', blocked: 'Needs attention', done: 'Finished', idle: 'Idle', unknown: 'Status unavailable' };
 function agentSummary(panes: RemoteTerminal[], connected: boolean) {
   const agents = panes.flatMap(pane => pane.agent ? [pane.agent] : []);
   if (!agents.length) return '';
-  if (!connected) return `状態未確認 ${agents.length}`;
+  if (!connected) return `Status unavailable ${agents.length}`;
   const statuses = ['blocked', 'working', 'done', 'idle', 'unknown'] as const;
   return statuses.flatMap(status => {
     const count = agents.filter(agent => agent.status === status).length;
@@ -239,7 +239,7 @@ function agentSummary(panes: RemoteTerminal[], connected: boolean) {
 function SearchField({ value, onChange, colors, label = 'Search workspaces', autoFocus = false }: { value: string; onChange: (value: string) => void; colors: Palette; label?: string; autoFocus?: boolean }) {
   return <View style={[styles.searchField, { backgroundColor: colors.surface, borderColor: colors.border }]}>
     <Icon name="search" color={colors.muted} size={18} />
-    <TextInput accessibilityLabel={label} autoFocus={autoFocus} autoCorrect={false} autoCapitalize="none" placeholder="ワークスペース名で検索" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} returnKeyType="search" onSubmitEditing={Keyboard.dismiss} style={[styles.searchInput, { color: colors.text }]} value={value} onChangeText={onChange} />
+    <TextInput accessibilityLabel={label} autoFocus={autoFocus} autoCorrect={false} autoCapitalize="none" placeholder="Search by workspace name" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} returnKeyType="search" onSubmitEditing={Keyboard.dismiss} style={[styles.searchInput, { color: colors.text }]} value={value} onChangeText={onChange} />
     {value ? <IconButton icon="close" label="Clear workspace search" onPress={() => onChange('')} colors={colors} /> : null}
   </View>;
 }
@@ -249,7 +249,7 @@ function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker 
     <Icon name="terminal" color={colors.muted} size={23} />
     <View style={styles.rowCopy}>
       <Text numberOfLines={picker ? undefined : 2} style={[styles.rowTitle, { color: colors.text }]}>{workspace.name}</Text>
-      <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{workspace.panes.length} ターミナル</Text>
+      <Text numberOfLines={1} style={[styles.rowSubtitle, { color: colors.muted }]}>{workspace.panes.length ? workspace.panes.map((pane, index) => pane.name || `Terminal ${index + 1}`).join(' · ') : 'No terminals'}</Text>
       {agentSummary(workspace.panes, connected) ? <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{agentSummary(workspace.panes, connected)}</Text> : null}
     </View>
     <Icon name={selected ? 'check' : 'chevron'} color={selected ? colors.accent : colors.muted} size={18} />
@@ -337,7 +337,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setPreferences(next);
       setPreferencesLoaded(true);
     } catch {
-      setControlMessage('設定を読み込めませんでした。「設定」から読み込みをやり直せます。');
+      setControlMessage('Settings could not be loaded. Open Settings to try again.');
     }
   }, [smokeFixtureActive]);
 
@@ -353,7 +353,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       // Preserve OS event order. Rust owns reconnect policy and timers.
       foregroundCommands.current = foregroundCommands.current
         .then(() => MeetermTerminal.setForeground(CONNECTION_ID, isForeground))
-        .catch(() => setControlMessage('アプリの状態を接続に反映できませんでした。接続を確認してください。'));
+        .catch(() => setControlMessage('Could not update the connection after the app changed state. Check your connection.'));
     };
     applyForeground(foreground.current);
     const subscription = AppState.addEventListener('change', state => {
@@ -404,10 +404,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const respond = (accept: boolean) => {
       void MeetermTerminal.respondToHostKey(CONNECTION_ID, connection.fingerprint, accept).catch(() => {
         shownHostKey.current = '';
-        setControlMessage('ホスト鍵への回答を送れませんでした。接続をやり直してください。');
+        setControlMessage('Your host-key decision could not be sent. Connect again.');
       });
     };
-    Alert.alert('Trust this SSH host?', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\nSHA256 fingerprint:\n${connection.fingerprint}\n\n信頼できる別の経路で、この指紋がサーバーのものか確認してください。承認したホスト鍵は端末に保存されます。`, [
+    Alert.alert('Trust this SSH host?', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\nSHA256 fingerprint:\n${connection.fingerprint}\n\nCompare this fingerprint with your server using another trusted channel. The approved key will be saved on this device.`, [
       { text: 'Cancel', style: 'cancel', onPress: () => respond(false) },
       { text: 'Trust and connect', onPress: () => respond(true) },
     ], { cancelable: false });
@@ -435,8 +435,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const selectedPane = groupPanes.find(pane => pane.selected);
   const activeWorkspaceId = selectedWorkspaceId
     ?? session.groups.find(group => group.workspaceId === workspaceId && group.selected)?.workspaceId;
-  const colors = homeColors;
-  const resolvedTheme = homeColors === DARK ? 'dark' : 'light';
+  // App appearance and terminal contrast are independent. Remote ANSI palettes
+  // remain readable on a dark work surface, including in the light app theme.
+  const colors = screen === 'terminal' ? DARK : homeColors;
+  const resolvedTheme = 'dark';
   const currentProfile = profiles.find(profile => profile.id === profileId);
   const presentation = connectionPresentation(connection);
   const ready = connection.state === 'Ready';
@@ -447,7 +449,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (smokeFixtureActive) return;
     foregroundCommands.current = foregroundCommands.current
       .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, terminalVisible))
-      .catch(() => setControlMessage('ターミナルの表示状態を接続へ反映できませんでした。再接続してください。'));
+      .catch(() => setControlMessage('Could not update terminal visibility. Reconnect to continue.'));
   }, [terminalVisible, smokeFixtureActive]);
   const closing = connection.state === 'Closing';
   const active = !['Disconnected', 'Failed', 'Closing'].includes(connection.state);
@@ -543,7 +545,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       resetForConnection(submission.profile);
       connectedIdentity.current = JSON.stringify([submission.profile.host, submission.profile.port, submission.profile.username, submission.profile.authMethod, submission.profile.backend ?? 'tmux', submission.profile.runtime ?? '']);
       setProfileId(savedProfile?.id ?? '');
-    }, 'サーバーの保存または接続を開始できませんでした。接続先と認証情報を確認してください。');
+    }, 'Could not save or connect to this server. Check the address and credentials.');
     if (success) finishConnectionForm();
     return success;
   }, [finishConnectionForm, prepareConnection, profileId, resetForConnection, runCommand]);
@@ -554,7 +556,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSheet(null);
     const previous = connection;
     setConnection(current => ({ ...current, state: 'Closing' }));
-    void runCommand(() => MeetermTerminal.disconnect(CONNECTION_ID), '切断の要求を送れませんでした。もう一度試してください。').then(success => {
+    void runCommand(() => MeetermTerminal.disconnect(CONNECTION_ID), 'Could not disconnect. Please try again.').then(success => {
       if (!success) setConnection(previous);
     });
   }, [connection, runCommand]);
@@ -564,7 +566,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSheet(null);
     const previous = connection;
     setConnection(current => ({ ...current, state: 'Reconnecting', errorCode: '', errorMessage: '' }));
-    void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), '再接続を開始できませんでした。「接続情報を入力」から認証情報を入力し直してください。').then(success => {
+    void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), 'Could not reconnect. Choose Connection details to enter your credentials again.').then(success => {
       if (!success) setConnection(previous);
     });
   }, [connection, runCommand]);
@@ -576,7 +578,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSelectedPaneIds(current => ({ ...current, [pane.groupId]: pane.id }));
     // Rust also retains a desired pane while disconnected, so reconnect's
     // restored selection follows an offline workspace choice.
-    const success = await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'ターミナルを選択できませんでした。一覧を確認して、もう一度選んでください。');
+    const success = await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
     if (!success) setSelectedPaneIds(current => {
         const next = { ...current };
         if (previous) next[pane.groupId] = previous; else delete next[pane.groupId];
@@ -604,7 +606,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setPickerQuery('');
       });
     } else if (chosenGroup && session.groupsSupported) {
-      void runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, chosenGroup.id), 'Groupを選択できませんでした。').then(success => {
+      void runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, chosenGroup.id), 'Could not open this group.').then(success => {
         if (success) { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
       });
     } else { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
@@ -655,11 +657,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         resetForConnection(profile);
         connectedIdentity.current = JSON.stringify([profile.host, profile.port, profile.username, profile.authMethod, profile.backend ?? 'tmux', profile.runtime ?? '']);
         setProfileId(profile.id);
-      }, '保存済みサーバーに接続できませんでした。「編集」から接続先と認証情報を確認してください。');
+      }, 'Could not connect to this saved server. Choose Edit server to check its address and credentials.');
     };
     if (active && profile.id !== profileId) {
-      Alert.alert('接続先を切り替えますか？', '現在の接続を切断して、選んだサーバーに接続します。サーバー上の作業は続きます。', [
-        { text: 'キャンセル', style: 'cancel' }, { text: '切り替える', onPress: connect },
+      Alert.alert('Switch servers?', 'This disconnects the current server and connects to the selected one. Your remote work keeps running.', [
+        { text: 'Cancel', style: 'cancel' }, { text: 'Switch server', onPress: connect },
       ]);
     } else if (active && profile.id === profileId) {
       setSheet(null);
@@ -667,14 +669,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [active, openProfileForm, prepareConnection, profileId, resetForConnection, runCommand]);
 
   const deleteProfile = useCallback((profile: ServerProfile) => {
-    Alert.alert('保存済みサーバーを削除しますか？', `${profile.name}\n\nこの端末の接続先と保存済み認証情報を削除します。サーバー上の作業は残ります。`, [
-      { text: 'キャンセル', style: 'cancel' },
-      { text: '削除', style: 'destructive', onPress: () => {
+    Alert.alert('Remove saved server?', `${profile.name}\n\nThis removes the server and its saved credentials from this device. Your remote work stays on the server.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => {
         void runCommand(async () => {
           await MeetermTerminal.deleteProfile(profile.id);
           setProfiles(current => current.filter(item => item.id !== profile.id));
           if (profile.id === profileId) setProfileId('');
-        }, '保存済みサーバーを削除できませんでした。もう一度試してください。');
+        }, 'Could not remove this saved server. Please try again.');
       } },
     ]);
   }, [profileId, runCommand]);
@@ -692,7 +694,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setPreferences(next);
         setPreferencesLoaded(true);
         showModal(() => setSettingsVisible(true));
-      }, '設定を読み込めませんでした。もう一度試してください。');
+      }, 'Could not load settings. Please try again.');
       return;
     }
     showModal(() => setSettingsVisible(true));
@@ -703,7 +705,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       await MeetermTerminal.setPreferences(next);
       setPreferences(next);
       await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, next.automaticReconnect);
-    }, '設定を保存または接続に反映できませんでした。設定画面からもう一度保存してください。');
+    }, 'Could not save or apply settings. Open Settings and save again.');
     if (success) setSettingsVisible(false);
     return success;
   }, [runCommand]);
@@ -724,16 +726,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           ? MeetermTerminal.createGroup(CONNECTION_ID, request.workspace.id, name)
           : request.kind === 'renameGroup'
             ? MeetermTerminal.renameGroup(CONNECTION_ID, request.group.id, name)
-            : MeetermTerminal.renamePane(CONNECTION_ID, request.pane.id, name), '名前を反映できませんでした。接続状態を確認して、もう一度試してください。');
+            : MeetermTerminal.renamePane(CONNECTION_ID, request.pane.id, name), 'Could not update the name. Check your connection and try again.');
     if (success) setNameRequest(null);
     return success;
   }, [nameRequest, ready, runCommand]);
 
   const closeWorkspace = useCallback((item: Workspace) => {
-    Alert.alert('ワークスペースを終了しますか？', `${item.name}\n\n${item.panes.length}個のターミナルと、その中で実行中のプロセスを終了します。保存していない作業は失われます。`, [
-      { text: 'キャンセル', style: 'cancel' },
-      { text: '終了', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closeWorkspace(CONNECTION_ID, item.id), 'ワークスペースを終了できませんでした。接続状態を確認してください。').then(success => {
+    Alert.alert('Close workspace?', `${item.name}\n\n${item.panes.length} terminals and their running processes will close. Unsaved work will be lost.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Close', style: 'destructive', onPress: () => {
+        void runCommand(() => MeetermTerminal.closeWorkspace(CONNECTION_ID, item.id), 'Could not close this workspace. Check your connection.').then(success => {
           if (success) { setSheet(null); if (workspaceId === item.id) backToWorkspaces(); }
         });
       } },
@@ -747,10 +749,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const createPane = useCallback(() => {
     if (!workspace || !ready) return;
     if (session.groupsSupported && groupPanes.length === 0) {
-      setControlMessage('このGroupには追加の元になるターミナルがありません。メニューから新しいGroupを作成してください。');
+      setControlMessage('This group has no terminal to split. Create a new group from the menu.');
       return;
     }
-    void runCommand(() => MeetermTerminal.createPane(CONNECTION_ID, workspace.id), 'ターミナルを作成できませんでした。接続状態を確認してください。').then(success => {
+    void runCommand(() => MeetermTerminal.createPane(CONNECTION_ID, workspace.id), 'Could not create a terminal. Check your connection.').then(success => {
       if (success) {
         setSelectedPaneIds(current => { const next = { ...current }; if (group) delete next[group.id]; return next; });
         setSheet(null);
@@ -761,12 +763,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const closePane = useCallback(() => {
     if (!selectedPane || !workspace) return;
     const pane = selectedPane;
-    const consequence = workspace.panes.length === 1 ? '最後のターミナルのため、ワークスペースも終了します。'
-      : session.groupsSupported && groupPanes.length === 1 ? 'このGroupの最後のターミナルのため、Groupも終了します。' : '';
-    Alert.alert('ターミナルを終了しますか？', `${pane.name || pane.id}\n\n実行中のプロセスを終了します。保存していない作業は失われます。${consequence}`, [
-      { text: 'キャンセル', style: 'cancel' },
-      { text: '終了', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closePane(CONNECTION_ID, pane.id), 'ターミナルを終了できませんでした。接続状態を確認してください。').then(success => {
+    const consequence = workspace.panes.length === 1 ? 'This is the last terminal, so its workspace will also close.'
+      : session.groupsSupported && groupPanes.length === 1 ? 'This is the last terminal in its group, so the group will also close.' : '';
+    Alert.alert('Close terminal?', `${pane.name || pane.id}\n\nThe running process will stop. Unsaved work will be lost.${consequence}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Close', style: 'destructive', onPress: () => {
+        void runCommand(() => MeetermTerminal.closePane(CONNECTION_ID, pane.id), 'Could not close this terminal. Check your connection.').then(success => {
           if (success) {
             setSelectedPaneIds(current => { const next = { ...current }; delete next[pane.groupId]; return next; });
             setSheet(null);
@@ -780,17 +782,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const chooseGroup = useCallback((item: TerminalGroup) => {
     if (!ready || commandPending.current) return;
     const remembered = panes.find(pane => pane.groupId === item.id && pane.id === selectedPaneIds[item.id]);
-    const selection = remembered ? choosePane(remembered) : runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, item.id), 'Groupを選択できませんでした。一覧を確認してください。');
+    const selection = remembered ? choosePane(remembered) : runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, item.id), 'Could not open this group. Check the list and try again.');
     void selection.then(success => { if (success) setSheet(null); });
   }, [ready, runCommand, panes, selectedPaneIds, choosePane]);
 
   const closeGroup = useCallback((item: TerminalGroup) => {
     const terminals = panes.filter(pane => pane.groupId === item.id);
     const last = session.groups.filter(group => group.workspaceId === item.workspaceId).length === 1;
-    Alert.alert('Groupを終了しますか？', `${item.name}\n\n${terminals.length}個のターミナルと、その中のプロセスを終了します。保存していない作業は失われます。${last ? '最後のGroupのため、ワークスペースも終了します。' : ''}`, [
-      { text: 'キャンセル', style: 'cancel' },
-      { text: '終了', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closeGroup(CONNECTION_ID, item.id), 'Groupを終了できませんでした。接続状態を確認してください。').then(success => {
+    Alert.alert('Close group?', `${item.name}\n\n${terminals.length} terminals and their running processes will close. Unsaved work will be lost.${last ? 'This is the last group, so its workspace will also close.' : ''}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Close', style: 'destructive', onPress: () => {
+        void runCommand(() => MeetermTerminal.closeGroup(CONNECTION_ID, item.id), 'Could not close this group. Check your connection.').then(success => {
           if (success) { setSheet(null); if (last) backToWorkspaces(); }
         });
       } },
@@ -798,7 +800,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [panes, session.groups, runCommand, backToWorkspaces]);
 
   const refreshTerminal = useCallback(() => {
-    void runCommand(() => MeetermTerminal.refreshTerminal(CONNECTION_ID), '画面の再描画を要求できませんでした。接続状態を確認してください。').then(success => { if (success) setSheet(null); });
+    void runCommand(() => MeetermTerminal.refreshTerminal(CONNECTION_ID), 'Could not refresh this terminal. Check your connection.').then(success => { if (success) setSheet(null); });
   }, [runCommand]);
   const closeSearch = useCallback(() => {
     Keyboard.dismiss();
@@ -818,13 +820,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const reviewChangedHostKey = useCallback(() => {
     const changeId = keyChangeId(connection);
     if (!changeId || changeId === removedHostKeyId) return;
-    Alert.alert('ホスト鍵が変更されています', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\n\n保存された指紋:\n${connection.knownFingerprint || '(unavailable)'}\n\n受信した指紋:\n${connection.fingerprint || '(unavailable)'}\n\nサーバーの再構築か、通信のなりすましの可能性があります。管理者に別の信頼できる経路で確認した場合だけ、保存済みの鍵を削除してください。`, [
-      { text: 'キャンセル', style: 'cancel' },
-      { text: '保存した鍵を削除', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.forgetHostKey(connection.host, connection.port), '保存したホスト鍵を削除できませんでした。').then(success => {
+    Alert.alert('Host key changed', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\n\nSaved fingerprint:\n${connection.knownFingerprint || '(unavailable)'}\n\nReceived fingerprint:\n${connection.fingerprint || '(unavailable)'}\n\nThe server may have been rebuilt, or someone may be impersonating it. Remove the saved key only after verifying the change with your administrator through another trusted channel.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove saved key', style: 'destructive', onPress: () => {
+        void runCommand(() => MeetermTerminal.forgetHostKey(connection.host, connection.port), 'Could not remove the saved host key.').then(success => {
           if (success) {
             setRemovedHostKeyId(changeId);
-            setControlMessage('保存した鍵を削除しました。接続情報を入力し直して、新しいホスト鍵を確認してください。');
+            setControlMessage('Saved key removed. Enter your connection details again to verify the new host key.');
           }
         });
       } },
@@ -832,77 +834,78 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [connection, removedHostKeyId, runCommand]);
 
   const statusNotice = attempted && !ready ? <View style={[styles.notice, { backgroundColor: colors.surface }]}>
-    <Text style={[styles.noticeTitle, { color: colors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'ホストの本人確認が必要です' : connection.state === 'Disconnected' ? 'サーバーから切断しています' : presentation.label}</Text>
-    <Text style={[styles.noticeBody, { color: colors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'サーバー上の作業は続いています。再接続して同じ場所へ戻れます。' : '接続を開始するには、接続情報を入力してください。' : closing ? hasConnected ? 'サーバー上の作業を残して、接続を閉じています。' : '接続をキャンセルしています。' : 'サーバー上のワークスペースを確認しています。'}</Text>
+    <Text style={[styles.noticeTitle, { color: colors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'Verify this server' : connection.state === 'Disconnected' ? 'Disconnected' : presentation.label}</Text>
+    <Text style={[styles.noticeBody, { color: colors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'Your work is still running on the server. Reconnect to pick up where you left off.' : 'Enter your connection details to get started.' : closing ? hasConnected ? 'Disconnecting. Your work will keep running on the server.' : 'Canceling the connection.' : 'Checking your remote workspaces.'}</Text>
     <View style={styles.noticeActions}>
-      {canReconnect ? <Button label="Reconnect" colors={colors} disabled={commandBusy} onPress={reconnect}>再接続</Button> : null}
-      {!active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={openForm} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>接続情報を入力</Text></Pressable> : null}
-      {active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel connection" disabled={commandBusy} onPress={disconnect} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>キャンセル</Text></Pressable> : null}
-      {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>鍵の変更を確認</Text></Pressable> : null}
+      {canReconnect ? <Button label="Reconnect" colors={colors} disabled={commandBusy} onPress={reconnect}>Reconnect</Button> : null}
+      {!active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={openForm} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Connection details</Text></Pressable> : null}
+      {active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel connection" disabled={commandBusy} onPress={disconnect} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Cancel</Text></Pressable> : null}
+      {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Review key change</Text></Pressable> : null}
     </View>
   </View> : null;
 
   const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: colors.surface }]}>
-    <Text style={[styles.noticeBody, { color: colors.danger, flex: 1 }]}>{controlMessage || '接続状態を取得できません。しばらくしてから接続をやり直してください。'}</Text>
+    <Text style={[styles.noticeBody, { color: colors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
     {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={colors} onPress={() => setControlMessage('')} /> : null}
   </View> : null;
 
   const listHeader = <View>
     {searching ? <View style={styles.searchHeader}>
       <View style={styles.flex}>
-        <Text accessibilityRole="header" style={[styles.searchTitle, { color: homeColors.text }]}>ワークスペースを探す</Text>
+        <Text accessibilityRole="header" style={[styles.searchTitle, { color: homeColors.text }]}>Find a workspace</Text>
         <Text numberOfLines={1} style={[styles.searchHost, { color: homeColors.muted }]}>{endpoint(connection)}</Text>
       </View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Close workspace search" onPress={closeSearch} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>閉じる</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Close workspace search" onPress={closeSearch} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Close</Text></Pressable>
     </View> : <>
-      <View style={styles.brandRow}><Text style={[styles.brand, { color: homeColors.text }]}>meeterm</Text><View style={styles.topActions}><IconButton icon="server" label="Saved servers" colors={homeColors} disabled={commandBusy} onPress={() => openSheet('servers')} /><Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" testID="open-settings" disabled={commandBusy} onPress={openSettings} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>設定</Text></Pressable></View></View>
-      <View style={styles.hero}>
+      <View style={styles.brandRow}><Text style={[styles.brand, { color: homeColors.text }]}>meeterm</Text><IconButton icon="settings" label="Terminal settings" testID="open-settings" colors={homeColors} disabled={commandBusy} onPress={openSettings} /></View>
+      {attempted || profiles.length > 0 ? <View style={styles.hero}>
         <View style={styles.heroCopy}>
-          <Text accessibilityRole="header" style={[styles.heroTitle, width < 360 && { fontSize: 24 }, { color: homeColors.text }]}>ワークスペース</Text>
-          {attempted ? <Text style={[styles.heroDescription, { color: homeColors.muted }]}>作業を選んで、ターミナルへ。</Text> : null}
+          <Text accessibilityRole="header" style={[styles.heroTitle, width < 360 && { fontSize: 24 }, { color: homeColors.text }]}>Workspaces</Text>
+          <Text style={[styles.heroDescription, { color: homeColors.muted }]}>{attempted ? 'Your work, right where you left it.' : 'Your servers. Your familiar workspace.'}</Text>
         </View>
-        {attempted ? <Companion small dark={homeColors === DARK} /> : null}
-      </View>
+        <Companion small />
+      </View> : null}
       {attempted ? <View style={[styles.serverRow, { borderBottomColor: homeColors.border }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Server connection" accessibilityHint={endpoint(connection)} onPress={() => openSheet('server')} style={({ pressed }) => [styles.serverTarget, pressed && { backgroundColor: homeColors.surface }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" accessibilityHint="Choose a saved server" onPress={() => openSheet('servers')} style={({ pressed }) => [styles.serverTarget, pressed && { backgroundColor: homeColors.surface }]}>
           <Icon name="server" color={homeColors.muted} size={17} />
           <Text numberOfLines={1} style={[styles.serverName, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
           <Icon name="down" color={homeColors.muted} size={12} />
         </Pressable>
         <ConnectionStatus connection={connection} colors={homeColors} />
+        <IconButton icon="menu" label="Server connection" colors={homeColors} onPress={() => openSheet('server')} />
       </View> : null}
     </>}
     {statusNotice ? <View style={styles.horizontal}>{statusNotice}</View> : null}
     {feedback ? <View style={styles.horizontal}>{feedback}</View> : null}
     {searching ? <View style={styles.horizontal}>
       <SearchField value={query} colors={homeColors} onChange={value => { setQuery(value); listOffsets.current.search = 0; workspaceList.current?.scrollToOffset({ offset: 0, animated: false }); }} autoFocus />
-      <Text style={[styles.resultCount, { color: homeColors.muted }]}>{filteredWorkspaces.length} 件</Text>
+      <Text style={[styles.resultCount, { color: homeColors.muted }]}>{filteredWorkspaces.length} {filteredWorkspaces.length === 1 ? 'result' : 'results'}</Text>
     </View> : attempted && (workspaces.length > 0 || ready) ? <View style={styles.sectionHeader}>
-      <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>すべて  {workspaces.length}</Text>
+      <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>All  {workspaces.length}</Text>
       <View style={styles.topActions}><IconButton icon="search" label="Search workspaces" onPress={() => setSearching(true)} colors={homeColors} /><IconButton icon="plus" label="Create workspace" onPress={() => openName({ kind: 'createWorkspace' })} colors={homeColors} disabled={!ready || commandBusy} /></View>
     </View> : null}
   </View>;
 
   const emptyList = searching ? <View style={styles.emptySearch}>
     <Icon name="search" color={homeColors.muted} size={28} />
-    <Text style={[styles.emptyTitle, { color: homeColors.text }]}>見つかりませんでした</Text>
-    <Text style={[styles.emptyBody, { color: homeColors.muted }]}>別の名前で検索してみてください。</Text>
-    <Pressable accessibilityRole="button" accessibilityLabel="Clear workspace search" onPress={() => setQuery('')} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>検索をクリア</Text></Pressable>
+    <Text style={[styles.emptyTitle, { color: homeColors.text }]}>No matching workspaces</Text>
+    <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Try another name or clear your search.</Text>
+    <Pressable accessibilityRole="button" accessibilityLabel="Clear workspace search" onPress={() => setQuery('')} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Clear search</Text></Pressable>
   </View> : !attempted && profiles.length > 0 ? <View style={styles.savedHome}>
-    <Text style={[styles.savedHomeTitle, { color: homeColors.text }]}>接続先を選んで、続きを。</Text>
+    <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>YOUR SERVERS</Text>
     {profiles.slice(0, 3).map(profile => <Pressable key={profile.id} accessibilityRole="button" accessibilityLabel={`Connect saved server ${profile.name}`} disabled={commandBusy} onPress={() => connectSavedProfile(profile)} style={({ pressed }) => [styles.savedHomeRow, { borderBottomColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Icon name="server" color={homeColors.muted} /><View style={styles.rowCopy}><Text numberOfLines={2} style={[styles.rowTitle, { color: homeColors.text }]}>{profile.name}</Text><Text numberOfLines={1} style={[styles.rowSubtitle, { color: homeColors.muted }]}>{profile.username}@{profile.host}</Text></View><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>)}
-    <Button label="Saved servers" colors={homeColors} secondary onPress={() => openSheet('servers')}>サーバーを管理</Button>
-    <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={() => openProfileForm()} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>別のサーバーに接続</Text></Pressable>
-  </View> : !attempted && profilesLoading ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>接続先を読み込んでいます</Text></View> : !attempted ? <View style={styles.firstUse}>
+    <Button label="Saved servers" colors={homeColors} secondary onPress={() => openSheet('servers')}>Manage servers</Button>
+    <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={() => openProfileForm()} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Connect to another server</Text></Pressable>
+  </View> : !attempted && profilesLoading ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>Loading your servers…</Text></View> : !attempted ? <View style={styles.firstUse}>
     <Companion dark={homeColors === DARK} />
-    <Text style={[styles.firstUseTitle, { color: homeColors.text }]}>いつものサーバーから。</Text>
-    <Text style={[styles.firstUseBody, { color: homeColors.muted }]}>SSH の接続先を追加して、{`\n`}いつもの作業を手元に。</Text>
-    <Button label="Connect" colors={homeColors} onPress={openForm} style={styles.fullWidth}>＋  サーバーに接続</Button>
+    <Text style={[styles.firstUseTitle, { color: homeColors.text }]}>Your workspace. Anywhere.</Text>
+    <Text style={[styles.firstUseBody, { color: homeColors.muted }]}>Connect to your server over SSH.{`\n`}Keep your work close.</Text>
+    <Button label="Connect" colors={homeColors} onPress={openForm} style={styles.fullWidth}>Connect to a server</Button>
   </View> : ready ? <View style={styles.emptySearch}>
-    <Text style={[styles.emptyTitle, { color: homeColors.text }]}>ワークスペースがありません</Text>
-    <Text style={[styles.emptyBody, { color: homeColors.muted }]}>ワークスペースを作って、{`\n`}ターミナルで作業を始めましょう。</Text>
-    <Button label="Create workspace" colors={homeColors} onPress={() => openName({ kind: 'createWorkspace' })} disabled={commandBusy}>ワークスペースを作成</Button>
-  </View> : presentation.pending ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>ワークスペースを取得しています</Text></View> : null;
+    <Text style={[styles.emptyTitle, { color: homeColors.text }]}>A fresh workspace starts here.</Text>
+    <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Create a workspace to open your first terminal.{`\n`}It stays on your server when you leave.</Text>
+    <Button label="Create workspace" colors={homeColors} onPress={() => openName({ kind: 'createWorkspace' })} disabled={commandBusy}>Create workspace</Button>
+  </View> : presentation.pending ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>Loading workspaces…</Text></View> : null;
 
   if (foundation) return <SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: DARK.background }]}>
     <StatusBar barStyle="light-content" backgroundColor={DARK.background} />
@@ -931,7 +934,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       <View style={styles.terminalHeader}>
         <IconButton icon="back" label="Back to workspaces" colors={colors} onPress={backToWorkspaces} />
         <View style={styles.terminalHeading}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: colors.text }]}>{workspace?.name ?? 'ワークスペース'}</Text><Icon name="down" color={colors.muted} size={12} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: colors.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={colors.muted} size={12} /></Pressable>
           <View style={styles.terminalStatusRow}><Text numberOfLines={1} style={[styles.terminalHost, { color: colors.muted }]}>{endpoint(connection)}</Text><ConnectionStatus connection={connection} colors={colors} /></View>
         </View>
         <IconButton icon="menu" label="Terminal menu" colors={colors} onPress={() => openSheet('server')} />
@@ -939,15 +942,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       {groups.length > 1 ? <View style={styles.groupBar}>
         <Text style={[styles.groupLabel, { color: colors.muted }]}>Group</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!ready || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: colors.surface }, pressed && { opacity: .65 }]}>
-          <Text numberOfLines={1} style={[styles.groupName, { color: colors.text }]}>{group?.name || 'Groupを選択'}</Text><Icon name="down" color={colors.muted} size={12} />
+          <Text numberOfLines={1} style={[styles.groupName, { color: colors.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={colors.muted} size={12} />
         </Pressable>
       </View> : null}
       {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: colors.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `ターミナル ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? colors.accent : 'transparent' }, pressed && { backgroundColor: colors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? colors.accent : colors.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? colors.accent : colors.muted }]}>{pane.name || `ターミナル ${index + 1}`}</Text></Pressable>)}
+        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `Terminal ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? colors.accent : 'transparent' }, pressed && { backgroundColor: colors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? colors.accent : colors.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? colors.accent : colors.muted }]}>{pane.name || `Terminal ${index + 1}`}</Text></Pressable>)}
       </ScrollView><IconButton icon="plus" label="Create terminal" colors={colors} disabled={!ready || commandBusy} onPress={createPane} /></View> : null}
       {selectedPane?.agent ? <View style={styles.agentLine}>
         <Text numberOfLines={1} style={[styles.agentName, { color: colors.muted }]}>{selectedPane.agent.name}</Text>
-        <Text accessibilityHint="Herdrが報告した状態です。タスクの正しさやテスト成功を保証するものではありません。" style={[styles.agentStatus, { color: ready && selectedPane.agent.status === 'blocked' ? colors.accent : colors.muted }]}>{AGENT_LABELS[ready ? selectedPane.agent.status : 'unknown']}</Text>
+        <Text accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." style={[styles.agentStatus, { color: ready && selectedPane.agent.status === 'blocked' ? colors.accent : colors.muted }]}>{AGENT_LABELS[ready ? selectedPane.agent.status : 'unknown']}</Text>
       </View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {ready && workspace && selectedPane ? (
@@ -958,72 +961,72 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {statusNotice}
         {ready ? <View style={styles.gone}>
           <Icon name="terminal" color={colors.muted} size={32} />
-          <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: colors.text }]}>{workspace ? 'このターミナルは終了しました' : 'このワークスペースは終了しました'}</Text>
-          <Text style={[styles.emptyBody, { color: colors.muted }]}>{workspace ? '別のターミナルを選んで作業を続けられます。' : '一覧から別のワークスペースを選んでください。'}</Text>
-          <Button label="Back to workspaces" colors={colors} secondary onPress={backToWorkspaces}>ワークスペースへ</Button>
+          <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: colors.text }]}>{workspace ? 'This terminal has closed' : 'This workspace has closed'}</Text>
+          <Text style={[styles.emptyBody, { color: colors.muted }]}>{workspace ? 'Select another terminal to keep working.' : 'Choose another workspace from the list.'}</Text>
+          <Button label="Back to workspaces" colors={colors} secondary onPress={backToWorkspaces}>Back to workspaces</Button>
         </View> : null}
       </ScrollView>}
     </View>}
 
-    <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={colors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
-    <SettingsForm visible={settingsVisible} preferences={preferences} colors={colors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
-    <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'ワークスペースを作成' : nameRequest?.kind === 'renameWorkspace' ? 'ワークスペースの名前' : nameRequest?.kind === 'createGroup' ? 'Groupを作成' : nameRequest?.kind === 'renameGroup' ? 'Groupの名前' : 'ターミナルの名前'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={colors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Groupを切り替える' : sheet === 'workspaces' ? '作業を切り替える' : sheet === 'handoff' ? 'PC で続きを' : sheet === 'servers' ? '保存済みサーバー' : 'サーバー'} visible={sheet !== null} onClose={() => setSheet(null)} busy={commandBusy} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={colors}>
+    <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
+    <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
+    <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} busy={commandBusy} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
-      {sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={colors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
-        <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={colors} /> : null}<Button label="Create workspace" colors={colors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>ワークスペースを作成</Button></View>
-        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={ready} workspace={item} selected={item.id === workspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={colors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: colors.muted }]}>該当するワークスペースがありません。</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" />
+      {sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
+        <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
+        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={ready} workspace={item} selected={item.id === workspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>Groupごとに、まとまったターミナルを切り替えます。</Text>
-        {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: colors.border }]}>
+        <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Keep related terminals together. Select a group to switch.</Text>
+        {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name}`} accessibilityState={{ selected: item.id === group?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
-            <Text style={[styles.groupName, { color: item.id === group?.id ? colors.accent : colors.text }]}>{item.name || '名前のないGroup'}</Text>
-            <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} ターミナル{item.id === group?.id ? ' · 選択中' : ''}</Text>
+            <Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text>
+            <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} Terminal{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
-          <IconButton icon="menu" label={`Group options ${item.name}`} colors={colors} disabled={!ready || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
+          <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!ready || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
         </View>)}
-        {workspace ? <Button label="Create group" colors={colors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Groupを追加</Button> : null}
+        {workspace ? <Button label="Create group" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button> : null}
       </ScrollView> : sheet === 'handoff' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
-        <Text style={[styles.handoffTitle, { color: colors.text }]}>同じ作業を、大きな画面で。</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>スマートフォンの接続を切っても、サーバー上の作業は続きます。</Text>
-        <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: colors.accent }]}>1</Text><Text style={[styles.emptyBody, { color: colors.text, flex: 1 }]}>このスマートフォンの接続を切断します。</Text></View>
-        <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: colors.accent }]}>2</Text><Text style={[styles.emptyBody, { color: colors.text, flex: 1 }]}>PC から同じサーバー・同じユーザーで SSH 接続します。</Text></View>
-        <Text selectable style={[styles.command, { backgroundColor: colors.surface, color: colors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : 'tmux attach -t meeterm'}</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>このコマンドで、同じワークスペースとターミナルを開けます。</Text>
-        {active ? <Button label="Disconnect" colors={colors} disabled={commandBusy} onPress={disconnect}>切断して PC へ</Button> : <Button label="Close sheet" colors={colors} secondary onPress={() => setSheet(null)}>閉じる</Button>}
+        <Text style={[styles.handoffTitle, { color: homeColors.text }]}>Same work. Bigger screen.</Text>
+        <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Your workspace keeps running when you disconnect your phone.</Text>
+        <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: homeColors.accent }]}>1</Text><Text style={[styles.emptyBody, { color: homeColors.text, flex: 1 }]}>Disconnect this phone to release the workspace.</Text></View>
+        <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: homeColors.accent }]}>2</Text><Text style={[styles.emptyBody, { color: homeColors.text, flex: 1 }]}>SSH into the same server with the same username on your computer.</Text></View>
+        <Text selectable style={[styles.command, { backgroundColor: homeColors.surface, color: homeColors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : 'tmux attach -t meeterm'}</Text>
+        <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Run this command to reopen the same workspaces and terminals.</Text>
+        {active ? <Button label="Disconnect" colors={homeColors} disabled={commandBusy} onPress={disconnect}>Disconnect this phone</Button> : <Button label="Close sheet" colors={homeColors} secondary onPress={() => setSheet(null)}>Close</Button>}
       </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <View style={styles.serverDetails}>
-          <Icon name="server" color={colors.accent} size={28} />
-          <Text selectable style={[styles.serverDetailTitle, { color: colors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
-          {currentProfile ? <Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{currentProfile.username}@{endpoint(connection)}</Text> : null}
-          <ConnectionStatus connection={connection} colors={colors} />
+          <Icon name="server" color={homeColors.accent} size={28} />
+          <Text selectable style={[styles.serverDetailTitle, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
+          {currentProfile ? <Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{currentProfile.username}@{endpoint(connection)}</Text> : null}
+          <ConnectionStatus connection={connection} colors={homeColors} />
         </View>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>サーバー上のワークスペースに接続しています。切断しても、作業はサーバーに残ります。</Text>
-        {canReconnect ? <Button label="Reconnect" colors={colors} disabled={commandBusy} onPress={reconnect}>再接続</Button> : null}
-        {!active && !closing ? <Button label="Connect" colors={colors} secondary onPress={openForm}>接続情報を入力</Button> : null}
-        {active ? <Button label="Disconnect" colors={colors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? '切断' : '接続をキャンセル'}</Button> : null}
-        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" disabled={commandBusy} onPress={() => setSheet('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: colors.border }, pressed && { backgroundColor: colors.surface }]}><Text style={[styles.actionText, { color: colors.text }]}>保存済みサーバー・切り替え</Text><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: colors.border }, pressed && { backgroundColor: colors.surface }]}><Text style={[styles.actionText, { color: colors.text }]}>ターミナル設定</Text><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
-        {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: colors.border }]}>
-          <Text numberOfLines={2} style={[styles.sectionLabel, { color: colors.muted }]}>{selectedPane.name || selectedPane.id}</Text>
-          <Button label="Refresh terminal" colors={colors} secondary disabled={!ready || commandBusy} onPress={refreshTerminal}>画面を再描画</Button>
-          <Text style={[styles.noticeBody, { color: colors.muted }]}>再接続後に表示が崩れたとき、アプリに画面の再描画を要求します。</Text>
+        <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Your work lives on this server. Disconnecting leaves it running.</Text>
+        {canReconnect ? <Button label="Reconnect" colors={homeColors} disabled={commandBusy} onPress={reconnect}>Reconnect</Button> : null}
+        {!active && !closing ? <Button label="Connect" colors={homeColors} secondary onPress={openForm}>Connection details</Button> : null}
+        {active ? <Button label="Disconnect" colors={homeColors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? 'Disconnect' : 'Cancel connection'}</Button> : null}
+        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" disabled={commandBusy} onPress={() => setSheet('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Settings</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
+          <Text numberOfLines={2} style={[styles.sectionLabel, { color: homeColors.muted }]}>{selectedPane.name || selectedPane.id}</Text>
+          <Button label="Refresh terminal" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={refreshTerminal}>Refresh terminal</Button>
+          <Text style={[styles.noticeBody, { color: homeColors.muted }]}>Ask the remote app to redraw if the display looks wrong after reconnecting.</Text>
           <View style={styles.noticeActions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Rename terminal" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renamePane', pane: selectedPane })} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>名前を変更</Text></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!ready || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>ターミナルを終了</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Rename terminal" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renamePane', pane: selectedPane })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!ready || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close terminal</Text></Pressable>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!ready || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>ワークスペースの名前・終了</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!ready || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Workspace options</Text></Pressable>
         </View> : null}
-        {screen === 'terminal' && workspace && session.groupsSupported ? <View style={[styles.terminalActions, { borderColor: colors.border }]}>
-          <Text style={[styles.sectionLabel, { color: colors.muted }]}>Group</Text>
-          <Button label="Create group" colors={colors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Groupを追加</Button>
+        {screen === 'terminal' && workspace && session.groupsSupported ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
+          <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>Group</Text>
+          <Button label="Create group" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button>
           {group ? <View style={styles.noticeActions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Rename group" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renameGroup', group })} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Groupの名前を変更</Text></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="Close group" disabled={!ready || commandBusy} onPress={() => closeGroup(group)} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Groupを終了</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Rename group" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renameGroup', group })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename group</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close group" disabled={!ready || commandBusy} onPress={() => closeGroup(group)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close group</Text></Pressable>
           </View> : null}
         </View> : null}
-        <Pressable accessibilityRole="button" accessibilityLabel="PC handoff help" onPress={() => setSheet('handoff')} style={({ pressed }) => [styles.menuRow, { borderColor: colors.border }, pressed && { backgroundColor: colors.surface }]}><Text style={[styles.actionText, { color: colors.text }]}>PC で続きを</Text><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
-        {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>ホスト鍵の変更を確認</Text></Pressable> : null}
+        <Pressable accessibilityRole="button" accessibilityLabel="PC handoff help" onPress={() => setSheet('handoff')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Continue on your computer</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Review host key change</Text></Pressable> : null}
       </ScrollView>}
     </NativeSheet>
   </SafeAreaView>;
@@ -1089,11 +1092,11 @@ const styles = StyleSheet.create({
   horizontal: { paddingHorizontal: 24 },
   brandRow: { minHeight: 56, paddingHorizontal: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
   topActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  brand: { fontSize: 24, letterSpacing: -.8, fontWeight: '600' },
-  hero: { paddingHorizontal: 24, paddingTop: 4, paddingBottom: 12, minHeight: 104, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  brand: { fontSize: 22, letterSpacing: -.8, fontWeight: '600' },
+  hero: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 16, minHeight: 128, flexDirection: 'row', alignItems: 'center', gap: 4 },
   heroCopy: { flex: 1, minWidth: 0 },
-  heroTitle: { fontSize: 28, lineHeight: 40, fontWeight: '700', letterSpacing: -1.2 },
-  heroDescription: { fontSize: 12, lineHeight: 20, marginTop: 8 },
+  heroTitle: { fontSize: 30, lineHeight: 38, fontWeight: '700', letterSpacing: -1 },
+  heroDescription: { fontSize: 13, lineHeight: 20, marginTop: 8 },
   serverRow: { marginHorizontal: 24, marginBottom: 16, minHeight: 60, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: StyleSheet.hairlineWidth },
   serverName: { flex: 1, minWidth: 0, fontSize: 15 },
   serverTarget: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -1105,10 +1108,10 @@ const styles = StyleSheet.create({
   workspaceContainer: { flexDirection: 'row', alignItems: 'center', gap: 4, borderBottomWidth: StyleSheet.hairlineWidth },
   workspaceRow: { flex: 1, minWidth: 0, minHeight: 88, paddingVertical: 20, flexDirection: 'row', alignItems: 'center', gap: 14 },
   rowCopy: { flex: 1, minWidth: 0, gap: 4 },
-  rowTitle: { fontSize: 18, lineHeight: 26, fontWeight: '500' },
+  rowTitle: { fontSize: 18, lineHeight: 26, fontWeight: '600', letterSpacing: -.3 },
   rowSubtitle: { fontSize: 13, lineHeight: 20, fontVariant: ['tabular-nums'] },
-  firstUse: { paddingHorizontal: 28, paddingTop: 4, alignItems: 'center', gap: 20 },
-  firstUseTitle: { fontSize: 22, lineHeight: 32, fontWeight: '600', letterSpacing: -.6, marginTop: 8, textAlign: 'center' },
+  firstUse: { paddingHorizontal: 28, paddingTop: 40, alignItems: 'center', gap: 20 },
+  firstUseTitle: { fontSize: 30, lineHeight: 38, fontWeight: '700', letterSpacing: -1, marginTop: 8, textAlign: 'center' },
   firstUseBody: { fontSize: 15, lineHeight: 28, textAlign: 'center' },
   savedHome: { paddingHorizontal: 24, gap: 20 },
   savedHomeTitle: { fontSize: 18, lineHeight: 28, fontWeight: '600', marginBottom: 4 },
@@ -1116,7 +1119,7 @@ const styles = StyleSheet.create({
   fullWidth: { alignSelf: 'stretch', marginTop: 8 },
   emptySearch: { padding: 32, gap: 12, alignItems: 'center' },
   emptyTitle: { fontSize: 17, lineHeight: 27, fontWeight: '600', textAlign: 'center' },
-  emptyBody: { fontSize: 14, lineHeight: 25 },
+  emptyBody: { fontSize: 15, lineHeight: 24 },
   loading: { padding: 32, gap: 12, alignItems: 'center' },
   searchHeader: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 20, flexDirection: 'row', alignItems: 'center', gap: 12 },
   searchTitle: { fontSize: 23, lineHeight: 32, fontWeight: '600', letterSpacing: -.6 },

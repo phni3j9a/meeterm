@@ -44,7 +44,7 @@ function Field({ label, error, optional, action, children, colors }: {
 }) {
   return <View style={styles.field}>
     <View style={styles.labelRow}>
-      <Text style={[styles.label, { color: colors.text }]}>{label}{optional ? <Text style={{ color: colors.muted, fontWeight: '400' }}> · 任意</Text> : null}</Text>
+      <Text style={[styles.label, { color: colors.text }]}>{label}{optional ? <Text style={{ color: colors.muted, fontWeight: '400' }}> · Optional</Text> : null}</Text>
       {action ? <Pressable accessibilityRole="button" accessibilityLabel={action.accessibilityLabel} onPress={action.onPress} style={({ pressed }) => [styles.fieldAction, pressed && styles.pressed]}><Text style={{ color: colors.accent, fontSize: 14 }}>{action.label}</Text></Pressable> : null}
     </View>
     {children}
@@ -167,9 +167,9 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
       || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved);
     const backendDirty = backend !== (initialProfile?.backend ?? 'tmux') || runtime !== (initialProfile?.runtime ?? '');
     if (!dirty && !backendDirty) { discard(); return; }
-    Alert.alert('変更を破棄しますか？', '入力した変更は保存されません。', [
-      { text: '編集を続ける', style: 'cancel' },
-      { text: '破棄', style: 'destructive', onPress: discard },
+    Alert.alert('Discard changes?', 'Your changes have not been saved.', [
+      { text: 'Keep editing', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: discard },
     ]);
   }, [authMethod, backend, runtime, discard, host, initialProfile, name, passphrase, password, port, privateKey, saveCredential, saveServer, username]);
 
@@ -191,25 +191,25 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
     const nextErrors: FormErrors = {};
     const sessionName = backend === 'herdr' ? runtime.trim() : '';
     if (sessionName && (!/^[A-Za-z0-9._-]{1,64}$/.test(sessionName) || sessionName === '.' || sessionName === '..')) {
-      nextErrors.runtime = 'セッション名は半角英数字・ピリオド・ハイフン・下線の64文字以内で入力してください。';
+      nextErrors.runtime = 'Use up to 64 letters, numbers, periods, hyphens, or underscores.';
     }
-    if (name.trim().length > 80 || /[\x00-\x1f\x7f]/.test(name)) nextErrors.name = '名前は制御文字を含まない80文字以内で入力してください。';
+    if (name.trim().length > 80 || /[\x00-\x1f\x7f]/.test(name)) nextErrors.name = 'Use up to 80 characters, without control characters.';
     if (!trimmedHost || /[\s\x00-\x1f\x7f]/.test(trimmedHost)) {
-      nextErrors.host = '空白を含まないホスト名か IP アドレスを入力してください。';
+      nextErrors.host = 'Enter a hostname or IP address without spaces.';
     }
     if (!/^\d+$/.test(port) || parsedPort < 1 || parsedPort > 65535) {
-      nextErrors.port = '1〜65535 の数字を入力してください。';
+      nextErrors.port = 'Enter a port from 1 to 65535.';
     }
     if (!trimmedUsername || /[\s\x00-\x1f\x7f]/.test(trimmedUsername)) {
-      nextErrors.username = 'SSH のユーザー名を入力してください。空白は使えません。';
+      nextErrors.username = 'Enter your SSH username without spaces.';
     }
     const needsCredential = !usingSavedCredential && (mode === 'connect' || saveCredential || Boolean(privateKey || password || passphrase));
     if (needsCredential && authMethod === 'publicKey') {
       if (!trimmedKey.startsWith('-----BEGIN OPENSSH PRIVATE KEY-----') || !trimmedKey.endsWith('-----END OPENSSH PRIVATE KEY-----')) {
-        nextErrors.privateKey = 'BEGIN と END の行を含む OpenSSH 形式の秘密鍵を貼り付けてください。';
+        nextErrors.privateKey = 'Paste an OpenSSH private key, including its BEGIN and END lines.';
       }
     } else if (needsCredential && (!password || password.includes('\u0000'))) {
-      nextErrors.password = 'SSH パスワードを入力してください。';
+      nextErrors.password = 'Enter your SSH password.';
     }
     if (Object.keys(nextErrors).length) {
       setErrors(nextErrors);
@@ -238,13 +238,13 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
         credential, saveProfile: mode === 'save' || saveServer, saveCredential: saveServer && saveCredential,
         keepCredential: saveServer && usingSavedCredential, connect: mode === 'connect',
       });
-      if (!accepted) setSubmissionError('保存または接続を開始できませんでした。接続先を確認して、認証情報を入力し直してください。');
+      if (!accepted) setSubmissionError('Could not save or connect. Check the address and enter your credentials again.');
     } catch {
-      setSubmissionError('保存または接続を開始できませんでした。認証情報を入力し直して、もう一度試してください。');
+      setSubmissionError('Could not save or connect. Enter your credentials again and retry.');
     } finally { submitting.current = false; setBusy(false); }
   }, [authMethod, backend, runtime, clearSecrets, host, initialProfile, mode, name, onSubmit, passphrase, password, port, privateKey, saveCredential, saveServer, username, usingSavedCredential]);
 
-  const inputStyle = [styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }];
+  const inputStyle = [styles.input, { color: colors.text, backgroundColor: colors.elevated, borderColor: colors.border }];
   const inputDefaults = { autoCapitalize: 'none' as const, autoComplete: 'off' as const, autoCorrect: false, spellCheck: false, placeholderTextColor: colors.placeholder, selectionColor: colors.accent };
 
   return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={close} onDismiss={() => { clearSecrets(); onDismiss?.(); }} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
@@ -253,88 +253,86 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
         <StatusBar hidden={false} barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.root}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={busy} onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed, busy && { opacity: .45 }]}><Text style={[styles.headerActionText, { color: colors.accent }]}>キャンセル</Text></Pressable>
-            <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>{mode === 'save' ? initialProfile ? 'サーバーを編集' : 'サーバーを追加' : 'サーバーに接続'}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel={mode === 'save' ? 'Save server' : 'Connect'} accessibilityState={{ disabled: busy, busy }} disabled={busy} testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.accent} /> : <Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>{mode === 'save' ? '保存' : '接続'}</Text>}</Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={busy} onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed, busy && { opacity: .45 }]}><Text style={[styles.headerActionText, { color: colors.accent }]}>Cancel</Text></Pressable>
+            <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>{mode === 'save' ? initialProfile ? 'Edit server' : 'Add server' : 'Connect to server'}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={mode === 'save' ? 'Save server' : 'Connect'} accessibilityState={{ disabled: busy, busy }} disabled={busy} testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.accent} /> : <Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>{mode === 'save' ? 'Save' : 'Connect'}</Text>}</Pressable>
           </View>
           <ScrollView ref={scrollRef} pointerEvents={busy ? 'none' : 'auto'} onLayout={scrollPasswordIntoView} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>
             <View style={styles.intro}>
-              <Text style={[styles.title, { color: colors.text }]}>{mode === 'save' ? 'いつもの接続先を。' : 'いつもの作業へ。'}</Text>
-              <Text style={[styles.body, { color: colors.muted }]}>{mode === 'save' ? '接続先をこの端末に保存します。認証情報の保存は任意です。' : 'SSH の接続先と認証情報を入力してください。接続後に、サーバーのワークスペースが並びます。'}</Text>
+              <Text style={[styles.body, { color: colors.muted }]}>{mode === 'save' ? 'Save a server on this device. You can add credentials now or when you connect.' : 'Connect over SSH to open the workspaces on your server.'}</Text>
             </View>
             {submissionError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.danger }]}>{submissionError}</Text> : null}
             <View style={styles.section}>
-              <Text style={[styles.sectionLabel, { color: colors.muted }]}>接続先</Text>
+              <Text style={[styles.sectionLabel, { color: colors.muted }]}>Server</Text>
               <View style={styles.hostPortRow}>
                 <View style={styles.hostColumn}>
-                  <Field label="ホスト" colors={colors} error={errors.host}>
+                  <Field label="Host" colors={colors} error={errors.host}>
                     <TextInput ref={hostRef} accessibilityLabel="Host" testID="ssh-host" {...inputDefaults} value={host} onChangeText={value => { setHost(value); setErrors(current => ({ ...current, host: undefined })); }} onSubmitEditing={() => portRef.current?.focus()} placeholder="server.example.com" returnKeyType="next" style={[inputStyle, errors.host && { borderColor: colors.danger }]} />
                   </Field>
                 </View>
                 <View style={styles.portColumn}>
-                  <Field label="ポート" colors={colors} error={errors.port}>
+                  <Field label="Port" colors={colors} error={errors.port}>
                     <TextInput ref={portRef} accessibilityLabel="Port" testID="ssh-port" autoComplete="off" inputMode="numeric" keyboardType="number-pad" maxLength={5} value={port} onChangeText={value => { setPort(value.replace(/[^0-9]/g, '')); setErrors(current => ({ ...current, port: undefined })); }} onSubmitEditing={() => usernameRef.current?.focus()} returnKeyType="next" selectionColor={colors.accent} style={[inputStyle, { fontVariant: ['tabular-nums'] }, errors.port && { borderColor: colors.danger }]} />
                   </Field>
                 </View>
               </View>
-              <Field label="ユーザー名" colors={colors} error={errors.username}>
+              <Field label="Username" colors={colors} error={errors.username}>
                 <TextInput ref={usernameRef} accessibilityLabel="Username" testID="ssh-username" {...inputDefaults} value={username} onChangeText={value => { setUsername(value); setErrors(current => ({ ...current, username: undefined })); }} onSubmitEditing={() => authMethod === 'publicKey' ? privateKeyRef.current?.focus() : passwordRef.current?.focus()} placeholder="developer" returnKeyType="next" style={[inputStyle, errors.username && { borderColor: colors.danger }]} />
               </Field>
             </View>
             <View style={styles.section}>
-              <Text style={[styles.sectionLabel, { color: colors.muted }]}>作業環境</Text>
+              <Text style={[styles.sectionLabel, { color: colors.muted }]}>Workspace runtime</Text>
               <View accessibilityRole="radiogroup" accessibilityLabel="Workspace backend" style={[styles.authChoices, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                {(['tmux', 'herdr'] as const).map(value => <Pressable key={value} accessibilityRole="radio" accessibilityLabel={`${value} backend`} testID={`ssh-backend-${value}`} accessibilityState={{ selected: backend === value, checked: backend === value }} disabled={busy} onPress={() => { setBackend(value); setErrors(current => ({ ...current, runtime: undefined })); }} style={({ pressed }) => [styles.authChoice, backend === value && { backgroundColor: colors.accentFill }, pressed && styles.pressed]}>
-                  <Text style={[styles.authChoiceText, { color: backend === value ? colors.onAccent : colors.text }]}>{value === 'herdr' ? 'Herdr' : 'tmux'}</Text>
+                {(['tmux', 'herdr'] as const).map(value => <Pressable key={value} accessibilityRole="radio" accessibilityLabel={`${value} backend`} testID={`ssh-backend-${value}`} accessibilityState={{ selected: backend === value, checked: backend === value }} disabled={busy} onPress={() => { setBackend(value); setErrors(current => ({ ...current, runtime: undefined })); }} style={({ pressed }) => [styles.authChoice, backend === value && { backgroundColor: colors.elevated }, pressed && styles.pressed]}>
+                  <Text style={[styles.authChoiceText, { color: backend === value ? colors.accent : colors.muted }]}>{value === 'herdr' ? 'Herdr' : 'tmux'}</Text>
                 </Pressable>)}
               </View>
               {backend === 'herdr' ? <>
-                <Field label="Herdr セッション名" colors={colors} optional error={errors.runtime}>
+                <Field label="Herdr session" colors={colors} optional error={errors.runtime}>
                   <TextInput ref={runtimeRef} accessibilityLabel="Herdr session name" testID="ssh-runtime" {...inputDefaults} value={runtime} maxLength={64} onChangeText={value => { setRuntime(value); setErrors(current => ({ ...current, runtime: undefined })); }} placeholder="default" returnKeyType="next" onSubmitEditing={() => authMethod === 'publicKey' ? privateKeyRef.current?.focus() : passwordRef.current?.focus()} style={[inputStyle, errors.runtime && { borderColor: colors.danger }]} />
                 </Field>
-                <Text style={[styles.helper, { color: colors.muted }]}>PCで起動済みのHerdrに接続します。空欄ならdefaultセッションを使います。</Text>
-              </> : <Text style={[styles.helper, { color: colors.muted }]}>tmux の meeterm セッションを使います。PCでも同じ作業を続けられます。</Text>}
+                <Text style={[styles.helper, { color: colors.muted }]}>Connect to an existing Herdr session. Leave blank to use default.</Text>
+              </> : <Text style={[styles.helper, { color: colors.muted }]}>Uses the meeterm session in tmux. Your computer can open the same workspaces.</Text>}
             </View>
             <View style={styles.section}>
-              <Text style={[styles.sectionLabel, { color: colors.muted }]}>認証</Text>
-              <Text style={[styles.authMethodLabel, { color: colors.muted }]}>認証方式</Text>
+              <Text style={[styles.sectionLabel, { color: colors.muted }]}>Authentication</Text>
               <View accessibilityRole="radiogroup" accessibilityLabel="Authentication method" style={[styles.authChoices, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <Pressable accessibilityRole="radio" accessibilityLabel="Private key authentication" accessibilityState={{ selected: authMethod === 'publicKey', checked: authMethod === 'publicKey' }} testID="ssh-auth-public-key" onPress={() => changeAuthMethod('publicKey')} style={({ pressed }) => [styles.authChoice, authMethod === 'publicKey' && { backgroundColor: colors.accentFill }, pressed && styles.pressed]}>
-                  <Text style={[styles.authChoiceText, { color: authMethod === 'publicKey' ? colors.onAccent : colors.text }]}>秘密鍵</Text>
+                <Pressable accessibilityRole="radio" accessibilityLabel="Private key authentication" accessibilityState={{ selected: authMethod === 'publicKey', checked: authMethod === 'publicKey' }} testID="ssh-auth-public-key" onPress={() => changeAuthMethod('publicKey')} style={({ pressed }) => [styles.authChoice, authMethod === 'publicKey' && { backgroundColor: colors.elevated }, pressed && styles.pressed]}>
+                  <Text style={[styles.authChoiceText, { color: authMethod === 'publicKey' ? colors.accent : colors.muted }]}>Private key</Text>
                 </Pressable>
-                <Pressable accessibilityRole="radio" accessibilityLabel="Password authentication" accessibilityState={{ selected: authMethod === 'password', checked: authMethod === 'password' }} testID="ssh-auth-password" onPress={() => changeAuthMethod('password')} style={({ pressed }) => [styles.authChoice, authMethod === 'password' && { backgroundColor: colors.accentFill }, pressed && styles.pressed]}>
-                  <Text style={[styles.authChoiceText, { color: authMethod === 'password' ? colors.onAccent : colors.text }]}>パスワード</Text>
+                <Pressable accessibilityRole="radio" accessibilityLabel="Password authentication" accessibilityState={{ selected: authMethod === 'password', checked: authMethod === 'password' }} testID="ssh-auth-password" onPress={() => changeAuthMethod('password')} style={({ pressed }) => [styles.authChoice, authMethod === 'password' && { backgroundColor: colors.elevated }, pressed && styles.pressed]}>
+                  <Text style={[styles.authChoiceText, { color: authMethod === 'password' ? colors.accent : colors.muted }]}>Password</Text>
                 </Pressable>
               </View>
               {usingSavedCredential ? <View style={[styles.savedCredential, { backgroundColor: colors.surface }]}>
-                <Text style={[styles.label, { color: colors.text }]}>認証情報を安全に保存済み</Text>
-                <Text style={[styles.helper, { color: colors.muted }]}>保存済みの認証情報を使います。内容は画面に表示しません。</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Replace saved credentials" onPress={() => setReplaceCredential(true)} style={styles.replaceAction}><Text style={[styles.label, { color: colors.accent }]}>認証情報を入れ替える</Text></Pressable>
+                <Text style={[styles.label, { color: colors.text }]}>Credentials saved securely</Text>
+                <Text style={[styles.helper, { color: colors.muted }]}>Connect using the credentials saved on this device.</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Replace saved credentials" onPress={() => setReplaceCredential(true)} style={styles.replaceAction}><Text style={[styles.label, { color: colors.accent }]}>Replace credentials</Text></Pressable>
               </View> : authMethod === 'publicKey' ? <>
-                <Field label="OpenSSH 秘密鍵" colors={colors} error={errors.privateKey} action={{ label: showPrivateKey ? '隠す' : '表示', accessibilityLabel: showPrivateKey ? 'Hide private key' : 'Show private key', onPress: () => setShowPrivateKey(value => !value) }}>
+                <Field label="OpenSSH private key" colors={colors} error={errors.privateKey} action={{ label: showPrivateKey ? 'Hide' : 'Show', accessibilityLabel: showPrivateKey ? 'Hide private key' : 'Show private key', onPress: () => setShowPrivateKey(value => !value) }}>
                   <View style={[styles.keyShell, { backgroundColor: colors.surface, borderColor: errors.privateKey ? colors.danger : colors.border }]}>
                     <TextInput ref={privateKeyRef} accessibilityLabel="Private OpenSSH key" testID="ssh-private-key" accessibilityValue={{ text: privateKey ? 'Private key entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" multiline caretHidden={!showPrivateKey} value={privateKey} onChangeText={value => { setPrivateKey(value); setErrors(current => ({ ...current, privateKey: undefined })); }} placeholder={showPrivateKey ? '-----BEGIN OPENSSH PRIVATE KEY-----' : undefined} selectionColor={showPrivateKey ? colors.accent : 'transparent'} style={[styles.keyInput, { color: showPrivateKey ? colors.text : 'transparent' }]} textAlignVertical="top" />
-                    {!showPrivateKey ? <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" pointerEvents="none" style={styles.keyMask}><Text style={[styles.body, { color: colors.muted }]}>{privateKey ? '秘密鍵を入力しました' : '秘密鍵の全文を貼り付け'}</Text></View> : null}
+                    {!showPrivateKey ? <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" pointerEvents="none" style={styles.keyMask}><Text style={[styles.body, { color: colors.muted }]}>{privateKey ? 'Private key entered' : 'Paste your complete private key'}</Text></View> : null}
                   </View>
                 </Field>
-                <Field label="鍵のパスフレーズ" colors={colors} optional action={{ label: showPassphrase ? '隠す' : '表示', accessibilityLabel: showPassphrase ? 'Hide passphrase' : 'Show passphrase', onPress: () => setShowPassphrase(value => !value) }}>
-                  <TextInput accessibilityLabel="Key passphrase, optional" testID="ssh-passphrase" {...inputDefaults} importantForAutofill="no" value={passphrase} onChangeText={setPassphrase} onSubmitEditing={submit} placeholder="暗号化された鍵の場合のみ" returnKeyType="go" secureTextEntry={!showPassphrase} style={inputStyle} />
+                <Field label="Key passphrase" colors={colors} optional action={{ label: showPassphrase ? 'Hide' : 'Show', accessibilityLabel: showPassphrase ? 'Hide passphrase' : 'Show passphrase', onPress: () => setShowPassphrase(value => !value) }}>
+                  <TextInput accessibilityLabel="Key passphrase, optional" testID="ssh-passphrase" {...inputDefaults} importantForAutofill="no" value={passphrase} onChangeText={setPassphrase} onSubmitEditing={submit} placeholder="For encrypted keys only" returnKeyType="go" secureTextEntry={!showPassphrase} style={inputStyle} />
                 </Field>
               </> : <>
-                <Field label="SSH パスワード" colors={colors} error={errors.password} action={{ label: showPassword ? '隠す' : '表示', accessibilityLabel: showPassword ? 'Hide password' : 'Show password', onPress: () => setShowPassword(value => !value) }}>
-                  <TextInput ref={passwordRef} accessibilityLabel="SSH password" testID="ssh-password" accessibilityValue={{ text: password ? 'Password entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" value={password} onChangeText={value => { setPassword(value); setErrors(current => ({ ...current, password: undefined })); }} onFocus={scrollPasswordIntoView} onSubmitEditing={submit} placeholder="SSH サーバーのパスワード" returnKeyType="go" secureTextEntry={!showPassword} style={[inputStyle, errors.password && { borderColor: colors.danger }]} />
+                <Field label="SSH password" colors={colors} error={errors.password} action={{ label: showPassword ? 'Hide' : 'Show', accessibilityLabel: showPassword ? 'Hide password' : 'Show password', onPress: () => setShowPassword(value => !value) }}>
+                  <TextInput ref={passwordRef} accessibilityLabel="SSH password" testID="ssh-password" accessibilityValue={{ text: password ? 'Password entered' : 'Empty' }} {...inputDefaults} importantForAutofill="no" value={password} onChangeText={value => { setPassword(value); setErrors(current => ({ ...current, password: undefined })); }} onFocus={scrollPasswordIntoView} onSubmitEditing={submit} placeholder="Your SSH password" returnKeyType="go" secureTextEntry={!showPassword} style={[inputStyle, errors.password && { borderColor: colors.danger }]} />
                 </Field>
               </>}
-              {!usingSavedCredential ? <Text style={[styles.helper, { color: colors.muted }]}>{mode === 'save' && !saveCredential ? '認証情報は空欄のまま保存できます。接続するときに入力します。' : '接続・保存・キャンセル時に、認証情報を入力欄から消去します。'}</Text> : null}
+              {!usingSavedCredential ? <Text style={[styles.helper, { color: colors.muted }]}>{mode === 'save' && !saveCredential ? 'You can leave credentials blank and enter them when you connect.' : 'Credentials are cleared from this form when you connect, save, or cancel.'}</Text> : null}
             </View>
             <View style={styles.section}>
-              <Text style={[styles.sectionLabel, { color: colors.muted }]}>この端末に保存</Text>
-              {mode === 'connect' ? <View style={styles.switchRow}><Text style={[styles.switchLabel, { color: colors.text }]}>接続先を保存</Text><Switch accessibilityLabel="Save server profile" testID="save-server-profile" value={saveServer} onValueChange={value => { setSaveServer(value); if (!value) setSaveCredential(false); }} disabled={busy || Boolean(initialProfile)} trackColor={{ true: colors.accentFill }} /></View> : null}
+              <Text style={[styles.sectionLabel, { color: colors.muted }]}>Save on this device</Text>
+              {mode === 'connect' ? <View style={styles.switchRow}><Text style={[styles.switchLabel, { color: colors.text }]}>Save server</Text><Switch accessibilityLabel="Save server profile" testID="save-server-profile" value={saveServer} onValueChange={value => { setSaveServer(value); if (!value) setSaveCredential(false); }} disabled={busy || Boolean(initialProfile)} trackColor={{ true: colors.accentFill }} /></View> : null}
               {saveServer || mode === 'save' ? <>
-                <Field label="表示名" colors={colors} optional error={errors.name}><TextInput ref={nameRef} accessibilityLabel="Server name" testID="server-profile-name" value={name} onChangeText={setName} placeholder={host.trim() || '自宅のサーバー'} placeholderTextColor={colors.placeholder} selectionColor={colors.accent} autoComplete="off" returnKeyType="done" onSubmitEditing={Keyboard.dismiss} style={inputStyle} /></Field>
-                <View style={styles.switchRow}><Text style={[styles.switchLabel, { color: colors.text }]}>認証情報も保存</Text><Switch accessibilityLabel="Save credentials securely" testID="save-credentials" value={saveCredential} onValueChange={setSaveCredential} disabled={busy} trackColor={{ true: colors.accentFill }} /></View>
-                <Text style={[styles.helper, { color: colors.muted }]}>{saveCredential ? '秘密鍵・パスワードは OS の安全な保存領域で保護します。次回から入力せず接続できます。' : initialProfile?.credentialSaved ? '保存時に、この接続先の保存済み認証情報を削除します。' : '認証情報は保存しません。アプリを終了した後は、接続時に再入力します。'}</Text>
-                {initialProfile?.credentialSaved && !credentialMatches ? <Text style={[styles.helper, { color: colors.muted }]}>接続先・ユーザー・認証方式を変えたため、以前の認証情報は引き継ぎません。</Text> : null}
+                <Field label="Display name" colors={colors} optional error={errors.name}><TextInput ref={nameRef} accessibilityLabel="Server name" testID="server-profile-name" value={name} onChangeText={setName} placeholder={host.trim() || 'Home server'} placeholderTextColor={colors.placeholder} selectionColor={colors.accent} autoComplete="off" returnKeyType="done" onSubmitEditing={Keyboard.dismiss} style={inputStyle} /></Field>
+                <View style={styles.switchRow}><Text style={[styles.switchLabel, { color: colors.text }]}>Remember credentials</Text><Switch accessibilityLabel="Save credentials securely" testID="save-credentials" value={saveCredential} onValueChange={setSaveCredential} disabled={busy} trackColor={{ true: colors.accentFill }} /></View>
+                <Text style={[styles.helper, { color: colors.muted }]}>{saveCredential ? 'Protected by your device secure storage. Connect next time without entering credentials.' : initialProfile?.credentialSaved ? 'Saving will remove the credentials previously stored for this server.' : 'Credentials will not be saved. Enter them again after restarting the app.'}</Text>
+                {initialProfile?.credentialSaved && !credentialMatches ? <Text style={[styles.helper, { color: colors.muted }]}>The server, username, or authentication method changed. Enter credentials for this connection.</Text> : null}
               </> : null}
             </View>
           </ScrollView>
@@ -358,8 +356,8 @@ const styles = StyleSheet.create({
   section: { gap: 16 },
   sectionLabel: { fontSize: 13, fontWeight: '600' },
   authMethodLabel: { fontSize: 14, lineHeight: 20, fontWeight: '500', marginBottom: -8 },
-  authChoices: { minHeight: 52, flexDirection: 'row', borderWidth: 1, borderRadius: 12, borderCurve: 'continuous', overflow: 'hidden' },
-  authChoice: { flex: 1, minHeight: 50, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  authChoices: { minHeight: 52, padding: 4, gap: 4, flexDirection: 'row', borderWidth: 1, borderRadius: 12, borderCurve: 'continuous', overflow: 'hidden' },
+  authChoice: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderRadius: 8, borderCurve: 'continuous' },
   authChoiceText: { fontSize: 15, lineHeight: 23, fontWeight: '600' },
   hostPortRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   hostColumn: { flex: 1, minWidth: 0 },

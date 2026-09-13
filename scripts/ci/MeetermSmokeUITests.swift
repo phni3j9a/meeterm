@@ -584,24 +584,24 @@ final class MeetermSmokeUITests: XCTestCase {
   private func waitForStandardScreen(_ screen: String) -> Bool {
     switch screen {
     case "home":
-      let title = app.staticTexts["ワークスペース"]
+      let title = app.staticTexts["Workspaces"]
       let profile = app.buttons.matching(
         NSPredicate(format: "label == %@", "Connect saved server Smoke server")
       ).firstMatch
       return title.waitForExistence(timeout: 30)
         && waitForHittable(profile, timeout: 30)
     case "servers":
-      let title = app.staticTexts["保存済みサーバー"]
+      let title = app.staticTexts["Saved servers"]
       let profile = app.buttons.matching(
         NSPredicate(format: "identifier == %@", "server-profile-smoke-profile")
       ).firstMatch
       return title.waitForExistence(timeout: 30)
         && waitForHittable(profile, timeout: 30)
     case "connection":
-      return app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30)
+      return app.staticTexts["Connect to server"].waitForExistence(timeout: 30)
         && waitForHittable(input("Host"), timeout: 30)
     case "password":
-      guard app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30) else { return false }
+      guard app.staticTexts["Connect to server"].waitForExistence(timeout: 30) else { return false }
       // The password field is deliberately empty but can be below the fold
       // on the iPhone simulator. Reuse the bounded, secret-free reveal path
       // used by the focused form test before calling the screen ready.
@@ -617,27 +617,27 @@ final class MeetermSmokeUITests: XCTestCase {
       return app.staticTexts["Connected"].waitForExistence(timeout: 30)
         && waitForHittable(terminal, timeout: 30)
     case "settings":
-      return app.staticTexts["ターミナル設定"].waitForExistence(timeout: 30)
+      return app.staticTexts["Settings"].waitForExistence(timeout: 30)
         && waitForHittable(app.buttons["settings-submit"], timeout: 30)
     case "workspace-name":
-      return app.staticTexts["ワークスペースの名前"].waitForExistence(timeout: 30)
+      return app.staticTexts["Rename workspace"].waitForExistence(timeout: 30)
         && waitForHittable(input("Workspace or terminal name"), timeout: 30)
     case "terminal-name":
-      return app.staticTexts["ターミナルの名前"].waitForExistence(timeout: 30)
+      return app.staticTexts["Rename terminal"].waitForExistence(timeout: 30)
         && waitForHittable(input("Workspace or terminal name"), timeout: 30)
     case "handoff":
-      return app.staticTexts["PC で続きを"].waitForExistence(timeout: 30)
+      return app.staticTexts["Continue on your computer"].waitForExistence(timeout: 30)
         && waitForHittable(button("Disconnect"), timeout: 30)
     case "herdr-connection":
       let backend = button("herdr backend")
       let runtime = input("Herdr session name")
-      return app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30)
+      return app.staticTexts["Connect to server"].waitForExistence(timeout: 30)
         && waitForHittable(backend, timeout: 30)
         && waitForSelected(backend)
         && runtime.waitForExistence(timeout: 30)
         && waitForShortFieldValue(runtime, expected: "dev", timeout: 30)
     case "herdr-groups":
-      let title = app.staticTexts["Groupを切り替える"]
+      let title = app.staticTexts["Switch group"]
       let development = button("Group Development")
       let tests = button("Group Tests & review")
       return title.waitForExistence(timeout: 30)
@@ -649,10 +649,10 @@ final class MeetermSmokeUITests: XCTestCase {
       return waitForHittable(groupPicker, timeout: 30)
         && terminal.waitForExistence(timeout: 30)
         && app.staticTexts["Claude Code"].waitForExistence(timeout: 30)
-        && app.staticTexts["作業中"].waitForExistence(timeout: 30)
+        && app.staticTexts["Working"].waitForExistence(timeout: 30)
     case "herdr-workspaces":
       let total = app.staticTexts.matching(
-        NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "すべて", "2")
+        NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "All", "2")
       ).firstMatch
       // WorkspaceRow is one accessible button with an explicit label. Its
       // count/Agent Text children are grouped into that element on iOS, so
@@ -756,7 +756,7 @@ final class MeetermSmokeUITests: XCTestCase {
     cancel.tap()
     let discard = app.alerts.firstMatch
     XCTAssertTrue(discard.waitForExistence(timeout: 10), "The dirty form did not ask for confirmation.")
-    let discardButton = discard.buttons["破棄"]
+    let discardButton = discard.buttons["Discard"]
     XCTAssertTrue(discardButton.waitForExistence(timeout: 5), "The form discard action is unavailable.")
     discardButton.tap()
     XCTAssertTrue(waitForConnectionFormDismissal(timeout: 10), "The form did not dismiss after cancellation.")
@@ -879,7 +879,7 @@ final class MeetermSmokeUITests: XCTestCase {
     fillTextField(label: "Scrollback lines", value: "20000")
     let theme = button("terminal-theme")
     theme.tap()
-    app.buttons["ライト"].tap()
+    app.buttons["Light"].tap()
     capture("daily-settings")
     button("settings-submit").tap()
     XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 15))
@@ -892,7 +892,7 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertEqual(shortFieldValue(input("Scrollback lines")), "20000")
     fillTextField(label: "Terminal font size", value: "15")
     button("terminal-theme").tap()
-    app.buttons["ダーク"].tap()
+    app.buttons["Dark"].tap()
     button("settings-submit").tap()
 
     verifyNameOperations()
@@ -943,7 +943,7 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     record("daily_create_workspace_row_ready")
     button("Workspace options daily-smoke").tap()
-    button("名前を変更").tap()
+    button("Rename").tap()
     fillTextField(label: "Workspace or terminal name", value: "daily-renamed")
     button("name-submit").tap()
     XCTAssertTrue(button("Workspace daily-renamed").waitForExistence(timeout: 20))
@@ -965,7 +965,7 @@ final class MeetermSmokeUITests: XCTestCase {
     button("Close terminal").tap()
     let closePane = app.alerts.firstMatch
     XCTAssertTrue(closePane.waitForExistence(timeout: 10))
-    closePane.buttons["終了"].tap()
+    closePane.buttons["Close"].tap()
     let paneRemoved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
       let tabs = self.app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Terminal %'"))
       return Set(tabs.allElementsBoundByIndex.map { $0.label }).count == 1
@@ -973,10 +973,10 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [paneRemoved], timeout: 20), .completed)
     button("Back to workspaces").tap()
     button("Workspace options daily-renamed").tap()
-    button("終了").tap()
+    button("Close").tap()
     let confirm = app.alerts.firstMatch
     XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-    confirm.buttons["終了"].tap()
+    confirm.buttons["Close"].tap()
     let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == NO"), object: button("Workspace daily-renamed"))
     XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 20), .completed)
   }
@@ -1640,14 +1640,14 @@ final class MeetermSmokeUITests: XCTestCase {
     // uploaded file contains flags, never the entered host, username, key, or
     // any XCTest description.
     let validations: [(String, String)] = [
-      ("profile_name", "名前は制御文字を含まない80文字以内で入力してください。"),
-      ("host", "空白を含まないホスト名か IP アドレスを入力してください。"),
-      ("port", "1〜65535 の数字を入力してください。"),
-      ("username", "SSH のユーザー名を入力してください。空白は使えません。"),
-      ("private_key", "BEGIN と END の行を含む OpenSSH 形式の秘密鍵を貼り付けてください。"),
-      ("password", "SSH パスワードを入力してください。"),
-      ("submission_rejected", "保存または接続を開始できませんでした。接続先を確認して、認証情報を入力し直してください。"),
-      ("submission_failed", "保存または接続を開始できませんでした。認証情報を入力し直して、もう一度試してください。"),
+      ("profile_name", "Use up to 80 characters, without control characters."),
+      ("host", "Enter a hostname or IP address without spaces."),
+      ("port", "Enter a port from 1 to 65535."),
+      ("username", "Enter your SSH username without spaces."),
+      ("private_key", "Paste an OpenSSH private key, including its BEGIN and END lines."),
+      ("password", "Enter your SSH password."),
+      ("submission_rejected", "Could not save or connect. Check the address and enter your credentials again."),
+      ("submission_failed", "Could not save or connect. Enter your credentials again and retry."),
     ]
     let lines = validations.map { name, message in
       "\(name)_validation_error_visible=\(app.staticTexts[message].exists ? 1 : 0)"
@@ -1733,7 +1733,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let trustHittable = trustExists && trust.isHittable
     let appForeground = app.state == .runningForeground
     let hostResponseError = app.staticTexts[
-      "ホスト鍵への回答を送れませんでした。接続をやり直してください。"
+      "Your host-key decision could not be sent. Connect again."
     ].exists
     let screenshotSafe = appForeground && connectionFormIsGone()
     writeConnectionStateArtifact(observation)

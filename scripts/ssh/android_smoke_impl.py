@@ -2904,7 +2904,7 @@ def edit_saved_profile_name(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, options, stage)
-    tap_action(device, stage, ("名前・情報を編集",))
+    tap_action(device, stage, ("Edit server",))
     fill_field(
         device,
         "Server name",
@@ -2975,8 +2975,8 @@ def switch_saved_profile(
 ) -> Node:
     profile = wait_for_saved_profile(device, stage, name, selected=False)
     tap_node(device, profile, stage)
-    wait_for_node(device, stage, text="接続先を切り替えますか？")
-    tap_action(device, stage, ("切り替える",))
+    wait_for_node(device, stage, text="Switch servers?")
+    tap_action(device, stage, ("Switch server",))
     wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
     tap_action(device, stage, ("Saved servers",))
     return wait_for_saved_profile(device, stage, name, selected=True)
@@ -3026,9 +3026,9 @@ def exercise_saved_profile_management(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, second_options, stage)
-    tap_action(device, stage, ("削除",))
-    wait_for_node(device, stage, text="保存済みサーバーを削除しますか？")
-    tap_action(device, stage, ("キャンセル",))
+    tap_action(device, stage, ("Remove",))
+    wait_for_node(device, stage, text="Remove saved server?")
+    tap_action(device, stage, ("Cancel",))
     wait_for_saved_profile(device, stage, DAILY_SECOND_PROFILE_NAME, selected=False)
     completed.append("daily_profile_delete_cancelled")
 
@@ -3040,9 +3040,9 @@ def exercise_saved_profile_management(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, second_options, stage)
-    tap_action(device, stage, ("削除",))
-    wait_for_node(device, stage, text="保存済みサーバーを削除しますか？")
-    tap_action(device, stage, ("削除",))
+    tap_action(device, stage, ("Remove",))
+    wait_for_node(device, stage, text="Remove saved server?")
+    tap_action(device, stage, ("Remove",))
     wait_for_saved_profile_absent(
         device,
         stage,
@@ -3188,7 +3188,7 @@ def reconnect_saved_profile_after_restart(
     wait_for_text_fragment(
         device,
         stage,
-        "認証情報を保存済み",
+        "Credentials saved",
         timeout=RECONNECT_TIMEOUT,
     )
     capture_optional_screenshot(
@@ -3220,7 +3220,7 @@ def exercise_daily_settings(
 
     stage = "daily_settings_theme"
     tap_action(device, stage, ("Terminal theme",))
-    light = wait_for_node(device, stage, text="ライト")
+    light = wait_for_node(device, stage, text="Light")
     tap_node(device, light, stage)
 
     fill_field(
@@ -3255,7 +3255,7 @@ def exercise_daily_settings(
     stage = "daily_settings_reopen"
     tap_action(device, stage, ("Terminal settings",))
     wait_for_field_value(device, stage, "Terminal font size", "18")
-    wait_for_node(device, stage, text="ライト")
+    wait_for_node(device, stage, text="Light")
     capture_optional_screenshot(
         device,
         artifact_dir / "daily-settings.png",
@@ -3503,7 +3503,7 @@ def exercise_daily_workspace_and_selection(
         scroll=True,
     )
     tap_node(device, options, stage)
-    tap_action(device, stage, ("名前を変更",))
+    tap_action(device, stage, ("Rename",))
     fill_field(
         device,
         "Workspace or terminal name",
@@ -3669,8 +3669,8 @@ def exercise_daily_workspace_and_selection(
         scroll=True,
     )
     tap_node(device, close_pane, stage)
-    wait_for_node(device, stage, text="ターミナルを終了しますか？")
-    tap_action(device, stage, ("終了",))
+    wait_for_node(device, stage, text="Close terminal?")
+    tap_action(device, stage, ("Close",))
     wait_for_panes(
         device,
         stage,
@@ -3696,9 +3696,9 @@ def exercise_daily_workspace_and_selection(
         scroll=True,
     )
     tap_node(device, options, stage)
-    tap_action(device, stage, ("終了",))
-    wait_for_node(device, stage, text="ワークスペースを終了しますか？")
-    tap_action(device, stage, ("終了",))
+    tap_action(device, stage, ("Close",))
+    wait_for_node(device, stage, text="Close workspace?")
+    tap_action(device, stage, ("Close",))
     remaining_workspaces = wait_for_workspace_count(
         device,
         stage,

@@ -162,7 +162,7 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         ]
     elif screen == "herdr-groups":
         checks = [
-            ("group_sheet_title", "Groupを切り替える" in values),
+            ("group_sheet_title", "Switch group" in values),
             ("group_development", "Group Development" in values),
             ("group_tests_review", "Group Tests & review" in values),
         ]
@@ -171,16 +171,16 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             ("terminal_group_switch", "Switch terminal group" in values),
             ("native_terminal", "Terminal" in values),
             ("agent_claude_code", "Claude Code" in values),
-            ("agent_working", "作業中" in values),
+            ("agent_working", "Working" in values),
         ]
     else:
         checks = [
             (
                 "workspace_total_two",
-                any(re.fullmatch(r"すべて\s+2", value) for value in normalized_values),
+                any(re.fullmatch(r"All\s+2", value) for value in normalized_values),
             ),
-            ("main_terminal_count_four", "4 ターミナル" in normalized_values),
-            ("tools_terminal_count_one", "1 ターミナル" in normalized_values),
+            ("main_terminal_count_four", "4 Terminal" in normalized_values),
+            ("tools_terminal_count_one", "1 Terminal" in normalized_values),
         ]
     return [name for name, passed in checks if not passed]
 
