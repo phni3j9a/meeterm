@@ -1516,10 +1516,10 @@ final class MeetermSmokeUITests: XCTestCase {
       return
     }
     let fixedLabel = { (label: String) in
-      app.staticTexts.matching(NSPredicate(format: "label == %@", label)).firstMatch
+      self.app.staticTexts.matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
     let fixedButton = { (label: String) in
-      app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+      self.app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
     var lines = [
       "phase=\(phase)",
