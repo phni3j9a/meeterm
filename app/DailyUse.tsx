@@ -71,7 +71,8 @@ function FormModal({ visible, title, submitLabel, submitId, submitText = 'Save',
   // can still reflect the preceding palette during a theme transition.
   return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy && !dirty} onRequestClose={onClose} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider><SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.flex, { backgroundColor: colors.background }]}>
-      <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
+      {/* An iOS page sheet leaves the status bar over its presenting screen. */}
+      {Platform.OS === 'android' ? <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} /> : null}
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <View style={[styles.formHeader, { borderBottomColor: colors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={busy} onPress={onClose} style={styles.headerAction}><Text style={[styles.actionText, { color: colors.accent, opacity: busy ? .45 : 1 }]}>Cancel</Text></Pressable>
@@ -179,7 +180,7 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
       <Text style={[styles.helper, { color: colors.muted }]}>Applies to every terminal. Reducing this removes older history. After an app restart, up to 2,000 lines are restored from the server.</Text>
     </View>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>CONNECTION</Text>
-      <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Reconnect automatically</Text></View><Switch accessibilityLabel="Automatic reconnect" testID="automatic-reconnect" value={automaticReconnect} onValueChange={setAutomaticReconnect} trackColor={{ true: colors.accentFill }} /></View></View>
+      <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Reconnect automatically</Text></View><Switch thumbColor={Platform.OS === 'android' ? '#FFFFFF' : undefined} accessibilityLabel="Automatic reconnect" testID="automatic-reconnect" value={automaticReconnect} onValueChange={setAutomaticReconnect} trackColor={{ true: colors.accentFill }} /></View></View>
       <Text style={[styles.helper, { color: colors.muted }]}>Reconnect after a network interruption or when you return to the app. Manual disconnects stay disconnected.</Text>
     </View>
     {error ? <Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>{error}</Text> : null}

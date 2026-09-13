@@ -40,7 +40,16 @@ case "${suite}" in
       standard-workspace-name standard-terminal-name standard-handoff
       standard-herdr-connection standard-herdr-groups standard-herdr-terminal
       standard-herdr-workspaces
-      standard-welcome standard-empty standard-search-empty standard-disconnected standard-reconnecting standard-connection-error standard-long-workspaces
+    )
+    ;;
+  polish)
+    if [[ -f "${artifact_dir}/terminal.png" ]]; then
+      scripts/ci/validate-png.sh "${artifact_dir}/terminal.png" "${artifact_dir}/screenshot-unavailable.txt"
+    else
+      echo "Polish XCTest did not capture its fresh native foundation" > "${artifact_dir}/screenshot-unavailable.txt"
+    fi
+    required_screenshots=(
+      polish-welcome polish-empty polish-search-empty polish-disconnected polish-reconnecting polish-connection-error polish-long-workspaces
     )
     ;;
   full)

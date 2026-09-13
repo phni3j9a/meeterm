@@ -92,8 +92,7 @@ for checkpoint in \
   standard-workspaces standard-terminal standard-settings \
   standard-workspace-name standard-terminal-name standard-handoff \
   standard-herdr-connection standard-herdr-groups standard-herdr-terminal \
-  standard-herdr-workspaces \
-  standard-welcome standard-empty standard-search-empty standard-disconnected standard-reconnecting standard-connection-error standard-long-workspaces; do
+  standard-herdr-workspaces; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
 done
 : > "${xcrun_log}"
@@ -116,6 +115,17 @@ if grep -Eq 'host-trust|reconnected|forms-controls' "${artifact_root}/ui-screens
   echo "standard evidence incorrectly requires old full or form checkpoints" >&2
   exit 1
 fi
+
+# Additional UI states remain separate from standard and from real SSH.
+for checkpoint in polish-welcome polish-empty polish-search-empty polish-disconnected polish-reconnecting polish-connection-error polish-long-workspaces; do
+  cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
+done
+run_collector polish
+grep -Fxq 'suite=polish' "${artifact_root}/screenshot-scope.txt"
+test ! -e "${artifact_root}/ui-screenshots-unavailable.txt"
+: > "${artifact_root}/polish-welcome.png"
+run_collector polish
+grep -Fq 'polish-welcome' "${artifact_root}/ui-screenshots-unavailable.txt"
 
 # The short SSH suite may preserve safe post-auth terminal checkpoints. It does
 # not manufacture screenshots, and missing evidence remains a diagnostic.

@@ -152,6 +152,42 @@ class SelectionCopyObserverTests(unittest.TestCase):
 
 
 class RunnerDiagnosticsTests(unittest.TestCase):
+    def test_polish_requires_navigation_and_foundation_without_ssh_or_storage(self):
+        for navigation_complete in (True, False):
+            with self.subTest(navigation_complete=navigation_complete), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                products = root / "Build" / "Products"
+                products.mkdir(parents=True)
+                (products / "fixture.xctestrun").touch()
+
+                def successful_process(command, **kwargs):
+                    (root / "ios-ui-polish-validation.txt").write_text("case=polish result=passed\n")
+                    stages = "polish_complete\nfoundation_verified\n"
+                    if navigation_complete:
+                        stages += "polish_navigation_complete\n"
+                    (root / "ios-ui-stages.txt").write_text(stages)
+                    return subprocess.CompletedProcess(command, 0)
+
+                with mock.patch.object(smoke, "inject_test_environment"), \
+                     mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                     mock.patch.object(smoke.subprocess, "run", side_effect=successful_process) as run, \
+                     mock.patch.dict(smoke.os.environ, {"MEETERM_SSH_HOST": "must-not-leak"}, clear=False):
+                    arguments = dict(derived_data=root, simulator_udid="fixture", result_bundle=root / "result.xcresult",
+                                     raw_log=root / "raw.log", diagnostics_path=root / "diagnostics.txt", suite="polish")
+                    if navigation_complete:
+                        self.assertEqual(smoke.run_xcuitest(**arguments), 0)
+                    else:
+                        with self.assertRaises(smoke.SmokeFailure) as failure:
+                            smoke.run_xcuitest(**arguments)
+                        self.assertEqual(failure.exception.stage, "xcuitest_polish")
+                self.assertEqual(run.call_count, 1)
+                command = run.call_args.args[0]
+                self.assertIn(smoke.POLISH_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.STANDARD_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.SSH_TEST_SELECTOR, command)
+                self.assertNotIn("MEETERM_SSH_HOST", run.call_args.kwargs["env"])
+
     @staticmethod
     def write_storage_success(root):
         (root / "ios-native-storage-validation.txt").write_text(

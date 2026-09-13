@@ -10,7 +10,7 @@ readonly suite="${MEETERM_IOS_SUITE:-standard}"
 
 : "${IOS_SIMULATOR_UDID:?IOS_SIMULATOR_UDID was not exported}"
 case "${suite}" in
-  standard|ssh|full|forms|native|names) ;;
+  standard|polish|ssh|full|forms|native|names) ;;
   *) echo "Unsupported iOS smoke suite: ${suite}" >&2; exit 2 ;;
 esac
 mkdir -p "${artifact_dir}"
@@ -21,6 +21,8 @@ rm -f \
   "${artifact_dir}/ios-standard-validation.txt" \
   "${artifact_dir}/ios-ssh-validation.txt" \
   "${artifact_dir}/ios-ui-standard-validation.txt" \
+  "${artifact_dir}/ios-ui-polish-validation.txt" \
+  "${artifact_dir}/ios-polish-validation.txt" \
   "${artifact_dir}/ios-ui-ssh-validation.txt" \
   "${artifact_dir}/ios-ui-names-validation.txt" \
   "${artifact_dir}/ios-names-validation.txt" \
@@ -39,13 +41,13 @@ rm -f \
   "${artifact_dir}/standard-herdr-groups.png" \
   "${artifact_dir}/standard-herdr-terminal.png" \
   "${artifact_dir}/standard-herdr-workspaces.png" \
-  "${artifact_dir}/standard-welcome.png" \
-  "${artifact_dir}/standard-empty.png" \
-  "${artifact_dir}/standard-search-empty.png" \
-  "${artifact_dir}/standard-disconnected.png" \
-  "${artifact_dir}/standard-reconnecting.png" \
-  "${artifact_dir}/standard-connection-error.png" \
-  "${artifact_dir}/standard-long-workspaces.png" \
+  "${artifact_dir}/polish-welcome.png" \
+  "${artifact_dir}/polish-empty.png" \
+  "${artifact_dir}/polish-search-empty.png" \
+  "${artifact_dir}/polish-disconnected.png" \
+  "${artifact_dir}/polish-reconnecting.png" \
+  "${artifact_dir}/polish-connection-error.png" \
+  "${artifact_dir}/polish-long-workspaces.png" \
   "${artifact_dir}/ssh-terminal-input.png" \
   "${artifact_dir}/ssh-disconnected.png" \
   "${artifact_dir}/simulator.log"
@@ -101,7 +103,7 @@ else
 fi
 xcrun simctl uninstall "${IOS_SIMULATOR_UDID}" "${bundle_id}" 2>/dev/null || true
 xcrun simctl install "${IOS_SIMULATOR_UDID}" "${app_path}"
-if [[ "${suite}" == "standard" || "${suite}" == "ssh" || "${suite}" == "full" ]]; then
+if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "ssh" || "${suite}" == "full" ]]; then
   smoke_started_at="$(date -u '+%Y-%m-%d %H:%M:%S')"
 fi
 
@@ -190,6 +192,8 @@ python3 "${GITHUB_WORKSPACE}/scripts/ci/ios-validate-foundation.py" \
   --artifact-dir "${artifact_dir}"
 if [[ "${suite}" == "standard" ]]; then
   echo "iOS standard seeded-screen and fresh native foundation smoke passed."
+elif [[ "${suite}" == "polish" ]]; then
+  echo "iOS additional UI states, navigation, and fresh native foundation passed."
 else
   echo "iOS real SSH UI and fresh native foundation smoke passed."
 fi

@@ -873,6 +873,21 @@ def _patched_clock(clock: _FakeClock):
 
 
 class UiDriverTests(unittest.TestCase):
+    def test_quick_keys_reject_crowded_phone_columns(self):
+        labels = ("Esc", "Tab", "Ctrl-C", "Paste", "Copy selection")
+        good = [smoke.Node(label, label, "android.widget.TextView", (0, 0, 132, 132)) for label in labels]
+        smoke.validate_quick_key_targets(good)
+        crowded = [smoke.Node(label, label, "android.widget.TextView", (0, 0, 99, 132)) for label in labels]
+        with self.assertRaises(smoke.SmokeFailure) as failure:
+            smoke.validate_quick_key_targets(crowded)
+        self.assertEqual(failure.exception.reason, "key_target_too_narrow")
+
+    def test_native_theme_action_uses_uppercase_button_not_setting_value(self):
+        value = smoke.Node("Light", "", "android.widget.TextView", (10, 10, 100, 40))
+        action = smoke.Node("LIGHT", "", "android.widget.Button", (10, 50, 100, 90), resource_id="android:id/button1")
+        self.assertIs(smoke.find_node([value, action], text="LIGHT", class_fragment="Button"), action)
+        self.assertIsNone(smoke.find_node([value], text="LIGHT", class_fragment="Button"))
+
     def test_focus_terminal_waits_for_native_ime_after_tap(self) -> None:
         clock = _FakeClock()
         device = mock.Mock(spec=smoke.AndroidDevice)

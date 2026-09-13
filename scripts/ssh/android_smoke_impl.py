@@ -3220,7 +3220,9 @@ def exercise_daily_settings(
 
     stage = "daily_settings_theme"
     tap_action(device, stage, ("Terminal theme",))
-    light = wait_for_node(device, stage, text="Light")
+    # Android's native AlertDialog uppercases its action captions. Match the
+    # actual native button, not the mixed-case value behind the dialog.
+    light = wait_for_node(device, stage, text="LIGHT", class_fragment="Button")
     tap_node(device, light, stage)
 
     fill_field(
@@ -3411,6 +3413,18 @@ def prepare_and_select_daily_marker(
     )
 
 
+def validate_quick_key_targets(nodes: list[Node]) -> None:
+    # Native keys are 44dp high. Requiring width >= height rejects the old
+    # eleven equal-weight columns on a phone without assuming a pixel density.
+    for label in ("Esc", "Tab", "Ctrl-C", "Paste", "Copy selection"):
+        node = find_node(nodes, text=label)
+        if node is None:
+            raise SmokeFailure("daily_quick_key_targets", "required_key_unavailable")
+        left, top, right, bottom = node.bounds
+        if right - left < bottom - top:
+            raise SmokeFailure("daily_quick_key_targets", "key_target_too_narrow")
+
+
 def exercise_daily_workspace_and_selection(
     device: AndroidDevice,
     tmux_socket: Path,
@@ -3425,11 +3439,11 @@ def exercise_daily_workspace_and_selection(
     artifact_dir: Path,
     completed: list[str],
 ) -> None:
-    """Exercise light rendering, native selection, and temporary tmux CRUD."""
+    """Exercise the dark terminal in the light app, selection, and tmux CRUD."""
 
     original_workspace_label = fixture_workspace_label(fixture_layout)
 
-    stage = "daily_terminal_light"
+    stage = "daily_terminal_dark"
     original_workspace = wait_for_workspace(
         device,
         stage,
@@ -3446,12 +3460,14 @@ def exercise_daily_workspace_and_selection(
         timeout=RECONNECT_TIMEOUT,
     )
     wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    validate_quick_key_targets(device.dump_ui())
+    completed.append("daily_quick_key_targets")
     time.sleep(1.0)
     capture_optional_screenshot(
         device,
-        artifact_dir / "daily-terminal-light.png",
+        artifact_dir / "daily-terminal-dark.png",
         completed,
-        "daily_terminal_light",
+        "daily_terminal_dark",
     )
     exercise_glyph_atlas_stress(
         device,

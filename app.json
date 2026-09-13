@@ -8,6 +8,7 @@
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "plugins": [
+      "./plugins/with-native-accent",
       [
         "expo-build-properties",
         {

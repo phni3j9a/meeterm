@@ -28,9 +28,10 @@ import threading
 import time
 
 
-IOS_SUITES = ("standard", "ssh", "full", "forms", "native", "names")
+IOS_SUITES = ("standard", "polish", "ssh", "full", "forms", "native", "names")
 SUITE_TIMEOUT_SECONDS = {
     "standard": 900.0,
+    "polish": 900.0,
     "ssh": 900.0,
     "full": 1800.0,
     "forms": 900.0,
@@ -40,6 +41,10 @@ SUITE_TIMEOUT_SECONDS = {
 STANDARD_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
     "MeetermSmokeUITests/testStandardSeededScreensAndFoundation"
+)
+POLISH_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testPolishStatesAndNavigation"
 )
 SSH_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
@@ -897,7 +902,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                 # These markers are emitted after authentication, with the
                 # native terminal/workspace UI already visible. No later
                 # focused operation opens an authentication form.
-                if not any(marker in stages for marker in ("daily_selection", "names_started", "standard_navigation_open")):
+                if not any(marker in stages for marker in ("daily_selection", "names_started", "polish_navigation_open")):
                     continue
                 xcrun = shutil.which("xcrun")
                 if xcrun is None:
@@ -913,7 +918,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                         break
                     try:
                         completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
-                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete", "standard_navigation_complete")):
+                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete", "polish_navigation_complete")):
                             break
                     except OSError:
                         pass
@@ -1035,6 +1040,9 @@ def _test_steps(
     )
     if suite == "standard":
         return (storage, standard)
+    if suite == "polish":
+        return (("xcuitest_polish", (POLISH_TEST_SELECTOR,), result_bundle, raw_log,
+                 diagnostics_path, diagnostics_path.parent / "ios-ui-polish-validation.txt", ("polish",)),)
     if suite == "ssh":
         return (ssh,)
     if suite == "forms":
@@ -1136,6 +1144,7 @@ def run_xcuitest(
     storage_validation = diagnostics_path.parent / "ios-native-storage-validation.txt"
     native_validation = diagnostics_path.parent / "ios-native-input-validation.txt"
     standard_validation = diagnostics_path.parent / "ios-ui-standard-validation.txt"
+    polish_validation = diagnostics_path.parent / "ios-ui-polish-validation.txt"
     ssh_validation = diagnostics_path.parent / "ios-ui-ssh-validation.txt"
     forms_validation = diagnostics_path.parent / "ios-ui-forms-validation.txt"
     names_validation = diagnostics_path.parent / "ios-ui-names-validation.txt"
@@ -1143,6 +1152,7 @@ def run_xcuitest(
         storage_validation,
         native_validation,
         standard_validation,
+        polish_validation,
         ssh_validation,
         forms_validation,
         names_validation,
@@ -1223,6 +1233,12 @@ def run_xcuitest(
                 diagnostics_path.parent / "ios-ui-stages.txt",
                 ("standard_complete", "foundation_verified"),
                 "xcuitest_standard",
+            )
+        elif suite == "polish":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("polish_complete", "polish_navigation_complete", "foundation_verified"),
+                "xcuitest_polish",
             )
         elif suite == "ssh":
             _require_stage_markers(
@@ -1515,7 +1531,7 @@ def main() -> int:
             if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
                 os.environ.pop(environment_name, None)
         stage = "xcuitest"
-        recording = record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir) if suite == "standard" else nullcontext()
+        recording = record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir) if suite == "polish" else nullcontext()
         with recording:
             run_status = run_xcuitest(
                 derived_data=args.derived_data,

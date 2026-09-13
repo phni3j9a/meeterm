@@ -114,6 +114,7 @@ final class MeetermSmokeUITests: XCTestCase {
     )
     for name in [
       "ios-ui-standard-validation.txt",
+      "ios-ui-polish-validation.txt",
       "ios-ui-ssh-validation.txt",
       "standard-home.png",
       "standard-servers.png",
@@ -129,13 +130,13 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-herdr-groups.png",
       "standard-herdr-terminal.png",
       "standard-herdr-workspaces.png",
-      "standard-welcome.png",
-      "standard-empty.png",
-      "standard-search-empty.png",
-      "standard-disconnected.png",
-      "standard-reconnecting.png",
-      "standard-connection-error.png",
-      "standard-long-workspaces.png",
+      "polish-welcome.png",
+      "polish-empty.png",
+      "polish-search-empty.png",
+      "polish-disconnected.png",
+      "polish-reconnecting.png",
+      "polish-connection-error.png",
+      "polish-long-workspaces.png",
     ] {
       try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(name))
     }
@@ -494,8 +495,6 @@ final class MeetermSmokeUITests: XCTestCase {
       "home", "servers", "connection", "password", "workspaces", "terminal",
       "settings", "workspace-name", "terminal-name", "handoff",
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
-      "welcome", "empty", "search-empty", "disconnected", "reconnecting",
-      "connection-error", "long-workspaces",
     ]
     for screen in screens {
       record("standard_screen_\(screen)_open")
@@ -518,8 +517,6 @@ final class MeetermSmokeUITests: XCTestCase {
       record("standard_screen_\(screen)_captured")
     }
 
-    try verifyStandardNavigation()
-
     // Keep the existing foundation check as a genuinely fresh process after
     // the seeded screen pass. The foundation uses the Rust poc-main fixture.
     app.terminate()
@@ -528,10 +525,32 @@ final class MeetermSmokeUITests: XCTestCase {
     record("standard_complete")
   }
 
+  /// Additional states and native navigation, separate from the 14-screen
+  /// daily gate so both scopes retain their own bounded execution budget.
+  func testPolishStatesAndNavigation() throws {
+    for screen in ["welcome", "empty", "search-empty", "disconnected", "reconnecting", "connection-error", "long-workspaces"] {
+      record("polish_screen_\(screen)_open")
+      app.open(try XCTUnwrap(URL(string: "meeterm://smoke?screen=\(screen)")))
+      XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+      guard waitForStandardScreen(screen) else {
+        XCTFail("The polish screen did not open: \(screen).")
+        return
+      }
+      dismissQuickPathTutorialIfPresent(stage: "polish_\(screen)")
+      capture("polish-\(screen)")
+      record("polish_screen_\(screen)_captured")
+    }
+    try verifyPolishNavigation()
+    app.terminate()
+    try verifyFoundationRelaunch()
+    writeFixedArtifact("ios-ui-polish-validation.txt", lines: ["case=polish result=passed"])
+    record("polish_complete")
+  }
+
   /// Real presentation interactions using the existing native poc-main handle.
   /// No remote input, connection, or workspace creation is claimed by this pass.
-  private func verifyStandardNavigation() throws {
-    record("standard_navigation_open")
+  private func verifyPolishNavigation() throws {
+    record("polish_navigation_open")
     app.open(try XCTUnwrap(URL(string: "meeterm://smoke?screen=workspaces")))
     XCTAssertTrue(waitForStandardScreen("workspaces"))
     button("Search workspaces").tap()
@@ -544,7 +563,7 @@ final class MeetermSmokeUITests: XCTestCase {
     workspace.tap()
     XCTAssertTrue(waitForTerminal(), "The workspace did not push the native terminal screen.")
 
-    record("standard_navigation_keyboard")
+    record("polish_navigation_keyboard")
     let terminal = try terminalElement()
     terminal.tap()
     XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
@@ -553,7 +572,7 @@ final class MeetermSmokeUITests: XCTestCase {
     hideKeyboard.tap()
     XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
 
-    record("standard_navigation_settings")
+    record("polish_navigation_settings")
     button("Terminal menu").tap()
     let settings = button("Terminal settings")
     XCTAssertTrue(waitForHittable(settings, timeout: 10))
@@ -562,7 +581,7 @@ final class MeetermSmokeUITests: XCTestCase {
     button("Cancel").tap()
     XCTAssertTrue(waitForTerminal(), "Closing Settings did not restore the native terminal.")
 
-    record("standard_navigation_picker")
+    record("polish_navigation_picker")
     button("Switch workspace").tap()
     let close = button("Close sheet")
     XCTAssertTrue(waitForHittable(close, timeout: 10))
@@ -571,7 +590,7 @@ final class MeetermSmokeUITests: XCTestCase {
     button("Back to workspaces").tap()
     XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "Back lost the workspace search.")
 
-    record("standard_navigation_edge_back")
+    record("polish_navigation_edge_back")
     XCTAssertTrue(waitForHittable(workspace, timeout: 10))
     workspace.tap()
     XCTAssertTrue(waitForTerminal())
@@ -580,7 +599,7 @@ final class MeetermSmokeUITests: XCTestCase {
     start.press(forDuration: 0.1, thenDragTo: end)
     XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "The native edge-back gesture did not restore search.")
     XCTAssertTrue(waitForHittable(workspace, timeout: 10))
-    record("standard_navigation_complete")
+    record("polish_navigation_complete")
   }
 
   /// A bounded real SSH round trip. The private key is entered through the

@@ -262,7 +262,7 @@ function SearchField({ value, onChange, colors, label = 'Search workspaces', aut
 }
 
 function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker = false, disabled = false, optionsDisabled = false, connected = false }: { workspace: Workspace; selected: boolean; colors: Palette; onPress: () => void; onOptions?: () => void; picker?: boolean; disabled?: boolean; optionsDisabled?: boolean; connected?: boolean }) {
-  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={`Workspace ${workspace.name}`} accessibilityHint={`${workspace.panes.length} terminals`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
+  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={`Workspace ${workspace.name}`} accessibilityHint={`${workspace.panes.length} ${workspace.panes.length === 1 ? 'terminal' : 'terminals'}`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
     <Icon name="terminal" color={colors.muted} size={23} />
     <View style={styles.rowCopy}>
       <Text numberOfLines={picker ? undefined : 2} style={[styles.rowTitle, { color: colors.text }]}>{workspace.name}</Text>
@@ -278,7 +278,7 @@ function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, childre
   return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy} onRequestClose={() => { if (!busy) onClose(); }} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.flex, { backgroundColor: colors.background }]}>
-        <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
+        {Platform.OS === 'android' ? <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} /> : null}
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>
           {busy ? <ActivityIndicator color={colors.accent} /> : null}
@@ -1151,7 +1151,7 @@ const styles = StyleSheet.create({
   searchField: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 12, paddingRight: 4, borderWidth: 1, borderRadius: 12, borderCurve: 'continuous' },
   searchInput: { minWidth: 0, flex: 1, fontSize: 16, paddingVertical: 12 },
   resultCount: { paddingTop: 20, paddingBottom: 8, fontSize: 12, fontVariant: ['tabular-nums'] },
-  textAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
+  textAction: { minWidth: 44, minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
   actionText: { fontSize: 14, lineHeight: 23, fontWeight: '500' },
   notice: { padding: 16, borderRadius: 12, borderCurve: 'continuous', gap: 8, marginBottom: 12 },
   noticeTitle: { fontSize: 15, lineHeight: 24, fontWeight: '600' },

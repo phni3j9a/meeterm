@@ -13,8 +13,9 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
-| Android | 既存のfull smokeと画像の実見。Herdr 4画面はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
-| iOS `standard` | production保存4件、native入力7件、21画面の撮影、短い画面遷移、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示と戻る操作、実native端末描画 |
+| Android | 既存のfull smokeと画像の実見。21状態はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
+| iOS `standard` | production保存4件、native入力7件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
@@ -70,22 +71,24 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 
 対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
 ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎに加え、
-Herdr connection、groups、terminal、workspaces、初回起動、空の一覧、検索結果なし、
-切断、再接続中、認証エラー、長いworkspace名の21画面です。
+Herdr connection、groups、terminal、workspaces の14画面が `standard` です。
 `meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
 名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
 `settings`、`workspace-name`、`terminal-name`、`handoff`、
-`herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces`、
-`welcome`、`empty`、`search-empty`、`disconnected`、`reconnecting`、
-`connection-error`、`long-workspaces` です。
+`herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces` です。
 撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
-21画面の後に、検索→既存native fixture端末→キーボード開閉→設定→workspace切替sheet→
+追加診断の `polish` は、初回起動、空の一覧、検索結果なし、切断、再接続中、認証エラー、
+長いworkspace名の7状態を `polish-<名前>.png` に保存します。起動URL名は
+`welcome`、`empty`、`search-empty`、`disconnected`、`reconnecting`、`connection-error`、`long-workspaces` です。
+その後に、検索→既存native fixture端末→キーボード開閉→設定→workspace切替sheet→
 戻る→iOS端からの戻るジェスチャを実際に操作します。検索条件の保持もassertします。
 この区間だけ既存の録画機構で `daily-interactions.mp4` を記録します。
 fixtureは既存 `poc-main` を開くことだけを許し、接続・遠隔操作・端末データの生成は行いません。
 これはnavigation/keyboard表示の検証であり、SSH入力の証拠にはしません。
 Androidも同じ21状態を任意の観測画像として採取し、既存full gateとdaily-use録画は維持します。
+通常の14画面と追加診断は別々に報告します。既存の900秒枠を延長せず、
+検証範囲を分けて同一ソースのpristine test productsを再利用します。
 
 小画面・大きい文字の明示的診断には workflow_dispatch の `ios_profile=compact-xl` を使います。
 同一commitのpristine test productsを指定して再利用できます。SE（第3世代）の新規Simulatorを
@@ -107,6 +110,7 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 | `ios_suite` | 用途 |
 | --- | --- |
 | `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
+| `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
 | `ssh` | 実SSH接続と短いnative入出力の確認 |
 | `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件だけの限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |

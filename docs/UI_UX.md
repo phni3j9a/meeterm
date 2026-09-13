@@ -39,6 +39,11 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 - A two-screen native stack provides platform navigation transitions and the
   iOS edge-back gesture. Switching terminals does not push additional routes.
   Reduced Motion selects a fade; no terminal frames cross JavaScript.
+- iOS page sheets preserve the presenting screen's status-bar appearance.
+  Android native dialogs use the same warm accent through a CNG config plugin.
+- Android native shortcut keys have 44 dp targets and native ripple feedback.
+  Keys scroll horizontally; Paste and Copy stay fixed. The toolbar remains
+  48 dp tall, preserving its terminal sizing and native input contract.
 - Server management, naming, connection details, and settings have explicit
   close/cancel boundaries. Unsaved forms ask before discarding changes.
 - Connection progress, empty results, empty workspaces, lost connections,
@@ -81,14 +86,36 @@ white-on-brown button is 6.06:1. These calculations do not replace visual review
 
 ## Verification and remaining work
 
-The initial implementation passes TypeScript and the existing nine app
-selection tests. The Android driver regression suite passes after its visible
-labels were updated to English. These checks do not prove rendering or motion.
+TypeScript, eleven app selection/presentation tests, and the Python driver
+regressions pass locally. These checks do not prove rendering or motion.
+Android CNG generation also passed locally; its generated day/night colors and
+`AppTheme` references were inspected. Generated native directories stay ignored.
 
-Still required: fresh Android full and iOS standard runs, actual inspection of
-both platforms' screenshots, interaction/back/keyboard review, compact and
-large-text layout, reduced-motion behavior, and a record of observed limits.
+The first source (`89a3113`) ran in [Mobile smoke 34750219346](https://github.com/phni3j9a/meeterm/actions/runs/34750219346).
+iOS `standard` passed its original fourteen screens, storage/input cases, and
+fresh foundation with a Metal frame. All fourteen images plus the foundation
+were actually viewed. Android built and reached real SSH, saved-credential
+reconnect, and foreground/restart checks, then failed at `daily_settings_theme`:
+the native dialog displayed `LIGHT`, while the test expected `Light`. Its
+recording and screenshots were inspected. That run is not an Android full pass.
+The Herdr workspace observational capture also still expected removed count
+subtitles; the updated check requires the exact two workspace rows instead.
+
+Image review found the iOS dark-presenter/light-sheet status-bar mismatch and
+crowded Android shortcut targets. The subsequent fixes require new mobile
+evidence. Android monochrome emoji remain the documented renderer limitation;
+this UI work does not change terminal rasterization or claim color-emoji parity.
+
+Still required on the final source: Android full, iOS standard, `polish`, short
+SSH, actual inspection of both platforms' screenshots, interaction/back/keyboard
+review, compact/large-text layout, and a record of observed motion limits.
 The existing iOS physical-device/Metal boundary remains separate.
+
+The normal `standard` gate remains fourteen screens. Seven additional states
+and navigation are a separate explicit `polish` diagnostic with independent
+completion markers and the unchanged 900-second ceiling. The first run used
+786 seconds for the original standard/storage scope; additional UI diagnostics
+must not consume its remaining headroom or remove its assertions.
 
 The iOS standard and Android fixture drivers now wait for the actual English
 labels. Required assertions and completion checks have not been skipped or
