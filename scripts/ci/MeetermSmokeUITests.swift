@@ -99,6 +99,12 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("terminal-keyboard-failure.png")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-terminal-paste-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("terminal-paste-failure.png")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-connection-state.txt")
     )
     try? FileManager.default.removeItem(
@@ -1945,6 +1951,38 @@ final class MeetermSmokeUITests: XCTestCase {
     }
   }
 
+  private func writeTerminalPasteDiagnostics(phase: String, paste: XCUIElement) {
+    // Only fixed states and booleans cross the artifact boundary. Never dump
+    // accessibility descriptions, clipboard contents or the typed command.
+    func state(_ element: XCUIElement) -> String {
+      guard element.exists else { return "absent" }
+      switch element.value as? String {
+      case "Ready": return "ready"
+      case "Pasting": return "pasting"
+      case nil: return "no_value"
+      default: return "unexpected_value"
+      }
+    }
+    let labelTarget = button("Paste")
+    let keyboard = app.keyboards.firstMatch
+    let terminal = app.otherElements["Terminal"]
+    appendFixedArtifact(
+      "ios-ui-terminal-paste-diagnostics.txt",
+      lines: [
+        "phase=\(phase)",
+        "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+        "connection_form_gone=\(connectionFormIsGone() ? 1 : 0)",
+        "terminal_exists=\(terminal.exists ? 1 : 0)",
+        "keyboard_exists=\(keyboard.exists ? 1 : 0)",
+        "paste_exists=\(paste.exists ? 1 : 0)",
+        "paste_hittable=\(paste.exists && paste.isHittable ? 1 : 0)",
+        "paste_state=\(state(paste))",
+        "label_target_is_native_control=\(labelTarget.exists && labelTarget.identifier == "terminal-paste" ? 1 : 0)",
+        "label_target_state=\(state(labelTarget))",
+      ]
+    )
+  }
+
   private func writeFixedArtifact(_ name: String, lines: [String]) {
     let contents = lines.joined(separator: "\n") + "\n"
     try? Data(contents.utf8).write(
@@ -2020,7 +2058,9 @@ final class MeetermSmokeUITests: XCTestCase {
     UIPasteboard.general.string = String(value.dropFirst(prefix.count))
     defer { UIPasteboard.general.string = nil }
     record("\(stage)_paste_set")
-    let paste = button("Paste")
+    // The completion value belongs to UIPasteControl, not an arbitrary child
+    // or edit-menu action carrying the same visible "Paste" label.
+    let paste = app.descendants(matching: .any).matching(identifier: "terminal-paste").firstMatch
     record("\(stage)_paste_exists")
     XCTAssertTrue(paste.waitForExistence(timeout: 10), "The terminal Paste action is unavailable.")
     record("\(stage)_paste_hittable")
@@ -2029,6 +2069,9 @@ final class MeetermSmokeUITests: XCTestCase {
       predicate: NSPredicate(format: "enabled == YES"), object: paste
     )
     XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed, "The terminal Paste action is disabled.")
+    let initiallyReady = paste.value as? String == "Ready"
+    if !initiallyReady { writeTerminalPasteDiagnostics(phase: "before_tap", paste: paste) }
+    XCTAssertTrue(initiallyReady, "The native paste completion state is unavailable before tapping.")
     record("\(stage)_paste_tap")
     paste.tap()
     record("\(stage)_paste_tapped")
@@ -2037,7 +2080,12 @@ final class MeetermSmokeUITests: XCTestCase {
     let finished = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "value == %@", "Ready"), object: paste
     )
-    XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 10), .completed, "The native paste did not finish.")
+    let completion = XCTWaiter.wait(for: [finished], timeout: 10)
+    writeTerminalPasteDiagnostics(phase: "after_tap", paste: paste)
+    if completion != .completed && safeForPostFormScreenshot() {
+      capture("terminal-paste-failure")
+    }
+    XCTAssertEqual(completion, .completed, "The native paste did not finish.")
     record("\(stage)_paste_finished")
     UIPasteboard.general.string = nil
 

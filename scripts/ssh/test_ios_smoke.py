@@ -1425,6 +1425,26 @@ class ConnectionFailureDiagnosticsTests(unittest.TestCase):
 
 
 class ShortSshInputDiagnosticsTests(unittest.TestCase):
+    def test_post_auth_paste_timeout_still_observes_fixture_echo(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            socket = root / "tmux" / f"tmux-{smoke.os.getuid()}" / "default"
+            (root / "ios-ui-stages.txt").write_text(
+                "ssh_connected\nssh_native_input_paste_tapped\nteardown_complete\n"
+            )
+            responses = [subprocess.CompletedProcess([], 0, "%0\n%1\n%2\n", "")]
+            responses += [subprocess.CompletedProcess([], 0, "$ printf", "")] * 3
+            with mock.patch.dict(smoke.os.environ, {
+                "MEETERM_TMUX_SOCKET": str(socket),
+                "MEETERM_IOS_MARKER_VALUE": "ios-ssh-input-0123456789abcdef",
+            }), mock.patch.object(smoke, "run_tmux", side_effect=responses) as run:
+                smoke.write_short_ssh_input_diagnostics(root, socket, root / "marker")
+            self.assertEqual(run.call_count, 4)
+            report = json.loads((root / smoke.INPUT_DIAGNOSTICS_NAME).read_text())
+            self.assertTrue(all(pane["keyboard_word_seen"] for pane in report["panes"]))
+            self.assertTrue(all(not pane["paste_body_seen"] for pane in report["panes"]))
+            self.assertFalse(report["marker_file_exists"])
+
     def test_pre_auth_never_reads_terminal_contents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -276,7 +276,8 @@ def write_short_ssh_input_diagnostics(
     booleans and counts, including on a successful run for comparison.
     """
     stages = (artifact_dir / "ios-ui-stages.txt").read_text().splitlines()
-    if not {"ssh_connected", "ssh_native_input_await_remote_marker"}.issubset(stages):
+    input_stages = {"ssh_native_input_paste_tapped", "ssh_native_input_await_remote_marker"}
+    if "ssh_connected" not in stages or not input_stages.intersection(stages):
         return
     if socket_path != fixture_socket():
         raise SmokeFailure("input_diagnostics", "socket_path_invalid")

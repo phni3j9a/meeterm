@@ -197,6 +197,27 @@ the obsolete "Terminal theme" label. The real Settings form regression
 reproduced it; the label and Android driver now use "Appearance". This changes
 app source, so the in-progress diagnostic-only build was cancelled and the
 next source requires both mobile jobs again, plus iOS SSH/polish diagnostics.
+That source, `55fb60d`, passed both normal gates in
+[34760570576](https://github.com/phni3j9a/meeterm/actions/runs/34760570576):
+Android full and iOS standard (four storage, seven input plus one gesture case,
+fourteen screens, fresh Metal foundation). All 21 Android states, its actual
+daily-use checkpoints, and all fourteen iOS screens plus foundation were viewed.
+The same-source [default polish](https://github.com/phni3j9a/meeterm/actions/runs/34761931479)
+also passed all interactions and the corrected strict foundation parser.
+
+The [SE/XL polish](https://github.com/phni3j9a/meeterm/actions/runs/34761930612)
+failed before UI setup; its new sanitized result summary identifies a runner
+initialization timeout. No image or UI acceptance is claimed for that run.
+The [short SSH run](https://github.com/phni3j9a/meeterm/actions/runs/34761932309)
+reached the connected terminal, typed the keyboard prefix, and tapped Paste,
+but failed waiting for the native completion value. Return was not reached.
+The test now addresses the existing `terminal-paste` identifier instead of an
+arbitrary same-label action, verifies its initial state, and retains the same
+completion timeout and remote acknowledgment. Fixed-state diagnostics and
+post-auth fixture echo booleans now also cover a Paste timeout. The underlying
+cause remains unconfirmed until the next fresh iOS test build supplies evidence;
+no app or native input behavior was changed for this diagnostic.
+
 Physical-device GPU/IME parity, OS Reduced Motion behavior, and measured frame
 performance remain unverified; no Simulator result replaces those boundaries.
 
