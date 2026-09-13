@@ -26,6 +26,10 @@ final class MeetermSmokeUITests: XCTestCase {
   private let testStartedAt = ProcessInfo.processInfo.systemUptime
   private let app = XCUIApplication(bundleIdentifier: "dev.meeterm.app")
   private var publicPresentationObservation = false
+  private var observesNativeInputDiagnostics = false
+  private var observesInitialConnectionEntry = false
+  private var preCredentialObservationAllowed = false
+  private var preCredentialFailureRecorded = false
   private var recordingPresentationFailure = false
   private let artifactDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["MEETERM_IOS_ARTIFACT_DIR"]
@@ -67,8 +71,12 @@ final class MeetermSmokeUITests: XCTestCase {
 
   override func setUpWithError() throws {
     continueAfterFailure = false
+    preCredentialObservationAllowed = false
+    preCredentialFailureRecorded = false
     publicPresentationObservation = name.contains("testStandardSeededScreensAndFoundation")
       || name.contains("testPolishStatesAndNavigation")
+    observesInitialConnectionEntry = name.contains("testShortSshInputAndDisconnect")
+    observesNativeInputDiagnostics = publicPresentationObservation || observesInitialConnectionEntry
     try? FileManager.default.createDirectory(
       at: artifactDirectory,
       withIntermediateDirectories: true
@@ -103,6 +111,15 @@ final class MeetermSmokeUITests: XCTestCase {
     )
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("terminal-paste-failure.png")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-ssh-entry-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ssh-entry-initial.png")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ssh-entry-failure.png")
     )
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-connection-state.txt")
@@ -157,14 +174,21 @@ final class MeetermSmokeUITests: XCTestCase {
     record("test_started")
 
     app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
-    if publicPresentationObservation {
+    if observesNativeInputDiagnostics {
       app.launchArguments += ["-meeterm-ui-observation"]
     }
     app.launch()
-    XCTAssertTrue(
-      app.wait(for: .runningForeground, timeout: 60),
-      "The meeterm app did not reach the foreground."
-    )
+    if observesInitialConnectionEntry {
+      // Arm only the explicit permission before the foreground wait. The
+      // initial element queries and app-scoped screenshot happen below, after
+      // the original wait, so a failed wait cannot abort diagnostics first.
+      beginPreCredentialConnectionEntryObservation()
+    }
+    let reachedForeground = app.wait(for: .runningForeground, timeout: 60)
+    if observesInitialConnectionEntry {
+      recordPreCredentialConnectionEntryInitial(reachedForeground: reachedForeground)
+    }
+    XCTAssertTrue(reachedForeground, "The meeterm app did not reach the foreground.")
     record("app_launched")
   }
 
@@ -653,7 +677,7 @@ final class MeetermSmokeUITests: XCTestCase {
   /// one command proves native terminal input reached the fixture shell.
   func testShortSshInputAndDisconnect() throws {
     record("ssh_open_connection_form")
-    openConnectionForm()
+    openConnectionForm(observeInitialEntry: true)
     let host = requiredEnvironment("MEETERM_SSH_HOST")
     let port = requiredEnvironment("MEETERM_SSH_PORT")
     let username = requiredEnvironment("MEETERM_SSH_USERNAME")
@@ -1384,18 +1408,170 @@ final class MeetermSmokeUITests: XCTestCase {
     )
   }
 
-  private func openConnectionForm() {
+  private func beginPreCredentialConnectionEntryObservation() {
+    guard observesInitialConnectionEntry, !preCredentialObservationAllowed else { return }
+    preCredentialObservationAllowed = true
+  }
+
+  private func recordPreCredentialConnectionEntryInitial(reachedForeground: Bool) {
+    guard observesInitialConnectionEntry, preCredentialObservationAllowed else { return }
+    guard reachedForeground, app.state == .runningForeground else {
+      // Do not query XCUI elements or capture the whole screen when the app
+      // did not reach the foreground; that could observe another app.
+      appendFixedArtifact(
+        "ios-ui-ssh-entry-diagnostics.txt",
+        lines: [
+          "phase=initial",
+          "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+        ]
+      )
+      writeFixedArtifact("ssh-entry-initial-unavailable.txt", lines: ["reason=foreground_unavailable"])
+      preCredentialObservationAllowed = false
+      return
+    }
+    writePreCredentialConnectionEntryDiagnostics(phase: "initial")
+    capturePreCredential("ssh-entry-initial")
+  }
+
+  private func closePreCredentialConnectionEntryObservation() {
+    preCredentialObservationAllowed = false
+  }
+
+  private func recordPreCredentialConnectionEntryFailure() {
+    guard observesInitialConnectionEntry,
+          preCredentialObservationAllowed,
+          !preCredentialFailureRecorded else { return }
+    preCredentialFailureRecorded = true
+    writePreCredentialConnectionEntryDiagnostics(phase: "entry_failure")
+    capturePreCredential("ssh-entry-failure")
+    // Do not leave a failure diagnostic path armed for a later XCTest issue.
+    preCredentialObservationAllowed = false
+  }
+
+  private func preCredentialElementFlags(_ name: String, _ element: XCUIElement) -> [String] {
+    guard element.exists else {
+      // Do not ask XCTest for frame or hittability of an absent element. Some
+      // XCTest versions turn those follow-up queries into their own failure.
+      return [
+        "\(name)_exists=0",
+        "\(name)_hittable=0",
+        "\(name)_frame_available=0",
+        "\(name)_frame_x=unavailable",
+        "\(name)_frame_y=unavailable",
+        "\(name)_frame_width=unavailable",
+        "\(name)_frame_height=unavailable",
+      ]
+    }
+
+    let frame = element.frame
+    let frameValues = [frame.minX, frame.minY, frame.width, frame.height]
+    let frameCoordinates = frameValues.map { value -> String in
+      guard value.isFinite, value >= -1_000_000, value <= 1_000_000 else {
+        return "unavailable"
+      }
+      return String(Int(value.rounded()))
+    }
+    let frameAvailable = !frame.isNull && !frame.isInfinite
+      && frame.width > 0 && frame.height > 0
+      && !frameCoordinates.contains("unavailable")
+    return [
+      "\(name)_exists=1",
+      "\(name)_hittable=\(element.isHittable ? 1 : 0)",
+      "\(name)_frame_available=\(frameAvailable ? 1 : 0)",
+      "\(name)_frame_x=\(frameCoordinates[0])",
+      "\(name)_frame_y=\(frameCoordinates[1])",
+      "\(name)_frame_width=\(frameCoordinates[2])",
+      "\(name)_frame_height=\(frameCoordinates[3])",
+    ]
+  }
+
+  private func capturePreCredential(_ name: String) {
+    let unavailableName = name + "-unavailable.txt"
+    guard app.state == .runningForeground else {
+      writeFixedArtifact(unavailableName, lines: ["reason=foreground_unavailable"])
+      return
+    }
+    do {
+      let data = app.screenshot().pngRepresentation
+      try data.write(
+        to: artifactDirectory.appendingPathComponent(name + ".png"),
+        options: .atomic
+      )
+      try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(unavailableName))
+    } catch {
+      writeFixedArtifact(unavailableName, lines: ["reason=screenshot_write_failed"])
+    }
+  }
+
+  private func writePreCredentialConnectionEntryDiagnostics(phase: String) {
+    guard preCredentialObservationAllowed else { return }
+    guard app.state == .runningForeground else {
+      appendFixedArtifact(
+        "ios-ui-ssh-entry-diagnostics.txt",
+        lines: [
+          "phase=\(phase)",
+          "app_foreground=0",
+        ]
+      )
+      return
+    }
+    let fixedLabel = { (label: String) in
+      app.staticTexts.matching(NSPredicate(format: "label == %@", label)).firstMatch
+    }
+    let fixedButton = { (label: String) in
+      app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+    }
+    var lines = [
+      "phase=\(phase)",
+      "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+    ]
+    lines += preCredentialElementFlags("window", app.windows.firstMatch)
+    lines += preCredentialElementFlags(
+      "open_settings",
+      app.buttons.matching(NSPredicate(format: "identifier == %@", "open-settings")).firstMatch
+    )
+    lines += preCredentialElementFlags("connect", fixedButton("Connect"))
+    lines += preCredentialElementFlags("server_connection", fixedButton("Server connection"))
+    lines += preCredentialElementFlags("host", input("Host"))
+
+    let loadingLabels: [(String, String)] = [
+      ("loading_servers", "Loading your servers…"),
+      ("loading_workspaces", "Loading workspaces…"),
+      ("connecting", "Connecting…"),
+      ("authenticating", "Authenticating…"),
+      ("opening_terminal", "Opening terminal…"),
+      ("opening_workspace", "Opening workspace…"),
+      ("restoring_terminals", "Restoring terminals…"),
+      ("reconnecting", "Reconnecting…"),
+    ]
+    for (name, label) in loadingLabels {
+      lines += preCredentialElementFlags(name, fixedLabel(label))
+    }
+    appendFixedArtifact("ios-ui-ssh-entry-diagnostics.txt", lines: lines)
+  }
+
+  private func openConnectionForm(observeInitialEntry: Bool = false) {
+    if observeInitialEntry { beginPreCredentialConnectionEntryObservation() }
     if button("Connect").waitForExistence(timeout: 20) {
       button("Connect").tap()
     } else if button("Server connection").waitForExistence(timeout: 10) {
       button("Server connection").tap()
-      XCTAssertTrue(button("Connect").waitForExistence(timeout: 10), "The connection menu did not open.")
+      guard button("Connect").waitForExistence(timeout: 10) else {
+        recordPreCredentialConnectionEntryFailure()
+        XCTFail("The connection menu did not open.")
+        return
+      }
       button("Connect").tap()
     } else {
+      recordPreCredentialConnectionEntryFailure()
       XCTFail("The connection entry point is unavailable.")
       return
     }
-    XCTAssertTrue(input("Host").waitForExistence(timeout: 15), "The SSH connection form did not open.")
+    guard input("Host").waitForExistence(timeout: 15) else {
+      recordPreCredentialConnectionEntryFailure()
+      XCTFail("The SSH connection form did not open.")
+      return
+    }
     record("connection_form_opened")
   }
 
@@ -1406,6 +1582,7 @@ final class MeetermSmokeUITests: XCTestCase {
       XCTFail("The short-field helper received an unsupported field.")
       return
     }
+    closePreCredentialConnectionEntryObservation()
     let field = input(label)
     XCTAssertTrue(field.waitForExistence(timeout: 10), "The \(label) field is unavailable.")
     let stage = "fill_" + label.lowercased().replacingOccurrences(of: " ", with: "_")
@@ -1644,6 +1821,9 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func fillPrivateKey(_ value: String) {
+    // Defense in depth: the pre-credential observation must be closed before
+    // any secret connection data enters the form.
+    closePreCredentialConnectionEntryObservation()
     let field = input("Private OpenSSH key")
     for _ in 0..<8 where !field.isHittable {
       app.scrollViews.firstMatch.swipeUp()
@@ -2085,6 +2265,8 @@ final class MeetermSmokeUITests: XCTestCase {
     if completion != .completed && safeForPostFormScreenshot() {
       capture("terminal-paste-failure")
     }
+    // Ready only describes UIPasteControl's provider lifecycle. It is not
+    // proof that delivery reached MeetermCore or the remote shell.
     XCTAssertEqual(completion, .completed, "The native paste did not finish.")
     record("\(stage)_paste_finished")
     UIPasteboard.general.string = nil

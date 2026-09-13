@@ -4,6 +4,7 @@ import contextlib
 import io
 import importlib.util
 import json
+import os
 import plistlib
 from pathlib import Path
 import re
@@ -17,6 +18,276 @@ from unittest import mock
 spec = importlib.util.spec_from_file_location("ios_smoke", Path(__file__).with_name("ios-smoke.py"))
 smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
+
+REPOSITORY_ROOT = Path(__file__).parents[2]
+IOS_UI_TEST_SOURCE = REPOSITORY_ROOT / "scripts" / "ci" / "MeetermSmokeUITests.swift"
+IOS_SMOKE_SCRIPT = REPOSITORY_ROOT / "scripts" / "ci" / "ios-smoke.sh"
+TERMINAL_INPUT_SOURCE = REPOSITORY_ROOT / "modules" / "meeterm-terminal" / "ios" / "TerminalInputView.swift"
+ARTIFACT_COLLECTOR_SOURCE = REPOSITORY_ROOT / "scripts" / "ci" / "ios-collect-artifacts.sh"
+
+
+class DiagnosticSourceContractTests(unittest.TestCase):
+    def test_precredential_keys_guard_absent_elements_and_append_snapshots(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        absent = source[source.index("guard element.exists else"):source.index("let frame = element.frame")]
+
+        self.assertNotIn('"(name)_exists=', source)
+        self.assertNotIn('"(name)_hittable=', source)
+        self.assertNotIn('"(name)_frame_available=', source)
+        self.assertNotIn("element.frame", absent)
+        self.assertNotIn("element.isHittable", absent)
+        self.assertIn('"\\(name)_frame_available=', source)
+        self.assertIn('"\\(name)_frame_x=', source)
+        self.assertRegex(source, r'appendFixedArtifact\(\s*"ios-ui-ssh-entry-diagnostics\.txt"')
+
+    def test_precredential_observation_waits_before_queries_and_uses_app_screenshot(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("beginPreCredentialConnectionEntryObservation()"),
+            source.index("let reachedForeground = app.wait"),
+        )
+        self.assertLess(
+            source.index("let reachedForeground = app.wait"),
+            source.index("recordPreCredentialConnectionEntryInitial(reachedForeground:"),
+        )
+        self.assertIn("let data = app.screenshot().pngRepresentation", source)
+        private_key = source[source.index("private func fillPrivateKey"):source.index("private func readPrivateKey")]
+        self.assertLess(
+            private_key.index("closePreCredentialConnectionEntryObservation()"),
+            private_key.index('let field = input("Private OpenSSH key")'),
+        )
+
+    def test_paste_provider_callback_is_main_safe_and_provider_drops_are_fixed(self):
+        source = TERMINAL_INPUT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("let observesProviderCompletion = observesInputLifecycle", source)
+        self.assertIn('NSLog("MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION")', source)
+        self.assertNotIn("self?.recordPasteProviderCompletion()", source)
+        self.assertIn("guard window != nil else", source)
+        self.assertIn("guard isFirstResponder else", source)
+        self.assertIn("recordPasteDrop(.provider)", source)
+
+    def test_collector_separates_command_and_marker_outcomes(self):
+        source = ARTIFACT_COLLECTOR_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('log_command_status="not_run"', source)
+        self.assertIn('log_marker_status="absent"', source)
+        self.assertIn('log_collection_reason="log_tool_missing"', source)
+        self.assertIn('log_collection_reason="log_command_failed"', source)
+        self.assertIn('log_collection_reason="no_smoke_markers"', source)
+        self.assertIn("2>/dev/null", source)
+
+
+class SmokeLogProducerTests(unittest.TestCase):
+    UNSAFE_STDERR = "UNSAFE_RAW_LOG_TOOL_ERROR"
+    MARKER_OUTPUT = (
+        "2026-09-14 12:34:57.000 Df meeterm[123:42af0] (Foundation) "
+        "MEETERM_SMOKE_NATIVE_READY\n"
+        "2026-09-14 12:34:58.000 Df meeterm[123:42af0] (Foundation) "
+        "MEETERM_SMOKE_FIRST_FRAME_METAL\n"
+    )
+
+    def run_smoke(
+        self, suite: str, fail_query: str = ""
+    ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        directory = tempfile.TemporaryDirectory(prefix="meeterm-ios-smoke-log-")
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        workspace = root / "workspace"
+        runner_temp = root / "runner-temp"
+        fake_bin = root / "bin"
+        artifact_dir = workspace / "artifacts" / "ios-simulator-observability"
+        xcrun_log = root / "xcrun.log"
+        fake_bin.mkdir(parents=True)
+        (workspace / "scripts" / "ssh").mkdir(parents=True)
+        (workspace / "scripts" / "ci").mkdir(parents=True)
+        (
+            runner_temp
+            / "meeterm-derived-data"
+            / "Build"
+            / "Products"
+            / "Release-iphonesimulator"
+            / "meeterm.app"
+        ).mkdir(parents=True)
+        (workspace / "scripts" / "ssh" / "ios-smoke.py").write_text("# stub\n", encoding="utf-8")
+        (workspace / "scripts" / "ssh" / "fixture.py").write_text("# stub\n", encoding="utf-8")
+        (workspace / "scripts" / "ci" / "ios-validate-foundation.py").write_text(
+            "# stub\n", encoding="utf-8"
+        )
+
+        (fake_bin / "xcrun").write_text(
+            f'''#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "${{IOS_SMOKE_TEST_XCRUN_LOG}}"
+if [[ "${{1:-}}" == "simctl" && "${{2:-}}" == "spawn" && "${{4:-}}" == "log" && "${{5:-}}" == "show" ]]; then
+  query="foundation"
+  if [[ "$*" == *"--end"* ]]; then
+    query="xctest"
+  elif [[ "${{MEETERM_IOS_SUITE:-}}" == "ssh" ]]; then
+    query="ssh"
+  fi
+  log_name="simulator.log"
+  if [[ "${{query}}" == "xctest" ]]; then log_name="xcuitest-simulator.log"; fi
+  upload_log="${{GITHUB_WORKSPACE}}/artifacts/ios-simulator-observability/${{log_name}}"
+  if [[ -e "${{upload_log}}" || -e "${{upload_log}}.partial" ]]; then
+    printf '%s\\n' 'private_output=0' >> "${{IOS_SMOKE_TEST_XCRUN_LOG}}"
+  else
+    printf '%s\\n' 'private_output=1' >> "${{IOS_SMOKE_TEST_XCRUN_LOG}}"
+  fi
+  printf '%s' "${{IOS_SMOKE_TEST_MARKER_OUTPUT}}"
+  printf '%s\\n' "${{IOS_SMOKE_TEST_UNSAFE_STDERR}}" >&2
+  if [[ "${{IOS_SMOKE_TEST_FAIL_QUERY:-}}" == "${{query}}" ]]; then
+    exit 42
+  fi
+fi
+exit 0
+''',
+            encoding="utf-8",
+        )
+        (fake_bin / "python3").write_text(
+            '''#!/usr/bin/env bash
+set -u
+workspace="${IOS_SMOKE_TEST_WORKSPACE}"
+if [[ "${1:-}" == "${workspace}/scripts/ssh/fixture.py" ]]; then
+  printf '%s\\n' '# stub fixture environment' > "${3}"
+  exit 0
+fi
+if [[ "${1:-}" == "${workspace}/scripts/ssh/ios-smoke.py" ]]; then
+  artifact_dir=""
+  suite=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --artifact-dir)
+        artifact_dir="$2"
+        shift 2
+        ;;
+      --suite)
+        suite="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  mkdir -p "${artifact_dir}"
+  if [[ "${suite}" == "full" ]]; then
+    printf '%s\\n' '{"launch_epoch": 100.0, "survival_start_epoch": 101.0, "survival_end_epoch": 111.0}' \
+      > "${artifact_dir}/ios-foundation-observation.json"
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == "-" ]]; then
+  cat >/dev/null
+  printf '%s\\n' '2026-09-14 12:34:56'
+  exit 0
+fi
+if [[ "${1:-}" == "${workspace}/scripts/ci/ios-validate-foundation.py" ]]; then
+  exit 0
+fi
+printf '%s\\n' "unexpected fake python invocation" >&2
+exit 90
+''',
+            encoding="utf-8",
+        )
+        for path in (fake_bin / "xcrun", fake_bin / "python3"):
+            path.chmod(0o755)
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GITHUB_WORKSPACE": str(workspace),
+                "RUNNER_TEMP": str(runner_temp),
+                "IOS_SIMULATOR_UDID": "SIMULATOR",
+                "MEETERM_IOS_SUITE": suite,
+                "IOS_SMOKE_TEST_FAIL_QUERY": fail_query,
+                "IOS_SMOKE_TEST_MARKER_OUTPUT": self.MARKER_OUTPUT,
+                "IOS_SMOKE_TEST_UNSAFE_STDERR": self.UNSAFE_STDERR,
+                "IOS_SMOKE_TEST_WORKSPACE": str(workspace),
+                "IOS_SMOKE_TEST_XCRUN_LOG": str(xcrun_log),
+                "PATH": f"{fake_bin}:{environment['PATH']}",
+            }
+        )
+        result = subprocess.run(
+            [str(IOS_SMOKE_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        return result, artifact_dir, xcrun_log
+
+    def assert_no_unsafe_stderr(self, artifact_dir: Path) -> None:
+        for path in artifact_dir.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    self.UNSAFE_STDERR.encode(), path.read_bytes(), str(path)
+                )
+
+    def test_failed_log_queries_discard_partial_output_at_all_producer_sites(self) -> None:
+        cases = (
+            (
+                "ssh",
+                "ssh",
+                "simulator.log",
+                "The short SSH XCUITest log query failed.",
+            ),
+            (
+                "full",
+                "xctest",
+                "xcuitest-simulator.log",
+                "The real XCUITest log query failed.",
+            ),
+            (
+                "full",
+                "foundation",
+                "simulator.log",
+                "The native foundation log query failed.",
+            ),
+        )
+        for suite, query, filename, message in cases:
+            with self.subTest(suite=suite, query=query):
+                result, artifact_dir, xcrun_log = self.run_smoke(suite, query)
+                query_trace = xcrun_log.read_text(encoding="utf-8")
+                self.assertIn("private_output=1", query_trace)
+                self.assertNotIn("private_output=0", query_trace)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn(self.UNSAFE_STDERR, result.stderr)
+                destination = artifact_dir / filename
+                self.assertFalse(destination.exists())
+                self.assertFalse((artifact_dir / f"{filename}.partial").exists())
+                self.assert_no_unsafe_stderr(artifact_dir)
+
+    def test_successful_log_queries_publish_stdout_only(self) -> None:
+        result, artifact_dir, xcrun_log = self.run_smoke("ssh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("private_output=1", xcrun_log.read_text(encoding="utf-8"))
+        self.assertNotIn("private_output=0", xcrun_log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (artifact_dir / "simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assert_no_unsafe_stderr(artifact_dir)
+
+        result, artifact_dir, xcrun_log = self.run_smoke("full")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(xcrun_log.read_text(encoding="utf-8").count("private_output=1"), 2)
+        self.assertNotIn("private_output=0", xcrun_log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (artifact_dir / "simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assertEqual(
+            (artifact_dir / "xcuitest-simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assertEqual(
+            sum(
+                " log show " in f" {line} "
+                for line in xcrun_log.read_text(encoding="utf-8").splitlines()
+            ),
+            2,
+        )
+        self.assert_no_unsafe_stderr(artifact_dir)
 
 
 class SelectionCopyObserverTests(unittest.TestCase):

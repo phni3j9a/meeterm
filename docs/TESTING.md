@@ -94,10 +94,17 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 
 `standard` / `polish` の公開fixture内で失敗した場合だけ、
 `public-presentation-failure.png` と要素の存在・操作可能性・矩形を記録します。
-この二つのテストだけが渡す `-meeterm-ui-observation` 起動引数により、native入力の
-focus/window/binding状態を固定形式のログに残します。入力文字・composition・clipboard・
-remote IDは記録しません。実SSHやformsの失敗を無条件に撮影する機能ではありません。
-foundation判定では、この固定4種類の入力診断をreadiness/frameから分離します。
+`-meeterm-ui-observation` 起動引数はこの二つと短い `ssh` テストだけが渡し、native入力の
+focus/window/bindingとPasteのrequest/provider/drop/delivery/accepted状態を固定形式の
+ログに残します。smoke iOS起動時にはJS module、initial URLの固定分類、AppContent、
+profile取得の到達phaseも、nativeのallowlistを通して記録します。URLそのもの、入力文字、
+composition、clipboard、profileやremote IDは記録しません。
+短い `ssh` の撮影許可は公開fixtureと分離し、最初の接続情報の入力前だけに限定します。
+foreground到達後の `ssh-entry-initial.png`、接続入口で失敗した場合の
+`ssh-entry-failure.png` と `ios-ui-ssh-entry-diagnostics.txt` を任意の観測として保存します。
+非foregroundでは要素照会や撮影を行わず、取得できない理由を固定値で残します。
+実SSHやformsの失敗を無条件に撮影する機能ではありません。
+foundation判定では、これらの固定診断をreadiness/frameから分離します。
 入力診断だけでは合格にならず、不正な値や未知のmarkerは引き続き失敗になります。
 fixtureも実際のAppState通知に追従しますが、Rustへの接続・再接続呼び出しは行いません。
 
@@ -190,6 +197,11 @@ XCTest開始前の終了も調べられるよう、`xcodebuild`の通常出力�
 任意のdomain名やraw summaryはアップロードしません。診断の失敗は元の合否を変えません。
 OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
 端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
+`simulator-log-collection.txt` はログ取得元、コマンド成否、smoke markerの有無を分けて
+記録します。失敗時も `launch.txt` の検証済みUTC開始時刻から取得し、旧成果物などで
+開始時刻がなければ `--last 10m` の限定fallbackを明示します。ログ取得成功や診断marker
+だけを起動・描画・入力の合格証拠にはしません。Pasteの `Ready` もproviderの状態であり、
+入力がremoteへ届いた証明は従来どおりremote acknowledgmentに依存します。
 実接続失敗では保存metadataの一致フラグとstrict SSH probeを確認できますが、事後probe成功だけでUI入力成功は証明できません。
 短いSSH入力のmarker待機まで進んだ実行では、`ios-ssh-input-diagnostics.json`に隔離fixtureの
 command echo、手入力とpasteの到達、markerの一致をbooleanと件数で残します。生の端末内容は

@@ -92,6 +92,34 @@ class FoundationValidatorTests(unittest.TestCase):
         result, root = self.run_case(lines)
         self.assert_reason(result, root, "missing_marker")
 
+    def test_startup_and_paste_diagnostics_are_ignored_without_native_frame(self) -> None:
+        diagnostics = [
+            "MEETERM_SMOKE_STARTUP phase=js_module_loaded",
+            "MEETERM_SMOKE_STARTUP phase=initial_url_requested",
+            "MEETERM_SMOKE_STARTUP phase=initial_url_null",
+            "MEETERM_SMOKE_STARTUP phase=app_content_mounted",
+            "MEETERM_SMOKE_STARTUP phase=profiles_requested",
+            "MEETERM_SMOKE_STARTUP phase=profiles_succeeded",
+            "MEETERM_SMOKE_PASTE_REQUEST",
+            "MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION",
+            "MEETERM_SMOKE_PASTE_DROP_GENERATION",
+            "MEETERM_SMOKE_PASTE_DROP_CANCEL",
+            "MEETERM_SMOKE_PASTE_DROP_FOCUS",
+            "MEETERM_SMOKE_PASTE_DROP_WINDOW",
+            "MEETERM_SMOKE_PASTE_DROP_PROVIDER",
+            "MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT",
+            "MEETERM_SMOKE_PASTE_RESULT accepted=1",
+        ]
+        result, root = self.run_case([compact_marker(102.0, 1234, message) for message in diagnostics])
+        self.assert_reason(result, root, "missing_marker")
+
+        result, root = self.run_case([
+            *[compact_marker(102.0, 1234, message) for message in diagnostics],
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+            compact_marker(103.0, 1234, "MEETERM_SMOKE_FIRST_FRAME_METAL"),
+        ])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_input_observation_cannot_satisfy_missing_frame(self) -> None:
         result, root = self.run_case([
             compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
@@ -105,6 +133,12 @@ class FoundationValidatorTests(unittest.TestCase):
             "MEETERM_SMOKE_INPUT_FOCUS result=2 window=1",
             "MEETERM_SMOKE_INPUT_WINDOW attached=1 arbitrary-text",
             "MEETERM_SMOKE_INPUT_BINDING_CANCEL extra=1",
+            "MEETERM_SMOKE_STARTUP phase=unknown",
+            "MEETERM_SMOKE_STARTUP phase=initial_url_null extra=1",
+            "MEETERM_SMOKE_PASTE_RESULT accepted=2",
+            "MEETERM_SMOKE_PASTE_RESULT accepted=1 extra=1",
+            "MEETERM_SMOKE_PASTE_REQUEST extra=1",
+            "MEETERM_SMOKE_PASTE_DROP_PROVIDER extra=1",
             "MEETERM_SMOKE_NATIVE_READY result=1",
         ]:
             with self.subTest(message=message):

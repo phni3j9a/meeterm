@@ -93,140 +93,92 @@ white-on-brown button is 6.06:1. These calculations do not replace visual review
 
 ## Verification and remaining work
 
-TypeScript, sixteen app selection/presentation tests, and the Python driver
-regressions pass locally. These checks do not prove rendering or motion.
-The Reduced Motion hook test mocks the platform preference boundary; it verifies
-initial state, change notifications, and cleanup, not the actual OS setting.
-Android CNG generation also passed locally; its generated day/night colors and
-`AppTheme` references were inspected. Generated native directories stay ignored.
+[Selected reviewed native screens](evidence/issue-19-ui/README.md) show the light
+workspace and dark terminal on both platforms. They are actual screenshots,
+not generated mockups. Full-size originals remain in the linked CI artifacts.
 
-The first source (`89a3113`) ran in [Mobile smoke 34750219346](https://github.com/phni3j9a/meeterm/actions/runs/34750219346).
-iOS `standard` passed its original fourteen screens, storage/input cases, and
-fresh foundation with a Metal frame. All fourteen images plus the foundation
-were actually viewed. Android built and reached real SSH, saved-credential
-reconnect, and foreground/restart checks, then failed at `daily_settings_theme`:
-the native dialog displayed `LIGHT`, while the test expected `Light`. Its
-recording and screenshots were inspected. That run is not an Android full pass.
-The Herdr workspace observational capture also still expected removed count
-subtitles; the updated check requires the exact two workspace rows instead.
+The latest app/native implementation with completed normal mobile evidence is
+`55fb60d30d439381204f6f331c9b9579f09c09ac`. Both normal mobile gates passed in
+[34760570576](https://github.com/phni3j9a/meeterm/actions/runs/34760570576).
+The subsequent `fb48d0f` changes only test scripts and documentation. The current
+candidate adds smoke-only startup and Paste observations; its new hosted
+build/runtime verification is pending. It does not change the visual design,
+renderer, dependencies or input delivery/cancellation semantics.
 
-Image review found the iOS dark-presenter/light-sheet status-bar mismatch and
-crowded Android shortcut targets. The subsequent fixes require new mobile
-evidence. Android monochrome emoji remain the documented renderer limitation;
-this UI work does not change terminal rasterization or claim color-emoji parity.
+| Check | Actual scope | Evidence |
+| --- | --- | --- |
+| Android full | Native readiness/frame/no crash, real SSH and daily-use flow, settings, selection/copy, lifecycle and desktop handoff | Passed in the fresh mobile run above; all 21 observational states and actual daily-use images viewed |
+| iOS standard | Four storage cases, seven input cases plus one gesture case, original fourteen screens, fresh native readiness/frame/survival | Passed in the same fresh run; all fourteen screens plus the Metal foundation viewed |
+| iOS default polish | Seven public states; real search, native keyboard show/hide, settings, picker, explicit Back and edge Back preserving search | [34761931479](https://github.com/phni3j9a/meeterm/actions/runs/34761931479) passed; seven states, two actual interaction screenshots and the Metal foundation viewed |
+| iOS SE/XL polish | An actual iPhone SE (3rd generation), with OS content size verified as extra-large | [34761930612](https://github.com/phni3j9a/meeterm/actions/runs/34761930612) failed before UI setup: sanitized result summary identifies a runner initialization timeout; no screenshots or UI acceptance for that run |
+| iOS short SSH | Native keyboard prefix, Paste, Return, remote acknowledgment and disconnect | [34761932309](https://github.com/phni3j9a/meeterm/actions/runs/34761932309) failed at Paste completion; fresh test-only build [34763474371](https://github.com/phni3j9a/meeterm/actions/runs/34763474371) succeeded but its SSH test failed before the connection form |
+| Shared Rust | 79 unit cases, real OpenSSH, pinned-SHA Herdr 0.9.0 integration through the isolated russh endpoint | [34760570515](https://github.com/phni3j9a/meeterm/actions/runs/34760570515) passed; Herdr integration completed in 20.96 seconds |
 
-The next source (`d6da311`) passed the fresh iOS `standard` job in
-[34752962390](https://github.com/phni3j9a/meeterm/actions/runs/34752962390), again
-with Metal. All fourteen images and the foundation were viewed; the sheet's
-status bar now remains legible over its dark presenter. Its short SSH run
-[34753879182](https://github.com/phni3j9a/meeterm/actions/runs/34753879182) passed
-real native input, remote acknowledgment, and disconnect; both images were viewed.
-General CI [34752962383](https://github.com/phni3j9a/meeterm/actions/runs/34752962383)
-passed, including SHA-verified Herdr 0.9.0 over the isolated russh endpoint.
+TypeScript, 24 App/Settings and startup-observation tests (including nested
+cases), and 152 Python SSH/driver regressions passed locally. CI-processing regressions also
+passed (20 tests, with one macOS-only case excluded on Linux). Android CNG
+generation passed, including inspection of generated day/night native accent
+resources. Generated native directories remain ignored.
 
-The exact-source SE/XL `polish` diagnostic
-[34753879206](https://github.com/phni3j9a/meeterm/actions/runs/34753879206) failed
-at edge-back (Swift line 600). Its seven states, search, native keyboard,
-settings, picker, and explicit Back checks ran first. All seven images and
-sampled navigation frames were inspected. The terminal's unrestricted pan
-recognizer consumed horizontal motion; the following source adds a narrow
-native gesture policy and an eighth native regression without removing the
-existing seven input checks. The new gesture policy still needs mobile evidence.
-The partly keyboard-covered duplicate clear action was removed, and status
-counts now use a nonbreaking space to prevent an orphaned number.
+### Open diagnostic
 
-Source `d0fafc1` passed Android full in
-[34755069513](https://github.com/phni3j9a/meeterm/actions/runs/34755069513) and
-the real iOS SSH round trip in
-[34756002275](https://github.com/phni3j9a/meeterm/actions/runs/34756002275).
-General CI [34755069516](https://github.com/phni3j9a/meeterm/actions/runs/34755069516)
-passed, including 79 Rust unit tests, real OpenSSH, and the SHA-verified Herdr
-0.9.0 integration (20.58 seconds).
-Its iOS standard storage four and native input/gesture eight passed, but the
-screen loop stopped at terminal readiness after five captures (Swift line 508;
-the foreground assertion at line 506 passed). This is not a standard pass.
-A focused regression reproduced a fixture mounted while iOS is inactive never
-following the later foreground notification. The subsequent fix keeps UI
-lifecycle observation active without invoking native connection effects;
-normal production events still reach Rust in order. This demonstrates that
-specific defect, not the cause of every preceding runner failure.
+The failed short SSH run reached the connected terminal, typed its keyboard
+prefix and tapped Paste, then timed out waiting for the native completion
+value (Swift line 2040 on `55fb60d`). Return was never reached. The cause is
+not yet established. The test now selects the existing `terminal-paste`
+identifier rather than an arbitrary same-label action, verifies its initial
+Ready state, and records only whitelisted completion/keyboard/target states.
+A post-auth Paste timeout also produces read-only fixture echo booleans.
+The new regression reproduced the missing diagnostic before the fix.
+The completion timeout and remote acknowledgment are unchanged; no app input
+behavior was modified for this investigation.
 
-The same-source SE/XL polish run
-[34755999408](https://github.com/phni3j9a/meeterm/actions/runs/34755999408)
-captured seven states, then failed waiting for the keyboard at Swift line 569.
-Sampled recording frames show the accessory appearing briefly and disappearing;
-edge-back was not reached. Follow-up public-screen diagnostics capture the
-failed screen and fixed existence/hittability/geometry fields. An explicit test
-launch argument enables native focus/window/binding booleans only: no typed
-text, composition, clipboard data, or remote identity is logged. Real SSH/forms
-failures do not enter the public-screen capture path.
+That fresh test-only run reached the app's foreground, but neither connection
+entry point appeared within the existing waits (Swift line 1395 on
+`fb48d0f`). No connection data had been entered and the Paste changes were
+never exercised. The artifact contains no screenshot of that initial screen;
+the new diagnostic candidate distinguishes startup, loading, and accessibility
+state before attributing this failure to the app or the Simulator. Both general
+CI runs on `fb48d0f` passed.
 
-App source `61050db` passed Android full in
-[34757079947](https://github.com/phni3j9a/meeterm/actions/runs/34757079947).
-All 21 presentation images and real daily-use/input/selection images were viewed.
-General CI [34757079945](https://github.com/phni3j9a/meeterm/actions/runs/34757079945)
-passed, including the SHA-verified live Herdr test (20.57 seconds).
-The fresh iOS standard and same-source short SSH
-[34758750427](https://github.com/phni3j9a/meeterm/actions/runs/34758750427)
-ended before their UI setup/stage records. Storage four passed in standard;
-these runs do not establish UI/input acceptance. Their quiet raw-log classifiers
-did not identify a cause. The next driver keeps normal private runner output and
-extracts only fixed classifications/counts/system codes from a local result summary.
+The candidate records only fixed startup phases and native Paste lifecycle /
+accepted booleans. Optional initial and entry-failure app screenshots are
+allowed only before any connection input. Fixed element flags, strict marker
+validation and UTC-bounded sanitized log collection complete this diagnostic;
+no timeout, assertion or remote-acknowledgment requirement is relaxed.
+Local regressions cover these contracts, not actual UIKit/XCTest execution.
+The fresh cross-platform build, short SSH and compact-keyboard observations
+remain to be run on this source.
 
-Both same-source polish diagnostics completed every UI assertion: the default
-[34758749180](https://github.com/phni3j9a/meeterm/actions/runs/34758749180) and
-SE/XL [34758747669](https://github.com/phni3j9a/meeterm/actions/runs/34758747669).
-These cover search, native keyboard show/hide, settings, picker, explicit Back,
-edge Back with preserved search, and fresh-process survival. All seven states
-and the foundation were viewed on each size. Sampled SE recording frames show
-the sheet and back transitions, but recording started after the keyboard check;
-it is not full-flow playback or frame-rate measurement.
+The newest SE/XL run stopped before the test body, not at an app interaction.
+Earlier SE/XL standard passed all fourteen screens in
+[34756003466](https://github.com/phni3j9a/meeterm/actions/runs/34756003466)
+on `d0fafc1`; those images were viewed but are not presented as the newest
+source. A small-screen screenshot with the actual terminal keyboard remains
+to be gathered.
 
-Both jobs then failed the foundation log parser: it treated the newly added
-fixed input diagnostics as malformed readiness/frame markers. A regression
-reproduced this failure before the parser fix. The updated parser accepts only
-the four exact diagnostic shapes without counting them as foundation evidence;
-missing frames, malformed values, and unknown markers still fail. Read-only
-revalidation of both original bundles identifies Metal; their original failed
-CI reports remain unchanged. The next polish driver also captures the actual
-keyboard and completed edge-back states so those visual checkpoints do not
-depend on successful video startup.
+### Corrections and evidence limits
 
-The subsequent accessibility review found the Appearance row still announced
-the obsolete "Terminal theme" label. The real Settings form regression
-reproduced it; the label and Android driver now use "Appearance". This changes
-app source, so the in-progress diagnostic-only build was cancelled and the
-next source requires both mobile jobs again, plus iOS SSH/polish diagnostics.
-That source, `55fb60d`, passed both normal gates in
-[34760570576](https://github.com/phni3j9a/meeterm/actions/runs/34760570576):
-Android full and iOS standard (four storage, seven input plus one gesture case,
-fourteen screens, fresh Metal foundation). All 21 Android states, its actual
-daily-use checkpoints, and all fourteen iOS screens plus foundation were viewed.
-The same-source [default polish](https://github.com/phni3j9a/meeterm/actions/runs/34761931479)
-also passed all interactions and the corrected strict foundation parser.
+Actual image review prompted fixes to iOS sheet status-bar contrast, Android
+native accent and 44 dp key targets, wrapping status counts, fixture foreground
+handling, native pan arbitration for edge Back, and the Appearance row's spoken
+label. Original failed runs remain failures. In particular, both `61050db`
+polish suites completed every UI assertion but failed the old strict parser on
+new fixed input diagnostics; local revalidation identified Metal without
+overwriting their artifacts. The complete sequence is retained in
+[PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The [SE/XL polish](https://github.com/phni3j9a/meeterm/actions/runs/34761930612)
-failed before UI setup; its new sanitized result summary identifies a runner
-initialization timeout. No image or UI acceptance is claimed for that run.
-The [short SSH run](https://github.com/phni3j9a/meeterm/actions/runs/34761932309)
-reached the connected terminal, typed the keyboard prefix, and tapped Paste,
-but failed waiting for the native completion value. Return was not reached.
-The test now addresses the existing `terminal-paste` identifier instead of an
-arbitrary same-label action, verifies its initial state, and retains the same
-completion timeout and remote acknowledgment. Fixed-state diagnostics and
-post-auth fixture echo booleans now also cover a Paste timeout. The underlying
-cause remains unconfirmed until the next fresh iOS test build supplies evidence;
-no app or native input behavior was changed for this diagnostic.
+The normal iOS gate still has fourteen screens. The seven extra states and
+navigation belong to the separate `polish` diagnostic with independent
+completion markers and the unchanged 900-second ceiling. Fixture screenshots
+verify presentation, not the remote actions that normally create that state.
+Their terminal content still comes from the Rust/native demo: no terminal
+bytes, cells or mock terminal renderings cross JavaScript.
 
-Physical-device GPU/IME parity, OS Reduced Motion behavior, and measured frame
-performance remain unverified; no Simulator result replaces those boundaries.
-
-The normal `standard` gate remains fourteen screens. Seven additional states
-and navigation are a separate explicit `polish` diagnostic with independent
-completion markers and the unchanged 900-second ceiling. The first run used
-786 seconds for the original standard/storage scope; additional UI diagnostics
-must not consume its remaining headroom or remove its assertions.
-
-The iOS standard and Android fixture drivers now wait for the actual English
-labels. Required assertions and completion checks have not been skipped or
-replaced with delays.
+Sampled recording frames were viewed, including native keyboard, sheets and
+the SE edge-back transition. This is not full-speed playback or a frame-rate
+measurement. The Reduced Motion regression verifies a mocked preference's
+initial state, notifications and cleanup, not the OS setting. Physical-device
+GPU, Japanese IME/font parity and rotation remain separate validation work.
+Android's documented monochrome-emoji limitation remains. Simulator Metal
+execution and native CoreGraphics fallback evidence are kept distinct.

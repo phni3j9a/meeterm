@@ -27,6 +27,14 @@ final class TerminalInputView: UITextView {
   private lazy var terminalPasteControl: UIPasteControl = makePasteControl()
   private let observesInputLifecycle = ProcessInfo.processInfo.arguments.contains("-meeterm-ui-observation")
 
+  private enum PasteDropReason {
+    case generation
+    case cancel
+    case focus
+    case window
+    case provider
+  }
+
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
     configure()
@@ -126,7 +134,8 @@ final class TerminalInputView: UITextView {
 
   override func paste(_ sender: Any?) {
     // Read the clipboard only in response to the user's explicit paste action.
-    invalidatePendingPaste()
+    recordPasteRequest()
+    invalidatePendingPaste(dropReason: .generation)
     guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
     deliverPaste(pasted)
   }
@@ -143,16 +152,29 @@ final class TerminalInputView: UITextView {
   }
 
   override func paste(itemProviders: [NSItemProvider]) {
-    invalidatePendingPaste()
-    guard window != nil, isFirstResponder,
-          let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else {
+    recordPasteRequest()
+    invalidatePendingPaste(dropReason: .generation)
+    guard window != nil else {
+      recordPasteDrop(.window)
+      return
+    }
+    guard isFirstResponder else {
+      recordPasteDrop(.focus)
+      return
+    }
+    guard let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else {
+      recordPasteDrop(.provider)
       return
     }
 
     let generation = pasteGeneration
+    let observesProviderCompletion = observesInputLifecycle
     pendingPasteGeneration = generation
     terminalPasteControl.accessibilityValue = "Pasting"
     pendingPasteProgress = provider.loadObject(ofClass: String.self) { [weak self] pasted, _ in
+      if observesProviderCompletion {
+        NSLog("MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION")
+      }
       DispatchQueue.main.async { [weak self] in
         guard let self,
               self.pasteGeneration == generation,
@@ -162,8 +184,15 @@ final class TerminalInputView: UITextView {
         self.pendingPasteGeneration = nil
         self.pendingPasteProgress = nil
         self.terminalPasteControl.accessibilityValue = "Ready"
-        guard self.window != nil, self.isFirstResponder,
-              let pasted, !pasted.isEmpty else {
+        let windowAttached = self.window != nil
+        let focused = self.isFirstResponder
+        guard windowAttached, focused else {
+          if !windowAttached { self.recordPasteDrop(.window) }
+          if !focused { self.recordPasteDrop(.focus) }
+          return
+        }
+        guard let pasted, !pasted.isEmpty else {
+          self.recordPasteDrop(.provider)
           return
         }
         self.deliverPaste(pasted)
@@ -177,7 +206,7 @@ final class TerminalInputView: UITextView {
       NSLog("MEETERM_SMOKE_INPUT_WINDOW attached=%d", window != nil ? 1 : 0)
     }
     if window == nil {
-      invalidatePendingPaste()
+      invalidatePendingPaste(dropReason: .window)
     }
   }
 
@@ -215,7 +244,7 @@ final class TerminalInputView: UITextView {
   func cancelCompositionForBinding() {
     if observesInputLifecycle { NSLog("MEETERM_SMOKE_INPUT_BINDING_CANCEL") }
     clearModifiers()
-    invalidatePendingPaste()
+    invalidatePendingPaste(dropReason: .cancel)
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
@@ -224,7 +253,11 @@ final class TerminalInputView: UITextView {
     resignFirstResponder()
   }
 
-  private func invalidatePendingPaste() {
+  private func invalidatePendingPaste(dropReason: PasteDropReason? = nil) {
+    let hasPendingPaste = pendingPasteGeneration != nil
+    if hasPendingPaste, let dropReason {
+      recordPasteDrop(dropReason)
+    }
     pasteGeneration &+= 1
     pendingPasteGeneration = nil
     pendingPasteProgress?.cancel()
@@ -234,11 +267,36 @@ final class TerminalInputView: UITextView {
 
   private func deliverPaste(_ pasted: String) {
     guard !pasted.isEmpty else { return }
+    recordPasteDeliveryAttempt()
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
     clearModifiers()
     onPaste?(pasted)
+  }
+
+  private func recordPasteRequest() {
+    if observesInputLifecycle { NSLog("MEETERM_SMOKE_PASTE_REQUEST") }
+  }
+
+  private func recordPasteDeliveryAttempt() {
+    if observesInputLifecycle { NSLog("MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT") }
+  }
+
+  private func recordPasteDrop(_ reason: PasteDropReason) {
+    guard observesInputLifecycle else { return }
+    switch reason {
+    case .generation:
+      NSLog("MEETERM_SMOKE_PASTE_DROP_GENERATION")
+    case .cancel:
+      NSLog("MEETERM_SMOKE_PASTE_DROP_CANCEL")
+    case .focus:
+      NSLog("MEETERM_SMOKE_PASTE_DROP_FOCUS")
+    case .window:
+      NSLog("MEETERM_SMOKE_PASTE_DROP_WINDOW")
+    case .provider:
+      NSLog("MEETERM_SMOKE_PASTE_DROP_PROVIDER")
+    }
   }
 
   private func resetBackingStore() {

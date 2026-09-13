@@ -8,6 +8,7 @@ readonly temporary_root
 readonly workspace_root="${temporary_root}/workspace"
 readonly artifact_root="${workspace_root}/artifacts/ios-simulator-observability"
 readonly fake_bin="${temporary_root}/bin"
+readonly minimal_bin="${temporary_root}/minimal-bin"
 readonly xcrun_log="${temporary_root}/xcrun.log"
 
 cleanup() {
@@ -15,9 +16,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "${workspace_root}/scripts/ci" "${fake_bin}" "${artifact_root}"
+mkdir -p "${workspace_root}/scripts/ci" "${fake_bin}" "${minimal_bin}" "${artifact_root}"
 cp "${repository_root}/scripts/ci/ios-collect-artifacts.sh" "${workspace_root}/scripts/ci/"
 cp "${repository_root}/scripts/ci/validate-png.sh" "${workspace_root}/scripts/ci/"
+for command in bash file find grep mkdir od python3 rm tr; do
+  ln -s "$(command -v "${command}")" "${minimal_bin}/${command}"
+done
 
 cat > "${fake_bin}/xcrun" <<'EOF'
 #!/usr/bin/env bash
@@ -27,7 +31,10 @@ if [[ "${1:-}" == "simctl" && "${2:-}" == "io" ]]; then
   output_path="${!#}"
   : > "${output_path}"
 fi
-exit 0
+if [[ "${1:-}" == "simctl" && "${2:-}" == "spawn" && -n "${IOS_COLLECT_TEST_XCRUN_OUTPUT:-}" ]]; then
+  printf '%s\n' "${IOS_COLLECT_TEST_XCRUN_OUTPUT}"
+fi
+exit "${IOS_COLLECT_TEST_XCRUN_EXIT:-0}"
 EOF
 chmod +x "${fake_bin}/xcrun"
 
@@ -39,7 +46,21 @@ run_collector() {
       DEVELOPER_DIR="/fixture/SelectedXcode/Contents/Developer" \
       MEETERM_IOS_SUITE="${1:-standard}" \
       IOS_COLLECT_TEST_XCRUN_LOG="${xcrun_log}" \
+      IOS_COLLECT_TEST_XCRUN_EXIT="${2:-0}" \
+      IOS_COLLECT_TEST_XCRUN_OUTPUT="${3:-}" \
       PATH="${fake_bin}:${PATH}" \
+      scripts/ci/ios-collect-artifacts.sh
+  )
+}
+
+run_collector_without_xcrun() {
+  (
+    cd "${workspace_root}"
+    GITHUB_WORKSPACE="${workspace_root}" \
+      IOS_SIMULATOR_UDID="SIMULATOR" \
+      DEVELOPER_DIR="/fixture/SelectedXcode/Contents/Developer" \
+      MEETERM_IOS_SUITE="${1:-standard}" \
+      PATH="${minimal_bin}" \
       scripts/ci/ios-collect-artifacts.sh
   )
 }
@@ -51,6 +72,11 @@ if grep -Fq 'simctl io' "${xcrun_log}"; then
   echo "collector captured a terminal screenshot before the safe post-test marker" >&2
   exit 1
 fi
+grep -Fq -- 'simctl spawn SIMULATOR log show --style compact --timezone UTC --last 10m' "${xcrun_log}"
+grep -Fxq 'source=last10m_fallback' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=start_metadata_missing' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'command_status=passed' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'marker_status=absent' "${artifact_root}/simulator-log-collection.txt"
 test ! -e "${artifact_root}/terminal.png"
 grep -Fxq 'xcode_developer_dir=/fixture/SelectedXcode/Contents/Developer' "${artifact_root}/metadata.txt"
 grep -Fq 'XCTest did not capture the fresh native foundation' \
@@ -188,5 +214,77 @@ if grep -Fq 'simctl io' "${xcrun_log}"; then
   echo "name-operation collector captured arbitrary UI" >&2
   exit 1
 fi
+
+# A fresh smoke run carries an explicit UTC start. The collector must use that
+# bounded point instead of dropping back to an arbitrary recent window.
+printf '%s\n' \
+  'mode=xcuitest-real-ssh' \
+  'smoke_started_at_utc=2026-09-14 12:34:56Z' \
+  > "${artifact_root}/launch.txt"
+rm -f "${artifact_root}/simulator.log"
+: > "${xcrun_log}"
+run_collector full
+grep -Fq -- 'simctl spawn SIMULATOR log show --style compact --timezone UTC --start 2026-09-14 12:34:56' "${xcrun_log}"
+grep -Fxq 'source=launch_metadata' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'result=unavailable' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'command_status=passed' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'marker_status=absent' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=no_smoke_markers' "${artifact_root}/simulator-log-collection.txt"
+
+# Invalid metadata remains explicit and uses only the bounded compatibility
+# fallback; it must never become an unvalidated xcrun argument.
+printf '%s\n' \
+  'mode=xcuitest-real-ssh' \
+  'smoke_started_at_utc=not-a-timestamp' \
+  > "${artifact_root}/launch.txt"
+rm -f "${artifact_root}/simulator.log"
+: > "${xcrun_log}"
+run_collector full
+grep -Fq -- 'simctl spawn SIMULATOR log show --style compact --timezone UTC --last 10m' "${xcrun_log}"
+grep -Fxq 'source=last10m_fallback' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=invalid_start_metadata' "${artifact_root}/simulator-log-collection.txt"
+
+# A command failure must not upload its stderr or partial output as a marker
+# log, and a header-only successful query is not startup evidence.
+printf '%s\n' \
+  'mode=xcuitest-real-ssh' \
+  'smoke_started_at_utc=2026-09-14 12:34:56Z' \
+  > "${artifact_root}/launch.txt"
+rm -f "${artifact_root}/simulator.log"
+: > "${xcrun_log}"
+run_collector full 42
+grep -Fxq 'source=launch_metadata' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'command_status=failed' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'marker_status=absent' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'result=unavailable' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=log_command_failed' "${artifact_root}/simulator-log-collection.txt"
+test ! -e "${artifact_root}/simulator.log"
+
+rm -f "${artifact_root}/simulator.log"
+: > "${xcrun_log}"
+run_collector full 0 'log show header only'
+grep -Fxq 'source=launch_metadata' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'command_status=passed' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'marker_status=absent' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'result=unavailable' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=no_smoke_markers' "${artifact_root}/simulator-log-collection.txt"
+
+rm -f "${artifact_root}/simulator.log"
+: > "${xcrun_log}"
+run_collector full 0 '2026-09-14 12:34:57.000 Df meeterm[123:42af0] (Foundation) MEETERM_SMOKE_STARTUP phase=root_effect'
+grep -Fxq 'command_status=passed' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'marker_status=present' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'result=available' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=none' "${artifact_root}/simulator-log-collection.txt"
+
+# The tool-missing path is tested with a minimal PATH that still contains the
+# shell and parser utilities but deliberately has no xcrun.
+rm -f "${artifact_root}/simulator.log"
+run_collector_without_xcrun full
+grep -Fxq 'source=launch_metadata' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'command_status=tool_missing' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'marker_status=absent' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'result=unavailable' "${artifact_root}/simulator-log-collection.txt"
+grep -Fxq 'reason=log_tool_missing' "${artifact_root}/simulator-log-collection.txt"
 
 echo "iOS artifact screenshot boundary and focused scope regressions passed."

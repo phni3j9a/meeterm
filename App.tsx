@@ -30,6 +30,36 @@ import { DEFAULT_PREFERENCES, itemActions, NameForm, ProfileList, SettingsForm }
 import { Button, Companion, DARK, Icon, IconButton, MONO, usePalette, useReducedMotion } from './app/ui';
 import type { Palette } from './app/ui';
 
+type StartupPhase =
+  | 'js_module_loaded'
+  | 'root_effect'
+  | 'initial_url_requested'
+  | 'initial_url_null'
+  | 'initial_url_allowed_fixture'
+  | 'initial_url_other'
+  | 'initial_url_rejected'
+  | 'app_content_mounted'
+  | 'profiles_requested'
+  | 'profiles_succeeded'
+  | 'profiles_failed';
+
+const SMOKE_BUILD = process.env.EXPO_PUBLIC_MEETERM_SMOKE === '1';
+
+// Startup observations are a smoke-only iOS diagnostic. Keep this bridge
+// synchronous and tiny so a bridge failure can never hold up app startup or
+// change the normal URL/profile behavior.
+function recordStartupPhase(phase: StartupPhase): void {
+  if (!SMOKE_BUILD || Platform.OS !== 'ios') return;
+  try {
+    MeetermTerminal.recordStartupPhase(phase);
+  } catch {
+    // Diagnostics must remain observational and must not become a startup
+    // failure when the native sink is unavailable.
+  }
+}
+
+if (SMOKE_BUILD) recordStartupPhase('js_module_loaded');
+
 // The owner outlives views. Only remote borrowed pane handles are displayed in
 // the ordinary app; the owner's local foundation fixture is never a fallback.
 const CONNECTION_ID = 'poc-main';
@@ -339,11 +369,23 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const workspaceList = useRef<FlatList<Workspace>>(null);
   const foreground = useRef(AppState.currentState === 'active');
 
+  useEffect(() => {
+    recordStartupPhase('app_content_mounted');
+  }, []);
+
   const loadProfiles = useCallback(async () => {
     if (smokeFixtureActive) return;
+    recordStartupPhase('profiles_requested');
     setProfilesLoading(true);
-    try { setProfiles(await MeetermTerminal.getProfiles()); setProfilesError(false); }
-    catch { setProfilesError(true); }
+    try {
+      setProfiles(await MeetermTerminal.getProfiles());
+      setProfilesError(false);
+      recordStartupPhase('profiles_succeeded');
+    }
+    catch {
+      setProfilesError(true);
+      recordStartupPhase('profiles_failed');
+    }
     finally { setProfilesLoading(false); }
   }, [smokeFixtureActive]);
 
@@ -1063,7 +1105,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 }
 
 export default function App() {
-  const smokeBuild = process.env.EXPO_PUBLIC_MEETERM_SMOKE === '1';
+  const smokeBuild = SMOKE_BUILD;
   const [smokeRoute, setSmokeRoute] = useState<SmokeRoute>(null);
   const [smokeRouteRevision, setSmokeRouteRevision] = useState(0);
   const [smokeRouteResolved, setSmokeRouteResolved] = useState(!smokeBuild);
@@ -1072,9 +1114,22 @@ export default function App() {
     // This build flag and explicit launch URL are both required. Normal
     // installed-app launches always start at the real workspace hub.
     if (!smokeBuild) return;
+    recordStartupPhase('root_effect');
+    recordStartupPhase('initial_url_requested');
     let launchEventReceived = false;
+    let initialUrlResolved = false;
     const applyUrl = (url: string | null) => {
       const route = smokeRouteForUrl(url);
+      if (!initialUrlResolved) {
+        initialUrlResolved = true;
+        recordStartupPhase(
+          url === null
+            ? 'initial_url_null'
+            : route === undefined
+              ? 'initial_url_other'
+              : 'initial_url_allowed_fixture',
+        );
+      }
       // Ignore unrelated deep links. A valid smoke URL always increments the
       // key so reopening the same foundation or screen URL resets its state.
       if (route !== undefined) {
@@ -1086,7 +1141,11 @@ export default function App() {
     void Linking.getInitialURL().then(url => {
       if (!launchEventReceived) applyUrl(url);
     }).catch(() => {
-      if (!launchEventReceived) setSmokeRouteResolved(true);
+      if (!launchEventReceived && !initialUrlResolved) {
+        initialUrlResolved = true;
+        recordStartupPhase('initial_url_rejected');
+        setSmokeRouteResolved(true);
+      }
     });
     const subscription = Linking.addEventListener('url', event => {
       launchEventReceived = true;

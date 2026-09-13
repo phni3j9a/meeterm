@@ -99,7 +99,14 @@ function FlatList({
 
 function makeNativeEnvironment() {
   const environment = {
-    snapshot: null,
+    snapshot: {
+      backend: 'tmux',
+      runtime: 'meeterm',
+      groupsSupported: false,
+      workspaces: [],
+      groups: [],
+      terminals: [],
+    },
     connection: {
       state: 'Ready',
       host: 'fixture.example',
@@ -112,8 +119,13 @@ function makeNativeEnvironment() {
     },
     calls: [],
     foregroundCalls: [],
+    nativeCalls: [],
+    startupPhases: [],
+    startupPhaseShouldFail: false,
     initialAppState: 'active',
     initialURL: null,
+    initialURLBehavior: 'resolve',
+    profilesShouldFail: false,
     appStateListeners: new Set(),
     visibility: [],
     renderedTerminalIds: [],
@@ -122,8 +134,19 @@ function makeNativeEnvironment() {
   };
 
   const native = {
-    async getProfiles() { return []; },
-    async getPreferences() { return { ...PREFERENCES }; },
+    recordStartupPhase(phase) {
+      if (environment.startupPhaseShouldFail) throw new Error('diagnostic bridge unavailable');
+      environment.startupPhases.push(phase);
+    },
+    async getProfiles() {
+      environment.nativeCalls.push('getProfiles');
+      if (environment.profilesShouldFail) throw new Error('profiles unavailable');
+      return [];
+    },
+    async getPreferences() {
+      environment.nativeCalls.push('getPreferences');
+      return { ...PREFERENCES };
+    },
     async setPreferences() {},
     async setAutomaticReconnect() {},
     async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
@@ -167,7 +190,11 @@ function makeReactNativeMocks(environment) {
   };
   const Keyboard = { dismiss() {} };
   const Linking = {
-    async getInitialURL() { return environment.initialURL; },
+    async getInitialURL() {
+      if (environment.initialURLBehavior === 'pending') return new Promise(() => {});
+      if (environment.initialURLBehavior === 'reject') throw new Error('initial URL unavailable');
+      return environment.initialURL;
+    },
     addEventListener() { return noOpSubscription; },
   };
   const Alert = {
@@ -340,6 +367,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
 test('public presentation fixtures stay release-gated and do not mutate shared connection state', () => {
   const { environment, native } = makeNativeEnvironment();
   const production = loadApp(environment, native, true);
+  assert.deepEqual(environment.startupPhases, []);
   assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=welcome'), undefined);
   const smoke = loadApp(environment, native, true, true);
   for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces']) {
@@ -353,6 +381,104 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
   assert.equal(smoke.smokeFixture('workspaces').connection.state, 'Ready');
   assert.equal(environment.calls.length, 0);
+});
+
+test('smoke startup diagnostics classify URL and profile boundaries without fixture effects', async t => {
+  const cases = [
+    {
+      name: 'null URL',
+      initialURL: null,
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_null',
+        'app_content_mounted', 'profiles_requested', 'profiles_succeeded'],
+    },
+    {
+      name: 'other URL',
+      initialURL: 'meeterm://unrelated',
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_other',
+        'app_content_mounted', 'profiles_requested', 'profiles_succeeded'],
+    },
+    {
+      name: 'rejected URL request',
+      initialURLBehavior: 'reject',
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_rejected',
+        'app_content_mounted', 'profiles_requested', 'profiles_succeeded'],
+    },
+    {
+      name: 'profile request failure',
+      profilesShouldFail: true,
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_null',
+        'app_content_mounted', 'profiles_requested', 'profiles_failed'],
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const { environment, native } = makeNativeEnvironment();
+      Object.assign(environment, item);
+      const App = loadApp(environment, native, false, true);
+      const root = createRoot();
+      try {
+        await act(async () => { root.render(React.createElement(App)); });
+        assert.deepEqual(environment.startupPhases, item.expected);
+      } finally {
+        await act(async () => { root.unmount(); });
+      }
+    });
+  }
+
+  await t.test('allowed fixture URL never touches native remote control', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.initialURL = 'meeterm://smoke?screen=terminal';
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      assert.deepEqual(environment.startupPhases, [
+        'js_module_loaded', 'root_effect', 'initial_url_requested',
+        'initial_url_allowed_fixture', 'app_content_mounted',
+      ]);
+      assert.deepEqual(environment.nativeCalls, []);
+      assert.deepEqual(environment.foregroundCalls, []);
+      assert.deepEqual(environment.visibility, []);
+      assert.deepEqual(environment.calls, []);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  await t.test('pending URL request does not mount AppContent or start native work', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.initialURLBehavior = 'pending';
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      assert.deepEqual(environment.startupPhases, [
+        'js_module_loaded', 'root_effect', 'initial_url_requested',
+      ]);
+      assert.equal(terminalViews(root).length, 0);
+      assert.deepEqual(environment.nativeCalls, []);
+      assert.deepEqual(environment.foregroundCalls, []);
+      assert.deepEqual(environment.visibility, []);
+      assert.deepEqual(environment.calls, []);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  await t.test('diagnostic bridge failure remains observational', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.startupPhaseShouldFail = true;
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      assert.equal(terminalViews(root).length, 0);
+      assert.deepEqual(environment.nativeCalls, ['getProfiles', 'getPreferences']);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
 });
 
 test('agent status counts stay attached to their labels when text wraps', () => {

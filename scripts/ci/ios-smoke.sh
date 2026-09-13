@@ -9,6 +9,25 @@ readonly derived_data="${RUNNER_TEMP}/meeterm-derived-data"
 readonly suite="${MEETERM_IOS_SUITE:-standard}"
 
 : "${IOS_SIMULATOR_UDID:?IOS_SIMULATOR_UDID was not exported}"
+
+capture_smoke_log() {
+  local destination="$1"
+  shift
+  local partial_path
+
+  # Keep command output out of the upload directory until the query has
+  # completed successfully. stderr is never part of the sanitized log.
+  rm -f "${destination}"
+  partial_path="$(mktemp "${RUNNER_TEMP}/meeterm-smoke-log.XXXXXX")" || return 1
+  if "$@" > "${partial_path}" 2>/dev/null; then
+    if mv "${partial_path}" "${destination}"; then
+      return 0
+    fi
+  fi
+  rm -f "${destination}" "${partial_path}"
+  return 1
+}
+
 case "${suite}" in
   standard|polish|ssh|full|forms|native|names) ;;
   *) echo "Unsupported iOS smoke suite: ${suite}" >&2; exit 2 ;;
@@ -48,6 +67,12 @@ rm -f \
   "${artifact_dir}/polish-reconnecting.png" \
   "${artifact_dir}/polish-connection-error.png" \
   "${artifact_dir}/polish-long-workspaces.png" \
+  "${artifact_dir}/ssh-entry-initial.png" \
+  "${artifact_dir}/ssh-entry-failure.png" \
+  "${artifact_dir}/ssh-entry-initial-unavailable.txt" \
+  "${artifact_dir}/ssh-entry-failure-unavailable.txt" \
+  "${artifact_dir}/ios-ui-ssh-entry-diagnostics.txt" \
+  "${artifact_dir}/simulator-log-collection.txt" \
   "${artifact_dir}/ssh-terminal-input.png" \
   "${artifact_dir}/ssh-disconnected.png" \
   "${artifact_dir}/simulator.log"
@@ -105,6 +130,7 @@ xcrun simctl uninstall "${IOS_SIMULATOR_UDID}" "${bundle_id}" 2>/dev/null || tru
 xcrun simctl install "${IOS_SIMULATOR_UDID}" "${app_path}"
 if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "ssh" || "${suite}" == "full" ]]; then
   smoke_started_at="$(date -u '+%Y-%m-%d %H:%M:%S')"
+  printf 'smoke_started_at_utc=%sZ\n' "${smoke_started_at}" >> "${artifact_dir}/launch.txt"
 fi
 
 python3 "${GITHUB_WORKSPACE}/scripts/ssh/ios-smoke.py" \
@@ -122,11 +148,14 @@ if [[ "${suite}" == "ssh" ]]; then
   # The short SSH suite has no foundation URL relaunch. Its native terminal
   # still must report readiness and a renderer-specific first frame from the
   # post-install process before the Swift foreground assertion ends.
-  xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
-    --style compact --timezone UTC \
-    --start "${smoke_started_at}" \
-    --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"' \
-    > "${artifact_dir}/simulator.log" 2>&1 || true
+  if ! capture_smoke_log "${artifact_dir}/simulator.log" \
+      xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
+      --style compact --timezone UTC \
+      --start "${smoke_started_at}" \
+      --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"'; then
+    echo "The short SSH XCUITest log query failed." >&2
+    exit 1
+  fi
   if ! grep -Fq 'MEETERM_SMOKE_NATIVE_READY' "${artifact_dir}/simulator.log"; then
     echo "The short SSH XCUITest did not report a fresh native-ready marker." >&2
     exit 1
@@ -159,11 +188,14 @@ PYTIME
 )"
 if [[ "${suite}" == "full" ]]; then
   xctest_log="${artifact_dir}/xcuitest-simulator.log"
-  xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
-    --style compact --timezone UTC \
-    --start "${smoke_started_at}" --end "${foundation_started_at}" \
-    --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"' \
-    > "${xctest_log}" 2>&1 || true
+  if ! capture_smoke_log "${xctest_log}" \
+      xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
+      --style compact --timezone UTC \
+      --start "${smoke_started_at}" --end "${foundation_started_at}" \
+      --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"'; then
+    echo "The real XCUITest log query failed." >&2
+    exit 1
+  fi
   if ! grep -Fq 'MEETERM_SMOKE_NATIVE_READY' "${xctest_log}"; then
     echo "The real XCUITest did not report a fresh native-ready marker." >&2
     exit 1
@@ -183,11 +215,14 @@ fi
 # Require native readiness and a renderer-specific first frame from the same
 # fresh process before the complete five-second XCTest survival observation.
 # A visible React Native title or a screenshot alone cannot satisfy this gate.
-xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
-  --style compact --timezone UTC \
-  --start "${foundation_started_at}" \
-  --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"' \
-  > "${artifact_dir}/simulator.log" 2>&1 || true
+if ! capture_smoke_log "${artifact_dir}/simulator.log" \
+    xcrun simctl spawn "${IOS_SIMULATOR_UDID}" log show \
+    --style compact --timezone UTC \
+    --start "${foundation_started_at}" \
+    --predicate 'process == "meeterm" AND eventMessage CONTAINS "MEETERM_SMOKE_"'; then
+  echo "The native foundation log query failed." >&2
+  exit 1
+fi
 python3 "${GITHUB_WORKSPACE}/scripts/ci/ios-validate-foundation.py" \
   --artifact-dir "${artifact_dir}"
 if [[ "${suite}" == "standard" ]]; then
