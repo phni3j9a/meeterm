@@ -50,6 +50,7 @@ case "${suite}" in
     fi
     required_screenshots=(
       polish-welcome polish-empty polish-search-empty polish-disconnected polish-reconnecting polish-connection-error polish-long-workspaces
+      polish-terminal-keyboard polish-edge-back
     )
     ;;
   full)

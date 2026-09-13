@@ -843,6 +843,7 @@ def write_xcuitest_diagnostics(
     xcodebuild_started_at: float | None = None,
     xcodebuild_elapsed_seconds: float | None = None,
     xcodebuild_timeout_seconds: float | None = None,
+    result_bundle: Path | None = None,
 ) -> None:
     """Keep runner failures observable without copying XCTest's credential text."""
     try:
@@ -851,12 +852,34 @@ def write_xcuitest_diagnostics(
     except OSError:
         log = ""
         available = False
+    # A runner can fail before XCTest reaches setUp. Read the local result
+    # summary for fixed classifications/counts only; its failure text can
+    # contain credentials and must never be copied into uploaded artifacts.
+    summary = None
+    if exit_code != 0 and result_bundle is not None and result_bundle.is_dir():
+        xcrun = shutil.which("xcrun")
+        if xcrun is not None:
+            try:
+                report = subprocess.run(
+                    [xcrun, "xcresulttool", "get", "test-results", "summary", "--path", str(result_bundle)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, check=False, timeout=10,
+                )
+                if report.returncode == 0:
+                    candidate = json.loads(report.stdout)
+                    if isinstance(candidate, dict):
+                        summary = candidate
+                        log += "\n" + json.dumps(candidate).lower()
+            except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
+                pass
     signals = {
         "test_case_started": r"test case .+ started",
         "test_suite_started": r"test suite .+ started",
         "runner_launch_failed": r"failed to launch|unable to launch|failed to start.*test runner",
         "runner_early_exit": r"early unexpected exit|test runner.*crash|runner.*exited",
-        "runner_connection_failed": r"failed to establish.*connection|lost.*connection|failed to get test.*ready|never began executing",
+        "runner_connection_failed": r"failed to establish.*(?:connection|communication)|lost.*connection|failed to get test.*ready|never began executing",
+        "runner_timed_out": r"timed out.*(?:runner|test process|launch|test session)|(?:runner|test session).*timed out",
+        "runner_initialization_failed": r"failed to initialize|initialization failed|failed to create.*test session",
         "test_bundle_load_failed": r"failed to load.*bundle|could not load.*bundle|dlopen|symbol not found",
         "swift_cast_failed": r"could not cast value of type",
         "simulator_boot_failed": r"failed to boot|unable to boot",
@@ -867,8 +890,23 @@ def write_xcuitest_diagnostics(
     lines = [
         f"raw_log_available={int(available)}",
         f"exit_code={exit_code if exit_code is not None else 'unavailable'}",
+        f"xcresult_summary_available={int(summary is not None)}",
     ]
     lines.extend(f"{name}={int(re.search(pattern, log) is not None)}" for name, pattern in signals.items())
+    if summary is not None:
+        for field, label in (
+            ("totalTestCount", "total_tests"), ("passedTests", "passed_tests"),
+            ("failedTests", "failed_tests"), ("skippedTests", "skipped_tests"),
+        ):
+            value = summary.get(field)
+            safe = value if type(value) is int and 0 <= value <= 100000 else "unavailable"
+            lines.append(f"xcresult_{label}={safe}")
+    # Keep only known Apple/POSIX domains and bounded integer codes. Never
+    # include userInfo, descriptions, paths, bundle names, or arbitrary tokens.
+    for domain in ("IDETestOperationsObserverErrorDomain", "IDELaunchErrorDomain", "NSCocoaErrorDomain", "NSPOSIXErrorDomain", "FBSOpenApplicationServiceErrorDomain"):
+        codes = sorted(set(re.findall(rf"\b{domain.lower()}\b[\s\"=:]+(?:code[\s\"=:]+)?(-?\d{{1,6}})\b", log)))
+        for code in codes[:8]:
+            lines.append(f"system_error_{domain}={int(code)}")
     if xcodebuild_started_at is not None:
         lines.extend(
             (
@@ -1117,7 +1155,8 @@ def run_xcuitest(
         str(xctestrun_path),
         "-destination",
         f"platform=iOS Simulator,id={simulator_udid}",
-        "-quiet",
+        # Keep normal runner output in the private RUNNER_TEMP log so startup
+        # failures remain classifiable; only fixed diagnostics are uploaded.
         "CODE_SIGNING_ALLOWED=NO",
         "CODE_SIGNING_REQUIRED=NO",
     ]
@@ -1200,6 +1239,7 @@ def run_xcuitest(
                     xcodebuild_started_at=xcodebuild_started_at,
                     xcodebuild_elapsed_seconds=xcodebuild_elapsed_seconds,
                     xcodebuild_timeout_seconds=xcodebuild_timeout_seconds,
+                    result_bundle=bundle,
                 )
             if exit_code != 0:
                 reason = {

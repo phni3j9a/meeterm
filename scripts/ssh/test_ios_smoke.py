@@ -487,6 +487,46 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertIn("raw_log_available=0\n", output.read_text())
             self.assertIn("exit_code=unavailable\n", output.read_text())
 
+    def test_result_summary_reports_counts_and_system_codes_without_failure_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, output = root / "result.xcresult", root / "diagnostics.txt"
+            bundle.mkdir()
+            summary = {
+                "totalTestCount": 0, "passedTests": 0, "failedTests": 1,
+                "skippedTests": "CREDENTIAL-SECRET",
+                "testFailures": [{"failureText": "Failed to initialize test runner: CREDENTIAL-SECRET; IDELaunchErrorDomain Code=20; ArbitrarySecretDomain Code=91"}],
+            }
+            with mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(summary))) as run:
+                smoke.write_xcuitest_diagnostics(root / "missing.log", output, 65, result_bundle=bundle)
+            report = output.read_text()
+            self.assertIn("xcresult_summary_available=1\n", report)
+            self.assertIn("xcresult_total_tests=0\n", report)
+            self.assertIn("xcresult_failed_tests=1\n", report)
+            self.assertIn("xcresult_skipped_tests=unavailable\n", report)
+            self.assertIn("runner_initialization_failed=1\n", report)
+            self.assertIn("system_error_IDELaunchErrorDomain=20\n", report)
+            self.assertNotIn("SECRET", report)
+            self.assertNotIn("ArbitrarySecretDomain", report)
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(bundle)])
+            self.assertEqual(run.call_args.kwargs["timeout"], 10)
+
+    def test_result_summary_failure_does_not_replace_original_runner_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, output = root / "result.xcresult", root / "diagnostics.txt"
+            bundle.mkdir()
+            for error in (subprocess.TimeoutExpired("xcrun", 10), OSError("PRIVATE-SECRET")):
+                with self.subTest(error=type(error).__name__), \
+                     mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                     mock.patch.object(smoke.subprocess, "run", side_effect=error):
+                    smoke.write_xcuitest_diagnostics(root / "missing.log", output, 65, result_bundle=bundle)
+                report = output.read_text()
+                self.assertIn("exit_code=65\n", report)
+                self.assertIn("xcresult_summary_available=0\n", report)
+                self.assertNotIn("SECRET", report)
+
     def test_timeout_keeps_original_failure_and_emits_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -605,6 +645,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             command = run.call_args.args[0]
             self.assertIn(smoke.FORMS_TEST_SELECTOR, command)
+            self.assertNotIn("-quiet", command)
             self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
             self.assertNotIn(smoke.FULL_TEST_SELECTOR, command)
             environment = run.call_args.kwargs["env"]

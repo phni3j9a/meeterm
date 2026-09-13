@@ -74,6 +74,47 @@ class FoundationValidatorTests(unittest.TestCase):
         self.assertIn("renderer_backend=software-simulator-fallback\n",
                       (root / "ios-foundation-validation.txt").read_text())
 
+    def test_input_observations_do_not_replace_or_invalidate_foundation_markers(self) -> None:
+        diagnostics = [
+            "MEETERM_SMOKE_INPUT_FOCUS result=1 window=1",
+            "MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0",
+            "MEETERM_SMOKE_INPUT_WINDOW attached=1",
+            "MEETERM_SMOKE_INPUT_BINDING_CANCEL",
+        ]
+        lines = [compact_marker(102.0, 5678, message) for message in diagnostics]
+        result, root = self.run_case([
+            *lines,
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+            compact_marker(103.0, 1234, "MEETERM_SMOKE_FIRST_FRAME_METAL"),
+        ])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("renderer_backend=metal\n", (root / "metadata.txt").read_text())
+        result, root = self.run_case(lines)
+        self.assert_reason(result, root, "missing_marker")
+
+    def test_input_observation_cannot_satisfy_missing_frame(self) -> None:
+        result, root = self.run_case([
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+            compact_marker(103.0, 1234, "MEETERM_SMOKE_INPUT_FOCUS result=1 window=1"),
+        ])
+        self.assert_reason(result, root, "missing_first_frame")
+
+    def test_unrecognized_or_malformed_diagnostics_remain_invalid(self) -> None:
+        for message in [
+            "MEETERM_SMOKE_INPUT_UNKNOWN",
+            "MEETERM_SMOKE_INPUT_FOCUS result=2 window=1",
+            "MEETERM_SMOKE_INPUT_WINDOW attached=1 arbitrary-text",
+            "MEETERM_SMOKE_INPUT_BINDING_CANCEL extra=1",
+            "MEETERM_SMOKE_NATIVE_READY result=1",
+        ]:
+            with self.subTest(message=message):
+                result, root = self.run_case([
+                    compact_marker(102.0, 1234, message),
+                    compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+                    compact_marker(103.0, 1234, "MEETERM_SMOKE_FIRST_FRAME_METAL"),
+                ])
+                self.assert_reason(result, root, "malformed_marker")
+
     def test_rejects_marker_after_required_survival_window(self) -> None:
         result, root = self.run_case([
             compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),

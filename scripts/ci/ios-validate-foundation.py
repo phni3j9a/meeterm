@@ -19,10 +19,18 @@ BACKENDS = {
     "MEETERM_SMOKE_FIRST_FRAME_SOFTWARE": "software-simulator-fallback",
 }
 MARKER_NAMES = {"MEETERM_SMOKE_NATIVE_READY", *BACKENDS}
+# Public-screen focus observations share the sanitized log, but are not
+# readiness/frame evidence. Accept only the exact native boolean contract.
+INPUT_DIAGNOSTICS = {
+    "MEETERM_SMOKE_INPUT_FOCUS": r"result=[01] window=[01]",
+    "MEETERM_SMOKE_INPUT_RESIGN": r"focused=[01] result=[01]",
+    "MEETERM_SMOKE_INPUT_WINDOW": r"attached=[01]",
+    "MEETERM_SMOKE_INPUT_BINDING_CANCEL": r"",
+}
 COMPACT_MARKER = re.compile(
     r"^\s*(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
     r"\s+\S+\s+meeterm\[(\d+):([^\]\s]+)\]\s+.*?"
-    r"\b(MEETERM_SMOKE_[A-Z_]+)\s*$"
+    r"\b(MEETERM_SMOKE_[A-Z_]+)([^\r\n]*)$"
 )
 
 
@@ -72,9 +80,7 @@ def _marker(line: str) -> Marker | None:
     match = COMPACT_MARKER.match(line)
     if match is None:
         raise ValidationError("malformed_marker")
-    date, clock, pid, _tid, name = match.groups()
-    if name not in MARKER_NAMES:
-        raise ValidationError("malformed_marker")
+    date, clock, pid, _tid, name, details = match.groups()
     try:
         stamp = datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S.%f")
     except ValueError:
@@ -82,6 +88,10 @@ def _marker(line: str) -> Marker | None:
             stamp = datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S")
         except ValueError as error:
             raise ValidationError("malformed_marker") from error
+    if name in INPUT_DIAGNOSTICS and re.fullmatch(INPUT_DIAGNOSTICS[name], details.strip()):
+        return None
+    if name not in MARKER_NAMES or details.strip():
+        raise ValidationError("malformed_marker")
     return Marker(stamp.replace(tzinfo=timezone.utc).timestamp(), pid, name)
 
 

@@ -83,6 +83,8 @@ Herdr connection、groups、terminal、workspaces の14画面が `standard` で�
 `welcome`、`empty`、`search-empty`、`disconnected`、`reconnecting`、`connection-error`、`long-workspaces` です。
 その後に、検索→既存native fixture端末→キーボード開閉→設定→workspace切替sheet→
 戻る→iOS端からの戻るジェスチャを実際に操作します。検索条件の保持もassertします。
+実際のkeyboard表示とedge back後の検索保持も、それぞれ `polish-terminal-keyboard.png` と
+`polish-edge-back.png` に記録します。7状態のseed画像とは別の実操作後の画像です。
 この区間だけ既存の録画機構で `daily-interactions.mp4` を記録します。
 fixtureは既存 `poc-main` を開くことだけを許し、接続・遠隔操作・端末データの生成は行いません。
 これはnavigation/keyboard表示の検証であり、SSH入力の証拠にはしません。
@@ -95,6 +97,8 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 この二つのテストだけが渡す `-meeterm-ui-observation` 起動引数により、native入力の
 focus/window/binding状態を固定形式のログに残します。入力文字・composition・clipboard・
 remote IDは記録しません。実SSHやformsの失敗を無条件に撮影する機能ではありません。
+foundation判定では、この固定4種類の入力診断をreadiness/frameから分離します。
+入力診断だけでは合格にならず、不正な値や未知のmarkerは引き続き失敗になります。
 fixtureも実際のAppState通知に追従しますが、Rustへの接続・再接続呼び出しは行いません。
 
 小画面・大きい文字の明示的診断には workflow_dispatch の `ios_profile=compact-xl` を使います。
@@ -180,6 +184,10 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 
 選択したsuiteの必須テスト、正常終了、fresh完了記録は維持します。タイムアウトを成功へ変えません。
 固定sleep・盲目的なretry・汎用Continueの無条件tapを追加しません。
+XCTest開始前の終了も調べられるよう、`xcodebuild`の通常出力をRUNNER_TEMP内だけに保持します。
+失敗時はAppleの`xcresulttool get test-results summary`も上限10秒で読み、固定分類・件数と
+既知のApple/POSIX error domainの整数コードだけを公開します。失敗文・userInfo・パス・
+任意のdomain名やraw summaryはアップロードしません。診断の失敗は元の合否を変えません。
 OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
 端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
 実接続失敗では保存metadataの一致フラグとstrict SSH probeを確認できますが、事後probe成功だけでUI入力成功は証明できません。

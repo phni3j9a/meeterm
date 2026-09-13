@@ -117,7 +117,7 @@ if grep -Eq 'host-trust|reconnected|forms-controls' "${artifact_root}/ui-screens
 fi
 
 # Additional UI states remain separate from standard and from real SSH.
-for checkpoint in polish-welcome polish-empty polish-search-empty polish-disconnected polish-reconnecting polish-connection-error polish-long-workspaces; do
+for checkpoint in polish-welcome polish-empty polish-search-empty polish-disconnected polish-reconnecting polish-connection-error polish-long-workspaces polish-terminal-keyboard polish-edge-back; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
 done
 run_collector polish

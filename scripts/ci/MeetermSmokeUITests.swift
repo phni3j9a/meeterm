@@ -141,6 +141,8 @@ final class MeetermSmokeUITests: XCTestCase {
       "polish-reconnecting.png",
       "polish-connection-error.png",
       "polish-long-workspaces.png",
+      "polish-terminal-keyboard.png",
+      "polish-edge-back.png",
       "public-presentation-failure.png",
       "ios-public-presentation-diagnostics.txt",
     ] {
@@ -605,6 +607,7 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
     let hideKeyboard = button("Hide keyboard")
     XCTAssertTrue(waitForHittable(hideKeyboard, timeout: 10))
+    capture("polish-terminal-keyboard")
     hideKeyboard.tap()
     XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
 
@@ -635,6 +638,7 @@ final class MeetermSmokeUITests: XCTestCase {
     start.press(forDuration: 0.1, thenDragTo: end)
     XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "The native edge-back gesture did not restore search.")
     XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    capture("polish-edge-back")
     record("polish_navigation_complete")
   }
 

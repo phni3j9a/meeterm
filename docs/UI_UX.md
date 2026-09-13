@@ -161,10 +161,42 @@ launch argument enables native focus/window/binding booleans only: no typed
 text, composition, clipboard data, or remote identity is logged. Real SSH/forms
 failures do not enter the public-screen capture path.
 
-Still required on the final source: Android full, iOS standard, `polish`, short
-SSH, actual inspection of both platforms' screenshots, interaction/back/keyboard
-review, compact/large-text layout, and a record of observed motion limits.
-The existing iOS physical-device/Metal boundary remains separate.
+App source `61050db` passed Android full in
+[34757079947](https://github.com/phni3j9a/meeterm/actions/runs/34757079947).
+All 21 presentation images and real daily-use/input/selection images were viewed.
+General CI [34757079945](https://github.com/phni3j9a/meeterm/actions/runs/34757079945)
+passed, including the SHA-verified live Herdr test (20.57 seconds).
+The fresh iOS standard and same-source short SSH
+[34758750427](https://github.com/phni3j9a/meeterm/actions/runs/34758750427)
+ended before their UI setup/stage records. Storage four passed in standard;
+these runs do not establish UI/input acceptance. Their quiet raw-log classifiers
+did not identify a cause. The next driver keeps normal private runner output and
+extracts only fixed classifications/counts/system codes from a local result summary.
+
+Both same-source polish diagnostics completed every UI assertion: the default
+[34758749180](https://github.com/phni3j9a/meeterm/actions/runs/34758749180) and
+SE/XL [34758747669](https://github.com/phni3j9a/meeterm/actions/runs/34758747669).
+These cover search, native keyboard show/hide, settings, picker, explicit Back,
+edge Back with preserved search, and fresh-process survival. All seven states
+and the foundation were viewed on each size. Sampled SE recording frames show
+the sheet and back transitions, but recording started after the keyboard check;
+it is not full-flow playback or frame-rate measurement.
+
+Both jobs then failed the foundation log parser: it treated the newly added
+fixed input diagnostics as malformed readiness/frame markers. A regression
+reproduced this failure before the parser fix. The updated parser accepts only
+the four exact diagnostic shapes without counting them as foundation evidence;
+missing frames, malformed values, and unknown markers still fail. Read-only
+revalidation of both original bundles identifies Metal; their original failed
+CI reports remain unchanged. The next polish driver also captures the actual
+keyboard and completed edge-back states so those visual checkpoints do not
+depend on successful video startup.
+
+Still required: a fresh iOS standard, short SSH, and hosted validation of the
+updated parser/polish checkpoints. The next changes are test/observability-only;
+Android app/native code remains exactly the source already reviewed above.
+Physical-device GPU/IME parity, OS Reduced Motion behavior, and measured frame
+performance remain unverified; no Simulator result replaces those boundaries.
 
 The normal `standard` gate remains fourteen screens. Seven additional states
 and navigation are a separate explicit `polish` diagnostic with independent
