@@ -97,65 +97,61 @@ white-on-brown button is 6.06:1. These calculations do not replace visual review
 workspace and dark terminal on both platforms. They are actual screenshots,
 not generated mockups. Full-size originals remain in the linked CI artifacts.
 
-The latest app/native implementation with completed normal mobile evidence is
-`55fb60d30d439381204f6f331c9b9579f09c09ac`. Both normal mobile gates passed in
-[34760570576](https://github.com/phni3j9a/meeterm/actions/runs/34760570576).
-The subsequent `fb48d0f` changes only test scripts and documentation. The current
-candidate adds smoke-only startup and Paste observations; its new hosted
-build/runtime verification is pending. It does not change the visual design,
-renderer, dependencies or input delivery/cancellation semantics.
+The latest app/native source is `1657174`; `57d36d2` changes only two Swift
+test references to explicit `self.app`. Android full passed on the former,
+and fresh iOS standard plus same-product SSH passed on the latter. The startup
+and Paste observations do not change the visual design, renderer, dependencies
+or input delivery/cancellation semantics. Both platforms' latest normal images
+have been reviewed.
 
 | Check | Actual scope | Evidence |
 | --- | --- | --- |
-| Android full | Native readiness/frame/no crash, real SSH and daily-use flow, settings, selection/copy, lifecycle and desktop handoff | Passed in the fresh mobile run above; all 21 observational states and actual daily-use images viewed |
-| iOS standard | Four storage cases, seven input cases plus one gesture case, original fourteen screens, fresh native readiness/frame/survival | Passed in the same fresh run; all fourteen screens plus the Metal foundation viewed |
-| iOS default polish | Seven public states; real search, native keyboard show/hide, settings, picker, explicit Back and edge Back preserving search | [34761931479](https://github.com/phni3j9a/meeterm/actions/runs/34761931479) passed; seven states, two actual interaction screenshots and the Metal foundation viewed |
-| iOS SE/XL polish | An actual iPhone SE (3rd generation), with OS content size verified as extra-large | [34761930612](https://github.com/phni3j9a/meeterm/actions/runs/34761930612) failed before UI setup: sanitized result summary identifies a runner initialization timeout; no screenshots or UI acceptance for that run |
-| iOS short SSH | Native keyboard prefix, Paste, Return, remote acknowledgment and disconnect | [34761932309](https://github.com/phni3j9a/meeterm/actions/runs/34761932309) failed at Paste completion; fresh test-only build [34763474371](https://github.com/phni3j9a/meeterm/actions/runs/34763474371) succeeded but its SSH test failed before the connection form |
+| Android full | Native readiness/frame/no crash, real SSH and daily-use flow, settings, selection/copy, lifecycle and desktop handoff | [34769679167](https://github.com/phni3j9a/meeterm/actions/runs/34769679167) Android job passed on `1657174`; all 21 observational states and actual daily-use images viewed. That run's iOS preflight failed, not the Android job |
+| iOS standard | Four storage cases, seven input cases plus one gesture case, original fourteen screens, fresh native readiness/frame/survival | Fresh [34772164238](https://github.com/phni3j9a/meeterm/actions/runs/34772164238) passed on `57d36d2`; all fourteen screens plus the Metal foundation viewed |
+| iOS default polish | Seven public states; real search, native keyboard show/hide, settings, picker, explicit Back and edge Back preserving search | [34761931479](https://github.com/phni3j9a/meeterm/actions/runs/34761931479) passed on `55fb60d`; seven states, two actual interaction screenshots and the Metal foundation viewed. This predates the added diagnostics |
+| iOS SE/XL polish | An actual iPhone SE (3rd generation), with OS content size verified as extra-large | Same-product [34773660488](https://github.com/phni3j9a/meeterm/actions/runs/34773660488) failed opening long-workspaces after six captured states; six images and the blank failure screen viewed. Navigation/terminal keyboard not reached |
+| iOS short SSH | Native keyboard prefix, Paste, Return, remote acknowledgment and disconnect | Same-product [34773642992](https://github.com/phni3j9a/meeterm/actions/runs/34773642992) passed on `57d36d2`; native Paste `accepted=1`, matching remote marker, and disconnect verified. Initial/input/disconnected images viewed |
 | Shared Rust | 79 unit cases, real OpenSSH, pinned-SHA Herdr 0.9.0 integration through the isolated russh endpoint | [34760570515](https://github.com/phni3j9a/meeterm/actions/runs/34760570515) passed; Herdr integration completed in 20.96 seconds |
 
 TypeScript, 24 App/Settings and startup-observation tests (including nested
-cases), and 152 Python SSH/driver regressions passed locally. CI-processing regressions also
+cases), and 160 Python SSH/driver regressions passed locally. CI-processing regressions also
 passed (20 tests, with one macOS-only case excluded on Linux). Android CNG
 generation passed, including inspection of generated day/night native accent
 resources. Generated native directories remain ignored.
+General CI on `57d36d2` passed for both
+[push](https://github.com/phni3j9a/meeterm/actions/runs/34772095787) and
+[PR](https://github.com/phni3j9a/meeterm/actions/runs/34772098032).
 
 ### Open diagnostic
 
-The failed short SSH run reached the connected terminal, typed its keyboard
-prefix and tapped Paste, then timed out waiting for the native completion
-value (Swift line 2040 on `55fb60d`). Return was never reached. The cause is
-not yet established. The test now selects the existing `terminal-paste`
-identifier rather than an arbitrary same-label action, verifies its initial
-Ready state, and records only whitelisted completion/keyboard/target states.
-A post-auth Paste timeout also produces read-only fixture echo booleans.
-The new regression reproduced the missing diagnostic before the fix.
-The completion timeout and remote acknowledgment are unchanged; no app input
-behavior was modified for this investigation.
+The latest SE/XL failure is at the long-workspaces presentation guard (Swift
+line 604 on `57d36d2`), after six public states were captured. The app is
+foreground in the failure observation and its initial smoke URL was accepted.
+The final process's AppContent effect was logged about 34 seconds after its
+root effect, but this alone does not identify a rendering, startup or
+accessibility cause. A white failure image is available; the long-row
+existence/hittability state was not recorded. No keyboard or navigation
+acceptance is claimed for that run.
 
-That fresh test-only run reached the app's foreground, but neither connection
-entry point appeared within the existing waits (Swift line 1395 on
-`fb48d0f`). No connection data had been entered and the Paste changes were
-never exercised. The artifact contains no screenshot of that initial screen;
-the new diagnostic candidate distinguishes startup, loading, and accessibility
-state before attributing this failure to the app or the Simulator. Both general
-CI runs on `fb48d0f` passed.
+Fixed startup and native Paste diagnostics are opt-in and contain no input
+text, URLs or remote IDs. Optional connection-entry images are allowed only
+before any connection input. The latest successful SSH trace shows provider
+completion, native delivery acceptance and the actual remote marker. It does
+not establish the cause of earlier intermittent startup/Paste failures.
+Those failures remain in the PR history; no timeout, assertion or remote
+acknowledgment requirement was relaxed to obtain a pass.
 
-The candidate records only fixed startup phases and native Paste lifecycle /
-accepted booleans. Optional initial and entry-failure app screenshots are
-allowed only before any connection input. Fixed element flags, strict marker
-validation and UTC-bounded sanitized log collection complete this diagnostic;
-no timeout, assertion or remote-acknowledgment requirement is relaxed.
-Local regressions cover these contracts, not actual UIKit/XCTest execution.
-The fresh cross-platform build, short SSH and compact-keyboard observations
-remain to be run on this source.
-
-The newest SE/XL run stopped before the test body, not at an app interaction.
 Earlier SE/XL standard passed all fourteen screens in
 [34756003466](https://github.com/phni3j9a/meeterm/actions/runs/34756003466)
 on `d0fafc1`; those images were viewed but are not presented as the newest
 source. A small-screen screenshot with the actual terminal keyboard remains
 to be gathered.
+
+A focused `polish-navigation` entry reuses the existing search, keyboard,
+settings, picker, Back and edge-Back helper plus a fresh native foundation.
+Its own completion record is separate from the seven-state `polish` suite.
+The next bounded check is one fresh build and one SE/XL focused execution;
+that result will not relabel the failed long-workspaces run as passed.
 
 ### Corrections and evidence limits
 

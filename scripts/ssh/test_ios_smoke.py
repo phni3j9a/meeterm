@@ -75,6 +75,32 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('log_collection_reason="no_smoke_markers"', source)
         self.assertIn("2>/dev/null", source)
 
+    def test_polish_navigation_entry_reuses_helper_and_public_observation(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index("func testPolishNavigationAndFoundation")
+        end = source.index("/// Real presentation interactions", start)
+        entry = source[start:end]
+
+        self.assertIn("try verifyPolishNavigation()", entry)
+        self.assertIn("try verifyFoundationRelaunch()", entry)
+        self.assertIn('"case=polish-navigation result=passed"', entry)
+        self.assertIn('record("polish_navigation_suite_complete")', entry)
+        self.assertNotIn('button("Search workspaces")', entry)
+        self.assertIn('name.contains("testPolishNavigationAndFoundation")', source)
+
+    def test_polish_navigation_recording_uses_existing_safe_route(self):
+        source = (Path(__file__).with_name("ios-smoke.py")).read_text(encoding="utf-8")
+        self.assertIn('suite in ("polish", "polish-navigation")', source)
+        self.assertIn('"polish_navigation_open"', source)
+
+    def test_new_suite_is_exposed_without_changing_the_standard_default(self):
+        workflow = (REPOSITORY_ROOT / ".github/workflows/mobile-smoke.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "options: [standard, polish, polish-navigation, ssh, full, forms, native, names]",
+            workflow,
+        )
+        self.assertIn("default: standard", workflow)
+
 
 class SmokeLogProducerTests(unittest.TestCase):
     UNSAFE_STDERR = "UNSAFE_RAW_LOG_TOOL_ERROR"
@@ -169,7 +195,7 @@ if [[ "${1:-}" == "${workspace}/scripts/ssh/ios-smoke.py" ]]; then
     esac
   done
   mkdir -p "${artifact_dir}"
-  if [[ "${suite}" == "full" ]]; then
+  if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "polish-navigation" || "${suite}" == "full" ]]; then
     printf '%s\\n' '{"launch_epoch": 100.0, "survival_start_epoch": 101.0, "survival_end_epoch": 111.0}' \
       > "${artifact_dir}/ios-foundation-observation.json"
   fi
@@ -286,6 +312,16 @@ exit 90
                 for line in xcrun_log.read_text(encoding="utf-8").splitlines()
             ),
             2,
+        )
+        self.assert_no_unsafe_stderr(artifact_dir)
+
+        result, artifact_dir, xcrun_log = self.run_smoke("polish-navigation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(xcrun_log.read_text(encoding="utf-8").count("private_output=1"), 1)
+        self.assertNotIn("private_output=0", xcrun_log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (artifact_dir / "simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
         )
         self.assert_no_unsafe_stderr(artifact_dir)
 
@@ -457,6 +493,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
                 self.assertNotIn(smoke.STANDARD_TEST_SELECTOR, command)
                 self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
                 self.assertNotIn(smoke.SSH_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.POLISH_NAVIGATION_TEST_SELECTOR, command)
                 self.assertNotIn("MEETERM_SSH_HOST", run.call_args.kwargs["env"])
 
     @staticmethod
@@ -501,6 +538,232 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         (root / "ios-ui-stages.txt").write_text(
             "standard_complete\nfoundation_verified\n"
         )
+
+    @staticmethod
+    def write_polish_navigation_success(root):
+        (root / "ios-ui-polish-navigation-validation.txt").write_text(
+            "case=polish-navigation result=passed\n"
+        )
+
+    @staticmethod
+    def write_polish_navigation_stages(root):
+        (root / "ios-ui-stages.txt").write_text(
+            "polish_navigation_complete\n"
+            "foundation_verified\n"
+            "polish_navigation_suite_complete\n"
+        )
+
+    def test_polish_navigation_has_own_plan_case_and_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            old_validation = root / "ios-ui-polish-validation.txt"
+            new_validation = root / "ios-ui-polish-navigation-validation.txt"
+            old_validation.write_text("case=polish result=passed\n")
+
+            def successful_run(command, **kwargs):
+                self.assertFalse(
+                    old_validation.exists(),
+                    "the old polish marker must not satisfy the new suite",
+                )
+                self.assertFalse(new_validation.exists(), "the new marker must be fresh")
+                self.write_polish_navigation_success(root)
+                self.write_polish_navigation_stages(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
+                status = smoke.run_xcuitest(
+                    derived_data=root,
+                    simulator_udid="fixture-simulator",
+                    result_bundle=root / "result.xcresult",
+                    raw_log=root / "raw.log",
+                    diagnostics_path=root / "diagnostics.txt",
+                    suite="polish-navigation",
+                )
+
+            self.assertEqual(status, 0)
+            self.assertEqual(run.call_count, 1)
+            command = run.call_args.args[0]
+            self.assertIn(smoke.POLISH_NAVIGATION_TEST_SELECTOR, command)
+            for selector in (
+                smoke.STANDARD_TEST_SELECTOR,
+                smoke.POLISH_TEST_SELECTOR,
+                smoke.STORAGE_TEST_SELECTOR,
+                smoke.NATIVE_TEST_SELECTOR,
+                smoke.SSH_TEST_SELECTOR,
+                smoke.FULL_TEST_SELECTOR,
+                smoke.FORMS_TEST_SELECTOR,
+                smoke.NAMES_TEST_SELECTOR,
+            ):
+                self.assertNotIn(selector, command)
+            self.assertEqual(run.call_args.kwargs["timeout"], 899.75)
+            self.assertEqual(
+                new_validation.read_text(), "case=polish-navigation result=passed\n"
+            )
+            self.assertEqual(
+                (root / "ios-ui-stages.txt").read_text(),
+                "polish_navigation_complete\n"
+                "foundation_verified\n"
+                "polish_navigation_suite_complete\n",
+            )
+            self.assertEqual(
+                smoke._test_steps(
+                    "polish-navigation",
+                    root / "result.xcresult",
+                    root / "raw.log",
+                    root / "diagnostics.txt",
+                )[0][6],
+                ("polish-navigation",),
+            )
+
+    def test_polish_navigation_rejects_old_or_incomplete_completion_contracts(self):
+        stages = (
+            "polish_complete\nfoundation_verified\n",
+            "polish_navigation_complete\npolish_navigation_suite_complete\n",
+            "polish_navigation_complete\nfoundation_verified\n",
+        )
+        for stage_contents in stages:
+            with self.subTest(stage_contents=stage_contents), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                products = root / "Build" / "Products"
+                products.mkdir(parents=True)
+                (products / "fixture.xctestrun").touch()
+
+                def incomplete_run(command, **kwargs):
+                    self.write_polish_navigation_success(root)
+                    (root / "ios-ui-stages.txt").write_text(stage_contents)
+                    return subprocess.CompletedProcess(command, 0)
+
+                with mock.patch.object(smoke, "inject_test_environment"), \
+                     mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                     mock.patch.object(smoke.subprocess, "run", side_effect=incomplete_run):
+                    with self.assertRaises(smoke.SmokeFailure) as failure:
+                        smoke.run_xcuitest(
+                            derived_data=root,
+                            simulator_udid="fixture-simulator",
+                            result_bundle=root / "result.xcresult",
+                            raw_log=root / "raw.log",
+                            diagnostics_path=root / "diagnostics.txt",
+                            suite="polish-navigation",
+                        )
+
+                self.assertEqual(
+                    (failure.exception.stage, failure.exception.reason),
+                    ("xcuitest_polish_navigation", "completion_marker_missing"),
+                )
+
+    def test_polish_navigation_rejects_stale_old_validation_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            old_validation = root / "ios-ui-polish-validation.txt"
+            old_validation.write_text("case=polish result=passed\n")
+
+            def no_new_case_run(command, **kwargs):
+                self.write_polish_navigation_stages(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=no_new_case_run):
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="polish-navigation",
+                    )
+
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_polish_navigation", "polish_navigation_cases_incomplete"),
+            )
+            self.assertFalse(old_validation.exists())
+
+    def test_polish_navigation_timeout_stays_failed_with_fresh_completion_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def timed_out_run(command, **kwargs):
+                self.write_polish_navigation_success(root)
+                self.write_polish_navigation_stages(root)
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run, \
+                 mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="polish-navigation",
+                    )
+
+            self.assertEqual(run.call_args.kwargs["timeout"], 899.75)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_polish_navigation", "xcodebuild_timeout"),
+            )
+
+    def test_polish_navigation_main_uses_existing_daily_recording_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            environment = {"RUNNER_TEMP": str(root / "runner")}
+
+            with mock.patch.dict(smoke.os.environ, environment, clear=False), \
+                 mock.patch.object(sys, "argv", [
+                     "ios-smoke.py",
+                     "--artifact-dir",
+                     str(artifact_dir),
+                     "--derived-data",
+                     str(root / "derived-data"),
+                     "--simulator-udid",
+                     "fixture-simulator",
+                     "--suite",
+                     "polish-navigation",
+                 ]), \
+                 mock.patch.object(smoke, "run_xcuitest", return_value=0) as run, \
+                 mock.patch.object(
+                     smoke,
+                     "record_daily_interactions",
+                     return_value=contextlib.nullcontext(),
+                 ) as recording:
+                status = smoke.main()
+
+            self.assertEqual(status, 0)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["suite"], "polish-navigation")
+            recording.assert_called_once_with(
+                "fixture-simulator",
+                artifact_dir / "ios-ui-stages.txt",
+                artifact_dir,
+            )
+            self.assertEqual(
+                (artifact_dir / "ios-polish-navigation-validation.txt").read_text(),
+                "result=passed\n"
+                "suite=polish-navigation\n"
+                "stage=complete\n"
+                "reason=none\n"
+                "ui_last_stage=complete\n",
+            )
 
     @staticmethod
     def write_ssh_success(root):

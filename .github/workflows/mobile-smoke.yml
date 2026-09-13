@@ -27,7 +27,7 @@ on:
       ios_suite:
         description: iOS scope (standard is the daily smoke; ssh is short optional input)
         type: choice
-        options: [standard, polish, ssh, full, forms, native, names]
+        options: [standard, polish, polish-navigation, ssh, full, forms, native, names]
         default: standard
       ios_build_run:
         description: Optional exact-commit Mobile smoke run containing ios-test-products

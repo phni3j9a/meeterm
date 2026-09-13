@@ -16,6 +16,7 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | Android | 既存のfull smokeと画像の実見。21状態はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
 | iOS `standard` | production保存4件、native入力7件＋scroll gesture 1件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
+| iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
@@ -92,9 +93,16 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 通常の14画面と追加診断は別々に報告します。既存の900秒枠を延長せず、
 検証範囲を分けて同一ソースのpristine test productsを再利用します。
 
-`standard` / `polish` の公開fixture内で失敗した場合だけ、
+`polish-navigation` は上記の検索・端末keyboard・sheet・戻る操作を同じhelperで単独実行し、
+その後にfresh native foundationを確認します。7状態の起動巡回への依存を避けて、未確認の
+操作区間を直接調べるための診断です。既存 `polish` の内容と完了条件は変更しません。
+独自の完了記録に加え、操作helperとfoundationの完了をすべて要求し、旧suiteの記録や
+画像だけで成功とは判定しません。成果物は実行ごとに分離し、実keyboard・edge Back後の
+2画像とfoundationを確認します。7状態の表示・実SSH・保存の成功は主張しません。
+
+`standard` / `polish` / `polish-navigation` の公開fixture内で失敗した場合だけ、
 `public-presentation-failure.png` と要素の存在・操作可能性・矩形を記録します。
-`-meeterm-ui-observation` 起動引数はこの二つと短い `ssh` テストだけが渡し、native入力の
+`-meeterm-ui-observation` 起動引数はこの三つと短い `ssh` テストだけが渡し、native入力の
 focus/window/bindingとPasteのrequest/provider/drop/delivery/accepted状態を固定形式の
 ログに残します。smoke iOS起動時にはJS module、initial URLの固定分類、AppContent、
 profile取得の到達phaseも、nativeのallowlistを通して記録します。URLそのもの、入力文字、
@@ -129,6 +137,7 @@ fixtureも実際のAppState通知に追従しますが、Rustへの接続・再�
 | --- | --- |
 | `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
 | `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
+| `polish-navigation` | 同じ操作helperとfresh foundationを、7状態の巡回から独立して確認 |
 | `ssh` | 実SSH接続と短いnative入出力の確認 |
 | `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
@@ -163,6 +172,10 @@ Simulator起動等の時間はこのXCTest実行枠とは別です。実行時�
 # BUILD_RUN_IDを同一ソースのビルド成功runに置き換える
 gh workflow run mobile-smoke.yml --ref "$test_ref" \
   -f platform=ios -f ios_suite=ssh -f ios_build_run=BUILD_RUN_ID
+# 同じ製品で小画面の端末keyboard/navigationだけを確認する場合
+gh workflow run mobile-smoke.yml --ref "$test_ref" \
+  -f platform=ios -f ios_suite=polish-navigation -f ios_profile=compact-xl \
+  -f ios_build_run=BUILD_RUN_ID
 ```
 
 GitHub runのcommitとmanifestのcommit・Xcode version/build・CPU・構成・SHA-256を照合します。

@@ -28,10 +28,13 @@ import threading
 import time
 
 
-IOS_SUITES = ("standard", "polish", "ssh", "full", "forms", "native", "names")
+IOS_SUITES = (
+    "standard", "polish", "polish-navigation", "ssh", "full", "forms", "native", "names"
+)
 SUITE_TIMEOUT_SECONDS = {
     "standard": 900.0,
     "polish": 900.0,
+    "polish-navigation": 900.0,
     "ssh": 900.0,
     "full": 1800.0,
     "forms": 900.0,
@@ -45,6 +48,10 @@ STANDARD_TEST_SELECTOR = (
 POLISH_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
     "MeetermSmokeUITests/testPolishStatesAndNavigation"
+)
+POLISH_NAVIGATION_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testPolishNavigationAndFoundation"
 )
 SSH_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
@@ -1083,6 +1090,10 @@ def _test_steps(
     if suite == "polish":
         return (("xcuitest_polish", (POLISH_TEST_SELECTOR,), result_bundle, raw_log,
                  diagnostics_path, diagnostics_path.parent / "ios-ui-polish-validation.txt", ("polish",)),)
+    if suite == "polish-navigation":
+        return (("xcuitest_polish_navigation", (POLISH_NAVIGATION_TEST_SELECTOR,), result_bundle, raw_log,
+                 diagnostics_path, diagnostics_path.parent / "ios-ui-polish-navigation-validation.txt",
+                 ("polish-navigation",)),)
     if suite == "ssh":
         return (ssh,)
     if suite == "forms":
@@ -1186,6 +1197,7 @@ def run_xcuitest(
     native_validation = diagnostics_path.parent / "ios-native-input-validation.txt"
     standard_validation = diagnostics_path.parent / "ios-ui-standard-validation.txt"
     polish_validation = diagnostics_path.parent / "ios-ui-polish-validation.txt"
+    polish_navigation_validation = diagnostics_path.parent / "ios-ui-polish-navigation-validation.txt"
     ssh_validation = diagnostics_path.parent / "ios-ui-ssh-validation.txt"
     forms_validation = diagnostics_path.parent / "ios-ui-forms-validation.txt"
     names_validation = diagnostics_path.parent / "ios-ui-names-validation.txt"
@@ -1194,6 +1206,7 @@ def run_xcuitest(
         native_validation,
         standard_validation,
         polish_validation,
+        polish_navigation_validation,
         ssh_validation,
         forms_validation,
         names_validation,
@@ -1248,6 +1261,7 @@ def run_xcuitest(
                     "xcuitest_native": "native_tests_failed",
                     "xcuitest_forms": "forms_tests_failed",
                     "xcuitest_names": "names_tests_failed",
+                    "xcuitest_polish_navigation": "polish_navigation_tests_failed",
                 }.get(stage, "ui_test_failed")
                 raise SmokeFailure(stage, reason)
             if validation_path is not None:
@@ -1260,6 +1274,7 @@ def run_xcuitest(
                         "xcuitest_forms": "forms_cases_incomplete",
                         "xcuitest_names": "names_cases_incomplete",
                         "xcuitest": "native_cases_incomplete",
+                        "xcuitest_polish_navigation": "polish_navigation_cases_incomplete",
                     }.get(stage, "cases_incomplete")
                     raise SmokeFailure(stage, reason) from error
         if suite == "standard":
@@ -1281,6 +1296,16 @@ def run_xcuitest(
                 diagnostics_path.parent / "ios-ui-stages.txt",
                 ("polish_complete", "polish_navigation_complete", "foundation_verified"),
                 "xcuitest_polish",
+            )
+        elif suite == "polish-navigation":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                (
+                    "polish_navigation_complete",
+                    "foundation_verified",
+                    "polish_navigation_suite_complete",
+                ),
+                "xcuitest_polish_navigation",
             )
         elif suite == "ssh":
             _require_stage_markers(
@@ -1400,6 +1425,7 @@ def main() -> int:
     validation_filename = {
         "full": "ios-validation.txt",
         "standard": "ios-standard-validation.txt",
+        "polish-navigation": "ios-polish-navigation-validation.txt",
         "ssh": "ios-ssh-validation.txt",
     }.get(suite, f"ios-{suite}-validation.txt")
     validation_path = args.artifact_dir / validation_filename
@@ -1573,7 +1599,11 @@ def main() -> int:
             if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
                 os.environ.pop(environment_name, None)
         stage = "xcuitest"
-        recording = record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir) if suite == "polish" else nullcontext()
+        recording = (
+            record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir)
+            if suite in ("polish", "polish-navigation")
+            else nullcontext()
+        )
         with recording:
             run_status = run_xcuitest(
                 derived_data=args.derived_data,

@@ -29,7 +29,7 @@ capture_smoke_log() {
 }
 
 case "${suite}" in
-  standard|polish|ssh|full|forms|native|names) ;;
+  standard|polish|polish-navigation|ssh|full|forms|native|names) ;;
   *) echo "Unsupported iOS smoke suite: ${suite}" >&2; exit 2 ;;
 esac
 mkdir -p "${artifact_dir}"
@@ -41,7 +41,9 @@ rm -f \
   "${artifact_dir}/ios-ssh-validation.txt" \
   "${artifact_dir}/ios-ui-standard-validation.txt" \
   "${artifact_dir}/ios-ui-polish-validation.txt" \
+  "${artifact_dir}/ios-ui-polish-navigation-validation.txt" \
   "${artifact_dir}/ios-polish-validation.txt" \
+  "${artifact_dir}/ios-polish-navigation-validation.txt" \
   "${artifact_dir}/ios-ui-ssh-validation.txt" \
   "${artifact_dir}/ios-ui-names-validation.txt" \
   "${artifact_dir}/ios-names-validation.txt" \
@@ -67,6 +69,8 @@ rm -f \
   "${artifact_dir}/polish-reconnecting.png" \
   "${artifact_dir}/polish-connection-error.png" \
   "${artifact_dir}/polish-long-workspaces.png" \
+  "${artifact_dir}/polish-terminal-keyboard.png" \
+  "${artifact_dir}/polish-edge-back.png" \
   "${artifact_dir}/ssh-entry-initial.png" \
   "${artifact_dir}/ssh-entry-failure.png" \
   "${artifact_dir}/ssh-entry-initial-unavailable.txt" \
@@ -128,7 +132,7 @@ else
 fi
 xcrun simctl uninstall "${IOS_SIMULATOR_UDID}" "${bundle_id}" 2>/dev/null || true
 xcrun simctl install "${IOS_SIMULATOR_UDID}" "${app_path}"
-if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "ssh" || "${suite}" == "full" ]]; then
+if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "polish-navigation" || "${suite}" == "ssh" || "${suite}" == "full" ]]; then
   smoke_started_at="$(date -u '+%Y-%m-%d %H:%M:%S')"
   printf 'smoke_started_at_utc=%sZ\n' "${smoke_started_at}" >> "${artifact_dir}/launch.txt"
 fi
@@ -229,6 +233,8 @@ if [[ "${suite}" == "standard" ]]; then
   echo "iOS standard seeded-screen and fresh native foundation smoke passed."
 elif [[ "${suite}" == "polish" ]]; then
   echo "iOS additional UI states, navigation, and fresh native foundation passed."
+elif [[ "${suite}" == "polish-navigation" ]]; then
+  echo "iOS focused navigation and fresh native foundation smoke passed."
 else
   echo "iOS real SSH UI and fresh native foundation smoke passed."
 fi

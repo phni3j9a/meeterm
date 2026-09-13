@@ -216,7 +216,9 @@ real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
 OpenSSH fixture. The normal mobile gate remains iOS `standard` (14 screenshots
 including four Herdr routes) and Android full. The explicit iOS `polish`
 diagnostic adds seven presentation states and native navigation/keyboard/back
-checks. Android's seeded presentation routes are observational evidence and
+checks. `polish-navigation` independently exercises the same navigation helper
+and a fresh native foundation; it does not validate the seven states or replace
+a failed `polish` result. Android's seeded presentation routes are observational evidence and
 do not replace the machine gate. No test result may
 claim acceptance without the applicable integration/CI evidence and required
 visual review.

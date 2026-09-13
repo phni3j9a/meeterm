@@ -75,6 +75,7 @@ final class MeetermSmokeUITests: XCTestCase {
     preCredentialFailureRecorded = false
     publicPresentationObservation = name.contains("testStandardSeededScreensAndFoundation")
       || name.contains("testPolishStatesAndNavigation")
+      || name.contains("testPolishNavigationAndFoundation")
     observesInitialConnectionEntry = name.contains("testShortSshInputAndDisconnect")
     observesNativeInputDiagnostics = publicPresentationObservation || observesInitialConnectionEntry
     try? FileManager.default.createDirectory(
@@ -142,6 +143,7 @@ final class MeetermSmokeUITests: XCTestCase {
     for name in [
       "ios-ui-standard-validation.txt",
       "ios-ui-polish-validation.txt",
+      "ios-ui-polish-navigation-validation.txt",
       "ios-ui-ssh-validation.txt",
       "standard-home.png",
       "standard-servers.png",
@@ -227,7 +229,7 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     if publicPresentationObservation, !recordingPresentationFailure,
        (issue.sourceCodeContext.location?.lineNumber ?? 0) > 0 {
-      // Only these two tests visit public, credential-free seeded screens.
+      // Only these public presentation tests visit credential-free seeded screens.
       // Never capture arbitrary failures in the real SSH/forms suites.
       recordingPresentationFailure = true
       writePublicPresentationDiagnostics()
@@ -613,6 +615,21 @@ final class MeetermSmokeUITests: XCTestCase {
     try verifyFoundationRelaunch()
     writeFixedArtifact("ios-ui-polish-validation.txt", lines: ["case=polish result=passed"])
     record("polish_complete")
+  }
+
+  /// Focused navigation diagnostic independent of the seven polish states.
+  /// The shared helper owns the search, native keyboard, settings, picker,
+  /// Back, edge-Back, and search-preservation assertions. This entry adds its
+  /// own validation record and keeps the fresh native foundation requirement.
+  func testPolishNavigationAndFoundation() throws {
+    try verifyPolishNavigation()
+    app.terminate()
+    try verifyFoundationRelaunch()
+    writeFixedArtifact(
+      "ios-ui-polish-navigation-validation.txt",
+      lines: ["case=polish-navigation result=passed"]
+    )
+    record("polish_navigation_suite_complete")
   }
 
   /// Real presentation interactions using the existing native poc-main handle.

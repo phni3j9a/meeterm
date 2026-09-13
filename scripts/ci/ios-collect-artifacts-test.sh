@@ -153,6 +153,41 @@ test ! -e "${artifact_root}/ui-screenshots-unavailable.txt"
 run_collector polish
 grep -Fq 'polish-welcome' "${artifact_root}/ui-screenshots-unavailable.txt"
 
+# The focused navigation suite has its own screenshot scope: only the two
+# actual interaction checkpoints and the fresh foundation image are relevant.
+# Existing seven-state polish images must not be claimed by this suite.
+cp "${temporary_root}/expected.png" "${artifact_root}/terminal.png"
+cp "${temporary_root}/expected.png" "${artifact_root}/polish-terminal-keyboard.png"
+cp "${temporary_root}/expected.png" "${artifact_root}/polish-edge-back.png"
+: > "${xcrun_log}"
+run_collector polish-navigation
+grep -Fxq 'suite=polish-navigation' "${artifact_root}/screenshot-scope.txt"
+test ! -e "${artifact_root}/ui-screenshots-unavailable.txt"
+cmp "${artifact_root}/terminal.png" "${temporary_root}/expected.png"
+cmp "${artifact_root}/polish-terminal-keyboard.png" "${temporary_root}/expected.png"
+cmp "${artifact_root}/polish-edge-back.png" "${temporary_root}/expected.png"
+if grep -Eq 'polish-welcome|polish-empty|polish-search-empty|polish-disconnected|polish-reconnecting|polish-connection-error|polish-long-workspaces' \
+    "${artifact_root}/ui-screenshots-unavailable.txt" 2>/dev/null; then
+  echo "focused navigation evidence incorrectly requires seven-state polish screenshots" >&2
+  exit 1
+fi
+if grep -Fq 'simctl io' "${xcrun_log}"; then
+  echo "focused navigation collector captured arbitrary UI" >&2
+  exit 1
+fi
+
+# Missing focused images remain diagnostics and never become a pixel or
+# screenshot-existence gate.
+: > "${artifact_root}/polish-terminal-keyboard.png"
+run_collector polish-navigation
+grep -Fq 'polish-terminal-keyboard' "${artifact_root}/ui-screenshots-unavailable.txt"
+test ! -e "${artifact_root}/polish-terminal-keyboard.png"
+if grep -Eq 'polish-welcome|polish-empty|polish-search-empty|polish-disconnected|polish-reconnecting|polish-connection-error|polish-long-workspaces' \
+    "${artifact_root}/ui-screenshots-unavailable.txt"; then
+  echo "focused navigation missing-image diagnostic leaked seven-state scope" >&2
+  exit 1
+fi
+
 # The short SSH suite may preserve safe post-auth terminal checkpoints. It does
 # not manufacture screenshots, and missing evidence remains a diagnostic.
 for checkpoint in ssh-terminal-input ssh-disconnected; do

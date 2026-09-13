@@ -178,6 +178,14 @@ case "${suite}" in
       polish-terminal-keyboard polish-edge-back
     )
     ;;
+  polish-navigation)
+    if [[ -f "${artifact_dir}/terminal.png" ]]; then
+      scripts/ci/validate-png.sh "${artifact_dir}/terminal.png" "${artifact_dir}/screenshot-unavailable.txt"
+    else
+      echo "Polish navigation XCTest did not capture its fresh native foundation" > "${artifact_dir}/screenshot-unavailable.txt"
+    fi
+    required_screenshots=(polish-terminal-keyboard polish-edge-back)
+    ;;
   full)
     if [[ -f "${artifact_dir}/terminal.png" ]]; then
       scripts/ci/validate-png.sh \
