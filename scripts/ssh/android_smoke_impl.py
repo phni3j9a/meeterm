@@ -3219,7 +3219,7 @@ def exercise_daily_settings(
     wait_for_text_input(device, stage, "Terminal font size")
 
     stage = "daily_settings_theme"
-    tap_action(device, stage, ("Terminal theme",))
+    tap_action(device, stage, ("Appearance",))
     # Android's native AlertDialog uppercases its action captions. Match the
     # actual native button, not the mixed-case value behind the dialog.
     light = wait_for_node(device, stage, text="LIGHT", class_fragment="Button")

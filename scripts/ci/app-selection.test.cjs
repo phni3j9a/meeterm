@@ -364,6 +364,38 @@ test('agent status counts stay attached to their labels when text wraps', () => 
   assert.equal(agentSummary([{ agent: null }], true), '');
 });
 
+test('settings appearance has the same visible and accessible meaning', async () => {
+  const filename = path.join(REPO_ROOT, 'app/DailyUse.tsx');
+  const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: TypeScript.ModuleKind.CommonJS, jsx: TypeScript.JsxEmit.ReactJSX },
+  }).outputText;
+  const { environment } = makeNativeEnvironment();
+  const rn = { ...makeReactNativeMocks(environment), KeyboardAvoidingView: 'KeyboardAvoidingView', Switch: 'Switch' };
+  const modules = new Map([
+    ['react', React], ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn], ['react-native-safe-area-context', makeSafeAreaMocks()],
+    ['./ui', makeUiMocks()],
+  ]);
+  const dailyUse = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: dailyUse.exports,
+    require: name => { assert.ok(modules.has(name), name); return modules.get(name); },
+  }, { filename });
+  const root = createRoot();
+  try {
+    await act(async () => {
+      root.render(React.createElement(dailyUse.exports.SettingsForm, {
+        visible: true, preferences: PREFERENCES, colors: LIGHT,
+        onClose() {}, async onSave() { return true; },
+      }));
+    });
+    assert.equal(findTestId(root, 'terminal-theme').props.accessibilityLabel, 'Appearance');
+    assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 0);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
 test('an inactive fixture deep link follows UI foreground changes without reconnecting', async () => {
   const { environment, native } = makeNativeEnvironment();
   environment.initialAppState = 'inactive';

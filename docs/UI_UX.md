@@ -93,7 +93,7 @@ white-on-brown button is 6.06:1. These calculations do not replace visual review
 
 ## Verification and remaining work
 
-TypeScript, fifteen app selection/presentation tests, and the Python driver
+TypeScript, sixteen app selection/presentation tests, and the Python driver
 regressions pass locally. These checks do not prove rendering or motion.
 The Reduced Motion hook test mocks the platform preference boundary; it verifies
 initial state, change notifications, and cleanup, not the actual OS setting.
@@ -192,9 +192,11 @@ CI reports remain unchanged. The next polish driver also captures the actual
 keyboard and completed edge-back states so those visual checkpoints do not
 depend on successful video startup.
 
-Still required: a fresh iOS standard, short SSH, and hosted validation of the
-updated parser/polish checkpoints. The next changes are test/observability-only;
-Android app/native code remains exactly the source already reviewed above.
+The subsequent accessibility review found the Appearance row still announced
+the obsolete "Terminal theme" label. The real Settings form regression
+reproduced it; the label and Android driver now use "Appearance". This changes
+app source, so the in-progress diagnostic-only build was cancelled and the
+next source requires both mobile jobs again, plus iOS SSH/polish diagnostics.
 Physical-device GPU/IME parity, OS Reduced Motion behavior, and measured frame
 performance remain unverified; no Simulator result replaces those boundaries.
 
