@@ -25,6 +25,7 @@ final class TerminalInputView: UITextView {
   private var pendingPasteProgress: Progress?
   private lazy var terminalAccessoryView: UIView = makeAccessoryView()
   private lazy var terminalPasteControl: UIPasteControl = makePasteControl()
+  private let observesInputLifecycle = ProcessInfo.processInfo.arguments.contains("-meeterm-ui-observation")
 
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
@@ -34,6 +35,25 @@ final class TerminalInputView: UITextView {
   @available(*, unavailable)
   required init?(coder: NSCoder) {
     fatalError("init(coder:) has not been implemented")
+  }
+
+  // Opt-in public-screen diagnostics record only lifecycle booleans, never
+  // text, marked ranges, key values, terminal IDs, or clipboard contents.
+  override func becomeFirstResponder() -> Bool {
+    let result = super.becomeFirstResponder()
+    if observesInputLifecycle {
+      NSLog("MEETERM_SMOKE_INPUT_FOCUS result=%d window=%d", result ? 1 : 0, window != nil ? 1 : 0)
+    }
+    return result
+  }
+
+  override func resignFirstResponder() -> Bool {
+    let wasFocused = isFirstResponder
+    let result = super.resignFirstResponder()
+    if observesInputLifecycle {
+      NSLog("MEETERM_SMOKE_INPUT_RESIGN focused=%d result=%d", wasFocused ? 1 : 0, result ? 1 : 0)
+    }
+    return result
   }
 
   override var keyCommands: [UIKeyCommand]? {
@@ -153,6 +173,9 @@ final class TerminalInputView: UITextView {
 
   override func didMoveToWindow() {
     super.didMoveToWindow()
+    if observesInputLifecycle {
+      NSLog("MEETERM_SMOKE_INPUT_WINDOW attached=%d", window != nil ? 1 : 0)
+    }
     if window == nil {
       invalidatePendingPaste()
     }
@@ -190,6 +213,7 @@ final class TerminalInputView: UITextView {
 
   /// Cancel local preedit before borrowing a different native terminal.
   func cancelCompositionForBinding() {
+    if observesInputLifecycle { NSLog("MEETERM_SMOKE_INPUT_BINDING_CANCEL") }
     clearModifiers()
     invalidatePendingPaste()
     super.unmarkText()

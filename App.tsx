@@ -366,13 +366,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [loadPreferences, loadProfiles, smokeFixtureActive]);
 
   useEffect(() => {
-    if (smokeFixtureActive) return;
     const applyForeground = (isForeground: boolean) => {
+      // A public fixture follows the real view lifecycle, but must not
+      // reconnect or otherwise touch a remote runtime.
+      if (smokeFixtureActive) return;
       // Preserve OS event order. Rust owns reconnect policy and timers.
       foregroundCommands.current = foregroundCommands.current
         .then(() => MeetermTerminal.setForeground(CONNECTION_ID, isForeground))
         .catch(() => setControlMessage('Could not update the connection after the app changed state. Check your connection.'));
     };
+    // A deep link may mount its screen while iOS is still inactive. Keep
+    // presentation state live even when native connection effects are off.
+    foreground.current = AppState.currentState === 'active';
+    setAppState(AppState.currentState);
     applyForeground(foreground.current);
     const subscription = AppState.addEventListener('change', state => {
       foreground.current = state === 'active';

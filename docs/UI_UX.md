@@ -93,7 +93,7 @@ white-on-brown button is 6.06:1. These calculations do not replace visual review
 
 ## Verification and remaining work
 
-TypeScript, thirteen app selection/presentation tests, and the Python driver
+TypeScript, fifteen app selection/presentation tests, and the Python driver
 regressions pass locally. These checks do not prove rendering or motion.
 The Reduced Motion hook test mocks the platform preference boundary; it verifies
 initial state, change notifications, and cleanup, not the actual OS setting.
@@ -134,6 +134,32 @@ native gesture policy and an eighth native regression without removing the
 existing seven input checks. The new gesture policy still needs mobile evidence.
 The partly keyboard-covered duplicate clear action was removed, and status
 counts now use a nonbreaking space to prevent an orphaned number.
+
+Source `d0fafc1` passed Android full in
+[34755069513](https://github.com/phni3j9a/meeterm/actions/runs/34755069513) and
+the real iOS SSH round trip in
+[34756002275](https://github.com/phni3j9a/meeterm/actions/runs/34756002275).
+General CI [34755069516](https://github.com/phni3j9a/meeterm/actions/runs/34755069516)
+passed, including 79 Rust unit tests, real OpenSSH, and the SHA-verified Herdr
+0.9.0 integration (20.58 seconds).
+Its iOS standard storage four and native input/gesture eight passed, but the
+screen loop stopped at terminal readiness after five captures (Swift line 508;
+the foreground assertion at line 506 passed). This is not a standard pass.
+A focused regression reproduced a fixture mounted while iOS is inactive never
+following the later foreground notification. The subsequent fix keeps UI
+lifecycle observation active without invoking native connection effects;
+normal production events still reach Rust in order. This demonstrates that
+specific defect, not the cause of every preceding runner failure.
+
+The same-source SE/XL polish run
+[34755999408](https://github.com/phni3j9a/meeterm/actions/runs/34755999408)
+captured seven states, then failed waiting for the keyboard at Swift line 569.
+Sampled recording frames show the accessory appearing briefly and disappearing;
+edge-back was not reached. Follow-up public-screen diagnostics capture the
+failed screen and fixed existence/hittability/geometry fields. An explicit test
+launch argument enables native focus/window/binding booleans only: no typed
+text, composition, clipboard data, or remote identity is logged. Real SSH/forms
+failures do not enter the public-screen capture path.
 
 Still required on the final source: Android full, iOS standard, `polish`, short
 SSH, actual inspection of both platforms' screenshots, interaction/back/keyboard

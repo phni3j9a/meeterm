@@ -111,6 +111,10 @@ function makeNativeEnvironment() {
       errorMessage: '',
     },
     calls: [],
+    foregroundCalls: [],
+    initialAppState: 'active',
+    initialURL: null,
+    appStateListeners: new Set(),
     visibility: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
@@ -122,7 +126,7 @@ function makeNativeEnvironment() {
     async getPreferences() { return { ...PREFERENCES }; },
     async setPreferences() {},
     async setAutomaticReconnect() {},
-    async setForeground() {},
+    async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
     async getConnectionState() { return { ...environment.connection }; },
     async getWorkspaceState() { return clone(environment.snapshot); },
     async setTerminalVisible(_connectionId, visible) {
@@ -147,15 +151,23 @@ function makeNativeEnvironment() {
 function makeReactNativeMocks(environment) {
   const noOpSubscription = { remove() {} };
   const AppState = {
-    currentState: 'active',
-    addEventListener() { return noOpSubscription; },
+    currentState: environment.initialAppState,
+    addEventListener(event, listener) {
+      assert.equal(event, 'change');
+      environment.appStateListeners.add(listener);
+      return { remove() { environment.appStateListeners.delete(listener); } };
+    },
+  };
+  environment.emitAppState = state => {
+    AppState.currentState = state;
+    for (const listener of environment.appStateListeners) listener(state);
   };
   const BackHandler = {
     addEventListener() { return noOpSubscription; },
   };
   const Keyboard = { dismiss() {} };
   const Linking = {
-    async getInitialURL() { return null; },
+    async getInitialURL() { return environment.initialURL; },
     addEventListener() { return noOpSubscription; },
   };
   const Alert = {
@@ -350,6 +362,41 @@ test('agent status counts stay attached to their labels when text wraps', () => 
   assert.equal(agentSummary(panes, true), 'Needs attention\u00a01 · Working\u00a02 · Finished\u00a01');
   assert.equal(agentSummary(panes, false), 'Status unavailable\u00a04');
   assert.equal(agentSummary([{ agent: null }], true), '');
+});
+
+test('an inactive fixture deep link follows UI foreground changes without reconnecting', async () => {
+  const { environment, native } = makeNativeEnvironment();
+  environment.initialAppState = 'inactive';
+  environment.initialURL = 'meeterm://smoke?screen=terminal';
+  const App = loadApp(environment, native, false, true);
+  const root = createRoot();
+  try {
+    await act(async () => { root.render(React.createElement(App)); });
+    assert.equal(terminalViews(root).length, 0);
+    await act(async () => { environment.emitAppState('active'); });
+    assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['poc-main']);
+    await act(async () => { environment.emitAppState('background'); });
+    assert.equal(terminalViews(root).length, 0);
+    await act(async () => { environment.emitAppState('active'); });
+    assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['poc-main']);
+    assert.deepEqual(environment.foregroundCalls, []);
+    assert.deepEqual(environment.visibility, []);
+    assert.deepEqual(environment.calls, []);
+    assert.equal(environment.intervalCallbacks.length, 0);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+  assert.equal(environment.appStateListeners.size, 0);
+});
+
+test('normal app foreground events retain ordered native lifecycle delivery', async t => {
+  const { root, environment } = await mountForTest(t, makeSnapshot());
+  await openWorkspace(root, 'W1');
+  await act(async () => { environment.emitAppState('background'); });
+  assert.equal(terminalViews(root).length, 0);
+  await act(async () => { environment.emitAppState('inactive'); environment.emitAppState('active'); });
+  assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['native:P1']);
+  assert.deepEqual(environment.foregroundCalls, [true, false, false, true]);
 });
 
 test('reduced-motion hook reads the initial preference, follows changes and cleans up', async () => {

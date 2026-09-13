@@ -25,6 +25,8 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private let testStartedAt = ProcessInfo.processInfo.systemUptime
   private let app = XCUIApplication(bundleIdentifier: "dev.meeterm.app")
+  private var publicPresentationObservation = false
+  private var recordingPresentationFailure = false
   private let artifactDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["MEETERM_IOS_ARTIFACT_DIR"]
       ?? NSTemporaryDirectory(),
@@ -65,6 +67,8 @@ final class MeetermSmokeUITests: XCTestCase {
 
   override func setUpWithError() throws {
     continueAfterFailure = false
+    publicPresentationObservation = name.contains("testStandardSeededScreensAndFoundation")
+      || name.contains("testPolishStatesAndNavigation")
     try? FileManager.default.createDirectory(
       at: artifactDirectory,
       withIntermediateDirectories: true
@@ -137,12 +141,17 @@ final class MeetermSmokeUITests: XCTestCase {
       "polish-reconnecting.png",
       "polish-connection-error.png",
       "polish-long-workspaces.png",
+      "public-presentation-failure.png",
+      "ios-public-presentation-diagnostics.txt",
     ] {
       try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(name))
     }
     record("test_started")
 
     app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+    if publicPresentationObservation {
+      app.launchArguments += ["-meeterm-ui-observation"]
+    }
     app.launch()
     XCTAssertTrue(
       app.wait(for: .runningForeground, timeout: 60),
@@ -184,7 +193,34 @@ final class MeetermSmokeUITests: XCTestCase {
     } else {
       try? data.write(to: path, options: .atomic)
     }
+    if publicPresentationObservation, !recordingPresentationFailure,
+       (issue.sourceCodeContext.location?.lineNumber ?? 0) > 0 {
+      // Only these two tests visit public, credential-free seeded screens.
+      // Never capture arbitrary failures in the real SSH/forms suites.
+      recordingPresentationFailure = true
+      writePublicPresentationDiagnostics()
+      recordingPresentationFailure = false
+    }
     super.record(issue)
+  }
+
+  private func writePublicPresentationDiagnostics() {
+    let terminal = app.otherElements["Terminal"]
+    let keyboard = app.keyboards.firstMatch
+    let hide = app.buttons.matching(NSPredicate(format: "label == %@", "Hide keyboard")).firstMatch
+    let foreground = app.state == .runningForeground
+    var lines = ["app_foreground=\(foreground ? 1 : 0)"]
+    for (name, element) in [("terminal", terminal), ("keyboard", keyboard), ("hide_keyboard", hide)] {
+      let exists = element.exists
+      lines.append("\(name)_exists=\(exists ? 1 : 0)")
+      lines.append("\(name)_hittable=\(exists && element.isHittable ? 1 : 0)")
+      if exists, !element.frame.isNull, !element.frame.isInfinite {
+        let frame = element.frame
+        lines.append("\(name)_frame=\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height))")
+      }
+    }
+    writeFixedArtifact("ios-public-presentation-diagnostics.txt", lines: lines)
+    if foreground { capture("public-presentation-failure") }
   }
 
   func testRealSshWorkspacePaneInputDisconnectReconnectAndHandoff() throws {

@@ -90,6 +90,13 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 通常の14画面と追加診断は別々に報告します。既存の900秒枠を延長せず、
 検証範囲を分けて同一ソースのpristine test productsを再利用します。
 
+`standard` / `polish` の公開fixture内で失敗した場合だけ、
+`public-presentation-failure.png` と要素の存在・操作可能性・矩形を記録します。
+この二つのテストだけが渡す `-meeterm-ui-observation` 起動引数により、native入力の
+focus/window/binding状態を固定形式のログに残します。入力文字・composition・clipboard・
+remote IDは記録しません。実SSHやformsの失敗を無条件に撮影する機能ではありません。
+fixtureも実際のAppState通知に追従しますが、Rustへの接続・再接続呼び出しは行いません。
+
 小画面・大きい文字の明示的診断には workflow_dispatch の `ios_profile=compact-xl` を使います。
 同一commitのpristine test productsを指定して再利用できます。SE（第3世代）の新規Simulatorを
 作成し、OSのcontent sizeをextra-largeに設定して読み戻しを記録します。通常のPro系端末の
