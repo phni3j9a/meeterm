@@ -25,6 +25,12 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private let testStartedAt = ProcessInfo.processInfo.systemUptime
   private let app = XCUIApplication(bundleIdentifier: "dev.meeterm.app")
+  private var publicPresentationObservation = false
+  private var observesNativeInputDiagnostics = false
+  private var observesInitialConnectionEntry = false
+  private var preCredentialObservationAllowed = false
+  private var preCredentialFailureRecorded = false
+  private var recordingPresentationFailure = false
   private let artifactDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["MEETERM_IOS_ARTIFACT_DIR"]
       ?? NSTemporaryDirectory(),
@@ -65,6 +71,13 @@ final class MeetermSmokeUITests: XCTestCase {
 
   override func setUpWithError() throws {
     continueAfterFailure = false
+    preCredentialObservationAllowed = false
+    preCredentialFailureRecorded = false
+    publicPresentationObservation = name.contains("testStandardSeededScreensAndFoundation")
+      || name.contains("testPolishStatesAndNavigation")
+      || name.contains("testPolishNavigationAndFoundation")
+    observesInitialConnectionEntry = name.contains("testShortSshInputAndDisconnect")
+    observesNativeInputDiagnostics = publicPresentationObservation || observesInitialConnectionEntry
     try? FileManager.default.createDirectory(
       at: artifactDirectory,
       withIntermediateDirectories: true
@@ -95,6 +108,21 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("terminal-keyboard-failure.png")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-terminal-paste-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("terminal-paste-failure.png")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-ssh-entry-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ssh-entry-initial.png")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ssh-entry-failure.png")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-connection-state.txt")
     )
     try? FileManager.default.removeItem(
@@ -114,6 +142,8 @@ final class MeetermSmokeUITests: XCTestCase {
     )
     for name in [
       "ios-ui-standard-validation.txt",
+      "ios-ui-polish-validation.txt",
+      "ios-ui-polish-navigation-validation.txt",
       "ios-ui-ssh-validation.txt",
       "standard-home.png",
       "standard-servers.png",
@@ -129,17 +159,38 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-herdr-groups.png",
       "standard-herdr-terminal.png",
       "standard-herdr-workspaces.png",
+      "polish-welcome.png",
+      "polish-empty.png",
+      "polish-search-empty.png",
+      "polish-disconnected.png",
+      "polish-reconnecting.png",
+      "polish-connection-error.png",
+      "polish-long-workspaces.png",
+      "polish-terminal-keyboard.png",
+      "polish-edge-back.png",
+      "public-presentation-failure.png",
+      "ios-public-presentation-diagnostics.txt",
     ] {
       try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(name))
     }
     record("test_started")
 
     app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+    if observesNativeInputDiagnostics {
+      app.launchArguments += ["-meeterm-ui-observation"]
+    }
     app.launch()
-    XCTAssertTrue(
-      app.wait(for: .runningForeground, timeout: 60),
-      "The meeterm app did not reach the foreground."
-    )
+    if observesInitialConnectionEntry {
+      // Arm only the explicit permission before the foreground wait. The
+      // initial element queries and app-scoped screenshot happen below, after
+      // the original wait, so a failed wait cannot abort diagnostics first.
+      beginPreCredentialConnectionEntryObservation()
+    }
+    let reachedForeground = app.wait(for: .runningForeground, timeout: 60)
+    if observesInitialConnectionEntry {
+      recordPreCredentialConnectionEntryInitial(reachedForeground: reachedForeground)
+    }
+    XCTAssertTrue(reachedForeground, "The meeterm app did not reach the foreground.")
     record("app_launched")
   }
 
@@ -176,7 +227,34 @@ final class MeetermSmokeUITests: XCTestCase {
     } else {
       try? data.write(to: path, options: .atomic)
     }
+    if publicPresentationObservation, !recordingPresentationFailure,
+       (issue.sourceCodeContext.location?.lineNumber ?? 0) > 0 {
+      // Only these public presentation tests visit credential-free seeded screens.
+      // Never capture arbitrary failures in the real SSH/forms suites.
+      recordingPresentationFailure = true
+      writePublicPresentationDiagnostics()
+      recordingPresentationFailure = false
+    }
     super.record(issue)
+  }
+
+  private func writePublicPresentationDiagnostics() {
+    let terminal = app.otherElements["Terminal"]
+    let keyboard = app.keyboards.firstMatch
+    let hide = app.buttons.matching(NSPredicate(format: "label == %@", "Hide keyboard")).firstMatch
+    let foreground = app.state == .runningForeground
+    var lines = ["app_foreground=\(foreground ? 1 : 0)"]
+    for (name, element) in [("terminal", terminal), ("keyboard", keyboard), ("hide_keyboard", hide)] {
+      let exists = element.exists
+      lines.append("\(name)_exists=\(exists ? 1 : 0)")
+      lines.append("\(name)_hittable=\(exists && element.isHittable ? 1 : 0)")
+      if exists, !element.frame.isNull, !element.frame.isInfinite {
+        let frame = element.frame
+        lines.append("\(name)_frame=\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height))")
+      }
+    }
+    writeFixedArtifact("ios-public-presentation-diagnostics.txt", lines: lines)
+    if foreground { capture("public-presentation-failure") }
   }
 
   func testRealSshWorkspacePaneInputDisconnectReconnectAndHandoff() throws {
@@ -517,12 +595,106 @@ final class MeetermSmokeUITests: XCTestCase {
     record("standard_complete")
   }
 
+  /// Additional states and native navigation, separate from the 14-screen
+  /// daily gate so both scopes retain their own bounded execution budget.
+  func testPolishStatesAndNavigation() throws {
+    for screen in ["welcome", "empty", "search-empty", "disconnected", "reconnecting", "connection-error", "long-workspaces"] {
+      record("polish_screen_\(screen)_open")
+      app.open(try XCTUnwrap(URL(string: "meeterm://smoke?screen=\(screen)")))
+      XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+      guard waitForStandardScreen(screen) else {
+        XCTFail("The polish screen did not open: \(screen).")
+        return
+      }
+      dismissQuickPathTutorialIfPresent(stage: "polish_\(screen)")
+      capture("polish-\(screen)")
+      record("polish_screen_\(screen)_captured")
+    }
+    try verifyPolishNavigation()
+    app.terminate()
+    try verifyFoundationRelaunch()
+    writeFixedArtifact("ios-ui-polish-validation.txt", lines: ["case=polish result=passed"])
+    record("polish_complete")
+  }
+
+  /// Focused navigation diagnostic independent of the seven polish states.
+  /// The shared helper owns the search, native keyboard, settings, picker,
+  /// Back, edge-Back, and search-preservation assertions. This entry adds its
+  /// own validation record and keeps the fresh native foundation requirement.
+  func testPolishNavigationAndFoundation() throws {
+    try verifyPolishNavigation()
+    app.terminate()
+    try verifyFoundationRelaunch()
+    writeFixedArtifact(
+      "ios-ui-polish-navigation-validation.txt",
+      lines: ["case=polish-navigation result=passed"]
+    )
+    record("polish_navigation_suite_complete")
+  }
+
+  /// Real presentation interactions using the existing native poc-main handle.
+  /// No remote input, connection, or workspace creation is claimed by this pass.
+  private func verifyPolishNavigation() throws {
+    record("polish_navigation_open")
+    app.open(try XCTUnwrap(URL(string: "meeterm://smoke?screen=workspaces")))
+    XCTAssertTrue(waitForStandardScreen("workspaces"))
+    button("Search workspaces").tap()
+    let search = input("Search workspaces")
+    XCTAssertTrue(waitForHittable(search, timeout: 10))
+    search.tap()
+    search.typeText("Main")
+    let workspace = button("Workspace Main workspace")
+    XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    workspace.tap()
+    XCTAssertTrue(waitForTerminal(), "The workspace did not push the native terminal screen.")
+
+    record("polish_navigation_keyboard")
+    let terminal = try terminalElement()
+    terminal.tap()
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+    let hideKeyboard = button("Hide keyboard")
+    XCTAssertTrue(waitForHittable(hideKeyboard, timeout: 10))
+    capture("polish-terminal-keyboard")
+    hideKeyboard.tap()
+    XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
+
+    record("polish_navigation_settings")
+    button("Terminal menu").tap()
+    let settings = button("Terminal settings")
+    XCTAssertTrue(waitForHittable(settings, timeout: 10))
+    settings.tap()
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    button("Cancel").tap()
+    XCTAssertTrue(waitForTerminal(), "Closing Settings did not restore the native terminal.")
+
+    record("polish_navigation_picker")
+    button("Switch workspace").tap()
+    let close = button("Close sheet")
+    XCTAssertTrue(waitForHittable(close, timeout: 10))
+    close.tap()
+    XCTAssertTrue(waitForTerminal())
+    button("Back to workspaces").tap()
+    XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "Back lost the workspace search.")
+
+    record("polish_navigation_edge_back")
+    XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    workspace.tap()
+    XCTAssertTrue(waitForTerminal())
+    let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.45))
+    let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.90, dy: 0.45))
+    start.press(forDuration: 0.1, thenDragTo: end)
+    XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "The native edge-back gesture did not restore search.")
+    XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    capture("polish-edge-back")
+    record("polish_navigation_complete")
+  }
+
   /// A bounded real SSH round trip. The private key is entered through the
   /// existing production form, host-key verification remains explicit, and
   /// one command proves native terminal input reached the fixture shell.
   func testShortSshInputAndDisconnect() throws {
     record("ssh_open_connection_form")
-    openConnectionForm()
+    openConnectionForm(observeInitialEntry: true)
     let host = requiredEnvironment("MEETERM_SSH_HOST")
     let port = requiredEnvironment("MEETERM_SSH_PORT")
     let username = requiredEnvironment("MEETERM_SSH_USERNAME")
@@ -583,25 +755,46 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func waitForStandardScreen(_ screen: String) -> Bool {
     switch screen {
+    case "welcome":
+      return app.staticTexts["Your workspace. Anywhere."].waitForExistence(timeout: 30)
+        && waitForHittable(button("Connect"), timeout: 30)
+    case "empty":
+      return app.staticTexts["A fresh workspace starts here."].waitForExistence(timeout: 30)
+        && button("Create workspace").waitForExistence(timeout: 30)
+    case "search-empty":
+      return app.staticTexts["No matching workspaces"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Clear workspace search"), timeout: 30)
+    case "disconnected":
+      return app.staticTexts["Disconnected"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Reconnect"), timeout: 30)
+    case "reconnecting":
+      return app.staticTexts.matching(NSPredicate(format: "label == %@", "Reconnecting…")).firstMatch.waitForExistence(timeout: 30)
+        && waitForHittable(button("Cancel connection"), timeout: 30)
+    case "connection-error":
+      return app.staticTexts.matching(NSPredicate(format: "label == %@", "Connection failed")).firstMatch.waitForExistence(timeout: 30)
+        && waitForHittable(button("Reconnect"), timeout: 30)
+    case "long-workspaces":
+      return waitForHittable(button("Workspace Production infrastructure — migration and release preparation"), timeout: 30)
+        && waitForHittable(button("Workspace Research / terminal typography and international text"), timeout: 30)
     case "home":
-      let title = app.staticTexts["ワークスペース"]
+      let title = app.staticTexts["Workspaces"]
       let profile = app.buttons.matching(
         NSPredicate(format: "label == %@", "Connect saved server Smoke server")
       ).firstMatch
       return title.waitForExistence(timeout: 30)
         && waitForHittable(profile, timeout: 30)
     case "servers":
-      let title = app.staticTexts["保存済みサーバー"]
+      let title = app.staticTexts["Saved servers"]
       let profile = app.buttons.matching(
         NSPredicate(format: "identifier == %@", "server-profile-smoke-profile")
       ).firstMatch
       return title.waitForExistence(timeout: 30)
         && waitForHittable(profile, timeout: 30)
     case "connection":
-      return app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30)
+      return app.staticTexts["Connect to server"].waitForExistence(timeout: 30)
         && waitForHittable(input("Host"), timeout: 30)
     case "password":
-      guard app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30) else { return false }
+      guard app.staticTexts["Connect to server"].waitForExistence(timeout: 30) else { return false }
       // The password field is deliberately empty but can be below the fold
       // on the iPhone simulator. Reuse the bounded, secret-free reveal path
       // used by the focused form test before calling the screen ready.
@@ -617,27 +810,27 @@ final class MeetermSmokeUITests: XCTestCase {
       return app.staticTexts["Connected"].waitForExistence(timeout: 30)
         && waitForHittable(terminal, timeout: 30)
     case "settings":
-      return app.staticTexts["ターミナル設定"].waitForExistence(timeout: 30)
+      return app.staticTexts["Settings"].waitForExistence(timeout: 30)
         && waitForHittable(app.buttons["settings-submit"], timeout: 30)
     case "workspace-name":
-      return app.staticTexts["ワークスペースの名前"].waitForExistence(timeout: 30)
+      return app.staticTexts["Rename workspace"].waitForExistence(timeout: 30)
         && waitForHittable(input("Workspace or terminal name"), timeout: 30)
     case "terminal-name":
-      return app.staticTexts["ターミナルの名前"].waitForExistence(timeout: 30)
+      return app.staticTexts["Rename terminal"].waitForExistence(timeout: 30)
         && waitForHittable(input("Workspace or terminal name"), timeout: 30)
     case "handoff":
-      return app.staticTexts["PC で続きを"].waitForExistence(timeout: 30)
+      return app.staticTexts["Continue on your computer"].waitForExistence(timeout: 30)
         && waitForHittable(button("Disconnect"), timeout: 30)
     case "herdr-connection":
       let backend = button("herdr backend")
       let runtime = input("Herdr session name")
-      return app.staticTexts["サーバーに接続"].waitForExistence(timeout: 30)
+      return app.staticTexts["Connect to server"].waitForExistence(timeout: 30)
         && waitForHittable(backend, timeout: 30)
         && waitForSelected(backend)
         && runtime.waitForExistence(timeout: 30)
         && waitForShortFieldValue(runtime, expected: "dev", timeout: 30)
     case "herdr-groups":
-      let title = app.staticTexts["Groupを切り替える"]
+      let title = app.staticTexts["Switch group"]
       let development = button("Group Development")
       let tests = button("Group Tests & review")
       return title.waitForExistence(timeout: 30)
@@ -649,10 +842,10 @@ final class MeetermSmokeUITests: XCTestCase {
       return waitForHittable(groupPicker, timeout: 30)
         && terminal.waitForExistence(timeout: 30)
         && app.staticTexts["Claude Code"].waitForExistence(timeout: 30)
-        && app.staticTexts["作業中"].waitForExistence(timeout: 30)
+        && app.staticTexts["Working"].waitForExistence(timeout: 30)
     case "herdr-workspaces":
       let total = app.staticTexts.matching(
-        NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "すべて", "2")
+        NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "All", "2")
       ).firstMatch
       // WorkspaceRow is one accessible button with an explicit label. Its
       // count/Agent Text children are grouped into that element on iOS, so
@@ -756,7 +949,7 @@ final class MeetermSmokeUITests: XCTestCase {
     cancel.tap()
     let discard = app.alerts.firstMatch
     XCTAssertTrue(discard.waitForExistence(timeout: 10), "The dirty form did not ask for confirmation.")
-    let discardButton = discard.buttons["破棄"]
+    let discardButton = discard.buttons["Discard"]
     XCTAssertTrue(discardButton.waitForExistence(timeout: 5), "The form discard action is unavailable.")
     discardButton.tap()
     XCTAssertTrue(waitForConnectionFormDismissal(timeout: 10), "The form did not dismiss after cancellation.")
@@ -879,7 +1072,7 @@ final class MeetermSmokeUITests: XCTestCase {
     fillTextField(label: "Scrollback lines", value: "20000")
     let theme = button("terminal-theme")
     theme.tap()
-    app.buttons["ライト"].tap()
+    app.buttons["Light"].tap()
     capture("daily-settings")
     button("settings-submit").tap()
     XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 15))
@@ -892,7 +1085,7 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertEqual(shortFieldValue(input("Scrollback lines")), "20000")
     fillTextField(label: "Terminal font size", value: "15")
     button("terminal-theme").tap()
-    app.buttons["ダーク"].tap()
+    app.buttons["Dark"].tap()
     button("settings-submit").tap()
 
     verifyNameOperations()
@@ -943,7 +1136,7 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     record("daily_create_workspace_row_ready")
     button("Workspace options daily-smoke").tap()
-    button("名前を変更").tap()
+    button("Rename").tap()
     fillTextField(label: "Workspace or terminal name", value: "daily-renamed")
     button("name-submit").tap()
     XCTAssertTrue(button("Workspace daily-renamed").waitForExistence(timeout: 20))
@@ -965,7 +1158,7 @@ final class MeetermSmokeUITests: XCTestCase {
     button("Close terminal").tap()
     let closePane = app.alerts.firstMatch
     XCTAssertTrue(closePane.waitForExistence(timeout: 10))
-    closePane.buttons["終了"].tap()
+    closePane.buttons["Close"].tap()
     let paneRemoved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
       let tabs = self.app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Terminal %'"))
       return Set(tabs.allElementsBoundByIndex.map { $0.label }).count == 1
@@ -973,10 +1166,10 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [paneRemoved], timeout: 20), .completed)
     button("Back to workspaces").tap()
     button("Workspace options daily-renamed").tap()
-    button("終了").tap()
+    button("Close").tap()
     let confirm = app.alerts.firstMatch
     XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-    confirm.buttons["終了"].tap()
+    confirm.buttons["Close"].tap()
     let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == NO"), object: button("Workspace daily-renamed"))
     XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 20), .completed)
   }
@@ -1232,18 +1425,170 @@ final class MeetermSmokeUITests: XCTestCase {
     )
   }
 
-  private func openConnectionForm() {
+  private func beginPreCredentialConnectionEntryObservation() {
+    guard observesInitialConnectionEntry, !preCredentialObservationAllowed else { return }
+    preCredentialObservationAllowed = true
+  }
+
+  private func recordPreCredentialConnectionEntryInitial(reachedForeground: Bool) {
+    guard observesInitialConnectionEntry, preCredentialObservationAllowed else { return }
+    guard reachedForeground, app.state == .runningForeground else {
+      // Do not query XCUI elements or capture the whole screen when the app
+      // did not reach the foreground; that could observe another app.
+      appendFixedArtifact(
+        "ios-ui-ssh-entry-diagnostics.txt",
+        lines: [
+          "phase=initial",
+          "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+        ]
+      )
+      writeFixedArtifact("ssh-entry-initial-unavailable.txt", lines: ["reason=foreground_unavailable"])
+      preCredentialObservationAllowed = false
+      return
+    }
+    writePreCredentialConnectionEntryDiagnostics(phase: "initial")
+    capturePreCredential("ssh-entry-initial")
+  }
+
+  private func closePreCredentialConnectionEntryObservation() {
+    preCredentialObservationAllowed = false
+  }
+
+  private func recordPreCredentialConnectionEntryFailure() {
+    guard observesInitialConnectionEntry,
+          preCredentialObservationAllowed,
+          !preCredentialFailureRecorded else { return }
+    preCredentialFailureRecorded = true
+    writePreCredentialConnectionEntryDiagnostics(phase: "entry_failure")
+    capturePreCredential("ssh-entry-failure")
+    // Do not leave a failure diagnostic path armed for a later XCTest issue.
+    preCredentialObservationAllowed = false
+  }
+
+  private func preCredentialElementFlags(_ name: String, _ element: XCUIElement) -> [String] {
+    guard element.exists else {
+      // Do not ask XCTest for frame or hittability of an absent element. Some
+      // XCTest versions turn those follow-up queries into their own failure.
+      return [
+        "\(name)_exists=0",
+        "\(name)_hittable=0",
+        "\(name)_frame_available=0",
+        "\(name)_frame_x=unavailable",
+        "\(name)_frame_y=unavailable",
+        "\(name)_frame_width=unavailable",
+        "\(name)_frame_height=unavailable",
+      ]
+    }
+
+    let frame = element.frame
+    let frameValues = [frame.minX, frame.minY, frame.width, frame.height]
+    let frameCoordinates = frameValues.map { value -> String in
+      guard value.isFinite, value >= -1_000_000, value <= 1_000_000 else {
+        return "unavailable"
+      }
+      return String(Int(value.rounded()))
+    }
+    let frameAvailable = !frame.isNull && !frame.isInfinite
+      && frame.width > 0 && frame.height > 0
+      && !frameCoordinates.contains("unavailable")
+    return [
+      "\(name)_exists=1",
+      "\(name)_hittable=\(element.isHittable ? 1 : 0)",
+      "\(name)_frame_available=\(frameAvailable ? 1 : 0)",
+      "\(name)_frame_x=\(frameCoordinates[0])",
+      "\(name)_frame_y=\(frameCoordinates[1])",
+      "\(name)_frame_width=\(frameCoordinates[2])",
+      "\(name)_frame_height=\(frameCoordinates[3])",
+    ]
+  }
+
+  private func capturePreCredential(_ name: String) {
+    let unavailableName = name + "-unavailable.txt"
+    guard app.state == .runningForeground else {
+      writeFixedArtifact(unavailableName, lines: ["reason=foreground_unavailable"])
+      return
+    }
+    do {
+      let data = app.screenshot().pngRepresentation
+      try data.write(
+        to: artifactDirectory.appendingPathComponent(name + ".png"),
+        options: .atomic
+      )
+      try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(unavailableName))
+    } catch {
+      writeFixedArtifact(unavailableName, lines: ["reason=screenshot_write_failed"])
+    }
+  }
+
+  private func writePreCredentialConnectionEntryDiagnostics(phase: String) {
+    guard preCredentialObservationAllowed else { return }
+    guard app.state == .runningForeground else {
+      appendFixedArtifact(
+        "ios-ui-ssh-entry-diagnostics.txt",
+        lines: [
+          "phase=\(phase)",
+          "app_foreground=0",
+        ]
+      )
+      return
+    }
+    let fixedLabel = { (label: String) in
+      self.app.staticTexts.matching(NSPredicate(format: "label == %@", label)).firstMatch
+    }
+    let fixedButton = { (label: String) in
+      self.app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+    }
+    var lines = [
+      "phase=\(phase)",
+      "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+    ]
+    lines += preCredentialElementFlags("window", app.windows.firstMatch)
+    lines += preCredentialElementFlags(
+      "open_settings",
+      app.buttons.matching(NSPredicate(format: "identifier == %@", "open-settings")).firstMatch
+    )
+    lines += preCredentialElementFlags("connect", fixedButton("Connect"))
+    lines += preCredentialElementFlags("server_connection", fixedButton("Server connection"))
+    lines += preCredentialElementFlags("host", input("Host"))
+
+    let loadingLabels: [(String, String)] = [
+      ("loading_servers", "Loading your servers…"),
+      ("loading_workspaces", "Loading workspaces…"),
+      ("connecting", "Connecting…"),
+      ("authenticating", "Authenticating…"),
+      ("opening_terminal", "Opening terminal…"),
+      ("opening_workspace", "Opening workspace…"),
+      ("restoring_terminals", "Restoring terminals…"),
+      ("reconnecting", "Reconnecting…"),
+    ]
+    for (name, label) in loadingLabels {
+      lines += preCredentialElementFlags(name, fixedLabel(label))
+    }
+    appendFixedArtifact("ios-ui-ssh-entry-diagnostics.txt", lines: lines)
+  }
+
+  private func openConnectionForm(observeInitialEntry: Bool = false) {
+    if observeInitialEntry { beginPreCredentialConnectionEntryObservation() }
     if button("Connect").waitForExistence(timeout: 20) {
       button("Connect").tap()
     } else if button("Server connection").waitForExistence(timeout: 10) {
       button("Server connection").tap()
-      XCTAssertTrue(button("Connect").waitForExistence(timeout: 10), "The connection menu did not open.")
+      guard button("Connect").waitForExistence(timeout: 10) else {
+        recordPreCredentialConnectionEntryFailure()
+        XCTFail("The connection menu did not open.")
+        return
+      }
       button("Connect").tap()
     } else {
+      recordPreCredentialConnectionEntryFailure()
       XCTFail("The connection entry point is unavailable.")
       return
     }
-    XCTAssertTrue(input("Host").waitForExistence(timeout: 15), "The SSH connection form did not open.")
+    guard input("Host").waitForExistence(timeout: 15) else {
+      recordPreCredentialConnectionEntryFailure()
+      XCTFail("The SSH connection form did not open.")
+      return
+    }
     record("connection_form_opened")
   }
 
@@ -1254,6 +1599,7 @@ final class MeetermSmokeUITests: XCTestCase {
       XCTFail("The short-field helper received an unsupported field.")
       return
     }
+    closePreCredentialConnectionEntryObservation()
     let field = input(label)
     XCTAssertTrue(field.waitForExistence(timeout: 10), "The \(label) field is unavailable.")
     let stage = "fill_" + label.lowercased().replacingOccurrences(of: " ", with: "_")
@@ -1492,6 +1838,9 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func fillPrivateKey(_ value: String) {
+    // Defense in depth: the pre-credential observation must be closed before
+    // any secret connection data enters the form.
+    closePreCredentialConnectionEntryObservation()
     let field = input("Private OpenSSH key")
     for _ in 0..<8 where !field.isHittable {
       app.scrollViews.firstMatch.swipeUp()
@@ -1640,14 +1989,14 @@ final class MeetermSmokeUITests: XCTestCase {
     // uploaded file contains flags, never the entered host, username, key, or
     // any XCTest description.
     let validations: [(String, String)] = [
-      ("profile_name", "名前は制御文字を含まない80文字以内で入力してください。"),
-      ("host", "空白を含まないホスト名か IP アドレスを入力してください。"),
-      ("port", "1〜65535 の数字を入力してください。"),
-      ("username", "SSH のユーザー名を入力してください。空白は使えません。"),
-      ("private_key", "BEGIN と END の行を含む OpenSSH 形式の秘密鍵を貼り付けてください。"),
-      ("password", "SSH パスワードを入力してください。"),
-      ("submission_rejected", "保存または接続を開始できませんでした。接続先を確認して、認証情報を入力し直してください。"),
-      ("submission_failed", "保存または接続を開始できませんでした。認証情報を入力し直して、もう一度試してください。"),
+      ("profile_name", "Use up to 80 characters, without control characters."),
+      ("host", "Enter a hostname or IP address without spaces."),
+      ("port", "Enter a port from 1 to 65535."),
+      ("username", "Enter your SSH username without spaces."),
+      ("private_key", "Paste an OpenSSH private key, including its BEGIN and END lines."),
+      ("password", "Enter your SSH password."),
+      ("submission_rejected", "Could not save or connect. Check the address and enter your credentials again."),
+      ("submission_failed", "Could not save or connect. Enter your credentials again and retry."),
     ]
     let lines = validations.map { name, message in
       "\(name)_validation_error_visible=\(app.staticTexts[message].exists ? 1 : 0)"
@@ -1733,7 +2082,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let trustHittable = trustExists && trust.isHittable
     let appForeground = app.state == .runningForeground
     let hostResponseError = app.staticTexts[
-      "ホスト鍵への回答を送れませんでした。接続をやり直してください。"
+      "Your host-key decision could not be sent. Connect again."
     ].exists
     let screenshotSafe = appForeground && connectionFormIsGone()
     writeConnectionStateArtifact(observation)
@@ -1797,6 +2146,38 @@ final class MeetermSmokeUITests: XCTestCase {
     if appForeground && formGone && terminalExists {
       capture("terminal-keyboard-failure")
     }
+  }
+
+  private func writeTerminalPasteDiagnostics(phase: String, paste: XCUIElement) {
+    // Only fixed states and booleans cross the artifact boundary. Never dump
+    // accessibility descriptions, clipboard contents or the typed command.
+    func state(_ element: XCUIElement) -> String {
+      guard element.exists else { return "absent" }
+      switch element.value as? String {
+      case "Ready": return "ready"
+      case "Pasting": return "pasting"
+      case nil: return "no_value"
+      default: return "unexpected_value"
+      }
+    }
+    let labelTarget = button("Paste")
+    let keyboard = app.keyboards.firstMatch
+    let terminal = app.otherElements["Terminal"]
+    appendFixedArtifact(
+      "ios-ui-terminal-paste-diagnostics.txt",
+      lines: [
+        "phase=\(phase)",
+        "app_foreground=\(app.state == .runningForeground ? 1 : 0)",
+        "connection_form_gone=\(connectionFormIsGone() ? 1 : 0)",
+        "terminal_exists=\(terminal.exists ? 1 : 0)",
+        "keyboard_exists=\(keyboard.exists ? 1 : 0)",
+        "paste_exists=\(paste.exists ? 1 : 0)",
+        "paste_hittable=\(paste.exists && paste.isHittable ? 1 : 0)",
+        "paste_state=\(state(paste))",
+        "label_target_is_native_control=\(labelTarget.exists && labelTarget.identifier == "terminal-paste" ? 1 : 0)",
+        "label_target_state=\(state(labelTarget))",
+      ]
+    )
   }
 
   private func writeFixedArtifact(_ name: String, lines: [String]) {
@@ -1874,7 +2255,9 @@ final class MeetermSmokeUITests: XCTestCase {
     UIPasteboard.general.string = String(value.dropFirst(prefix.count))
     defer { UIPasteboard.general.string = nil }
     record("\(stage)_paste_set")
-    let paste = button("Paste")
+    // The completion value belongs to UIPasteControl, not an arbitrary child
+    // or edit-menu action carrying the same visible "Paste" label.
+    let paste = app.descendants(matching: .any).matching(identifier: "terminal-paste").firstMatch
     record("\(stage)_paste_exists")
     XCTAssertTrue(paste.waitForExistence(timeout: 10), "The terminal Paste action is unavailable.")
     record("\(stage)_paste_hittable")
@@ -1883,6 +2266,9 @@ final class MeetermSmokeUITests: XCTestCase {
       predicate: NSPredicate(format: "enabled == YES"), object: paste
     )
     XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed, "The terminal Paste action is disabled.")
+    let initiallyReady = paste.value as? String == "Ready"
+    if !initiallyReady { writeTerminalPasteDiagnostics(phase: "before_tap", paste: paste) }
+    XCTAssertTrue(initiallyReady, "The native paste completion state is unavailable before tapping.")
     record("\(stage)_paste_tap")
     paste.tap()
     record("\(stage)_paste_tapped")
@@ -1891,7 +2277,14 @@ final class MeetermSmokeUITests: XCTestCase {
     let finished = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "value == %@", "Ready"), object: paste
     )
-    XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 10), .completed, "The native paste did not finish.")
+    let completion = XCTWaiter.wait(for: [finished], timeout: 10)
+    writeTerminalPasteDiagnostics(phase: "after_tap", paste: paste)
+    if completion != .completed && safeForPostFormScreenshot() {
+      capture("terminal-paste-failure")
+    }
+    // Ready only describes UIPasteControl's provider lifecycle. It is not
+    // proof that delivery reached MeetermCore or the remote shell.
+    XCTAssertEqual(completion, .completed, "The native paste did not finish.")
     record("\(stage)_paste_finished")
     UIPasteboard.general.string = nil
 

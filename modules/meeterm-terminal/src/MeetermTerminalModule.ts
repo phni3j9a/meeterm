@@ -11,6 +11,7 @@ import type {
 } from './MeetermTerminal.types';
 
 declare class MeetermTerminalModule extends NativeModule<{}> {
+  recordStartupPhase(phase: string): void;
   getProfiles(): Promise<ServerProfile[]>;
   saveProfile(profile: Omit<ServerProfile, 'credentialSaved'>, credential: SavedCredential | null, keepCredential: boolean): Promise<ServerProfile>;
   deleteProfile(profileId: string): Promise<void>;

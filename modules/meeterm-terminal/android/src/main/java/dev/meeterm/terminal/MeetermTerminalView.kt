@@ -3,8 +3,10 @@ package dev.meeterm.terminal
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.ClipData
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.opengl.GLSurfaceView
 import android.text.Editable
@@ -22,6 +24,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
+import android.widget.HorizontalScrollView
 import android.widget.TextView
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
@@ -682,6 +685,14 @@ class MeetermTerminalView(
     )
   }
 
+  private fun keyBackground(selected: Boolean = false): RippleDrawable {
+    val fill = GradientDrawable().apply {
+      setColor(if (selected) Color.rgb(117, 83, 39) else Color.rgb(48, 44, 38))
+      cornerRadius = dp(8).toFloat()
+    }
+    return RippleDrawable(ColorStateList.valueOf(Color.argb(46, 219, 179, 120)), fill, null)
+  }
+
   private fun syncModifierButtons() {
     listOf(
       controlModifierButton to InputSession.MOD_CTRL,
@@ -689,10 +700,7 @@ class MeetermTerminalView(
     ).forEach { (button, modifier) ->
       val modifierButton = button ?: return@forEach
       val selected = inputSession.modifierIsActive(modifier)
-      modifierButton.background = GradientDrawable().apply {
-        setColor(if (selected) Color.rgb(117, 83, 39) else Color.rgb(48, 44, 38))
-        cornerRadius = dp(5).toFloat()
-      }
+      modifierButton.background = keyBackground(selected)
       modifierButton.contentDescription = if (selected) {
         "${modifierButton.text} modifier on"
       } else {
@@ -708,8 +716,8 @@ class MeetermTerminalView(
       gravity = android.view.Gravity.CENTER
       minHeight = dp(44)
       minimumHeight = dp(44)
-      minWidth = 0
-      minimumWidth = 0
+      minWidth = dp(44)
+      minimumWidth = dp(44)
       setPadding(0, 0, 0, 0)
       setTextColor(Color.rgb(219, 179, 120))
       isClickable = true
@@ -727,6 +735,22 @@ class MeetermTerminalView(
       setBackgroundColor(Color.rgb(33, 31, 27))
       importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
     }
+    val keys = LinearLayout(context).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = android.view.Gravity.CENTER_VERTICAL
+    }
+    val scroll = HorizontalScrollView(context).apply {
+      isHorizontalScrollBarEnabled = false
+      isHorizontalFadingEdgeEnabled = true
+      setFadingEdgeLength(dp(12))
+      addView(keys, ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      ))
+    }
+    // Keep clipboard actions fixed while the 44dp keys scroll. The row stays
+    // native and its height/terminal geometry contract is unchanged.
+    row.addView(scroll, LinearLayout.LayoutParams(0, dp(48), 1f))
     val controlButton = createModifierButton(context, "Ctrl", InputSession.MOD_CTRL)
     val altButton = createModifierButton(context, "Alt", InputSession.MOD_ALT)
     controlModifierButton = controlButton
@@ -746,14 +770,11 @@ class MeetermTerminalView(
         gravity = android.view.Gravity.CENTER
         minHeight = dp(44)
         minimumHeight = dp(44)
-        minWidth = 0
-        minimumWidth = 0
+        minWidth = dp(44)
+        minimumWidth = dp(44)
         setPadding(0, 0, 0, 0)
         setTextColor(Color.rgb(219, 179, 120))
-        background = GradientDrawable().apply {
-          setColor(Color.rgb(48, 44, 38))
-          cornerRadius = dp(5).toFloat()
-        }
+        background = keyBackground()
         isClickable = true
         isFocusable = true
         contentDescription = if (key == TerminalSpecialKey.Interrupt) "Ctrl-C" else label
@@ -762,13 +783,13 @@ class MeetermTerminalView(
           if (inputSession.sendSpecial(key)) surface.requestRender()
         }
       }
-      row.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+      keys.addView(button, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
         marginStart = dp(1)
         marginEnd = dp(1)
       })
     }
     listOf(controlButton, altButton).forEach { button ->
-      row.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+      keys.addView(button, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
         marginStart = dp(1)
         marginEnd = dp(1)
       })
@@ -779,14 +800,11 @@ class MeetermTerminalView(
       gravity = android.view.Gravity.CENTER
       minHeight = dp(44)
       minimumHeight = dp(44)
-      minWidth = 0
-      minimumWidth = 0
+      minWidth = dp(44)
+      minimumWidth = dp(44)
       setPadding(0, 0, 0, 0)
       setTextColor(Color.rgb(219, 179, 120))
-      background = GradientDrawable().apply {
-        setColor(Color.rgb(48, 44, 38))
-        cornerRadius = dp(5).toFloat()
-      }
+      background = keyBackground()
       isClickable = true
       isFocusable = true
       contentDescription = "Paste"
@@ -795,7 +813,7 @@ class MeetermTerminalView(
         performContextMenuAction(android.R.id.paste)
       }
     }
-    row.addView(pasteButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+    row.addView(pasteButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
     })
@@ -805,14 +823,11 @@ class MeetermTerminalView(
       gravity = android.view.Gravity.CENTER
       minHeight = dp(44)
       minimumHeight = dp(44)
-      minWidth = 0
-      minimumWidth = 0
+      minWidth = dp(44)
+      minimumWidth = dp(44)
       setPadding(0, 0, 0, 0)
       setTextColor(Color.rgb(219, 179, 120))
-      background = GradientDrawable().apply {
-        setColor(Color.rgb(48, 44, 38))
-        cornerRadius = dp(5).toFloat()
-      }
+      background = keyBackground()
       isClickable = true
       isFocusable = true
       contentDescription = "Copy selection"
@@ -821,7 +836,7 @@ class MeetermTerminalView(
         copySelection()
       }
     }
-    row.addView(copyButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+    row.addView(copyButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
     })

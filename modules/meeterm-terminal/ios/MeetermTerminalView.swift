@@ -28,6 +28,8 @@ final class MeetermTerminalView: ExpoView {
   private let selectionBar = UIStackView()
   private let startHandle = UIButton(type: .system)
   private let endHandle = UIButton(type: .system)
+  private var scrollGestureDelegate: TerminalScrollGestureDelegate?
+  private let observesInputLifecycle = ProcessInfo.processInfo.arguments.contains("-meeterm-ui-observation")
 
   private var cellSize: CGSize {
     TerminalRenderer.cellSize(fontSize: fontSize, scale: max(1, window?.screen.scale ?? contentScaleFactor))
@@ -103,7 +105,11 @@ final class MeetermTerminalView: ExpoView {
     terminalInputView.onPaste = { [weak self] text in
       guard let self, self.terminalHandle != 0 else { return }
       self.clearSelection()
-      if MeetermCore.paste(terminalId: self.terminalHandle, text: text) {
+      let accepted = MeetermCore.paste(terminalId: self.terminalHandle, text: text)
+      if self.observesInputLifecycle {
+        NSLog("MEETERM_SMOKE_PASTE_RESULT accepted=%d", accepted ? 1 : 0)
+      }
+      if accepted {
         self.renderer.requestFrame()
       }
     }
@@ -134,6 +140,9 @@ final class MeetermTerminalView: ExpoView {
     renderingView.addGestureRecognizer(focusGesture)
     let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(scrollTerminal(_:)))
     scrollGesture.maximumNumberOfTouches = 1
+    let scrollDelegate = TerminalScrollGestureDelegate { [weak self] in self?.selectionStart != nil }
+    scrollGestureDelegate = scrollDelegate
+    scrollGesture.delegate = scrollDelegate
     renderingView.addGestureRecognizer(scrollGesture)
     focusGesture.require(toFail: scrollGesture)
     let selectionGesture = UILongPressGestureRecognizer(target: self, action: #selector(selectTerminal(_:)))

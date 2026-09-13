@@ -2904,7 +2904,7 @@ def edit_saved_profile_name(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, options, stage)
-    tap_action(device, stage, ("名前・情報を編集",))
+    tap_action(device, stage, ("Edit server",))
     fill_field(
         device,
         "Server name",
@@ -2975,8 +2975,8 @@ def switch_saved_profile(
 ) -> Node:
     profile = wait_for_saved_profile(device, stage, name, selected=False)
     tap_node(device, profile, stage)
-    wait_for_node(device, stage, text="接続先を切り替えますか？")
-    tap_action(device, stage, ("切り替える",))
+    wait_for_node(device, stage, text="Switch servers?")
+    tap_action(device, stage, ("Switch server",))
     wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
     tap_action(device, stage, ("Saved servers",))
     return wait_for_saved_profile(device, stage, name, selected=True)
@@ -3026,9 +3026,9 @@ def exercise_saved_profile_management(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, second_options, stage)
-    tap_action(device, stage, ("削除",))
-    wait_for_node(device, stage, text="保存済みサーバーを削除しますか？")
-    tap_action(device, stage, ("キャンセル",))
+    tap_action(device, stage, ("Remove",))
+    wait_for_node(device, stage, text="Remove saved server?")
+    tap_action(device, stage, ("Cancel",))
     wait_for_saved_profile(device, stage, DAILY_SECOND_PROFILE_NAME, selected=False)
     completed.append("daily_profile_delete_cancelled")
 
@@ -3040,9 +3040,9 @@ def exercise_saved_profile_management(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, second_options, stage)
-    tap_action(device, stage, ("削除",))
-    wait_for_node(device, stage, text="保存済みサーバーを削除しますか？")
-    tap_action(device, stage, ("削除",))
+    tap_action(device, stage, ("Remove",))
+    wait_for_node(device, stage, text="Remove saved server?")
+    tap_action(device, stage, ("Remove",))
     wait_for_saved_profile_absent(
         device,
         stage,
@@ -3188,7 +3188,7 @@ def reconnect_saved_profile_after_restart(
     wait_for_text_fragment(
         device,
         stage,
-        "認証情報を保存済み",
+        "Credentials saved",
         timeout=RECONNECT_TIMEOUT,
     )
     capture_optional_screenshot(
@@ -3219,8 +3219,10 @@ def exercise_daily_settings(
     wait_for_text_input(device, stage, "Terminal font size")
 
     stage = "daily_settings_theme"
-    tap_action(device, stage, ("Terminal theme",))
-    light = wait_for_node(device, stage, text="ライト")
+    tap_action(device, stage, ("Appearance",))
+    # Android's native AlertDialog uppercases its action captions. Match the
+    # actual native button, not the mixed-case value behind the dialog.
+    light = wait_for_node(device, stage, text="LIGHT", class_fragment="Button")
     tap_node(device, light, stage)
 
     fill_field(
@@ -3255,7 +3257,7 @@ def exercise_daily_settings(
     stage = "daily_settings_reopen"
     tap_action(device, stage, ("Terminal settings",))
     wait_for_field_value(device, stage, "Terminal font size", "18")
-    wait_for_node(device, stage, text="ライト")
+    wait_for_node(device, stage, text="Light")
     capture_optional_screenshot(
         device,
         artifact_dir / "daily-settings.png",
@@ -3411,6 +3413,18 @@ def prepare_and_select_daily_marker(
     )
 
 
+def validate_quick_key_targets(nodes: list[Node]) -> None:
+    # Native keys are 44dp high. Requiring width >= height rejects the old
+    # eleven equal-weight columns on a phone without assuming a pixel density.
+    for label in ("Esc", "Tab", "Ctrl-C", "Paste", "Copy selection"):
+        node = find_node(nodes, text=label)
+        if node is None:
+            raise SmokeFailure("daily_quick_key_targets", "required_key_unavailable")
+        left, top, right, bottom = node.bounds
+        if right - left < bottom - top:
+            raise SmokeFailure("daily_quick_key_targets", "key_target_too_narrow")
+
+
 def exercise_daily_workspace_and_selection(
     device: AndroidDevice,
     tmux_socket: Path,
@@ -3425,11 +3439,11 @@ def exercise_daily_workspace_and_selection(
     artifact_dir: Path,
     completed: list[str],
 ) -> None:
-    """Exercise light rendering, native selection, and temporary tmux CRUD."""
+    """Exercise the dark terminal in the light app, selection, and tmux CRUD."""
 
     original_workspace_label = fixture_workspace_label(fixture_layout)
 
-    stage = "daily_terminal_light"
+    stage = "daily_terminal_dark"
     original_workspace = wait_for_workspace(
         device,
         stage,
@@ -3446,12 +3460,14 @@ def exercise_daily_workspace_and_selection(
         timeout=RECONNECT_TIMEOUT,
     )
     wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+    validate_quick_key_targets(device.dump_ui())
+    completed.append("daily_quick_key_targets")
     time.sleep(1.0)
     capture_optional_screenshot(
         device,
-        artifact_dir / "daily-terminal-light.png",
+        artifact_dir / "daily-terminal-dark.png",
         completed,
-        "daily_terminal_light",
+        "daily_terminal_dark",
     )
     exercise_glyph_atlas_stress(
         device,
@@ -3503,7 +3519,7 @@ def exercise_daily_workspace_and_selection(
         scroll=True,
     )
     tap_node(device, options, stage)
-    tap_action(device, stage, ("名前を変更",))
+    tap_action(device, stage, ("Rename",))
     fill_field(
         device,
         "Workspace or terminal name",
@@ -3669,8 +3685,8 @@ def exercise_daily_workspace_and_selection(
         scroll=True,
     )
     tap_node(device, close_pane, stage)
-    wait_for_node(device, stage, text="ターミナルを終了しますか？")
-    tap_action(device, stage, ("終了",))
+    wait_for_node(device, stage, text="Close terminal?")
+    tap_action(device, stage, ("Close",))
     wait_for_panes(
         device,
         stage,
@@ -3696,9 +3712,9 @@ def exercise_daily_workspace_and_selection(
         scroll=True,
     )
     tap_node(device, options, stage)
-    tap_action(device, stage, ("終了",))
-    wait_for_node(device, stage, text="ワークスペースを終了しますか？")
-    tap_action(device, stage, ("終了",))
+    tap_action(device, stage, ("Close",))
+    wait_for_node(device, stage, text="Close workspace?")
+    tap_action(device, stage, ("Close",))
     remaining_workspaces = wait_for_workspace_count(
         device,
         stage,

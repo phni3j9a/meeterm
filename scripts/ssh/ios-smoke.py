@@ -10,7 +10,7 @@ log and xcresult remain under RUNNER_TEMP.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -28,9 +28,13 @@ import threading
 import time
 
 
-IOS_SUITES = ("standard", "ssh", "full", "forms", "native", "names")
+IOS_SUITES = (
+    "standard", "polish", "polish-navigation", "ssh", "full", "forms", "native", "names"
+)
 SUITE_TIMEOUT_SECONDS = {
     "standard": 900.0,
+    "polish": 900.0,
+    "polish-navigation": 900.0,
     "ssh": 900.0,
     "full": 1800.0,
     "forms": 900.0,
@@ -40,6 +44,14 @@ SUITE_TIMEOUT_SECONDS = {
 STANDARD_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
     "MeetermSmokeUITests/testStandardSeededScreensAndFoundation"
+)
+POLISH_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testPolishStatesAndNavigation"
+)
+POLISH_NAVIGATION_TEST_SELECTOR = (
+    "-only-testing:meetermTests/"
+    "MeetermSmokeUITests/testPolishNavigationAndFoundation"
 )
 SSH_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
@@ -73,6 +85,7 @@ NATIVE_INPUT_CASES = (
     "hardware_control",
     "hardware_shift_combinations",
     "marked_commit",
+    "scroll_gesture",
 )
 RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -270,7 +283,8 @@ def write_short_ssh_input_diagnostics(
     booleans and counts, including on a successful run for comparison.
     """
     stages = (artifact_dir / "ios-ui-stages.txt").read_text().splitlines()
-    if not {"ssh_connected", "ssh_native_input_await_remote_marker"}.issubset(stages):
+    input_stages = {"ssh_native_input_paste_tapped", "ssh_native_input_await_remote_marker"}
+    if "ssh_connected" not in stages or not input_stages.intersection(stages):
         return
     if socket_path != fixture_socket():
         raise SmokeFailure("input_diagnostics", "socket_path_invalid")
@@ -837,6 +851,7 @@ def write_xcuitest_diagnostics(
     xcodebuild_started_at: float | None = None,
     xcodebuild_elapsed_seconds: float | None = None,
     xcodebuild_timeout_seconds: float | None = None,
+    result_bundle: Path | None = None,
 ) -> None:
     """Keep runner failures observable without copying XCTest's credential text."""
     try:
@@ -845,12 +860,34 @@ def write_xcuitest_diagnostics(
     except OSError:
         log = ""
         available = False
+    # A runner can fail before XCTest reaches setUp. Read the local result
+    # summary for fixed classifications/counts only; its failure text can
+    # contain credentials and must never be copied into uploaded artifacts.
+    summary = None
+    if exit_code != 0 and result_bundle is not None and result_bundle.is_dir():
+        xcrun = shutil.which("xcrun")
+        if xcrun is not None:
+            try:
+                report = subprocess.run(
+                    [xcrun, "xcresulttool", "get", "test-results", "summary", "--path", str(result_bundle)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, check=False, timeout=10,
+                )
+                if report.returncode == 0:
+                    candidate = json.loads(report.stdout)
+                    if isinstance(candidate, dict):
+                        summary = candidate
+                        log += "\n" + json.dumps(candidate).lower()
+            except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
+                pass
     signals = {
         "test_case_started": r"test case .+ started",
         "test_suite_started": r"test suite .+ started",
         "runner_launch_failed": r"failed to launch|unable to launch|failed to start.*test runner",
         "runner_early_exit": r"early unexpected exit|test runner.*crash|runner.*exited",
-        "runner_connection_failed": r"failed to establish.*connection|lost.*connection|failed to get test.*ready|never began executing",
+        "runner_connection_failed": r"failed to establish.*(?:connection|communication)|lost.*connection|failed to get test.*ready|never began executing",
+        "runner_timed_out": r"timed out.*(?:runner|test process|launch|test session)|(?:runner|test session).*timed out",
+        "runner_initialization_failed": r"failed to initialize|initialization failed|failed to create.*test session",
         "test_bundle_load_failed": r"failed to load.*bundle|could not load.*bundle|dlopen|symbol not found",
         "swift_cast_failed": r"could not cast value of type",
         "simulator_boot_failed": r"failed to boot|unable to boot",
@@ -861,8 +898,23 @@ def write_xcuitest_diagnostics(
     lines = [
         f"raw_log_available={int(available)}",
         f"exit_code={exit_code if exit_code is not None else 'unavailable'}",
+        f"xcresult_summary_available={int(summary is not None)}",
     ]
     lines.extend(f"{name}={int(re.search(pattern, log) is not None)}" for name, pattern in signals.items())
+    if summary is not None:
+        for field, label in (
+            ("totalTestCount", "total_tests"), ("passedTests", "passed_tests"),
+            ("failedTests", "failed_tests"), ("skippedTests", "skipped_tests"),
+        ):
+            value = summary.get(field)
+            safe = value if type(value) is int and 0 <= value <= 100000 else "unavailable"
+            lines.append(f"xcresult_{label}={safe}")
+    # Keep only known Apple/POSIX domains and bounded integer codes. Never
+    # include userInfo, descriptions, paths, bundle names, or arbitrary tokens.
+    for domain in ("IDETestOperationsObserverErrorDomain", "IDELaunchErrorDomain", "NSCocoaErrorDomain", "NSPOSIXErrorDomain", "FBSOpenApplicationServiceErrorDomain"):
+        codes = sorted(set(re.findall(rf"\b{domain.lower()}\b[\s\"=:]+(?:code[\s\"=:]+)?(-?\d{{1,6}})\b", log)))
+        for code in codes[:8]:
+            lines.append(f"system_error_{domain}={int(code)}")
     if xcodebuild_started_at is not None:
         lines.extend(
             (
@@ -880,7 +932,7 @@ def write_xcuitest_diagnostics(
 
 @contextmanager
 def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_dir: Path):
-    """Record only the post-authentication daily-use section, never the form."""
+    """Record only safe daily-use or public navigation sections, never credentials."""
     stopped = threading.Event()
 
     def monitor() -> None:
@@ -897,7 +949,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                 # These markers are emitted after authentication, with the
                 # native terminal/workspace UI already visible. No later
                 # focused operation opens an authentication form.
-                if not any(marker in stages for marker in ("daily_selection", "names_started")):
+                if not any(marker in stages for marker in ("daily_selection", "names_started", "polish_navigation_open")):
                     continue
                 xcrun = shutil.which("xcrun")
                 if xcrun is None:
@@ -913,7 +965,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                         break
                     try:
                         completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
-                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete")):
+                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete", "polish_navigation_complete")):
                             break
                     except OSError:
                         pass
@@ -1035,6 +1087,13 @@ def _test_steps(
     )
     if suite == "standard":
         return (storage, standard)
+    if suite == "polish":
+        return (("xcuitest_polish", (POLISH_TEST_SELECTOR,), result_bundle, raw_log,
+                 diagnostics_path, diagnostics_path.parent / "ios-ui-polish-validation.txt", ("polish",)),)
+    if suite == "polish-navigation":
+        return (("xcuitest_polish_navigation", (POLISH_NAVIGATION_TEST_SELECTOR,), result_bundle, raw_log,
+                 diagnostics_path, diagnostics_path.parent / "ios-ui-polish-navigation-validation.txt",
+                 ("polish-navigation",)),)
     if suite == "ssh":
         return (ssh,)
     if suite == "forms":
@@ -1108,7 +1167,8 @@ def run_xcuitest(
         str(xctestrun_path),
         "-destination",
         f"platform=iOS Simulator,id={simulator_udid}",
-        "-quiet",
+        # Keep normal runner output in the private RUNNER_TEMP log so startup
+        # failures remain classifiable; only fixed diagnostics are uploaded.
         "CODE_SIGNING_ALLOWED=NO",
         "CODE_SIGNING_REQUIRED=NO",
     ]
@@ -1136,6 +1196,8 @@ def run_xcuitest(
     storage_validation = diagnostics_path.parent / "ios-native-storage-validation.txt"
     native_validation = diagnostics_path.parent / "ios-native-input-validation.txt"
     standard_validation = diagnostics_path.parent / "ios-ui-standard-validation.txt"
+    polish_validation = diagnostics_path.parent / "ios-ui-polish-validation.txt"
+    polish_navigation_validation = diagnostics_path.parent / "ios-ui-polish-navigation-validation.txt"
     ssh_validation = diagnostics_path.parent / "ios-ui-ssh-validation.txt"
     forms_validation = diagnostics_path.parent / "ios-ui-forms-validation.txt"
     names_validation = diagnostics_path.parent / "ios-ui-names-validation.txt"
@@ -1143,6 +1205,8 @@ def run_xcuitest(
         storage_validation,
         native_validation,
         standard_validation,
+        polish_validation,
+        polish_navigation_validation,
         ssh_validation,
         forms_validation,
         names_validation,
@@ -1189,6 +1253,7 @@ def run_xcuitest(
                     xcodebuild_started_at=xcodebuild_started_at,
                     xcodebuild_elapsed_seconds=xcodebuild_elapsed_seconds,
                     xcodebuild_timeout_seconds=xcodebuild_timeout_seconds,
+                    result_bundle=bundle,
                 )
             if exit_code != 0:
                 reason = {
@@ -1196,6 +1261,7 @@ def run_xcuitest(
                     "xcuitest_native": "native_tests_failed",
                     "xcuitest_forms": "forms_tests_failed",
                     "xcuitest_names": "names_tests_failed",
+                    "xcuitest_polish_navigation": "polish_navigation_tests_failed",
                 }.get(stage, "ui_test_failed")
                 raise SmokeFailure(stage, reason)
             if validation_path is not None:
@@ -1208,11 +1274,12 @@ def run_xcuitest(
                         "xcuitest_forms": "forms_cases_incomplete",
                         "xcuitest_names": "names_cases_incomplete",
                         "xcuitest": "native_cases_incomplete",
+                        "xcuitest_polish_navigation": "polish_navigation_cases_incomplete",
                     }.get(stage, "cases_incomplete")
                     raise SmokeFailure(stage, reason) from error
         if suite == "standard":
             # The standard UI invocation also selects the native input suite.
-            # Keep its seven-case contract separate from the UI route marker so
+            # Keep its native-case contract separate from the UI route marker so
             # a test that only launches the screen flow cannot satisfy input
             # coverage accidentally.
             try:
@@ -1223,6 +1290,22 @@ def run_xcuitest(
                 diagnostics_path.parent / "ios-ui-stages.txt",
                 ("standard_complete", "foundation_verified"),
                 "xcuitest_standard",
+            )
+        elif suite == "polish":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                ("polish_complete", "polish_navigation_complete", "foundation_verified"),
+                "xcuitest_polish",
+            )
+        elif suite == "polish-navigation":
+            _require_stage_markers(
+                diagnostics_path.parent / "ios-ui-stages.txt",
+                (
+                    "polish_navigation_complete",
+                    "foundation_verified",
+                    "polish_navigation_suite_complete",
+                ),
+                "xcuitest_polish_navigation",
             )
         elif suite == "ssh":
             _require_stage_markers(
@@ -1342,6 +1425,7 @@ def main() -> int:
     validation_filename = {
         "full": "ios-validation.txt",
         "standard": "ios-standard-validation.txt",
+        "polish-navigation": "ios-polish-navigation-validation.txt",
         "ssh": "ios-ssh-validation.txt",
     }.get(suite, f"ios-{suite}-validation.txt")
     validation_path = args.artifact_dir / validation_filename
@@ -1515,16 +1599,22 @@ def main() -> int:
             if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
                 os.environ.pop(environment_name, None)
         stage = "xcuitest"
-        run_status = run_xcuitest(
-            derived_data=args.derived_data,
-            simulator_udid=args.simulator_udid,
-            result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / f"meeterm-ios-{suite}.xcresult",
-            raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / f"meeterm-ios-{suite}-xcodebuild.log",
-            diagnostics_path=args.artifact_dir / f"ios-{suite}-xctest-runner-diagnostics.txt",
-            suite=suite,
+        recording = (
+            record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir)
+            if suite in ("polish", "polish-navigation")
+            else nullcontext()
         )
+        with recording:
+            run_status = run_xcuitest(
+                derived_data=args.derived_data,
+                simulator_udid=args.simulator_udid,
+                result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                / f"meeterm-ios-{suite}.xcresult",
+                raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                / f"meeterm-ios-{suite}-xcodebuild.log",
+                diagnostics_path=args.artifact_dir / f"ios-{suite}-xctest-runner-diagnostics.txt",
+                suite=suite,
+            )
         if run_status != 0:
             ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
             raise SmokeFailure("xcuitest", "focused_tests_failed")

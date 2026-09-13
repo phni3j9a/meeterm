@@ -19,10 +19,46 @@ BACKENDS = {
     "MEETERM_SMOKE_FIRST_FRAME_SOFTWARE": "software-simulator-fallback",
 }
 MARKER_NAMES = {"MEETERM_SMOKE_NATIVE_READY", *BACKENDS}
+# Public-screen focus observations share the sanitized log, but are not
+# readiness/frame evidence. Accept only the exact native boolean contract.
+INPUT_DIAGNOSTICS = {
+    "MEETERM_SMOKE_INPUT_FOCUS": r"result=[01] window=[01]",
+    "MEETERM_SMOKE_INPUT_RESIGN": r"focused=[01] result=[01]",
+    "MEETERM_SMOKE_INPUT_WINDOW": r"attached=[01]",
+    "MEETERM_SMOKE_INPUT_BINDING_CANCEL": r"",
+}
+STARTUP_PHASES = (
+    "js_module_loaded",
+    "root_effect",
+    "initial_url_requested",
+    "initial_url_null",
+    "initial_url_allowed_fixture",
+    "initial_url_other",
+    "initial_url_rejected",
+    "app_content_mounted",
+    "profiles_requested",
+    "profiles_succeeded",
+    "profiles_failed",
+)
+STARTUP_DIAGNOSTICS = {
+    "MEETERM_SMOKE_STARTUP": rf"phase=(?:{'|'.join(STARTUP_PHASES)})",
+}
+PASTE_DIAGNOSTICS = {
+    "MEETERM_SMOKE_PASTE_REQUEST": r"",
+    "MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION": r"",
+    "MEETERM_SMOKE_PASTE_DROP_GENERATION": r"",
+    "MEETERM_SMOKE_PASTE_DROP_CANCEL": r"",
+    "MEETERM_SMOKE_PASTE_DROP_FOCUS": r"",
+    "MEETERM_SMOKE_PASTE_DROP_WINDOW": r"",
+    "MEETERM_SMOKE_PASTE_DROP_PROVIDER": r"",
+    "MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT": r"",
+    "MEETERM_SMOKE_PASTE_RESULT": r"accepted=[01]",
+}
+DIAGNOSTICS = {**INPUT_DIAGNOSTICS, **STARTUP_DIAGNOSTICS, **PASTE_DIAGNOSTICS}
 COMPACT_MARKER = re.compile(
     r"^\s*(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
     r"\s+\S+\s+meeterm\[(\d+):([^\]\s]+)\]\s+.*?"
-    r"\b(MEETERM_SMOKE_[A-Z_]+)\s*$"
+    r"\b(MEETERM_SMOKE_[A-Z_]+)([^\r\n]*)$"
 )
 
 
@@ -72,9 +108,7 @@ def _marker(line: str) -> Marker | None:
     match = COMPACT_MARKER.match(line)
     if match is None:
         raise ValidationError("malformed_marker")
-    date, clock, pid, _tid, name = match.groups()
-    if name not in MARKER_NAMES:
-        raise ValidationError("malformed_marker")
+    date, clock, pid, _tid, name, details = match.groups()
     try:
         stamp = datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S.%f")
     except ValueError:
@@ -82,6 +116,10 @@ def _marker(line: str) -> Marker | None:
             stamp = datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S")
         except ValueError as error:
             raise ValidationError("malformed_marker") from error
+    if name in DIAGNOSTICS and re.fullmatch(DIAGNOSTICS[name], details.strip()):
+        return None
+    if name not in MARKER_NAMES or details.strip():
+        raise ValidationError("malformed_marker")
     return Marker(stamp.replace(tzinfo=timezone.utc).timestamp(), pid, name)
 
 

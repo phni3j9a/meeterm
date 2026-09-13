@@ -17,6 +17,7 @@ const WEB_UNAVAILABLE =
 // module that cannot exist in a browser; actions reject with a sanitized,
 // deterministic error.
 class MeetermTerminalModule extends NativeModule<{}> {
+  recordStartupPhase(_phase: string): void {}
   async getProfiles(): Promise<ServerProfile[]> { return []; }
   async saveProfile(_profile: Omit<ServerProfile, 'credentialSaved'>, _credential: SavedCredential | null, _keepCredential: boolean): Promise<ServerProfile> { throw new Error(WEB_UNAVAILABLE); }
   async deleteProfile(_profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }

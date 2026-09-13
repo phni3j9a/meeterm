@@ -99,7 +99,14 @@ function FlatList({
 
 function makeNativeEnvironment() {
   const environment = {
-    snapshot: null,
+    snapshot: {
+      backend: 'tmux',
+      runtime: 'meeterm',
+      groupsSupported: false,
+      workspaces: [],
+      groups: [],
+      terminals: [],
+    },
     connection: {
       state: 'Ready',
       host: 'fixture.example',
@@ -111,6 +118,15 @@ function makeNativeEnvironment() {
       errorMessage: '',
     },
     calls: [],
+    foregroundCalls: [],
+    nativeCalls: [],
+    startupPhases: [],
+    startupPhaseShouldFail: false,
+    initialAppState: 'active',
+    initialURL: null,
+    initialURLBehavior: 'resolve',
+    profilesShouldFail: false,
+    appStateListeners: new Set(),
     visibility: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
@@ -118,11 +134,22 @@ function makeNativeEnvironment() {
   };
 
   const native = {
-    async getProfiles() { return []; },
-    async getPreferences() { return { ...PREFERENCES }; },
+    recordStartupPhase(phase) {
+      if (environment.startupPhaseShouldFail) throw new Error('diagnostic bridge unavailable');
+      environment.startupPhases.push(phase);
+    },
+    async getProfiles() {
+      environment.nativeCalls.push('getProfiles');
+      if (environment.profilesShouldFail) throw new Error('profiles unavailable');
+      return [];
+    },
+    async getPreferences() {
+      environment.nativeCalls.push('getPreferences');
+      return { ...PREFERENCES };
+    },
     async setPreferences() {},
     async setAutomaticReconnect() {},
-    async setForeground() {},
+    async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
     async getConnectionState() { return { ...environment.connection }; },
     async getWorkspaceState() { return clone(environment.snapshot); },
     async setTerminalVisible(_connectionId, visible) {
@@ -147,15 +174,27 @@ function makeNativeEnvironment() {
 function makeReactNativeMocks(environment) {
   const noOpSubscription = { remove() {} };
   const AppState = {
-    currentState: 'active',
-    addEventListener() { return noOpSubscription; },
+    currentState: environment.initialAppState,
+    addEventListener(event, listener) {
+      assert.equal(event, 'change');
+      environment.appStateListeners.add(listener);
+      return { remove() { environment.appStateListeners.delete(listener); } };
+    },
+  };
+  environment.emitAppState = state => {
+    AppState.currentState = state;
+    for (const listener of environment.appStateListeners) listener(state);
   };
   const BackHandler = {
     addEventListener() { return noOpSubscription; },
   };
   const Keyboard = { dismiss() {} };
   const Linking = {
-    async getInitialURL() { return null; },
+    async getInitialURL() {
+      if (environment.initialURLBehavior === 'pending') return new Promise(() => {});
+      if (environment.initialURLBehavior === 'reject') throw new Error('initial URL unavailable');
+      return environment.initialURL;
+    },
     addEventListener() { return noOpSubscription; },
   };
   const Alert = {
@@ -232,6 +271,7 @@ function makeUiMocks() {
     IconButton,
     MONO: 'MONO',
     usePalette,
+    useReducedMotion: () => true,
   };
 }
 
@@ -261,7 +301,7 @@ function makeTerminalModule(native, environment) {
   return module;
 }
 
-function loadApp(environment, native) {
+function loadApp(environment, native, presentationOnly = false, smokeEnabled = false) {
   const source = fs.readFileSync(APP_SOURCE, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
     compilerOptions: {
@@ -288,13 +328,18 @@ function loadApp(environment, native) {
     ['./app/ConnectionForm', forms],
     ['./app/DailyUse', forms],
     ['./app/ui', ui],
+    // Navigation's native view/gesture execution belongs to mobile evidence.
+    // These tests retain their real App selection and registry assertions.
+    ['./app/WorkspaceNavigation', {
+      WorkspaceNavigation: ({ screen, workspaces, terminal }) => screen === 'terminal' ? terminal : workspaces,
+    }],
   ]);
   function localRequire(request) {
     if (moduleMap.has(request)) return moduleMap.get(request);
     return require(request);
   }
   const processForApp = { ...process, env: { ...process.env } };
-  processForApp.env.EXPO_PUBLIC_MEETERM_SMOKE = '0';
+  processForApp.env.EXPO_PUBLIC_MEETERM_SMOKE = smokeEnabled ? '1' : '0';
   const context = {
     require: localRequire,
     module: appModule,
@@ -315,8 +360,261 @@ function loadApp(environment, native) {
     globalThis,
   };
   vm.runInNewContext(transpiled, context, { filename: APP_SOURCE });
+  if (presentationOnly) return vm.runInNewContext('({ smokeFixture, smokeWorkspaceState, smokeRouteForUrl, agentSummary })', context);
   return appModule.exports.default;
 }
+
+test('public presentation fixtures stay release-gated and do not mutate shared connection state', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const production = loadApp(environment, native, true);
+  assert.deepEqual(environment.startupPhases, []);
+  assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=welcome'), undefined);
+  const smoke = loadApp(environment, native, true, true);
+  for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces']) {
+    assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
+  }
+  assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
+  assert.equal(smoke.smokeFixture('welcome').profiles.length, 0);
+  assert.equal(smoke.smokeFixture('empty').panes.length, 0);
+  assert.equal(smoke.smokeFixture('search-empty').query, 'deployment');
+  assert.equal(smoke.smokeFixture('disconnected').connection.state, 'Disconnected');
+  assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
+  assert.equal(smoke.smokeFixture('workspaces').connection.state, 'Ready');
+  assert.equal(environment.calls.length, 0);
+});
+
+test('smoke startup diagnostics classify URL and profile boundaries without fixture effects', async t => {
+  const cases = [
+    {
+      name: 'null URL',
+      initialURL: null,
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_null',
+        'app_content_mounted', 'profiles_requested', 'profiles_succeeded'],
+    },
+    {
+      name: 'other URL',
+      initialURL: 'meeterm://unrelated',
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_other',
+        'app_content_mounted', 'profiles_requested', 'profiles_succeeded'],
+    },
+    {
+      name: 'rejected URL request',
+      initialURLBehavior: 'reject',
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_rejected',
+        'app_content_mounted', 'profiles_requested', 'profiles_succeeded'],
+    },
+    {
+      name: 'profile request failure',
+      profilesShouldFail: true,
+      expected: ['js_module_loaded', 'root_effect', 'initial_url_requested', 'initial_url_null',
+        'app_content_mounted', 'profiles_requested', 'profiles_failed'],
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const { environment, native } = makeNativeEnvironment();
+      Object.assign(environment, item);
+      const App = loadApp(environment, native, false, true);
+      const root = createRoot();
+      try {
+        await act(async () => { root.render(React.createElement(App)); });
+        assert.deepEqual(environment.startupPhases, item.expected);
+      } finally {
+        await act(async () => { root.unmount(); });
+      }
+    });
+  }
+
+  await t.test('allowed fixture URL never touches native remote control', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.initialURL = 'meeterm://smoke?screen=terminal';
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      assert.deepEqual(environment.startupPhases, [
+        'js_module_loaded', 'root_effect', 'initial_url_requested',
+        'initial_url_allowed_fixture', 'app_content_mounted',
+      ]);
+      assert.deepEqual(environment.nativeCalls, []);
+      assert.deepEqual(environment.foregroundCalls, []);
+      assert.deepEqual(environment.visibility, []);
+      assert.deepEqual(environment.calls, []);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  await t.test('pending URL request does not mount AppContent or start native work', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.initialURLBehavior = 'pending';
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      assert.deepEqual(environment.startupPhases, [
+        'js_module_loaded', 'root_effect', 'initial_url_requested',
+      ]);
+      assert.equal(terminalViews(root).length, 0);
+      assert.deepEqual(environment.nativeCalls, []);
+      assert.deepEqual(environment.foregroundCalls, []);
+      assert.deepEqual(environment.visibility, []);
+      assert.deepEqual(environment.calls, []);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  await t.test('diagnostic bridge failure remains observational', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.startupPhaseShouldFail = true;
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      assert.equal(terminalViews(root).length, 0);
+      assert.deepEqual(environment.nativeCalls, ['getProfiles', 'getPreferences']);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+});
+
+test('agent status counts stay attached to their labels when text wraps', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const { agentSummary } = loadApp(environment, native, true);
+  const panes = ['working', 'blocked', 'done', 'working'].map(status => ({ agent: { status } }));
+  assert.equal(agentSummary(panes, true), 'Needs attention\u00a01 · Working\u00a02 · Finished\u00a01');
+  assert.equal(agentSummary(panes, false), 'Status unavailable\u00a04');
+  assert.equal(agentSummary([{ agent: null }], true), '');
+});
+
+test('settings appearance has the same visible and accessible meaning', async () => {
+  const filename = path.join(REPO_ROOT, 'app/DailyUse.tsx');
+  const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: TypeScript.ModuleKind.CommonJS, jsx: TypeScript.JsxEmit.ReactJSX },
+  }).outputText;
+  const { environment } = makeNativeEnvironment();
+  const rn = { ...makeReactNativeMocks(environment), KeyboardAvoidingView: 'KeyboardAvoidingView', Switch: 'Switch' };
+  const modules = new Map([
+    ['react', React], ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn], ['react-native-safe-area-context', makeSafeAreaMocks()],
+    ['./ui', makeUiMocks()],
+  ]);
+  const dailyUse = { exports: {} };
+  vm.runInNewContext(compiled, {
+    exports: dailyUse.exports,
+    require: name => { assert.ok(modules.has(name), name); return modules.get(name); },
+  }, { filename });
+  const root = createRoot();
+  try {
+    await act(async () => {
+      root.render(React.createElement(dailyUse.exports.SettingsForm, {
+        visible: true, preferences: PREFERENCES, colors: LIGHT,
+        onClose() {}, async onSave() { return true; },
+      }));
+    });
+    assert.equal(findTestId(root, 'terminal-theme').props.accessibilityLabel, 'Appearance');
+    assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 0);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test('an inactive fixture deep link follows UI foreground changes without reconnecting', async () => {
+  const { environment, native } = makeNativeEnvironment();
+  environment.initialAppState = 'inactive';
+  environment.initialURL = 'meeterm://smoke?screen=terminal';
+  const App = loadApp(environment, native, false, true);
+  const root = createRoot();
+  try {
+    await act(async () => { root.render(React.createElement(App)); });
+    assert.equal(terminalViews(root).length, 0);
+    await act(async () => { environment.emitAppState('active'); });
+    assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['poc-main']);
+    await act(async () => { environment.emitAppState('background'); });
+    assert.equal(terminalViews(root).length, 0);
+    await act(async () => { environment.emitAppState('active'); });
+    assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['poc-main']);
+    assert.deepEqual(environment.foregroundCalls, []);
+    assert.deepEqual(environment.visibility, []);
+    assert.deepEqual(environment.calls, []);
+    assert.equal(environment.intervalCallbacks.length, 0);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+  assert.equal(environment.appStateListeners.size, 0);
+});
+
+test('normal app foreground events retain ordered native lifecycle delivery', async t => {
+  const { root, environment } = await mountForTest(t, makeSnapshot());
+  await openWorkspace(root, 'W1');
+  await act(async () => { environment.emitAppState('background'); });
+  assert.equal(terminalViews(root).length, 0);
+  await act(async () => { environment.emitAppState('inactive'); environment.emitAppState('active'); });
+  assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['native:P1']);
+  assert.deepEqual(environment.foregroundCalls, [true, false, false, true]);
+});
+
+test('reduced-motion hook reads the initial preference, follows changes and cleans up', async () => {
+  // Run the real hook with a mocked platform settings boundary. This verifies
+  // its subscription lifecycle, not an OS setting or animation performance.
+  const source = TypeScript.createSourceFile('ui.tsx', fs.readFileSync(path.join(REPO_ROOT, 'app/ui.tsx'), 'utf8'), TypeScript.ScriptTarget.Latest, true, TypeScript.ScriptKind.TSX);
+  const declaration = source.statements.find(statement => TypeScript.isFunctionDeclaration(statement) && statement.name.text === 'useReducedMotion');
+  assert.ok(declaration);
+  const compiled = TypeScript.transpileModule(declaration.getText(source), { compilerOptions: { module: TypeScript.ModuleKind.CommonJS } }).outputText;
+  let listener;
+  let removed = false;
+  const moduleExports = {};
+  vm.runInNewContext(compiled, {
+    exports: moduleExports,
+    useEffect: React.useEffect,
+    useState: React.useState,
+    AccessibilityInfo: {
+      async isReduceMotionEnabled() { return true; },
+      addEventListener(event, callback) {
+        assert.equal(event, 'reduceMotionChanged');
+        listener = callback;
+        return { remove() { removed = true; } };
+      },
+    },
+  });
+  let observed;
+  function Probe() { observed = moduleExports.useReducedMotion(); return null; }
+  const root = createRoot();
+  try {
+    await act(async () => { root.render(React.createElement(Probe)); });
+    assert.equal(observed, true);
+    await act(async () => { listener(false); });
+    assert.equal(observed, false);
+    await act(async () => { listener(true); });
+    assert.equal(observed, true);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+  assert.equal(removed, true);
+});
+
+test('light supporting text and action colors retain readable contrast', () => {
+  const source = TypeScript.createSourceFile('ui.tsx', fs.readFileSync(path.join(REPO_ROOT, 'app/ui.tsx'), 'utf8'), TypeScript.ScriptTarget.Latest, true, TypeScript.ScriptKind.TSX);
+  let colors;
+  for (const statement of source.statements) {
+    if (!TypeScript.isVariableStatement(statement)) continue;
+    const declaration = statement.declarationList.declarations.find(item => item.name.getText(source) === 'LIGHT');
+    if (declaration) colors = Object.fromEntries(declaration.initializer.properties.map(item => [item.name.getText(source), item.initializer.text]));
+  }
+  assert.ok(colors);
+  const luminance = color => {
+    const [r, g, b] = color.slice(1).match(/../g).map(value => parseInt(value, 16) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return r * 0.2126 + g * 0.7152 + b * 0.0722;
+  };
+  for (const [text, background] of [['text', 'background'], ['muted', 'surface'], ['placeholder', 'surface'], ['accent', 'surface'], ['onAccent', 'accentFill']]) {
+    const values = [luminance(colors[text]), luminance(colors[background])].sort((a, b) => b - a);
+    assert.ok((values[0] + 0.05) / (values[1] + 0.05) >= 4.5, `${text} on ${background}`);
+  }
+});
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

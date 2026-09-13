@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture optional Android presentation evidence for the Herdr smoke routes.
+"""Capture optional Android presentation evidence for the public smoke routes.
 
 This is deliberately observational.  It never taps an action that changes
 remote state, never makes a screenshot an acceptance gate, and reports a
@@ -22,10 +22,14 @@ PACKAGE_NAME = "dev.meeterm.app"
 ACTIVITY_NAME = ".MainActivity"
 UI_DUMP_PATH = "/sdcard/meeterm-screen-fixture.xml"
 SCREEN_NAMES = (
+    "home", "servers", "connection", "password", "workspaces", "terminal",
+    "settings", "workspace-name", "terminal-name", "handoff",
     "herdr-connection",
     "herdr-groups",
     "herdr-terminal",
     "herdr-workspaces",
+    "welcome", "empty", "search-empty", "disconnected", "reconnecting",
+    "connection-error", "long-workspaces",
 )
 
 
@@ -162,7 +166,7 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         ]
     elif screen == "herdr-groups":
         checks = [
-            ("group_sheet_title", "Groupを切り替える" in values),
+            ("group_sheet_title", "Switch group" in values),
             ("group_development", "Group Development" in values),
             ("group_tests_review", "Group Tests & review" in values),
         ]
@@ -171,17 +175,41 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             ("terminal_group_switch", "Switch terminal group" in values),
             ("native_terminal", "Terminal" in values),
             ("agent_claude_code", "Claude Code" in values),
-            ("agent_working", "作業中" in values),
+            ("agent_working", "Working" in values),
         ]
-    else:
+    elif screen in ("workspaces", "herdr-workspaces"):
         checks = [
             (
                 "workspace_total_two",
-                any(re.fullmatch(r"すべて\s+2", value) for value in normalized_values),
+                any(re.fullmatch(r"All\s+2", value) for value in normalized_values),
             ),
-            ("main_terminal_count_four", "4 ターミナル" in normalized_values),
-            ("tools_terminal_count_one", "1 ターミナル" in normalized_values),
+            ("main_workspace_row", "Workspace Main workspace" in normalized_values),
+            ("tools_workspace_row", "Workspace Tools workspace" in normalized_values),
         ]
+    else:
+        required = {
+            "home": ("Workspaces", "Connect saved server Smoke server"),
+            "servers": ("Saved servers", "server-profile-smoke-profile"),
+            "connection": ("Connect to server", "Host"),
+            "password": ("Connect to server", "Password authentication"),
+            "terminal": ("Connected", "Terminal"),
+            "settings": ("Settings", "settings-submit"),
+            "workspace-name": ("Rename workspace", "Workspace or terminal name"),
+            "terminal-name": ("Rename terminal", "Workspace or terminal name"),
+            "handoff": ("Continue on your computer", "Disconnect"),
+            "welcome": ("Your workspace. Anywhere.", "Connect"),
+            "empty": ("A fresh workspace starts here.", "Create workspace"),
+            "search-empty": ("No matching workspaces", "Clear workspace search"),
+            "disconnected": ("Disconnected", "Reconnect"),
+            "reconnecting": ("Reconnecting…", "Cancel connection"),
+            "connection-error": ("Connection failed", "Reconnect"),
+            "long-workspaces": (
+                "Workspace Production infrastructure — migration and release preparation",
+                "Workspace Research / terminal typography and international text",
+            ),
+        }
+        checks = [(f"screen_element_{index}", value in normalized_values)
+                  for index, value in enumerate(required[screen])]
     return [name for name, passed in checks if not passed]
 
 
@@ -268,7 +296,7 @@ def main() -> int:
     artifact_dir: Path = args.artifact_dir
     artifact_dir.mkdir(parents=True, exist_ok=True)
     report_lines = [
-        "suite=android-herdr-screen-fixtures",
+        "suite=android-screen-fixtures",
         "evidence=observational; screenshot_presence_is_not_a_gate",
     ]
 
@@ -307,7 +335,7 @@ def main() -> int:
     (artifact_dir / "android-screen-fixtures.txt").write_text(
         "\n".join(report_lines) + "\n", encoding="utf-8"
     )
-    print("Android Herdr screen evidence collection completed (optional).")
+    print("Android screen evidence collection completed (optional).")
     return 0
 
 

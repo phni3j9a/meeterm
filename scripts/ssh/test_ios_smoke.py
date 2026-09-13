@@ -4,6 +4,7 @@ import contextlib
 import io
 import importlib.util
 import json
+import os
 import plistlib
 from pathlib import Path
 import re
@@ -17,6 +18,312 @@ from unittest import mock
 spec = importlib.util.spec_from_file_location("ios_smoke", Path(__file__).with_name("ios-smoke.py"))
 smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
+
+REPOSITORY_ROOT = Path(__file__).parents[2]
+IOS_UI_TEST_SOURCE = REPOSITORY_ROOT / "scripts" / "ci" / "MeetermSmokeUITests.swift"
+IOS_SMOKE_SCRIPT = REPOSITORY_ROOT / "scripts" / "ci" / "ios-smoke.sh"
+TERMINAL_INPUT_SOURCE = REPOSITORY_ROOT / "modules" / "meeterm-terminal" / "ios" / "TerminalInputView.swift"
+ARTIFACT_COLLECTOR_SOURCE = REPOSITORY_ROOT / "scripts" / "ci" / "ios-collect-artifacts.sh"
+
+
+class DiagnosticSourceContractTests(unittest.TestCase):
+    def test_precredential_keys_guard_absent_elements_and_append_snapshots(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        absent = source[source.index("guard element.exists else"):source.index("let frame = element.frame")]
+
+        self.assertNotIn('"(name)_exists=', source)
+        self.assertNotIn('"(name)_hittable=', source)
+        self.assertNotIn('"(name)_frame_available=', source)
+        self.assertNotIn("element.frame", absent)
+        self.assertNotIn("element.isHittable", absent)
+        self.assertIn('"\\(name)_frame_available=', source)
+        self.assertIn('"\\(name)_frame_x=', source)
+        self.assertRegex(source, r'appendFixedArtifact\(\s*"ios-ui-ssh-entry-diagnostics\.txt"')
+
+    def test_precredential_observation_waits_before_queries_and_uses_app_screenshot(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("beginPreCredentialConnectionEntryObservation()"),
+            source.index("let reachedForeground = app.wait"),
+        )
+        self.assertLess(
+            source.index("let reachedForeground = app.wait"),
+            source.index("recordPreCredentialConnectionEntryInitial(reachedForeground:"),
+        )
+        self.assertIn("let data = app.screenshot().pngRepresentation", source)
+        private_key = source[source.index("private func fillPrivateKey"):source.index("private func readPrivateKey")]
+        self.assertLess(
+            private_key.index("closePreCredentialConnectionEntryObservation()"),
+            private_key.index('let field = input("Private OpenSSH key")'),
+        )
+
+    def test_paste_provider_callback_is_main_safe_and_provider_drops_are_fixed(self):
+        source = TERMINAL_INPUT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("let observesProviderCompletion = observesInputLifecycle", source)
+        self.assertIn('NSLog("MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION")', source)
+        self.assertNotIn("self?.recordPasteProviderCompletion()", source)
+        self.assertIn("guard window != nil else", source)
+        self.assertIn("guard isFirstResponder else", source)
+        self.assertIn("recordPasteDrop(.provider)", source)
+
+    def test_collector_separates_command_and_marker_outcomes(self):
+        source = ARTIFACT_COLLECTOR_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('log_command_status="not_run"', source)
+        self.assertIn('log_marker_status="absent"', source)
+        self.assertIn('log_collection_reason="log_tool_missing"', source)
+        self.assertIn('log_collection_reason="log_command_failed"', source)
+        self.assertIn('log_collection_reason="no_smoke_markers"', source)
+        self.assertIn("2>/dev/null", source)
+
+    def test_polish_navigation_entry_reuses_helper_and_public_observation(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index("func testPolishNavigationAndFoundation")
+        end = source.index("/// Real presentation interactions", start)
+        entry = source[start:end]
+
+        self.assertIn("try verifyPolishNavigation()", entry)
+        self.assertIn("try verifyFoundationRelaunch()", entry)
+        self.assertIn('"case=polish-navigation result=passed"', entry)
+        self.assertIn('record("polish_navigation_suite_complete")', entry)
+        self.assertNotIn('button("Search workspaces")', entry)
+        self.assertIn('name.contains("testPolishNavigationAndFoundation")', source)
+
+    def test_polish_navigation_recording_uses_existing_safe_route(self):
+        source = (Path(__file__).with_name("ios-smoke.py")).read_text(encoding="utf-8")
+        self.assertIn('suite in ("polish", "polish-navigation")', source)
+        self.assertIn('"polish_navigation_open"', source)
+
+    def test_new_suite_is_exposed_without_changing_the_standard_default(self):
+        workflow = (REPOSITORY_ROOT / ".github/workflows/mobile-smoke.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "options: [standard, polish, polish-navigation, ssh, full, forms, native, names]",
+            workflow,
+        )
+        self.assertIn("default: standard", workflow)
+
+
+class SmokeLogProducerTests(unittest.TestCase):
+    UNSAFE_STDERR = "UNSAFE_RAW_LOG_TOOL_ERROR"
+    MARKER_OUTPUT = (
+        "2026-09-14 12:34:57.000 Df meeterm[123:42af0] (Foundation) "
+        "MEETERM_SMOKE_NATIVE_READY\n"
+        "2026-09-14 12:34:58.000 Df meeterm[123:42af0] (Foundation) "
+        "MEETERM_SMOKE_FIRST_FRAME_METAL\n"
+    )
+
+    def run_smoke(
+        self, suite: str, fail_query: str = ""
+    ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        directory = tempfile.TemporaryDirectory(prefix="meeterm-ios-smoke-log-")
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        workspace = root / "workspace"
+        runner_temp = root / "runner-temp"
+        fake_bin = root / "bin"
+        artifact_dir = workspace / "artifacts" / "ios-simulator-observability"
+        xcrun_log = root / "xcrun.log"
+        fake_bin.mkdir(parents=True)
+        (workspace / "scripts" / "ssh").mkdir(parents=True)
+        (workspace / "scripts" / "ci").mkdir(parents=True)
+        (
+            runner_temp
+            / "meeterm-derived-data"
+            / "Build"
+            / "Products"
+            / "Release-iphonesimulator"
+            / "meeterm.app"
+        ).mkdir(parents=True)
+        (workspace / "scripts" / "ssh" / "ios-smoke.py").write_text("# stub\n", encoding="utf-8")
+        (workspace / "scripts" / "ssh" / "fixture.py").write_text("# stub\n", encoding="utf-8")
+        (workspace / "scripts" / "ci" / "ios-validate-foundation.py").write_text(
+            "# stub\n", encoding="utf-8"
+        )
+
+        (fake_bin / "xcrun").write_text(
+            f'''#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "${{IOS_SMOKE_TEST_XCRUN_LOG}}"
+if [[ "${{1:-}}" == "simctl" && "${{2:-}}" == "spawn" && "${{4:-}}" == "log" && "${{5:-}}" == "show" ]]; then
+  query="foundation"
+  if [[ "$*" == *"--end"* ]]; then
+    query="xctest"
+  elif [[ "${{MEETERM_IOS_SUITE:-}}" == "ssh" ]]; then
+    query="ssh"
+  fi
+  log_name="simulator.log"
+  if [[ "${{query}}" == "xctest" ]]; then log_name="xcuitest-simulator.log"; fi
+  upload_log="${{GITHUB_WORKSPACE}}/artifacts/ios-simulator-observability/${{log_name}}"
+  if [[ -e "${{upload_log}}" || -e "${{upload_log}}.partial" ]]; then
+    printf '%s\\n' 'private_output=0' >> "${{IOS_SMOKE_TEST_XCRUN_LOG}}"
+  else
+    printf '%s\\n' 'private_output=1' >> "${{IOS_SMOKE_TEST_XCRUN_LOG}}"
+  fi
+  printf '%s' "${{IOS_SMOKE_TEST_MARKER_OUTPUT}}"
+  printf '%s\\n' "${{IOS_SMOKE_TEST_UNSAFE_STDERR}}" >&2
+  if [[ "${{IOS_SMOKE_TEST_FAIL_QUERY:-}}" == "${{query}}" ]]; then
+    exit 42
+  fi
+fi
+exit 0
+''',
+            encoding="utf-8",
+        )
+        (fake_bin / "python3").write_text(
+            '''#!/usr/bin/env bash
+set -u
+workspace="${IOS_SMOKE_TEST_WORKSPACE}"
+if [[ "${1:-}" == "${workspace}/scripts/ssh/fixture.py" ]]; then
+  printf '%s\\n' '# stub fixture environment' > "${3}"
+  exit 0
+fi
+if [[ "${1:-}" == "${workspace}/scripts/ssh/ios-smoke.py" ]]; then
+  artifact_dir=""
+  suite=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --artifact-dir)
+        artifact_dir="$2"
+        shift 2
+        ;;
+      --suite)
+        suite="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  mkdir -p "${artifact_dir}"
+  if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "polish-navigation" || "${suite}" == "full" ]]; then
+    printf '%s\\n' '{"launch_epoch": 100.0, "survival_start_epoch": 101.0, "survival_end_epoch": 111.0}' \
+      > "${artifact_dir}/ios-foundation-observation.json"
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == "-" ]]; then
+  cat >/dev/null
+  printf '%s\\n' '2026-09-14 12:34:56'
+  exit 0
+fi
+if [[ "${1:-}" == "${workspace}/scripts/ci/ios-validate-foundation.py" ]]; then
+  exit 0
+fi
+printf '%s\\n' "unexpected fake python invocation" >&2
+exit 90
+''',
+            encoding="utf-8",
+        )
+        for path in (fake_bin / "xcrun", fake_bin / "python3"):
+            path.chmod(0o755)
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GITHUB_WORKSPACE": str(workspace),
+                "RUNNER_TEMP": str(runner_temp),
+                "IOS_SIMULATOR_UDID": "SIMULATOR",
+                "MEETERM_IOS_SUITE": suite,
+                "IOS_SMOKE_TEST_FAIL_QUERY": fail_query,
+                "IOS_SMOKE_TEST_MARKER_OUTPUT": self.MARKER_OUTPUT,
+                "IOS_SMOKE_TEST_UNSAFE_STDERR": self.UNSAFE_STDERR,
+                "IOS_SMOKE_TEST_WORKSPACE": str(workspace),
+                "IOS_SMOKE_TEST_XCRUN_LOG": str(xcrun_log),
+                "PATH": f"{fake_bin}:{environment['PATH']}",
+            }
+        )
+        result = subprocess.run(
+            [str(IOS_SMOKE_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        return result, artifact_dir, xcrun_log
+
+    def assert_no_unsafe_stderr(self, artifact_dir: Path) -> None:
+        for path in artifact_dir.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    self.UNSAFE_STDERR.encode(), path.read_bytes(), str(path)
+                )
+
+    def test_failed_log_queries_discard_partial_output_at_all_producer_sites(self) -> None:
+        cases = (
+            (
+                "ssh",
+                "ssh",
+                "simulator.log",
+                "The short SSH XCUITest log query failed.",
+            ),
+            (
+                "full",
+                "xctest",
+                "xcuitest-simulator.log",
+                "The real XCUITest log query failed.",
+            ),
+            (
+                "full",
+                "foundation",
+                "simulator.log",
+                "The native foundation log query failed.",
+            ),
+        )
+        for suite, query, filename, message in cases:
+            with self.subTest(suite=suite, query=query):
+                result, artifact_dir, xcrun_log = self.run_smoke(suite, query)
+                query_trace = xcrun_log.read_text(encoding="utf-8")
+                self.assertIn("private_output=1", query_trace)
+                self.assertNotIn("private_output=0", query_trace)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn(self.UNSAFE_STDERR, result.stderr)
+                destination = artifact_dir / filename
+                self.assertFalse(destination.exists())
+                self.assertFalse((artifact_dir / f"{filename}.partial").exists())
+                self.assert_no_unsafe_stderr(artifact_dir)
+
+    def test_successful_log_queries_publish_stdout_only(self) -> None:
+        result, artifact_dir, xcrun_log = self.run_smoke("ssh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("private_output=1", xcrun_log.read_text(encoding="utf-8"))
+        self.assertNotIn("private_output=0", xcrun_log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (artifact_dir / "simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assert_no_unsafe_stderr(artifact_dir)
+
+        result, artifact_dir, xcrun_log = self.run_smoke("full")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(xcrun_log.read_text(encoding="utf-8").count("private_output=1"), 2)
+        self.assertNotIn("private_output=0", xcrun_log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (artifact_dir / "simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assertEqual(
+            (artifact_dir / "xcuitest-simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assertEqual(
+            sum(
+                " log show " in f" {line} "
+                for line in xcrun_log.read_text(encoding="utf-8").splitlines()
+            ),
+            2,
+        )
+        self.assert_no_unsafe_stderr(artifact_dir)
+
+        result, artifact_dir, xcrun_log = self.run_smoke("polish-navigation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(xcrun_log.read_text(encoding="utf-8").count("private_output=1"), 1)
+        self.assertNotIn("private_output=0", xcrun_log.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (artifact_dir / "simulator.log").read_text(encoding="utf-8"),
+            self.MARKER_OUTPUT,
+        )
+        self.assert_no_unsafe_stderr(artifact_dir)
 
 
 class SelectionCopyObserverTests(unittest.TestCase):
@@ -152,6 +459,43 @@ class SelectionCopyObserverTests(unittest.TestCase):
 
 
 class RunnerDiagnosticsTests(unittest.TestCase):
+    def test_polish_requires_navigation_and_foundation_without_ssh_or_storage(self):
+        for navigation_complete in (True, False):
+            with self.subTest(navigation_complete=navigation_complete), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                products = root / "Build" / "Products"
+                products.mkdir(parents=True)
+                (products / "fixture.xctestrun").touch()
+
+                def successful_process(command, **kwargs):
+                    (root / "ios-ui-polish-validation.txt").write_text("case=polish result=passed\n")
+                    stages = "polish_complete\nfoundation_verified\n"
+                    if navigation_complete:
+                        stages += "polish_navigation_complete\n"
+                    (root / "ios-ui-stages.txt").write_text(stages)
+                    return subprocess.CompletedProcess(command, 0)
+
+                with mock.patch.object(smoke, "inject_test_environment"), \
+                     mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                     mock.patch.object(smoke.subprocess, "run", side_effect=successful_process) as run, \
+                     mock.patch.dict(smoke.os.environ, {"MEETERM_SSH_HOST": "must-not-leak"}, clear=False):
+                    arguments = dict(derived_data=root, simulator_udid="fixture", result_bundle=root / "result.xcresult",
+                                     raw_log=root / "raw.log", diagnostics_path=root / "diagnostics.txt", suite="polish")
+                    if navigation_complete:
+                        self.assertEqual(smoke.run_xcuitest(**arguments), 0)
+                    else:
+                        with self.assertRaises(smoke.SmokeFailure) as failure:
+                            smoke.run_xcuitest(**arguments)
+                        self.assertEqual(failure.exception.stage, "xcuitest_polish")
+                self.assertEqual(run.call_count, 1)
+                command = run.call_args.args[0]
+                self.assertIn(smoke.POLISH_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.STANDARD_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.SSH_TEST_SELECTOR, command)
+                self.assertNotIn(smoke.POLISH_NAVIGATION_TEST_SELECTOR, command)
+                self.assertNotIn("MEETERM_SSH_HOST", run.call_args.kwargs["env"])
+
     @staticmethod
     def write_storage_success(root):
         (root / "ios-native-storage-validation.txt").write_text(
@@ -171,6 +515,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             "case=hardware_control result=passed\n"
             "case=hardware_shift_combinations result=passed\n"
             "case=marked_commit result=passed\n"
+            "case=scroll_gesture result=passed\n"
         )
 
     @staticmethod
@@ -193,6 +538,232 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         (root / "ios-ui-stages.txt").write_text(
             "standard_complete\nfoundation_verified\n"
         )
+
+    @staticmethod
+    def write_polish_navigation_success(root):
+        (root / "ios-ui-polish-navigation-validation.txt").write_text(
+            "case=polish-navigation result=passed\n"
+        )
+
+    @staticmethod
+    def write_polish_navigation_stages(root):
+        (root / "ios-ui-stages.txt").write_text(
+            "polish_navigation_complete\n"
+            "foundation_verified\n"
+            "polish_navigation_suite_complete\n"
+        )
+
+    def test_polish_navigation_has_own_plan_case_and_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            old_validation = root / "ios-ui-polish-validation.txt"
+            new_validation = root / "ios-ui-polish-navigation-validation.txt"
+            old_validation.write_text("case=polish result=passed\n")
+
+            def successful_run(command, **kwargs):
+                self.assertFalse(
+                    old_validation.exists(),
+                    "the old polish marker must not satisfy the new suite",
+                )
+                self.assertFalse(new_validation.exists(), "the new marker must be fresh")
+                self.write_polish_navigation_success(root)
+                self.write_polish_navigation_stages(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
+                status = smoke.run_xcuitest(
+                    derived_data=root,
+                    simulator_udid="fixture-simulator",
+                    result_bundle=root / "result.xcresult",
+                    raw_log=root / "raw.log",
+                    diagnostics_path=root / "diagnostics.txt",
+                    suite="polish-navigation",
+                )
+
+            self.assertEqual(status, 0)
+            self.assertEqual(run.call_count, 1)
+            command = run.call_args.args[0]
+            self.assertIn(smoke.POLISH_NAVIGATION_TEST_SELECTOR, command)
+            for selector in (
+                smoke.STANDARD_TEST_SELECTOR,
+                smoke.POLISH_TEST_SELECTOR,
+                smoke.STORAGE_TEST_SELECTOR,
+                smoke.NATIVE_TEST_SELECTOR,
+                smoke.SSH_TEST_SELECTOR,
+                smoke.FULL_TEST_SELECTOR,
+                smoke.FORMS_TEST_SELECTOR,
+                smoke.NAMES_TEST_SELECTOR,
+            ):
+                self.assertNotIn(selector, command)
+            self.assertEqual(run.call_args.kwargs["timeout"], 899.75)
+            self.assertEqual(
+                new_validation.read_text(), "case=polish-navigation result=passed\n"
+            )
+            self.assertEqual(
+                (root / "ios-ui-stages.txt").read_text(),
+                "polish_navigation_complete\n"
+                "foundation_verified\n"
+                "polish_navigation_suite_complete\n",
+            )
+            self.assertEqual(
+                smoke._test_steps(
+                    "polish-navigation",
+                    root / "result.xcresult",
+                    root / "raw.log",
+                    root / "diagnostics.txt",
+                )[0][6],
+                ("polish-navigation",),
+            )
+
+    def test_polish_navigation_rejects_old_or_incomplete_completion_contracts(self):
+        stages = (
+            "polish_complete\nfoundation_verified\n",
+            "polish_navigation_complete\npolish_navigation_suite_complete\n",
+            "polish_navigation_complete\nfoundation_verified\n",
+        )
+        for stage_contents in stages:
+            with self.subTest(stage_contents=stage_contents), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                products = root / "Build" / "Products"
+                products.mkdir(parents=True)
+                (products / "fixture.xctestrun").touch()
+
+                def incomplete_run(command, **kwargs):
+                    self.write_polish_navigation_success(root)
+                    (root / "ios-ui-stages.txt").write_text(stage_contents)
+                    return subprocess.CompletedProcess(command, 0)
+
+                with mock.patch.object(smoke, "inject_test_environment"), \
+                     mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                     mock.patch.object(smoke.subprocess, "run", side_effect=incomplete_run):
+                    with self.assertRaises(smoke.SmokeFailure) as failure:
+                        smoke.run_xcuitest(
+                            derived_data=root,
+                            simulator_udid="fixture-simulator",
+                            result_bundle=root / "result.xcresult",
+                            raw_log=root / "raw.log",
+                            diagnostics_path=root / "diagnostics.txt",
+                            suite="polish-navigation",
+                        )
+
+                self.assertEqual(
+                    (failure.exception.stage, failure.exception.reason),
+                    ("xcuitest_polish_navigation", "completion_marker_missing"),
+                )
+
+    def test_polish_navigation_rejects_stale_old_validation_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+            old_validation = root / "ios-ui-polish-validation.txt"
+            old_validation.write_text("case=polish result=passed\n")
+
+            def no_new_case_run(command, **kwargs):
+                self.write_polish_navigation_stages(root)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=no_new_case_run):
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="polish-navigation",
+                    )
+
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_polish_navigation", "polish_navigation_cases_incomplete"),
+            )
+            self.assertFalse(old_validation.exists())
+
+    def test_polish_navigation_timeout_stays_failed_with_fresh_completion_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            products = root / "Build" / "Products"
+            products.mkdir(parents=True)
+            (products / "fixture.xctestrun").touch()
+
+            def timed_out_run(command, **kwargs):
+                self.write_polish_navigation_success(root)
+                self.write_polish_navigation_stages(root)
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+            with mock.patch.object(smoke, "inject_test_environment"), \
+                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
+                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run, \
+                 mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
+                with self.assertRaises(smoke.SmokeFailure) as failure:
+                    smoke.run_xcuitest(
+                        derived_data=root,
+                        simulator_udid="fixture-simulator",
+                        result_bundle=root / "result.xcresult",
+                        raw_log=root / "raw.log",
+                        diagnostics_path=root / "diagnostics.txt",
+                        suite="polish-navigation",
+                    )
+
+            self.assertEqual(run.call_args.kwargs["timeout"], 899.75)
+            self.assertEqual(
+                (failure.exception.stage, failure.exception.reason),
+                ("xcuitest_polish_navigation", "xcodebuild_timeout"),
+            )
+
+    def test_polish_navigation_main_uses_existing_daily_recording_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            environment = {"RUNNER_TEMP": str(root / "runner")}
+
+            with mock.patch.dict(smoke.os.environ, environment, clear=False), \
+                 mock.patch.object(sys, "argv", [
+                     "ios-smoke.py",
+                     "--artifact-dir",
+                     str(artifact_dir),
+                     "--derived-data",
+                     str(root / "derived-data"),
+                     "--simulator-udid",
+                     "fixture-simulator",
+                     "--suite",
+                     "polish-navigation",
+                 ]), \
+                 mock.patch.object(smoke, "run_xcuitest", return_value=0) as run, \
+                 mock.patch.object(
+                     smoke,
+                     "record_daily_interactions",
+                     return_value=contextlib.nullcontext(),
+                 ) as recording:
+                status = smoke.main()
+
+            self.assertEqual(status, 0)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["suite"], "polish-navigation")
+            recording.assert_called_once_with(
+                "fixture-simulator",
+                artifact_dir / "ios-ui-stages.txt",
+                artifact_dir,
+            )
+            self.assertEqual(
+                (artifact_dir / "ios-polish-navigation-validation.txt").read_text(),
+                "result=passed\n"
+                "suite=polish-navigation\n"
+                "stage=complete\n"
+                "reason=none\n"
+                "ui_last_stage=complete\n",
+            )
 
     @staticmethod
     def write_ssh_success(root):
@@ -450,6 +1021,46 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertIn("raw_log_available=0\n", output.read_text())
             self.assertIn("exit_code=unavailable\n", output.read_text())
 
+    def test_result_summary_reports_counts_and_system_codes_without_failure_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, output = root / "result.xcresult", root / "diagnostics.txt"
+            bundle.mkdir()
+            summary = {
+                "totalTestCount": 0, "passedTests": 0, "failedTests": 1,
+                "skippedTests": "CREDENTIAL-SECRET",
+                "testFailures": [{"failureText": "Failed to initialize test runner: CREDENTIAL-SECRET; IDELaunchErrorDomain Code=20; ArbitrarySecretDomain Code=91"}],
+            }
+            with mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(summary))) as run:
+                smoke.write_xcuitest_diagnostics(root / "missing.log", output, 65, result_bundle=bundle)
+            report = output.read_text()
+            self.assertIn("xcresult_summary_available=1\n", report)
+            self.assertIn("xcresult_total_tests=0\n", report)
+            self.assertIn("xcresult_failed_tests=1\n", report)
+            self.assertIn("xcresult_skipped_tests=unavailable\n", report)
+            self.assertIn("runner_initialization_failed=1\n", report)
+            self.assertIn("system_error_IDELaunchErrorDomain=20\n", report)
+            self.assertNotIn("SECRET", report)
+            self.assertNotIn("ArbitrarySecretDomain", report)
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(bundle)])
+            self.assertEqual(run.call_args.kwargs["timeout"], 10)
+
+    def test_result_summary_failure_does_not_replace_original_runner_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, output = root / "result.xcresult", root / "diagnostics.txt"
+            bundle.mkdir()
+            for error in (subprocess.TimeoutExpired("xcrun", 10), OSError("PRIVATE-SECRET")):
+                with self.subTest(error=type(error).__name__), \
+                     mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/xcrun"), \
+                     mock.patch.object(smoke.subprocess, "run", side_effect=error):
+                    smoke.write_xcuitest_diagnostics(root / "missing.log", output, 65, result_bundle=bundle)
+                report = output.read_text()
+                self.assertIn("exit_code=65\n", report)
+                self.assertIn("xcresult_summary_available=0\n", report)
+                self.assertNotIn("SECRET", report)
+
     def test_timeout_keeps_original_failure_and_emits_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -568,6 +1179,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             command = run.call_args.args[0]
             self.assertIn(smoke.FORMS_TEST_SELECTOR, command)
+            self.assertNotIn("-quiet", command)
             self.assertNotIn(smoke.STORAGE_TEST_SELECTOR, command)
             self.assertNotIn(smoke.FULL_TEST_SELECTOR, command)
             environment = run.call_args.kwargs["env"]
@@ -1347,6 +1959,26 @@ class ConnectionFailureDiagnosticsTests(unittest.TestCase):
 
 
 class ShortSshInputDiagnosticsTests(unittest.TestCase):
+    def test_post_auth_paste_timeout_still_observes_fixture_echo(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            socket = root / "tmux" / f"tmux-{smoke.os.getuid()}" / "default"
+            (root / "ios-ui-stages.txt").write_text(
+                "ssh_connected\nssh_native_input_paste_tapped\nteardown_complete\n"
+            )
+            responses = [subprocess.CompletedProcess([], 0, "%0\n%1\n%2\n", "")]
+            responses += [subprocess.CompletedProcess([], 0, "$ printf", "")] * 3
+            with mock.patch.dict(smoke.os.environ, {
+                "MEETERM_TMUX_SOCKET": str(socket),
+                "MEETERM_IOS_MARKER_VALUE": "ios-ssh-input-0123456789abcdef",
+            }), mock.patch.object(smoke, "run_tmux", side_effect=responses) as run:
+                smoke.write_short_ssh_input_diagnostics(root, socket, root / "marker")
+            self.assertEqual(run.call_count, 4)
+            report = json.loads((root / smoke.INPUT_DIAGNOSTICS_NAME).read_text())
+            self.assertTrue(all(pane["keyboard_word_seen"] for pane in report["panes"]))
+            self.assertTrue(all(not pane["paste_body_seen"] for pane in report["panes"]))
+            self.assertFalse(report["marker_file_exists"])
+
     def test_pre_auth_never_reads_terminal_contents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

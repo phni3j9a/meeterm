@@ -19,7 +19,7 @@ The canonical product and native data-plane invariants remain unchanged.
 - Native Ctrl/Alt combinations and useful navigation keys, including external
   keyboard input, with shared Rust encoding and local IME composition.
 - Configurable bounded scrollback and documented reconnect retention semantics.
-- Persisted font size, terminal theme and history settings; deterministic resize.
+- Persisted font size, app appearance and history settings; deterministic resize.
 
 ## Control contract for this milestone
 
@@ -36,7 +36,7 @@ type SavedCredential =
   | { authMethod: 'password'; password: string };
 type TerminalPreferences = {
   fontSize: number; // 10..24 points, default 15
-  theme: 'system' | 'light' | 'dark';
+  theme: 'system' | 'light' | 'dark'; // App appearance; new installs default to light
   scrollbackLines: number; // 1000..50000, default 10000
   automaticReconnect: boolean; // default true
 };
@@ -62,8 +62,12 @@ Empty profile IDs request a new native-generated UUID. A null credential with
 `keepCredential=false` removes any saved credential; `true` preserves it only
 when endpoint, username and auth method still match. No API returns credentials
 to JavaScript. `TmuxPane` gains `paneName`. The native terminal view gains
-`fontSize`, `theme` (`light` or `dark`) and `scrollbackLines` props. Preferences
-are applied to the Rust terminal registry, including hidden panes.
+`fontSize`, `theme` (`light` or `dark`) and `scrollbackLines` props. History
+preferences are applied to the Rust terminal registry, including hidden panes.
+Since [the Issue #19 interface refinement](UI_UX.md), the app's saved `theme`
+controls its chrome and auxiliary screens; the product terminal view is always
+dark for consistent ANSI colors. The native view still supports both palettes,
+and the historical light/dark evidence below describes its tested source.
 
 ## Verification
 

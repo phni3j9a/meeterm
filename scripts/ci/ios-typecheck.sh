@@ -22,6 +22,7 @@ readonly driver_source="${repository_root}/scripts/ci/MeetermSmokeUITests.swift"
 readonly input_tests_source="${repository_root}/scripts/ci/TerminalInputViewTests.swift"
 readonly native_input_source="${repository_root}/modules/meeterm-terminal/ios/TerminalInputView.swift"
 readonly native_key_source="${repository_root}/modules/meeterm-terminal/ios/TerminalSpecialKey.swift"
+readonly native_scroll_source="${repository_root}/modules/meeterm-terminal/ios/TerminalScrollGestureDelegate.swift"
 # Production storage tests are intentionally outside this preflight: their
 # @testable import requires the built production app module and app host.
 
@@ -29,7 +30,8 @@ for source in \
   "${driver_source}" \
   "${input_tests_source}" \
   "${native_input_source}" \
-  "${native_key_source}"; do
+  "${native_key_source}" \
+  "${native_scroll_source}"; do
   if [[ ! -f "${source}" ]]; then
     echo "iOS Swift typecheck source is missing: ${source}" >&2
     exit 1
@@ -72,10 +74,11 @@ readonly staged_source_directory="${temporary_directory}/meetermTests"
 mkdir -p "${staged_source_directory}" "${temporary_directory}/module-cache"
 cp "${native_input_source}" "${staged_source_directory}/TerminalInputView.swift"
 cp "${native_key_source}" "${staged_source_directory}/TerminalSpecialKey.swift"
+cp "${native_scroll_source}" "${staged_source_directory}/TerminalScrollGestureDelegate.swift"
 
 selected_developer_directory="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
 readonly selected_developer_directory
-printf 'iOS Swift typecheck: Xcode=%s SDK=%s target=%s sources=4\n' \
+printf 'iOS Swift typecheck: Xcode=%s SDK=%s target=%s sources=5\n' \
   "${selected_developer_directory:-unavailable}" \
   "${sdk_version}" \
   "${swift_target}"
@@ -92,7 +95,8 @@ xcrun swiftc \
   "${driver_source}" \
   "${input_tests_source}" \
   "${staged_source_directory}/TerminalInputView.swift" \
-  "${staged_source_directory}/TerminalSpecialKey.swift"
+  "${staged_source_directory}/TerminalSpecialKey.swift" \
+  "${staged_source_directory}/TerminalScrollGestureDelegate.swift"
 
 echo "iOS Swift typecheck passed."
 

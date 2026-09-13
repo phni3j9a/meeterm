@@ -4,6 +4,12 @@ public final class MeetermTerminalModule: Module {
   public func definition() -> ModuleDefinition {
     Name("MeetermTerminal")
 
+    // This is a smoke-only, fixed-enum sink. It is intentionally a no-op for
+    // normal launches and for values outside the allowlist.
+    Function("recordStartupPhase") { (phase: String) in
+      Self.recordStartupPhase(phase)
+    }
+
     AsyncFunction("getProfiles") { () throws -> [[String: Any]] in try ClientStore.profiles() }
     AsyncFunction("saveProfile") { (profile: [String: Any], credential: [String: Any]?, keepCredential: Bool) throws -> [String: Any] in
       try ClientStore.saveProfile(profile, credential: credential, keepCredential: keepCredential)
@@ -368,6 +374,28 @@ public final class MeetermTerminalModule: Module {
 
   private static func containsControl(_ value: String) -> Bool {
     value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+  }
+
+  private static let startupPhases: Set<String> = [
+    "js_module_loaded",
+    "root_effect",
+    "initial_url_requested",
+    "initial_url_null",
+    "initial_url_allowed_fixture",
+    "initial_url_other",
+    "initial_url_rejected",
+    "app_content_mounted",
+    "profiles_requested",
+    "profiles_succeeded",
+    "profiles_failed",
+  ]
+
+  private static func recordStartupPhase(_ phase: String) {
+    guard ProcessInfo.processInfo.arguments.contains("-meeterm-ui-observation"),
+          startupPhases.contains(phase) else {
+      return
+    }
+    NSLog("MEETERM_SMOKE_STARTUP phase=%@", phase)
   }
 
   private static func error(_ message: String) -> NSError {

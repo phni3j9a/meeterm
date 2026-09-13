@@ -13,8 +13,10 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
-| Android | 既存のfull smokeと画像の実見。Herdr 4画面はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
-| iOS `standard` | production保存4件、native入力7件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| Android | 既存のfull smokeと画像の実見。21状態はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
+| iOS `standard` | production保存4件、native入力7件＋scroll gesture 1件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
+| iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
@@ -70,12 +72,55 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 
 対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
 ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎに加え、
-Herdr connection、groups、terminal、workspaces の14画面です。
+Herdr connection、groups、terminal、workspaces の14画面が `standard` です。
 `meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
 名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
 `settings`、`workspace-name`、`terminal-name`、`handoff`、
 `herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces` です。
 撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
+
+追加診断の `polish` は、初回起動、空の一覧、検索結果なし、切断、再接続中、認証エラー、
+長いworkspace名の7状態を `polish-<名前>.png` に保存します。起動URL名は
+`welcome`、`empty`、`search-empty`、`disconnected`、`reconnecting`、`connection-error`、`long-workspaces` です。
+その後に、検索→既存native fixture端末→キーボード開閉→設定→workspace切替sheet→
+戻る→iOS端からの戻るジェスチャを実際に操作します。検索条件の保持もassertします。
+実際のkeyboard表示とedge back後の検索保持も、それぞれ `polish-terminal-keyboard.png` と
+`polish-edge-back.png` に記録します。7状態のseed画像とは別の実操作後の画像です。
+この区間だけ既存の録画機構で `daily-interactions.mp4` を記録します。
+fixtureは既存 `poc-main` を開くことだけを許し、接続・遠隔操作・端末データの生成は行いません。
+これはnavigation/keyboard表示の検証であり、SSH入力の証拠にはしません。
+Androidも同じ21状態を任意の観測画像として採取し、既存full gateとdaily-use録画は維持します。
+通常の14画面と追加診断は別々に報告します。既存の900秒枠を延長せず、
+検証範囲を分けて同一ソースのpristine test productsを再利用します。
+
+`polish-navigation` は上記の検索・端末keyboard・sheet・戻る操作を同じhelperで単独実行し、
+その後にfresh native foundationを確認します。7状態の起動巡回への依存を避けて、未確認の
+操作区間を直接調べるための診断です。既存 `polish` の内容と完了条件は変更しません。
+独自の完了記録に加え、操作helperとfoundationの完了をすべて要求し、旧suiteの記録や
+画像だけで成功とは判定しません。成果物は実行ごとに分離し、実keyboard・edge Back後の
+2画像とfoundationを確認します。7状態の表示・実SSH・保存の成功は主張しません。
+
+`standard` / `polish` / `polish-navigation` の公開fixture内で失敗した場合だけ、
+`public-presentation-failure.png` と要素の存在・操作可能性・矩形を記録します。
+`-meeterm-ui-observation` 起動引数はこの三つと短い `ssh` テストだけが渡し、native入力の
+focus/window/bindingとPasteのrequest/provider/drop/delivery/accepted状態を固定形式の
+ログに残します。smoke iOS起動時にはJS module、initial URLの固定分類、AppContent、
+profile取得の到達phaseも、nativeのallowlistを通して記録します。URLそのもの、入力文字、
+composition、clipboard、profileやremote IDは記録しません。
+短い `ssh` の撮影許可は公開fixtureと分離し、最初の接続情報の入力前だけに限定します。
+foreground到達後の `ssh-entry-initial.png`、接続入口で失敗した場合の
+`ssh-entry-failure.png` と `ios-ui-ssh-entry-diagnostics.txt` を任意の観測として保存します。
+非foregroundでは要素照会や撮影を行わず、取得できない理由を固定値で残します。
+実SSHやformsの失敗を無条件に撮影する機能ではありません。
+foundation判定では、これらの固定診断をreadiness/frameから分離します。
+入力診断だけでは合格にならず、不正な値や未知のmarkerは引き続き失敗になります。
+fixtureも実際のAppState通知に追従しますが、Rustへの接続・再接続呼び出しは行いません。
+
+小画面・大きい文字の明示的診断には workflow_dispatch の `ios_profile=compact-xl` を使います。
+同一commitのpristine test productsを指定して再利用できます。SE（第3世代）の新規Simulatorを
+作成し、OSのcontent sizeをextra-largeに設定して読み戻しを記録します。通常のPro系端末の
+結果と区別し、別runの画像として確認します。対応runtimeがなければ失敗を明示し、
+大型端末を小型端末と称するfallbackは行いません。
 
 - 保存済みサーバーやworkspace/paneの情報は表示用fixtureです。実サーバーで作成した証拠にはしません。
 - Herdr fixture は backend/runtimes、group、Agent metadata、native terminal の表示を確認します。画面上のseed状態は group作成や接続操作の成功を証明しません。
@@ -91,8 +136,10 @@ Herdr connection、groups、terminal、workspaces の14画面です。
 | `ios_suite` | 用途 |
 | --- | --- |
 | `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
+| `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
+| `polish-navigation` | 同じ操作helperとfresh foundationを、7状態の巡回から独立して確認 |
 | `ssh` | 実SSH接続と短いnative入出力の確認 |
-| `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件だけの限定確認 |
+| `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |
@@ -125,6 +172,10 @@ Simulator起動等の時間はこのXCTest実行枠とは別です。実行時�
 # BUILD_RUN_IDを同一ソースのビルド成功runに置き換える
 gh workflow run mobile-smoke.yml --ref "$test_ref" \
   -f platform=ios -f ios_suite=ssh -f ios_build_run=BUILD_RUN_ID
+# 同じ製品で小画面の端末keyboard/navigationだけを確認する場合
+gh workflow run mobile-smoke.yml --ref "$test_ref" \
+  -f platform=ios -f ios_suite=polish-navigation -f ios_profile=compact-xl \
+  -f ios_build_run=BUILD_RUN_ID
 ```
 
 GitHub runのcommitとmanifestのcommit・Xcode version/build・CPU・構成・SHA-256を照合します。
@@ -153,8 +204,17 @@ gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evi
 
 選択したsuiteの必須テスト、正常終了、fresh完了記録は維持します。タイムアウトを成功へ変えません。
 固定sleep・盲目的なretry・汎用Continueの無条件tapを追加しません。
+XCTest開始前の終了も調べられるよう、`xcodebuild`の通常出力をRUNNER_TEMP内だけに保持します。
+失敗時はAppleの`xcresulttool get test-results summary`も上限10秒で読み、固定分類・件数と
+既知のApple/POSIX error domainの整数コードだけを公開します。失敗文・userInfo・パス・
+任意のdomain名やraw summaryはアップロードしません。診断の失敗は元の合否を変えません。
 OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
 端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
+`simulator-log-collection.txt` はログ取得元、コマンド成否、smoke markerの有無を分けて
+記録します。失敗時も `launch.txt` の検証済みUTC開始時刻から取得し、旧成果物などで
+開始時刻がなければ `--last 10m` の限定fallbackを明示します。ログ取得成功や診断marker
+だけを起動・描画・入力の合格証拠にはしません。Pasteの `Ready` もproviderの状態であり、
+入力がremoteへ届いた証明は従来どおりremote acknowledgmentに依存します。
 実接続失敗では保存metadataの一致フラグとstrict SSH probeを確認できますが、事後probe成功だけでUI入力成功は証明できません。
 短いSSH入力のmarker待機まで進んだ実行では、`ios-ssh-input-diagnostics.json`に隔離fixtureの
 command echo、手入力とpasteの到達、markerの一致をbooleanと件数で残します。生の端末内容は

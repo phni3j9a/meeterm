@@ -235,7 +235,7 @@ enum ClientStore {
     }
   }
 
-  static let defaultPreferences: [String: Any] = ["fontSize": 15, "theme": "system", "scrollbackLines": 10000, "automaticReconnect": true]
+  static let defaultPreferences: [String: Any] = ["fontSize": 15, "theme": "light", "scrollbackLines": 10000, "automaticReconnect": true]
 
   static func preferences() throws -> [String: Any] {
     try guarded {

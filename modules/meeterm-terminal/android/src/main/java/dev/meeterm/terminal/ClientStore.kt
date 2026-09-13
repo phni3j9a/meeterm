@@ -160,7 +160,7 @@ internal object ClientStore {
     write(context, state)
   }
 
-  internal fun defaults(): Map<String, Any> = mapOf("fontSize" to 15, "theme" to "system",
+  internal fun defaults(): Map<String, Any> = mapOf("fontSize" to 15, "theme" to "light",
     "scrollbackLines" to 10000, "automaticReconnect" to true)
 
   internal fun validatePreferences(values: Map<String, Any?>): Map<String, Any> {
