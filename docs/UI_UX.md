@@ -2,8 +2,9 @@
 
 Issue [#19](https://github.com/phni3j9a/meeterm/issues/19) brings the final
 [`docs/mock`](mock/README.md) direction into the native app and refines its
-English interface. This is work in progress; the verification section below
-separates implemented behavior from evidence still to be gathered.
+English interface. Implementation and the normal hosted mobile gates are
+complete; the verification section below separates reviewed evidence from
+remaining diagnostic and physical-device limits.
 
 ## Visual direction
 
@@ -91,40 +92,45 @@ Light supporting text and placeholders are checked against both the ivory
 background and the darker grouped surface (minimum 4.54:1). The primary
 white-on-brown button is 6.06:1. These calculations do not replace visual review.
 
-## Verification and remaining work
+## Verification and remaining limits
 
 [Selected reviewed native screens](evidence/issue-19-ui/README.md) show the light
 workspace and dark terminal on both platforms. They are actual screenshots,
 not generated mockups. Full-size originals remain in the linked CI artifacts.
 
-The latest app/native source is `1657174`; `57d36d2` changes only two Swift
-test references to explicit `self.app`. Android full passed on the former,
-and fresh iOS standard plus same-product SSH passed on the latter. The startup
-and Paste observations do not change the visual design, renderer, dependencies
-or input delivery/cancellation semantics. Both platforms' latest normal images
-have been reviewed.
+The latest tested candidate is `946fa98a130b8ad7ec5a03e20bc3bfbde555eb80`.
+Its app/native source remains `1657174`: `57d36d2` fixes two Swift test
+references and `946fa98` adds the focused navigation diagnostic without
+changing the app, native code or the existing standard/SSH test helpers.
+Android full, iOS standard and focused SE/XL navigation passed on this candidate;
+short SSH passed on the unchanged app/native source at `57d36d2`.
+The startup and Paste observations do not change the visual design, renderer,
+dependencies or input delivery/cancellation semantics. Main downloaded and
+actually viewed both platforms' latest normal images and the SE interaction
+images. The final documentation-only commit does not require another mobile build.
 
 | Check | Actual scope | Evidence |
 | --- | --- | --- |
-| Android full | Native readiness/frame/no crash, real SSH and daily-use flow, settings, selection/copy, lifecycle and desktop handoff | [34769679167](https://github.com/phni3j9a/meeterm/actions/runs/34769679167) Android job passed on `1657174`; all 21 observational states and actual daily-use images viewed. That run's iOS preflight failed, not the Android job |
-| iOS standard | Four storage cases, seven input cases plus one gesture case, original fourteen screens, fresh native readiness/frame/survival | Fresh [34772164238](https://github.com/phni3j9a/meeterm/actions/runs/34772164238) passed on `57d36d2`; all fourteen screens plus the Metal foundation viewed |
+| Android full | Native readiness/frame/no crash, real SSH and daily-use flow, settings, selection/copy, lifecycle and desktop handoff | [34776784422](https://github.com/phni3j9a/meeterm/actions/runs/34776784422), job `103776242392`, passed on `946fa98`; all 21 observational states and four actual daily-use images viewed. That run's original iOS standard failed, not the Android job |
+| iOS standard | Four storage cases, seven input cases plus one gesture case, original fourteen screens, fresh native readiness/frame/survival | [34779460110](https://github.com/phni3j9a/meeterm/actions/runs/34779460110) passed on `946fa98`, reusing pristine exact-source products from fresh build [34776784422](https://github.com/phni3j9a/meeterm/actions/runs/34776784422); all fourteen screens plus the Metal foundation viewed. This is a controlled revalidation, not a second fresh build or a relabeling of the original failure |
 | iOS default polish | Seven public states; real search, native keyboard show/hide, settings, picker, explicit Back and edge Back preserving search | [34761931479](https://github.com/phni3j9a/meeterm/actions/runs/34761931479) passed on `55fb60d`; seven states, two actual interaction screenshots and the Metal foundation viewed. This predates the added diagnostics |
-| iOS SE/XL polish | An actual iPhone SE (3rd generation), with OS content size verified as extra-large | Same-product [34773660488](https://github.com/phni3j9a/meeterm/actions/runs/34773660488) failed opening long-workspaces after six captured states; six images and the blank failure screen viewed. Navigation/terminal keyboard not reached |
+| iOS SE/XL navigation | iPhone SE (3rd generation) Simulator with OS content size verified as extra-large; real search, native keyboard, sheets, Back, edge Back and fresh foundation | Focused [34778274408](https://github.com/phni3j9a/meeterm/actions/runs/34778274408) passed on `946fa98`, reusing the same pristine fresh-build products; actual keyboard/edge-Back screenshots and Metal foundation viewed. This is not the seven-state `polish` suite |
+| iOS SE/XL seven-state polish | Public-state presentation followed by the navigation helper | [34773660488](https://github.com/phni3j9a/meeterm/actions/runs/34773660488) on `57d36d2` remains failed at long-workspaces after six captured states; six images and the blank failure screen viewed. Navigation/terminal keyboard was not reached in this run |
 | iOS short SSH | Native keyboard prefix, Paste, Return, remote acknowledgment and disconnect | Same-product [34773642992](https://github.com/phni3j9a/meeterm/actions/runs/34773642992) passed on `57d36d2`; native Paste `accepted=1`, matching remote marker, and disconnect verified. Initial/input/disconnected images viewed |
-| Shared Rust | 79 unit cases, real OpenSSH, pinned-SHA Herdr 0.9.0 integration through the isolated russh endpoint | [34760570515](https://github.com/phni3j9a/meeterm/actions/runs/34760570515) passed; Herdr integration completed in 20.96 seconds |
+| Shared Rust | 79 unit cases, real OpenSSH, pinned-SHA Herdr 0.9.0 integration through the isolated russh endpoint | [34776698058](https://github.com/phni3j9a/meeterm/actions/runs/34776698058), job `103776001069`, passed on `946fa98`; OpenSSH completed in 15.73 seconds and Herdr integration in 20.69 seconds |
 
 TypeScript, 24 App/Settings and startup-observation tests (including nested
 cases), and 160 Python SSH/driver regressions passed locally. CI-processing regressions also
 passed (20 tests, with one macOS-only case excluded on Linux). Android CNG
 generation passed, including inspection of generated day/night native accent
 resources. Generated native directories remain ignored.
-General CI on `57d36d2` passed for both
-[push](https://github.com/phni3j9a/meeterm/actions/runs/34772095787) and
-[PR](https://github.com/phni3j9a/meeterm/actions/runs/34772098032).
+General CI on `946fa98` passed for both
+[push](https://github.com/phni3j9a/meeterm/actions/runs/34776698058) and
+[PR](https://github.com/phni3j9a/meeterm/actions/runs/34776702202).
 
-### Open diagnostic
+### Preserved failures and controlled revalidation
 
-The latest SE/XL failure is at the long-workspaces presentation guard (Swift
+The seven-state SE/XL failure is at the long-workspaces presentation guard (Swift
 line 604 on `57d36d2`), after six public states were captured. The app is
 foreground in the failure observation and its initial smoke URL was accepted.
 The final process's AppContent effect was logged about 34 seconds after its
@@ -141,17 +147,31 @@ not establish the cause of earlier intermittent startup/Paste failures.
 Those failures remain in the PR history; no timeout, assertion or remote
 acknowledgment requirement was relaxed to obtain a pass.
 
+The initial `946fa98` standard job failed during the workspace-name route's
+QuickPath tutorial: Continue was recorded, but dismissal completion was not.
+The safe diagnostics record source line zero, runner timeout and exit 65; they
+do not distinguish a tap, wait, runner or product cause. Storage/input and the
+first seven screenshots passed, but the remaining seven and fresh foundation
+were not reached. That original [run](https://github.com/phni3j9a/meeterm/actions/runs/34776784422)
+remains failed. Read-only triage verified that the app, standard test and
+QuickPath helper were unchanged from the preceding successful `57d36d2` run.
+Main then authorized one exact-source standard revalidation using the existing
+pristine products. It passed, with all fourteen screens and the Metal foundation
+actually reviewed. No assertion, timeout or source change was made, and no
+automatic retry loop was added. The pass does not establish the original cause
+or claim that an intermittent failure was repaired.
+
 Earlier SE/XL standard passed all fourteen screens in
 [34756003466](https://github.com/phni3j9a/meeterm/actions/runs/34756003466)
 on `d0fafc1`; those images were viewed but are not presented as the newest
-source. A small-screen screenshot with the actual terminal keyboard remains
-to be gathered.
+source. The actual small-screen terminal keyboard is now separately evidenced
+by the successful focused `946fa98` navigation run.
 
 A focused `polish-navigation` entry reuses the existing search, keyboard,
 settings, picker, Back and edge-Back helper plus a fresh native foundation.
 Its own completion record is separate from the seven-state `polish` suite.
-The next bounded check is one fresh build and one SE/XL focused execution;
-that result will not relabel the failed long-workspaces run as passed.
+The successful focused execution closes the missing keyboard/navigation
+evidence without relabeling the failed long-workspaces run as passed.
 
 ### Corrections and evidence limits
 
@@ -171,9 +191,11 @@ verify presentation, not the remote actions that normally create that state.
 Their terminal content still comes from the Rust/native demo: no terminal
 bytes, cells or mock terminal renderings cross JavaScript.
 
-Sampled recording frames were viewed, including native keyboard, sheets and
-the SE edge-back transition. This is not full-speed playback or a frame-rate
-measurement. The Reduced Motion regression verifies a mocked preference's
+Sampled recording frames from earlier runs were viewed, including native
+keyboard, sheets and the SE edge-back transition. The latest focused SE run's
+video capture was unavailable; its assertions and actual screenshots remain
+separate evidence. Neither is full-speed playback or a frame-rate measurement.
+The Reduced Motion regression verifies a mocked preference's
 initial state, notifications and cleanup, not the OS setting. Physical-device
 GPU, Japanese IME/font parity and rotation remain separate validation work.
 Android's documented monochrome-emoji limitation remains. Simulator Metal

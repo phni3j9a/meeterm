@@ -27,3 +27,25 @@ and [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 The light application surfaces and dark terminal are intentional. Terminal
 palette, CJK rendering, GPU execution, and input remain native; these Simulator
 and emulator images do not establish physical-device or Japanese IME parity.
+
+## Small-screen terminal interaction
+
+The focused `polish-navigation` run
+[34778274408](https://github.com/phni3j9a/meeterm/actions/runs/34778274408)
+passed on `946fa98a130b8ad7ec5a03e20bc3bfbde555eb80`, reusing the exact-source
+fresh iOS products from
+[34776784422](https://github.com/phni3j9a/meeterm/actions/runs/34776784422).
+The Simulator is iPhone SE (3rd generation); the OS text-size readback is
+extra-large. Main viewed both full-size interaction images and the fresh Metal
+foundation, then checked these 480 px documentation copies.
+
+- [Actual native terminal keyboard](ios-se-terminal-keyboard.webp): terminal
+  area, accessory keys and Hide keyboard remain visible together.
+- [After native edge Back](ios-se-edge-back.webp): the `Main` search and its
+  selected workspace are preserved.
+
+This establishes the focused search/keyboard/sheets/Back/edge-Back scope, not
+the seven-state `polish` suite, SSH or storage. Its video capture was unavailable;
+these screenshots and assertions are not a full-speed playback or FPS result.
+The original compact `polish` failure and the separate standard-run failure
+remain recorded rather than being replaced with this narrower pass.
