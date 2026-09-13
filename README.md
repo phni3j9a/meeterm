@@ -81,6 +81,7 @@ npx expo run:android --device
 
 ## Design docs
 
+- [Current mobile UI, design research, and verification scope](docs/UI_UX.md)
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Herdr backend and usage](docs/HERDR.md)

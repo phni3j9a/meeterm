@@ -10,7 +10,7 @@ log and xcresult remain under RUNNER_TEMP.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -880,7 +880,7 @@ def write_xcuitest_diagnostics(
 
 @contextmanager
 def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_dir: Path):
-    """Record only the post-authentication daily-use section, never the form."""
+    """Record only safe daily-use or public navigation sections, never credentials."""
     stopped = threading.Event()
 
     def monitor() -> None:
@@ -897,7 +897,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                 # These markers are emitted after authentication, with the
                 # native terminal/workspace UI already visible. No later
                 # focused operation opens an authentication form.
-                if not any(marker in stages for marker in ("daily_selection", "names_started")):
+                if not any(marker in stages for marker in ("daily_selection", "names_started", "standard_navigation_open")):
                     continue
                 xcrun = shutil.which("xcrun")
                 if xcrun is None:
@@ -913,7 +913,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                         break
                     try:
                         completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
-                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete")):
+                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete", "standard_navigation_complete")):
                             break
                     except OSError:
                         pass
@@ -1515,16 +1515,18 @@ def main() -> int:
             if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
                 os.environ.pop(environment_name, None)
         stage = "xcuitest"
-        run_status = run_xcuitest(
-            derived_data=args.derived_data,
-            simulator_udid=args.simulator_udid,
-            result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / f"meeterm-ios-{suite}.xcresult",
-            raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-            / f"meeterm-ios-{suite}-xcodebuild.log",
-            diagnostics_path=args.artifact_dir / f"ios-{suite}-xctest-runner-diagnostics.txt",
-            suite=suite,
-        )
+        recording = record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir) if suite == "standard" else nullcontext()
+        with recording:
+            run_status = run_xcuitest(
+                derived_data=args.derived_data,
+                simulator_udid=args.simulator_udid,
+                result_bundle=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                / f"meeterm-ios-{suite}.xcresult",
+                raw_log=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+                / f"meeterm-ios-{suite}-xcodebuild.log",
+                diagnostics_path=args.artifact_dir / f"ios-{suite}-xctest-runner-diagnostics.txt",
+                suite=suite,
+            )
         if run_status != 0:
             ui_stage = last_ui_stage(Path(os.environ["MEETERM_IOS_STAGE_PATH"]))
             raise SmokeFailure("xcuitest", "focused_tests_failed")

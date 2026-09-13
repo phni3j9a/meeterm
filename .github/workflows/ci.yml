@@ -61,6 +61,9 @@ jobs:
       - name: Check App snapshot and terminal selection transitions
         run: npm run test:app
 
+      - name: Check public Android presentation routes
+        run: python3 scripts/ci/test_android_screen_fixtures.py
+
       - name: Check iOS Simulator entitlement generation
         run: python3 scripts/ci/test_ios_simulator_entitlements.py
 

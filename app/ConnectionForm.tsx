@@ -19,7 +19,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import type { SavedCredential, ServerProfile } from '../modules/meeterm-terminal';
-import { DARK, MONO } from './ui';
+import { DARK, MONO, useReducedMotion } from './ui';
 import type { Palette } from './ui';
 
 type AuthMethod = 'publicKey' | 'password';
@@ -61,6 +61,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   mode?: 'connect' | 'save';
   colors: Palette;
 }) {
+  const reducedMotion = useReducedMotion();
   const [name, setName] = useState('');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('22');
@@ -159,19 +160,19 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
     onClose();
   }, [clearSecrets, onClose]);
 
-  const close = useCallback(() => {
-    if (submitting.current) return;
-    const dirty = name !== (initialProfile?.name ?? '') || host !== (initialProfile?.host ?? '')
+  const dirty = name !== (initialProfile?.name ?? '') || host !== (initialProfile?.host ?? '')
       || port !== String(initialProfile?.port ?? 22) || username !== (initialProfile?.username ?? '')
       || authMethod !== (initialProfile?.authMethod ?? 'publicKey') || Boolean(privateKey || passphrase || password)
-      || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved);
-    const backendDirty = backend !== (initialProfile?.backend ?? 'tmux') || runtime !== (initialProfile?.runtime ?? '');
-    if (!dirty && !backendDirty) { discard(); return; }
+      || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved)
+      || backend !== (initialProfile?.backend ?? 'tmux') || runtime !== (initialProfile?.runtime ?? '');
+  const close = useCallback(() => {
+    if (submitting.current) return;
+    if (!dirty) { discard(); return; }
     Alert.alert('Discard changes?', 'Your changes have not been saved.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: discard },
     ]);
-  }, [authMethod, backend, runtime, discard, host, initialProfile, name, passphrase, password, port, privateKey, saveCredential, saveServer, username]);
+  }, [dirty, discard]);
 
   const changeAuthMethod = useCallback((next: AuthMethod) => {
     if (next === authMethod) return;
@@ -247,7 +248,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   const inputStyle = [styles.input, { color: colors.text, backgroundColor: colors.elevated, borderColor: colors.border }];
   const inputDefaults = { autoCapitalize: 'none' as const, autoComplete: 'off' as const, autoCorrect: false, spellCheck: false, placeholderTextColor: colors.placeholder, selectionColor: colors.accent };
 
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={close} onDismiss={() => { clearSecrets(); onDismiss?.(); }} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
+  return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy && !dirty} onRequestClose={close} onDismiss={() => { clearSecrets(); onDismiss?.(); }} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.root, { backgroundColor: colors.background }]}>
         <StatusBar hidden={false} barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />

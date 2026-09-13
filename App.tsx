@@ -24,9 +24,10 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import type { ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
+import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
 import { DEFAULT_PREFERENCES, itemActions, NameForm, ProfileList, SettingsForm } from './app/DailyUse';
-import { Button, Companion, DARK, Icon, IconButton, MONO, usePalette } from './app/ui';
+import { Button, Companion, DARK, Icon, IconButton, MONO, usePalette, useReducedMotion } from './app/ui';
 import type { Palette } from './app/ui';
 
 // The owner outlives views. Only remote borrowed pane handles are displayed in
@@ -39,7 +40,7 @@ const INITIAL_CONNECTION: SshConnectionState = {
 type Workspace = { id: string; name: string; panes: RemoteTerminal[] };
 type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
-type SmokeScreen = 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 const SMOKE_PROFILE: ServerProfile = {
@@ -78,6 +79,8 @@ type SmokeFixtureState = {
   profileId: string;
   sheet: SheetKind;
   hasConnected: boolean;
+  searching?: boolean;
+  query?: string;
 };
 
 function smokeReadyConnection(): SshConnectionState {
@@ -91,6 +94,19 @@ function smokeWorkspace(panes: RemoteTerminal[], workspaceId: string): Workspace
 }
 
 function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
+  if (['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces'].includes(screen)) {
+    const base = smokeFixture(screen === 'welcome' ? 'home' : 'workspaces');
+    if (screen === 'welcome') base.profiles = [];
+    if (screen === 'empty') base.panes = [];
+    if (screen === 'search-empty') { base.searching = true; base.query = 'deployment'; }
+    if (screen === 'disconnected') base.connection.state = 'Disconnected';
+    if (screen === 'reconnecting') base.connection.state = 'Reconnecting';
+    if (screen === 'connection-error') {
+      base.connection.state = 'Failed';
+      base.connection.errorCode = 'authentication_failed';
+    }
+    return base;
+  }
   if (screen.startsWith('herdr-')) {
     const base = smokeFixture(screen === 'herdr-connection' ? 'connection' : screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
     base.formProfile = { ...SMOKE_PROFILE, backend: 'herdr', runtime: 'dev' };
@@ -137,6 +153,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
 }
 
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
+  'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
@@ -158,10 +175,10 @@ function sameConnection(a: SshConnectionState, b: SshConnectionState) {
     && a.errorMessage === b.errorMessage;
 }
 const EMPTY_WORKSPACES: WorkspaceState = { backend: 'tmux', runtime: 'meeterm', groupsSupported: false, workspaces: [], groups: [], terminals: [] };
-function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false): WorkspaceState {
+function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false, longNames = false): WorkspaceState {
   const ids = [...new Set(panes.map(pane => pane.workspaceId))];
   return { ...EMPTY_WORKSPACES, terminals: panes,
-    workspaces: ids.map(id => ({ id, name: id === '@smoke-main' ? 'Main workspace' : 'Tools workspace' })),
+    workspaces: ids.map(id => ({ id, name: longNames ? id === '@smoke-main' ? 'Production infrastructure — migration and release preparation' : 'Research / terminal typography and international text' : id === '@smoke-main' ? 'Main workspace' : 'Tools workspace' })),
     backend: herdr ? 'herdr' : 'tmux', runtime: herdr ? 'dev' : 'meeterm', groupsSupported: herdr,
     groups: herdr ? [
       { id: 'smoke-code', workspaceId: '@smoke-main', name: 'Development', selected: true },
@@ -257,7 +274,8 @@ function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker 
 }
 
 function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, children }: { title: string; visible: boolean; onClose: () => void; onDismiss: () => void; busy: boolean; colors: Palette; children: ReactNode }) {
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy} onRequestClose={() => { if (!busy) onClose(); }} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
+  const reducedMotion = useReducedMotion();
+  return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy} onRequestClose={() => { if (!busy) onClose(); }} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.flex, { backgroundColor: colors.background }]}>
         <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
@@ -281,7 +299,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [connection, setConnection] = useState<SshConnectionState>(() => fixture?.connection ?? INITIAL_CONNECTION);
-  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-')) : EMPTY_WORKSPACES);
+  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-'), smokeScreen === 'long-workspaces') : EMPTY_WORKSPACES);
   const panes = session.terminals;
   const [screen, setScreen] = useState<'workspaces' | 'terminal'>(() => fixture?.screen ?? 'workspaces');
   const [rememberedWorkspaceId, setWorkspaceId] = useState(() => fixture?.workspaceId ?? '');
@@ -299,8 +317,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [nameRequest, setNameRequest] = useState<NameRequest | null>(() => fixture?.nameRequest ?? null);
   const [profileId, setProfileId] = useState(() => fixture?.profileId ?? '');
   const [sheet, setSheet] = useState<SheetKind>(() => fixture?.sheet ?? null);
-  const [searching, setSearching] = useState(false);
-  const [query, setQuery] = useState('');
+  const [searching, setSearching] = useState(fixture?.searching ?? false);
+  const [query, setQuery] = useState(fixture?.query ?? '');
   const [pickerQuery, setPickerQuery] = useState('');
   const [controlMessage, setControlMessage] = useState('');
   const [pollProblem, setPollProblem] = useState(false);
@@ -578,14 +596,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSelectedPaneIds(current => ({ ...current, [pane.groupId]: pane.id }));
     // Rust also retains a desired pane while disconnected, so reconnect's
     // restored selection follows an offline workspace choice.
-    const success = await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
+    // Presentation fixtures may navigate only to their existing native demo
+    // terminal. They never issue a remote selection or create a fake JS buffer.
+    const success = smokeFixtureActive ? pane.terminalId === CONNECTION_ID : await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
     if (!success) setSelectedPaneIds(current => {
         const next = { ...current };
         if (previous) next[pane.groupId] = previous; else delete next[pane.groupId];
         return next;
       });
     return success;
-  }, [connection.state, runCommand, selectedPaneIds]);
+  }, [connection.state, runCommand, selectedPaneIds, smokeFixtureActive]);
 
   const openWorkspace = useCallback((item: Workspace) => {
     if (commandPending.current) return;
@@ -684,7 +704,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const openSettings = useCallback(() => {
     if (commandPending.current) return;
     if (smokeFixtureActive) {
-      setSettingsVisible(true);
+      showModal(() => setSettingsVisible(true));
       return;
     }
     if (!preferencesLoaded) {
@@ -844,9 +864,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     </View>
   </View> : null;
 
-  const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: colors.surface }]}>
-    <Text style={[styles.noticeBody, { color: colors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
-    {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={colors} onPress={() => setControlMessage('')} /> : null}
+  const feedbackColors = sheet ? homeColors : colors;
+  const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
+    <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
+    {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={feedbackColors} onPress={() => setControlMessage('')} /> : null}
   </View> : null;
 
   const listHeader = <View>
@@ -913,9 +934,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <TerminalView terminalId={CONNECTION_ID} fontSize={15} theme="dark" scrollbackLines={10000} style={styles.flex} />
   </SafeAreaView>;
 
-  return <SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: colors.background }]}>
+  return <View style={[styles.flex, { backgroundColor: homeColors.background }]}>
     <StatusBar hidden={false} backgroundColor={colors.background} barStyle={colors === DARK ? 'light-content' : 'dark-content'} />
-    {screen === 'workspaces' ? <FlatList
+    <WorkspaceNavigation screen={screen} colors={homeColors} onScreenChange={next => { if (next === 'workspaces') Keyboard.dismiss(); setScreen(next); }}
+      workspaces={<SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: homeColors.background }]}><FlatList
       key={searching ? 'workspace-search' : 'workspace-list'}
       ref={workspaceList}
       data={filteredWorkspaces}
@@ -930,43 +952,45 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-    /> : <View style={styles.flex}>
+    /></SafeAreaView>}
+      terminal={<SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: DARK.background }]}><View style={styles.flex}>
       <View style={styles.terminalHeader}>
-        <IconButton icon="back" label="Back to workspaces" colors={colors} onPress={backToWorkspaces} />
+        <IconButton icon="back" label="Back to workspaces" colors={DARK} onPress={backToWorkspaces} />
         <View style={styles.terminalHeading}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: colors.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={colors.muted} size={12} /></Pressable>
-          <View style={styles.terminalStatusRow}><Text numberOfLines={1} style={[styles.terminalHost, { color: colors.muted }]}>{endpoint(connection)}</Text><ConnectionStatus connection={connection} colors={colors} /></View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: DARK.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={DARK.muted} size={12} /></Pressable>
+          <View style={styles.terminalStatusRow}><Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{endpoint(connection)}</Text><ConnectionStatus connection={connection} colors={DARK} /></View>
         </View>
-        <IconButton icon="menu" label="Terminal menu" colors={colors} onPress={() => openSheet('server')} />
+        <IconButton icon="menu" label="Terminal menu" colors={DARK} onPress={() => openSheet('server')} />
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
-        <Text style={[styles.groupLabel, { color: colors.muted }]}>Group</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!ready || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: colors.surface }, pressed && { opacity: .65 }]}>
-          <Text numberOfLines={1} style={[styles.groupName, { color: colors.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={colors.muted} size={12} />
+        <Text style={[styles.groupLabel, { color: DARK.muted }]}>Group</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!ready || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, pressed && { opacity: .65 }]}>
+          <Text numberOfLines={1} style={[styles.groupName, { color: DARK.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={DARK.muted} size={12} />
         </Pressable>
       </View> : null}
-      {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: colors.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `Terminal ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? colors.accent : 'transparent' }, pressed && { backgroundColor: colors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? colors.accent : colors.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? colors.accent : colors.muted }]}>{pane.name || `Terminal ${index + 1}`}</Text></Pressable>)}
-      </ScrollView><IconButton icon="plus" label="Create terminal" colors={colors} disabled={!ready || commandBusy} onPress={createPane} /></View> : null}
+      {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: DARK.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
+        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `Terminal ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{pane.name || `Terminal ${index + 1}`}</Text></Pressable>)}
+      </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!ready || commandBusy} onPress={createPane} /></View> : null}
       {selectedPane?.agent ? <View style={styles.agentLine}>
-        <Text numberOfLines={1} style={[styles.agentName, { color: colors.muted }]}>{selectedPane.agent.name}</Text>
-        <Text accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." style={[styles.agentStatus, { color: ready && selectedPane.agent.status === 'blocked' ? colors.accent : colors.muted }]}>{AGENT_LABELS[ready ? selectedPane.agent.status : 'unknown']}</Text>
+        <Text numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
+        <Text accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." style={[styles.agentStatus, { color: ready && selectedPane.agent.status === 'blocked' ? DARK.accent : DARK.muted }]}>{AGENT_LABELS[ready ? selectedPane.agent.status : 'unknown']}</Text>
       </View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {ready && workspace && selectedPane ? (
         // Unmounting a surface cancels composition; the shared native registry
         // still owns the SSH connection and each terminal's retained state.
-        sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active' ? <TerminalView key={selectedPane.terminalId} terminalId={selectedPane.terminalId} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View style={[styles.flex, { backgroundColor: colors.terminal }]} />
+        sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active' ? <TerminalView key={selectedPane.terminalId} terminalId={selectedPane.terminalId} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View style={[styles.flex, { backgroundColor: DARK.terminal }]} />
       ) : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.terminalUnavailable, { paddingBottom: Math.max(insets.bottom, 24) }]}>
         {statusNotice}
         {ready ? <View style={styles.gone}>
-          <Icon name="terminal" color={colors.muted} size={32} />
-          <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: colors.text }]}>{workspace ? 'This terminal has closed' : 'This workspace has closed'}</Text>
-          <Text style={[styles.emptyBody, { color: colors.muted }]}>{workspace ? 'Select another terminal to keep working.' : 'Choose another workspace from the list.'}</Text>
-          <Button label="Back to workspaces" colors={colors} secondary onPress={backToWorkspaces}>Back to workspaces</Button>
+          <Icon name="terminal" color={DARK.muted} size={32} />
+          <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: DARK.text }]}>{workspace ? 'This terminal has closed' : 'This workspace has closed'}</Text>
+          <Text style={[styles.emptyBody, { color: DARK.muted }]}>{workspace ? 'Select another terminal to keep working.' : 'Choose another workspace from the list.'}</Text>
+          <Button label="Back to workspaces" colors={DARK} secondary onPress={backToWorkspaces}>Back to workspaces</Button>
         </View> : null}
       </ScrollView>}
-    </View>}
+    </View></SafeAreaView>}
+    />
 
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
@@ -981,7 +1005,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name}`} accessibilityState={{ selected: item.id === group?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
             <Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text>
-            <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} Terminal{item.id === group?.id ? ' · Selected' : ''}</Text>
+            <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} {panes.filter(pane => pane.groupId === item.id).length === 1 ? 'terminal' : 'terminals'}{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
           <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!ready || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
         </View>)}
@@ -1029,7 +1053,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Review host key change</Text></Pressable> : null}
       </ScrollView>}
     </NativeSheet>
-  </SafeAreaView>;
+  </View>;
 }
 
 export default function App() {

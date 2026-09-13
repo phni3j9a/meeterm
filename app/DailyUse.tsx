@@ -8,7 +8,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ServerProfile, TerminalPreferences } from '../modules/meeterm-terminal';
-import { Button, DARK, Icon, IconButton, MONO } from './ui';
+import { Button, DARK, Icon, IconButton, MONO, useReducedMotion } from './ui';
 import type { Palette } from './ui';
 
 export const DEFAULT_PREFERENCES: TerminalPreferences = {
@@ -62,13 +62,14 @@ export function ProfileList({ profiles, selectedId, loading, error, busy, colors
   />;
 }
 
-function FormModal({ visible, title, submitLabel, submitId, submitText = 'Save', busy, colors, onClose, onSubmit, children }: {
+function FormModal({ visible, title, submitLabel, submitId, submitText = 'Save', busy, dirty = false, colors, onClose, onSubmit, children }: {
   visible: boolean; title: string; submitLabel: string; submitId: string; submitText?: string;
-  busy: boolean; colors: Palette; onClose: () => void; onSubmit: () => void; children: ReactNode;
+  busy: boolean; dirty?: boolean; colors: Palette; onClose: () => void; onSubmit: () => void; children: ReactNode;
 }) {
+  const reducedMotion = useReducedMotion();
   // Apply after Android registers the dialog window; its initial appearance
   // can still reflect the preceding palette during a theme transition.
-  return <Modal visible={visible} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
+  return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy && !dirty} onRequestClose={onClose} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider><SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.flex, { backgroundColor: colors.background }]}>
       <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
@@ -112,7 +113,7 @@ export function NameForm({ visible, title, initialName, colors, onClose, onSave 
     catch { setError('Could not save the change. Check your connection and try again.'); }
     finally { pending.current = false; setBusy(false); }
   };
-  return <FormModal visible={visible} title={title} submitLabel="Save name" submitId="name-submit" submitText={title.includes('Create') ? 'Create' : 'Save'} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(name !== initialName, onClose); }} onSubmit={() => { void submit(); }}>
+  return <FormModal visible={visible} title={title} submitLabel="Save name" submitId="name-submit" dirty={name !== initialName} submitText={title.includes('Create') ? 'Create' : 'Save'} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(name !== initialName, onClose); }} onSubmit={() => { void submit(); }}>
     <View style={styles.field}><Text style={[styles.body, { color: colors.text }]}>Name</Text><TextInput accessibilityLabel="Workspace or terminal name" testID="workspace-terminal-name" value={name} onChangeText={setName} autoFocus autoComplete="off" autoCorrect={false} returnKeyType="done" onSubmitEditing={submit} placeholder="e.g. Development" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]} />
       {error ? <Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>{error}</Text> : null}
     </View>
@@ -161,10 +162,10 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
     finally { pending.current = false; setBusy(false); }
   };
   const numericStyle = [styles.numericInput, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }];
-  return <FormModal visible={visible} title="Settings" submitLabel="Save settings" submitId="settings-submit" busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(dirty, onClose); }} onSubmit={() => { void submit(); }}>
+  return <FormModal visible={visible} title="Settings" submitLabel="Save settings" submitId="settings-submit" dirty={dirty} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(dirty, onClose); }} onSubmit={() => { void submit(); }}>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>DISPLAY</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}>
-        <View style={[styles.settingRow, { borderBottomColor: colors.border }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Text size</Text><Text style={[styles.caption, { color: colors.muted }]}>10〜24 pt</Text></View><TextInput accessibilityLabel="Terminal font size" testID="terminal-font-size" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={2} value={fontSize} onChangeText={setFontSize} selectionColor={colors.accent} style={numericStyle} /></View>
+        <View style={[styles.settingRow, { borderBottomColor: colors.border }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Text size</Text><Text style={[styles.caption, { color: colors.muted }]}>10–24 pt</Text></View><TextInput accessibilityLabel="Terminal font size" testID="terminal-font-size" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={2} value={fontSize} onChangeText={setFontSize} selectionColor={colors.accent} style={numericStyle} /></View>
         <Pressable accessibilityRole="button" accessibilityLabel="Terminal theme" testID="terminal-theme" onPress={chooseTheme} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Appearance</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
       </View>
       <View style={[styles.previewCard, { backgroundColor: DARK.terminal }]}>

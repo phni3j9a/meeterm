@@ -213,9 +213,10 @@ are implemented together. Keep verifying:
 
 The Herdr live case is an opt-in ignored Rust integration test because it needs a
 real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
-OpenSSH fixture. The normal mobile gate remains iOS `standard` (14 screenshots
-including four Herdr routes) plus Android full; Android's four Herdr routes are
-observational evidence and do not replace the machine gate. No test result may
+OpenSSH fixture. The normal mobile gate remains iOS `standard` (21 screenshots
+including four Herdr routes, plus a short native navigation check) and Android
+full; Android's seeded presentation routes are observational evidence and do
+not replace the machine gate. No test result may
 claim acceptance without the applicable integration/CI evidence and required
 visual review.
 

@@ -92,7 +92,8 @@ for checkpoint in \
   standard-workspaces standard-terminal standard-settings \
   standard-workspace-name standard-terminal-name standard-handoff \
   standard-herdr-connection standard-herdr-groups standard-herdr-terminal \
-  standard-herdr-workspaces; do
+  standard-herdr-workspaces \
+  standard-welcome standard-empty standard-search-empty standard-disconnected standard-reconnecting standard-connection-error standard-long-workspaces; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
 done
 : > "${xcrun_log}"

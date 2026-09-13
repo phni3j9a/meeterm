@@ -7,6 +7,18 @@ mkdir -p "${artifact_dir}"
 echo "bootstatus_timeout_seconds=${bootstatus_timeout_seconds}" >> "${artifact_dir}/metadata.txt"
 
 devices_json="$(xcrun simctl list devices available --json)"
+readonly layout_profile="${MEETERM_IOS_PROFILE:-default}"
+case "${layout_profile}" in
+  default|compact-xl) ;;
+  *) echo "Unknown Simulator layout profile." >&2; exit 2 ;;
+esac
+if [[ "${layout_profile}" == 'compact-xl' ]]; then
+  runtime_id="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable and (.identifier | contains("iOS")))] | last | .identifier // empty')"
+  [[ -n "${runtime_id}" ]]
+  # A new disposable SE-class device, not a renamed full-size simulator.
+  simulator_udid="$(xcrun simctl create 'meeterm compact XL' 'com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation' "${runtime_id}")"
+  simulator_name='iPhone SE (3rd generation), XL text'
+else
 simulator_udid="$(jq -r '
   [.devices | to_entries[]
     | select(.key | contains("iOS"))
@@ -15,15 +27,18 @@ simulator_udid="$(jq -r '
   | (map(select(.name | test(" Pro$"))) + .)
   | .[0].udid // empty
 ' <<<"${devices_json}")"
+fi
 
 if [[ -z "${simulator_udid}" ]]; then
   echo "No available iPhone Simulator was found." >&2
   exit 1
 fi
 
-simulator_name="$(jq -r --arg udid "${simulator_udid}" '
+if [[ "${layout_profile}" == 'default' ]]; then
+  simulator_name="$(jq -r --arg udid "${simulator_udid}" '
   [.devices[][] | select(.udid == $udid)][0].name
 ' <<<"${devices_json}")"
+fi
 
 xcrun simctl boot "${simulator_udid}" \
   > "${artifact_dir}/boot-request.txt" 2>&1 || true
@@ -76,6 +91,12 @@ if (( bootstatus_exit != 0 )); then
 fi
 printf '%s\n' 'bootstatus=ready' >> "${bootstatus_log}"
 
+if [[ "${layout_profile}" == 'compact-xl' ]]; then
+  xcrun simctl ui "${simulator_udid}" content_size extra-large
+  xcrun simctl ui "${simulator_udid}" content_size > "${artifact_dir}/content-size.txt"
+  grep -Fq 'extra-large' "${artifact_dir}/content-size.txt"
+fi
+
 {
   echo "IOS_SIMULATOR_UDID=${simulator_udid}"
   echo "IOS_SIMULATOR_NAME=${simulator_name}"
@@ -83,6 +104,7 @@ printf '%s\n' 'bootstatus=ready' >> "${bootstatus_log}"
 {
   echo "simulator_udid=${simulator_udid}"
   echo "simulator_name=${simulator_name}"
+  echo "layout_profile=${layout_profile}"
 } >> "${artifact_dir}/metadata.txt"
 
 xcrun simctl list devices "${simulator_udid}" | tee "${artifact_dir}/simulator.txt"

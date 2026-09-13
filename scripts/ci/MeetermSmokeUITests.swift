@@ -129,6 +129,13 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-herdr-groups.png",
       "standard-herdr-terminal.png",
       "standard-herdr-workspaces.png",
+      "standard-welcome.png",
+      "standard-empty.png",
+      "standard-search-empty.png",
+      "standard-disconnected.png",
+      "standard-reconnecting.png",
+      "standard-connection-error.png",
+      "standard-long-workspaces.png",
     ] {
       try? FileManager.default.removeItem(at: artifactDirectory.appendingPathComponent(name))
     }
@@ -487,6 +494,8 @@ final class MeetermSmokeUITests: XCTestCase {
       "home", "servers", "connection", "password", "workspaces", "terminal",
       "settings", "workspace-name", "terminal-name", "handoff",
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
+      "welcome", "empty", "search-empty", "disconnected", "reconnecting",
+      "connection-error", "long-workspaces",
     ]
     for screen in screens {
       record("standard_screen_\(screen)_open")
@@ -509,12 +518,69 @@ final class MeetermSmokeUITests: XCTestCase {
       record("standard_screen_\(screen)_captured")
     }
 
+    try verifyStandardNavigation()
+
     // Keep the existing foundation check as a genuinely fresh process after
     // the seeded screen pass. The foundation uses the Rust poc-main fixture.
     app.terminate()
     try verifyFoundationRelaunch()
     writeFixedArtifact("ios-ui-standard-validation.txt", lines: ["case=standard result=passed"])
     record("standard_complete")
+  }
+
+  /// Real presentation interactions using the existing native poc-main handle.
+  /// No remote input, connection, or workspace creation is claimed by this pass.
+  private func verifyStandardNavigation() throws {
+    record("standard_navigation_open")
+    app.open(try XCTUnwrap(URL(string: "meeterm://smoke?screen=workspaces")))
+    XCTAssertTrue(waitForStandardScreen("workspaces"))
+    button("Search workspaces").tap()
+    let search = input("Search workspaces")
+    XCTAssertTrue(waitForHittable(search, timeout: 10))
+    search.tap()
+    search.typeText("Main")
+    let workspace = button("Workspace Main workspace")
+    XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    workspace.tap()
+    XCTAssertTrue(waitForTerminal(), "The workspace did not push the native terminal screen.")
+
+    record("standard_navigation_keyboard")
+    let terminal = try terminalElement()
+    terminal.tap()
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+    let hideKeyboard = button("Hide keyboard")
+    XCTAssertTrue(waitForHittable(hideKeyboard, timeout: 10))
+    hideKeyboard.tap()
+    XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
+
+    record("standard_navigation_settings")
+    button("Terminal menu").tap()
+    let settings = button("Terminal settings")
+    XCTAssertTrue(waitForHittable(settings, timeout: 10))
+    settings.tap()
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    button("Cancel").tap()
+    XCTAssertTrue(waitForTerminal(), "Closing Settings did not restore the native terminal.")
+
+    record("standard_navigation_picker")
+    button("Switch workspace").tap()
+    let close = button("Close sheet")
+    XCTAssertTrue(waitForHittable(close, timeout: 10))
+    close.tap()
+    XCTAssertTrue(waitForTerminal())
+    button("Back to workspaces").tap()
+    XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "Back lost the workspace search.")
+
+    record("standard_navigation_edge_back")
+    XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    workspace.tap()
+    XCTAssertTrue(waitForTerminal())
+    let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.45))
+    let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.90, dy: 0.45))
+    start.press(forDuration: 0.1, thenDragTo: end)
+    XCTAssertTrue(waitForShortFieldValue(search, expected: "Main", timeout: 10), "The native edge-back gesture did not restore search.")
+    XCTAssertTrue(waitForHittable(workspace, timeout: 10))
+    record("standard_navigation_complete")
   }
 
   /// A bounded real SSH round trip. The private key is entered through the
@@ -583,6 +649,27 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func waitForStandardScreen(_ screen: String) -> Bool {
     switch screen {
+    case "welcome":
+      return app.staticTexts["Your workspace. Anywhere."].waitForExistence(timeout: 30)
+        && waitForHittable(button("Connect"), timeout: 30)
+    case "empty":
+      return app.staticTexts["A fresh workspace starts here."].waitForExistence(timeout: 30)
+        && button("Create workspace").waitForExistence(timeout: 30)
+    case "search-empty":
+      return app.staticTexts["No matching workspaces"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Clear workspace search"), timeout: 30)
+    case "disconnected":
+      return app.staticTexts["Disconnected"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Reconnect"), timeout: 30)
+    case "reconnecting":
+      return app.staticTexts.matching(NSPredicate(format: "label == %@", "Reconnecting…")).firstMatch.waitForExistence(timeout: 30)
+        && waitForHittable(button("Cancel connection"), timeout: 30)
+    case "connection-error":
+      return app.staticTexts.matching(NSPredicate(format: "label == %@", "Connection failed")).firstMatch.waitForExistence(timeout: 30)
+        && waitForHittable(button("Reconnect"), timeout: 30)
+    case "long-workspaces":
+      return waitForHittable(button("Workspace Production infrastructure — migration and release preparation"), timeout: 30)
+        && waitForHittable(button("Workspace Research / terminal typography and international text"), timeout: 30)
     case "home":
       let title = app.staticTexts["Workspaces"]
       let profile = app.buttons.matching(

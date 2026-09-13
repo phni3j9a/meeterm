@@ -14,7 +14,7 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
 | Android | 既存のfull smokeと画像の実見。Herdr 4画面はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
-| iOS `standard` | production保存4件、native入力7件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| iOS `standard` | production保存4件、native入力7件、21画面の撮影、短い画面遷移、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示と戻る操作、実native端末描画 |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
@@ -70,12 +70,28 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 
 対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
 ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎに加え、
-Herdr connection、groups、terminal、workspaces の14画面です。
+Herdr connection、groups、terminal、workspaces、初回起動、空の一覧、検索結果なし、
+切断、再接続中、認証エラー、長いworkspace名の21画面です。
 `meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
 名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
 `settings`、`workspace-name`、`terminal-name`、`handoff`、
-`herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces` です。
+`herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces`、
+`welcome`、`empty`、`search-empty`、`disconnected`、`reconnecting`、
+`connection-error`、`long-workspaces` です。
 撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
+
+21画面の後に、検索→既存native fixture端末→キーボード開閉→設定→workspace切替sheet→
+戻る→iOS端からの戻るジェスチャを実際に操作します。検索条件の保持もassertします。
+この区間だけ既存の録画機構で `daily-interactions.mp4` を記録します。
+fixtureは既存 `poc-main` を開くことだけを許し、接続・遠隔操作・端末データの生成は行いません。
+これはnavigation/keyboard表示の検証であり、SSH入力の証拠にはしません。
+Androidも同じ21状態を任意の観測画像として採取し、既存full gateとdaily-use録画は維持します。
+
+小画面・大きい文字の明示的診断には workflow_dispatch の `ios_profile=compact-xl` を使います。
+同一commitのpristine test productsを指定して再利用できます。SE（第3世代）の新規Simulatorを
+作成し、OSのcontent sizeをextra-largeに設定して読み戻しを記録します。通常のPro系端末の
+結果と区別し、別runの画像として確認します。対応runtimeがなければ失敗を明示し、
+大型端末を小型端末と称するfallbackは行いません。
 
 - 保存済みサーバーやworkspace/paneの情報は表示用fixtureです。実サーバーで作成した証拠にはしません。
 - Herdr fixture は backend/runtimes、group、Agent metadata、native terminal の表示を確認します。画面上のseed状態は group作成や接続操作の成功を証明しません。

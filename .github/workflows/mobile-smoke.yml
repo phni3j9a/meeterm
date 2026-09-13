@@ -32,13 +32,18 @@ on:
         description: Optional exact-commit Mobile smoke run containing ios-test-products
         type: string
         default: ""
+      ios_profile:
+        description: Simulator layout profile (compact-xl is an explicit accessibility diagnostic)
+        type: choice
+        options: [default, compact-xl]
+        default: default
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: mobile-smoke-${{ github.ref }}-${{ inputs.platform || 'both' }}-${{ inputs.ios_suite || 'standard' }}
+  group: mobile-smoke-${{ github.ref }}-${{ inputs.platform || 'both' }}-${{ inputs.ios_suite || 'standard' }}-${{ inputs.ios_profile || 'default' }}
   cancel-in-progress: true
 
 env:
@@ -484,6 +489,8 @@ jobs:
           python3 scripts/ssh/fixture.py --check
 
       - name: Boot an available iPhone Simulator
+        env:
+          MEETERM_IOS_PROFILE: ${{ inputs.ios_profile || 'default' }}
         run: scripts/ci/ios-select-simulator.sh
 
       - name: Record Metal availability

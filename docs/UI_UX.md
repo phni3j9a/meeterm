@@ -36,6 +36,9 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 - Workspace rows show their terminal names. Selecting a workspace opens its
   selected pane. Pane tabs and Herdr groups retain the remote hierarchy.
 - Search and its list offset survive opening and leaving a workspace.
+- A two-screen native stack provides platform navigation transitions and the
+  iOS edge-back gesture. Switching terminals does not push additional routes.
+  Reduced Motion selects a fade; no terminal frames cross JavaScript.
 - Server management, naming, connection details, and settings have explicit
   close/cancel boundaries. Unsaved forms ask before discarding changes.
 - Connection progress, empty results, empty workspaces, lost connections,
@@ -69,6 +72,12 @@ is provenance and is not reproduced in meeterm.
 Icon integration follows the [Lucide React Native package](https://lucide.dev/guide/packages/lucide-react-native)
 and the [Expo SVG integration](https://docs.expo.dev/versions/latest/sdk/svg/).
 Expo selected the SVG version compatible with the repository's SDK.
+Navigation uses [React Navigation's native stack](https://reactnavigation.org/docs/native-stack-navigator/)
+and Expo-compatible `react-native-screens`; CNG regenerates both platform projects.
+
+Light supporting text and placeholders are checked against both the ivory
+background and the darker grouped surface (minimum 4.54:1). The primary
+white-on-brown button is 6.06:1. These calculations do not replace visual review.
 
 ## Verification and remaining work
 

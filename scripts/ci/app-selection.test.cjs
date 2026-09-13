@@ -232,6 +232,7 @@ function makeUiMocks() {
     IconButton,
     MONO: 'MONO',
     usePalette,
+    useReducedMotion: () => true,
   };
 }
 
@@ -261,7 +262,7 @@ function makeTerminalModule(native, environment) {
   return module;
 }
 
-function loadApp(environment, native) {
+function loadApp(environment, native, presentationOnly = false, smokeEnabled = false) {
   const source = fs.readFileSync(APP_SOURCE, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
     compilerOptions: {
@@ -288,13 +289,18 @@ function loadApp(environment, native) {
     ['./app/ConnectionForm', forms],
     ['./app/DailyUse', forms],
     ['./app/ui', ui],
+    // Navigation's native view/gesture execution belongs to mobile evidence.
+    // These tests retain their real App selection and registry assertions.
+    ['./app/WorkspaceNavigation', {
+      WorkspaceNavigation: ({ screen, workspaces, terminal }) => screen === 'terminal' ? terminal : workspaces,
+    }],
   ]);
   function localRequire(request) {
     if (moduleMap.has(request)) return moduleMap.get(request);
     return require(request);
   }
   const processForApp = { ...process, env: { ...process.env } };
-  processForApp.env.EXPO_PUBLIC_MEETERM_SMOKE = '0';
+  processForApp.env.EXPO_PUBLIC_MEETERM_SMOKE = smokeEnabled ? '1' : '0';
   const context = {
     require: localRequire,
     module: appModule,
@@ -315,8 +321,47 @@ function loadApp(environment, native) {
     globalThis,
   };
   vm.runInNewContext(transpiled, context, { filename: APP_SOURCE });
+  if (presentationOnly) return vm.runInNewContext('({ smokeFixture, smokeWorkspaceState, smokeRouteForUrl })', context);
   return appModule.exports.default;
 }
+
+test('public presentation fixtures stay release-gated and do not mutate shared connection state', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const production = loadApp(environment, native, true);
+  assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=welcome'), undefined);
+  const smoke = loadApp(environment, native, true, true);
+  for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces']) {
+    assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
+  }
+  assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
+  assert.equal(smoke.smokeFixture('welcome').profiles.length, 0);
+  assert.equal(smoke.smokeFixture('empty').panes.length, 0);
+  assert.equal(smoke.smokeFixture('search-empty').query, 'deployment');
+  assert.equal(smoke.smokeFixture('disconnected').connection.state, 'Disconnected');
+  assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
+  assert.equal(smoke.smokeFixture('workspaces').connection.state, 'Ready');
+  assert.equal(environment.calls.length, 0);
+});
+
+test('light supporting text and action colors retain readable contrast', () => {
+  const source = TypeScript.createSourceFile('ui.tsx', fs.readFileSync(path.join(REPO_ROOT, 'app/ui.tsx'), 'utf8'), TypeScript.ScriptTarget.Latest, true, TypeScript.ScriptKind.TSX);
+  let colors;
+  for (const statement of source.statements) {
+    if (!TypeScript.isVariableStatement(statement)) continue;
+    const declaration = statement.declarationList.declarations.find(item => item.name.getText(source) === 'LIGHT');
+    if (declaration) colors = Object.fromEntries(declaration.initializer.properties.map(item => [item.name.getText(source), item.initializer.text]));
+  }
+  assert.ok(colors);
+  const luminance = color => {
+    const [r, g, b] = color.slice(1).match(/../g).map(value => parseInt(value, 16) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return r * 0.2126 + g * 0.7152 + b * 0.0722;
+  };
+  for (const [text, background] of [['text', 'background'], ['muted', 'surface'], ['placeholder', 'surface'], ['accent', 'surface'], ['onAccent', 'accentFill']]) {
+    const values = [luminance(colors[text]), luminance(colors[background])].sort((a, b) => b - a);
+    assert.ok((values[0] + 0.05) / (values[1] + 0.05) >= 4.5, `${text} on ${background}`);
+  }
+});
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

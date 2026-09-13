@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
+  AccessibilityInfo,
   Image,
   Platform,
   Pressable,
@@ -17,8 +19,8 @@ export const LIGHT = {
   elevated: '#FFFFFF',
   border: '#E3DED5',
   text: '#302B25',
-  muted: '#756B5E',
-  placeholder: '#82786A',
+  muted: '#73695C',
+  placeholder: '#746A5D',
   accent: '#8B5E30',
   accentFill: '#85592E',
   onAccent: '#FFFFFF',
@@ -43,6 +45,17 @@ export const DARK: typeof LIGHT = {
 
 export type Palette = typeof LIGHT;
 export const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
+
+export function useReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then(value => { if (mounted) setReduced(value); }).catch(() => {});
+    const listener = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduced);
+    return () => { mounted = false; listener.remove(); };
+  }, []);
+  return reduced;
+}
 
 export function usePalette(preference: 'system' | 'light' | 'dark' = 'system') {
   const system = useColorScheme();

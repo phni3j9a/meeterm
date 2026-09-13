@@ -1,15 +1,28 @@
-# App illustration
+# App image assets
+
+## App icon
+
+`app-icon.png` is an opaque 1024 × 1024 close-up of the same meerkat,
+generated with ImageGen on 2026-09-13 using the alpha companion as reference.
+The platform applies its own icon mask; the asset has no baked rounded corners.
+Prompt: simplify the alert tan/ivory meerkat into a legible head-and-shoulders
+app icon, dark brown outlines, calm paper-colored background, no text, terminal
+symbol, shadow, or gradient. The 1254 px source was resized without changing
+its artwork. Original generation remains outside the repository.
+
+## Original mock illustration
 
 `meerkat-companion.webp` is an unchanged copy of the existing r3/r5 mock asset
 from `docs/mock/assets/meerkat-companion.webp`. Its ImageGen origin and prompt
 are recorded in `docs/mock/assets/README.md`.
 
-The image has a white RGB matte, not an alpha channel. The native app uses the
-original artwork on a small warm-paper field in dark mode and multiply blending
-on the light surface. It does not claim to implement the mock's SVG alpha filter.
+The original has a white RGB matte, not an alpha channel. It is kept for
+provenance; the current native app uses the transparent v2 below.
 
-An attempted ImageGen background extraction during app integration changed the
-illustration and was rejected; that output is not included in the app.
+An earlier ImageGen background extraction during the first app integration
+changed the illustration and was rejected. It is separate from the accepted
+2026-09-13 v2 below.
+
 # Meerkat companion v2
 
 `meerkat-companion-v2.png` was generated with the built-in ImageGen tool on

@@ -39,6 +39,13 @@ rm -f \
   "${artifact_dir}/standard-herdr-groups.png" \
   "${artifact_dir}/standard-herdr-terminal.png" \
   "${artifact_dir}/standard-herdr-workspaces.png" \
+  "${artifact_dir}/standard-welcome.png" \
+  "${artifact_dir}/standard-empty.png" \
+  "${artifact_dir}/standard-search-empty.png" \
+  "${artifact_dir}/standard-disconnected.png" \
+  "${artifact_dir}/standard-reconnecting.png" \
+  "${artifact_dir}/standard-connection-error.png" \
+  "${artifact_dir}/standard-long-workspaces.png" \
   "${artifact_dir}/ssh-terminal-input.png" \
   "${artifact_dir}/ssh-disconnected.png" \
   "${artifact_dir}/simulator.log"

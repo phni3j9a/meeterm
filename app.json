@@ -4,6 +4,7 @@
     "slug": "meeterm",
     "scheme": "meeterm",
     "version": "0.1.0",
+    "icon": "./app/assets/app-icon.png",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "plugins": [
