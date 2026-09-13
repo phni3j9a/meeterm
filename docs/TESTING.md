@@ -14,7 +14,7 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
 | Android | 既存のfull smokeと画像の実見。21状態はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
-| iOS `standard` | production保存4件、native入力7件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| iOS `standard` | production保存4件、native入力7件＋scroll gesture 1件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
 
@@ -112,7 +112,7 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 | `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
 | `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
 | `ssh` | 実SSH接続と短いnative入出力の確認 |
-| `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件だけの限定確認 |
+| `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |

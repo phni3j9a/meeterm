@@ -28,6 +28,7 @@ final class MeetermTerminalView: ExpoView {
   private let selectionBar = UIStackView()
   private let startHandle = UIButton(type: .system)
   private let endHandle = UIButton(type: .system)
+  private var scrollGestureDelegate: TerminalScrollGestureDelegate?
 
   private var cellSize: CGSize {
     TerminalRenderer.cellSize(fontSize: fontSize, scale: max(1, window?.screen.scale ?? contentScaleFactor))
@@ -134,6 +135,9 @@ final class MeetermTerminalView: ExpoView {
     renderingView.addGestureRecognizer(focusGesture)
     let scrollGesture = UIPanGestureRecognizer(target: self, action: #selector(scrollTerminal(_:)))
     scrollGesture.maximumNumberOfTouches = 1
+    let scrollDelegate = TerminalScrollGestureDelegate { [weak self] in self?.selectionStart != nil }
+    scrollGestureDelegate = scrollDelegate
+    scrollGesture.delegate = scrollDelegate
     renderingView.addGestureRecognizer(scrollGesture)
     focusGesture.require(toFail: scrollGesture)
     let selectionGesture = UILongPressGestureRecognizer(target: self, action: #selector(selectTerminal(_:)))

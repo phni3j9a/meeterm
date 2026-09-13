@@ -321,7 +321,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     globalThis,
   };
   vm.runInNewContext(transpiled, context, { filename: APP_SOURCE });
-  if (presentationOnly) return vm.runInNewContext('({ smokeFixture, smokeWorkspaceState, smokeRouteForUrl })', context);
+  if (presentationOnly) return vm.runInNewContext('({ smokeFixture, smokeWorkspaceState, smokeRouteForUrl, agentSummary })', context);
   return appModule.exports.default;
 }
 
@@ -341,6 +341,54 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
   assert.equal(smoke.smokeFixture('workspaces').connection.state, 'Ready');
   assert.equal(environment.calls.length, 0);
+});
+
+test('agent status counts stay attached to their labels when text wraps', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const { agentSummary } = loadApp(environment, native, true);
+  const panes = ['working', 'blocked', 'done', 'working'].map(status => ({ agent: { status } }));
+  assert.equal(agentSummary(panes, true), 'Needs attention\u00a01 · Working\u00a02 · Finished\u00a01');
+  assert.equal(agentSummary(panes, false), 'Status unavailable\u00a04');
+  assert.equal(agentSummary([{ agent: null }], true), '');
+});
+
+test('reduced-motion hook reads the initial preference, follows changes and cleans up', async () => {
+  // Run the real hook with a mocked platform settings boundary. This verifies
+  // its subscription lifecycle, not an OS setting or animation performance.
+  const source = TypeScript.createSourceFile('ui.tsx', fs.readFileSync(path.join(REPO_ROOT, 'app/ui.tsx'), 'utf8'), TypeScript.ScriptTarget.Latest, true, TypeScript.ScriptKind.TSX);
+  const declaration = source.statements.find(statement => TypeScript.isFunctionDeclaration(statement) && statement.name.text === 'useReducedMotion');
+  assert.ok(declaration);
+  const compiled = TypeScript.transpileModule(declaration.getText(source), { compilerOptions: { module: TypeScript.ModuleKind.CommonJS } }).outputText;
+  let listener;
+  let removed = false;
+  const moduleExports = {};
+  vm.runInNewContext(compiled, {
+    exports: moduleExports,
+    useEffect: React.useEffect,
+    useState: React.useState,
+    AccessibilityInfo: {
+      async isReduceMotionEnabled() { return true; },
+      addEventListener(event, callback) {
+        assert.equal(event, 'reduceMotionChanged');
+        listener = callback;
+        return { remove() { removed = true; } };
+      },
+    },
+  });
+  let observed;
+  function Probe() { observed = moduleExports.useReducedMotion(); return null; }
+  const root = createRoot();
+  try {
+    await act(async () => { root.render(React.createElement(Probe)); });
+    assert.equal(observed, true);
+    await act(async () => { listener(false); });
+    assert.equal(observed, false);
+    await act(async () => { listener(true); });
+    assert.equal(observed, true);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+  assert.equal(removed, true);
 });
 
 test('light supporting text and action colors retain readable contrast', () => {

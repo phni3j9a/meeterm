@@ -98,6 +98,17 @@ final class TerminalInputViewTests: XCTestCase {
     if !recordedIssue { appendValidation("case=multiline result=passed") }
   }
 
+  @MainActor func testHistoryScrollYieldsToHorizontalNavigation() {
+    XCTAssertFalse(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: 200, y: 5), originX: 4, selecting: false))
+    XCTAssertFalse(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: -200, y: 5), originX: 180, selecting: false))
+    XCTAssertTrue(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: 5, y: 200), originX: 4, selecting: false))
+    XCTAssertTrue(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: 5, y: -200), originX: 180, selecting: false))
+    XCTAssertTrue(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: 200, y: 5), originX: 180, selecting: true))
+    XCTAssertFalse(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: 200, y: 5), originX: 4, selecting: true))
+    XCTAssertTrue(TerminalScrollGestureDelegate.shouldBegin(velocity: CGPoint(x: -200, y: 5), originX: 4, selecting: true))
+    if !recordedIssue { appendValidation("case=scroll_gesture result=passed") }
+  }
+
   @MainActor func testPendingPasteIsDroppedAfterCancelComposition() async {
     var pastedCount = 0
     var commitCount = 0

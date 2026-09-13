@@ -78,6 +78,7 @@ NATIVE_INPUT_CASES = (
     "hardware_control",
     "hardware_shift_combinations",
     "marked_commit",
+    "scroll_gesture",
 )
 RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -1222,7 +1223,7 @@ def run_xcuitest(
                     raise SmokeFailure(stage, reason) from error
         if suite == "standard":
             # The standard UI invocation also selects the native input suite.
-            # Keep its seven-case contract separate from the UI route marker so
+            # Keep its native-case contract separate from the UI route marker so
             # a test that only launches the screen flow cannot satisfy input
             # coverage accidentally.
             try:

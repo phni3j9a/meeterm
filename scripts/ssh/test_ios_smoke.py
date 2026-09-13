@@ -207,6 +207,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             "case=hardware_control result=passed\n"
             "case=hardware_shift_combinations result=passed\n"
             "case=marked_commit result=passed\n"
+            "case=scroll_gesture result=passed\n"
         )
 
     @staticmethod

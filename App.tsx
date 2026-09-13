@@ -245,11 +245,11 @@ const AGENT_LABELS = { working: 'Working', blocked: 'Needs attention', done: 'Fi
 function agentSummary(panes: RemoteTerminal[], connected: boolean) {
   const agents = panes.flatMap(pane => pane.agent ? [pane.agent] : []);
   if (!agents.length) return '';
-  if (!connected) return `Status unavailable ${agents.length}`;
+  if (!connected) return `Status unavailable\u00a0${agents.length}`;
   const statuses = ['blocked', 'working', 'done', 'idle', 'unknown'] as const;
   return statuses.flatMap(status => {
     const count = agents.filter(agent => agent.status === status).length;
-    return count ? [`${AGENT_LABELS[status]} ${count}`] : [];
+    return count ? [`${AGENT_LABELS[status]}\u00a0${count}`] : [];
   }).join(' · ');
 }
 
@@ -911,7 +911,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <Icon name="search" color={homeColors.muted} size={28} />
     <Text style={[styles.emptyTitle, { color: homeColors.text }]}>No matching workspaces</Text>
     <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Try another name or clear your search.</Text>
-    <Pressable accessibilityRole="button" accessibilityLabel="Clear workspace search" onPress={() => setQuery('')} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Clear search</Text></Pressable>
   </View> : !attempted && profiles.length > 0 ? <View style={styles.savedHome}>
     <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>YOUR SERVERS</Text>
     {profiles.slice(0, 3).map(profile => <Pressable key={profile.id} accessibilityRole="button" accessibilityLabel={`Connect saved server ${profile.name}`} disabled={commandBusy} onPress={() => connectSavedProfile(profile)} style={({ pressed }) => [styles.savedHomeRow, { borderBottomColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Icon name="server" color={homeColors.muted} /><View style={styles.rowCopy}><Text numberOfLines={2} style={[styles.rowTitle, { color: homeColors.text }]}>{profile.name}</Text><Text numberOfLines={1} style={[styles.rowSubtitle, { color: homeColors.muted }]}>{profile.username}@{profile.host}</Text></View><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>)}
@@ -950,6 +949,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       onScroll={event => { listOffsets.current[searching ? 'search' : 'normal'] = event.nativeEvent.contentOffset.y; }}
       scrollEventThrottle={100}
       contentInsetAdjustmentBehavior="automatic"
+      automaticallyAdjustKeyboardInsets
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
     /></SafeAreaView>}
@@ -999,7 +999,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
         <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
-        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={ready} workspace={item} selected={item.id === workspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" />
+        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={ready} workspace={item} selected={item.id === workspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Keep related terminals together. Select a group to switch.</Text>
         {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>

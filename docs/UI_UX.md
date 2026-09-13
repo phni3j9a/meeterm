@@ -39,6 +39,9 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 - A two-screen native stack provides platform navigation transitions and the
   iOS edge-back gesture. Switching terminals does not push additional routes.
   Reduced Motion selects a fade; no terminal frames cross JavaScript.
+- The iOS history-pan delegate yields horizontal motion to navigation while
+  keeping selection dragging away from the left edge. Search lists use native
+  keyboard insets; clearing a query is one action in the search field.
 - iOS page sheets preserve the presenting screen's status-bar appearance.
   Android native dialogs use the same warm accent through a CNG config plugin.
 - Android native shortcut keys have 44 dp targets and native ripple feedback.
@@ -79,6 +82,10 @@ and the [Expo SVG integration](https://docs.expo.dev/versions/latest/sdk/svg/).
 Expo selected the SVG version compatible with the repository's SDK.
 Navigation uses [React Navigation's native stack](https://reactnavigation.org/docs/native-stack-navigator/)
 and Expo-compatible `react-native-screens`; CNG regenerates both platform projects.
+Gesture arbitration follows UIKit's
+[`gestureRecognizerShouldBegin`](https://developer.apple.com/documentation/uikit/uigesturerecognizerdelegate/gesturerecognizershouldbegin(_:))
+boundary. Keyboard spacing uses React Native's
+[`automaticallyAdjustKeyboardInsets`](https://reactnative.dev/docs/scrollview#automaticallyadjustkeyboardinsets).
 
 Light supporting text and placeholders are checked against both the ivory
 background and the darker grouped surface (minimum 4.54:1). The primary
@@ -86,8 +93,10 @@ white-on-brown button is 6.06:1. These calculations do not replace visual review
 
 ## Verification and remaining work
 
-TypeScript, eleven app selection/presentation tests, and the Python driver
+TypeScript, thirteen app selection/presentation tests, and the Python driver
 regressions pass locally. These checks do not prove rendering or motion.
+The Reduced Motion hook test mocks the platform preference boundary; it verifies
+initial state, change notifications, and cleanup, not the actual OS setting.
 Android CNG generation also passed locally; its generated day/night colors and
 `AppTheme` references were inspected. Generated native directories stay ignored.
 
@@ -105,6 +114,26 @@ Image review found the iOS dark-presenter/light-sheet status-bar mismatch and
 crowded Android shortcut targets. The subsequent fixes require new mobile
 evidence. Android monochrome emoji remain the documented renderer limitation;
 this UI work does not change terminal rasterization or claim color-emoji parity.
+
+The next source (`d6da311`) passed the fresh iOS `standard` job in
+[34752962390](https://github.com/phni3j9a/meeterm/actions/runs/34752962390), again
+with Metal. All fourteen images and the foundation were viewed; the sheet's
+status bar now remains legible over its dark presenter. Its short SSH run
+[34753879182](https://github.com/phni3j9a/meeterm/actions/runs/34753879182) passed
+real native input, remote acknowledgment, and disconnect; both images were viewed.
+General CI [34752962383](https://github.com/phni3j9a/meeterm/actions/runs/34752962383)
+passed, including SHA-verified Herdr 0.9.0 over the isolated russh endpoint.
+
+The exact-source SE/XL `polish` diagnostic
+[34753879206](https://github.com/phni3j9a/meeterm/actions/runs/34753879206) failed
+at edge-back (Swift line 600). Its seven states, search, native keyboard,
+settings, picker, and explicit Back checks ran first. All seven images and
+sampled navigation frames were inspected. The terminal's unrestricted pan
+recognizer consumed horizontal motion; the following source adds a narrow
+native gesture policy and an eighth native regression without removing the
+existing seven input checks. The new gesture policy still needs mobile evidence.
+The partly keyboard-covered duplicate clear action was removed, and status
+counts now use a nonbreaking space to prevent an orphaned number.
 
 Still required on the final source: Android full, iOS standard, `polish`, short
 SSH, actual inspection of both platforms' screenshots, interaction/back/keyboard
