@@ -58,6 +58,10 @@ rm -f \
   "${artifact_dir}/standard-workspace-name.png" \
   "${artifact_dir}/standard-terminal-name.png" \
   "${artifact_dir}/standard-handoff.png" \
+  "${artifact_dir}/standard-runtime-picker.png" \
+  "${artifact_dir}/standard-runtime-partial-error.png" \
+  "${artifact_dir}/standard-runtime-empty.png" \
+  "${artifact_dir}/standard-runtime-create.png" \
   "${artifact_dir}/standard-herdr-connection.png" \
   "${artifact_dir}/standard-herdr-groups.png" \
   "${artifact_dir}/standard-herdr-terminal.png" \

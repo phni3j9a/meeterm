@@ -155,6 +155,10 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-workspace-name.png",
       "standard-terminal-name.png",
       "standard-handoff.png",
+      "standard-runtime-picker.png",
+      "standard-runtime-partial-error.png",
+      "standard-runtime-empty.png",
+      "standard-runtime-create.png",
       "standard-herdr-connection.png",
       "standard-herdr-groups.png",
       "standard-herdr-terminal.png",
@@ -564,6 +568,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let screens = [
       "home", "servers", "connection", "password", "workspaces", "terminal",
       "settings", "workspace-name", "terminal-name", "handoff",
+      "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
     ]
     for screen in screens {
@@ -595,7 +600,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("standard_complete")
   }
 
-  /// Additional states and native navigation, separate from the 14-screen
+  /// Additional states and native navigation, separate from the 18-screen
   /// daily gate so both scopes retain their own bounded execution budget.
   func testPolishStatesAndNavigation() throws {
     for screen in ["welcome", "empty", "search-empty", "disconnected", "reconnecting", "connection-error", "long-workspaces"] {
@@ -821,14 +826,26 @@ final class MeetermSmokeUITests: XCTestCase {
     case "handoff":
       return app.staticTexts["Continue on your computer"].waitForExistence(timeout: 30)
         && waitForHittable(button("Disconnect"), timeout: 30)
+    case "runtime-picker":
+      return app.staticTexts["Choose a runtime for Smoke server"].waitForExistence(timeout: 30)
+        && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
+        && waitForHittable(button("Herdr runtime default"), timeout: 30)
+        && button("Herdr runtime paused").waitForExistence(timeout: 30)
+    case "runtime-partial-error":
+      return app.staticTexts["Herdr is not available over SSH. Open Herdr on your computer or check its installation."].waitForExistence(timeout: 30)
+        && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
+    case "runtime-empty":
+      return app.staticTexts["No running tmux sessions found."].waitForExistence(timeout: 30)
+        && button("Herdr runtime paused").waitForExistence(timeout: 30)
+        && app.staticTexts["Stopped"].waitForExistence(timeout: 30)
+    case "runtime-create":
+      return app.staticTexts["Create tmux session"].waitForExistence(timeout: 30)
+        && input("tmux session name").waitForExistence(timeout: 30)
+        && waitForHittable(app.buttons["runtime-tmux-create-submit"], timeout: 30)
     case "herdr-connection":
-      let backend = button("herdr backend")
-      let runtime = input("Herdr session name")
-      return app.staticTexts["Connect to server"].waitForExistence(timeout: 30)
-        && waitForHittable(backend, timeout: 30)
-        && waitForSelected(backend)
-        && runtime.waitForExistence(timeout: 30)
-        && waitForShortFieldValue(runtime, expected: "dev", timeout: 30)
+      return app.staticTexts["Choose a runtime for Smoke server"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Herdr runtime default"), timeout: 30)
+        && app.staticTexts["Last used"].waitForExistence(timeout: 30)
     case "herdr-groups":
       let title = app.staticTexts["Switch group"]
       let development = button("Group Development")

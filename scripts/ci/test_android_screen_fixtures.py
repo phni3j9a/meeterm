@@ -15,9 +15,9 @@ spec.loader.exec_module(fixtures)
 
 
 class PresentationReadinessTests(unittest.TestCase):
-    def test_all_twenty_one_routes_require_visible_content(self):
-        self.assertEqual(len(fixtures.SCREEN_NAMES), 21)
-        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 21)
+    def test_all_twenty_five_routes_require_visible_content(self):
+        self.assertEqual(len(fixtures.SCREEN_NAMES), 25)
+        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 25)
         for screen in fixtures.SCREEN_NAMES:
             with self.subTest(screen=screen):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
@@ -38,6 +38,33 @@ class PresentationReadinessTests(unittest.TestCase):
         empty = {"A fresh workspace starts here.", "Create workspace"}
         self.assertEqual(fixtures.screen_checks("empty", empty), [])
         self.assertTrue(fixtures.screen_checks("disconnected", empty))
+
+    def test_runtime_picker_requires_both_backends_and_stopped_herdr(self):
+        values = {
+            "Choose a runtime for Smoke server",
+            "tmux runtime meeterm",
+            "Herdr runtime default",
+            "Herdr runtime paused",
+        }
+        self.assertEqual(fixtures.screen_checks("runtime-picker", values), [])
+        values.remove("Herdr runtime paused")
+        self.assertIn("herdr_paused", fixtures.screen_checks("runtime-picker", values))
+
+    def test_runtime_create_requires_the_native_form_contract(self):
+        values = {
+            "Create tmux session",
+            "tmux session name",
+            "dev.meeterm.app:id/runtime-tmux-create-submit",
+        }
+        self.assertEqual(fixtures.screen_checks("runtime-create", values), [])
+
+    def test_herdr_connection_route_is_the_picker_with_last_used_hint(self):
+        values = {
+            "Choose a runtime for Smoke server",
+            "Herdr runtime default",
+            "Last used",
+        }
+        self.assertEqual(fixtures.screen_checks("herdr-connection", values), [])
 
 
 if __name__ == "__main__":
