@@ -8,12 +8,141 @@ use crate::ssh::{
     connection_snapshot, disconnect_terminal, forget_host_key, respond_to_host_key,
     terminal_revision,
 };
-use crate::workspace::Backend;
+use crate::workspace::{
+    Backend, RuntimeCandidate, RuntimeSection, RuntimeSectionState, RuntimeState,
+};
 use zeroize::Zeroizing;
 
 const FFI_ERROR: i32 = -1;
 const FFI_INVALID_KEY: i32 = -2;
 pub const MAX_WORKSPACE_STATE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_RUNTIME_DISCOVERY_BYTES: usize = 1024 * 1024;
+const RUNTIME_DISPLAY_NAME_BYTES: usize = 256;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeDiscoveryBridge {
+    revision: u64,
+    backends: Vec<RuntimeBackendBridge>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeBackendBridge {
+    backend: &'static str,
+    state: &'static str,
+    error_code: String,
+    error_message: String,
+    candidates: Vec<RuntimeCandidateBridge>,
+    can_create: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeCandidateBridge {
+    id: String,
+    backend: &'static str,
+    name: String,
+    state: &'static str,
+    selectable: bool,
+    is_default: bool,
+    last_used: bool,
+    error_code: String,
+    error_message: String,
+}
+
+fn runtime_backend_name(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Tmux => "tmux",
+        Backend::Herdr => "herdr",
+    }
+}
+
+fn runtime_section_state(state: &RuntimeSectionState) -> &'static str {
+    match state {
+        RuntimeSectionState::Loading => "loading",
+        RuntimeSectionState::Success | RuntimeSectionState::Empty => "ready",
+        RuntimeSectionState::Error => "error",
+    }
+}
+
+fn runtime_candidate_state(state: &RuntimeState) -> &'static str {
+    match state {
+        RuntimeState::Running => "running",
+        RuntimeState::Stopped | RuntimeState::Unknown => "stopped",
+    }
+}
+
+fn runtime_display_name(name: &str) -> String {
+    let mut end = name.len().min(RUNTIME_DISPLAY_NAME_BYTES);
+    while end > 0 && !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_owned()
+}
+
+fn runtime_error_text(value: Option<&str>, max_bytes: usize) -> String {
+    let value = value.unwrap_or_default();
+    let mut end = value.len().min(max_bytes);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+fn runtime_backend_bridge(
+    backend: Backend,
+    section: &RuntimeSection,
+    can_create: bool,
+) -> RuntimeBackendBridge {
+    let backend_name = runtime_backend_name(backend);
+    RuntimeBackendBridge {
+        backend: backend_name,
+        state: runtime_section_state(&section.state),
+        error_code: section.error_code.clone().unwrap_or_default(),
+        error_message: section.error_message.clone().unwrap_or_default(),
+        candidates: section
+            .candidates
+            .iter()
+            .map(|candidate: &RuntimeCandidate| RuntimeCandidateBridge {
+                id: candidate.id.clone(),
+                backend: backend_name,
+                // The platform adapters expose a 256-byte display field;
+                // the native binding still retains the complete opaque
+                // candidate and remote name for selection.
+                name: runtime_display_name(&candidate.name),
+                state: runtime_candidate_state(&candidate.state),
+                selectable: candidate.selectable,
+                is_default: candidate.suggested,
+                // Persisted profile hints are applied by the platform layer;
+                // the native host connection does not know the profile ID.
+                last_used: false,
+                error_code: runtime_error_text(
+                    candidate.error_code.as_deref(),
+                    crate::ssh::ERROR_CODE_CAPACITY,
+                ),
+                error_message: runtime_error_text(
+                    candidate.error_message.as_deref(),
+                    crate::ssh::ERROR_MESSAGE_CAPACITY,
+                ),
+            })
+            .collect(),
+        can_create,
+    }
+}
+
+fn runtime_discovery_bytes(id: u64) -> Option<Vec<u8>> {
+    let snapshot = crate::ssh::runtime_discovery_snapshot(id).ok()?;
+    let bridge = RuntimeDiscoveryBridge {
+        revision: snapshot.discovery_revision,
+        backends: vec![
+            runtime_backend_bridge(Backend::Tmux, &snapshot.tmux, true),
+            runtime_backend_bridge(Backend::Herdr, &snapshot.herdr, false),
+        ],
+    };
+    let bytes = serde_json::to_vec(&bridge).ok()?;
+    (bytes.len() <= MAX_RUNTIME_DISCOVERY_BYTES).then_some(bytes)
+}
 
 fn terminal_error_code(error: crate::terminal::TerminalError) -> i32 {
     match error {
@@ -540,6 +669,251 @@ pub unsafe extern "C" fn meeterm_connect_backend(
     .unwrap_or_else(connection_error_code)
 }
 
+/// Authenticate an SSH host and enter the native runtime picker. Unlike
+/// `meeterm_connect_backend`, this operation has no backend/runtime target and
+/// never creates or attaches a session before the caller selects a candidate.
+/// The credential argument order intentionally matches the existing connect
+/// ABI so platform adapters can share their transient decoding path.
+///
+/// # Safety
+/// Every non-empty pointer must point to the stated number of readable UTF-8
+/// bytes for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_connect_host(
+    id: u64,
+    host: *const u8,
+    host_length: usize,
+    port: u16,
+    username: *const u8,
+    username_length: usize,
+    private_key: *const u8,
+    private_key_length: usize,
+    passphrase: *const u8,
+    passphrase_length: usize,
+    known_hosts_path: *const u8,
+    known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
+) -> i32 {
+    let Ok(host) = (unsafe { utf8_argument(host, host_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(username) = (unsafe { utf8_argument(username, username_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(private_key) =
+        (unsafe { utf8_argument(private_key, private_key_length) }).map(Zeroizing::new)
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(passphrase) =
+        (unsafe { utf8_argument(passphrase, passphrase_length) }).map(Zeroizing::new)
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(known_hosts_path) =
+        (unsafe { utf8_argument(known_hosts_path, known_hosts_path_length) })
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(auth_method) = (unsafe { utf8_argument(auth_method, auth_method_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(password) = (unsafe { utf8_argument(password, password_length) }).map(Zeroizing::new)
+    else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let credentials = match auth_method.as_str() {
+        "" | "publicKey" => {
+            if !password.is_empty() {
+                return ConnectionError::InvalidArgument.code();
+            }
+            AuthOptions::PublicKey {
+                private_key,
+                passphrase: (!passphrase.is_empty()).then_some(passphrase),
+            }
+        }
+        "password" => {
+            if !private_key.is_empty() || !passphrase.is_empty() {
+                return ConnectionError::InvalidArgument.code();
+            }
+            AuthOptions::Password { password }
+        }
+        _ => return ConnectionError::InvalidArgument.code(),
+    };
+    crate::ssh::connect_host(
+        id,
+        ConnectOptions {
+            host,
+            port,
+            username,
+            credentials,
+            known_hosts_path: known_hosts_path.into(),
+            backend: Backend::Tmux,
+            runtime: None,
+        },
+    )
+    .map(|()| 0)
+    .unwrap_or_else(connection_error_code)
+}
+
+/// Ask the authenticated host actor to refresh both picker sections.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_list_runtimes(id: u64) -> i32 {
+    crate::ssh::list_runtimes(id)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+fn copy_runtime_discovery(id: u64, output: *mut u8, capacity: usize) -> usize {
+    let Some(bytes) = runtime_discovery_bytes(id) else {
+        return 0;
+    };
+    if output.is_null() || capacity < bytes.len() {
+        return bytes.len();
+    }
+    if !bytes.is_empty() {
+        // SAFETY: callers of the exported wrappers promise writable storage;
+        // this branch proves it is large enough for the complete payload.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()) };
+    }
+    bytes.len()
+}
+
+/// Return the bounded runtime picker payload size. The public bridge shape is
+/// `{revision, backends}`; it contains opaque candidate IDs and display state,
+/// never executable paths, sockets, session directories, or terminal bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_runtime_discovery_size(id: u64) -> usize {
+    runtime_discovery_bytes(id).map_or(0, |bytes| bytes.len())
+}
+
+/// Copy the bounded runtime picker payload for the iOS C ABI and Android JNI
+/// adapter. If `output` is null or too small, no bytes are copied and the
+/// required length is returned.
+///
+/// # Safety
+/// When `output` is non-null and `capacity` is at least the returned length,
+/// it must point to writable storage for that many bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_discovery(
+    id: u64,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    copy_runtime_discovery(id, output, capacity)
+}
+
+/// Compatibility aliases used by an earlier native adapter draft. Keep them
+/// byte-for-byte identical to the canonical runtime-discovery ABI so there is
+/// one public metadata shape and one size bound.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_runtime_snapshot_size(id: u64) -> usize {
+    meeterm_runtime_discovery_size(id)
+}
+
+/// # Safety
+/// See [`meeterm_runtime_discovery`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_snapshot(
+    id: u64,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    // SAFETY: this compatibility wrapper has the same caller contract as the
+    // canonical byte-copy operation.
+    unsafe { meeterm_runtime_discovery(id, output, capacity) }
+}
+
+/// Select a candidate ID returned by the current runtime snapshot. Raw
+/// session IDs, socket paths, and command strings are not accepted here.
+///
+/// # Safety
+/// For nonzero length, `candidate` must point to that many readable UTF-8
+/// bytes for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_select_runtime(
+    id: u64,
+    candidate: *const u8,
+    candidate_length: usize,
+) -> i32 {
+    if candidate_length > 128 {
+        return ConnectionError::InvalidArgument.code();
+    }
+    let Ok(candidate) = (unsafe { utf8_argument(candidate, candidate_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    crate::ssh::select_runtime(id, &candidate)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Request a fresh runtime list using the authenticated SSH actor.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_refresh_runtimes(id: u64) -> i32 {
+    meeterm_list_runtimes(id)
+}
+
+/// Explicitly create and select a detached tmux runtime. Herdr creation/start
+/// is rejected until the isolated 0.9.0 lifecycle proof is available.
+///
+/// # Safety
+/// Every non-empty pointer must point to the stated number of readable UTF-8
+/// bytes for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_create_runtime(
+    id: u64,
+    backend: *const u8,
+    backend_length: usize,
+    name: *const u8,
+    name_length: usize,
+) -> i32 {
+    if backend_length > 32 || name_length > 4096 {
+        return ConnectionError::InvalidArgument.code();
+    }
+    let (Ok(backend), Ok(name)) = (unsafe { utf8_argument(backend, backend_length) }, unsafe {
+        utf8_argument(name, name_length)
+    }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let backend = if backend.is_empty() {
+        Backend::Tmux
+    } else if let Some(backend) = Backend::parse(&backend) {
+        backend
+    } else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    crate::ssh::create_runtime(id, backend, &name)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Canonical iOS/Android operation for the explicitly supported tmux create
+/// action. Herdr creation has no public ABI here and remains rejected by the
+/// native selector.
+///
+/// # Safety
+/// For nonzero length, `name` must point to that many readable UTF-8 bytes for
+/// the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_create_tmux_session(
+    id: u64,
+    name: *const u8,
+    name_length: usize,
+) -> i32 {
+    if name_length > crate::tmux::MAX_SESSION_NAME_BYTES {
+        return ConnectionError::InvalidArgument.code();
+    }
+    let Ok(name) = (unsafe { utf8_argument(name, name_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    crate::ssh::create_runtime(id, Backend::Tmux, &name)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
 /// Abort an SSH task while retaining its terminal ID for state polling.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_disconnect(id: u64) -> i32 {
@@ -820,6 +1194,98 @@ mod session_abi_tests {
             unsafe { meeterm_workspace_state(0, std::ptr::null_mut(), 0) },
             0
         );
+    }
+
+    #[test]
+    fn runtime_discovery_abi_matches_platform_shape_without_private_paths() {
+        let id = meeterm_create_terminal(80, 24);
+        assert_ne!(id, 0);
+        let required = meeterm_runtime_discovery_size(id);
+        assert!(required > 0 && required <= MAX_RUNTIME_DISCOVERY_BYTES);
+        assert_eq!(required, meeterm_runtime_snapshot_size(id));
+        assert_eq!(
+            unsafe { meeterm_runtime_discovery(id, std::ptr::null_mut(), 0) },
+            required
+        );
+
+        let mut bytes = vec![0_u8; required];
+        let copied = unsafe { meeterm_runtime_discovery(id, bytes.as_mut_ptr(), bytes.len()) };
+        assert_eq!(copied, required);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["revision"], 0);
+        let backends = value["backends"].as_array().unwrap();
+        assert_eq!(backends.len(), 2);
+        assert_eq!(backends[0]["backend"], "tmux");
+        assert_eq!(backends[0]["state"], "loading");
+        assert_eq!(backends[0]["canCreate"], true);
+        assert_eq!(backends[1]["backend"], "herdr");
+        assert_eq!(backends[1]["state"], "loading");
+        assert_eq!(backends[1]["canCreate"], false);
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("socket_path"));
+        assert!(!text.contains("session_dir"));
+        assert!(!text.contains("executable"));
+        assert_eq!(meeterm_destroy_terminal(id), 1);
+    }
+
+    #[test]
+    fn runtime_candidate_bridge_preserves_selection_and_bounded_error_state() {
+        let long_message = "あ".repeat(200);
+        let section = RuntimeSection {
+            state: RuntimeSectionState::Success,
+            candidates: vec![
+                RuntimeCandidate {
+                    id: "running".into(),
+                    backend: Backend::Tmux,
+                    name: "meeterm".into(),
+                    state: RuntimeState::Running,
+                    selectable: true,
+                    suggested: true,
+                    error_code: None,
+                    error_message: None,
+                },
+                RuntimeCandidate {
+                    id: "stopped".into(),
+                    backend: Backend::Herdr,
+                    name: "default".into(),
+                    state: RuntimeState::Stopped,
+                    selectable: false,
+                    suggested: false,
+                    error_code: None,
+                    error_message: None,
+                },
+                RuntimeCandidate {
+                    id: "failed-selection".into(),
+                    backend: Backend::Tmux,
+                    name: "work".into(),
+                    state: RuntimeState::Running,
+                    selectable: false,
+                    suggested: false,
+                    error_code: Some("runtime_selection".into()),
+                    error_message: Some(long_message),
+                },
+            ],
+            error_code: None,
+            error_message: None,
+        };
+        let value = serde_json::to_value(runtime_backend_bridge(Backend::Tmux, &section, true))
+            .expect("runtime bridge JSON");
+        let candidates = value["candidates"].as_array().expect("candidate array");
+
+        assert_eq!(candidates[0]["state"], "running");
+        assert_eq!(candidates[0]["selectable"], true);
+        assert_eq!(candidates[0]["errorCode"], "");
+        assert_eq!(candidates[0]["errorMessage"], "");
+
+        assert_eq!(candidates[1]["state"], "stopped");
+        assert_eq!(candidates[1]["selectable"], false);
+
+        assert_eq!(candidates[2]["selectable"], false);
+        assert_eq!(candidates[2]["errorCode"], "runtime_selection");
+        let message = candidates[2]["errorMessage"].as_str().unwrap();
+        assert!(message.len() <= crate::ssh::ERROR_MESSAGE_CAPACITY);
+        assert!(message.is_char_boundary(message.len()));
+        assert_eq!(message.chars().count(), 85);
     }
 
     #[test]

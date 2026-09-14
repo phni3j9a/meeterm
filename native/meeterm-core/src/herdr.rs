@@ -20,6 +20,12 @@ pub(crate) const MAX_SNAPSHOT_ENTITIES: usize = 4096;
 pub(crate) const MAX_SNAPSHOT_ID_BYTES: usize = 512;
 pub(crate) const MAX_SNAPSHOT_NAME_BYTES: usize = 4096;
 pub(crate) const MAX_TERMINAL_DIMENSION: u16 = 4096;
+pub(crate) const MAX_SESSION_LIST_ENTRIES: usize = 256;
+pub(crate) const MAX_HERDR_SESSION_NAME_BYTES: usize = 64;
+pub(crate) const MAX_EXECUTABLE_PATH_BYTES: usize = 4096;
+pub(crate) const HERDR_VERSION: &str = "0.9.0";
+pub(crate) const HERDR_PROTOCOL: u32 = 22;
+pub(crate) const HERDR_SCHEMA: u32 = 1;
 
 /// A decoding or command-construction failure in this module.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +68,90 @@ impl fmt::Display for HerdrError {
 }
 
 impl std::error::Error for HerdrError {}
+
+/// The public `herdr session list --json` row. Socket and session-directory
+/// fields from the upstream response are intentionally not retained here;
+/// they are native connection capabilities, never picker data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionInfo {
+    pub(crate) name: String,
+    pub(crate) default: bool,
+    pub(crate) running: bool,
+}
+
+/// Parse the official v0.9.0 session-list envelope and keep only the fields
+/// needed by the runtime picker. This parser is deliberately strict about
+/// required types and bounded cardinality while ignoring additive upstream
+/// fields such as `socket_path` and `session_dir`.
+pub(crate) fn decode_session_list(value: &Value) -> Result<Vec<SessionInfo>, HerdrError> {
+    let root = as_object(value, "session list")?;
+    let sessions = root
+        .get("sessions")
+        .ok_or_else(|| HerdrError::InvalidRecord("session list.sessions is missing".to_owned()))?
+        .as_array()
+        .ok_or_else(|| {
+            HerdrError::InvalidRecord("session list.sessions must be an array".to_owned())
+        })?;
+    if sessions.len() > MAX_SESSION_LIST_ENTRIES {
+        return Err(HerdrError::InvalidRecord(format!(
+            "session list exceeds {MAX_SESSION_LIST_ENTRIES} entries"
+        )));
+    }
+    let mut names = HashSet::with_capacity(sessions.len());
+    let mut decoded = Vec::with_capacity(sessions.len());
+    for value in sessions {
+        let object = as_object(value, "session list entry")?;
+        let name = bounded_required_string(
+            object,
+            "name",
+            "session list entry",
+            MAX_HERDR_SESSION_NAME_BYTES,
+        )?;
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.chars().any(char::is_control)
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(HerdrError::InvalidRecord(
+                "session list entry name is invalid".to_owned(),
+            ));
+        }
+        if !names.insert(name.to_owned()) {
+            return Err(HerdrError::InvalidRecord(format!(
+                "duplicate session name {name:?}"
+            )));
+        }
+        decoded.push(SessionInfo {
+            name: name.to_owned(),
+            default: object
+                .get("default")
+                .ok_or_else(|| {
+                    HerdrError::InvalidRecord("session list entry.default is missing".to_owned())
+                })?
+                .as_bool()
+                .ok_or_else(|| {
+                    HerdrError::InvalidRecord(
+                        "session list entry.default must be a boolean".to_owned(),
+                    )
+                })?,
+            running: object
+                .get("running")
+                .ok_or_else(|| {
+                    HerdrError::InvalidRecord("session list entry.running is missing".to_owned())
+                })?
+                .as_bool()
+                .ok_or_else(|| {
+                    HerdrError::InvalidRecord(
+                        "session list entry.running must be a boolean".to_owned(),
+                    )
+                })?,
+        });
+    }
+    Ok(decoded)
+}
 
 /// Incremental newline-delimited JSON decoder.
 ///
@@ -647,6 +737,7 @@ pub(crate) fn shell_quote(value: &str) -> Result<String, HerdrError> {
 
 /// Build a remote Herdr command. The session selector is always explicit so
 /// inherited HERDR_SESSION or socket environment cannot redirect the command.
+#[allow(dead_code)]
 pub(crate) fn command(runtime: Option<&str>, args: &[&str]) -> Result<String, HerdrError> {
     let session = runtime.unwrap_or("default");
     if session.is_empty() {
@@ -665,6 +756,85 @@ pub(crate) fn command(runtime: Option<&str>, args: &[&str]) -> Result<String, He
             .collect::<Result<Vec<_>, _>>()?,
     );
     Ok(parts.join(" "))
+}
+
+/// Build a remote Herdr command with the connection-scoped resolved absolute
+/// executable. Keeping this separate from [`command`] preserves the old
+/// parser/fixture helper while production selected-runtime operations use one
+/// validated binary for every CLI invocation.
+pub(crate) fn command_with_executable(
+    executable: &str,
+    runtime: Option<&str>,
+    args: &[&str],
+) -> Result<String, HerdrError> {
+    if !executable.starts_with('/')
+        || executable.len() > MAX_EXECUTABLE_PATH_BYTES
+        || executable.chars().any(char::is_control)
+    {
+        return Err(HerdrError::InvalidCommand(
+            "Herdr executable must be a bounded absolute path".to_owned(),
+        ));
+    }
+    let session = runtime.unwrap_or("default");
+    if session.is_empty() {
+        return Err(HerdrError::InvalidCommand(
+            "Herdr session name cannot be empty".to_owned(),
+        ));
+    }
+    let mut parts = vec![
+        shell_quote(executable)?,
+        "--session".to_owned(),
+        shell_quote(session)?,
+    ];
+    parts.extend(
+        args.iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    Ok(parts.join(" "))
+}
+
+/// A fixed remote resolver. It checks the non-interactive SSH PATH first, then
+/// common direct/Homebrew/mise/Nix locations. Only an absolute executable and
+/// an exact 0.9.0 version line are accepted. Exit 127 means no candidate was
+/// found; exit 78 means candidates existed but were incompatible.
+pub(crate) fn resolver_command() -> &'static str {
+    r#"found=0; for candidate in "$(command -v herdr 2>/dev/null || true)" "$HOME/.cargo/bin/herdr" "$HOME/.local/bin/herdr" "/usr/local/bin/herdr" "/opt/homebrew/bin/herdr" "$HOME/.homebrew/bin/herdr" "$HOME/.linuxbrew/bin/herdr" "$HOME/.local/share/mise/installs/herdr/0.9.0/bin/herdr" "$HOME/.local/share/mise/installs/herdr/latest/bin/herdr" "$HOME/.nix-profile/bin/herdr" "/nix/var/nix/profiles/default/bin/herdr"; do case "$candidate" in /*) ;; *) continue ;; esac; [ -x "$candidate" ] || continue; found=1; version=$("$candidate" --version 2>/dev/null | head -n 1) || continue; case "$version" in *"0.9.0"*) printf '%s\t%s\n' "$candidate" "$version"; exit 0 ;; esac; done; [ "$found" -eq 1 ] && exit 78 || exit 127"#
+}
+
+pub(crate) fn parse_resolved_executable(output: &[u8]) -> Result<String, HerdrError> {
+    let mut lines = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty());
+    let line = lines
+        .next()
+        .ok_or_else(|| HerdrError::InvalidCommand("Herdr resolver returned no path".to_owned()))?;
+    if lines.next().is_some() {
+        return Err(HerdrError::InvalidCommand(
+            "Herdr resolver returned multiple records".to_owned(),
+        ));
+    }
+    let separator = line.iter().position(|byte| *byte == b'\t').ok_or_else(|| {
+        HerdrError::InvalidCommand("Herdr resolver returned an invalid record".to_owned())
+    })?;
+    let (path, version) = (&line[..separator], &line[separator + 1..]);
+    let path = std::str::from_utf8(path)
+        .map_err(|_| HerdrError::InvalidCommand("Herdr path is not UTF-8".to_owned()))?;
+    let version = std::str::from_utf8(version)
+        .map_err(|_| HerdrError::InvalidCommand("Herdr version is not UTF-8".to_owned()))?;
+    if path.is_empty()
+        || path.len() > MAX_EXECUTABLE_PATH_BYTES
+        || !path.starts_with('/')
+        || path.chars().any(char::is_control)
+        || !version
+            .split_whitespace()
+            .any(|token| token == HERDR_VERSION)
+    {
+        return Err(HerdrError::InvalidCommand(
+            "Herdr executable is not compatible with 0.9.0".to_owned(),
+        ));
+    }
+    Ok(path.to_owned())
 }
 
 fn as_object<'a>(value: &'a Value, context: &str) -> Result<&'a Map<String, Value>, HerdrError> {
@@ -1089,5 +1259,80 @@ mod tests {
             command(Some("work"), &["status", "--json"]).unwrap(),
             "herdr --session work status --json"
         );
+    }
+
+    #[test]
+    fn session_list_keeps_default_and_running_state_without_paths() {
+        let value = json!({
+            "sessions": [
+                {
+                    "name": "default",
+                    "default": true,
+                    "running": true,
+                    "socket_path": "/private/default/herdr.sock",
+                    "session_dir": "/private/default"
+                },
+                {
+                    "name": "stopped-work",
+                    "default": false,
+                    "running": false,
+                    "socket_path": "/private/work/herdr.sock",
+                    "session_dir": "/private/work"
+                }
+            ]
+        });
+        let sessions = decode_session_list(&value).unwrap();
+        assert_eq!(sessions[0].name, "default");
+        assert!(sessions[0].default && sessions[0].running);
+        assert_eq!(sessions[1].name, "stopped-work");
+        assert!(!sessions[1].default && !sessions[1].running);
+    }
+
+    #[test]
+    fn session_list_is_bounded_and_rejects_duplicate_or_control_names() {
+        let too_many = json!({
+            "sessions": (0..=MAX_SESSION_LIST_ENTRIES)
+                .map(|index| json!({
+                    "name": format!("session-{index}"),
+                    "default": index == 0,
+                    "running": true
+                }))
+                .collect::<Vec<_>>()
+        });
+        assert!(decode_session_list(&too_many).is_err());
+
+        let duplicate = json!({
+            "sessions": [
+                {"name":"same", "default":true, "running":true},
+                {"name":"same", "default":false, "running":false}
+            ]
+        });
+        assert!(decode_session_list(&duplicate).is_err());
+
+        let control = json!({
+            "sessions": [{"name":"bad\nname", "default":false, "running":true}]
+        });
+        assert!(decode_session_list(&control).is_err());
+    }
+
+    #[test]
+    fn resolved_executable_is_absolute_bounded_and_reusable_for_all_commands() {
+        let executable = parse_resolved_executable(b"/opt/herdr bin/herdr\tHerdr 0.9.0\n").unwrap();
+        assert_eq!(executable, "/opt/herdr bin/herdr");
+        assert_eq!(
+            command_with_executable(&executable, Some("work; rm -rf /"), &["status", "--json"])
+                .unwrap(),
+            "'/opt/herdr bin/herdr' --session 'work; rm -rf /' status --json"
+        );
+        assert!(parse_resolved_executable(b"herdr\t0.9.0\n").is_err());
+        assert!(parse_resolved_executable(b"/opt/herdr\t0.9.0-beta\n").is_err());
+        assert!(command_with_executable("herdr", None, &["status"]).is_err());
+
+        let resolver = resolver_command();
+        assert!(resolver.contains("command -v herdr"));
+        assert!(resolver.contains(".cargo/bin/herdr"));
+        assert!(resolver.contains("/opt/homebrew/bin/herdr"));
+        assert!(resolver.contains("mise/installs/herdr/0.9.0"));
+        assert!(resolver.contains(".nix-profile/bin/herdr"));
     }
 }

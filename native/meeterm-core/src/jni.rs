@@ -603,6 +603,70 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnect<'calle
     }))
 }
 
+/// Authenticate an SSH host and enter the native runtime picker without
+/// selecting or creating a backend runtime.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnectHost<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    host: JString<'caller>,
+    port: jint,
+    username: JString<'caller>,
+    private_key: JString<'caller>,
+    passphrase: JString<'caller>,
+    known_hosts_path: JString<'caller>,
+    auth_method: JString<'caller>,
+    password: JString<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -2;
+    };
+    let Some(port) = u16::try_from(port).ok() else {
+        return -1;
+    };
+
+    code_from_outcome(unowned_env.with_env(|env| {
+        let host = string_from_java(env, &host)?;
+        let username = string_from_java(env, &username)?;
+        let private_key = Zeroizing::new(string_from_java(env, &private_key)?);
+        let passphrase = Zeroizing::new(string_from_java(env, &passphrase)?);
+        let known_hosts_path = string_from_java(env, &known_hosts_path)?;
+        let auth_method = string_from_java(env, &auth_method)?;
+        let password = Zeroizing::new(string_from_java(env, &password)?);
+        let credentials = match auth_method.as_str() {
+            "" | "publicKey" => {
+                if !password.is_empty() {
+                    return Ok(ConnectionError::InvalidArgument.code());
+                }
+                AuthOptions::PublicKey {
+                    private_key,
+                    passphrase: (!passphrase.is_empty()).then_some(passphrase),
+                }
+            }
+            "password" => {
+                if !private_key.is_empty() || !passphrase.is_empty() {
+                    return Ok(ConnectionError::InvalidArgument.code());
+                }
+                AuthOptions::Password { password }
+            }
+            _ => return Ok(ConnectionError::InvalidArgument.code()),
+        };
+        let options = ConnectOptions {
+            host,
+            port,
+            username,
+            credentials,
+            known_hosts_path: known_hosts_path.into(),
+            backend: crate::workspace::Backend::Tmux,
+            runtime: None,
+        };
+        Ok(crate::ssh::connect_host(handle, options)
+            .map(|()| 0)
+            .unwrap_or_else(|error| error.code()))
+    }))
+}
+
 /// Start an SSH connection for an explicit backend/runtime while preserving
 /// the legacy `sshConnect` entry point above for existing Android callers.
 #[unsafe(no_mangle)]
@@ -695,6 +759,108 @@ fn workspace_json(handle: u64) -> Option<String> {
         return String::from_utf8(bytes).ok();
     }
     None
+}
+
+fn runtime_discovery_json(handle: u64) -> Option<String> {
+    let mut capacity = crate::ffi::meeterm_runtime_discovery_size(handle);
+    // Runtime metadata is low-frequency and bounded. A small retry window
+    // handles a size change between the query and copy without allowing an
+    // unbounded Java allocation.
+    for _ in 0..4 {
+        if capacity == 0 || capacity > crate::ffi::MAX_RUNTIME_DISCOVERY_BYTES {
+            return None;
+        }
+        let mut bytes = vec![0_u8; capacity];
+        let copied = unsafe {
+            crate::ffi::meeterm_runtime_discovery(handle, bytes.as_mut_ptr(), bytes.len())
+        };
+        if copied > bytes.len() {
+            capacity = copied;
+            continue;
+        }
+        if copied == 0 || copied > crate::ffi::MAX_RUNTIME_DISCOVERY_BYTES {
+            return None;
+        }
+        bytes.truncate(copied);
+        return String::from_utf8(bytes).ok();
+    }
+    None
+}
+
+/// Return the bounded, sanitized runtime discovery object expected by the
+/// Android module. Runtime candidate IDs are opaque and all terminal data
+/// stays in the native registry.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeDiscovery<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JString::default();
+    };
+    let outcome = unowned_env
+        .with_env(|env| match runtime_discovery_json(handle) {
+            Some(json) => env.new_string(json),
+            None => Ok(JString::default()),
+        })
+        .into_outcome();
+    match outcome {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_refreshRuntimes(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    crate::ssh::list_runtimes(handle)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_selectRuntime<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    candidate_id: JString<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let candidate_id = string_from_java(env, &candidate_id)?;
+        Ok(crate::ssh::select_runtime(handle, &candidate_id)
+            .map(|()| 0)
+            .unwrap_or_else(|error| error.code()))
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_createTmuxSession<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    name: JString<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let name = string_from_java(env, &name)?;
+        Ok(
+            crate::ssh::create_runtime(handle, crate::workspace::Backend::Tmux, &name)
+                .map(|()| 0)
+                .unwrap_or_else(|error| error.code()),
+        )
+    }))
 }
 
 /// Return the bounded backend-independent workspace metadata JSON. The

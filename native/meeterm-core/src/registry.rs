@@ -74,6 +74,10 @@ pub(crate) fn begin_remote(id: TerminalId, generation: u64) -> Result<(), Termin
     with_terminal(id, |terminal| terminal.begin_remote(generation))
 }
 
+pub(crate) fn reset_remote_binding(id: TerminalId, generation: u64) -> Result<(), TerminalError> {
+    with_terminal(id, |terminal| terminal.reset_remote_binding(generation))
+}
+
 pub(crate) fn prepare_pane_transport(
     id: TerminalId,
     generation: u64,

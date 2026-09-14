@@ -246,6 +246,7 @@ struct Controller {
 struct HerdrClient<'a> {
     shared: &'a Arc<ConnectionShared>,
     session: &'a client::Handle<HostKeyHandler>,
+    executable: String,
     runtime: Option<String>,
     socket: String,
     subscription: JsonChannel,
@@ -261,26 +262,166 @@ impl Drop for HerdrClient<'_> {
     }
 }
 
+pub(super) struct DiscoveredSession {
+    pub(super) name: String,
+    pub(super) default: bool,
+    pub(super) running: bool,
+    pub(super) executable: String,
+}
+
+pub(super) struct Discovery {
+    pub(super) sessions: Vec<DiscoveredSession>,
+    pub(super) executable: String,
+}
+
+/// Resolve and list all Herdr sessions without opening, starting, stopping,
+/// or updating any runtime. The upstream response contains socket paths and
+/// session directories; the caller receives only names and running state.
+pub(super) async fn discover(
+    shared: &Arc<ConnectionShared>,
+    session: &client::Handle<HostKeyHandler>,
+    expected: Option<&str>,
+) -> Result<Discovery, FlowFailure> {
+    let executable = resolve_executable(shared, session, expected, true).await?;
+    let command = wire::command_with_executable(&executable, None, &["session", "list", "--json"])
+        .map_err(|_| FlowFailure::HerdrDiscoveryMalformed)?;
+    let output = super::run_remote_command_with_timeout(
+        shared,
+        session,
+        command,
+        MAX_JSON_BYTES,
+        FlowFailure::HerdrDiscoveryMalformed,
+        FlowFailure::HerdrDiscoveryTimeout,
+    )
+    .await?;
+    match output.exit_status {
+        Some(0) => {
+            let value: Value = serde_json::from_slice(&output.stdout)
+                .map_err(|_| FlowFailure::HerdrDiscoveryMalformed)?;
+            let sessions = wire::decode_session_list(&value)
+                .map_err(|_| FlowFailure::HerdrDiscoveryMalformed)?
+                .into_iter()
+                .map(|session| DiscoveredSession {
+                    name: session.name,
+                    default: session.default,
+                    running: session.running,
+                    executable: executable.clone(),
+                })
+                .collect::<Vec<_>>();
+            Ok(Discovery {
+                sessions,
+                executable,
+            })
+        }
+        Some(127) => Err(FlowFailure::HerdrDiscoveryMissing),
+        Some(78) => Err(FlowFailure::HerdrDiscoveryIncompatible),
+        Some(_) if is_permission_error(&output.stderr) => {
+            Err(FlowFailure::HerdrDiscoveryPermission)
+        }
+        Some(_) => Err(FlowFailure::HerdrDiscoveryMalformed),
+        None => Err(FlowFailure::HerdrDiscoveryMalformed),
+    }
+}
+
+async fn resolve_executable(
+    shared: &Arc<ConnectionShared>,
+    session: &client::Handle<HostKeyHandler>,
+    expected: Option<&str>,
+    discovery: bool,
+) -> Result<String, FlowFailure> {
+    let output = super::run_remote_command_with_timeout(
+        shared,
+        session,
+        wire::resolver_command().to_owned(),
+        64 * 1024,
+        if discovery {
+            FlowFailure::HerdrDiscoveryMalformed
+        } else {
+            FlowFailure::HerdrProtocol
+        },
+        if discovery {
+            FlowFailure::HerdrDiscoveryTimeout
+        } else {
+            FlowFailure::HerdrProtocol
+        },
+    )
+    .await?;
+    let (missing, incompatible, malformed) = if discovery {
+        (
+            FlowFailure::HerdrDiscoveryMissing,
+            FlowFailure::HerdrDiscoveryIncompatible,
+            FlowFailure::HerdrDiscoveryMalformed,
+        )
+    } else {
+        (
+            FlowFailure::HerdrMissing,
+            FlowFailure::HerdrIncompatible,
+            FlowFailure::HerdrProtocol,
+        )
+    };
+    let executable = match output.exit_status {
+        Some(0) => wire::parse_resolved_executable(&output.stdout).map_err(|_| malformed)?,
+        Some(127) => return Err(missing),
+        Some(78) => return Err(incompatible),
+        Some(_) | None => return Err(malformed),
+    };
+    if expected.is_some_and(|expected| expected != executable) {
+        // A lifecycle that already selected a binary must not silently switch
+        // to another installation after reconnect.
+        return Err(incompatible);
+    }
+    Ok(executable)
+}
+
+fn is_permission_error(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    message.contains("permission denied")
+        || message.contains("access denied")
+        || message.contains("operation not permitted")
+}
+
 pub(super) async fn run(
     shared: &Arc<ConnectionShared>,
-    profile: &ConnectionProfile,
+    profile: &mut ConnectionProfile,
     session: &client::Handle<HostKeyHandler>,
     commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
+    let executable =
+        resolve_executable(shared, session, profile.herdr_executable.as_deref(), false).await?;
+    profile.herdr_executable = Some(executable.clone());
+    shared.set_profile(profile.clone());
     shared.set_state(ConnectionState::Synchronizing);
     let status = command_output(
         shared,
         session,
-        wire::command(profile.runtime.as_deref(), &["status", "--json"])
-            .map_err(|_| FlowFailure::HerdrProtocol)?,
+        wire::command_with_executable(
+            &executable,
+            profile.runtime.as_deref(),
+            &["status", "--json"],
+        )
+        .map_err(|_| FlowFailure::HerdrProtocol)?,
     )
-    .await?;
+    .await
+    .map_err(|failure| match failure {
+        // A named/default server can disappear after picker discovery. Treat
+        // a failed status probe as a local selection miss so the actor returns
+        // to the picker instead of reporting a host-wide transport failure.
+        FlowFailure::HerdrOperation => FlowFailure::HerdrSessionMissing,
+        failure => failure,
+    })?;
     let status: Value = serde_json::from_slice(&status).map_err(|_| FlowFailure::HerdrProtocol)?;
     let server = &status["server"];
     if server["running"] != true {
         return Err(FlowFailure::HerdrSessionMissing);
     }
-    if server["protocol"] != 22 || status["client"]["protocol"] != 22 {
+    if server["version"] != wire::HERDR_VERSION
+        || server["protocol"] != wire::HERDR_PROTOCOL
+        || status["client"]["protocol"] != wire::HERDR_PROTOCOL
+        || status
+            .get("schema")
+            .or_else(|| server.get("schema"))
+            .is_some_and(|schema| schema.as_u64() != Some(u64::from(wire::HERDR_SCHEMA)))
+    {
         return Err(FlowFailure::HerdrIncompatible);
     }
     let socket = server["socket"]
@@ -306,6 +447,7 @@ pub(super) async fn run(
     let mut client = HerdrClient {
         shared,
         session,
+        executable,
         runtime: profile.runtime.clone(),
         socket,
         subscription,
@@ -530,7 +672,8 @@ impl HerdrClient<'_> {
             let result = self.request("session.snapshot", json!({})).await?;
             let snapshot =
                 decode_snapshot_result(&result).map_err(|_| FlowFailure::HerdrProtocol)?;
-            if snapshot.protocol != 22 {
+            if snapshot.version != wire::HERDR_VERSION || snapshot.protocol != wire::HERDR_PROTOCOL
+            {
                 return Err(FlowFailure::HerdrIncompatible);
             }
             let pane_ids: HashSet<String> = snapshot
@@ -900,6 +1043,14 @@ impl HerdrClient<'_> {
                 self.synchronize().await?;
                 return self.activate_selected().await;
             }
+            ControlCommand::RefreshRuntimes
+            | ControlCommand::SelectRuntime { .. }
+            | ControlCommand::CreateRuntime { .. } => {
+                // A picker action can already be queued when the first
+                // selection reaches Ready. It belongs to the old picker
+                // state and must not tear down the selected runtime.
+                return Ok(());
+            }
             _ => {}
         }
         if matches!(
@@ -938,7 +1089,10 @@ impl HerdrClient<'_> {
                     .ok_or(FlowFailure::HerdrOperation)
             };
             match command {
-                ControlCommand::SelectPane { .. }
+                ControlCommand::RefreshRuntimes
+                | ControlCommand::SelectRuntime { .. }
+                | ControlCommand::CreateRuntime { .. }
+                | ControlCommand::SelectPane { .. }
                 | ControlCommand::SelectGroup { .. }
                 | ControlCommand::RefreshTerminal
                 | ControlCommand::SetTerminalVisible { .. } => unreachable!(),
@@ -1127,7 +1281,8 @@ impl HerdrClient<'_> {
             return Ok(());
         }
         let (cols, rows) = self.viewport;
-        let command = wire::command(
+        let command = wire::command_with_executable(
+            &self.executable,
             self.runtime.as_deref(),
             &[
                 "terminal",

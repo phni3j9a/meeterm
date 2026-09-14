@@ -11,6 +11,7 @@ enum PaneEvent {
 
 struct ControlClient {
     shared: Arc<ConnectionShared>,
+    session: String,
     reader: russh::ChannelReadHalf,
     writer: russh::ChannelWriteHalf<client::Msg>,
     decoder: tmux::Decoder,
@@ -42,10 +43,38 @@ impl Drop for ControlClient {
 
 pub(super) async fn run(
     shared: &Arc<ConnectionShared>,
+    profile: &mut ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
     commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::AttachingTmux);
+
+    let exact_runtime = profile.tmux_identity.is_some() || profile.runtime.is_some();
+    let (runtime_session, startup) = if let Some(identity) = profile.tmux_identity.clone() {
+        verify_selected_runtime(shared, session, &identity).await?;
+        let startup = tmux::attach_command_for_session(&identity.session_id)
+            .map_err(|_| FlowFailure::TmuxProtocol)?;
+        (identity.session_id, startup)
+    } else if let Some(name) = profile.runtime.as_deref() {
+        // A direct named tmux option has no native identity yet. Resolve it
+        // once through the bounded list and then use the exact `$N` for this
+        // lifecycle; a missing name never falls through to create/attach.
+        let identities = discover(shared, session).await?;
+        let identity = identities
+            .into_iter()
+            .find(|identity| identity.name == name)
+            .ok_or(FlowFailure::TmuxRuntimeMissing)?;
+        profile.tmux_identity = Some(identity.clone());
+        shared.set_profile(profile.clone());
+        let startup = tmux::attach_command_for_session(&identity.session_id)
+            .map_err(|_| FlowFailure::TmuxProtocol)?;
+        (identity.session_id, startup)
+    } else {
+        (
+            tmux::SESSION_NAME.to_owned(),
+            String::from_utf8_lossy(tmux::initial_command()).into_owned(),
+        )
+    };
     let channel = await_stage(
         shared,
         session.channel_open_session(),
@@ -70,6 +99,7 @@ pub(super) async fn run(
     let (pane_sender, pane_receiver) = mpsc::channel(INPUT_QUEUE_CAPACITY);
     let mut client = ControlClient {
         shared: Arc::clone(shared),
+        session: runtime_session,
         reader,
         writer,
         decoder: tmux::Decoder::new(),
@@ -87,7 +117,7 @@ pub(super) async fn run(
     };
     await_stage(
         shared,
-        client.writer.exec(true, tmux::initial_command()),
+        client.writer.exec(true, startup.into_bytes()),
         SSH_STAGE_TIMEOUT,
         FlowFailure::Channel,
     )
@@ -107,7 +137,13 @@ pub(super) async fn run(
     loop {
         match client.next_event().await? {
             tmux::Event::Command(block) if !block.error => break,
-            tmux::Event::Command(_) => return Err(FlowFailure::Tmux),
+            tmux::Event::Command(_) => {
+                return Err(if exact_runtime {
+                    FlowFailure::TmuxRuntimeMissing
+                } else {
+                    FlowFailure::Tmux
+                });
+            }
             event => client.dispatch(event)?,
         }
     }
@@ -134,6 +170,7 @@ pub(super) async fn run(
                         client.synchronize(false).await?;
                     }
                     Some(ControlCommand::CreateWorkspace { name }) => {
+                        client.ensure_session_topology_safe().await?;
                         let existing = client
                             .shared
                             .session
@@ -141,7 +178,10 @@ pub(super) async fn run(
                             .map_err(|_| FlowFailure::Stale)?
                             .snapshot
                             .clone();
-                        let command = tmux::create_workspace_command(&name)
+                        let command = tmux::create_workspace_command_for_session(
+                            &client.session,
+                            &name,
+                        )
                             .map_err(|_| FlowFailure::TmuxProtocol)?;
                         client.query(&command).await?;
                         client.synchronize(false).await?;
@@ -153,12 +193,18 @@ pub(super) async fn run(
                         }
                     }
                     Some(ControlCommand::RenameWorkspace { window_id, name }) => {
-                        let command = tmux::rename_workspace_command(window_id, &name)
+                        client.ensure_topology_safe(window_id).await?;
+                        let command = tmux::rename_workspace_command_for_session(
+                            &client.session,
+                            window_id,
+                            &name,
+                        )
                             .map_err(|_| FlowFailure::TmuxProtocol)?;
                         client.query(&command).await?;
                         client.synchronize(false).await?;
                     }
                     Some(ControlCommand::CloseWorkspace { window_id }) => {
+                        client.ensure_topology_safe(window_id).await?;
                         let final_window = {
                             let state = client
                                 .shared
@@ -168,7 +214,11 @@ pub(super) async fn run(
                             state.snapshot.windows.len() == 1
                                 && state.snapshot.windows[0].window_id == window_id
                         };
-                        let command = tmux::close_workspace_command(window_id);
+                        let command = tmux::close_workspace_command_for_session(
+                            &client.session,
+                            window_id,
+                        )
+                        .map_err(|_| FlowFailure::TmuxProtocol)?;
                         if final_window {
                             return client.close_last_session(command).await;
                         }
@@ -176,6 +226,7 @@ pub(super) async fn run(
                         client.synchronize(false).await?;
                     }
                     Some(ControlCommand::CreatePane { window_id }) => {
+                        client.ensure_topology_safe(window_id).await?;
                         let existing = client
                             .shared
                             .session
@@ -183,7 +234,12 @@ pub(super) async fn run(
                             .map_err(|_| FlowFailure::Stale)?
                             .snapshot
                             .clone();
-                        client.query(&tmux::create_pane_command(window_id)).await?;
+                        let command = tmux::create_pane_command_for_session(
+                            &client.session,
+                            window_id,
+                        )
+                        .map_err(|_| FlowFailure::TmuxProtocol)?;
+                        client.query(&command).await?;
                         client.synchronize(false).await?;
                         if let Some(pane_id) = client.new_pane_id_since(&existing, window_id) {
                             client.select(window_id, pane_id).await?;
@@ -202,7 +258,13 @@ pub(super) async fn run(
                             .find(|pane| pane.pane_id == pane_id)
                             .map(|pane| pane.window_id)
                             .ok_or(FlowFailure::Stale)?;
-                        let command = tmux::rename_pane_command(window_id, pane_id, &name)
+                        client.ensure_topology_safe(window_id).await?;
+                        let command = tmux::rename_pane_command_for_session(
+                            &client.session,
+                            window_id,
+                            pane_id,
+                            &name,
+                        )
                             .map_err(|_| FlowFailure::TmuxProtocol)?;
                         client.query(&command).await?;
                         client.synchronize(false).await?;
@@ -222,7 +284,13 @@ pub(super) async fn run(
                                 .ok_or(FlowFailure::Stale)?;
                             (pane.window_id, state.snapshot.panes.len() == 1)
                         };
-                        let command = tmux::close_pane_command(window_id, pane_id);
+                        client.ensure_topology_safe(window_id).await?;
+                        let command = tmux::close_pane_command_for_session(
+                            &client.session,
+                            window_id,
+                            pane_id,
+                        )
+                        .map_err(|_| FlowFailure::TmuxProtocol)?;
                         if final_pane {
                             return client.close_last_session(command).await;
                         }
@@ -232,6 +300,14 @@ pub(super) async fn run(
                     Some(ControlCommand::RefreshTerminal) => {
                         client.refresh_terminal().await?;
                         client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::RefreshRuntimes
+                        | ControlCommand::SelectRuntime { .. }
+                        | ControlCommand::CreateRuntime { .. }) => {
+                        // A picker action can already be queued when the
+                        // first selection reaches Ready. It belongs to the
+                        // old picker state and must not tear down the newly
+                        // selected runtime (double taps are discarded).
                     }
                     Some(ControlCommand::CreateGroup { .. } | ControlCommand::RenameGroup { .. }
                         | ControlCommand::CloseGroup { .. } | ControlCommand::SelectGroup { .. }) => return Err(FlowFailure::TmuxProtocol),
@@ -243,7 +319,13 @@ pub(super) async fn run(
                 match event {
                     Some(PaneEvent::Input(pane, bytes)) => {
                         if client.routes.contains_key(&pane) {
-                            client.query(&tmux::send_bytes_command(pane, &bytes)).await?;
+                            let command = tmux::send_bytes_command_for_session(
+                                &client.session,
+                                pane,
+                                &bytes,
+                            )
+                            .map_err(|_| FlowFailure::TmuxProtocol)?;
+                            client.query(&command).await?;
                         }
                     }
                     Some(PaneEvent::Resize(pane, columns, rows)) => {
@@ -263,6 +345,164 @@ pub(super) async fn run(
             }
         }
     }
+}
+
+/// Discover only the ordinary tmux server. A missing server with the narrow
+/// documented diagnostic is an empty picker section; missing binaries,
+/// permissions, malformed output, and uncertain statuses remain errors.
+pub(super) async fn discover(
+    shared: &Arc<ConnectionShared>,
+    session: &client::Handle<HostKeyHandler>,
+) -> Result<Vec<tmux::SessionIdentity>, FlowFailure> {
+    let output = super::run_remote_command_with_timeout(
+        shared,
+        session,
+        tmux::list_sessions_command().to_owned(),
+        super::MAX_RUNTIME_COMMAND_OUTPUT_BYTES,
+        FlowFailure::TmuxDiscoveryMalformed,
+        FlowFailure::TmuxDiscoveryTimeout,
+    )
+    .await?;
+    match output.exit_status {
+        Some(0) => parse_sessions(&output.stdout),
+        Some(127) if tmux::is_command_missing(output.exit_status, &output.stderr) => {
+            Err(FlowFailure::TmuxDiscoveryMissing)
+        }
+        Some(1) if tmux::is_verified_no_server(&output.stderr) => Ok(Vec::new()),
+        Some(_) if is_permission_error(&output.stderr) => Err(FlowFailure::TmuxDiscoveryPermission),
+        Some(_) => Err(FlowFailure::TmuxDiscoveryMalformed),
+        None => Err(FlowFailure::TmuxDiscoveryMalformed),
+    }
+}
+
+fn parse_sessions(bytes: &[u8]) -> Result<Vec<tmux::SessionIdentity>, FlowFailure> {
+    let mut sessions = Vec::new();
+    let mut ids = HashSet::new();
+    let mut names = HashSet::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            continue;
+        }
+        if sessions.len() >= tmux::MAX_RUNTIME_SESSIONS {
+            return Err(FlowFailure::TmuxDiscoveryMalformed);
+        }
+        let identity =
+            tmux::parse_session_line(line).map_err(|_| FlowFailure::TmuxDiscoveryMalformed)?;
+        if !ids.insert(identity.session_id.clone()) || !names.insert(identity.name.clone()) {
+            return Err(FlowFailure::TmuxDiscoveryMalformed);
+        }
+        sessions.push(identity);
+    }
+    Ok(sessions)
+}
+
+fn is_permission_error(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    message.contains("permission denied")
+        || message.contains("access denied")
+        || message.contains("cannot connect")
+}
+
+pub(super) async fn create_runtime(
+    shared: &Arc<ConnectionShared>,
+    session: &client::Handle<HostKeyHandler>,
+    name: &str,
+) -> Result<tmux::SessionIdentity, FlowFailure> {
+    let command =
+        tmux::create_session_command(name).map_err(|_| FlowFailure::TmuxRuntimeUnknown)?;
+    let output = super::run_remote_command_with_timeout(
+        shared,
+        session,
+        command,
+        super::MAX_RUNTIME_COMMAND_OUTPUT_BYTES,
+        FlowFailure::TmuxRuntimeUnknown,
+        FlowFailure::TmuxRuntimeUnknown,
+    )
+    .await?;
+    let identity = match output.exit_status {
+        Some(0) => {
+            let sessions =
+                parse_sessions(&output.stdout).map_err(|_| FlowFailure::TmuxRuntimeUnknown)?;
+            if sessions.len() != 1 {
+                return Err(FlowFailure::TmuxRuntimeUnknown);
+            }
+            let identity = sessions.into_iter().next().expect("one session parsed");
+            if identity.name != name {
+                return Err(FlowFailure::TmuxRuntimeUnknown);
+            }
+            identity
+        }
+        Some(_) if tmux::is_session_collision(&output.stderr) => {
+            return Err(FlowFailure::TmuxRuntimeCollision);
+        }
+        Some(_) => return Err(FlowFailure::TmuxRuntimeUnknown),
+        None => return Err(FlowFailure::TmuxRuntimeUnknown),
+    };
+    let listed = match discover(shared, session).await {
+        Ok(listed) => listed,
+        Err(FlowFailure::Stale) => return Err(FlowFailure::Stale),
+        Err(_) => return Err(FlowFailure::TmuxRuntimeUnknown),
+    };
+    if listed.iter().any(|candidate| candidate == &identity) {
+        Ok(identity)
+    } else {
+        Err(FlowFailure::TmuxRuntimeUnknown)
+    }
+}
+
+async fn verify_selected_runtime(
+    shared: &Arc<ConnectionShared>,
+    session: &client::Handle<HostKeyHandler>,
+    expected: &tmux::SessionIdentity,
+) -> Result<(), FlowFailure> {
+    let listed = match discover(shared, session).await {
+        Ok(listed) => listed,
+        Err(
+            FlowFailure::TmuxDiscoveryMissing
+            | FlowFailure::TmuxDiscoveryPermission
+            | FlowFailure::TmuxDiscoveryTimeout
+            | FlowFailure::TmuxDiscoveryMalformed,
+        ) => return Err(FlowFailure::TmuxRuntimeMissing),
+        Err(failure) => return Err(failure),
+    };
+    if listed.iter().any(|candidate| candidate == expected) {
+        Ok(())
+    } else {
+        Err(FlowFailure::TmuxRuntimeMissing)
+    }
+}
+
+fn topology_is_safe(
+    topologies: &[tmux::WindowTopology],
+    selected_session: &str,
+    window_id: u64,
+) -> bool {
+    let mut observed = false;
+    for topology in topologies {
+        let selected =
+            topology.session_id == selected_session || topology.session_name == selected_session;
+        if selected && topology.window_id == window_id {
+            observed = true;
+            if topology.linked_sessions > 1 {
+                return false;
+            }
+        }
+    }
+    observed
+}
+
+fn topology_session_is_safe(topologies: &[tmux::WindowTopology], selected_session: &str) -> bool {
+    let mut observed = false;
+    for topology in topologies {
+        if topology.session_id == selected_session || topology.session_name == selected_session {
+            observed = true;
+            if topology.linked_sessions > 1 {
+                return false;
+            }
+        }
+    }
+    observed
 }
 
 impl ControlClient {
@@ -432,6 +672,39 @@ impl ControlClient {
         Ok(())
     }
 
+    /// Check linked-window/session topology immediately before a mutation, in
+    /// this same serialized Control Mode actor. A missing or malformed
+    /// observation fails closed; the mutation is never replaced with
+    /// `unlink-window` or another weaker operation.
+    async fn ensure_topology_safe(&mut self, window_id: u64) -> Result<(), FlowFailure> {
+        let lines = self.read_topology().await?;
+        topology_is_safe(&lines, &self.session, window_id)
+            .then_some(())
+            .ok_or(FlowFailure::TmuxTopologyUnsafe)
+    }
+
+    async fn ensure_session_topology_safe(&mut self) -> Result<(), FlowFailure> {
+        let lines = self.read_topology().await?;
+        topology_session_is_safe(&lines, &self.session)
+            .then_some(())
+            .ok_or(FlowFailure::TmuxTopologyUnsafe)
+    }
+
+    async fn read_topology(&mut self) -> Result<Vec<tmux::WindowTopology>, FlowFailure> {
+        let reply = self.query(tmux::list_topology_command()).await?;
+        if reply.len() != 1 {
+            return Err(FlowFailure::TmuxTopologyUnsafe);
+        }
+        reply
+            .first()
+            .ok_or(FlowFailure::TmuxTopologyUnsafe)?
+            .lines
+            .iter()
+            .map(|line| tmux::parse_topology_line(line))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| FlowFailure::TmuxTopologyUnsafe)
+    }
+
     async fn refresh_terminal(&mut self) -> Result<(), FlowFailure> {
         let pane = self
             .shared
@@ -530,7 +803,9 @@ impl ControlClient {
         // is the same pane: the zoom we just remove must not be mistaken for
         // a desktop zoom that meeterm should preserve.
         if let Some(previous) = previous {
-            self.query(&tmux::restore_layout_command(previous)).await?;
+            let command = tmux::restore_layout_command_for_session(&self.session, previous)
+                .map_err(|_| FlowFailure::TmuxProtocol)?;
+            self.query(&command).await?;
         }
 
         // A desktop user may already have zoomed this window.  The latest
@@ -562,16 +837,24 @@ impl ControlClient {
             // immediately re-zooms the new target, so the desktop zoom state
             // survives the mobile tab change even though meeterm does not own
             // the cleanup.
-            let mut transition = vec![tmux::select_pane_command(None, window, pane)];
+            let mut transition = vec![
+                tmux::select_pane_command_for_session(&self.session, None, window, pane)
+                    .map_err(|_| FlowFailure::TmuxProtocol)?,
+            ];
             if let Some(allocation) = self.zoom_hooks.take() {
-                transition.push(tmux::remove_zoom_recovery_hooks_command(allocation));
+                transition.push(
+                    tmux::remove_zoom_recovery_hooks_command_for_session(&self.session, allocation)
+                        .map_err(|_| FlowFailure::TmuxProtocol)?,
+                );
             }
             self.query(&transition.join(" ; ")).await?;
         } else {
             let allocation = if let Some(allocation) = self.zoom_hooks {
                 allocation
             } else {
-                let reply = self.query("show-hooks -t =meeterm:").await?;
+                let target = tmux::session_target_for_hooks(&self.session)
+                    .map_err(|_| FlowFailure::TmuxProtocol)?;
+                let reply = self.query(&format!("show-hooks -t {target}:")).await?;
                 let hooks = reply
                     .into_iter()
                     .flat_map(|b| b.lines)
@@ -586,8 +869,14 @@ impl ControlClient {
             // hooks remain intact; only our allocated pair is updated on tab
             // selection.
             let transition = [
-                tmux::install_zoom_recovery_hooks_command(allocation, pane),
-                tmux::select_pane_command(None, window, pane),
+                tmux::install_zoom_recovery_hooks_command_for_session(
+                    &self.session,
+                    allocation,
+                    pane,
+                )
+                .map_err(|_| FlowFailure::TmuxProtocol)?,
+                tmux::select_pane_command_for_session(&self.session, None, window, pane)
+                    .map_err(|_| FlowFailure::TmuxProtocol)?,
             ]
             .join(" ; ");
             self.query(&transition).await?;
@@ -611,9 +900,14 @@ impl ControlClient {
             // Cancellation rejects all normal commands. This bounded best
             // effort cleanup is the only write permitted after cancellation.
             let cleanup = if let Some(allocation) = self.zoom_hooks {
-                tmux::cleanup_zoom_recovery_hooks_command(allocation, pane)
+                tmux::cleanup_zoom_recovery_hooks_command_for_session(
+                    &self.session,
+                    allocation,
+                    pane,
+                )
+                .unwrap_or_default()
             } else {
-                tmux::restore_layout_command(pane)
+                tmux::restore_layout_command_for_session(&self.session, pane).unwrap_or_default()
             };
             let command = format!("{cleanup}\n");
             let _ = tokio::time::timeout(
@@ -677,12 +971,12 @@ impl ControlClient {
         if initial {
             self.resize_client().await?;
         }
-        let windows_reply = self
-            .query(std::str::from_utf8(tmux::list_windows_command()).unwrap())
-            .await?;
-        let panes_reply = self
-            .query(std::str::from_utf8(tmux::list_panes_command()).unwrap())
-            .await?;
+        let windows_command = tmux::list_windows_command_for_session(&self.session)
+            .map_err(|_| FlowFailure::TmuxProtocol)?;
+        let panes_command = tmux::list_panes_command_for_session(&self.session)
+            .map_err(|_| FlowFailure::TmuxProtocol)?;
+        let windows_reply = self.query(&windows_command).await?;
+        let panes_reply = self.query(&panes_command).await?;
         let windows = windows_reply
             .first()
             .ok_or(FlowFailure::TmuxProtocol)?
@@ -856,9 +1150,8 @@ impl ControlClient {
         self.capturing = Some(pane);
         self.capture_complete = false;
         self.capture_output.clear();
-        let command = format!(
-            "capture-pane -p -e -C -N -S -2000 -t %{pane} ; display-message -p -t %{pane} '#{{pane_width}},#{{pane_height}},#{{cursor_x}},#{{cursor_y}},#{{alternate_on}},#{{cursor_flag}},#{{keypad_cursor_flag}},#{{keypad_flag}},#{{?bracket_paste_flag,1,0}},#{{insert_flag}},#{{origin_flag}},#{{wrap_flag}}'"
-        );
+        let command = tmux::capture_pane_command_for_session(&self.session, pane)
+            .map_err(|_| FlowFailure::TmuxProtocol)?;
         let reply = self.query(&command).await?;
         if reply.len() != 2 {
             return Err(FlowFailure::TmuxProtocol);
@@ -926,5 +1219,70 @@ impl ControlClient {
         }
         self.capture_output.clear();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topology_safety_ignores_unlinked_nonselected_session() {
+        let topologies = vec![
+            tmux::WindowTopology {
+                session_id: "$1".to_owned(),
+                session_name: "selected".to_owned(),
+                window_id: 7,
+                linked_sessions: 1,
+            },
+            tmux::WindowTopology {
+                session_id: "$2".to_owned(),
+                session_name: "other".to_owned(),
+                window_id: 8,
+                linked_sessions: 1,
+            },
+        ];
+        assert!(topology_is_safe(&topologies, "$1", 7));
+        assert!(!topology_is_safe(&topologies, "$1", 8));
+    }
+
+    #[test]
+    fn topology_safety_rejects_linked_selected_window_and_missing_target() {
+        let linked = [tmux::WindowTopology {
+            session_id: "$1".to_owned(),
+            session_name: "selected".to_owned(),
+            window_id: 7,
+            linked_sessions: 2,
+        }];
+        assert!(!topology_is_safe(&linked, "$1", 7));
+        assert!(!topology_is_safe(&linked, "$1", 9));
+    }
+
+    #[test]
+    fn topology_safety_rejects_shared_session_for_new_workspace() {
+        let linked = [
+            tmux::WindowTopology {
+                session_id: "$1".to_owned(),
+                session_name: "selected".to_owned(),
+                window_id: 7,
+                linked_sessions: 2,
+            },
+            tmux::WindowTopology {
+                session_id: "$1".to_owned(),
+                session_name: "selected".to_owned(),
+                window_id: 8,
+                linked_sessions: 2,
+            },
+        ];
+        assert!(!topology_session_is_safe(&linked, "$1"));
+        assert!(!topology_session_is_safe(
+            &[tmux::WindowTopology {
+                session_id: "$2".to_owned(),
+                session_name: "other".to_owned(),
+                window_id: 7,
+                linked_sessions: 1,
+            }],
+            "$1"
+        ));
     }
 }

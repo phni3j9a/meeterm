@@ -11,6 +11,37 @@ use std::fmt;
 /// The managed tmux session used by meeterm.
 pub const SESSION_NAME: &str = "meeterm";
 
+/// Runtime discovery bounds. These limits apply before a candidate is
+/// copied into the native picker snapshot.
+pub const MAX_RUNTIME_SESSIONS: usize = 256;
+pub const MAX_SESSION_NAME_BYTES: usize = 4096;
+const MAX_CREATE_NAME_BYTES: usize = 64;
+
+/// The exact tmux session identity retained by a selected connection. A
+/// `$N` id is only meaningful during the server epoch in which it was listed;
+/// the server PID alone is not sufficient because the OS may reuse it. The
+/// PID/start-time pair is retained separately from the display-name hint for
+/// stale/replacement checks.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionIdentity {
+    pub(crate) session_id: String,
+    pub(crate) name: String,
+    pub(crate) server_pid: u64,
+    pub(crate) server_start_time: u64,
+}
+
+impl PartialEq for SessionIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        // Session names are mutable display hints. The runtime identity is
+        // the tmux session ID within the server PID/start-time epoch.
+        self.session_id == other.session_id
+            && self.server_pid == other.server_pid
+            && self.server_start_time == other.server_start_time
+    }
+}
+
+impl Eq for SessionIdentity {}
+
 /// Low-frequency state exposed to the control bridge.  `panes` is a flat
 /// view for mobile list rendering; `windows` retains the canonical tmux
 /// window/pane hierarchy for callers that need it.
@@ -129,6 +160,12 @@ pub enum DecodeError {
     BufferTooLarge,
 }
 
+impl fmt::Display for SessionIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.session_id)
+    }
+}
+
 /// Errors returned while encoding a user-visible tmux name as one command
 /// argument. Names are bounded and cannot contain control characters because
 /// the Control Mode command stream is line-oriented.
@@ -165,10 +202,7 @@ pub fn quote_tmux_argument(value: &str) -> Result<String, CommandArgumentError> 
     if value.len() > MAX_NAME_BYTES {
         return Err(CommandArgumentError::TooLong);
     }
-    if value
-        .bytes()
-        .any(|byte| byte == 0 || byte.is_ascii_control())
-    {
+    if value.chars().any(char::is_control) {
         return Err(CommandArgumentError::ControlCharacter);
     }
 
@@ -465,6 +499,114 @@ pub fn parse_window_id(value: &[u8]) -> Result<u64, DecodeError> {
     parse_decimal_u64(digits).map_err(|()| DecodeError::InvalidNotification)
 }
 
+/// Parse the fixed, side-effect-free session discovery format:
+/// `$N<TAB>quoted name<TAB>server pid<TAB>server start time`.
+pub(crate) fn parse_session_line(line: &[u8]) -> Result<SessionIdentity, DecodeError> {
+    let fields = line.split(|byte| *byte == b'\t').collect::<Vec<_>>();
+    if fields.len() != 4 {
+        return Err(DecodeError::InvalidNotification);
+    }
+    let session_id = fields[0]
+        .strip_prefix(b"$")
+        .filter(|digits| !digits.is_empty())
+        .and_then(|digits| parse_decimal_u64(digits).ok())
+        .map(|number| format!("${number}"))
+        .ok_or(DecodeError::InvalidNotification)?;
+    let name = decode_tmux_quoted_strict(fields[1])?;
+    if name.is_empty() || name.len() > MAX_SESSION_NAME_BYTES || name.chars().any(char::is_control)
+    {
+        return Err(DecodeError::InvalidNotification);
+    }
+    let server_pid = std::str::from_utf8(fields[2])
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|pid| *pid != 0)
+        .ok_or(DecodeError::InvalidNotification)?;
+    let server_start_time = std::str::from_utf8(fields[3])
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|start_time| *start_time != 0)
+        .ok_or(DecodeError::InvalidNotification)?;
+    Ok(SessionIdentity {
+        session_id,
+        name,
+        server_pid,
+        server_start_time,
+    })
+}
+
+/// A tmux command returns exit status 1 when the ordinary server has not
+/// been started (or when it has no sessions). Only this narrow diagnostic is
+/// considered a verified empty section; every other non-zero result remains a
+/// backend error.
+pub(crate) fn is_verified_no_server(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let message = message.trim();
+    message == "no server running"
+        || message
+            .strip_prefix("no server running on ")
+            .is_some_and(|path| !path.is_empty())
+        || message == "no sessions"
+}
+
+pub(crate) fn is_session_collision(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    message.contains("duplicate session")
+        || message.contains("session already exists")
+        || message.contains("already exists")
+}
+
+/// Return true for the shell's conventional command-not-found status or its
+/// usual diagnostic. This is used only to label the tmux picker section.
+pub(crate) fn is_command_missing(status: Option<u32>, stderr: &[u8]) -> bool {
+    if status == Some(127) {
+        return true;
+    }
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .contains("command not found")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WindowTopology {
+    pub(crate) session_id: String,
+    pub(crate) session_name: String,
+    pub(crate) window_id: u64,
+    pub(crate) linked_sessions: u32,
+}
+
+pub(crate) fn parse_topology_line(line: &[u8]) -> Result<WindowTopology, DecodeError> {
+    let fields = line.split(|byte| *byte == b'\t').collect::<Vec<_>>();
+    if fields.len() != 4 {
+        return Err(DecodeError::InvalidNotification);
+    }
+    let session_id = fields[0]
+        .strip_prefix(b"$")
+        .filter(|digits| !digits.is_empty())
+        .and_then(|digits| parse_decimal_u64(digits).ok())
+        .map(|number| format!("${number}"))
+        .ok_or(DecodeError::InvalidNotification)?;
+    let session_name = decode_tmux_quoted_strict(fields[1])?;
+    if session_name.is_empty()
+        || session_name.len() > MAX_SESSION_NAME_BYTES
+        || session_name.chars().any(char::is_control)
+    {
+        return Err(DecodeError::InvalidNotification);
+    }
+    let window_id = parse_window_id(fields[2])?;
+    let linked_sessions = std::str::from_utf8(fields[3])
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|count| *count > 0)
+        .ok_or(DecodeError::InvalidNotification)?;
+    Ok(WindowTopology {
+        session_id,
+        session_name,
+        window_id,
+        linked_sessions,
+    })
+}
+
 pub(crate) fn parse_window_line(line: &[u8]) -> Result<WindowInfo, DecodeError> {
     let separator = line
         .iter()
@@ -521,6 +663,22 @@ pub(crate) fn parse_pane_line(line: &[u8]) -> Result<PaneInfo, DecodeError> {
 /// unit instead of consuming pairs independently so either form does not
 /// leave spurious backslashes in a user-visible workspace name.
 fn decode_tmux_quoted(value: &[u8]) -> String {
+    String::from_utf8_lossy(&decode_tmux_quoted_bytes(value)).into_owned()
+}
+
+fn decode_tmux_quoted_strict(value: &[u8]) -> Result<String, DecodeError> {
+    let trailing_slashes = value
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count();
+    if trailing_slashes % 2 != 0 {
+        return Err(DecodeError::InvalidNotification);
+    }
+    String::from_utf8(decode_tmux_quoted_bytes(value)).map_err(|_| DecodeError::InvalidNotification)
+}
+
+fn decode_tmux_quoted_bytes(value: &[u8]) -> Vec<u8> {
     let mut decoded = Vec::with_capacity(value.len());
     let mut index = 0;
     while index < value.len() {
@@ -571,7 +729,7 @@ fn decode_tmux_quoted(value: &[u8]) -> String {
             index += 1;
         }
     }
-    String::from_utf8_lossy(&decoded).into_owned()
+    decoded
 }
 
 /// Decode tmux's `\\ooo` byte escaping used in `%output` notifications.
@@ -624,22 +782,138 @@ pub fn decode_capture(encoded: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(decoded)
 }
 
-/// Build a Control Mode command. The session name is fixed by product
-/// invariants, while pane/window IDs are validated before being interpolated.
+/// Build the legacy Control Mode command. The picker path uses
+/// [`attach_command_for_session`] and never routes a selected runtime through
+/// `new-session -A`.
 pub fn initial_command() -> &'static [u8] {
     b"tmux -C -u new-session -A -s meeterm"
 }
 
+/// Build a remote, side-effect-free session list command. `#{pid}` and
+/// `#{start_time}` are kept as native server-epoch evidence and are never
+/// exposed in the picker snapshot.
+pub fn list_sessions_command() -> &'static str {
+    "tmux list-sessions -F '#{session_id}\t#{q:session_name}\t#{pid}\t#{start_time}'"
+}
+
+/// Explicitly create one detached session and print its exact identity. This
+/// is intentionally separate from `initial_command`: callers must verify the
+/// returned `$N` before attaching and must not retry an unknown outcome.
+pub(crate) fn create_session_command(name: &str) -> Result<String, CommandArgumentError> {
+    validate_create_name(name)?;
+    Ok(format!(
+        "tmux new-session -d -s {} -P -F '#{{session_id}}\\t#{{q:session_name}}\\t#{{pid}}\\t#{{start_time}}'",
+        quote_tmux_argument(name)?
+    ))
+}
+
+/// Validate names accepted by the explicit tmux create form. Existing names
+/// discovered from tmux deliberately use the looser parser above and are not
+/// rejected just because they would not be accepted by this UI form.
+pub(crate) fn validate_create_name(name: &str) -> Result<(), CommandArgumentError> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() {
+        return Err(CommandArgumentError::Empty);
+    }
+    if bytes.len() > MAX_CREATE_NAME_BYTES {
+        return Err(CommandArgumentError::TooLong);
+    }
+    if !bytes[0].is_ascii_alphanumeric()
+        || !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(CommandArgumentError::ControlCharacter);
+    }
+    Ok(())
+}
+
+fn session_target(session: &str) -> Result<String, CommandArgumentError> {
+    if session.is_empty() || session.len() > MAX_SESSION_NAME_BYTES {
+        return Err(if session.is_empty() {
+            CommandArgumentError::Empty
+        } else {
+            CommandArgumentError::TooLong
+        });
+    }
+    quote_tmux_argument(&format!("={session}"))
+}
+
+pub(crate) fn session_target_for_hooks(session: &str) -> Result<String, CommandArgumentError> {
+    session_target(session)
+}
+
+fn window_target(session: &str, window_id: u64) -> Result<String, CommandArgumentError> {
+    quote_tmux_argument(&format!("={session}:@{window_id}"))
+}
+
+fn pane_target(
+    session: &str,
+    window_id: u64,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    quote_tmux_argument(&format!("={session}:@{window_id}.%{pane_id}"))
+}
+
+fn pane_only_target(session: &str, pane_id: u64) -> Result<String, CommandArgumentError> {
+    quote_tmux_argument(&format!("={session}:%{pane_id}"))
+}
+
+pub(crate) fn attach_command_for_session(session: &str) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "tmux -C -u attach-session -t {}",
+        session_target(session)?
+    ))
+}
+
+pub(crate) fn list_windows_command_for_session(
+    session: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "list-windows -t {} -F '#{{window_id}}\\t#{{q:window_name}}'",
+        session_target(session)?
+    ))
+}
+
+pub(crate) fn list_panes_command_for_session(
+    session: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "list-panes -s -t {} -F '#{{window_id}}\\t#{{pane_id}}\\t#{{pane_index}}\\t#{{pane_active}}\\t#{{pane_width}}\\t#{{pane_height}}\\t#{{q:pane_title}}\\t#{{window_zoomed_flag}}\\t#{{window_active}}'",
+        session_target(session)?
+    ))
+}
+
+pub(crate) fn capture_pane_command_for_session(
+    session: &str,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = pane_only_target(session, pane_id)?;
+    Ok(format!(
+        "capture-pane -p -e -C -N -S -2000 -t {target} ; display-message -p -t {target} '#{{pane_width}},#{{pane_height}},#{{cursor_x}},#{{cursor_y}},#{{alternate_on}},#{{cursor_flag}},#{{keypad_cursor_flag}},#{{keypad_flag}},#{{?bracket_paste_flag,1,0}},#{{insert_flag}},#{{origin_flag}},#{{wrap_flag}}'"
+    ))
+}
+
+/// List every linked window at the action boundary. This is deliberately
+/// broader than the selected session so an unsafe `kill-window`/`kill-pane`
+/// can fail closed before it mutates another session.
+pub(crate) fn list_topology_command() -> &'static str {
+    "list-windows -a -F '#{session_id}\t#{q:session_name}\t#{window_id}\t#{window_linked_sessions}'"
+}
+
+#[allow(dead_code)]
 pub fn list_windows_command() -> &'static [u8] {
     b"list-windows -t =meeterm -F '#{window_id}\t#{q:window_name}'"
 }
 
+#[allow(dead_code)]
 pub fn list_panes_command() -> &'static [u8] {
     b"list-panes -s -t =meeterm -F '#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{q:pane_title}\t#{window_zoomed_flag}\t#{window_active}'"
 }
 
 /// Create a detached workspace window in the managed session. The exact
 /// session target prevents a similarly named session from receiving it.
+#[allow(dead_code)]
 pub fn create_workspace_command(name: &str) -> Result<String, CommandArgumentError> {
     Ok(format!(
         "new-window -d -t =meeterm -n {}",
@@ -647,6 +921,18 @@ pub fn create_workspace_command(name: &str) -> Result<String, CommandArgumentErr
     ))
 }
 
+pub(crate) fn create_workspace_command_for_session(
+    session: &str,
+    name: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "new-window -d -t {} -n {}",
+        session_target(session)?,
+        quote_tmux_argument(name)?
+    ))
+}
+
+#[allow(dead_code)]
 pub fn rename_workspace_command(
     window_id: u64,
     name: &str,
@@ -657,16 +943,51 @@ pub fn rename_workspace_command(
     ))
 }
 
+pub(crate) fn rename_workspace_command_for_session(
+    session: &str,
+    window_id: u64,
+    name: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "rename-window -t {} {}",
+        window_target(session, window_id)?,
+        quote_tmux_argument(name)?
+    ))
+}
+
+#[allow(dead_code)]
 pub fn close_workspace_command(window_id: u64) -> String {
     format!("kill-window -t =meeterm:@{window_id}")
 }
 
+pub(crate) fn close_workspace_command_for_session(
+    session: &str,
+    window_id: u64,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "kill-window -t {}",
+        window_target(session, window_id)?
+    ))
+}
+
 /// Create a detached pane in a numeric target window. Using `-d` keeps the
 /// currently selected mobile pane and the desktop layout stable.
+#[allow(dead_code)]
 pub fn create_pane_command(window_id: u64) -> String {
     format!("split-window -d -t =meeterm:@{window_id}")
 }
 
+pub(crate) fn create_pane_command_for_session(
+    session: &str,
+    window_id: u64,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "split-window -d -t {}",
+        window_target(session, window_id)?
+    ))
+}
+
+#[allow(dead_code)]
 pub fn rename_pane_command(
     window_id: u64,
     pane_id: u64,
@@ -678,14 +999,40 @@ pub fn rename_pane_command(
     ))
 }
 
+pub(crate) fn rename_pane_command_for_session(
+    session: &str,
+    window_id: u64,
+    pane_id: u64,
+    name: &str,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "select-pane -t {} -T {}",
+        pane_target(session, window_id, pane_id)?,
+        quote_tmux_argument(name)?
+    ))
+}
+
+#[allow(dead_code)]
 pub fn close_pane_command(window_id: u64, pane_id: u64) -> String {
     format!("kill-pane -t =meeterm:@{window_id}.%{pane_id}")
+}
+
+pub(crate) fn close_pane_command_for_session(
+    session: &str,
+    window_id: u64,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    Ok(format!(
+        "kill-pane -t {}",
+        pane_target(session, window_id, pane_id)?
+    ))
 }
 
 pub fn refresh_client_command(columns: u16, rows: u16) -> String {
     format!("refresh-client -C {columns}x{rows}")
 }
 
+#[allow(dead_code)]
 pub fn select_pane_command(
     previous_zoomed_pane: Option<u64>,
     window_id: u64,
@@ -706,10 +1053,44 @@ pub fn select_pane_command(
     )
 }
 
+pub(crate) fn select_pane_command_for_session(
+    session: &str,
+    previous_zoomed_pane: Option<u64>,
+    window_id: u64,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = pane_only_target(session, pane_id)?;
+    let window = window_target(session, window_id)?;
+    let restore = previous_zoomed_pane
+        .map(|id| {
+            pane_only_target(session, id).map(|target| {
+                format!(
+                    "if-shell -F -t {target} '#{{window_zoomed_flag}}' 'resize-pane -Z -t {target}' '' ; "
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(format!(
+        "{restore}select-window -t {window} ; select-pane -t {target} ; if-shell -F -t {target} '#{{window_zoomed_flag}}' '' 'resize-pane -Z -t {target}'"
+    ))
+}
+
+#[allow(dead_code)]
 pub fn restore_layout_command(pane_id: u64) -> String {
     // The target condition makes this idempotent if a recovery hook already
     // returned the window to its normal layout.
     format!("if-shell -F -t %{pane_id} '#{{window_zoomed_flag}}' 'resize-pane -Z -t %{pane_id}' ''")
+}
+
+pub(crate) fn restore_layout_command_for_session(
+    session: &str,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = pane_only_target(session, pane_id)?;
+    Ok(format!(
+        "if-shell -F -t {target} '#{{window_zoomed_flag}}' 'resize-pane -Z -t {target}' ''"
+    ))
 }
 
 /// Choose an unused indexed hook slot for the two session-scoped recovery
@@ -746,6 +1127,7 @@ pub fn choose_zoom_recovery_hook(hooks: &[u8]) -> Option<ZoomRecoveryHookAllocat
 /// window only when `window_zoomed_flag` is still set, then removes both
 /// indexed hooks. An empty index-0 placeholder is harmless and remains;
 /// unsetting an unindexed hook would delete unrelated user entries.
+#[allow(dead_code)]
 pub fn install_zoom_recovery_hooks_command(
     allocation: ZoomRecoveryHookAllocation,
     pane_id: u64,
@@ -757,7 +1139,21 @@ pub fn install_zoom_recovery_hooks_command(
     )
 }
 
+pub(crate) fn install_zoom_recovery_hooks_command_for_session(
+    session: &str,
+    allocation: ZoomRecoveryHookAllocation,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = session_target(session)?;
+    let body = zoom_recovery_hook_body_for_session(session, allocation, pane_id)?;
+    Ok(format!(
+        "set-hook -t {target}: {ZOOM_RECOVERY_DETACHED_HOOK}[{}] '{body}' ; set-hook -t {target}: {ZOOM_RECOVERY_SESSION_CHANGED_HOOK}[{}] '{body}'",
+        allocation.index, allocation.index
+    ))
+}
+
 /// Remove the indexed recovery pair without changing the current layout.
+#[allow(dead_code)]
 pub fn remove_zoom_recovery_hooks_command(allocation: ZoomRecoveryHookAllocation) -> String {
     let commands = [
         format!(
@@ -772,9 +1168,28 @@ pub fn remove_zoom_recovery_hooks_command(allocation: ZoomRecoveryHookAllocation
     commands.join(" ; ")
 }
 
+pub(crate) fn remove_zoom_recovery_hooks_command_for_session(
+    session: &str,
+    allocation: ZoomRecoveryHookAllocation,
+) -> Result<String, CommandArgumentError> {
+    let target = session_target(session)?;
+    let commands = [
+        format!(
+            "set-hook -u -t {target}: {ZOOM_RECOVERY_DETACHED_HOOK}[{}]",
+            allocation.index
+        ),
+        format!(
+            "set-hook -u -t {target}: {ZOOM_RECOVERY_SESSION_CHANGED_HOOK}[{}]",
+            allocation.index
+        ),
+    ];
+    Ok(commands.join(" ; "))
+}
+
 /// Restore a meeterm-owned zoom and remove its recovery hooks during an
 /// orderly disconnect. The conditional restore makes this safe when another
 /// command has already returned the window to its normal layout.
+#[allow(dead_code)]
 pub fn cleanup_zoom_recovery_hooks_command(
     allocation: ZoomRecoveryHookAllocation,
     pane_id: u64,
@@ -785,6 +1200,19 @@ pub fn cleanup_zoom_recovery_hooks_command(
     )
 }
 
+pub(crate) fn cleanup_zoom_recovery_hooks_command_for_session(
+    session: &str,
+    allocation: ZoomRecoveryHookAllocation,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = pane_only_target(session, pane_id)?;
+    let remove = remove_zoom_recovery_hooks_command_for_session(session, allocation)?;
+    Ok(format!(
+        "if-shell -F -t {target} \"#{{window_zoomed_flag}}\" \"resize-pane -Z -t {target}\" ; {remove}"
+    ))
+}
+
+#[allow(dead_code)]
 fn zoom_recovery_hook_body(allocation: ZoomRecoveryHookAllocation, pane_id: u64) -> String {
     let mut commands = vec![format!(
         "if-shell -F -t %{pane_id} \"#{{window_zoomed_flag}}\" \"resize-pane -Z -t %{pane_id}\""
@@ -793,6 +1221,22 @@ fn zoom_recovery_hook_body(allocation: ZoomRecoveryHookAllocation, pane_id: u64)
     commands.join(" ; ")
 }
 
+fn zoom_recovery_hook_body_for_session(
+    session: &str,
+    allocation: ZoomRecoveryHookAllocation,
+    pane_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = pane_only_target(session, pane_id)?;
+    let mut commands = vec![format!(
+        "if-shell -F -t {target} \"#{{window_zoomed_flag}}\" \"resize-pane -Z -t {target}\""
+    )];
+    commands.push(remove_zoom_recovery_hooks_command_for_session(
+        session, allocation,
+    )?);
+    Ok(commands.join(" ; "))
+}
+
+#[allow(dead_code)]
 fn remove_zoom_recovery_commands(allocation: ZoomRecoveryHookAllocation) -> Vec<String> {
     let commands = vec![
         format!(
@@ -848,12 +1292,26 @@ fn parse_hook_entry(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
     Ok(Some((name, Some(index))))
 }
 
+#[allow(dead_code)]
 pub fn send_bytes_command(pane_id: u64, bytes: &[u8]) -> String {
     let mut command = format!("send-keys -t %{pane_id} -H");
     for byte in bytes {
         command.push_str(&format!(" {byte:02x}"));
     }
     command
+}
+
+pub(crate) fn send_bytes_command_for_session(
+    session: &str,
+    pane_id: u64,
+    bytes: &[u8],
+) -> Result<String, CommandArgumentError> {
+    let target = pane_only_target(session, pane_id)?;
+    let mut command = format!("send-keys -t {target} -H");
+    for byte in bytes {
+        command.push_str(&format!(" {byte:02x}"));
+    }
+    Ok(command)
 }
 
 #[cfg(test)]
@@ -1086,6 +1544,86 @@ mod tests {
             quote_tmux_argument(&"x".repeat(4097)),
             Err(CommandArgumentError::TooLong)
         );
+    }
+
+    #[test]
+    fn runtime_discovery_retains_opaque_id_server_identity_and_unicode_name() {
+        let line = "$7\tdaily\\ \\;\\ \\#\\ $HOME\\ 日本語\t4242\t1700000000";
+        let identity = parse_session_line(line.as_bytes()).unwrap();
+        assert_eq!(identity.session_id, "$7");
+        assert_eq!(identity.name, "daily ; # $HOME 日本語");
+        assert_eq!(identity.server_pid, 4242);
+        assert_eq!(identity.server_start_time, 1700000000);
+        let mut same_pid_after_restart = identity.clone();
+        same_pid_after_restart.server_start_time += 1;
+        assert_ne!(identity, same_pid_after_restart);
+        let mut renamed = identity.clone();
+        renamed.name = "renamed-hint".into();
+        assert_eq!(identity, renamed);
+
+        let attach = attach_command_for_session(&identity.session_id).unwrap();
+        assert_eq!(attach, "tmux -C -u attach-session -t '=$7'");
+        assert!(!attach.contains("new-session -A"));
+    }
+
+    #[test]
+    fn runtime_discovery_rejects_invalid_utf8_controls_and_server_identity() {
+        assert!(parse_session_line(b"$1\t\xff\t1\t1").is_err());
+        assert!(parse_session_line(b"$1\tbad\x01name\t1\t1").is_err());
+        assert!(parse_session_line(b"$1\tname\\\t1\t1").is_err());
+        assert!(parse_session_line(b"$1\tname\t0\t1").is_err());
+        assert!(parse_session_line(b"$1\tname\t1\t0").is_err());
+        assert!(parse_session_line(b"$1\tname\t1").is_err());
+        assert!(parse_topology_line(b"$1\tname\t@2\t0").is_err());
+        assert!(parse_topology_line(b"$1\t\xff\t@2\t1").is_err());
+    }
+
+    #[test]
+    fn discovery_exit_diagnostics_are_narrow_and_fail_closed() {
+        assert!(is_verified_no_server(
+            b"no server running on /tmp/tmux-1000/default\n"
+        ));
+        assert!(is_verified_no_server(b"no sessions\n"));
+        assert!(!is_verified_no_server(b"fatal: no sessions\n"));
+        assert!(!is_verified_no_server(b"permission denied\n"));
+        assert!(is_command_missing(Some(127), b"sh: tmux: not found\n"));
+        assert!(!is_command_missing(Some(1), b"not found in a data field\n"));
+        assert!(is_session_collision(b"duplicate session: work\n"));
+        assert!(!is_session_collision(b"permission denied\n"));
+    }
+
+    #[test]
+    fn runtime_commands_are_session_scoped_and_create_is_explicit() {
+        let name = "desk-1";
+        let create = create_session_command(name).unwrap();
+        assert!(create.starts_with("tmux new-session -d -s '"));
+        assert!(create.contains("-P -F"));
+        assert!(create.contains("#{session_id}"));
+        assert!(create.contains("#{pid}"));
+        assert!(create.contains("#{start_time}"));
+        assert!(!create.contains("new-session -A"));
+        assert!(create_session_command("desk; # $HOME 日本語").is_err());
+        assert_eq!(
+            validate_create_name("."),
+            Err(CommandArgumentError::ControlCharacter)
+        );
+        assert!(validate_create_name("日本語").is_err());
+        assert!(validate_create_name("a.b_c-2").is_ok());
+        assert!(validate_create_name("1-start").is_ok());
+        assert!(validate_create_name("-start").is_err());
+        assert!(validate_create_name("_start").is_err());
+        assert!(validate_create_name(".start").is_err());
+        assert!(validate_create_name(&"a".repeat(64)).is_ok());
+        assert!(validate_create_name(&"a".repeat(65)).is_err());
+        assert!(validate_create_name("a#b").is_err());
+        assert!(validate_create_name("a\nb").is_err());
+
+        let command = create_workspace_command_for_session("team; # 日本語", "work").unwrap();
+        assert!(command.contains("new-window -d -t '"));
+        assert!(command.contains("work"));
+        assert!(list_sessions_command().contains("#{pid}"));
+        assert!(list_sessions_command().contains("#{start_time}"));
+        assert!(!list_sessions_command().contains("new-session"));
     }
 
     #[test]
