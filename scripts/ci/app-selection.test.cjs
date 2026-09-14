@@ -167,6 +167,9 @@ function makeNativeEnvironment() {
     createTmuxSessionMode: 'ready',
     pendingCreation: null,
     createTmuxSessionShouldFail: false,
+    refreshRuntimeMode: 'ready',
+    pendingRefresh: null,
+    refreshRuntimeShouldFail: false,
     refreshRuntimeCalls: 0,
     createdRuntime: null,
     lastUsedUpdates: [],
@@ -208,6 +211,12 @@ function makeNativeEnvironment() {
     async refreshRuntimes() {
       environment.nativeCalls.push('refreshRuntimes');
       environment.refreshRuntimeCalls += 1;
+      if (environment.refreshRuntimeShouldFail) throw new Error('runtime refresh rejected');
+      if (environment.refreshRuntimeMode === 'delayed') {
+        environment.pendingRefresh = {};
+        return;
+      }
+      completeRefresh(environment);
     },
     async selectRuntime(_connectionId, candidateId) {
       environment.calls.push({ method: 'selectRuntime', candidateId });
@@ -293,6 +302,11 @@ function makeNativeEnvironment() {
     }
     environment.pendingCreation = null;
   };
+  environment.resolvePendingRefresh = () => {
+    assert.ok(environment.pendingRefresh, 'a runtime refresh should be pending');
+    completeRefresh(environment);
+    environment.pendingRefresh = null;
+  };
   return { environment, native };
 }
 
@@ -309,6 +323,10 @@ function completeCreation(environment, name) {
   tmux.candidates.push(candidate);
   environment.runtimeDiscovery.revision += 1;
   completeSelection(environment, candidate);
+}
+
+function completeRefresh(environment) {
+  environment.runtimeDiscovery.revision += 1;
 }
 
 function makeReactNativeMocks(environment) {
@@ -1101,6 +1119,8 @@ test('runtime picker cancellation disconnects provisional SSH and leaves backend
   });
   await press(stale.root, findTestId(stale.root, 'runtime-row-tmux-stale-tmux'));
   await settleAsync();
+  await poll(stale.environment);
+  await settleAsync();
   assert.ok(stale.environment.calls.some(call => call.method === 'selectRuntime' && call.candidateId === 'stale-tmux'));
   const staleRow = findTestId(stale.root, 'runtime-row-tmux-stale-tmux');
   assert.equal(staleRow.props.accessibilityState.disabled, false);
@@ -1322,6 +1342,82 @@ test('repeated tmux creation failure clears the old section error and preserves 
   assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
   assert.equal(fixture.environment.profiles.find(item => item.id === profile.id).runtime, 'meeterm');
+});
+
+test('queued runtime refresh waits for a newer revision without repeating the command', async t => {
+  const { fixture } = await mountSavedPicker(t, environment => {
+    environment.refreshRuntimeMode = 'delayed';
+    environment.runtimeDiscovery = pickerDiscovery(20);
+  });
+  const oldRevision = fixture.environment.runtimeDiscovery.revision;
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-refresh'));
+  await settleAsync();
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.ok(fixture.environment.pendingRefresh);
+  assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, true);
+
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.runtimeDiscovery.revision, oldRevision);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, true);
+
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, true);
+
+  fixture.environment.resolvePendingRefresh();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(fixture.environment.runtimeDiscovery.revision > oldRevision);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.equal(fixture.environment.pendingRefresh, null);
+  assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
+});
+
+test('cancel invalidates a queued runtime refresh and ignores a late revision', async t => {
+  const { fixture } = await mountSavedPicker(t, environment => {
+    environment.refreshRuntimeMode = 'delayed';
+    environment.runtimeDiscovery = pickerDiscovery(21);
+  });
+  const oldRevision = fixture.environment.runtimeDiscovery.revision;
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-refresh'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.ok(fixture.environment.pendingRefresh);
+  await press(fixture.root, findLabel(fixture.root, 'Cancel runtime selection'));
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-queued-tmux').length, 0);
+
+  fixture.environment.resolvePendingRefresh();
+  assert.ok(fixture.environment.runtimeDiscovery.revision > oldRevision);
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-queued-tmux').length, 0);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-refresh').length, 0);
+});
+
+test('refresh enqueue failure releases busy and keeps the existing actionable error', async t => {
+  const { fixture } = await mountSavedPicker(t, environment => {
+    environment.refreshRuntimeShouldFail = true;
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-refresh'));
+  await settleAsync();
+  assert.equal(fixture.environment.refreshRuntimeCalls, 1);
+  assert.equal(fixture.environment.pendingRefresh, null);
+  assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
+  assert.ok(all(fixture.root, node => textContent(node).includes('Could not refresh runtimes. Check the connection and try again.')).length > 0);
 });
 
 test('verified runtime reconnect skips the picker but a lost identity reopens it with an explanation', async t => {

@@ -71,6 +71,11 @@ type Workspace = { id: string; name: string; panes: RemoteTerminal[] };
 type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
+type PendingRuntimeRefresh = {
+  attempt: number;
+  baselineRevision: number;
+  clearSelectionErrors: boolean;
+};
 type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
@@ -616,6 +621,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const pendingRuntimeCreation = useRef('');
   const pendingRuntimeSelectionBaseline = useRef({ revision: -1, errorCode: '' });
   const pendingRuntimeCreationBaseline = useRef({ revision: -1, errorCode: '' });
+  const pendingRuntimeRefresh = useRef<PendingRuntimeRefresh | null>(null);
   const runtimeDiscoveryLoading = useRef(false);
   const runtimeDiscoveryAttempt = useRef(0);
   const runtimeDiscoveryLoadedAttempt = useRef(-1);
@@ -633,6 +639,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     runtimeDiscoveryLoadedAttempt.current = -1;
     pendingRuntimeSelectionBaseline.current = { revision: -1, errorCode: '' };
     pendingRuntimeCreationBaseline.current = { revision: -1, errorCode: '' };
+    pendingRuntimeRefresh.current = null;
     setRuntimeDiscovery(null);
     setRuntimeCreateVisible(false);
     setRuntimeSelectionErrors({});
@@ -712,7 +719,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const observationAttempt = runtimeDiscoveryAttempt.current;
       const pendingSelectionAtStart = pendingRuntimeSelection.current;
       const pendingCreationAtStart = pendingRuntimeCreation.current;
-      const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart);
+      const pendingRefreshAtStart = pendingRuntimeRefresh.current;
+      const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart || pendingRefreshAtStart);
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
         // Host authentication and runtime discovery do not have workspace
@@ -735,10 +743,28 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           }
         }
         const operationStillPending = pendingRuntimeSelection.current === pendingSelectionAtStart
-          && pendingRuntimeCreation.current === pendingCreationAtStart;
+          && pendingRuntimeCreation.current === pendingCreationAtStart
+          && pendingRuntimeRefresh.current === pendingRefreshAtStart;
         if (mounted && version === commandVersion.current && observationAttempt === runtimeDiscoveryAttempt.current && !commandPending.current) {
           if (pendingDiscovery && operationStillPending) {
-            setRuntimeDiscovery(applyRuntimeHint(pendingDiscovery, runtimeHintRef.current));
+            if (pendingRefreshAtStart) {
+              if (pendingDiscovery.revision > pendingRefreshAtStart.baselineRevision) {
+                pendingRuntimeRefresh.current = null;
+                setRuntimeDiscovery(applyRuntimeHint(pendingDiscovery, runtimeHintRef.current));
+                if (pendingRefreshAtStart.clearSelectionErrors) setRuntimeSelectionErrors({});
+                setRuntimeCreationError('');
+                setRuntimeMessage('');
+                setRuntimeBusy(false);
+                setRuntimeActionBusy(false);
+              }
+            } else {
+              setRuntimeDiscovery(applyRuntimeHint(pendingDiscovery, runtimeHintRef.current));
+            }
+          } else if (pendingRefreshAtStart && operationStillPending && ['Failed', 'Disconnected', 'Closing'].includes(next.state)) {
+            pendingRuntimeRefresh.current = null;
+            setRuntimeBusy(false);
+            setRuntimeActionBusy(false);
+            setRuntimeMessage('Could not refresh runtimes. Check the connection and try again.');
           }
           setConnection(current => sameConnection(current, next) ? current : next);
           if (nextSession) {
@@ -828,25 +854,49 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const loadRuntimeDiscovery = useCallback(async (refresh = false, clearSelectionErrors = refresh) => {
     if (smokeFixtureActive) return runtimeDiscovery;
+    if (refresh) {
+      if (runtimeDiscoveryLoading.current || pendingRuntimeRefresh.current) return null;
+      const attempt = runtimeDiscoveryAttempt.current;
+      const pending: PendingRuntimeRefresh = {
+        attempt,
+        baselineRevision: runtimeDiscovery?.revision ?? -1,
+        clearSelectionErrors,
+      };
+      pendingRuntimeRefresh.current = pending;
+      setRuntimeBusy(true);
+      setRuntimeActionBusy(true);
+      try {
+        await MeetermTerminal.refreshRuntimes(CONNECTION_ID);
+        if (attempt !== runtimeDiscoveryAttempt.current || pendingRuntimeRefresh.current !== pending) return null;
+        // Native accepted the request, but the actor may not have published
+        // the new snapshot yet. The existing connection poll completes it.
+        return null;
+      } catch {
+        if (attempt === runtimeDiscoveryAttempt.current && pendingRuntimeRefresh.current === pending) {
+          pendingRuntimeRefresh.current = null;
+          setRuntimeBusy(false);
+          setRuntimeActionBusy(false);
+          setRuntimeMessage('Could not refresh runtimes. Check the connection and try again.');
+        }
+        return null;
+      } finally {
+        if (attempt === runtimeDiscoveryAttempt.current && pendingRuntimeRefresh.current === pending) {
+          setRuntimeActionBusy(false);
+        }
+      }
+    }
     if (runtimeDiscoveryLoading.current) return null;
     const attempt = runtimeDiscoveryAttempt.current;
     runtimeDiscoveryLoading.current = true;
     setRuntimeBusy(true);
     try {
-      if (refresh) await MeetermTerminal.refreshRuntimes(CONNECTION_ID);
       if (attempt !== runtimeDiscoveryAttempt.current) return null;
       const next = await MeetermTerminal.getRuntimeDiscovery(CONNECTION_ID);
       if (attempt !== runtimeDiscoveryAttempt.current) return null;
       setRuntimeDiscovery(applyRuntimeHint(next, effectiveRuntimeHint));
-      if (clearSelectionErrors) {
-        setRuntimeSelectionErrors({});
-      }
-      if (refresh) {
-        setRuntimeMessage('');
-      }
       return next;
     } catch {
-      setRuntimeMessage(refresh ? 'Could not refresh runtimes. Check the connection and try again.' : 'Runtimes could not be loaded. Tap Refresh to try again.');
+      setRuntimeMessage('Runtimes could not be loaded. Tap Refresh to try again.');
       return null;
     } finally {
       runtimeDiscoveryLoading.current = false;
@@ -1162,6 +1212,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRemovedHostKeyId('');
     setHasConnected(false);
     setRuntimeSelectingId('');
+    setRuntimeBusy(false);
     setRuntimeActionBusy(false);
     setRuntimeMessage('');
     selectedRuntimeRef.current = null;
