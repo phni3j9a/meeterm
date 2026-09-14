@@ -22,7 +22,7 @@ import {
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
-import type { ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
+import type { RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -70,7 +70,8 @@ const INITIAL_CONNECTION: SshConnectionState = {
 type Workspace = { id: string; name: string; panes: RemoteTerminal[] };
 type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type RuntimeHint = { backend: RuntimeBackend; runtime: string };
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 const SMOKE_PROFILE: ServerProfile = {
@@ -111,7 +112,54 @@ type SmokeFixtureState = {
   hasConnected: boolean;
   searching?: boolean;
   query?: string;
+  runtimeDiscovery?: RuntimeDiscovery;
+  runtimePickerVisible?: boolean;
+  runtimeCreateVisible?: boolean;
+  runtimeMessage?: string;
 };
+
+const SMOKE_RUNTIME_DISCOVERY: RuntimeDiscovery = {
+  revision: 7,
+  backends: [
+    {
+      backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true,
+      candidates: [
+        { id: 'smoke-tmux-meeterm', backend: 'tmux', name: 'meeterm', state: 'running', selectable: true, isDefault: true, lastUsed: true, errorCode: '', errorMessage: '' },
+        { id: 'smoke-tmux-release', backend: 'tmux', name: 'release-prep', state: 'running', selectable: true, isDefault: false, lastUsed: false, errorCode: '', errorMessage: '' },
+      ],
+    },
+    {
+      backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false,
+      candidates: [
+        { id: 'smoke-herdr-default', backend: 'herdr', name: 'default', state: 'running', selectable: true, isDefault: true, lastUsed: false, errorCode: '', errorMessage: '' },
+        { id: 'smoke-herdr-paused', backend: 'herdr', name: 'paused', state: 'stopped', selectable: false, isDefault: false, lastUsed: false, errorCode: '', errorMessage: '' },
+      ],
+    },
+  ],
+};
+
+function smokeRuntimeDiscovery(screen: SmokeScreen): RuntimeDiscovery {
+  if (screen === 'runtime-partial-error') {
+    return {
+      ...SMOKE_RUNTIME_DISCOVERY,
+      backends: [SMOKE_RUNTIME_DISCOVERY.backends[0], {
+        backend: 'herdr', state: 'error', errorCode: 'herdr_missing',
+        errorMessage: 'Herdr is not available over SSH. Open Herdr on your computer or check its installation.',
+        canCreate: false, candidates: [],
+      }],
+    };
+  }
+  if (screen === 'runtime-empty') {
+    return {
+      ...SMOKE_RUNTIME_DISCOVERY,
+      backends: [
+        { ...SMOKE_RUNTIME_DISCOVERY.backends[0], candidates: [] },
+        { ...SMOKE_RUNTIME_DISCOVERY.backends[1], candidates: [{ ...SMOKE_RUNTIME_DISCOVERY.backends[1].candidates[1] }] },
+      ],
+    };
+  }
+  return JSON.parse(JSON.stringify(SMOKE_RUNTIME_DISCOVERY)) as RuntimeDiscovery;
+}
 
 function smokeReadyConnection(): SshConnectionState {
   return { ...INITIAL_CONNECTION, state: 'Ready', host: SMOKE_PROFILE.host, port: SMOKE_PROFILE.port };
@@ -124,6 +172,35 @@ function smokeWorkspace(panes: RemoteTerminal[], workspaceId: string): Workspace
 }
 
 function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
+  if (screen === 'runtime-picker' || screen === 'runtime-partial-error' || screen === 'runtime-empty' || screen === 'runtime-create') {
+    const base = smokeFixture('workspaces');
+    base.connection = { ...base.connection, state: 'AwaitingRuntimeSelection' };
+    base.panes = [];
+    base.screen = 'workspaces';
+    base.workspaceId = '';
+    base.profileId = SMOKE_PROFILE.id;
+    base.hasConnected = false;
+    base.runtimeDiscovery = smokeRuntimeDiscovery(screen);
+    base.runtimePickerVisible = true;
+    base.runtimeCreateVisible = screen === 'runtime-create';
+    base.runtimeMessage = screen === 'runtime-empty'
+      ? 'No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer.'
+      : '';
+    return base;
+  }
+  if (screen === 'herdr-connection') {
+    const base = smokeFixture('runtime-picker');
+    const discovery = JSON.parse(JSON.stringify(base.runtimeDiscovery)) as RuntimeDiscovery;
+    discovery.backends = discovery.backends.map(section => ({
+      ...section,
+      candidates: section.candidates.map(candidate => ({
+        ...candidate,
+        lastUsed: candidate.backend === 'herdr' && candidate.name === 'default',
+      })),
+    }));
+    base.runtimeDiscovery = discovery;
+    return base;
+  }
   if (['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces'].includes(screen)) {
     const base = smokeFixture(screen === 'welcome' ? 'home' : 'workspaces');
     if (screen === 'welcome') base.profiles = [];
@@ -138,8 +215,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     return base;
   }
   if (screen.startsWith('herdr-')) {
-    const base = smokeFixture(screen === 'herdr-connection' ? 'connection' : screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
-    base.formProfile = { ...SMOKE_PROFILE, backend: 'herdr', runtime: 'dev' };
+    const base = smokeFixture(screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
     base.panes = [
       { ...SMOKE_PANES[0], groupId: 'smoke-code', name: 'Code', agent: { name: 'Claude Code', status: 'working' } },
       { ...SMOKE_PANES[1], groupId: 'smoke-code', name: 'Shell' },
@@ -184,6 +260,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
 
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
+  'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
@@ -238,6 +315,10 @@ function connectionPresentation(connection: SshConnectionState) {
     case 'AttachingTmux': return { label: 'Opening workspace…', accessibility: 'Opening workspace…', pending: true };
     case 'Synchronizing': return { label: 'Restoring terminals…', accessibility: 'Restoring terminals…', pending: true };
     case 'Reconnecting': return { label: 'Reconnecting…', accessibility: 'Reconnecting…', pending: true };
+    case 'DiscoveringRuntimes': return { label: 'Finding runtimes…', accessibility: 'Finding runtimes…', pending: true };
+    case 'AwaitingRuntimeSelection': return { label: 'Choose a runtime', accessibility: 'Choose a runtime', pending: false };
+    case 'AttachingRuntime': return { label: 'Opening runtime…', accessibility: 'Opening runtime…', pending: true };
+    case 'CreatingRuntime': return { label: 'Creating runtime…', accessibility: 'Creating runtime…', pending: true };
     case 'Closing': return { label: 'Disconnecting…', accessibility: 'Disconnecting…', pending: true };
     case 'Failed': return { label: 'Connection failed', accessibility: 'Connection failed', pending: false };
     default: return { label: 'Not connected', accessibility: 'Not connected', pending: false };
@@ -320,6 +401,155 @@ function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, childre
   </Modal>;
 }
 
+function emptyRuntimeBackend(backend: RuntimeBackend): RuntimeBackendDiscovery {
+  return { backend, state: 'loading', errorCode: '', errorMessage: '', candidates: [], canCreate: backend === 'tmux' };
+}
+
+function suggestedTmuxName(discovery: RuntimeDiscovery | null): string {
+  const tmux = discovery?.backends.find(item => item.backend === 'tmux');
+  return tmux?.candidates.some(item => item.name === 'meeterm') ? '' : 'meeterm';
+}
+
+function validateTmuxSessionName(value: string): string {
+  const name = value.trim();
+  if (!name) return 'Enter a session name.';
+  if (name.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name === '.' || name === '..') {
+    return 'Use 1–64 letters, numbers, periods, hyphens, or underscores; start with a letter or number.';
+  }
+  return '';
+}
+
+function runtimeFailureMessage(errorCode: string, errorMessage: string, fallback: string): string {
+  const detail = errorMessage || errorCode;
+  return detail ? `${detail} Refresh runtimes and try again.` : fallback;
+}
+
+function createdTmuxCandidate(name: string): RuntimeCandidate {
+  return {
+    id: '',
+    backend: 'tmux',
+    name,
+    state: 'running',
+    selectable: true,
+    isDefault: false,
+    lastUsed: false,
+    errorCode: '',
+    errorMessage: '',
+  };
+}
+
+function RuntimePicker({ visible, serverName, discovery, createVisible, busy, discoveryBusy, cancelDisabled, selectingId, selectionErrors, message, creationError, onCancel, onDismiss, onRefresh, onRetryBackend, onSelect, onOpenCreate, onBackToList, onCreate, colors }: {
+  visible: boolean;
+  serverName: string;
+  discovery: RuntimeDiscovery | null;
+  createVisible: boolean;
+  busy: boolean;
+  discoveryBusy: boolean;
+  cancelDisabled: boolean;
+  selectingId: string;
+  selectionErrors: Record<string, string>;
+  message: string;
+  creationError: string;
+  onCancel: () => void;
+  onDismiss: () => void;
+  onRefresh: () => void;
+  onRetryBackend: (backend: RuntimeBackend) => void;
+  onSelect: (candidate: RuntimeCandidate) => void;
+  onOpenCreate: () => void;
+  onBackToList: () => void;
+  onCreate: (name: string) => Promise<boolean>;
+  colors: Palette;
+}) {
+  const reducedMotion = useReducedMotion();
+  const [name, setName] = useState('');
+  const [nameError, setNameError] = useState('');
+  useEffect(() => {
+    if (visible && createVisible) {
+      setName(suggestedTmuxName(discovery));
+      setNameError('');
+    }
+  }, [createVisible, visible]);
+
+  const submitCreate = async () => {
+    const error = validateTmuxSessionName(name);
+    if (error) { setNameError(error); return; }
+    setNameError('');
+    await onCreate(name.trim());
+  };
+  const backend = (kind: RuntimeBackend) => discovery?.backends.find(item => item.backend === kind) ?? emptyRuntimeBackend(kind);
+  const renderCandidate = (candidate: RuntimeCandidate) => {
+    const stopped = candidate.state !== 'running';
+    const unavailable = stopped || !candidate.selectable;
+    const error = selectionErrors[candidate.id] || candidate.errorMessage || candidate.errorCode;
+    return <View key={candidate.id} style={[styles.runtimeRowContainer, { borderBottomColor: colors.border }]}>
+      <Pressable testID={`runtime-row-${candidate.backend}-${candidate.id}`} accessibilityRole="button" accessibilityLabel={`${candidate.backend === 'tmux' ? 'tmux' : 'Herdr'} runtime ${candidate.name}`} accessibilityHint={stopped ? 'Open this runtime on your computer, then refresh.' : !candidate.selectable ? 'This runtime is unavailable. Refresh runtimes and try again.' : undefined} accessibilityState={{ disabled: unavailable || busy, selected: selectingId === candidate.id }} disabled={unavailable || busy} onPress={() => onSelect(candidate)} style={({ pressed }) => [styles.runtimeRow, pressed && { backgroundColor: colors.surface }, (unavailable || busy) && { opacity: stopped ? .55 : .8 }]}>
+        <View style={styles.runtimeRowCopy}>
+          <View style={styles.runtimeNameLine}><Text numberOfLines={2} style={[styles.runtimeName, { color: colors.text }]}>{candidate.name}</Text>{candidate.lastUsed ? <Text style={[styles.runtimeBadge, { color: colors.accent, borderColor: colors.accent }]}>Last used</Text> : null}</View>
+          <Text style={[styles.runtimeState, { color: stopped || !candidate.selectable ? colors.muted : colors.accent }]}>{stopped ? 'Stopped' : candidate.selectable ? 'Running' : 'Unavailable'}</Text>
+          {stopped ? <Text style={[styles.runtimeHint, { color: colors.muted }]}>Open this session in {candidate.backend === 'herdr' ? 'Herdr' : 'tmux'} on your computer, then tap Refresh.</Text> : null}
+          {error ? <Text accessibilityRole="alert" style={[styles.runtimeError, { color: colors.danger }]}>{error}</Text> : null}
+        </View>
+        {selectingId === candidate.id ? <ActivityIndicator color={colors.accent} /> : <Icon name="chevron" color={stopped ? colors.muted : colors.accent} size={18} />}
+      </Pressable>
+    </View>;
+  };
+  const renderSection = (kind: RuntimeBackend, title: string) => {
+    const item = backend(kind);
+    const sectionError = item.errorMessage || item.errorCode;
+    return <View key={kind} style={styles.runtimeSection}>
+      <View style={styles.runtimeSectionHeading}><Text style={[styles.runtimeSectionTitle, { color: colors.text }]}>{title}</Text>{item.state === 'loading' ? <ActivityIndicator size="small" color={colors.accent} /> : null}</View>
+      {item.state === 'error' || sectionError ? <View style={[styles.runtimeSectionError, { backgroundColor: colors.surface }]}><Text accessibilityRole="alert" style={[styles.runtimeHint, { color: colors.danger }]}>{sectionError || 'This backend could not be inspected.'}</Text>{item.state === 'error' ? <Button label={`Retry ${title} discovery`} colors={colors} secondary disabled={busy || discoveryBusy} onPress={() => onRetryBackend(kind)}>Retry</Button> : null}</View> : null}
+      {item.state === 'loading' ? <Text style={[styles.runtimeHint, { color: colors.muted }]}>Looking for running sessions…</Text> : item.candidates.length ? item.candidates.map(renderCandidate) : <Text style={[styles.runtimeHint, { color: colors.muted }]}>{kind === 'tmux' ? 'No running tmux sessions found.' : 'No running Herdr sessions found.'}</Text>}
+      {kind === 'tmux' && item.state === 'ready' && item.canCreate ? <Button testID="runtime-create-tmux" label="Create tmux session" colors={colors} secondary disabled={busy || discoveryBusy} onPress={onOpenCreate}>Create tmux session</Button> : null}
+    </View>;
+  };
+
+  return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={false} onRequestClose={() => createVisible && !busy ? onBackToList() : onCancel()} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
+    <SafeAreaProvider><SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.flex, { backgroundColor: colors.background }]}>
+      {Platform.OS === 'android' ? <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} /> : null}
+      <View style={[styles.runtimeHeader, { borderBottomColor: colors.border }]}>
+        {createVisible ? <Pressable accessibilityRole="button" accessibilityLabel="Back to runtime list" disabled={busy} onPress={onBackToList} style={styles.runtimeHeaderAction}><Text style={[styles.actionText, { color: colors.accent, opacity: busy ? .45 : 1 }]}>Back</Text></Pressable> : <Pressable accessibilityRole="button" accessibilityLabel="Cancel runtime selection" disabled={cancelDisabled} onPress={onCancel} style={styles.runtimeHeaderAction}><Text style={[styles.actionText, { color: colors.accent, opacity: cancelDisabled ? .45 : 1 }]}>Cancel</Text></Pressable>}
+        <Text numberOfLines={2} accessibilityRole="header" style={[styles.runtimeHeaderTitle, { color: colors.text }]}>{createVisible ? 'Create tmux session' : `Choose a runtime for ${serverName}`}</Text>
+        {createVisible ? <IconButton icon="close" label="Cancel runtime selection" colors={colors} disabled={cancelDisabled} onPress={onCancel} /> : <View style={styles.runtimeHeaderPlaceholder} />}
+      </View>
+      {createVisible ? <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.runtimeFormContent}>
+        <Text style={[styles.runtimeIntroTitle, { color: colors.text }]}>Create a tmux session</Text>
+        <Text style={[styles.runtimeHint, { color: colors.muted }]}>This creates a detached session on {serverName} and opens it after the native runtime confirms its identity.</Text>
+        <View style={styles.runtimeField}><Text style={[styles.runtimeLabel, { color: colors.text }]}>Session name</Text><TextInput accessibilityLabel="tmux session name" testID="runtime-tmux-name" value={name} onChangeText={value => { setName(value); setNameError(''); }} autoCapitalize="none" autoComplete="off" autoCorrect={false} maxLength={64} returnKeyType="go" onSubmitEditing={() => { void submitCreate(); }} placeholder="meeterm" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.runtimeInput, { color: colors.text, backgroundColor: colors.elevated, borderColor: nameError ? colors.danger : colors.border }]} />{nameError ? <Text accessibilityRole="alert" style={[styles.runtimeError, { color: colors.danger }]}>{nameError}</Text> : null}</View>
+        {creationError ? <Text accessibilityRole="alert" style={[styles.runtimeError, { color: colors.danger }]}>{creationError}</Text> : null}
+        <Button testID="runtime-tmux-create-submit" label="Create tmux session" colors={colors} disabled={busy} onPress={() => { void submitCreate(); }}>{busy ? 'Creating…' : 'Create and open'}</Button>
+        <Text style={[styles.runtimeHint, { color: colors.muted }]}>If the name is already in use or the session changes before creation finishes, meeterm will refresh the list and leave the existing sessions untouched.</Text>
+      </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.runtimePickerContent}>
+        <View style={styles.runtimeIntro}><Text accessibilityRole="header" style={[styles.runtimeIntroTitle, { color: colors.text }]}>Where should we continue?</Text><Text numberOfLines={2} style={[styles.runtimeServer, { color: colors.muted }]}>{serverName}</Text><Text style={[styles.runtimeHint, { color: colors.muted }]}>Choose a running session. Your last-used runtime is highlighted only as a hint; nothing opens until you tap a row.</Text></View>
+        {message ? <Text accessibilityRole="alert" style={[styles.runtimeMessage, { color: colors.danger }]}>{message}</Text> : null}
+        {renderSection('tmux', 'tmux')}
+        {renderSection('herdr', 'Herdr')}
+        <Button testID="runtime-refresh" label="Refresh runtimes" colors={colors} secondary disabled={busy || discoveryBusy} onPress={onRefresh}>Refresh</Button>
+        <Text style={[styles.runtimeHint, { color: colors.muted }]}>Herdr can be selected only when its session is already running. Start or create Herdr sessions on the computer.</Text>
+      </ScrollView>}
+    </SafeAreaView></SafeAreaProvider>
+  </Modal>;
+}
+
+function runtimeHintForProfile(profile?: Pick<ServerProfile, 'backend' | 'runtime'>): RuntimeHint | null {
+  if (!profile) return null;
+  const backend = profile.backend ?? 'tmux';
+  return { backend, runtime: profile.runtime || (backend === 'herdr' ? 'default' : 'meeterm') };
+}
+
+function applyRuntimeHint(discovery: RuntimeDiscovery, hint: RuntimeHint | null): RuntimeDiscovery {
+  return {
+    ...discovery,
+    backends: discovery.backends.map(backend => ({
+      ...backend,
+      candidates: backend.candidates.map(candidate => ({
+        ...candidate,
+        lastUsed: candidate.lastUsed || Boolean(hint && hint.backend === candidate.backend && hint.runtime === candidate.name),
+      })),
+    })),
+  };
+}
+
 function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const smokeScreen = smokeRoute?.kind === 'screen' ? smokeRoute.screen : null;
   const smokeFixtureActive = smokeScreen !== null;
@@ -350,6 +580,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [searching, setSearching] = useState(fixture?.searching ?? false);
   const [query, setQuery] = useState(fixture?.query ?? '');
   const [pickerQuery, setPickerQuery] = useState('');
+  const [runtimeDiscovery, setRuntimeDiscovery] = useState<RuntimeDiscovery | null>(() => fixture?.runtimeDiscovery ?? null);
+  const [runtimePickerVisible, setRuntimePickerVisible] = useState(() => fixture?.runtimePickerVisible ?? false);
+  const [runtimeCreateVisible, setRuntimeCreateVisible] = useState(() => fixture?.runtimeCreateVisible ?? false);
+  const [runtimeSelectingId, setRuntimeSelectingId] = useState('');
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
+  const [runtimeSelectionErrors, setRuntimeSelectionErrors] = useState<Record<string, string>>({});
+  const [runtimeMessage, setRuntimeMessage] = useState(() => fixture?.runtimeMessage ?? '');
+  const [runtimeCreationError, setRuntimeCreationError] = useState('');
+  const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
+  const [runtimeBound, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
   const [controlMessage, setControlMessage] = useState('');
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
@@ -363,11 +604,41 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const pendingModal = useRef<(() => void) | null>(null);
   const formSavedProfile = useRef<ServerProfile | undefined>(undefined);
   const returnToServersAfterForm = useRef(false);
-  const connectedIdentity = useRef('');
   const foregroundCommands = useRef(Promise.resolve());
   const listOffsets = useRef({ normal: 0, search: 0 });
   const workspaceList = useRef<FlatList<Workspace>>(null);
   const foreground = useRef(AppState.currentState === 'active');
+  const runtimeBoundRef = useRef(Boolean(fixture?.hasConnected));
+  const runtimeSelectionRequired = useRef(false);
+  const ignoreReadyUntilNewConnection = useRef(false);
+  const selectedRuntimeRef = useRef<RuntimeCandidate | null>(null);
+  const pendingRuntimeSelection = useRef<RuntimeCandidate | null>(null);
+  const pendingRuntimeCreation = useRef('');
+  const pendingRuntimeSelectionBaseline = useRef({ revision: -1, errorCode: '' });
+  const pendingRuntimeCreationBaseline = useRef({ revision: -1, errorCode: '' });
+  const runtimeDiscoveryLoading = useRef(false);
+  const runtimeDiscoveryAttempt = useRef(0);
+  const runtimeDiscoveryLoadedAttempt = useRef(-1);
+  const runtimeHintRef = useRef<RuntimeHint | null>(null);
+
+  const updateRuntimeBound = useCallback((value: boolean) => {
+    runtimeBoundRef.current = value;
+    setRuntimeBound(value);
+  }, []);
+
+  const invalidateRuntimeDiscovery = useCallback((showPicker: boolean) => {
+    // A late result from the previous host/runtime identity must not repopulate
+    // the picker after a host-key change or a lost selected runtime.
+    runtimeDiscoveryAttempt.current += 1;
+    runtimeDiscoveryLoadedAttempt.current = -1;
+    pendingRuntimeSelectionBaseline.current = { revision: -1, errorCode: '' };
+    pendingRuntimeCreationBaseline.current = { revision: -1, errorCode: '' };
+    setRuntimeDiscovery(null);
+    setRuntimeCreateVisible(false);
+    setRuntimeSelectionErrors({});
+    setRuntimeCreationError('');
+    setRuntimePickerVisible(showPicker);
+  }, []);
 
   useEffect(() => {
     recordStartupPhase('app_content_mounted');
@@ -438,24 +709,70 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       if (polling || !foreground.current) return;
       polling = true;
       const version = commandVersion.current;
+      const observationAttempt = runtimeDiscoveryAttempt.current;
+      const pendingSelectionAtStart = pendingRuntimeSelection.current;
+      const pendingCreationAtStart = pendingRuntimeCreation.current;
+      const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart);
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        const session = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
-        if (mounted && version === commandVersion.current && !commandPending.current) {
-          setConnection(current => sameConnection(current, next) ? current : next);
-          setSession(current => sameSession(current, session) ? current : session);
-          if (next.state === 'Ready') setHasConnected(true);
-          setPollProblem(false);
+        // Host authentication and runtime discovery do not have workspace
+        // metadata yet. Never turn the existing metadata poll into a runtime
+        // discovery loop or ask native for a workspace before binding one.
+        const nextSession = next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current
+          ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+          : null;
+        // A select/create call is queued in Rust and can remain in Awaiting or
+        // an intermediate phase until the actor processes it. Observe only
+        // the bounded runtime snapshot during that explicit operation; never
+        // issue a discovery refresh from this poll.
+        let pendingDiscovery: RuntimeDiscovery | null = null;
+        if (observePendingRuntime && !['Failed', 'Disconnected', 'Closing', 'HostKeyPending'].includes(next.state)) {
+          try {
+            pendingDiscovery = await MeetermTerminal.getRuntimeDiscovery(CONNECTION_ID);
+          } catch {
+            // A transient snapshot read failure is not an operation failure.
+            // The next existing connection poll can observe it again.
+          }
         }
+        const operationStillPending = pendingRuntimeSelection.current === pendingSelectionAtStart
+          && pendingRuntimeCreation.current === pendingCreationAtStart;
+        if (mounted && version === commandVersion.current && observationAttempt === runtimeDiscoveryAttempt.current && !commandPending.current) {
+          if (pendingDiscovery && operationStillPending) {
+            setRuntimeDiscovery(applyRuntimeHint(pendingDiscovery, runtimeHintRef.current));
+          }
+          setConnection(current => sameConnection(current, next) ? current : next);
+          if (nextSession) {
+            updateRuntimeBound(true);
+            setSession(current => sameSession(current, nextSession) ? current : nextSession);
+            setHasConnected(true);
+          } else if (next.state === 'AwaitingRuntimeSelection' || next.state === 'DiscoveringRuntimes') {
+            if (!runtimeSelectionRequired.current) {
+              const wasEstablishedBinding = runtimeBoundRef.current;
+              runtimeSelectionRequired.current = true;
+              invalidateRuntimeDiscovery(true);
+              updateRuntimeBound(false);
+              if (wasEstablishedBinding) setRuntimeMessage('The selected runtime is no longer available. Choose a runtime to continue.');
+            }
+            setRuntimePickerVisible(true);
+          } else if (next.state === 'HostKeyPending' || next.errorCode === 'host_key_changed') {
+            // Never show stale runtime rows while a host identity is awaiting
+            // verification.
+            invalidateRuntimeDiscovery(false);
+            updateRuntimeBound(false);
+          }
+          if (next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current) setHasConnected(true);
+          setPollProblem(false);
+      }
       } catch {
         if (mounted) setPollProblem(true);
       } finally { polling = false; }
     };
     void refresh();
-    // Poll metadata only. Native owns reconnect, terminal bytes, and frames.
+    // Poll low-frequency metadata only. Native owns reconnect, terminal bytes,
+    // frames, and all remote discovery/actor work.
     const interval = setInterval(() => { void refresh(); }, 1000);
     return () => { mounted = false; clearInterval(interval); };
-  }, [smokeFixtureActive]);
+  }, [invalidateRuntimeDiscovery, smokeFixtureActive, updateRuntimeBound]);
 
   useEffect(() => {
     if (smokeFixtureActive) return;
@@ -506,9 +823,49 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const colors = screen === 'terminal' ? DARK : homeColors;
   const resolvedTheme = 'dark';
   const currentProfile = profiles.find(profile => profile.id === profileId);
+  const effectiveRuntimeHint = runtimeHint ?? runtimeHintForProfile(currentProfile);
+  runtimeHintRef.current = effectiveRuntimeHint;
+
+  const loadRuntimeDiscovery = useCallback(async (refresh = false, clearSelectionErrors = refresh) => {
+    if (smokeFixtureActive) return runtimeDiscovery;
+    if (runtimeDiscoveryLoading.current) return null;
+    const attempt = runtimeDiscoveryAttempt.current;
+    runtimeDiscoveryLoading.current = true;
+    setRuntimeBusy(true);
+    try {
+      if (refresh) await MeetermTerminal.refreshRuntimes(CONNECTION_ID);
+      if (attempt !== runtimeDiscoveryAttempt.current) return null;
+      const next = await MeetermTerminal.getRuntimeDiscovery(CONNECTION_ID);
+      if (attempt !== runtimeDiscoveryAttempt.current) return null;
+      setRuntimeDiscovery(applyRuntimeHint(next, effectiveRuntimeHint));
+      if (clearSelectionErrors) {
+        setRuntimeSelectionErrors({});
+      }
+      if (refresh) {
+        setRuntimeMessage('');
+      }
+      return next;
+    } catch {
+      setRuntimeMessage(refresh ? 'Could not refresh runtimes. Check the connection and try again.' : 'Runtimes could not be loaded. Tap Refresh to try again.');
+      return null;
+    } finally {
+      runtimeDiscoveryLoading.current = false;
+      setRuntimeBusy(false);
+    }
+  }, [effectiveRuntimeHint, runtimeDiscovery, smokeFixtureActive]);
+
+  useEffect(() => {
+    if (smokeFixtureActive || !['DiscoveringRuntimes', 'AwaitingRuntimeSelection'].includes(connection.state)) return;
+    setRuntimePickerVisible(true);
+    if (runtimeDiscoveryLoadedAttempt.current === runtimeDiscoveryAttempt.current) return;
+    runtimeDiscoveryLoadedAttempt.current = runtimeDiscoveryAttempt.current;
+    void loadRuntimeDiscovery();
+  }, [connection.state, loadRuntimeDiscovery, smokeFixtureActive]);
+
   const presentation = connectionPresentation(connection);
   const ready = connection.state === 'Ready';
-  const terminalVisible = Boolean(ready && workspace && selectedPane)
+  const runtimeReady = Boolean(ready && runtimeBound);
+  const terminalVisible = Boolean(runtimeReady && workspace && selectedPane)
     && screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible
     && !nameRequest && appState === 'active';
   useEffect(() => {
@@ -535,15 +892,241 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       await action();
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        const session = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
-        setConnection(next); setSession(session); setPollProblem(false);
-        if (next.state === 'Ready') setHasConnected(true);
+        const nextSession = next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current
+          ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+          : null;
+        setConnection(next);
+        if (nextSession) {
+          updateRuntimeBound(true);
+          setSession(nextSession);
+          setHasConnected(true);
+        } else if (next.state === 'AwaitingRuntimeSelection' || next.state === 'DiscoveringRuntimes') {
+          if (!runtimeSelectionRequired.current) {
+            const wasEstablishedBinding = runtimeBoundRef.current;
+            runtimeSelectionRequired.current = true;
+            invalidateRuntimeDiscovery(true);
+            if (wasEstablishedBinding) setRuntimeMessage('The selected runtime is no longer available. Choose a runtime to continue.');
+          }
+          updateRuntimeBound(false);
+          setRuntimePickerVisible(true);
+        } else if (next.state === 'HostKeyPending' || next.errorCode === 'host_key_changed') {
+          invalidateRuntimeDiscovery(false);
+          updateRuntimeBound(false);
+        }
+        setPollProblem(false);
       } catch { setPollProblem(true); }
       return true;
     }
     catch { setControlMessage(errorMessage); return false; }
     finally { commandPending.current = false; setCommandBusy(false); }
-  }, [smokeFixtureActive]);
+  }, [invalidateRuntimeDiscovery, smokeFixtureActive, updateRuntimeBound]);
+
+  const finishRuntimeSelection = useCallback((candidate: RuntimeCandidate) => {
+    // This callback is reached only after a Ready snapshot. Keeping the hint
+    // write here prevents failed/stale taps from changing profile metadata.
+    pendingRuntimeSelection.current = null;
+    pendingRuntimeCreation.current = '';
+    pendingRuntimeSelectionBaseline.current = { revision: -1, errorCode: '' };
+    pendingRuntimeCreationBaseline.current = { revision: -1, errorCode: '' };
+    runtimeSelectionRequired.current = false;
+    selectedRuntimeRef.current = candidate;
+    updateRuntimeBound(true);
+    setRuntimePickerVisible(false);
+    setRuntimeCreateVisible(false);
+    setRuntimeSelectingId('');
+    setRuntimeBusy(false);
+    setRuntimeActionBusy(false);
+    setRuntimeMessage('');
+    setRuntimeCreationError('');
+    setScreen('workspaces');
+    setSheet(null);
+    setPickerQuery('');
+
+    const profileIdForHint = profileId;
+    if (!smokeFixtureActive && profileIdForHint) {
+      void MeetermTerminal.setLastUsedRuntime(profileIdForHint, candidate.backend, candidate.name)
+        .then(updated => {
+          setProfiles(current => current.map(profile => profile.id === updated.id ? updated : profile));
+          setRuntimeHint({ backend: candidate.backend, runtime: candidate.name });
+        })
+        .catch(() => {
+          // Selection remains successful; a hint is convenience metadata only.
+          setControlMessage('Runtime opened. The last-used hint could not be saved.');
+        });
+    }
+  }, [profileId, smokeFixtureActive, updateRuntimeBound]);
+
+  const failPendingRuntime = useCallback((kind: 'selection' | 'creation' | 'connection', candidate: RuntimeCandidate | null, errorCode: string, errorMessage: string) => {
+    const wasCreating = Boolean(pendingRuntimeCreation.current);
+    pendingRuntimeSelection.current = null;
+    pendingRuntimeCreation.current = '';
+    pendingRuntimeSelectionBaseline.current = { revision: -1, errorCode: '' };
+    pendingRuntimeCreationBaseline.current = { revision: -1, errorCode: '' };
+    setRuntimeSelectingId('');
+    setRuntimeBusy(false);
+    setRuntimeActionBusy(false);
+    runtimeSelectionRequired.current = true;
+    updateRuntimeBound(false);
+    setRuntimePickerVisible(true);
+    if (kind === 'selection' && candidate) {
+      setRuntimeSelectionErrors(current => ({
+        ...current,
+        [candidate.id]: runtimeFailureMessage(errorCode, errorMessage, 'This runtime could not be opened.'),
+      }));
+      setRuntimeMessage('The other runtime sections remain available.');
+    } else if (kind === 'creation') {
+      setRuntimeCreationError(runtimeFailureMessage(errorCode, errorMessage, 'The tmux session could not be created.'));
+      setRuntimeMessage('Choose another session name or refresh the runtime list.');
+    } else {
+      const message = runtimeFailureMessage(errorCode, errorMessage, 'The connection failed while opening this runtime. Check the connection and reconnect.');
+      if (wasCreating) setRuntimeCreationError(message);
+      setRuntimeMessage(message);
+    }
+  }, [updateRuntimeBound]);
+
+  useEffect(() => {
+    if (smokeFixtureActive) return;
+    const candidate = pendingRuntimeSelection.current;
+    const creationName = pendingRuntimeCreation.current;
+    if (!candidate && !creationName) return;
+
+    // Ready is the only successful completion signal. In particular, an
+    // initial AwaitingRuntimeSelection snapshot while the Rust actor is still
+    // dequeuing the request is not a failure.
+    if (connection.state === 'Ready') {
+      const operationAttempt = runtimeDiscoveryAttempt.current;
+      finishRuntimeSelection(candidate ?? createdTmuxCandidate(creationName));
+      void MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+        .then(next => {
+          if (operationAttempt !== runtimeDiscoveryAttempt.current) return;
+          setSession(next);
+          setHasConnected(true);
+        })
+        .catch(() => {
+          if (operationAttempt === runtimeDiscoveryAttempt.current) setPollProblem(true);
+        });
+      return;
+    }
+    if (connection.state === 'Failed') {
+      failPendingRuntime('connection', candidate, connection.errorCode, connection.errorMessage);
+      return;
+    }
+
+    const snapshot = runtimeDiscovery;
+    if (!snapshot) return;
+    if (candidate) {
+      const observed = snapshot.backends.flatMap(item => item.candidates).find(item => item.id === candidate.id);
+      const baseline = pendingRuntimeSelectionBaseline.current;
+      if (observed?.errorCode && (observed.errorCode !== baseline.errorCode || snapshot.revision !== baseline.revision)) {
+        failPendingRuntime('selection', candidate, observed.errorCode, observed.errorMessage);
+      }
+      return;
+    }
+
+    const tmux = snapshot.backends.find(item => item.backend === 'tmux');
+    const baseline = pendingRuntimeCreationBaseline.current;
+    if (tmux?.errorCode && (tmux.errorCode !== baseline.errorCode || snapshot.revision !== baseline.revision)) {
+      failPendingRuntime('creation', null, tmux.errorCode, tmux.errorMessage);
+    }
+  }, [connection, failPendingRuntime, finishRuntimeSelection, runtimeDiscovery, runtimeActionBusy, runtimeSelectingId, smokeFixtureActive]);
+
+  const selectRuntime = useCallback(async (candidate: RuntimeCandidate) => {
+    if (candidate.state !== 'running' || !candidate.selectable || commandPending.current || runtimeBusy) return false;
+    const operationAttempt = runtimeDiscoveryAttempt.current;
+    const baselineDiscovery = runtimeDiscovery;
+    const baseline = baselineDiscovery?.backends.flatMap(item => item.candidates).find(item => item.id === candidate.id);
+    pendingRuntimeSelectionBaseline.current = {
+      revision: baselineDiscovery?.revision ?? -1,
+      errorCode: baseline?.errorCode ?? candidate.errorCode,
+    };
+    setRuntimeSelectionErrors(current => {
+      const next = { ...current };
+      delete next[candidate.id];
+      return next;
+    });
+    setRuntimeSelectingId(candidate.id);
+    setRuntimeActionBusy(true);
+    setRuntimeBusy(true);
+    setRuntimeMessage('');
+    pendingRuntimeSelection.current = candidate;
+    try {
+      if (!smokeFixtureActive) await MeetermTerminal.selectRuntime(CONNECTION_ID, candidate.id);
+      if (operationAttempt !== runtimeDiscoveryAttempt.current || !pendingRuntimeSelection.current) return false;
+      setRuntimeMessage('Runtime selected. Waiting for its workspace to become ready…');
+      return true;
+    } catch {
+      if (operationAttempt !== runtimeDiscoveryAttempt.current) return false;
+      pendingRuntimeSelection.current = null;
+      pendingRuntimeSelectionBaseline.current = { revision: -1, errorCode: '' };
+      setRuntimeSelectionErrors(current => ({ ...current, [candidate.id]: 'This runtime could not be opened. It may have stopped or changed; refresh and try again.' }));
+      setRuntimeMessage('The other runtime sections remain available.');
+      void loadRuntimeDiscovery(true, false);
+      return false;
+    } finally {
+      if (operationAttempt === runtimeDiscoveryAttempt.current && !pendingRuntimeSelection.current) {
+        setRuntimeSelectingId('');
+        if (!runtimeDiscoveryLoading.current) setRuntimeBusy(false);
+      }
+      if (operationAttempt === runtimeDiscoveryAttempt.current) setRuntimeActionBusy(false);
+    }
+  }, [loadRuntimeDiscovery, runtimeBusy, runtimeDiscovery, smokeFixtureActive]);
+
+  const refreshRuntimes = useCallback(() => {
+    if (commandPending.current || runtimeActionBusy || runtimeBusy) return;
+    void loadRuntimeDiscovery(true);
+  }, [loadRuntimeDiscovery, runtimeActionBusy, runtimeBusy]);
+
+  const cancelRuntimeSelection = useCallback(() => {
+    if (commandPending.current) return;
+    Keyboard.dismiss();
+    invalidateRuntimeDiscovery(false);
+    setRuntimeMessage('');
+    pendingRuntimeSelection.current = null;
+    pendingRuntimeCreation.current = '';
+    setRuntimeSelectingId('');
+    setRuntimeBusy(false);
+    setRuntimeActionBusy(false);
+    ignoreReadyUntilNewConnection.current = true;
+    runtimeSelectionRequired.current = false;
+    updateRuntimeBound(false);
+    if (smokeFixtureActive) return;
+    setConnection(current => ({ ...current, state: 'Closing' }));
+    void runCommand(() => MeetermTerminal.disconnect(CONNECTION_ID), 'Could not cancel the provisional connection. Please try again.');
+  }, [invalidateRuntimeDiscovery, runCommand, smokeFixtureActive, updateRuntimeBound]);
+
+  const createTmuxSession = useCallback(async (name: string) => {
+    if (commandPending.current || runtimeActionBusy) return false;
+    const operationAttempt = runtimeDiscoveryAttempt.current;
+    pendingRuntimeCreationBaseline.current = {
+      revision: runtimeDiscovery?.revision ?? -1,
+      // A new native create request clears any previous create-operation
+      // section error when it is accepted. Baseline the new attempt against
+      // that empty error so the same code can be reported again on failure.
+      errorCode: '',
+    };
+    setRuntimeActionBusy(true);
+    setRuntimeBusy(true);
+    setRuntimeCreationError('');
+    pendingRuntimeCreation.current = name;
+    try {
+      if (!smokeFixtureActive) await MeetermTerminal.createTmuxSession(CONNECTION_ID, name);
+      if (operationAttempt !== runtimeDiscoveryAttempt.current || !pendingRuntimeCreation.current) return false;
+      setRuntimeMessage('Session creation requested. Waiting for it to become ready…');
+      return true;
+    } catch {
+      if (operationAttempt !== runtimeDiscoveryAttempt.current) return false;
+      pendingRuntimeCreation.current = '';
+      pendingRuntimeCreationBaseline.current = { revision: -1, errorCode: '' };
+      setRuntimeCreationError('The session could not be created. Refresh the list to check whether the name is already in use.');
+      setRuntimeMessage('Choose another session name or refresh the runtime list.');
+      return false;
+    } finally {
+      if (operationAttempt === runtimeDiscoveryAttempt.current) {
+        if (!pendingRuntimeCreation.current && !pendingRuntimeSelection.current && !runtimeDiscoveryLoading.current) setRuntimeBusy(false);
+        setRuntimeActionBusy(false);
+      }
+    }
+  }, [runtimeActionBusy, runtimeDiscovery, smokeFixtureActive]);
 
   const finishConnectionForm = useCallback(() => {
     if (Platform.OS === 'ios' && returnToServersAfterForm.current) setModalPending(true);
@@ -570,7 +1153,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSheet(null);
     setScreen('workspaces');
     setFoundation(false);
-    setSession({ ...EMPTY_WORKSPACES, backend: profile.backend ?? 'tmux', runtime: profile.runtime || (profile.backend === 'herdr' ? 'default' : 'meeterm') });
+    setSession(EMPTY_WORKSPACES);
     setSelectedPaneIds({});
     setWorkspaceId('');
     setSearching(false);
@@ -578,8 +1161,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     listOffsets.current = { normal: 0, search: 0 };
     setRemovedHostKeyId('');
     setHasConnected(false);
+    setRuntimeSelectingId('');
+    setRuntimeActionBusy(false);
+    setRuntimeMessage('');
+    selectedRuntimeRef.current = null;
+    pendingRuntimeSelection.current = null;
+    pendingRuntimeCreation.current = '';
+    ignoreReadyUntilNewConnection.current = false;
+    runtimeSelectionRequired.current = true;
+    invalidateRuntimeDiscovery(false);
+    setRuntimeHint(runtimeHintForProfile(profile));
+    updateRuntimeBound(false);
     setConnection({ ...INITIAL_CONNECTION, state: 'Connecting', host: profile.host, port: profile.port });
-  }, [formVisible, sheet]);
+  }, [formVisible, invalidateRuntimeDiscovery, sheet, updateRuntimeBound]);
 
   const prepareConnection = useCallback(async () => {
     if (smokeFixtureActive) return;
@@ -598,23 +1192,21 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         savedProfile = await MeetermTerminal.saveProfile({ ...submission.profile, id: submission.profile.id || formSavedProfile.current?.id || '' }, submission.saveCredential ? submission.credential : null, submission.keepCredential);
         formSavedProfile.current = savedProfile;
         setProfiles(current => [...current.filter(item => item.id !== savedProfile!.id), savedProfile!]);
-        if (savedProfile.id === profileId && connectedIdentity.current !== JSON.stringify([savedProfile.host, savedProfile.port, savedProfile.username, savedProfile.authMethod, savedProfile.backend ?? 'tmux', savedProfile.runtime ?? ''])) setProfileId('');
       }
       if (!submission.connect) return;
       await prepareConnection();
       if (submission.credential) {
-        const options: SshConnectOptions = { host: submission.profile.host, port: submission.profile.port, username: submission.profile.username, backend: submission.profile.backend ?? 'tmux', runtime: submission.profile.runtime ?? '', ...submission.credential };
-        await MeetermTerminal.connect(CONNECTION_ID, options);
+        const options: SshConnectOptions = { host: submission.profile.host, port: submission.profile.port, username: submission.profile.username, ...submission.credential };
+        await MeetermTerminal.connectHost(CONNECTION_ID, options);
       } else if (savedProfile?.credentialSaved) {
-        await MeetermTerminal.connectProfile(CONNECTION_ID, savedProfile.id);
+        await MeetermTerminal.connectProfileHost(CONNECTION_ID, savedProfile.id);
       } else { throw new Error('Credential required'); }
-      resetForConnection(submission.profile);
-      connectedIdentity.current = JSON.stringify([submission.profile.host, submission.profile.port, submission.profile.username, submission.profile.authMethod, submission.profile.backend ?? 'tmux', submission.profile.runtime ?? '']);
+      resetForConnection(savedProfile ?? submission.profile);
       setProfileId(savedProfile?.id ?? '');
     }, 'Could not save or connect to this server. Check the address and credentials.');
     if (success) finishConnectionForm();
     return success;
-  }, [finishConnectionForm, prepareConnection, profileId, resetForConnection, runCommand]);
+  }, [finishConnectionForm, prepareConnection, resetForConnection, runCommand]);
 
   const disconnect = useCallback(() => {
     if (commandPending.current) return;
@@ -638,7 +1230,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [connection, runCommand]);
 
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
-    if (commandPending.current || !['Ready', 'Disconnected', 'Failed'].includes(connection.state)) return false;
+    if (commandPending.current || (!runtimeReady && !['Disconnected', 'Failed'].includes(connection.state))) return false;
     Keyboard.dismiss();
     const previous = selectedPaneIds[pane.groupId];
     setSelectedPaneIds(current => ({ ...current, [pane.groupId]: pane.id }));
@@ -653,7 +1245,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         return next;
       });
     return success;
-  }, [connection.state, runCommand, selectedPaneIds, smokeFixtureActive]);
+  }, [connection.state, runCommand, runtimeReady, selectedPaneIds, smokeFixtureActive]);
 
   const openWorkspace = useCallback((item: Workspace) => {
     if (commandPending.current) return;
@@ -721,9 +1313,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       if (!profile.credentialSaved) { openProfileForm(profile); return; }
       void runCommand(async () => {
         await prepareConnection();
-        await MeetermTerminal.connectProfile(CONNECTION_ID, profile.id);
+        await MeetermTerminal.connectProfileHost(CONNECTION_ID, profile.id);
         resetForConnection(profile);
-        connectedIdentity.current = JSON.stringify([profile.host, profile.port, profile.username, profile.authMethod, profile.backend ?? 'tmux', profile.runtime ?? '']);
         setProfileId(profile.id);
       }, 'Could not connect to this saved server. Choose Edit server to check its address and credentials.');
     };
@@ -779,12 +1370,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [runCommand]);
 
   const openName = useCallback((request: NameRequest) => {
-    if (!ready || commandPending.current) return;
+    if (!runtimeReady || commandPending.current) return;
     showModal(() => setNameRequest(request));
-  }, [ready, showModal]);
+  }, [runtimeReady, showModal]);
 
   const saveName = useCallback(async (name: string) => {
-    if (!nameRequest || !ready) return false;
+    if (!nameRequest || !runtimeReady) return false;
     const request = nameRequest;
     const success = await runCommand(() => request.kind === 'createWorkspace'
       ? MeetermTerminal.createWorkspace(CONNECTION_ID, name)
@@ -797,7 +1388,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             : MeetermTerminal.renamePane(CONNECTION_ID, request.pane.id, name), 'Could not update the name. Check your connection and try again.');
     if (success) setNameRequest(null);
     return success;
-  }, [nameRequest, ready, runCommand]);
+  }, [nameRequest, runCommand, runtimeReady]);
 
   const closeWorkspace = useCallback((item: Workspace) => {
     Alert.alert('Close workspace?', `${item.name}\n\n${item.panes.length} terminals and their running processes will close. Unsaved work will be lost.`, [
@@ -815,7 +1406,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [closeWorkspace, openName]);
 
   const createPane = useCallback(() => {
-    if (!workspace || !ready) return;
+    if (!workspace || !runtimeReady) return;
     if (session.groupsSupported && groupPanes.length === 0) {
       setControlMessage('This group has no terminal to split. Create a new group from the menu.');
       return;
@@ -826,7 +1417,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setSheet(null);
       }
     });
-  }, [ready, runCommand, workspace, group, session.groupsSupported, groupPanes.length]);
+  }, [runCommand, runtimeReady, workspace, group, session.groupsSupported, groupPanes.length]);
 
   const closePane = useCallback(() => {
     if (!selectedPane || !workspace) return;
@@ -848,11 +1439,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [backToWorkspaces, runCommand, selectedPane, workspace, session.groupsSupported, groupPanes.length]);
 
   const chooseGroup = useCallback((item: TerminalGroup) => {
-    if (!ready || commandPending.current) return;
+    if (!runtimeReady || commandPending.current) return;
     const remembered = panes.find(pane => pane.groupId === item.id && pane.id === selectedPaneIds[item.id]);
     const selection = remembered ? choosePane(remembered) : runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, item.id), 'Could not open this group. Check the list and try again.');
     void selection.then(success => { if (success) setSheet(null); });
-  }, [ready, runCommand, panes, selectedPaneIds, choosePane]);
+  }, [runtimeReady, runCommand, panes, selectedPaneIds, choosePane]);
 
   const closeGroup = useCallback((item: TerminalGroup) => {
     const terminals = panes.filter(pane => pane.groupId === item.id);
@@ -878,12 +1469,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (foundation) { setFoundation(false); return true; }
+      if (runtimePickerVisible) { cancelRuntimeSelection(); return true; }
       if (screen === 'terminal') { backToWorkspaces(); return true; }
       if (searching) { closeSearch(); return true; }
       return false;
     });
     return () => subscription.remove();
-  }, [backToWorkspaces, closeSearch, foundation, screen, searching]);
+  }, [backToWorkspaces, cancelRuntimeSelection, closeSearch, foundation, runtimePickerVisible, screen, searching]);
 
   const reviewChangedHostKey = useCallback(() => {
     const changeId = keyChangeId(connection);
@@ -949,9 +1541,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     {searching ? <View style={styles.horizontal}>
       <SearchField value={query} colors={homeColors} onChange={value => { setQuery(value); listOffsets.current.search = 0; workspaceList.current?.scrollToOffset({ offset: 0, animated: false }); }} autoFocus />
       <Text style={[styles.resultCount, { color: homeColors.muted }]}>{filteredWorkspaces.length} {filteredWorkspaces.length === 1 ? 'result' : 'results'}</Text>
-    </View> : attempted && (workspaces.length > 0 || ready) ? <View style={styles.sectionHeader}>
+    </View> : attempted && (workspaces.length > 0 || runtimeReady) ? <View style={styles.sectionHeader}>
       <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>All  {workspaces.length}</Text>
-      <View style={styles.topActions}><IconButton icon="search" label="Search workspaces" onPress={() => setSearching(true)} colors={homeColors} /><IconButton icon="plus" label="Create workspace" onPress={() => openName({ kind: 'createWorkspace' })} colors={homeColors} disabled={!ready || commandBusy} /></View>
+      <View style={styles.topActions}><IconButton icon="search" label="Search workspaces" onPress={() => setSearching(true)} colors={homeColors} /><IconButton icon="plus" label="Create workspace" onPress={() => openName({ kind: 'createWorkspace' })} colors={homeColors} disabled={!runtimeReady || commandBusy} /></View>
     </View> : null}
   </View>;
 
@@ -969,7 +1561,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <Text style={[styles.firstUseTitle, { color: homeColors.text }]}>Your workspace. Anywhere.</Text>
     <Text style={[styles.firstUseBody, { color: homeColors.muted }]}>Connect to your server over SSH.{`\n`}Keep your work close.</Text>
     <Button label="Connect" colors={homeColors} onPress={openForm} style={styles.fullWidth}>Connect to a server</Button>
-  </View> : ready ? <View style={styles.emptySearch}>
+  </View> : runtimeReady ? <View style={styles.emptySearch}>
     <Text style={[styles.emptyTitle, { color: homeColors.text }]}>A fresh workspace starts here.</Text>
     <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Create a workspace to open your first terminal.{`\n`}It stays on your server when you leave.</Text>
     <Button label="Create workspace" colors={homeColors} onPress={() => openName({ kind: 'createWorkspace' })} disabled={commandBusy}>Create workspace</Button>
@@ -989,7 +1581,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ref={workspaceList}
       data={filteredWorkspaces}
       keyExtractor={item => item.id}
-      renderItem={({ item }) => <View style={styles.horizontal}><WorkspaceRow connected={ready} workspace={item} selected={item.id === activeWorkspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>}
+      renderItem={({ item }) => <View style={styles.horizontal}><WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>}
       ListHeaderComponent={listHeader}
       ListEmptyComponent={emptyList}
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 24 }}
@@ -1012,25 +1604,25 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
         <Text style={[styles.groupLabel, { color: DARK.muted }]}>Group</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!ready || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, pressed && { opacity: .65 }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, pressed && { opacity: .65 }]}>
           <Text numberOfLines={1} style={[styles.groupName, { color: DARK.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={DARK.muted} size={12} />
         </Pressable>
       </View> : null}
       {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: DARK.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `Terminal ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (ready) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{pane.name || `Terminal ${index + 1}`}</Text></Pressable>)}
-      </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!ready || commandBusy} onPress={createPane} /></View> : null}
+        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `Terminal ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{pane.name || `Terminal ${index + 1}`}</Text></Pressable>)}
+      </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
       {selectedPane?.agent ? <View style={styles.agentLine}>
         <Text numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
-        <Text accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." style={[styles.agentStatus, { color: ready && selectedPane.agent.status === 'blocked' ? DARK.accent : DARK.muted }]}>{AGENT_LABELS[ready ? selectedPane.agent.status : 'unknown']}</Text>
+        <Text accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." style={[styles.agentStatus, { color: runtimeReady && selectedPane.agent.status === 'blocked' ? DARK.accent : DARK.muted }]}>{AGENT_LABELS[runtimeReady ? selectedPane.agent.status : 'unknown']}</Text>
       </View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
-      {ready && workspace && selectedPane ? (
+      {runtimeReady && workspace && selectedPane ? (
         // Unmounting a surface cancels composition; the shared native registry
         // still owns the SSH connection and each terminal's retained state.
         sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active' ? <TerminalView key={selectedPane.terminalId} terminalId={selectedPane.terminalId} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View style={[styles.flex, { backgroundColor: DARK.terminal }]} />
       ) : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.terminalUnavailable, { paddingBottom: Math.max(insets.bottom, 24) }]}>
         {statusNotice}
-        {ready ? <View style={styles.gone}>
+        {runtimeReady ? <View style={styles.gone}>
           <Icon name="terminal" color={DARK.muted} size={32} />
           <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: DARK.text }]}>{workspace ? 'This terminal has closed' : 'This workspace has closed'}</Text>
           <Text style={[styles.emptyBody, { color: DARK.muted }]}>{workspace ? 'Select another terminal to keep working.' : 'Choose another workspace from the list.'}</Text>
@@ -1040,30 +1632,52 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     </View></SafeAreaView>}
     />
 
+    <RuntimePicker
+      visible={runtimePickerVisible}
+      serverName={currentProfile?.name ?? endpoint(connection)}
+      discovery={runtimeDiscovery}
+      createVisible={runtimeCreateVisible}
+      busy={commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId)}
+      discoveryBusy={runtimeBusy && !runtimeActionBusy && !runtimeSelectingId}
+      cancelDisabled={commandBusy}
+      selectingId={runtimeSelectingId}
+      selectionErrors={runtimeSelectionErrors}
+      message={runtimeMessage}
+      creationError={runtimeCreationError}
+      onCancel={cancelRuntimeSelection}
+      onDismiss={() => {}}
+      onRefresh={refreshRuntimes}
+      onRetryBackend={() => { if (!commandPending.current && !runtimeBusy) void loadRuntimeDiscovery(true, false); }}
+      onSelect={candidate => { void selectRuntime(candidate); }}
+      onOpenCreate={() => { if (!runtimeBusy) { setRuntimeCreationError(''); setRuntimeCreateVisible(true); } }}
+      onBackToList={() => { if (!runtimeBusy) { setRuntimeCreationError(''); setRuntimeCreateVisible(false); } }}
+      onCreate={createTmuxSession}
+      colors={homeColors}
+    />
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
     <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} busy={commandBusy} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
-        <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
-        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={ready} workspace={item} selected={item.id === workspaceId} disabled={presentation.pending || commandBusy} optionsDisabled={!ready} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
+        <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
+        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Keep related terminals together. Select a group to switch.</Text>
         {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name}`} accessibilityState={{ selected: item.id === group?.id, disabled: !ready || commandBusy }} disabled={!ready || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name}`} accessibilityState={{ selected: item.id === group?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
             <Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text>
             <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} {panes.filter(pane => pane.groupId === item.id).length === 1 ? 'terminal' : 'terminals'}{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
-          <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!ready || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
+          <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
         </View>)}
-        {workspace ? <Button label="Create group" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button> : null}
+        {workspace ? <Button label="Create group" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button> : null}
       </ScrollView> : sheet === 'handoff' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.handoffTitle, { color: homeColors.text }]}>Same work. Bigger screen.</Text>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Your workspace keeps running when you disconnect your phone.</Text>
         <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: homeColors.accent }]}>1</Text><Text style={[styles.emptyBody, { color: homeColors.text, flex: 1 }]}>Disconnect this phone to release the workspace.</Text></View>
         <View style={styles.handoffStep}><Text style={[styles.stepNumber, { color: homeColors.accent }]}>2</Text><Text style={[styles.emptyBody, { color: homeColors.text, flex: 1 }]}>SSH into the same server with the same username on your computer.</Text></View>
-        <Text selectable style={[styles.command, { backgroundColor: homeColors.surface, color: homeColors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : 'tmux attach -t meeterm'}</Text>
+        <Text selectable style={[styles.command, { backgroundColor: homeColors.surface, color: homeColors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : `tmux attach -t ${session.runtime || 'meeterm'}`}</Text>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Run this command to reopen the same workspaces and terminals.</Text>
         {active ? <Button label="Disconnect" colors={homeColors} disabled={commandBusy} onPress={disconnect}>Disconnect this phone</Button> : <Button label="Close sheet" colors={homeColors} secondary onPress={() => setSheet(null)}>Close</Button>}
       </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
@@ -1081,20 +1695,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Settings</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
           <Text numberOfLines={2} style={[styles.sectionLabel, { color: homeColors.muted }]}>{selectedPane.name || selectedPane.id}</Text>
-          <Button label="Refresh terminal" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={refreshTerminal}>Refresh terminal</Button>
+          <Button label="Refresh terminal" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={refreshTerminal}>Refresh terminal</Button>
           <Text style={[styles.noticeBody, { color: homeColors.muted }]}>Ask the remote app to redraw if the display looks wrong after reconnecting.</Text>
           <View style={styles.noticeActions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Rename terminal" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renamePane', pane: selectedPane })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename</Text></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!ready || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close terminal</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Rename terminal" disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'renamePane', pane: selectedPane })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!runtimeReady || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close terminal</Text></Pressable>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!ready || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Workspace options</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!runtimeReady || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Workspace options</Text></Pressable>
         </View> : null}
         {screen === 'terminal' && workspace && session.groupsSupported ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
           <Text style={[styles.sectionLabel, { color: homeColors.muted }]}>Group</Text>
-          <Button label="Create group" colors={homeColors} secondary disabled={!ready || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button>
+          <Button label="Create group" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button>
           {group ? <View style={styles.noticeActions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Rename group" disabled={!ready || commandBusy} onPress={() => openName({ kind: 'renameGroup', group })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename group</Text></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="Close group" disabled={!ready || commandBusy} onPress={() => closeGroup(group)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close group</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Rename group" disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'renameGroup', group })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename group</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close group" disabled={!runtimeReady || commandBusy} onPress={() => closeGroup(group)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close group</Text></Pressable>
           </View> : null}
         </View> : null}
         <Pressable accessibilityRole="button" accessibilityLabel="PC handoff help" onPress={() => setSheet('handoff')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Continue on your computer</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
@@ -1250,4 +1864,30 @@ const styles = StyleSheet.create({
   stepNumber: { fontSize: 15, lineHeight: 25, fontVariant: ['tabular-nums'] },
   command: { padding: 16, fontFamily: MONO, fontSize: 16, lineHeight: 26, borderRadius: 12, borderCurve: 'continuous' },
   foundationTitle: { flex: 1, fontSize: 16, paddingLeft: 12 },
+  runtimeHeader: { minHeight: 64, paddingLeft: 12, paddingRight: 12, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  runtimeHeaderAction: { minWidth: 72, minHeight: 48, justifyContent: 'center', paddingHorizontal: 4 },
+  runtimeHeaderPlaceholder: { width: 72, minHeight: 48 },
+  runtimeHeaderTitle: { flex: 1, textAlign: 'center', fontSize: 18, lineHeight: 28, fontWeight: '600' },
+  runtimePickerContent: { padding: 24, paddingBottom: 40, gap: 28 },
+  runtimeFormContent: { padding: 24, paddingBottom: 40, gap: 20 },
+  runtimeField: { gap: 8 },
+  runtimeLabel: { fontSize: 14, lineHeight: 22, fontWeight: '500' },
+  runtimeInput: { minHeight: 52, borderWidth: 1, borderRadius: 12, borderCurve: 'continuous', paddingHorizontal: 12, paddingVertical: 12, fontSize: 16 },
+  runtimeIntro: { gap: 10 },
+  runtimeIntroTitle: { fontSize: 24, lineHeight: 34, fontWeight: '600', letterSpacing: -.5 },
+  runtimeServer: { fontSize: 13, lineHeight: 22 },
+  runtimeSection: { gap: 12 },
+  runtimeSectionHeading: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  runtimeSectionTitle: { fontSize: 15, lineHeight: 24, fontWeight: '700' },
+  runtimeSectionError: { padding: 16, gap: 12, borderRadius: 12, borderCurve: 'continuous' },
+  runtimeRowContainer: { borderBottomWidth: StyleSheet.hairlineWidth },
+  runtimeRow: { minHeight: 76, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  runtimeRowCopy: { flex: 1, minWidth: 0, gap: 3 },
+  runtimeNameLine: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  runtimeName: { flexShrink: 1, fontSize: 17, lineHeight: 25, fontWeight: '600' },
+  runtimeState: { fontSize: 12, lineHeight: 19, fontWeight: '600' },
+  runtimeHint: { fontSize: 13, lineHeight: 21 },
+  runtimeError: { fontSize: 13, lineHeight: 21 },
+  runtimeBadge: { paddingHorizontal: 7, paddingVertical: 2, borderWidth: 1, borderRadius: 6, fontSize: 11, lineHeight: 17, fontWeight: '600' },
+  runtimeMessage: { padding: 12, fontSize: 13, lineHeight: 21, borderRadius: 10 },
 });

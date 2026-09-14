@@ -60,6 +60,33 @@ const DARK = {
   placeholder: '#98897b',
 };
 
+function runtimeCandidate(id, backend, name, state = 'running', overrides = {}) {
+  return {
+    id,
+    backend,
+    name,
+    state,
+    selectable: state === 'running',
+    isDefault: false,
+    lastUsed: false,
+    errorCode: '',
+    errorMessage: '',
+    ...overrides,
+  };
+}
+
+function runtimeBackend(backend, candidates = [], overrides = {}) {
+  return {
+    backend,
+    state: 'ready',
+    errorCode: '',
+    errorMessage: '',
+    canCreate: backend === 'tmux',
+    candidates,
+    ...overrides,
+  };
+}
+
 function SafeAreaProvider({ children }) {
   return React.createElement(React.Fragment, null, children);
 }
@@ -107,6 +134,13 @@ function makeNativeEnvironment() {
       groups: [],
       terminals: [],
     },
+    runtimeDiscovery: {
+      revision: 1,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [] },
+        { backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false, candidates: [] },
+      ],
+    },
     connection: {
       state: 'Ready',
       host: 'fixture.example',
@@ -126,6 +160,16 @@ function makeNativeEnvironment() {
     initialURL: null,
     initialURLBehavior: 'resolve',
     profilesShouldFail: false,
+    profiles: [],
+    selectRuntimeShouldFail: false,
+    selectRuntimeMode: 'ready',
+    pendingSelection: null,
+    createTmuxSessionMode: 'ready',
+    pendingCreation: null,
+    createTmuxSessionShouldFail: false,
+    refreshRuntimeCalls: 0,
+    createdRuntime: null,
+    lastUsedUpdates: [],
     appStateListeners: new Set(),
     visibility: [],
     renderedTerminalIds: [],
@@ -141,7 +185,7 @@ function makeNativeEnvironment() {
     async getProfiles() {
       environment.nativeCalls.push('getProfiles');
       if (environment.profilesShouldFail) throw new Error('profiles unavailable');
-      return [];
+      return clone(environment.profiles);
     },
     async getPreferences() {
       environment.nativeCalls.push('getPreferences');
@@ -149,6 +193,59 @@ function makeNativeEnvironment() {
     },
     async setPreferences() {},
     async setAutomaticReconnect() {},
+    async connectHost(_connectionId, options) {
+      environment.nativeCalls.push({ method: 'connectHost', options });
+      environment.connection.state = 'DiscoveringRuntimes';
+    },
+    async connectProfileHost(_connectionId, profileId) {
+      environment.nativeCalls.push({ method: 'connectProfileHost', profileId });
+      environment.connection.state = 'DiscoveringRuntimes';
+    },
+    async getRuntimeDiscovery() {
+      environment.nativeCalls.push('getRuntimeDiscovery');
+      return clone(environment.runtimeDiscovery);
+    },
+    async refreshRuntimes() {
+      environment.nativeCalls.push('refreshRuntimes');
+      environment.refreshRuntimeCalls += 1;
+    },
+    async selectRuntime(_connectionId, candidateId) {
+      environment.calls.push({ method: 'selectRuntime', candidateId });
+      if (environment.selectRuntimeShouldFail) throw new Error('stale runtime');
+      const candidate = environment.runtimeDiscovery.backends.flatMap(item => item.candidates).find(item => item.id === candidateId);
+      if (!candidate) throw new Error('runtime disappeared');
+      if (environment.selectRuntimeMode === 'delayed-ready' || environment.selectRuntimeMode === 'candidate-failure') {
+        environment.pendingSelection = { candidateId };
+        return;
+      }
+      completeSelection(environment, candidate);
+    },
+    async createTmuxSession(_connectionId, name) {
+      environment.calls.push({ method: 'createTmuxSession', name });
+      if (environment.createTmuxSessionShouldFail) throw new Error('tmux create rejected');
+      const tmux = environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux');
+      if (tmux.errorCode || tmux.errorMessage) {
+        // Native clears an old create-operation error when it accepts a new
+        // request. The next failure may publish the same code again.
+        tmux.errorCode = '';
+        tmux.errorMessage = '';
+        environment.runtimeDiscovery.revision += 1;
+      }
+      if (environment.createTmuxSessionMode === 'delayed-ready' || environment.createTmuxSessionMode === 'delayed-failure') {
+        environment.pendingCreation = { name };
+        return;
+      }
+      completeCreation(environment, name);
+    },
+    async setLastUsedRuntime(profileId, backend, runtime) {
+      environment.lastUsedUpdates.push({ profileId, backend, runtime });
+      const profile = environment.profiles.find(item => item.id === profileId);
+      return { ...(profile || { id: profileId }), backend, runtime };
+    },
+    async disconnect() {
+      environment.nativeCalls.push('disconnect');
+      environment.connection.state = 'Disconnected';
+    },
     async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
     async getConnectionState() { return { ...environment.connection }; },
     async getWorkspaceState() { return clone(environment.snapshot); },
@@ -168,7 +265,50 @@ function makeNativeEnvironment() {
       closePane(environment.snapshot, paneId);
     },
   };
+  environment.resolvePendingSelection = outcome => {
+    assert.ok(environment.pendingSelection, 'a runtime selection should be pending');
+    const { candidateId } = environment.pendingSelection;
+    const candidate = environment.runtimeDiscovery.backends.flatMap(item => item.candidates).find(item => item.id === candidateId);
+    assert.ok(candidate, 'the pending runtime should still be discoverable');
+    if (outcome === 'failure') {
+      candidate.selectable = false;
+      candidate.errorCode = 'runtime_unavailable';
+      candidate.errorMessage = 'The runtime stopped before it could be opened.';
+      environment.runtimeDiscovery.revision += 1;
+    } else {
+      completeSelection(environment, candidate);
+    }
+    environment.pendingSelection = null;
+  };
+  environment.resolvePendingCreation = outcome => {
+    assert.ok(environment.pendingCreation, 'a tmux creation should be pending');
+    const { name } = environment.pendingCreation;
+    if (outcome === 'failure') {
+      const tmux = environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux');
+      tmux.errorCode = 'tmux_create_failed';
+      tmux.errorMessage = 'tmux could not create this session.';
+      environment.runtimeDiscovery.revision += 1;
+    } else {
+      completeCreation(environment, name);
+    }
+    environment.pendingCreation = null;
+  };
   return { environment, native };
+}
+
+function completeSelection(environment, candidate) {
+  environment.snapshot.backend = candidate.backend;
+  environment.snapshot.runtime = candidate.name;
+  environment.connection.state = 'Ready';
+}
+
+function completeCreation(environment, name) {
+  const candidate = runtimeCandidate(`created-${name}`, 'tmux', name);
+  environment.createdRuntime = candidate;
+  const tmux = environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux');
+  tmux.candidates.push(candidate);
+  environment.runtimeDiscovery.revision += 1;
+  completeSelection(environment, candidate);
 }
 
 function makeReactNativeMocks(environment) {
@@ -370,7 +510,8 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.deepEqual(environment.startupPhases, []);
   assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=welcome'), undefined);
   const smoke = loadApp(environment, native, true, true);
-  for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces']) {
+  for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
+    'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
@@ -380,6 +521,18 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('disconnected').connection.state, 'Disconnected');
   assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
   assert.equal(smoke.smokeFixture('workspaces').connection.state, 'Ready');
+  const picker = smoke.smokeFixture('runtime-picker');
+  assert.equal(picker.connection.state, 'AwaitingRuntimeSelection');
+  assert.equal(picker.runtimeDiscovery.backends.length, 2);
+  assert.equal(picker.runtimeDiscovery.backends[1].candidates[1].state, 'stopped');
+  assert.equal(smoke.smokeFixture('runtime-partial-error').runtimeDiscovery.backends[1].state, 'error');
+  assert.equal(smoke.smokeFixture('runtime-empty').runtimeDiscovery.backends[0].candidates.length, 0);
+  assert.equal(smoke.smokeFixture('runtime-create').runtimeCreateVisible, true);
+  const herdrPicker = smoke.smokeFixture('herdr-connection');
+  assert.equal(herdrPicker.connection.state, 'AwaitingRuntimeSelection');
+  assert.equal(herdrPicker.formVisible, false);
+  assert.equal(herdrPicker.runtimeDiscovery.backends[0].candidates[0].lastUsed, false);
+  assert.equal(herdrPicker.runtimeDiscovery.backends[1].candidates[0].lastUsed, true);
   assert.equal(environment.calls.length, 0);
 });
 
@@ -749,6 +902,62 @@ async function mountForTest(t, snapshot) {
   return fixture;
 }
 
+async function mountConfiguredForTest(t, configure) {
+  const { environment, native } = makeNativeEnvironment();
+  configure(environment, native);
+  const App = loadApp(environment, native);
+  const root = createRoot();
+  await act(async () => {
+    root.render(React.createElement(App));
+  });
+  await settleAsync();
+  const fixture = { root, environment, native };
+  t.after(async () => {
+    await act(async () => {
+      fixture.root.unmount();
+    });
+  });
+  return fixture;
+}
+
+function pickerProfile(host = 'queued.example') {
+  return {
+    id: '00000000-0000-4000-8000-000000000021',
+    name: 'Queued picker',
+    host,
+    port: 22,
+    username: 'developer',
+    authMethod: 'password',
+    credentialSaved: true,
+    backend: 'tmux',
+    runtime: 'meeterm',
+  };
+}
+
+function pickerDiscovery(revision = 1, tmuxCandidates = [runtimeCandidate('queued-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]) {
+  return {
+    revision,
+    backends: [
+      runtimeBackend('tmux', tmuxCandidates),
+      runtimeBackend('herdr', [runtimeCandidate('queued-herdr', 'herdr', 'default', 'running', { isDefault: true })]),
+    ],
+  };
+}
+
+async function mountSavedPicker(t, configure) {
+  const profile = pickerProfile();
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+    environment.profiles = [profile];
+    environment.runtimeDiscovery = pickerDiscovery();
+    environment.snapshot = makeSnapshot();
+    configure(environment, profile);
+  });
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Queued picker'));
+  await settleAsync();
+  return { fixture, profile };
+}
+
 async function poll(env) {
   assert.equal(env.intervalCallbacks.length, 1, 'App should register one metadata polling interval');
   await act(async () => {
@@ -762,6 +971,14 @@ async function press(root, node) {
     const result = node.props.onPress();
     if (result && typeof result.then === 'function') await result;
   });
+}
+
+async function settleAsync(rounds = 4) {
+  for (let index = 0; index < rounds; index += 1) {
+    await act(async () => {
+      await new Promise(resolve => setImmediate(resolve));
+    });
+  }
 }
 
 async function openWorkspace(root, id) {
@@ -785,6 +1002,357 @@ async function closeCurrentPane(root, environment) {
     action.onPress();
   });
 }
+
+test('saved-server connect authenticates first, then requires explicit runtime selection', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000021', name: 'Picker server',
+    host: 'picker.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'herdr', runtime: 'default',
+  };
+  const fixture = await mountConfiguredForTest(t, (environment) => {
+    environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+    environment.profiles = [profile];
+    environment.runtimeDiscovery = {
+      revision: 2,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
+          runtimeCandidate('tmux-one', 'tmux', 'meeterm', 'running', { isDefault: true }),
+        ] },
+        { backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false, candidates: [
+          runtimeCandidate('herdr-one', 'herdr', 'default', 'running', { isDefault: true }),
+          runtimeCandidate('herdr-stopped', 'herdr', 'paused', 'stopped'),
+        ] },
+      ],
+    };
+    environment.snapshot = makeSnapshot();
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Picker server'));
+  await settleAsync();
+  assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
+  assert.equal(fixture.environment.nativeCalls.some(call => call.method === 'connectProfile'), false);
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-tmux-one'));
+  assert.ok(findTestId(fixture.root, 'runtime-row-herdr-herdr-one'));
+  assert.equal(findTestId(fixture.root, 'runtime-row-herdr-herdr-stopped').props.accessibilityState.disabled, true);
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-tmux-one'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(fixture.environment.calls.some(call => call.method === 'selectRuntime' && call.candidateId === 'tmux-one'));
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-tmux-one').length, 0);
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{
+    profileId: profile.id, backend: 'tmux', runtime: 'meeterm',
+  }]);
+});
+
+test('runtime picker cancellation disconnects provisional SSH and leaves backend sections independent', async t => {
+  const partial = await mountConfiguredForTest(t, (environment) => {
+    environment.connection = { ...environment.connection, state: 'DiscoveringRuntimes', host: 'partial.example', port: 22 };
+    environment.runtimeDiscovery = {
+      revision: 3,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
+          runtimeCandidate('partial-tmux', 'tmux', 'meeterm', 'running', { isDefault: true }),
+        ] },
+        { backend: 'herdr', state: 'error', errorCode: 'herdr_missing', errorMessage: 'Herdr unavailable', canCreate: false, candidates: [] },
+      ],
+    };
+  });
+  assert.ok(findTestId(partial.root, 'runtime-row-tmux-partial-tmux'));
+  assert.ok(all(partial.root, node => textContent(node).includes('Herdr unavailable')).length > 0);
+  await press(partial.root, findLabel(partial.root, 'Cancel runtime selection'));
+  await settleAsync();
+  assert.ok(partial.environment.nativeCalls.includes('disconnect'));
+  assert.equal(partial.environment.connection.state, 'Disconnected');
+  assert.equal(all(partial.root, node => node.props && node.props.testID === 'runtime-row-tmux-partial-tmux').length, 0);
+
+  const stopped = await mountConfiguredForTest(t, (environment) => {
+    environment.connection = { ...environment.connection, state: 'AwaitingRuntimeSelection', host: 'stopped.example', port: 22 };
+    environment.runtimeDiscovery = {
+      revision: 4,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [] },
+        { backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false, candidates: [
+          runtimeCandidate('stopped-herdr', 'herdr', 'default', 'stopped', { isDefault: true }),
+        ] },
+      ],
+    };
+  });
+  const stoppedRow = findTestId(stopped.root, 'runtime-row-herdr-stopped-herdr');
+  assert.equal(stoppedRow.props.accessibilityState.disabled, true);
+  assert.match(textContent(stoppedRow), /Stopped/);
+
+  const stale = await mountConfiguredForTest(t, (environment) => {
+    environment.connection = { ...environment.connection, state: 'AwaitingRuntimeSelection', host: 'stale.example', port: 22 };
+    environment.selectRuntimeShouldFail = true;
+    environment.runtimeDiscovery = {
+      revision: 5,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
+          runtimeCandidate('stale-tmux', 'tmux', 'meeterm', 'running', { isDefault: true }),
+        ] },
+        { backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false, candidates: [
+          runtimeCandidate('other-herdr', 'herdr', 'default', 'running', { isDefault: true }),
+        ] },
+      ],
+    };
+  });
+  await press(stale.root, findTestId(stale.root, 'runtime-row-tmux-stale-tmux'));
+  await settleAsync();
+  assert.ok(stale.environment.calls.some(call => call.method === 'selectRuntime' && call.candidateId === 'stale-tmux'));
+  const staleRow = findTestId(stale.root, 'runtime-row-tmux-stale-tmux');
+  assert.equal(staleRow.props.accessibilityState.disabled, false);
+  assert.match(textContent(staleRow), /could not be opened/);
+  assert.ok(findTestId(stale.root, 'runtime-row-herdr-other-herdr'));
+});
+
+test('tmux creation is an explicit editable step and opens only after native confirmation', async t => {
+  const fixture = await mountConfiguredForTest(t, (environment) => {
+    environment.connection = { ...environment.connection, state: 'AwaitingRuntimeSelection', host: 'create.example', port: 22 };
+    environment.runtimeDiscovery = {
+      revision: 6,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [] },
+        { backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false, candidates: [
+          runtimeCandidate('create-stopped-herdr', 'herdr', 'default', 'stopped', { isDefault: true }),
+        ] },
+      ],
+    };
+    environment.snapshot = makeSnapshot();
+  });
+  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
+  const nameInput = findTestId(fixture.root, 'runtime-tmux-name');
+  assert.equal(nameInput.props.value, 'meeterm');
+  assert.equal(fixture.environment.calls.some(call => call.method === 'createTmuxSession'), false);
+  await act(async () => { nameInput.props.onChangeText('scratch'); });
+  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
+    { method: 'createTmuxSession', name: 'scratch' },
+  ]);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-tmux-create-submit').length, 0);
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+});
+
+test('queued runtime selection waits for delayed Ready without writing a hint early', async t => {
+  const { fixture, profile } = await mountSavedPicker(t, environment => {
+    environment.selectRuntimeMode = 'delayed-ready';
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
+  await settleAsync();
+  assert.ok(fixture.environment.pendingSelection);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
+
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+
+  fixture.environment.resolvePendingSelection('ready');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{
+    profileId: profile.id, backend: 'tmux', runtime: 'meeterm',
+  }]);
+});
+
+test('queued selection failure uses candidate-local error and preserves other rows', async t => {
+  const { fixture } = await mountSavedPicker(t, environment => {
+    environment.selectRuntimeMode = 'candidate-failure';
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+
+  fixture.environment.resolvePendingSelection('failure');
+  await poll(fixture.environment);
+  await settleAsync();
+  const failedRow = findTestId(fixture.root, 'runtime-row-tmux-queued-tmux');
+  assert.equal(failedRow.props.accessibilityState.disabled, true);
+  assert.match(textContent(failedRow), /stopped before it could be opened/);
+  assert.ok(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr'));
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+});
+
+test('cancel invalidates a queued selection and ignores a late Ready snapshot', async t => {
+  const { fixture } = await mountSavedPicker(t, environment => {
+    environment.selectRuntimeMode = 'delayed-ready';
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
+  await settleAsync();
+  assert.ok(fixture.environment.pendingSelection);
+  await press(fixture.root, findLabel(fixture.root, 'Cancel runtime selection'));
+  await settleAsync();
+  assert.ok(fixture.environment.nativeCalls.includes('disconnect'));
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-queued-tmux').length, 0);
+
+  // The test double models an actor result arriving after disconnect. The
+  // app must not turn that stale Ready into a newly bound workspace.
+  fixture.environment.resolvePendingSelection('ready');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'workspace-row-W1').length, 0);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+});
+
+test('queued tmux creation waits for delayed success and never refreshes implicitly', async t => {
+  const { fixture, profile } = await mountSavedPicker(t, environment => {
+    environment.createTmuxSessionMode = 'delayed-ready';
+    environment.runtimeDiscovery = pickerDiscovery(10, []);
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
+  const nameInput = findTestId(fixture.root, 'runtime-tmux-name');
+  await act(async () => { nameInput.props.onChangeText('scratch'); });
+  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
+    { method: 'createTmuxSession', name: 'scratch' },
+  ]);
+  assert.ok(fixture.environment.pendingCreation);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+
+  fixture.environment.resolvePendingCreation('ready');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{
+    profileId: profile.id, backend: 'tmux', runtime: 'scratch',
+  }]);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+});
+
+test('queued tmux creation reports delayed native failure without hiding Herdr', async t => {
+  const { fixture } = await mountSavedPicker(t, environment => {
+    environment.createTmuxSessionMode = 'delayed-failure';
+    environment.runtimeDiscovery = pickerDiscovery(11, []);
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
+  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(fixture.environment.pendingCreation);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+
+  fixture.environment.resolvePendingCreation('failure');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(all(fixture.root, node => textContent(node).includes('tmux could not create this session')).length > 0);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+
+  await press(fixture.root, findLabel(fixture.root, 'Back to runtime list'));
+  assert.ok(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr'));
+});
+
+test('repeated tmux creation failure clears the old section error and preserves runtimes', async t => {
+  const { fixture, profile } = await mountSavedPicker(t, environment => {
+    environment.createTmuxSessionMode = 'delayed-failure';
+    environment.runtimeDiscovery = pickerDiscovery(12);
+  });
+
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
+  assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
+  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
+  const firstName = findTestId(fixture.root, 'runtime-tmux-name');
+  await act(async () => { firstName.props.onChangeText('first-attempt'); });
+  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
+    { method: 'createTmuxSession', name: 'first-attempt' },
+  ]);
+  assert.ok(fixture.environment.pendingCreation);
+  fixture.environment.resolvePendingCreation('failure');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux').errorCode, 'tmux_create_failed');
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(findTestId(fixture.root, 'runtime-tmux-create-submit').props.disabled, false);
+
+  await press(fixture.root, findLabel(fixture.root, 'Back to runtime list'));
+  const tmuxRow = findTestId(fixture.root, 'runtime-row-tmux-queued-tmux');
+  assert.equal(tmuxRow.props.accessibilityState.disabled, false);
+  assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
+  const secondName = findTestId(fixture.root, 'runtime-tmux-name');
+  await act(async () => { secondName.props.onChangeText('second-attempt'); });
+  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
+    { method: 'createTmuxSession', name: 'first-attempt' },
+    { method: 'createTmuxSession', name: 'second-attempt' },
+  ]);
+  assert.ok(fixture.environment.pendingCreation);
+  assert.equal(fixture.environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux').errorCode, '');
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+
+  fixture.environment.resolvePendingCreation('failure');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux').errorCode, 'tmux_create_failed');
+  assert.ok(all(fixture.root, node => textContent(node).includes('tmux could not create this session')).length > 0);
+  assert.equal(findTestId(fixture.root, 'runtime-tmux-create-submit').props.disabled, false);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.refreshRuntimeCalls, 0);
+  await press(fixture.root, findLabel(fixture.root, 'Back to runtime list'));
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
+  assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
+  assert.equal(fixture.environment.profiles.find(item => item.id === profile.id).runtime, 'meeterm');
+});
+
+test('verified runtime reconnect skips the picker but a lost identity reopens it with an explanation', async t => {
+  const fixture = await mountConfiguredForTest(t, (environment) => {
+    environment.snapshot = makeSnapshot();
+    environment.runtimeDiscovery = {
+      revision: 8,
+      backends: [
+        { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
+          runtimeCandidate('reconnect-tmux', 'tmux', 'meeterm', 'running', { isDefault: true, lastUsed: true }),
+        ] },
+        { backend: 'herdr', state: 'ready', errorCode: '', errorMessage: '', canCreate: false, candidates: [] },
+      ],
+    };
+  });
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-reconnect-tmux').length, 0);
+
+  fixture.environment.connection.state = 'Reconnecting';
+  await poll(fixture.environment);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-reconnect-tmux').length, 0);
+
+  fixture.environment.connection.state = 'Ready';
+  await poll(fixture.environment);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-reconnect-tmux').length, 0);
+
+  fixture.environment.connection.state = 'AwaitingRuntimeSelection';
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-reconnect-tmux'));
+  assert.ok(all(fixture.root, node => textContent(node).includes('selected runtime is no longer available')).length > 0);
+});
 
 test('external cross-workspace move follows selected stable native terminal', async t => {
   const fixture = await mountForTest(t, makeSnapshot());

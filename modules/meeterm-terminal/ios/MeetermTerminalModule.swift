@@ -15,8 +15,25 @@ public final class MeetermTerminalModule: Module {
       try ClientStore.saveProfile(profile, credential: credential, keepCredential: keepCredential)
     }
     AsyncFunction("deleteProfile") { (profileId: String) throws in try ClientStore.deleteProfile(profileId) }
+    // New connection path: authenticate the SSH host first, then let the app
+    // explicitly bind one discovered runtime. Legacy connectProfile remains
+    // below for older direct-connect fixtures.
+    AsyncFunction("connectHost") { (terminalId: String, options: [String: Any]) throws in
+      try Self.connectHostOptions(terminalId, options: options)
+    }
+    AsyncFunction("connectProfileHost") { (terminalId: String, profileId: String) throws in
+      var options = try ClientStore.connectionOptions(profileId)
+      // Persisted backend/runtime values are display/sort hints only. They are
+      // deliberately removed before host authentication.
+      options.removeValue(forKey: "backend")
+      options.removeValue(forKey: "runtime")
+      try Self.connectHostOptions(terminalId, options: options)
+    }
     AsyncFunction("connectProfile") { (terminalId: String, profileId: String) throws in
       try Self.connectOptions(terminalId, options: ClientStore.connectionOptions(profileId))
+    }
+    AsyncFunction("setLastUsedRuntime") { (profileId: String, backend: String, runtime: String) throws -> [String: Any] in
+      try ClientStore.setLastUsedRuntime(profileId, backend: backend, runtime: runtime)
     }
     AsyncFunction("getPreferences") { () throws -> [String: Any] in
       let preferences = try ClientStore.preferences()
@@ -107,6 +124,39 @@ public final class MeetermTerminalModule: Module {
       return Self.expoRecord(snapshot)
     }
 
+    AsyncFunction("getRuntimeDiscovery") { (terminalId: String) throws -> [String: Any] in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard let json = MeetermCore.runtimeDiscoveryJSON(terminalId: handle),
+            let data = json.data(using: .utf8),
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw Self.error("Native runtime discovery is unavailable.")
+      }
+      return try Self.runtimeDiscoveryRecord(value)
+    }
+
+    AsyncFunction("refreshRuntimes") { (terminalId: String) throws in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.refreshRuntimes(terminalId: handle) == 0 else {
+        throw Self.error("Runtime discovery could not be refreshed.")
+      }
+    }
+
+    AsyncFunction("selectRuntime") { (terminalId: String, candidateId: String) throws in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard !candidateId.isEmpty, !Self.containsControl(candidateId), candidateId.utf8.count <= 256,
+            MeetermCore.selectRuntime(terminalId: handle, candidateId: candidateId) == 0 else {
+        throw Self.error("The selected runtime could not be opened.")
+      }
+    }
+
+    AsyncFunction("createTmuxSession") { (terminalId: String, name: String) throws in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard !name.isEmpty, name.utf8.count <= 64, !Self.containsControl(name),
+            MeetermCore.createTmuxSession(terminalId: handle, name: name) == 0 else {
+        throw Self.error("The tmux session could not be created.")
+      }
+    }
+
     AsyncFunction("reconnect") { (terminalId: String) throws in
       let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
       guard MeetermCore.reconnect(terminalId: handle) == 0 else {
@@ -194,6 +244,85 @@ public final class MeetermTerminalModule: Module {
       knownHostsPath: knownHostsPath, authMethod: connection.authMethod, password: connection.password,
       backend: connection.backend, runtime: connection.runtime)
     guard result == 0 else { throw Self.error("The SSH connection could not be started.") }
+  }
+
+  private static func connectHostOptions(_ terminalId: String, options: [String: Any]) throws {
+    let connection = try decodeOptions(options)
+    let handle = try ensureHandle(normalizeTerminalId(terminalId))
+    let preferences = try ClientStore.preferences()
+    guard MeetermCore.setScrollbackLimit(preferences["scrollbackLines"] as! Int),
+          MeetermCore.setAutomaticReconnect(terminalId: handle, enabled: preferences["automaticReconnect"] as! Bool) == 0 else {
+      throw error("The connection preferences could not be applied.")
+    }
+    let knownHostsPath: String
+    do { knownHostsPath = try KnownHostsStore.path() }
+    catch { throw Self.error("SSH trust storage is unavailable.") }
+    let result = MeetermCore.connectHost(terminalId: handle, host: connection.host, port: connection.port,
+      username: connection.username, privateKey: connection.privateKey, passphrase: connection.passphrase,
+      knownHostsPath: knownHostsPath, authMethod: connection.authMethod, password: connection.password)
+    guard result == 0 else { throw Self.error("The SSH host connection could not be started.") }
+  }
+
+  /// Keep the JavaScript contract limited to the fixed runtime summary. The
+  /// native adapter rejects malformed/oversized fields instead of forwarding
+  /// arbitrary CLI output, paths, sockets, or stderr.
+  private static func runtimeDiscoveryRecord(_ value: [String: Any]) throws -> [String: Any] {
+    guard let revision = integer(value["revision"]), revision >= 0,
+          let rawBackends = value["backends"] as? [[String: Any]], rawBackends.count <= 2 else {
+      throw error("The native runtime discovery is invalid.")
+    }
+    var backends: [[String: Any]] = []
+    for raw in rawBackends {
+      guard let backend = raw["backend"] as? String,
+            backend == "tmux" || backend == "herdr",
+            let state = raw["state"] as? String,
+            ["loading", "ready", "error"].contains(state),
+            let canCreate = raw["canCreate"] as? Bool,
+            canCreate == (backend == "tmux"),
+            let rawCandidates = raw["candidates"] as? [[String: Any]], rawCandidates.count <= 256 else {
+        throw error("The native runtime discovery is invalid.")
+      }
+      var candidates: [[String: Any]] = []
+      for candidate in rawCandidates {
+        guard let id = candidate["id"] as? String,
+              let name = candidate["name"] as? String,
+              let candidateBackend = candidate["backend"] as? String,
+              candidateBackend == backend,
+              let candidateState = candidate["state"] as? String,
+              candidateState == "running" || candidateState == "stopped",
+              let selectable = candidate["selectable"] as? Bool,
+              let isDefault = candidate["isDefault"] as? Bool,
+              let lastUsed = candidate["lastUsed"] as? Bool,
+              let rawErrorCode = candidate["errorCode"] as? String,
+              let rawErrorMessage = candidate["errorMessage"] as? String,
+              !id.isEmpty, id.utf8.count <= 256,
+              !name.isEmpty, name.utf8.count <= 256,
+              rawErrorCode.utf8.count <= 64,
+              rawErrorMessage.utf8.count <= 256 else {
+          throw error("The native runtime discovery is invalid.")
+        }
+        candidates.append([
+          "id": sanitize(id, maxLength: 256),
+          "backend": backend,
+          "name": sanitize(name, maxLength: 256),
+          "state": candidateState,
+          "selectable": selectable,
+          "isDefault": isDefault,
+          "lastUsed": lastUsed,
+          "errorCode": sanitizeErrorCode(rawErrorCode),
+          "errorMessage": sanitize(rawErrorMessage, maxLength: 256)
+        ])
+      }
+      backends.append([
+        "backend": backend,
+        "state": state,
+        "errorCode": sanitizeErrorCode(raw["errorCode"] as? String ?? ""),
+        "errorMessage": sanitize(raw["errorMessage"] as? String ?? "", maxLength: 256),
+        "candidates": candidates,
+        "canCreate": canCreate
+      ])
+    }
+    return ["revision": revision, "backends": backends]
   }
 
   private static func targetId(_ value: String, prefix: Character) throws -> UInt64 {
@@ -370,6 +499,27 @@ public final class MeetermTerminalModule: Module {
       "errorCode": snapshot.errorCode,
       "errorMessage": snapshot.errorMessage
     ]
+  }
+
+  private static func sanitize(_ value: String, maxLength: Int) -> String {
+    value
+      .unicodeScalars
+      .filter { !CharacterSet.controlCharacters.contains($0) }
+      .prefix(maxLength)
+      .reduce(into: "") { result, scalar in result.unicodeScalars.append(scalar) }
+  }
+
+  private static func sanitizeErrorCode(_ value: String) -> String {
+    let code = sanitize(value, maxLength: 64)
+    guard !code.isEmpty,
+          code.unicodeScalars.allSatisfy({ scalar in
+            scalar.value >= 0x61 && scalar.value <= 0x7A ||
+            scalar.value >= 0x30 && scalar.value <= 0x39 ||
+            scalar.value == 0x5F
+          }) else {
+      return code.isEmpty ? "" : "native_error"
+    }
+    return code
   }
 
   private static func containsControl(_ value: String) -> Bool {

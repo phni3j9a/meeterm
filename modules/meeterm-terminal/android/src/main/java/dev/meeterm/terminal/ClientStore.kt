@@ -22,6 +22,8 @@ internal object ClientStore {
   private const val KEY_ALIAS = "dev.meeterm.credentials.v1"
   private const val MAX_PROFILES = 100
   private const val MAX_STORE_BYTES = 16 * 1024 * 1024
+  private const val HERDR_RUNTIME_HINT_MAX_BYTES = 64
+  private const val TMUX_RUNTIME_HINT_MAX_BYTES = 256
 
   private fun file(context: Context) = AtomicFile(File(context.noBackupFilesDir, "meeterm-client-v1.json"))
 
@@ -93,6 +95,8 @@ internal object ClientStore {
     "id" to profile.getString("id"), "name" to profile.getString("name"),
     "host" to profile.getString("host"), "port" to profile.getInt("port"),
     "username" to profile.getString("username"), "authMethod" to profile.getString("authMethod"),
+    // Compatibility-only fields: these are a non-authoritative last-used hint.
+    // A fresh/manual connection always authenticates before runtime selection.
     "backend" to profile.optString("backend", "tmux"),
     "runtime" to profile.optString("runtime", ""),
     "credentialSaved" to profile.has("credential"),
@@ -107,11 +111,12 @@ internal object ClientStore {
     credential: Map<String, Any?>?, keepCredential: Boolean): Map<String, Any> = guarded {
     val state = read(context)
     val profiles = state.getJSONArray("profiles")
-    val profile = validateProfile(values)
-    val id = profile.getString("id")
-    val index = (0 until profiles.length()).firstOrNull { profiles.getJSONObject(it).getString("id") == id }
-    check(index != null || profiles.length() < MAX_PROFILES) { "Too many saved servers." }
+    val requestedId = values["id"] as? String ?: ""
+    val index = (0 until profiles.length()).firstOrNull { profiles.getJSONObject(it).getString("id") == requestedId }
     val previous = index?.let { profiles.getJSONObject(it) }
+    val profile = validateProfile(values, previous)
+    val id = profile.getString("id")
+    check(index != null || profiles.length() < MAX_PROFILES) { "Too many saved servers." }
     if (credential != null) {
       val normalized = validateCredential(profile, credential)
       profile.put("credential", encrypt(profile, normalized))
@@ -133,6 +138,27 @@ internal object ClientStore {
     }
     state.put("profiles", remaining)
     write(context, state)
+  }
+
+  /**
+   * Update only the compatibility last-used hint after a selected runtime is
+   * Ready. It never touches the encrypted credential record.
+   */
+  @Synchronized fun setLastUsedRuntime(context: Context, id: String, backend: String,
+    runtime: String): Map<String, Any> = guarded {
+    require(id.matches(Regex("[a-fA-F0-9-]{36}")) &&
+      backend in listOf("tmux", "herdr") && validRuntime(backend, runtime)) {
+      "The runtime hint is invalid."
+    }
+    val state = read(context)
+    val profiles = state.getJSONArray("profiles")
+    val index = (0 until profiles.length()).firstOrNull { profiles.getJSONObject(it).getString("id") == id }
+      ?: throw IllegalArgumentException("The saved server no longer exists.")
+    val profile = profiles.getJSONObject(index)
+    profile.put("backend", backend).put("runtime", runtime)
+    state.put("profiles", profiles)
+    write(context, state)
+    record(profile)
   }
 
   /** This result is consumed only by the native connect implementation. */
@@ -174,7 +200,8 @@ internal object ClientStore {
       "automaticReconnect" to automatic)
   }
 
-  private fun validateProfile(values: Map<String, Any?>): JSONObject {
+  /** Pure profile migration/validation seam covered by the JVM tests. */
+  internal fun validateProfile(values: Map<String, Any?>, previous: JSONObject? = null): JSONObject {
     val suppliedId = values["id"] as? String ?: ""
     val id = if (suppliedId.isEmpty()) UUID.randomUUID().toString() else suppliedId
     require(id.matches(Regex("[a-fA-F0-9-]{36}"))) { "The server ID is invalid." }
@@ -190,21 +217,42 @@ internal object ClientStore {
     require(method == "publicKey" || method == "password") { "The authentication method is invalid." }
     require(!values.containsKey("backend") || values["backend"] is String) { "The backend is invalid." }
     require(!values.containsKey("runtime") || values["runtime"] is String) { "The runtime is invalid." }
-    val backend = values["backend"] as? String ?: "tmux"
+    profile.put("port", port).put("authMethod", method)
+    val preserveHint = previous != null && sameRuntimeEndpoint(previous, profile)
+    val backend = values["backend"] as? String
+      ?: if (preserveHint) previous?.optString("backend", "tmux") ?: "tmux" else "tmux"
     require(backend == "tmux" || backend == "herdr") { "The backend is invalid." }
-    val runtime = values["runtime"] as? String ?: ""
+    val runtime = values["runtime"] as? String
+      ?: if (preserveHint) previous?.optString("runtime", "") ?: "" else ""
     requireRuntime(backend, runtime)
-    return profile.put("port", port).put("authMethod", method)
-      .put("backend", backend).put("runtime", runtime)
+    return profile.put("backend", backend).put("runtime", runtime)
   }
 
   private fun requireRuntime(backend: String, runtime: String) {
-    require(runtime.toByteArray(Charsets.UTF_8).size <= 64 && runtime != "." && runtime != ".." &&
-      runtime.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '_' || it == '-' }) {
-      "The Herdr runtime is invalid."
+    when (backend) {
+      "herdr" -> require(runtime.toByteArray(Charsets.UTF_8).size <= HERDR_RUNTIME_HINT_MAX_BYTES && runtime != "." && runtime != ".." &&
+        runtime.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '_' || it == '-' }) {
+        "The runtime hint is invalid."
+      }
+      "tmux" -> require(runtime.toByteArray(Charsets.UTF_8).size <= TMUX_RUNTIME_HINT_MAX_BYTES && runtime.none(Char::isISOControl)) {
+        "The runtime hint is invalid."
+      }
+      else -> throw IllegalArgumentException("The runtime hint is invalid.")
     }
-    require(backend == "herdr" || runtime.isEmpty()) { "The tmux backend does not accept a named runtime." }
   }
+
+  private fun validRuntime(backend: String, runtime: String): Boolean = try {
+    requireRuntime(backend, runtime)
+    true
+  } catch (_: IllegalArgumentException) {
+    false
+  }
+
+  private fun sameRuntimeEndpoint(previous: JSONObject, next: JSONObject): Boolean =
+    previous.optString("host") == next.optString("host") &&
+      previous.optInt("port", -1) == next.optInt("port", -2) &&
+      previous.optString("username") == next.optString("username") &&
+      previous.optString("authMethod") == next.optString("authMethod")
 
   private fun validateCredential(profile: JSONObject, values: Map<String, Any?>): JSONObject {
     require(values["authMethod"] == profile.getString("authMethod")) { "The credential does not match this server." }

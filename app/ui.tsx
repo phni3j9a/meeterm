@@ -85,7 +85,7 @@ export function IconButton({ icon, label, onPress, colors, disabled, style, test
   </Pressable>;
 }
 
-export function Button({ children, label, onPress, colors, secondary, disabled, style }: {
+export function Button({ children, label, onPress, colors, secondary, disabled, style, testID }: {
   children: ReactNode;
   label?: string;
   onPress: () => void;
@@ -93,8 +93,9 @@ export function Button({ children, label, onPress, colors, secondary, disabled, 
   secondary?: boolean;
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
+  testID?: string;
 }) {
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [ui.button, { backgroundColor: secondary ? colors.surface : colors.accentFill }, style, pressed && { opacity: .7 }, disabled && { opacity: .45 }]}>
+  return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [ui.button, { backgroundColor: secondary ? colors.surface : colors.accentFill }, style, pressed && { opacity: .7 }, disabled && { opacity: .45 }]}>
     <Text style={[ui.buttonText, { color: secondary ? colors.accent : colors.onAccent }]}>{children}</Text>
   </Pressable>;
 }

@@ -7,6 +7,8 @@ enum ClientStore {
   private static let lock = NSLock()
   private static let service = "dev.meeterm.credentials.v1"
   private static let maxProfiles = 100
+  private static let herdrRuntimeHintMaxBytes = 64
+  private static let tmuxRuntimeHintMaxBytes = 256
   static let diagnosticCategoryKey = "dev.meeterm.storage.category"
   static let diagnosticCodeKey = "dev.meeterm.storage.code"
 
@@ -161,6 +163,8 @@ enum ClientStore {
   private static func record(_ profile: [String: Any]) -> [String: Any] {
     var result = profile
     result.removeValue(forKey: "credentialID")
+    // These compatibility keys are only a non-authoritative last-used hint.
+    // A fresh/manual connection always authenticates before the runtime picker.
     result["backend"] = profile["backend"] as? String ?? "tmux"
     result["runtime"] = profile["runtime"] as? String ?? ""
     result["credentialSaved"] = hasCredential(profile)
@@ -175,11 +179,12 @@ enum ClientStore {
     try guarded {
       var state = try read()
       var profiles = state["profiles"] as! [[String: Any]]
-      var profile = try validateProfile(values)
-      let id = profile["id"] as! String
-      let index = profiles.firstIndex { $0["id"] as? String == id }
-      guard index != nil || profiles.count < maxProfiles else { throw Failure.invalid }
+      let requestedID = values["id"] as? String ?? ""
+      let index = profiles.firstIndex { $0["id"] as? String == requestedID }
       let previous = index.map { profiles[$0] }
+      var profile = try validateProfile(values, previous: previous)
+      let id = profile["id"] as! String
+      guard index != nil || profiles.count < maxProfiles else { throw Failure.invalid }
       let oldCredentialID = previous?["credentialID"] as? String
       var newCredentialID: String?
       if let credential {
@@ -218,6 +223,25 @@ enum ClientStore {
       profiles.remove(at: index)
       state["profiles"] = profiles
       try write(state)
+    }
+  }
+
+  /// Update only the compatibility last-used hint after a runtime has reached
+  /// Ready. This operation never reads or returns credentials and cannot
+  /// create a profile as a side effect of a successful runtime tap.
+  static func setLastUsedRuntime(_ id: String, backend: String, runtime: String) throws -> [String: Any] {
+    try guarded {
+      guard UUID(uuidString: id) != nil,
+            ["tmux", "herdr"].contains(backend),
+            validRuntime(backend: backend, runtime: runtime) else { throw Failure.invalid }
+      var state = try read()
+      var profiles = state["profiles"] as! [[String: Any]]
+      guard let index = profiles.firstIndex(where: { $0["id"] as? String == id }) else { throw Failure.invalid }
+      profiles[index]["backend"] = backend
+      profiles[index]["runtime"] = runtime
+      state["profiles"] = profiles
+      try write(state)
+      return record(profiles[index])
     }
   }
 
@@ -262,7 +286,7 @@ enum ClientStore {
     return ["fontSize": size, "theme": theme, "scrollbackLines": lines, "automaticReconnect": automatic.boolValue]
   }
 
-  private static func validateProfile(_ values: [String: Any]) throws -> [String: Any] {
+  private static func validateProfile(_ values: [String: Any], previous: [String: Any]? = nil) throws -> [String: Any] {
     let requested = values["id"] as? String ?? ""
     let id = requested.isEmpty ? UUID().uuidString.lowercased() : requested
     guard UUID(uuidString: id) != nil,
@@ -270,16 +294,10 @@ enum ClientStore {
           let method = values["authMethod"] as? String, ["publicKey", "password"].contains(method) else { throw Failure.invalid }
     guard (!values.keys.contains("backend") || values["backend"] is String),
           (!values.keys.contains("runtime") || values["runtime"] is String) else { throw Failure.invalid }
-    let backend = values["backend"] as? String ?? "tmux"
-    let runtime = values["runtime"] as? String ?? ""
-    guard ["tmux", "herdr"].contains(backend),
-          validRuntime(backend: backend, runtime: runtime) else { throw Failure.invalid }
     var profile: [String: Any] = [
       "id": id,
       "port": port,
-      "authMethod": method,
-      "backend": backend,
-      "runtime": runtime
+      "authMethod": method
     ]
     for field in ["name", "host", "username"] {
       guard let string = values[field] as? String else { throw Failure.invalid }
@@ -288,18 +306,46 @@ enum ClientStore {
             !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw Failure.invalid }
       profile[field] = value
     }
+    let preserveHint = previous.map { sameRuntimeEndpoint($0, profile) } ?? false
+    let backend = values["backend"] as? String ?? (preserveHint ? previous?["backend"] as? String : nil) ?? "tmux"
+    let runtime = values["runtime"] as? String ?? (preserveHint ? previous?["runtime"] as? String : nil) ?? ""
+    guard ["tmux", "herdr"].contains(backend),
+          validRuntime(backend: backend, runtime: runtime) else { throw Failure.invalid }
+    profile["backend"] = backend
+    profile["runtime"] = runtime
     return profile
   }
 
   private static func validRuntime(backend: String, runtime: String) -> Bool {
-    let validCharacters = runtime.unicodeScalars.allSatisfy { scalar in
-      (scalar.value >= 0x41 && scalar.value <= 0x5A) ||
-      (scalar.value >= 0x61 && scalar.value <= 0x7A) ||
-      (scalar.value >= 0x30 && scalar.value <= 0x39) ||
-      scalar.value == 0x2E || scalar.value == 0x5F || scalar.value == 0x2D
+    switch backend {
+    case "herdr":
+      let validCharacters = runtime.unicodeScalars.allSatisfy { scalar in
+        (scalar.value >= 0x41 && scalar.value <= 0x5A) ||
+        (scalar.value >= 0x61 && scalar.value <= 0x7A) ||
+        (scalar.value >= 0x30 && scalar.value <= 0x39) ||
+        scalar.value == 0x2E || scalar.value == 0x5F || scalar.value == 0x2D
+      }
+      return runtime.utf8.count <= herdrRuntimeHintMaxBytes &&
+        runtime != "." && runtime != ".." && validCharacters
+    case "tmux":
+      return runtime.utf8.count <= tmuxRuntimeHintMaxBytes &&
+        !runtime.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    default:
+      return false
     }
-    return runtime.utf8.count <= 64 && runtime != "." && runtime != ".." && validCharacters &&
-      (backend == "herdr" || runtime.isEmpty)
+  }
+
+  private static func sameRuntimeEndpoint(_ previous: [String: Any], _ next: [String: Any]) -> Bool {
+    guard let previousHost = previous["host"] as? String,
+          let nextHost = next["host"] as? String,
+          let previousPort = integer(previous["port"]),
+          let nextPort = integer(next["port"]),
+          let previousUsername = previous["username"] as? String,
+          let nextUsername = next["username"] as? String,
+          let previousAuth = previous["authMethod"] as? String,
+          let nextAuth = next["authMethod"] as? String else { return false }
+    return previousHost == nextHost && previousPort == nextPort &&
+      previousUsername == nextUsername && previousAuth == nextAuth
   }
 
   private static func validateCredential(_ values: [String: Any], profile: [String: Any]) throws -> [String: Any] {

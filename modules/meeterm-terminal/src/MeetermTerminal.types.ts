@@ -8,6 +8,7 @@ type SshConnectEndpoint = {
   host: string;
   port: number;
   username: string;
+  /** Compatibility-only hint fields; host-only connect must omit them. */
   backend?: 'tmux' | 'herdr';
   runtime?: string;
 };
@@ -41,6 +42,7 @@ export type ServerProfile = {
   username: string;
   authMethod: 'publicKey' | 'password';
   credentialSaved: boolean;
+  /** Legacy persisted keys, now only a non-authoritative last-used hint. */
   backend?: 'tmux' | 'herdr';
   runtime?: string;
 };
@@ -66,6 +68,10 @@ export type SshConnectionPhase =
   | 'AttachingTmux'
   | 'Synchronizing'
   | 'Reconnecting'
+  | 'DiscoveringRuntimes'
+  | 'AwaitingRuntimeSelection'
+  | 'AttachingRuntime'
+  | 'CreatingRuntime'
   | 'Ready'
   | 'Closing'
   | 'Failed';
@@ -120,6 +126,41 @@ export type WorkspaceState = {
   workspaces: RemoteWorkspace[];
   groups: TerminalGroup[];
   terminals: RemoteTerminal[];
+};
+
+export type RuntimeBackend = 'tmux' | 'herdr';
+export type RuntimeCandidateState = 'running' | 'stopped';
+
+/** Native-owned opaque runtime identity and display-only state. */
+export type RuntimeCandidate = {
+  id: string;
+  backend: RuntimeBackend;
+  name: string;
+  state: RuntimeCandidateState;
+  /** Native says whether this identity can currently be selected. */
+  selectable: boolean;
+  isDefault: boolean;
+  /** A last-used hint is never an instruction to attach or create. */
+  lastUsed: boolean;
+  /** Sanitized native-local failure for this candidate, if any. */
+  errorCode: string;
+  errorMessage: string;
+};
+
+export type RuntimeBackendDiscovery = {
+  backend: RuntimeBackend;
+  state: 'loading' | 'ready' | 'error';
+  errorCode: string;
+  errorMessage: string;
+  candidates: RuntimeCandidate[];
+  /** True only for the ordinary tmux backend. */
+  canCreate: boolean;
+};
+
+/** Bounded, low-frequency runtime metadata; terminal data stays native. */
+export type RuntimeDiscovery = {
+  revision: number;
+  backends: RuntimeBackendDiscovery[];
 };
 
 export type NativeReadyEvent = {
