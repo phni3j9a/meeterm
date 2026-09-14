@@ -93,6 +93,57 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('suite in ("polish", "polish-navigation")', source)
         self.assertIn('"polish_navigation_open"', source)
 
+    def test_real_ssh_connects_require_an_explicit_fixture_runtime_selection(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("private func selectFixtureTmuxRuntimeAndWaitForConnected", source)
+        self.assertIn('button("tmux runtime meeterm")', source)
+        self.assertIn("ios-ui-runtime-picker-diagnostics.txt", source)
+        helper_start = source.index("private func selectFixtureTmuxRuntimeAndWaitForConnected")
+        helper_end = source.index("func testConnectionFormControlsWithoutSecrets", helper_start)
+        helper = source[helper_start:helper_end]
+        self.assertIn(
+            'NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")',
+            helper,
+        )
+        self.assertIn("waitForHittable(runtime, timeout: 30)", helper)
+        self.assertIn("runtime.tap()", helper)
+        self.assertIn("connected.waitForExistence(timeout: 90)", helper)
+
+        real_workflow_start = source.index("private func runRealSshWorkflow")
+        real_workflow_end = source.index("/// Opens each production screen", real_workflow_start)
+        real_workflow = source[real_workflow_start:real_workflow_end]
+        self.assertIn(
+            'selectFixtureTmuxRuntimeAndWaitForConnected(stage: "real_ssh_initial_runtime")',
+            real_workflow,
+        )
+        self.assertIn(
+            'selectFixtureTmuxRuntimeAndWaitForConnected(stage: "real_ssh_manual_reconnect")',
+            real_workflow,
+        )
+        self.assertNotIn('app.staticTexts["Connected"].waitForExistence(timeout: 90)', real_workflow)
+
+        short_workflow_start = source.index("private func acceptFixtureHostKey")
+        short_workflow_end = source.index("func testConnectionFormControlsWithoutSecrets", short_workflow_start)
+        short_workflow = source[short_workflow_start:short_workflow_end]
+        self.assertIn(
+            'selectFixtureTmuxRuntimeAndWaitForConnected(stage: "ssh_initial_runtime")',
+            short_workflow,
+        )
+        self.assertNotIn('app.staticTexts["Connected"].waitForExistence(timeout: 90)', short_workflow)
+
+        daily_start = source.index("private func verifyDailyUse")
+        daily_end = source.index("private func verifyNameOperations", daily_start)
+        daily_workflow = source[daily_start:daily_end]
+        self.assertIn(
+            'selectFixtureTmuxRuntimeAndWaitForConnected(stage: "real_ssh_cold_saved_profile")',
+            daily_workflow,
+        )
+        self.assertNotIn('app.staticTexts["Connected"].waitForExistence(timeout: 90)', daily_workflow)
+
+        seeded_start = source.index("func testStandardSeededScreensAndFoundation")
+        seeded_end = source.index("/// Additional states and native navigation", seeded_start)
+        self.assertNotIn("selectFixtureTmuxRuntimeAndWaitForConnected", source[seeded_start:seeded_end])
+
     def test_new_suite_is_exposed_without_changing_the_standard_default(self):
         workflow = (REPOSITORY_ROOT / ".github/workflows/mobile-smoke.yml").read_text(encoding="utf-8")
         self.assertIn(

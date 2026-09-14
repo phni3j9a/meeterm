@@ -105,6 +105,9 @@ DISCONNECT_LABELS = (
 RECONNECT_LABELS = (
     "Reconnect",
 )
+TMUX_RUNTIME_LABELS = (
+    "tmux runtime meeterm",
+)
 HANDOFF_COMMAND = "tmux attach -t meeterm"
 PRIVATE_KEY_ACCESSIBILITY_LABELS = (
     "Private OpenSSH key",
@@ -2317,6 +2320,54 @@ def trust_host(device: AndroidDevice, expected_fingerprint: str) -> None:
     raise SmokeFailure("host_key_prompt", "trust_button_unavailable")
 
 
+def select_fixture_tmux_runtime_and_wait_for_connected(
+    device: AndroidDevice,
+    stage: str,
+    completed: list[str] | None = None,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> None:
+    """Explicitly select the fixture runtime before accepting Connected.
+
+    The product intentionally does not auto-select a runtime, even when the
+    picker exposes one candidate.  Match the exact production accessibility
+    label for the fixture's existing tmux session and tap that row; never
+    infer a choice from candidate count, default state, or list position.
+    """
+
+    picker_stage = f"{stage}_runtime_picker"
+    try:
+        runtime = wait_for_node_with_labels(
+            device,
+            picker_stage,
+            TMUX_RUNTIME_LABELS,
+            timeout=timeout,
+        )
+    except SmokeFailure as error:
+        raise SmokeFailure(
+            picker_stage,
+            f"runtime_picker_{error.reason}",
+        ) from error
+    if completed is not None:
+        completed.append(f"{stage}_runtime_picker_ready")
+
+    selection_stage = f"{stage}_runtime_select_tmux"
+    tap_node(device, runtime, selection_stage)
+    if completed is not None:
+        completed.append(f"{stage}_runtime_picker_selected")
+
+    connected_stage = f"{stage}_runtime_connected"
+    try:
+        wait_for_node(device, connected_stage, text="Connected", timeout=timeout)
+    except SmokeFailure as error:
+        raise SmokeFailure(
+            connected_stage,
+            f"runtime_selection_{error.reason}",
+        ) from error
+    if completed is not None:
+        completed.append(f"{stage}_runtime_connected")
+
+
 def shell_quote(value: str) -> str:
     return shlex.quote(value)
 
@@ -2977,7 +3028,10 @@ def switch_saved_profile(
     tap_node(device, profile, stage)
     wait_for_node(device, stage, text="Switch servers?")
     tap_action(device, stage, ("Switch server",))
-    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+    select_fixture_tmux_runtime_and_wait_for_connected(
+        device,
+        f"{stage}_runtime_selection",
+    )
     tap_action(device, stage, ("Saved servers",))
     return wait_for_saved_profile(device, stage, name, selected=True)
 
@@ -3052,6 +3106,9 @@ def exercise_saved_profile_management(
     wait_for_saved_profile(device, stage, DAILY_PROFILE_NAME, selected=True)
     completed.append("daily_second_profile_deleted")
     tap_action(device, stage, ("Close sheet",))
+    # Closing the sheet returns to the already-selected primary runtime; this
+    # is a settled-state check, not a new connection that should reopen the
+    # picker.
     wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
 
 
@@ -3109,6 +3166,8 @@ def exercise_foreground_return(
         stage,
         timeout=15.0,
     )
+    # Foreground return exercises automatic transport recovery. It retains
+    # the verified runtime binding and must not require a new picker choice.
     wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
     device.assert_foreground(stage)
     if device.process_id(stage) != expected_pid:
@@ -3201,7 +3260,11 @@ def reconnect_saved_profile_after_restart(
 
     stage = "daily_saved_profile_connect"
     tap_node(device, profile, stage)
-    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+    select_fixture_tmux_runtime_and_wait_for_connected(
+        device,
+        f"{stage}_runtime_selection",
+        completed,
+    )
     device.assert_process_alive(stage)
     completed.append("daily_saved_profile_connected")
     return restarted_pid
@@ -3924,8 +3987,12 @@ def main(argv: list[str] | None = None) -> int:
         trust_host(device, expected_fingerprint)
         completed.append("host_key_verified")
 
-        stage = "connected"
-        wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+        stage = "initial_runtime_selection"
+        select_fixture_tmux_runtime_and_wait_for_connected(
+            device,
+            stage,
+            completed,
+        )
         completed.append("connected")
 
         if initial_app_pid is None:
@@ -4326,7 +4393,11 @@ def main(argv: list[str] | None = None) -> int:
             timeout=RECONNECT_TIMEOUT,
         )
         tap_node(device, reconnect_button, stage)
-        wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
+        select_fixture_tmux_runtime_and_wait_for_connected(
+            device,
+            "manual_reconnect",
+            completed,
+        )
         completed.append("reconnected")
 
         stage = "tmux_session_resume"
