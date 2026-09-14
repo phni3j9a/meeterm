@@ -8,7 +8,7 @@ type SshConnectEndpoint = {
   host: string;
   port: number;
   username: string;
-  /** Compatibility-only hint fields; host-only connect must omit them. */
+  /** Compatibility-only hint fields; every fresh connect path ignores them. */
   backend?: 'tmux' | 'herdr';
   runtime?: string;
 };

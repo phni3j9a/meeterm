@@ -466,6 +466,15 @@ preserves the structured Control Mode boundary; pane contents remain bytes.
 See the [tmux Control Mode documentation](https://github.com/tmux/tmux/wiki/Control-Mode#entering-control-mode)
 for the terminal-attribute difference between the two flags.
 
+The shell discovery/preflight channel and the later Control Mode attach channel
+are separate, so the actor closes that replacement race before synchronization:
+after the attach startup block succeeds and before `Ready` or input acceptance,
+it issues a read-only `display-message` format query on the same Control Mode
+stream for the exact `$N` target. A bounded byte parser reads
+`session_id|pid|start_time` and compares all three values with the selected
+`SessionIdentity`. A mismatch, malformed reply, command error, or uncertain
+result fails as `TmuxRuntimeMissing` and returns the actor to the picker.
+
 Control Mode provides structured notifications and identifies pane output by pane ID. The Rust core should parse Control Mode as a byte-oriented protocol and route each pane's output to its own terminal state.
 
 Conceptually:

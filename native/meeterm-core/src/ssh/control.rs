@@ -50,31 +50,33 @@ pub(super) async fn run(
     shared.set_state(ConnectionState::AttachingTmux);
 
     let exact_runtime = profile.tmux_identity.is_some() || profile.runtime.is_some();
-    let (runtime_session, startup) = if let Some(identity) = profile.tmux_identity.clone() {
-        verify_selected_runtime(shared, session, &identity).await?;
-        let startup = tmux::attach_command_for_session(&identity.session_id)
-            .map_err(|_| FlowFailure::TmuxProtocol)?;
-        (identity.session_id, startup)
-    } else if let Some(name) = profile.runtime.as_deref() {
-        // A direct named tmux option has no native identity yet. Resolve it
-        // once through the bounded list and then use the exact `$N` for this
-        // lifecycle; a missing name never falls through to create/attach.
-        let identities = discover(shared, session).await?;
-        let identity = identities
-            .into_iter()
-            .find(|identity| identity.name == name)
-            .ok_or(FlowFailure::TmuxRuntimeMissing)?;
-        profile.tmux_identity = Some(identity.clone());
-        shared.set_profile(profile.clone());
-        let startup = tmux::attach_command_for_session(&identity.session_id)
-            .map_err(|_| FlowFailure::TmuxProtocol)?;
-        (identity.session_id, startup)
-    } else {
-        (
-            tmux::SESSION_NAME.to_owned(),
-            String::from_utf8_lossy(tmux::initial_command()).into_owned(),
-        )
-    };
+    let (runtime_session, startup, selected_identity) =
+        if let Some(identity) = profile.tmux_identity.clone() {
+            verify_selected_runtime(shared, session, &identity).await?;
+            let startup = tmux::attach_command_for_session(&identity.session_id)
+                .map_err(|_| FlowFailure::TmuxRuntimeMissing)?;
+            (identity.session_id.clone(), startup, identity)
+        } else if let Some(name) = profile.runtime.as_deref() {
+            // A direct named tmux option has no native identity yet. Resolve it
+            // once through the bounded list and then use the exact `$N` for this
+            // lifecycle; a missing name never falls through to create/attach.
+            let identities = discover(shared, session).await?;
+            let identity = identities
+                .into_iter()
+                .find(|identity| identity.name == name)
+                .ok_or(FlowFailure::TmuxRuntimeMissing)?;
+            profile.tmux_identity = Some(identity.clone());
+            shared.set_profile(profile.clone());
+            let startup = tmux::attach_command_for_session(&identity.session_id)
+                .map_err(|_| FlowFailure::TmuxRuntimeMissing)?;
+            (identity.session_id.clone(), startup, identity)
+        } else {
+            // A tmux actor without a selected identity must not fall back to
+            // the historical `new-session -A` command. Fresh/manual host
+            // flows enter the picker, and an automatic reconnect with no
+            // verifiable binding is handled as a local runtime loss there.
+            return Err(FlowFailure::TmuxRuntimeMissing);
+        };
     let channel = await_stage(
         shared,
         session.channel_open_session(),
@@ -147,6 +149,7 @@ pub(super) async fn run(
             event => client.dispatch(event)?,
         }
     }
+    client.verify_attached_session(&selected_identity).await?;
     client.synchronize(true).await?;
     loop {
         // Drain every decoded event before blocking on the SSH channel again.
@@ -659,6 +662,35 @@ impl ControlClient {
                 event => self.dispatch(event)?,
             }
         }
+    }
+
+    /// Re-check the selected session after the attach command has been
+    /// accepted. The discovery/preflight command used a separate SSH channel,
+    /// so only this same Control Mode stream closes the list-to-attach race.
+    /// A cancellation remains a stale lifecycle result; every other failure is
+    /// deliberately reported as a missing runtime so the caller returns to
+    /// the picker instead of accepting an uncertain server epoch.
+    async fn verify_attached_session(
+        &mut self,
+        expected: &tmux::SessionIdentity,
+    ) -> Result<(), FlowFailure> {
+        let reply = match self.query(tmux::attached_session_epoch_command()).await {
+            Ok(reply) => reply,
+            Err(FlowFailure::Stale) => return Err(FlowFailure::Stale),
+            Err(_) => return Err(FlowFailure::TmuxRuntimeMissing),
+        };
+        let Some(block) = (reply.len() == 1).then(|| &reply[0]) else {
+            return Err(FlowFailure::TmuxRuntimeMissing);
+        };
+        let Some(line) = (block.lines.len() == 1).then(|| block.lines[0].as_slice()) else {
+            return Err(FlowFailure::TmuxRuntimeMissing);
+        };
+        let observed =
+            tmux::parse_session_epoch_line(line).map_err(|_| FlowFailure::TmuxRuntimeMissing)?;
+        observed
+            .matches(expected)
+            .then_some(())
+            .ok_or(FlowFailure::TmuxRuntimeMissing)
     }
 
     async fn resize_client(&mut self) -> Result<(), FlowFailure> {

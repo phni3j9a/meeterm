@@ -15,9 +15,9 @@ public final class MeetermTerminalModule: Module {
       try ClientStore.saveProfile(profile, credential: credential, keepCredential: keepCredential)
     }
     AsyncFunction("deleteProfile") { (profileId: String) throws in try ClientStore.deleteProfile(profileId) }
-    // New connection path: authenticate the SSH host first, then let the app
-    // explicitly bind one discovered runtime. Legacy connectProfile remains
-    // below for older direct-connect fixtures.
+    // Every fresh connection path authenticates the SSH host first. Persisted
+    // backend/runtime values are only last-used hints and never select a
+    // runtime on behalf of the caller.
     AsyncFunction("connectHost") { (terminalId: String, options: [String: Any]) throws in
       try Self.connectHostOptions(terminalId, options: options)
     }
@@ -30,7 +30,7 @@ public final class MeetermTerminalModule: Module {
       try Self.connectHostOptions(terminalId, options: options)
     }
     AsyncFunction("connectProfile") { (terminalId: String, profileId: String) throws in
-      try Self.connectOptions(terminalId, options: ClientStore.connectionOptions(profileId))
+      try Self.connectHostOptions(terminalId, options: ClientStore.connectionOptions(profileId))
     }
     AsyncFunction("setLastUsedRuntime") { (profileId: String, backend: String, runtime: String) throws -> [String: Any] in
       try ClientStore.setLastUsedRuntime(profileId, backend: backend, runtime: runtime)
@@ -104,7 +104,7 @@ public final class MeetermTerminalModule: Module {
     }
 
     AsyncFunction("connect") { (terminalId: String, options: [String: Any]) throws in
-      try Self.connectOptions(terminalId, options: options)
+      try Self.connectHostOptions(terminalId, options: options)
     }
 
     AsyncFunction("disconnect") { (terminalId: String) throws in
@@ -228,24 +228,6 @@ public final class MeetermTerminalModule: Module {
     }
   }
 
-  private static func connectOptions(_ terminalId: String, options: [String: Any]) throws {
-    let connection = try decodeOptions(options)
-    let handle = try ensureHandle(normalizeTerminalId(terminalId))
-    let preferences = try ClientStore.preferences()
-    guard MeetermCore.setScrollbackLimit(preferences["scrollbackLines"] as! Int),
-          MeetermCore.setAutomaticReconnect(terminalId: handle, enabled: preferences["automaticReconnect"] as! Bool) == 0 else {
-      throw error("The connection preferences could not be applied.")
-    }
-    let knownHostsPath: String
-    do { knownHostsPath = try KnownHostsStore.path() }
-    catch { throw Self.error("SSH trust storage is unavailable.") }
-    let result = MeetermCore.connectBackend(terminalId: handle, host: connection.host, port: connection.port,
-      username: connection.username, privateKey: connection.privateKey, passphrase: connection.passphrase,
-      knownHostsPath: knownHostsPath, authMethod: connection.authMethod, password: connection.password,
-      backend: connection.backend, runtime: connection.runtime)
-    guard result == 0 else { throw Self.error("The SSH connection could not be started.") }
-  }
-
   private static func connectHostOptions(_ terminalId: String, options: [String: Any]) throws {
     let connection = try decodeOptions(options)
     let handle = try ensureHandle(normalizeTerminalId(terminalId))
@@ -359,8 +341,6 @@ public final class MeetermTerminalModule: Module {
     let privateKey: String
     let passphrase: String
     let password: String
-    let backend: String
-    let runtime: String
   }
 
   private static func decodeOptions(_ values: [String: Any]) throws -> SshOptions {
@@ -386,15 +366,6 @@ public final class MeetermTerminalModule: Module {
       authMethod = "publicKey"
     }
 
-    guard (!values.keys.contains("backend") || values["backend"] is String),
-          (!values.keys.contains("runtime") || values["runtime"] is String) else { throw error("The backend or runtime is invalid.") }
-    let backend = values["backend"] as? String ?? "tmux"
-    guard backend == "tmux" || backend == "herdr" else {
-      throw error("The SSH connection options are invalid.")
-    }
-    let runtime = values["runtime"] as? String ?? ""
-    try validateRuntime(backend: backend, runtime: runtime)
-
     switch authMethod {
     case "publicKey":
       guard let privateKey = values["privateKey"] as? String,
@@ -411,9 +382,7 @@ public final class MeetermTerminalModule: Module {
         authMethod: authMethod,
         privateKey: privateKey,
         passphrase: passphrase,
-        password: "",
-        backend: backend,
-        runtime: runtime
+        password: ""
       )
     case "password":
       guard let password = values["password"] as? String,
@@ -428,24 +397,9 @@ public final class MeetermTerminalModule: Module {
         authMethod: authMethod,
         privateKey: "",
         passphrase: "",
-        password: password,
-        backend: backend,
-        runtime: runtime
+        password: password
       )
     default:
-      throw error("The SSH connection options are invalid.")
-    }
-  }
-
-  private static func validateRuntime(backend: String, runtime: String) throws {
-    let validCharacters = runtime.unicodeScalars.allSatisfy { scalar in
-      (scalar.value >= 0x41 && scalar.value <= 0x5A) ||
-      (scalar.value >= 0x61 && scalar.value <= 0x7A) ||
-      (scalar.value >= 0x30 && scalar.value <= 0x39) ||
-      scalar.value == 0x2E || scalar.value == 0x5F || scalar.value == 0x2D
-    }
-    guard runtime.utf8.count <= 64, runtime != ".", runtime != "..", validCharacters,
-          backend == "herdr" || runtime.isEmpty else {
       throw error("The SSH connection options are invalid.")
     }
   }

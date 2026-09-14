@@ -44,6 +44,11 @@ race refreshes with an error instead of creating a replacement. Herdr lists
 revalidated candidate is selectable. Herdr start/create/install/update and
 automatic fallback to tmux are outside this issue.
 
+For tmux, the selected session's `$N`, server PID, and server start time are
+verified again after Control Mode attach on that same stream and before
+synchronization or input readiness. A changed, malformed, or uncertain epoch
+is treated as a missing runtime and returns to the picker.
+
 Automatic transport reconnect may reuse the selected `(backend, runtime)` only
 after identity and compatibility verification. A missing, restarted,
 same-name-replaced, incompatible, or uncertain runtime returns to the picker.
@@ -96,7 +101,7 @@ saveProfile(profile: Omit<ServerProfile, 'credentialSaved'>,
 deleteProfile(profileId: string): Promise<void>;
 connectHost(terminalId: string, options: SshConnectOptions): Promise<void>;
 connectProfileHost(terminalId: string, profileId: string): Promise<void>;
-/** Legacy direct-connect compatibility; new flow uses connectProfileHost. */
+/** Legacy host-only alias; it never selects a runtime. */
 connectProfile(terminalId: string, profileId: string): Promise<void>;
 getRuntimeDiscovery(connectionId: string): Promise<RuntimeDiscovery>;
 refreshRuntimes(connectionId: string): Promise<void>;
@@ -116,6 +121,14 @@ renamePane(terminalId: string, paneId: string, name: string): Promise<void>;
 closePane(terminalId: string, paneId: string): Promise<void>;
 refreshTerminal(terminalId: string): Promise<void>;
 ```
+
+The legacy `connect` and `connectProfile` native bridge methods are host-only
+aliases for `connectHost` and `connectProfileHost`. They authenticate the SSH
+host and enter the picker; any persisted or supplied `backend`/`runtime` values
+remain hints and cannot bind a runtime. Runtime binding is available only
+through `selectRuntime` (or the separate explicit `createTmuxSession` action).
+The Rust-only direct-options helper is compiled only for internal lifecycle
+tests and is not exposed by the production Android JNI or iOS C bridges.
 
 Empty profile IDs request a new native-generated UUID. A null credential with
 `keepCredential=false` removes any saved credential; `true` preserves it only

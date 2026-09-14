@@ -19,11 +19,11 @@ use meeterm_core::workspace::{
 };
 use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, PaneSnapshot,
-    SessionSnapshot, SpecialKey, close_pane, close_workspace, connect_host, connect_terminal,
-    connection_snapshot, create_pane, create_runtime, create_terminal, create_workspace,
-    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count,
-    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot,
-    meeterm_snapshot_size, reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
+    SessionSnapshot, SpecialKey, close_pane, close_workspace, connect_host, connection_snapshot,
+    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
+    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
+    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
     runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
 };
 
@@ -954,7 +954,7 @@ fn real_openssh_tmux_session_loop() {
     let wrong_id = create_terminal(80, 24).expect("create wrong-passphrase terminal");
     let _wrong_guard = TerminalGuard { id: wrong_id };
     let wrong_options = fixture.options_with_passphrase("definitely-wrong-passphrase");
-    connect_terminal(wrong_id, wrong_options).expect("start wrong-passphrase connection");
+    connect_host(wrong_id, wrong_options).expect("start wrong-passphrase connection");
     let wrong = wait_for_state(
         wrong_id,
         ConnectionState::Failed,
@@ -971,7 +971,7 @@ fn real_openssh_tmux_session_loop() {
     let changed_id = create_terminal(80, 24).expect("create changed-key terminal");
     let _changed_guard = TerminalGuard { id: changed_id };
     write_alternate_trust_record(&fixture);
-    connect_terminal(changed_id, fixture.options()).expect("start changed-key connection");
+    connect_host(changed_id, fixture.options()).expect("start changed-key connection");
     let changed = wait_for_state(
         changed_id,
         ConnectionState::Failed,
@@ -1001,8 +1001,9 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     let id = create_terminal(80, 24).expect("create password SSH terminal");
     let _guard = TerminalGuard { id };
 
-    connect_terminal(id, fixture.options()).expect("start password connection");
-    let ready = wait_for_ready_without_prompt(id, "password authentication");
+    connect_host(id, fixture.options()).expect("start password host connection");
+    let discovery = wait_for_runtime_picker(id, &fixture.fingerprint, "password authentication");
+    let ready = create_tmux_meeterm_from_picker(id, &discovery, "password authentication");
     assert_eq!(
         connection_string(&ready.algorithm, ready.algorithm_len),
         "ssh-ed25519"
@@ -1057,7 +1058,7 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     // method. The host key is already pinned, so this reaches authentication.
     let wrong_id = create_terminal(80, 24).expect("create wrong-password terminal");
     let _wrong_guard = TerminalGuard { id: wrong_id };
-    connect_terminal(
+    connect_host(
         wrong_id,
         fixture.options_with_password("wrong password that must be rejected"),
     )
@@ -1082,7 +1083,7 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     write_alternate_password_trust_record(&fixture, &changed_trust);
     let changed_id = create_terminal(80, 24).expect("create changed-key terminal");
     let _changed_guard = TerminalGuard { id: changed_id };
-    connect_terminal(
+    connect_host(
         changed_id,
         fixture.options_with_password_and_trust(
             "wrong password must never be reached",

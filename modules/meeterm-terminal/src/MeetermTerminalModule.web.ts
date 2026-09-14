@@ -25,6 +25,8 @@ class MeetermTerminalModule extends NativeModule<{}> {
   async deleteProfile(_profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async connectHost(_terminalId: string, _options: SshConnectOptions): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async connectProfileHost(_terminalId: string, _profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  // The native implementation treats this legacy API as a host-only alias;
+  // keep the same unavailable web surface without introducing a runtime bind.
   async connectProfile(_terminalId: string, _profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async getPreferences(): Promise<TerminalPreferences> { return { fontSize: 15, theme: 'system', scrollbackLines: 10000, automaticReconnect: true }; }
   async setPreferences(_preferences: TerminalPreferences): Promise<void> { throw new Error(WEB_UNAVAILABLE); }

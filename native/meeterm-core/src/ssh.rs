@@ -366,6 +366,7 @@ impl SessionEndpoint {
         }
     }
 
+    #[cfg(test)]
     fn matches(&self, options: &ConnectOptions) -> bool {
         self.host == options.host
             && self.port == options.port
@@ -919,8 +920,13 @@ fn connections() -> &'static Mutex<HashMap<TerminalId, ConnectionEntry>> {
     CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Start or replace the SSH session associated with a terminal ID.
-pub fn connect_terminal(
+/// Start or replace the SSH session associated with a terminal ID using the
+/// Rust-only direct-options path. Platform FFI/JNI bridges must use
+/// [`connect_host`] so a fresh connection always authenticates and discovers
+/// runtimes before an explicit bind. This test-only entry point remains for
+/// internal Rust lifecycle tests.
+#[cfg(test)]
+pub(crate) fn connect_terminal(
     terminal_id: TerminalId,
     options: ConnectOptions,
 ) -> Result<(), ConnectionError> {
@@ -1399,6 +1405,7 @@ pub fn workspace_snapshot_json(terminal_id: TerminalId) -> Result<String, Connec
     serde_json::to_string(&snapshot).map_err(|_| ConnectionError::Internal)
 }
 
+#[cfg(test)]
 fn prepare_session_endpoint(
     terminal_id: TerminalId,
     options: &ConnectOptions,
@@ -1500,6 +1507,10 @@ fn prepare_manual_reconnect(
 }
 
 enum ConnectionStart {
+    /// Rust-only direct-options compatibility path. It is intentionally not
+    /// reachable from the production FFI/JNI bridges; the host-only bridges
+    /// use [`ConnectionStart::Host`] and therefore enter the picker.
+    #[cfg(test)]
     Options(ConnectOptions),
     Host(ConnectOptions),
     /// A transport loss after Ready may retry the selected binding. This mode
@@ -1526,7 +1537,14 @@ impl ConnectionStart {
 
     fn endpoint(&self) -> (&str, u16, &str, &Path) {
         match self {
-            Self::Options(options) | Self::Host(options) => (
+            #[cfg(test)]
+            Self::Options(options) => (
+                &options.host,
+                options.port,
+                &options.username,
+                &options.known_hosts_path,
+            ),
+            Self::Host(options) => (
                 &options.host,
                 options.port,
                 &options.username,
@@ -1596,6 +1614,7 @@ fn start_connection(
     }
 
     let stale_terminals = match &start {
+        #[cfg(test)]
         ConnectionStart::Options(options) => prepare_session_endpoint(terminal_id, options)?,
         ConnectionStart::Host(options) => prepare_host_endpoint(terminal_id, options)?,
         ConnectionStart::AutomaticReconnect(_) => Vec::new(),
@@ -2630,6 +2649,7 @@ async fn run_connection_flow(
     let mut profile = match start {
         ConnectionStart::AutomaticReconnect(profile)
         | ConnectionStart::ManualReconnect(profile) => profile,
+        #[cfg(test)]
         ConnectionStart::Options(ConnectOptions {
             host,
             port,

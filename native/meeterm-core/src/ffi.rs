@@ -4,9 +4,8 @@ use std::slice;
 use crate::input::SpecialKey;
 use crate::registry;
 use crate::ssh::{
-    AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot, connect_terminal,
-    connection_snapshot, disconnect_terminal, forget_host_key, respond_to_host_key,
-    terminal_revision,
+    AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot, connection_snapshot,
+    disconnect_terminal, forget_host_key, respond_to_host_key, terminal_revision,
 };
 use crate::workspace::{
     Backend, RuntimeCandidate, RuntimeSection, RuntimeSectionState, RuntimeState,
@@ -488,12 +487,13 @@ pub extern "C" fn meeterm_set_automatic_reconnect(id: u64, enabled: u8) -> i32 {
         .unwrap_or_else(connection_error_code)
 }
 
-/// Start the legacy tmux SSH connection. All string arguments are UTF-8 byte slices; the
-/// platform supplies the app-private known-hosts path. The authentication
-/// arguments are appended after the original endpoint/key/trust-store
-/// arguments, keeping the original arguments in their existing order. All
-/// callers must rebuild against the extended declaration; an old binary that
-/// calls the shorter function signature is not compatible with this symbol.
+/// Start the legacy host-only SSH connection. All string arguments are UTF-8
+/// byte slices; the platform supplies the app-private known-hosts path. The
+/// authentication arguments are appended after the original endpoint/key/trust
+/// store arguments, keeping the original arguments in their existing order.
+/// This compatibility symbol deliberately stops after host authentication and
+/// runtime discovery; callers must use the runtime picker and explicit
+/// selection/create operations to bind a backend.
 ///
 /// `auth_method` is `publicKey` or `password`. An empty method retains the
 /// legacy public-key default for adapters that predate the method selector;
@@ -530,10 +530,10 @@ pub unsafe extern "C" fn meeterm_connect(
     password_length: usize,
 ) -> i32 {
     // SAFETY: the caller of this legacy ABI supplied the same pointers and
-    // lengths that this forwarding call receives. The static backend and
-    // empty runtime have valid lifetimes for the duration of the call.
+    // lengths that this forwarding call receives. The host-only ABI has the
+    // same argument layout and does not inspect any backend/runtime fields.
     unsafe {
-        meeterm_connect_backend(
+        meeterm_connect_host(
             id,
             host,
             host_length,
@@ -550,130 +550,14 @@ pub unsafe extern "C" fn meeterm_connect(
             auth_method_length,
             password,
             password_length,
-            b"tmux".as_ptr(),
-            4,
-            std::ptr::null(),
-            0,
         )
     }
 }
 
-/// Start an SSH connection for the selected backend/runtime.
-///
-/// The original `meeterm_connect` ABI remains available and supplies the
-/// default `tmux` backend with no named runtime. Backend and runtime are
-/// copied and validated before any connection task is spawned.
-///
-/// # Safety
-/// Every non-empty pointer must point to the stated number of readable UTF-8
-/// bytes for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn meeterm_connect_backend(
-    id: u64,
-    host: *const u8,
-    host_length: usize,
-    port: u16,
-    username: *const u8,
-    username_length: usize,
-    private_key: *const u8,
-    private_key_length: usize,
-    passphrase: *const u8,
-    passphrase_length: usize,
-    known_hosts_path: *const u8,
-    known_hosts_path_length: usize,
-    auth_method: *const u8,
-    auth_method_length: usize,
-    password: *const u8,
-    password_length: usize,
-    backend: *const u8,
-    backend_length: usize,
-    runtime: *const u8,
-    runtime_length: usize,
-) -> i32 {
-    let Ok(host) = (unsafe { utf8_argument(host, host_length) }) else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(username) = (unsafe { utf8_argument(username, username_length) }) else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    // Decode secrets into zeroizing buffers one at a time so a later malformed
-    // argument cannot leave an earlier credential as an ordinary String.
-    let Ok(private_key) =
-        (unsafe { utf8_argument(private_key, private_key_length) }).map(Zeroizing::new)
-    else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(passphrase) =
-        (unsafe { utf8_argument(passphrase, passphrase_length) }).map(Zeroizing::new)
-    else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(known_hosts_path) =
-        (unsafe { utf8_argument(known_hosts_path, known_hosts_path_length) })
-    else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(auth_method) = (unsafe { utf8_argument(auth_method, auth_method_length) }) else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(password) = (unsafe { utf8_argument(password, password_length) }).map(Zeroizing::new)
-    else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(backend) = (unsafe { utf8_argument(backend, backend_length) }) else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let Ok(runtime) = (unsafe { utf8_argument(runtime, runtime_length) }) else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    let backend = if backend.is_empty() {
-        Backend::Tmux
-    } else if let Some(backend) = Backend::parse(&backend) {
-        backend
-    } else {
-        return ConnectionError::InvalidArgument.code();
-    };
-
-    let credentials = match auth_method.as_str() {
-        "" | "publicKey" => {
-            if !password.is_empty() {
-                return ConnectionError::InvalidArgument.code();
-            }
-            AuthOptions::PublicKey {
-                private_key,
-                passphrase: (!passphrase.is_empty()).then_some(passphrase),
-            }
-        }
-        "password" => {
-            if !private_key.is_empty() || !passphrase.is_empty() {
-                return ConnectionError::InvalidArgument.code();
-            }
-            AuthOptions::Password { password }
-        }
-        _ => {
-            return ConnectionError::InvalidArgument.code();
-        }
-    };
-
-    connect_terminal(
-        id,
-        ConnectOptions {
-            host,
-            port,
-            username,
-            credentials,
-            known_hosts_path: known_hosts_path.into(),
-            backend,
-            runtime: (!runtime.is_empty()).then_some(runtime),
-        },
-    )
-    .map(|()| 0)
-    .unwrap_or_else(connection_error_code)
-}
-
 /// Authenticate an SSH host and enter the native runtime picker. Unlike
-/// `meeterm_connect_backend`, this operation has no backend/runtime target and
-/// never creates or attaches a session before the caller selects a candidate.
+/// the removed direct-connect backend ABI, this operation has no
+/// backend/runtime target and never creates or attaches a session before the
+/// caller selects a candidate.
 /// The credential argument order intentionally matches the existing connect
 /// ABI so platform adapters can share their transient decoding path.
 ///

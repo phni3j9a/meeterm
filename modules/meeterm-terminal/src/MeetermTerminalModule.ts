@@ -21,6 +21,7 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   connectHost(terminalId: string, options: SshConnectOptions): Promise<void>;
   /** Host-only saved-profile path; legacy hint fields are ignored for attach. */
   connectProfileHost(terminalId: string, profileId: string): Promise<void>;
+  /** Legacy alias for connectProfileHost; it never selects a runtime. */
   connectProfile(terminalId: string, profileId: string): Promise<void>;
   getPreferences(): Promise<TerminalPreferences>;
   setPreferences(preferences: TerminalPreferences): Promise<void>;
@@ -33,6 +34,7 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   renamePane(terminalId: string, paneId: string, name: string): Promise<void>;
   closePane(terminalId: string, paneId: string): Promise<void>;
   refreshTerminal(terminalId: string): Promise<void>;
+  /** Legacy alias for connectHost; backend/runtime hints are ignored. */
   connect(terminalId: string, options: SshConnectOptions): Promise<void>;
   disconnect(terminalId: string): Promise<void>;
   reconnect(terminalId: string): Promise<void>;

@@ -597,7 +597,7 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnect<'calle
             backend: crate::workspace::Backend::Tmux,
             runtime: None,
         };
-        Ok(crate::ssh::connect_terminal(handle, options)
+        Ok(crate::ssh::connect_host(handle, options)
             .map(|()| 0)
             .unwrap_or_else(|error| error.code()))
     }))
@@ -662,76 +662,6 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnectHost<'c
             runtime: None,
         };
         Ok(crate::ssh::connect_host(handle, options)
-            .map(|()| 0)
-            .unwrap_or_else(|error| error.code()))
-    }))
-}
-
-/// Start an SSH connection for an explicit backend/runtime while preserving
-/// the legacy `sshConnect` entry point above for existing Android callers.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshConnectBackend<'caller>(
-    mut unowned_env: EnvUnowned<'caller>,
-    _this: JObject<'caller>,
-    handle: jlong,
-    host: JString<'caller>,
-    port: jint,
-    username: JString<'caller>,
-    private_key: JString<'caller>,
-    passphrase: JString<'caller>,
-    known_hosts_path: JString<'caller>,
-    auth_method: JString<'caller>,
-    password: JString<'caller>,
-    backend: JString<'caller>,
-    runtime: JString<'caller>,
-) -> jint {
-    let Some(handle) = handle_from_jlong(handle) else {
-        return -2;
-    };
-    let Some(port) = u16::try_from(port).ok() else {
-        return -1;
-    };
-
-    code_from_outcome(unowned_env.with_env(|env| {
-        let host = string_from_java(env, &host)?;
-        let username = string_from_java(env, &username)?;
-        let private_key = Zeroizing::new(string_from_java(env, &private_key)?);
-        let passphrase = Zeroizing::new(string_from_java(env, &passphrase)?);
-        let known_hosts_path = string_from_java(env, &known_hosts_path)?;
-        let auth_method = string_from_java(env, &auth_method)?;
-        let password = Zeroizing::new(string_from_java(env, &password)?);
-        let backend = string_from_java(env, &backend)?;
-        let runtime = string_from_java(env, &runtime)?;
-        let credentials = match auth_method.as_str() {
-            "" | "publicKey" => {
-                if !password.is_empty() {
-                    return Ok(ConnectionError::InvalidArgument.code());
-                }
-                AuthOptions::PublicKey {
-                    private_key,
-                    passphrase: (!passphrase.is_empty()).then_some(passphrase),
-                }
-            }
-            "password" => {
-                if !private_key.is_empty() || !passphrase.is_empty() {
-                    return Ok(ConnectionError::InvalidArgument.code());
-                }
-                AuthOptions::Password { password }
-            }
-            _ => return Ok(ConnectionError::InvalidArgument.code()),
-        };
-        let backend = crate::workspace::Backend::parse(&backend)
-            .ok_or_else(|| JniError::ParseFailed("invalid backend".into()))?;
-        let options = ConnectOptions {
-            host,
-            port,
-            username,
-            credentials,
-            known_hosts_path: known_hosts_path.into(),
-            backend,
-            runtime: (!runtime.is_empty()).then_some(runtime),
-        };
-        Ok(crate::ssh::connect_terminal(handle, options)
             .map(|()| 0)
             .unwrap_or_else(|error| error.code()))
     }))

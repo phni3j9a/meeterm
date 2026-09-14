@@ -14,8 +14,9 @@ class MeetermTerminalModule : Module() {
       ClientStore.saveProfile(storageContext(), profile, credential, keepCredential)
     }
     AsyncFunction("deleteProfile") { profileId: String -> ClientStore.deleteProfile(storageContext(), profileId) }
-    // New path: authenticate the SSH host first. Persisted backend/runtime
-    // values are removed before this call because they are only last-used hints.
+    // Every fresh connection path authenticates the SSH host first. Persisted
+    // backend/runtime values are only last-used hints and never select a
+    // runtime on behalf of the caller.
     AsyncFunction("connectHost") { terminalId: String, options: Map<String, Any?> ->
       connectHostOptions(terminalId, options)
     }
@@ -27,7 +28,7 @@ class MeetermTerminalModule : Module() {
       connectHostOptions(terminalId, options)
     }
     AsyncFunction("connectProfile") { terminalId: String, profileId: String ->
-      connectOptions(terminalId, ClientStore.connectionOptions(storageContext(), profileId))
+      connectHostOptions(terminalId, ClientStore.connectionOptions(storageContext(), profileId))
     }
     AsyncFunction("setLastUsedRuntime") { profileId: String, backend: String, runtime: String ->
       ClientStore.setLastUsedRuntime(storageContext(), profileId, backend, runtime)
@@ -79,7 +80,7 @@ class MeetermTerminalModule : Module() {
     }
 
     AsyncFunction("connect") { terminalId: String, options: Map<String, Any?> ->
-      connectOptions(terminalId, options)
+      connectHostOptions(terminalId, options)
     }
 
     AsyncFunction("disconnect") { terminalId: String ->
@@ -221,20 +222,6 @@ class MeetermTerminalModule : Module() {
     }
   }
 
-  private fun connectOptions(terminalId: String, options: Map<String, Any?>) {
-    val nativeOptions = SshOptions.from(options)
-    val handle = ensureHandle(normalizeTerminalId(terminalId))
-    val preferences = ClientStore.preferences(storageContext())
-    check(MeetermNative.setScrollbackLimit((preferences["scrollbackLines"] as Number).toInt()) == 0)
-    check(MeetermNative.setAutomaticReconnect(handle, preferences["automaticReconnect"] as Boolean) == 0)
-    check(MeetermNative.sshConnectBackend(handle, nativeOptions.host, nativeOptions.port,
-      nativeOptions.username, nativeOptions.privateKey, nativeOptions.passphrase,
-      KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password,
-      nativeOptions.backend, nativeOptions.runtime) == 0) {
-      "The SSH connection could not be started."
-    }
-  }
-
   private fun connectHostOptions(terminalId: String, options: Map<String, Any?>) {
     val nativeOptions = SshOptions.from(options)
     val handle = ensureHandle(normalizeTerminalId(terminalId))
@@ -367,8 +354,6 @@ class MeetermTerminalModule : Module() {
     val privateKey: String,
     val passphrase: String,
     val password: String,
-    val backend: String,
-    val runtime: String,
   ) {
     companion object {
       fun from(values: Map<String, Any?>): SshOptions {
@@ -389,15 +374,6 @@ class MeetermTerminalModule : Module() {
           else -> throw IllegalArgumentException("The SSH connection options are invalid.")
         }
 
-        require(!values.containsKey("backend") || values["backend"] is String) { "The backend is invalid." }
-        require(!values.containsKey("runtime") || values["runtime"] is String) { "The runtime is invalid." }
-        val backend = values["backend"] as? String ?: MeetermTerminalModule.DEFAULT_BACKEND
-        require(backend == MeetermTerminalModule.TMUX_BACKEND || backend == MeetermTerminalModule.HERDR_BACKEND) {
-          "The SSH connection options are invalid."
-        }
-        val runtime = values["runtime"] as? String ?: ""
-        requireValidRuntime(backend, runtime)
-
         return when (authMethod) {
           PUBLIC_KEY_AUTH_METHOD -> {
             val privateKey = values["privateKey"] as? String
@@ -407,14 +383,14 @@ class MeetermTerminalModule : Module() {
             ) {
               throw IllegalArgumentException("The SSH connection options are invalid.")
             }
-            SshOptions(host, port, username, authMethod, privateKey, passphrase, "", backend, runtime)
+            SshOptions(host, port, username, authMethod, privateKey, passphrase, "")
           }
           PASSWORD_AUTH_METHOD -> {
             val password = values["password"] as? String
             if (password.isNullOrEmpty() || password.any { it == '\u0000' }) {
               throw IllegalArgumentException("The SSH connection options are invalid.")
             }
-            SshOptions(host, port, username, authMethod, "", "", password, backend, runtime)
+            SshOptions(host, port, username, authMethod, "", "", password)
           }
           else -> error("unreachable authentication method")
         }
@@ -427,16 +403,6 @@ class MeetermTerminalModule : Module() {
         return double.toInt()
       }
 
-      private fun requireValidRuntime(backend: String, runtime: String) {
-        require(runtime.toByteArray(Charsets.UTF_8).size <= MeetermTerminalModule.HERDR_RUNTIME_MAX_BYTES &&
-          runtime != "." && runtime != ".." &&
-          runtime.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '_' || it == '-' }) {
-          "The SSH connection options are invalid."
-        }
-        require(backend == MeetermTerminalModule.HERDR_BACKEND || runtime.isEmpty()) {
-          "The SSH connection options are invalid."
-        }
-      }
     }
   }
 
@@ -445,8 +411,6 @@ class MeetermTerminalModule : Module() {
     const val PASSWORD_AUTH_METHOD = "password"
     const val TMUX_BACKEND = "tmux"
     const val HERDR_BACKEND = "herdr"
-    const val DEFAULT_BACKEND = TMUX_BACKEND
-    const val HERDR_RUNTIME_MAX_BYTES = 64
     const val DEFAULT_COLUMNS = 80
     const val DEFAULT_ROWS = 24
     const val STATE_FIELD_COUNT = 8

@@ -75,9 +75,9 @@ enum MeetermCore {
     return meeterm_create_terminal(columns, rows)
   }
 
-  /// Submit a native SSH request. Credential strings are copied only for this
-  /// call; this adapter never writes them to disk or logs them. The Rust core
-  /// owns the selected credential retained for an in-process reconnect.
+  /// Submit the legacy host-only SSH request. Credential strings are copied
+  /// only for this call; this adapter never writes them to disk or logs them.
+  /// The runtime picker performs the later backend/runtime selection.
   static func connect(
     terminalId: UInt64,
     host: String,
@@ -167,66 +167,6 @@ enum MeetermCore {
                     passwordPointer,
                     passwordLength
                   )
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  /// Submit a native SSH request with an explicit backend/runtime. The legacy
-  /// `connect` method above remains the tmux/default ABI for older callers.
-  static func connectBackend(
-    terminalId: UInt64,
-    host: String,
-    port: Int,
-    username: String,
-    privateKey: String,
-    passphrase: String,
-    knownHostsPath: String,
-    authMethod: String,
-    password: String,
-    backend: String,
-    runtime: String
-  ) -> Int32 {
-    guard let port = UInt16(exactly: port) else {
-      return -1
-    }
-    return withUTF8(host) { hostPointer, hostLength in
-      withUTF8(username) { usernamePointer, usernameLength in
-        withUTF8(privateKey) { keyPointer, keyLength in
-          withUTF8(passphrase) { passphrasePointer, passphraseLength in
-            withUTF8(knownHostsPath) { pathPointer, pathLength in
-              withUTF8(authMethod) { authMethodPointer, authMethodLength in
-                withUTF8(password) { passwordPointer, passwordLength in
-                  withUTF8(backend) { backendPointer, backendLength in
-                    withUTF8(runtime) { runtimePointer, runtimeLength in
-                      meeterm_connect_backend(
-                        terminalId,
-                        hostPointer,
-                        hostLength,
-                        port,
-                        usernamePointer,
-                        usernameLength,
-                        keyPointer,
-                        keyLength,
-                        passphrasePointer,
-                        passphraseLength,
-                        pathPointer,
-                        pathLength,
-                        authMethodPointer,
-                        authMethodLength,
-                        passwordPointer,
-                        passwordLength,
-                        backendPointer,
-                        backendLength,
-                        runtimePointer,
-                        runtimeLength
-                      )
-                    }
-                  }
                 }
               }
             }

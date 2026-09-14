@@ -85,6 +85,7 @@ typedef struct meeterm_ssh_connection_state {
 } meeterm_ssh_connection_state_t;
 
 /* The Rust ABI uses byte-pointer plus length pairs for all text. */
+/* Legacy fresh connect is host-only; runtime binding is explicit below. */
 int32_t meeterm_connect(
   uint64_t terminal_id,
   const uint8_t *host,
@@ -122,31 +123,6 @@ int32_t meeterm_connect_host(
   size_t auth_method_length,
   const uint8_t *password,
   size_t password_length
-);
-
-/* Explicit backend/runtime variant. The legacy meeterm_connect ABI above
- * remains the tmux/default path for existing native callers. */
-int32_t meeterm_connect_backend(
-  uint64_t terminal_id,
-  const uint8_t *host,
-  size_t host_length,
-  uint16_t port,
-  const uint8_t *username,
-  size_t username_length,
-  const uint8_t *private_key,
-  size_t private_key_length,
-  const uint8_t *passphrase,
-  size_t passphrase_length,
-  const uint8_t *known_hosts_path,
-  size_t known_hosts_path_length,
-  const uint8_t *auth_method,
-  size_t auth_method_length,
-  const uint8_t *password,
-  size_t password_length,
-  const uint8_t *backend,
-  size_t backend_length,
-  const uint8_t *runtime,
-  size_t runtime_length
 );
 
 int32_t meeterm_disconnect(uint64_t terminal_id);

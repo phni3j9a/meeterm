@@ -55,7 +55,7 @@ internal object MeetermNative {
   /** One row per pane: window ID, pane ID, terminal handle, window name, selected, active, pane name. */
   external fun tmuxSessionState(handle: Long): Array<String>?
 
-  /** Queue an SSH connect request; zero means the request was accepted. */
+  /** Queue the legacy host-only SSH connect request. */
   external fun sshConnect(
     handle: Long,
     host: String,
@@ -79,21 +79,6 @@ internal object MeetermNative {
     knownHostsPath: String,
     authMethod: String,
     password: String,
-  ): Int
-
-  /** Queue an SSH connect request for an explicit backend/runtime. */
-  external fun sshConnectBackend(
-    handle: Long,
-    host: String,
-    port: Int,
-    username: String,
-    privateKey: String,
-    passphrase: String,
-    knownHostsPath: String,
-    authMethod: String,
-    password: String,
-    backend: String,
-    runtime: String,
   ): Int
 
   /** Bounded low-frequency workspace metadata; terminal bytes stay native. */

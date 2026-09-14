@@ -42,6 +42,24 @@ impl PartialEq for SessionIdentity {
 
 impl Eq for SessionIdentity {}
 
+/// The server-epoch portion of a session identity returned over an already
+/// attached Control Mode stream. The display name is intentionally omitted:
+/// it is mutable and is not part of the runtime identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionEpoch {
+    pub(crate) session_id: String,
+    pub(crate) server_pid: u64,
+    pub(crate) server_start_time: u64,
+}
+
+impl SessionEpoch {
+    pub(crate) fn matches(&self, expected: &SessionIdentity) -> bool {
+        self.session_id == expected.session_id
+            && self.server_pid == expected.server_pid
+            && self.server_start_time == expected.server_start_time
+    }
+}
+
 /// Low-frequency state exposed to the control bridge.  `panes` is a flat
 /// view for mobile list rendering; `windows` retains the canonical tmux
 /// window/pane hierarchy for callers that need it.
@@ -542,33 +560,55 @@ fn split_identity_fields(line: &[u8]) -> Result<[&[u8]; 4], DecodeError> {
 /// `$N|quoted name|server pid|server start time`.
 pub(crate) fn parse_session_line(line: &[u8]) -> Result<SessionIdentity, DecodeError> {
     let fields = split_identity_fields(line)?;
-    let session_id = fields[0]
-        .strip_prefix(b"$")
-        .filter(|digits| !digits.is_empty())
-        .and_then(|digits| parse_decimal_u64(digits).ok())
-        .map(|number| format!("${number}"))
-        .ok_or(DecodeError::InvalidNotification)?;
+    let session_id = parse_session_id(fields[0])?;
     let name = decode_tmux_quoted_strict(fields[1])?;
     if name.is_empty() || name.len() > MAX_SESSION_NAME_BYTES || name.chars().any(char::is_control)
     {
         return Err(DecodeError::InvalidNotification);
     }
-    let server_pid = std::str::from_utf8(fields[2])
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|pid| *pid != 0)
-        .ok_or(DecodeError::InvalidNotification)?;
-    let server_start_time = std::str::from_utf8(fields[3])
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|start_time| *start_time != 0)
-        .ok_or(DecodeError::InvalidNotification)?;
+    let server_pid = parse_nonzero_u64(fields[2])?;
+    let server_start_time = parse_nonzero_u64(fields[3])?;
     Ok(SessionIdentity {
         session_id,
         name,
         server_pid,
         server_start_time,
     })
+}
+
+/// Parse the bounded identity format emitted by the post-attach epoch query:
+/// `$N|server pid|server start time`.
+pub(crate) fn parse_session_epoch_line(line: &[u8]) -> Result<SessionEpoch, DecodeError> {
+    const MAX_EPOCH_LINE_BYTES: usize = 128;
+    if line.is_empty() || line.len() > MAX_EPOCH_LINE_BYTES {
+        return Err(DecodeError::InvalidNotification);
+    }
+    let fields = line.split(|byte| *byte == b'|').collect::<Vec<_>>();
+    let [session_id, server_pid, server_start_time] = fields
+        .try_into()
+        .map_err(|_| DecodeError::InvalidNotification)?;
+    Ok(SessionEpoch {
+        session_id: parse_session_id(session_id)?,
+        server_pid: parse_nonzero_u64(server_pid)?,
+        server_start_time: parse_nonzero_u64(server_start_time)?,
+    })
+}
+
+fn parse_session_id(value: &[u8]) -> Result<String, DecodeError> {
+    value
+        .strip_prefix(b"$")
+        .filter(|digits| !digits.is_empty())
+        .and_then(|digits| parse_decimal_u64(digits).ok())
+        .map(|number| format!("${number}"))
+        .ok_or(DecodeError::InvalidNotification)
+}
+
+fn parse_nonzero_u64(value: &[u8]) -> Result<u64, DecodeError> {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value != 0)
+        .ok_or(DecodeError::InvalidNotification)
 }
 
 /// A tmux command returns exit status 1 when the ordinary server has not
@@ -815,13 +855,6 @@ pub fn decode_capture(encoded: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(decoded)
 }
 
-/// Build the legacy Control Mode command. The picker path uses
-/// [`attach_command_for_session`] and never routes a selected runtime through
-/// `new-session -A`.
-pub fn initial_command() -> &'static [u8] {
-    b"tmux -C -u new-session -A -s meeterm"
-}
-
 /// Build a remote, side-effect-free session list command. `#{pid}` and
 /// `#{start_time}` are kept as native server-epoch evidence and are never
 /// exposed in the picker snapshot.
@@ -830,7 +863,7 @@ pub fn list_sessions_command() -> &'static str {
 }
 
 /// Explicitly create one detached session and print its exact identity. This
-/// is intentionally separate from `initial_command`: callers must verify the
+/// is intentionally separate from the attach path: callers must verify the
 /// returned `$N` before attaching and must not retry an unknown outcome.
 pub(crate) fn create_session_command(name: &str) -> Result<String, CommandArgumentError> {
     validate_create_name(name)?;
@@ -900,6 +933,14 @@ pub(crate) fn attach_command_for_session(session: &str) -> Result<String, Comman
         "tmux -C -u attach-session -t {}",
         session_target(session)?
     ))
+}
+
+/// Read the current client's attached session identity from the same Control
+/// Mode stream used for pane synchronization. `display-message -t` expects a
+/// pane target and loses session context for an exact `$N`, so this query must
+/// deliberately use the calling control client's current session.
+pub(crate) fn attached_session_epoch_command() -> &'static str {
+    "display-message -p '#{session_id}|#{pid}|#{start_time}'"
 }
 
 pub(crate) fn list_windows_command_for_session(
@@ -1603,6 +1644,41 @@ mod tests {
 
         let pipe_name = parse_session_line(b"$8|daily\\|ops|4242|1700000001").unwrap();
         assert_eq!(pipe_name.name, "daily|ops");
+    }
+
+    #[test]
+    fn attached_epoch_query_rejects_preflight_to_attach_server_replacements() {
+        let preflight = parse_session_line(b"$7|meeterm|4242|1700000000").unwrap();
+        let query = attached_session_epoch_command();
+        assert_eq!(
+            query,
+            "display-message -p '#{session_id}|#{pid}|#{start_time}'"
+        );
+
+        // The same session ID and unchanged PID/start time prove that the
+        // Control Mode stream reached the server observed by preflight.
+        let attached = parse_session_epoch_line(b"$7|4242|1700000000").unwrap();
+        assert!(attached.matches(&preflight));
+
+        // A session replacement may retain the name, the ID, or even the OS
+        // PID. The complete server epoch is required in every case.
+        for replacement in [
+            b"$8|4242|1700000000".as_slice(),
+            b"$7|4243|1700000000".as_slice(),
+            b"$7|4242|1700000001".as_slice(),
+        ] {
+            let replacement = parse_session_epoch_line(replacement).unwrap();
+            assert!(!replacement.matches(&preflight));
+        }
+
+        for malformed in [
+            b"$7|4242".as_slice(),
+            b"$7|0|1700000000".as_slice(),
+            b"$7|4242|0".as_slice(),
+            b"$7|4242|1700000000|extra".as_slice(),
+        ] {
+            assert!(parse_session_epoch_line(malformed).is_err());
+        }
     }
 
     #[test]
