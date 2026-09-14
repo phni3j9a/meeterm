@@ -267,34 +267,62 @@ are implemented together. Keep verifying:
 
 The Herdr live case is an opt-in ignored Rust integration test because it needs a
 real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
-OpenSSH fixture. The normal mobile gate remains iOS `standard` and Android full.
+OpenSSH fixture. Mobile validation is tiered: fast source checks and a short
+native core smoke provide continuous feedback, while Android full and iOS
+`standard` provide final acceptance once the relevant source is stable and
+before merge. Do not spend full-matrix runner time on every intermediate push.
+The short core smoke must still build the generated app when required, install
+and launch it, observe native readiness and a first terminal frame, and check
+that the process does not crash. It is not a substitute for final full and
+`standard` acceptance.
+
 The iOS `standard` source-level manifest is 18 screens: the previous 14 plus
 `runtime-picker`, `runtime-partial-error`, `runtime-empty`, and `runtime-create`.
 Its existing `herdr-connection` route is now a picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
 `SCREEN_NAMES` contains 25 routes: the previous 21 plus those same four runtime
 routes. These are source-level scopes, not remote CI or visual-review results.
-The explicit iOS `polish`
-diagnostic adds seven presentation states and native navigation/keyboard/back
-checks. `polish-navigation` independently exercises the same navigation helper
-and a fresh native foundation; it does not validate the seven states or replace
-a failed `polish` result. Android's seeded presentation routes are observational evidence and
-do not replace the machine gate. No test result may
-claim acceptance without the applicable integration/CI evidence and required
-visual review.
+
+The explicit iOS `polish` diagnostic adds seven presentation states and native
+navigation/keyboard/back checks. `polish-navigation` independently exercises the
+same navigation helper and a fresh native foundation; it does not validate the
+seven states or replace a failed `polish` result. Android's seeded presentation
+routes are observational evidence and do not replace the machine gate. No test
+result may claim acceptance without the applicable integration/CI evidence and
+required visual review.
 
 ## Standard testing workflow
 
-Read `docs/TESTING.md` before changing tests, CI, or native code. The user-approved
-iOS policy uses `standard` as the normal gate: production storage/input tests,
-direct screen screenshots, and native launch/readiness/frame/no-crash checks.
-Use the small `ssh` round-trip for connection/input changes and before distribution.
-The long `full` flow and `forms`/`native`/`names` suites remain explicit diagnostics;
-`full` is not required for every iOS change or milestone acceptance. Android retains
-its existing full smoke. Keep UI fixtures behind the smoke build flag and an
-explicit test launch route; screenshots of seeded state verify presentation,
-not the user actions that would ordinarily create that state. Preserve real
-native terminal rendering and never send fixture terminal bytes/cells through JS.
+Read `docs/TESTING.md` before changing tests, CI, or native code. Use it for the
+current suite contents and commands; the tier and trigger policy below controls
+when those suites run. Use these test tiers:
+
+- On every relevant push, run the fast Rust, JavaScript, Swift/Kotlin, native
+  bridge, and build-contract checks selected for the changed paths.
+- The workflow should provide a short Android emulator and iOS Simulator core
+  smoke for changes that affect the mobile runtime, generated projects, native
+  bridge, renderer, lifecycle, or user flow. Once available, run it as a
+  blocking PR check. Keep this suite focused on CNG or product restoration,
+  install, launch, native readiness, first frame, and no-crash evidence, plus
+  only the smallest representative UI state needed to prove the path.
+- Once the relevant source is stable and before merge, run Android full and iOS
+  `standard` on the exact candidate commit. These acceptance runs cover the full
+  interaction and presentation matrices and are required for applicable mobile
+  changes, but they do not need to run after every intermediate push. Run them
+  again after any later source change that affects their product or assertions.
+- Use the small `ssh` round-trip for connection, authentication, runtime
+  selection, or native input changes and before distribution. Do not run it for
+  unrelated UI or documentation changes.
+
+Until the short core smoke exists in the workflow, keep using the current
+Android full and iOS `standard` suites for final acceptance; a source-only check
+must not be presented as the missing runtime gate. The long iOS `full` flow and
+`forms`/`native`/`names` suites remain explicit diagnostics and are not required
+for every change. Keep UI fixtures behind the smoke build flag and an explicit
+test launch route; screenshots of seeded state verify presentation, not the user
+actions that would ordinarily create that state. Preserve real native terminal
+rendering and never send fixture terminal bytes/cells through JS.
+
 For the runtime picker, the applicable Rust/native checks also cover bounded
 side-effect-free discovery, tmux list/create/select and exact identity,
 Herdr executable resolution and running-session list/select, independent
@@ -304,15 +332,17 @@ picker loading, duplicate-name, stale-selection, asynchronous refresh, and
 explicit selection/create state transitions in focused app/native tests. The
 18-screen iOS source manifest and 25-route Android observational `SCREEN_NAMES`
 add the four visual routes `runtime-picker`, `runtime-partial-error`,
-`runtime-empty`, and `runtime-create`. Android full and iOS `standard`
-plus `ssh` remain the required mobile paths for this connection-lifecycle
-change; both platform screenshots must be downloaded and actually viewed before
-the corresponding evidence is reported.
+`runtime-empty`, and `runtime-create`. Android full and iOS `standard` plus `ssh`
+remain the required mobile paths for this connection-lifecycle change; both
+platform screenshots from the applicable exact-source acceptance runs must be
+downloaded and actually viewed before the corresponding evidence is reported.
+
 The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
 suite by its actual scope; never rename an old full failure into a passing result.
 For another suite or diagnosis on identical source, reuse pristine iOS test
 products only through the workflow's commit/toolchain/hash checks. Record the
-original fresh build and the reuse run. Source changes require a new build.
+original fresh build and the reuse run. Changes to app, native, test, or build
+inputs require a new build.
 Investigate the first failed stage before rerunning; retain bounded state waits,
 exact completion evidence, and sanitized artifacts. Do not fix failures by
 silently skipping assertions, adding blind retries, or extending deadlines.
@@ -323,11 +353,11 @@ For both mobile jobs, the machine-gated acceptance boundary is: generated projec
 
 Standard GitHub-hosted macOS runners do not guarantee Metal. The iOS job must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
 
-The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots before reporting visual success; an uploaded bundle or a passing process check is not visual review. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; record the exact run and result in the acceptance evidence.
+The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots from the final exact-source acceptance runs before reporting visual success; an uploaded bundle or a passing process check is not visual review. Intermediate short-smoke screenshots are diagnostic and do not require a full presentation review unless they are the evidence being used for a visual claim. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; record the exact run and result in the acceptance evidence.
 
 The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
 
-Treat updates to Expo/React Native, the Rust terminal stack, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, fonts, or the chosen iOS renderer backend as cross-platform native dependency changes. Regenerate CNG output on a fresh checkout and run both mobile jobs; do not patch ignored generated directories to accommodate a dependency update.
+Treat updates to Expo/React Native, the Rust terminal stack, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, fonts, or the chosen iOS renderer backend as cross-platform native dependency changes. Regenerate CNG output on a fresh checkout, run the short core smoke while iterating, and complete fresh Android full and iOS `standard` acceptance on the final candidate commit; do not patch ignored generated directories to accommodate a dependency update.
 
 ## Change policy
 
