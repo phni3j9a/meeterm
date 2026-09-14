@@ -1562,7 +1562,9 @@ fn assert_empty_tmux_and_independent_herdr(discovery: &RuntimeDiscoverySnapshot,
     assert_eq!(
         discovery.tmux.state,
         RuntimeSectionState::Empty,
-        "{label} must report an empty tmux section"
+        "{label} must report an empty tmux section: code={:?}, message={:?}",
+        discovery.tmux.error_code,
+        discovery.tmux.error_message
     );
     assert!(
         discovery.tmux.candidates.is_empty(),

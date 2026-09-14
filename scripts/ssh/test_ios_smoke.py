@@ -108,6 +108,9 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn("waitForHittable(runtime, timeout: 30)", helper)
         self.assertIn("runtime.tap()", helper)
         self.assertIn("connected.waitForExistence(timeout: 90)", helper)
+        self.assertIn('"connection_error_code_hint=\\(failureCodeHint)"', source)
+        self.assertIn('capture("runtime-picker-failure")', source)
+        self.assertIn('"tmux_runtime_missing"', source)
 
         real_workflow_start = source.index("private func runRealSshWorkflow")
         real_workflow_end = source.index("/// Opens each production screen", real_workflow_start)

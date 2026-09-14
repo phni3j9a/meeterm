@@ -142,6 +142,9 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("ios-ui-runtime-picker-diagnostics.txt")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("runtime-picker-failure.png")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("host-trust-timeout.png")
     )
     try? FileManager.default.removeItem(
@@ -2211,6 +2214,23 @@ final class MeetermSmokeUITests: XCTestCase {
   ) {
     let observation = connectionStateObservation()
     let appForeground = app.state == .runningForeground
+    // The Rust bridge already renders one bounded, non-secret connection
+    // error. Match only known fixed product copy so diagnostics can identify
+    // the native failure class without serializing the accessibility tree or
+    // any credential-bearing XCTest description.
+    let knownConnectionErrors: [(String, String)] = [
+      ("network", "The SSH connection could not be established."),
+      ("channel", "The SSH session channel could not be opened."),
+      ("transport", "The SSH terminal transport stopped."),
+      ("remote_closed", "The remote terminal closed the session."),
+      ("tmux_failed", "The managed tmux session could not be opened."),
+      ("tmux_protocol", "The tmux Control Mode stream was malformed."),
+      ("tmux_runtime_missing", "The selected tmux session disappeared or its server was replaced. Choose a runtime again."),
+      ("stale_connection", "The SSH connection was replaced."),
+    ]
+    let failureCodeHint = knownConnectionErrors.first { _, message in
+      app.staticTexts[message].exists
+    }?.0 ?? "unavailable"
     writeConnectionStateArtifact(observation)
     writeFixedArtifact(
       "ios-ui-runtime-picker-diagnostics.txt",
@@ -2226,8 +2246,12 @@ final class MeetermSmokeUITests: XCTestCase {
         "tmux_runtime_enabled=\(runtime.exists && runtime.isEnabled ? 1 : 0)",
         "tmux_runtime_hittable=\(runtime.exists && runtime.isHittable ? 1 : 0)",
         "connected_exists=\(connected.exists ? 1 : 0)",
+        "connection_error_code_hint=\(failureCodeHint)",
       ]
     )
+    if safeForPostFormScreenshot() {
+      capture("runtime-picker-failure")
+    }
   }
 
   private func writeTerminalKeyboardDiagnostics(
