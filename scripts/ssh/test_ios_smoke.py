@@ -554,6 +554,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             "case=credential_endpoint_binding result=passed\n"
             "case=remove_saved_credential result=passed\n"
             "case=preferences_validation result=passed\n"
+            "case=runtime_hint_validation result=passed\n"
         )
 
     @staticmethod

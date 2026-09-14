@@ -103,9 +103,9 @@ class ClientStoreRuntimeHintTest {
   }
 
   @Test
-  fun malformedHintCannotBeAcceptedAsAProfileMigration() {
+  fun malformedHerdrHintCannotBeAcceptedAsAProfileMigration() {
     val invalid = values().toMutableMap().apply {
-      put("backend", "tmux")
+      put("backend", "herdr")
       put("runtime", "../named-session")
     }
 
