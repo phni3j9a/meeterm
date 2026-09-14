@@ -2,17 +2,17 @@
 
 **meeterm** is a smartphone-first SSH client for carrying the same development environment between phone and desktop. It supports the ordinary tmux backend and an explicitly selected Herdr backend.
 
-The core idea is simple: the phone is not a separate development environment. It is another viewport into the same tmux workspace you can later attach to from a PC.
+The core idea is simple: the phone is not a separate development environment. It is another viewport into the selected tmux or Herdr workspace you can later open from a PC.
 
 ## Product model
 
 - **Connection** = SSH host
-- **Runtime** = tmux session `meeterm`, or a Herdr `default`/named session
+- **Runtime** = a selected ordinary tmux session, or a selected running Herdr `default`/named session
 - **Workspace** = tmux window, or Herdr workspace
 - **TerminalGroup** = one virtual group for a tmux window, or a Herdr tab
 - **Terminal** = tmux pane, or Herdr pane
 
-On mobile, panes are presented as tabs and the active pane is expanded for a phone-sized viewport. A profile selects its backend and runtime explicitly; profiles saved before backend support continue to use tmux. On desktop, `tmux attach -t meeterm` exposes the tmux windows and panes using their normal layout, while a Herdr runtime remains available to the normal Herdr client.
+On mobile, panes are presented as tabs and the active pane is expanded for a phone-sized viewport. A profile stores the SSH endpoint and authentication details. After authentication, the user explicitly selects a runtime from the tmux and Herdr session lists; a saved backend/runtime value is only a last-used hint. On desktop, `tmux attach -t <selected-session>` exposes the selected tmux windows and panes using their normal layout, while a selected Herdr runtime remains available to the normal Herdr client.
 
 ## Issue #17 implementation status
 
@@ -31,6 +31,22 @@ OpenSSH public CLI proof remains historical evidence. The
 source revisions, suite results, actual screenshot review, and remaining limits.
 See [`docs/HERDR.md`](docs/HERDR.md) for setup, input semantics, handoff behavior,
 close-scope restrictions, and verification commands.
+
+## Issue #21 implementation status
+
+Fresh and manual connections now authenticate the SSH host before showing a
+runtime picker. Discovery is bounded and read-only. tmux sessions can be
+selected or explicitly created as detached sessions; `meeterm` is the suggested
+new-session name rather than a fixed target. Herdr lists running and stopped
+sessions, allows selection only for running sessions, and resolves the 0.9.0
+binary from the non-interactive PATH, the official `~/.local/bin` default, and
+common package-manager locations. Starting or creating Herdr sessions remains
+an ordinary Herdr-client action.
+
+Automatic transport reconnect retains the verified selected runtime. A fresh
+manual reconnect, or an uncertain/missing runtime identity, returns to the
+picker. The saved backend/runtime fields remain non-authoritative last-used
+hints and are updated only after the selected runtime reaches `Ready`.
 
 ## Architecture direction
 
@@ -51,10 +67,10 @@ Rust native core
         │ ordinary SSH
         ▼
 OpenSSH server
-├── tmux session: meeterm
+├── selected ordinary tmux session
 │   ├── window = Workspace
 │   └── pane   = Terminal
-└── existing Herdr 0.9.0 session/socket
+└── selected existing Herdr 0.9.0 session/socket
 ```
 
 Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME composition, and rendering frames must stay out of JavaScript. React Native owns app chrome and product state; the native core owns terminal data and rendering.
@@ -65,7 +81,7 @@ The first evaluation app has passed real SSH connection, workspace/pane selectio
 
 The shared Rust terminal foundation has Android and iOS native adapters, with GLES on Android and Metal on iOS. Hosted iOS Simulators without Metal use an explicitly identified native CoreGraphics fallback. Both platforms have build/install/launch/first-frame smoke jobs. The original Android foundation was also exercised on a physical Pixel 3, including Japanese IME composition/commit and resize; that historical device evidence remains separate from later SSH validation.
 
-The session path uses a Rust-owned `russh` connection and an explicit backend. The tmux path attaches to or creates the ordinary `meeterm` session through Control Mode; the Herdr path connects to the selected existing `default` or named session through its direct public stream-local API. Use **Connect** to enter a host and username, select the backend/runtime, then choose OpenSSH private-key authentication (with an optional passphrase) or the SSH `password` authentication method. Explicitly verify the host key. Keyboard-interactive prompts and MFA are not added. **Disconnect** leaves the selected remote runtime running, and **Reconnect** uses the process-local authentication credential to resume it. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, resize, scroll, and rendering stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace/group/pane selection, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
+The session path uses a Rust-owned `russh` connection and an explicit backend. Use **Connect** to enter the SSH host, username, and OpenSSH private-key credential (with an optional passphrase) or SSH `password`, then explicitly verify the host key. After authentication, choose an existing tmux session or a running Herdr `default`/named session. tmux creation is a separate explicit action; Herdr creation and startup stay in the normal Herdr client. **Disconnect** leaves the selected remote runtime running. Native automatic reconnect may resume the same verified runtime, while a manual reconnect shows the picker again. Keyboard-interactive prompts and MFA are not added. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, resize, scroll, and rendering stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace/group/pane selection, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
 
 ## Quick start
 

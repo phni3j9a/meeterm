@@ -9,25 +9,47 @@ iOS standardと短いSSH入力テストが成功し、両OSの画面を実際に
 に保存してあり、書き換えていません。
 
 Herdr は既存の外部アプリです。meeterm は公開 API に適応し、Herdr 本体の変更・fork・
-自動導入・更新を行いません。リモートには、SSH から実行できる既存の Herdr 0.9.0、
-起動済みの対象 session、SSH stream-local forwarding の許可が必要です。meeterm 用 gateway、daemon、
-HTTP/WebSocket relay、追加のリモートツールはありません。
+自動導入・更新を行いません。リモートには、SSH から実行できる既存の Herdr 0.9.0 と
+SSH stream-local forwarding の許可が必要です。picker には起動中・停止中の対象 session
+を表示しますが、meeterm から選べるのは互換性を再確認できた起動中の session だけです。
+meeterm 用 gateway、daemon、HTTP/WebSocket relay、追加のリモートツールはありません。
 
 ## 接続して使う
 
-1. PCで、使いたいHerdrのセッションを開いておきます。SSHでログインした環境からも
-   `herdr --session default status --json` を実行できる必要があります。
-2. meetermの接続画面でSSHの接続先・ユーザー・認証方法を入力し、「作業環境」を
-   **Herdr** にします。通常はセッション名を空欄にします。named sessionを使う場合だけ、
-   PCで使っている名前を入力します。
-3. 初めての接続ではホスト鍵を確認します。接続後、ワークスペースを選びます。
-   HerdrのTabが複数ある場合だけGroupの選択が表示され、その中のターミナルを開けます。
-4. 作業を残してPCへ戻るときは **切断** を使います。PCでは同じセッションを通常の
-   `herdr --session default`、または指定したセッション名で開きます。
+1. リモートに Herdr 0.9.0 を用意し、SSH から実行できる状態にします。起動中の
+   session はそのまま選択できます。停止中の session も一覧には出ますが、meeterm で
+   は選択できません。
+2. meetermの接続画面でSSHの接続先・ユーザー・認証方法を入力します。backendや
+   session名を固定するのではなく、ホスト鍵確認と認証が成功した後に runtime picker
+   の Herdr セクションを表示します。
+3. picker で `default` または named session の起動中の row を明示的に選びます。選択時
+   に session、protocol 22、schema 1、direct operation、stream-local forwarding を
+   再確認します。選択後、ワークスペースを開きます。Herdr の Tab が複数ある場合だけ
+   Group の選択が表示され、その中のターミナルを開けます。
+4. 作業を残してPCへ戻るときは **切断** を使います。PCでは選択した同じ session を通常の
+   `herdr --session default`、または指定した session 名で開きます。
 
 SSHのUnix socket転送が許可されていない場合は、転送設定を確認する案内が出ます。
 Herdr未導入、セッション未起動、対応機能・バージョンの不一致、入力権限の競合も
-それぞれ別のエラーで案内します。以前の保存済み設定はtmuxとして読み込みます。
+それぞれ別のエラーで案内します。保存済み profile の legacy backend/runtime は
+last-used hint として移行しますが、picker を省略しません。既存のSSH credentialと
+profile IDは維持し、hintは選択したruntimeが `Ready` になった後だけ更新します。
+
+停止中の row には、通常の Herdr client でその session を開いてから picker を更新する
+よう案内します。この issue では meeterm による Herdr の start/create/install/update は
+提供しません。停止中の session を選べないことや Herdr のエラーを理由に tmux へ自動で
+切り替えることもありません。
+
+### Herdr executable の解決
+
+認証後の discovery では、native core が PATH、公式installerの既定値 `~/.local/bin`、一般的なpackage managerのinstall location
+から Herdr 0.9.0 binary を解決します。解決した絶対 path は connection-scoped な native
+capability として保持し、runtime list、session status、controller setup、後続の
+proof-gated operation のすべてで同じものを使います。path は JavaScript や通常のログへ
+渡しません。transport reconnect 後は再解決・再検証してから runtime を再取得します。
+非対話 SSH の PATH に `~/.local/bin` が含まれない場合でも、公式installerの既定locationとして
+確認できる場所を探索します。解決できない場合は Herdr section の局所エラーとして表示し、
+tmux の候補を隠しません。
 
 ## 対応する公開プロトコル
 
@@ -37,9 +59,10 @@ Herdr未導入、セッション未起動、対応機能・バージョンの不
 と [v0.9.0 source](https://github.com/herdrdev/herdr/tree/v0.9.0) を参照します。
 tag の dereferenced source commit は `b99002ac99b09e00b4ca692436cb15a6b0d676f1` です。
 
-- `herdr --session default status --json` または指定した named session を明示的に実行し、
-  protocol、session、socket を確認します。runtime 名は Herdr の session 名として扱い、
-  default は `default` です。
+- discovery は `herdr session list --json` と、同じ解決済み binary による各 session の
+  status 確認で `default` と named session を列挙します。`listed/stopped` と起動中の
+  candidate を区別し、runtime 名は Herdr の session 名として扱います。default は
+  `default` です。socket が存在するだけでは互換性確認済みとはしません。
 - 接続は SSH の direct stream-local public API です。1 channel につき 1 request を順番に
   処理します。購読は subscribe ack の後に snapshot を繰り返し受け、pane set が期待値と
   一致して安定するまで snapshot を確定状態へ適用しません。その後は event と resync で
@@ -56,7 +79,7 @@ tag の dereferenced source commit は `b99002ac99b09e00b4ca692436cb15a6b0d676f1
 | meeterm | tmux | Herdr |
 | --- | --- | --- |
 | Connection | SSH host | SSH host |
-| Runtime | session `meeterm` | `default` または named session |
+| Runtime | pickerで選択した通常のtmux session | pickerで選択した起動中の `default` または named session |
 | Workspace | window | workspace |
 | TerminalGroup | window 内の仮想 group 1 個 | tab |
 | Terminal | pane | pane |
@@ -82,11 +105,14 @@ remote ID は SSH、backend、runtime の scope に閉じた opaque 値です。
 `native:<registry>` を安定した terminal ID として native view に渡します。Herdr の外部
 `pane_id` が移動で変わっても、stable `terminal_id` に同じ Term と view を結びます。
 
-保存済み profile に backend がない場合は tmux、Herdr runtime が空の場合は `default` です。
+保存済み profile は SSH endpoint/auth の情報を持ち、legacy backend/runtime は
+logical な `lastUsedRuntime` hint として扱います。backend がない旧 profile は tmux を既定の候補表示
+hint として扱えますが、picker を省略しません。Herdr runtime が空でも `default` へ自動接続しません。
 既存の SSH credential は SSH/auth/profile の identity として維持し、backend と runtime は
 暗号化 credential の AAD identity に含めません。したがって旧 profile の credential を
-無効化しません。tmux profile の named runtime は受け付けず、Herdr runtime は upstream の
-session 名規則で検証します。
+無効化しません。tmux は任意の既存 session を picker で選択でき、Herdr runtime は
+upstream の session 名規則で検証します。選択した runtime が `Ready` になった後だけ
+`lastUsedRuntime` hint を更新します。
 
 ## Native data path
 
@@ -101,8 +127,8 @@ Rust native core
   └─ Android/iOS native renderer and IME
        ↓ ordinary SSH
 remote host
-  ├─ tmux session `meeterm`
-  └─ existing Herdr 0.9.0 session/socket
+  ├─ selected ordinary tmux session
+  └─ selected existing Herdr 0.9.0 session/socket
 ```
 
 ANSI bytes、cells、scrollback、render frame、cursor、IME composition は JavaScript の
@@ -146,13 +172,21 @@ Groupへ移動した場合、表示するWorkspace/Groupも同じ更新で移動
 SSH と metadata subscription は維持します。release は Herdr stream を closed/EOF まで
 drain してから終えます。foreground では stable `terminal_id` を使って再取得し、remote
 process を終了させずに snapshot/frame を resync します。background の transport loss は
-Rust が bounded reconnect します。
+Rust が bounded reconnect します。別の server profile または runtime へ切り替える場合も、
+先に現在の controller を release してから新しい actor/binding を取得します。
 
-tmux は従来どおり PC から `tmux attach -t meeterm` で同じ window/pane layout を使えます。
-Herdr は選択した session を通常の Herdr client から開けます。mobile が phone viewport 用に
-保持していた lease/size を graceful release で解放し、ungraceful EOF の後も次の attach が
-remote process を再利用できることを handoff の要件にします。PC と phone の完全な同時
-操作成功はこの設計の主張ではありません。
+自動 reconnect が Herdr の同じ session に戻るのは、SSH host identity、解決済み binary、
+session identity、protocol 22、schema 1、direct operation、stream-local forwarding を
+再確認できた場合だけです。session が消えた、同名 session に置き換わった、server が再起動
+した、または identity が不明な場合は picker に戻し、Herdr へ tmux から自動 fallback しません。
+fresh manual connect と cold start も常に picker から選び直します。
+
+tmux は選択した通常の session を PC から `tmux attach -t <selected-session>` で開き、同じ
+window/pane layout を使えます。Herdr は選択した session を通常の Herdr client から開けます。
+`meeterm` は選択した session がその名前の場合にだけ tmux command へ入ります。mobile が
+phone viewport 用に保持していた lease/size を graceful release で解放し、ungraceful EOF の
+後も次の attach が remote process を再利用できることを handoff の要件にします。PC と phone
+の完全な同時操作成功はこの設計の主張ではありません。
 
 ## 実装と検証
 
@@ -181,10 +215,23 @@ stable identity を一つの bounded ケースで確認します。公式 binary
 一般CIと両OSの結果は[モバイル受入記録](evidence/issue-17-herdr-mobile.md)で、
 対象sourceと検証範囲を分けて記録します。
 
-モバイルでは iOS `standard` の 14 screen に Herdr connection、groups、terminal、workspaces
-を含め、Android でも同じ 4 route を fresh process ごとの observational fixture として
-撮影します。これらは seeded presentation の確認で、group 作成操作や pixel-diff の gate
-ではありません。iOS/Android の画像を実際に review するまで visual success と報告しません。
+Issue #21 の runtime picker では、discovery の no-side-effect、Herdr PATH 解決、default/named
+の running/stopped list、running candidate の再検証、局所的な backend failure、reconnect
+identity、profile migration、switch/release を別途確認します。停止中の start/create や
+Herdr への自動 fallback は検証対象にも実装 promise にも含めません。linked/shared tmux
+topology の安全性は、Herdr の既存 close contract と混同せず、tmux 側の実行直前 fail-closed
+検証として記録します。
+
+モバイルでは Android full、iOS `standard`、接続・認証・native input を含む短い iOS `ssh` を
+影響範囲に応じて実行します。runtime picker の loading、mixed、empty、partial error、重複名、
+明示的作成、stale selection の画面は fixture で確認します。iOS `standard` の source-level
+manifest は18画面で、以前の14画面に `runtime-picker`、`runtime-partial-error`、
+`runtime-empty`、`runtime-create` を加えたものです。既存の `herdr-connection` は、
+Herdr `default` candidate に non-authoritative な `Last used` hint を表示する picker state
+です。Android の observational `SCREEN_NAMES` は25 routeで、以前の21 routeに同じ4 routeを
+加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
+しません。seeded presentation は remote 操作の成功や pixel-diff の gate ではなく、iOS/Android
+の画像を実際に review するまで visual success と報告しません。
 
 旧 `scripts/herdr/feasibility.py` の public CLI proof は OpenSSH 経由の先行診断です。新しい
 russh integration の代わりにはしません。過去の frame/input の失敗や CI failure は、元の

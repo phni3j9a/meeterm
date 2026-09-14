@@ -42,11 +42,29 @@ GitHub-hosted runners provide the required OS split: Android jobs can run on Ubu
 
 - `standard`: four production storage cases, seven native input cases, direct
   screen captures from public deterministic state, and a fresh native foundation
-  launch/readiness/frame/no-crash observation. No SSH fixture is started.
-- `ssh`: the actual connection and host-key boundary plus one native input and
-  remote acknowledgment, followed by disconnect. No daily CRUD/copy/restart chain.
+  launch/readiness/frame/no-crash observation. Its source-level screen manifest
+  has 18 routes: the previous 14 plus `runtime-picker`,
+  `runtime-partial-error`, `runtime-empty`, and `runtime-create`. The existing
+  `herdr-connection` route is the picker with the Herdr `default` candidate's
+  non-authoritative `Last used` hint. Runtime-picker states are seeded only for
+  presentation; no SSH fixture is started.
+- `ssh`: the actual connection and host-key boundary, runtime discovery and
+  explicit selection, plus one native input and remote acknowledgment, followed
+  by disconnect. No daily CRUD/copy/restart chain.
 - `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
   Full preserves its original assertions and result; a prior failed full remains failed.
+
+For Issue #21, Android `full` and iOS `standard` plus `ssh` are the applicable
+mobile paths. Shared/native tests separately cover bounded no-side-effect
+discovery, tmux list/create/select and identity races, Herdr executable
+resolution and running-only selection, profile migration, reconnect identity,
+switch/release, backend-local partial failures, and fail-closed linked/shared
+tmux mutations. The iOS `standard` source-level manifest has 18 routes and
+Android's observational `SCREEN_NAMES` has 25 routes: each includes the four
+runtime-picker routes `runtime-picker`, `runtime-partial-error`, `runtime-empty`,
+and `runtime-create`, while `herdr-connection` is the repurposed picker state
+described above. These are source-level scopes only; this document does not
+claim remote CI or visual review.
 
 Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
 forms/names have 15, and optional full retains its 30-minute storage/UI budget.

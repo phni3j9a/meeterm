@@ -21,6 +21,39 @@ The canonical product and native data-plane invariants remain unchanged.
 - Configurable bounded scrollback and documented reconnect retention semantics.
 - Persisted font size, app appearance and history settings; deterministic resize.
 
+## Issue #21 runtime picker
+
+The saved server profile is the SSH endpoint/authentication record. It is not
+the durable tmux/Herdr runtime binding. Legacy backend/runtime fields are
+migrated to a non-authoritative last-used hint and are updated only after the
+selected runtime reaches `Ready`; profile IDs and saved credentials remain
+independent.
+
+After host-key verification and authentication, a fresh manual connection and
+cold start enter a bounded, read-only runtime discovery phase. The picker has
+separate tmux and Herdr sections and requires an explicit selection even when a
+last-used row is highlighted. Discovery never creates, starts, attaches, or
+mutates a runtime. Backend-specific failures are shown in their own section.
+
+Tmux lists arbitrary sessions from the ordinary server and selects the exact
+discovered identity. Empty discovery is only reported for a verified empty
+server/session result. Explicit creation is detached, suggests `meeterm`,
+verifies the returned identity, and then selects it; a stale list-to-select
+race refreshes with an error instead of creating a replacement. Herdr lists
+`default` and named sessions as running or stopped, but only a running,
+revalidated candidate is selectable. Herdr start/create/install/update and
+automatic fallback to tmux are outside this issue.
+
+Automatic transport reconnect may reuse the selected `(backend, runtime)` only
+after identity and compatibility verification. A missing, restarted,
+same-name-replaced, incompatible, or uncertain runtime returns to the picker.
+Switching server/runtime releases the current controller before acquiring the
+next one, keeps one selected runtime actor per host connection, and leaves the
+remote runtime/process alive. Before linked/shared tmux workspace close or a
+terminal close that may remove the final pane, the same Rust actor/control
+queue must prove safety immediately before execution; otherwise it fails
+closed.
+
 ## Control contract for this milestone
 
 One existing connection owner remains active at a time. Profiles are local client
@@ -30,6 +63,20 @@ metadata, never a second source of truth for tmux topology. New low-frequency AP
 type ServerProfile = {
   id: string; name: string; host: string; port: number; username: string;
   authMethod: 'publicKey' | 'password'; credentialSaved: boolean;
+  /** Legacy persisted keys; display/sort hint only, never an attach command. */
+  backend?: 'tmux' | 'herdr'; runtime?: string;
+};
+type RuntimeCandidate = {
+  id: string; backend: 'tmux' | 'herdr'; name: string;
+  state: 'running' | 'stopped'; isDefault: boolean; lastUsed: boolean;
+};
+type RuntimeBackendDiscovery = {
+  backend: 'tmux' | 'herdr'; state: 'loading' | 'ready' | 'error';
+  errorCode: string; errorMessage: string; candidates: RuntimeCandidate[];
+  canCreate: boolean; // true only for tmux in this issue
+};
+type RuntimeDiscovery = {
+  revision: number; backends: RuntimeBackendDiscovery[];
 };
 type SavedCredential =
   | { authMethod: 'publicKey'; privateKey: string; passphrase: string }
@@ -44,7 +91,16 @@ getProfiles(): Promise<ServerProfile[]>;
 saveProfile(profile: Omit<ServerProfile, 'credentialSaved'>,
   credential: SavedCredential | null, keepCredential: boolean): Promise<ServerProfile>;
 deleteProfile(profileId: string): Promise<void>;
+connectHost(terminalId: string, options: SshConnectOptions): Promise<void>;
+connectProfileHost(terminalId: string, profileId: string): Promise<void>;
+/** Legacy direct-connect compatibility; new flow uses connectProfileHost. */
 connectProfile(terminalId: string, profileId: string): Promise<void>;
+getRuntimeDiscovery(connectionId: string): Promise<RuntimeDiscovery>;
+refreshRuntimes(connectionId: string): Promise<void>;
+selectRuntime(connectionId: string, candidateId: string): Promise<void>;
+createTmuxSession(connectionId: string, name: string): Promise<void>;
+setLastUsedRuntime(profileId: string, backend: 'tmux' | 'herdr', runtime: string): Promise<ServerProfile>;
+disconnect(terminalId: string): Promise<void>;
 getPreferences(): Promise<TerminalPreferences>;
 setPreferences(preferences: TerminalPreferences): Promise<void>;
 setForeground(terminalId: string, foreground: boolean): Promise<void>;
@@ -69,16 +125,47 @@ controls its chrome and auxiliary screens; the product terminal view is always
 dark for consistent ANSI colors. The native view still supports both palettes,
 and the historical light/dark evidence below describes its tested source.
 
+`connectHost` stops after host-key/authentication and runtime discovery;
+`selectRuntime` performs the explicit backend binding. `createTmuxSession` is
+the only runtime-creation operation in Issue #21; there is no Herdr creation
+operation. The native bridge must discard candidates from an older connection
+generation/revision and must never return the resolved Herdr binary path or any
+credential to JavaScript. `setLastUsedRuntime` updates the legacy
+backend/runtime hint only after synchronization reaches `Ready`.
+
 ## Verification
 
-Implementation is present. Local deterministic tests, real SSH/tmux integration,
-Android native tests and TypeScript must pass. Under the user-approved policy
+The previously documented daily-use implementation is present. Issue #21's
+runtime-picker additions require the focused checks below; this document does
+not claim those new checks or mobile evidence until Main records them. Local
+deterministic tests, real SSH/tmux integration, Android native tests and
+TypeScript must pass. Under the user-approved policy
 of 2026-09-11, Android full and iOS standard validate a fresh CNG build and
 their screenshots must be downloaded and actually viewed. iOS standard combines
 production storage/input tests, seeded production-screen images and real native
 foundation gates. A separate short SSH round-trip validates connection/input.
 The long iOS full is optional; seeded images do not establish end-to-end behavior. An independent
 review follows integration. Physical-device-only claims require device evidence.
+
+For Issue #21, the Rust/native acceptance set must additionally cover bounded
+side-effect-free discovery; tmux empty/multiple-session listing, explicit
+detached creation, exact selection, and list/select races; Herdr PATH plus
+known-location resolution, default/named running/stopped listing, and running
+selection revalidation; backend-local partial failures; profile/credential
+migration; verified reconnect identity and stale replacement; switch/release
+semantics; and fail-closed linked/shared tmux topology mutations, including
+workspace close and final-pane close. Mobile validation remains Android full
+and iOS `standard` plus the short `ssh` suite for connection changes. Picker
+loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
+selection/create transitions are covered by focused app/native tests. The fixed
+source-level visual manifests add mixed picker, partial-error, empty, and
+explicit-create routes. The iOS `standard` manifest has 18 screens: the previous 14 plus
+`runtime-picker`, `runtime-partial-error`, `runtime-empty`, and `runtime-create`.
+The existing `herdr-connection` route is the picker state whose Herdr `default`
+candidate carries the non-authoritative `Last used` hint. Android's observational
+`SCREEN_NAMES` has 25 routes: the previous 21 plus those same four runtime
+routes. These counts describe source scope only; Main must still record actual
+CI results and downloaded, viewed screenshots before visual success is reported.
 
 ### Accepted candidate under the revised policy
 
@@ -167,12 +254,17 @@ for the preserved investigation history.
 
 ## User behavior and storage boundary
 
-The server list manages local profiles; only one server is interactive at a time.
-Connecting to another saved server asks before disconnecting the current transport.
+The server list manages local profiles; only one server/runtime actor is
+interactive at a time. A profile stores SSH endpoint/authentication metadata;
+its legacy backend/runtime fields are only a display hint until a fresh picker selection
+reaches `Ready`. Connecting to another saved server or switching runtime asks
+before releasing the current transport/controller.
 A profile can be saved without a credential. Credential saving is opt-in, and an
 endpoint, username or authentication-method change invalidates the old credential.
-Renaming a profile preserves its credential. Removing the profile also removes
-its saved credential; it does not close the remote tmux workspace.
+Renaming a profile preserves its credential. Migrating the legacy
+backend/runtime fields does not invalidate the credential or change its secure
+storage identity. Removing the profile also removes its saved credential; it
+does not close the remote tmux or Herdr runtime.
 
 Android stores metadata and authenticated ciphertext in one atomic file under
 `noBackupFilesDir`, with an AES-GCM key held by Android Keystore. The final file
