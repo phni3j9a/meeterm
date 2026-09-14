@@ -22,6 +22,10 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
 今回の方針導入時は、fresh CNGでAndroid fullとiOS standardを確認し、同一ソースのiOS sshも確認します。
 `full`の全操作成功は、この新しい通常検証や日常利用マイルストーンの必須条件ではありません。
+`ssh`/`full`/`names` は Simulator を起動する前に、同じ macOS runner と tmux で
+共有Rustの既存runtime一覧・明示選択・Control Mode接続を実OpenSSH経由で確認します。
+このpreflightはXCTest runnerが起動できない場合も、remote tmux接続とiOS UI操作の
+どちらで失敗したかを分けるためのもので、iOS UI/input検証の代わりにはしません。
 
 ## Issue #21 runtime picker の確認項目
 

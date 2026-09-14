@@ -92,6 +92,20 @@ struct DecodedCell {
 
 #[test]
 #[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
+fn real_openssh_existing_tmux_runtime_selection() {
+    let fixture = FixtureConfig::from_environment();
+    create_fixture_tmux_session(&fixture, "meeterm");
+    let id = create_terminal(80, 24).expect("create SSH terminal");
+    let _guard = TerminalGuard { id };
+
+    connect_host_and_select_meeterm(id, &fixture, "existing tmux runtime selection");
+    let session = wait_for_session(id, 1, "existing tmux runtime ready");
+    assert_eq!(session.windows.len(), 1);
+    assert_eq!(session.panes.len(), 1);
+}
+
+#[test]
+#[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
 fn real_openssh_tmux_session_loop() {
     let fixture = FixtureConfig::from_environment();
     let id = create_terminal(80, 24).expect("create SSH terminal");
@@ -1286,6 +1300,33 @@ fn run_remote_tmux(fixture: &FixtureConfig, command: &str, label: &str) -> Outpu
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+fn create_fixture_tmux_session(fixture: &FixtureConfig, name: &str) {
+    let output = Command::new("tmux")
+        .arg("-S")
+        .arg(&fixture.tmux_socket)
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-n",
+            "smoke",
+            "/bin/sh",
+            "-i",
+        ])
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("TMUX_TMPDIR", &fixture.tmux_tmpdir)
+        .output()
+        .expect("create fixture tmux session");
+    assert!(
+        output.status.success(),
+        "create fixture tmux session failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn wait_for_remote_tmux<F>(

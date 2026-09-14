@@ -154,6 +154,9 @@ class DiagnosticSourceContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("default: standard", workflow)
+        self.assertIn("Install pinned Rust toolchain for SSH runtime preflight", workflow)
+        self.assertIn("Verify native runtime selection before Simulator SSH testing", workflow)
+        self.assertIn("real_openssh_existing_tmux_runtime_selection", workflow)
 
     def test_seeded_runtime_readiness_uses_the_accessible_row_boundary(self):
         source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
