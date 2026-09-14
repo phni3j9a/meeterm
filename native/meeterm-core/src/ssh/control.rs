@@ -733,13 +733,37 @@ impl ControlClient {
     /// finish as Disconnected even if the remote channel closes immediately.
     async fn close_last_session(&mut self, command: String) -> Result<(), FlowFailure> {
         let request = format!("{command}\n");
-        let _ = await_stage(
+        await_stage(
             &self.shared,
             self.writer.data_bytes(request.into_bytes()),
             SSH_STAGE_TIMEOUT,
             FlowFailure::Transport,
         )
-        .await;
+        .await?;
+        // Writing to russh only queues channel data. Wait for tmux to accept
+        // the destructive command and close its Control Mode client before
+        // cancellation can tear down SSH and leave the session alive. The
+        // final pane/window normally yields `%exit` followed by EOF/close;
+        // an explicit command error or a missing close acknowledgement fails
+        // instead of reporting a false Disconnected state.
+        tokio::time::timeout(SSH_STAGE_TIMEOUT, async {
+            loop {
+                match self.next_event().await {
+                    Ok(tmux::Event::Command(block)) if block.error => {
+                        return Err(FlowFailure::Tmux);
+                    }
+                    Ok(tmux::Event::Notification { name, .. }) if name == "exit" => return Ok(()),
+                    Ok(event) => match self.dispatch(event) {
+                        Err(FlowFailure::RemoteClosed) => return Ok(()),
+                        result => result?,
+                    },
+                    Err(FlowFailure::RemoteClosed) => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+        })
+        .await
+        .map_err(|_| FlowFailure::Tmux)??;
         self.shared.cancel();
         Err(FlowFailure::Stale)
     }

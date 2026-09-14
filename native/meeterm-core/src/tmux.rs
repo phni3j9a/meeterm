@@ -499,13 +499,49 @@ pub fn parse_window_id(value: &[u8]) -> Result<u64, DecodeError> {
     parse_decimal_u64(digits).map_err(|()| DecodeError::InvalidNotification)
 }
 
-/// Parse the fixed, side-effect-free session discovery format:
-/// `$N<TAB>quoted name<TAB>server pid<TAB>server start time`.
-pub(crate) fn parse_session_line(line: &[u8]) -> Result<SessionIdentity, DecodeError> {
-    let fields = line.split(|byte| *byte == b'\t').collect::<Vec<_>>();
-    if fields.len() != 4 {
+/// Split the four identity fields emitted by shell-level tmux discovery.
+///
+/// OpenSSH replaces control characters in an exec command with `_`, so the
+/// shell-level format uses printable `|` separators. The session name is the
+/// only free-form field and may itself contain an escaped pipe; taking the
+/// first separator and the final two separators keeps that name opaque until
+/// tmux's `q:` encoding is decoded. Tab input remains accepted for the
+/// Control Mode fixtures and older captured evidence.
+fn split_identity_fields(line: &[u8]) -> Result<[&[u8]; 4], DecodeError> {
+    if line.contains(&b'\t') {
+        let fields = line.split(|byte| *byte == b'\t').collect::<Vec<_>>();
+        return fields
+            .try_into()
+            .map_err(|_| DecodeError::InvalidNotification);
+    }
+
+    let first = line
+        .iter()
+        .position(|byte| *byte == b'|')
+        .ok_or(DecodeError::InvalidNotification)?;
+    let last = line
+        .iter()
+        .rposition(|byte| *byte == b'|')
+        .ok_or(DecodeError::InvalidNotification)?;
+    let middle = line[..last]
+        .iter()
+        .rposition(|byte| *byte == b'|')
+        .ok_or(DecodeError::InvalidNotification)?;
+    if first >= middle || middle >= last {
         return Err(DecodeError::InvalidNotification);
     }
+    Ok([
+        &line[..first],
+        &line[first + 1..middle],
+        &line[middle + 1..last],
+        &line[last + 1..],
+    ])
+}
+
+/// Parse the fixed, side-effect-free session discovery format:
+/// `$N|quoted name|server pid|server start time`.
+pub(crate) fn parse_session_line(line: &[u8]) -> Result<SessionIdentity, DecodeError> {
+    let fields = split_identity_fields(line)?;
     let session_id = fields[0]
         .strip_prefix(b"$")
         .filter(|digits| !digits.is_empty())
@@ -576,10 +612,7 @@ pub(crate) struct WindowTopology {
 }
 
 pub(crate) fn parse_topology_line(line: &[u8]) -> Result<WindowTopology, DecodeError> {
-    let fields = line.split(|byte| *byte == b'\t').collect::<Vec<_>>();
-    if fields.len() != 4 {
-        return Err(DecodeError::InvalidNotification);
-    }
+    let fields = split_identity_fields(line)?;
     let session_id = fields[0]
         .strip_prefix(b"$")
         .filter(|digits| !digits.is_empty())
@@ -793,7 +826,7 @@ pub fn initial_command() -> &'static [u8] {
 /// `#{start_time}` are kept as native server-epoch evidence and are never
 /// exposed in the picker snapshot.
 pub fn list_sessions_command() -> &'static str {
-    "tmux list-sessions -F '#{session_id}\t#{q:session_name}\t#{pid}\t#{start_time}'"
+    "tmux list-sessions -F '#{session_id}|#{q:session_name}|#{pid}|#{start_time}'"
 }
 
 /// Explicitly create one detached session and print its exact identity. This
@@ -802,7 +835,7 @@ pub fn list_sessions_command() -> &'static str {
 pub(crate) fn create_session_command(name: &str) -> Result<String, CommandArgumentError> {
     validate_create_name(name)?;
     Ok(format!(
-        "tmux new-session -d -s {} -P -F '#{{session_id}}\\t#{{q:session_name}}\\t#{{pid}}\\t#{{start_time}}'",
+        "tmux new-session -d -s {} -P -F '#{{session_id}}|#{{q:session_name}}|#{{pid}}|#{{start_time}}'",
         quote_tmux_argument(name)?
     ))
 }
@@ -856,7 +889,10 @@ fn pane_target(
 }
 
 fn pane_only_target(session: &str, pane_id: u64) -> Result<String, CommandArgumentError> {
-    quote_tmux_argument(&format!("={session}:%{pane_id}"))
+    // tmux target syntax is session:window.pane. An empty/current window is
+    // written as `.` before the stable `%N` pane ID; `session:%N` treats the
+    // pane ID as a window target and fails with "can't find window".
+    quote_tmux_argument(&format!("={session}:.%{pane_id}"))
 }
 
 pub(crate) fn attach_command_for_session(session: &str) -> Result<String, CommandArgumentError> {
@@ -870,7 +906,7 @@ pub(crate) fn list_windows_command_for_session(
     session: &str,
 ) -> Result<String, CommandArgumentError> {
     Ok(format!(
-        "list-windows -t {} -F '#{{window_id}}\\t#{{q:window_name}}'",
+        "list-windows -t {} -F '#{{window_id}}\t#{{q:window_name}}'",
         session_target(session)?
     ))
 }
@@ -879,7 +915,7 @@ pub(crate) fn list_panes_command_for_session(
     session: &str,
 ) -> Result<String, CommandArgumentError> {
     Ok(format!(
-        "list-panes -s -t {} -F '#{{window_id}}\\t#{{pane_id}}\\t#{{pane_index}}\\t#{{pane_active}}\\t#{{pane_width}}\\t#{{pane_height}}\\t#{{q:pane_title}}\\t#{{window_zoomed_flag}}\\t#{{window_active}}'",
+        "list-panes -s -t {} -F '#{{window_id}}\t#{{pane_id}}\t#{{pane_index}}\t#{{pane_active}}\t#{{pane_width}}\t#{{pane_height}}\t#{{q:pane_title}}\t#{{window_zoomed_flag}}\t#{{window_active}}'",
         session_target(session)?
     ))
 }
@@ -1548,7 +1584,7 @@ mod tests {
 
     #[test]
     fn runtime_discovery_retains_opaque_id_server_identity_and_unicode_name() {
-        let line = "$7\tdaily\\ \\;\\ \\#\\ $HOME\\ 日本語\t4242\t1700000000";
+        let line = "$7|daily\\ \\;\\ \\#\\ $HOME\\ 日本語|4242|1700000000";
         let identity = parse_session_line(line.as_bytes()).unwrap();
         assert_eq!(identity.session_id, "$7");
         assert_eq!(identity.name, "daily ; # $HOME 日本語");
@@ -1564,6 +1600,9 @@ mod tests {
         let attach = attach_command_for_session(&identity.session_id).unwrap();
         assert_eq!(attach, "tmux -C -u attach-session -t '=$7'");
         assert!(!attach.contains("new-session -A"));
+
+        let pipe_name = parse_session_line(b"$8|daily\\|ops|4242|1700000001").unwrap();
+        assert_eq!(pipe_name.name, "daily|ops");
     }
 
     #[test]
@@ -1574,6 +1613,8 @@ mod tests {
         assert!(parse_session_line(b"$1\tname\t0\t1").is_err());
         assert!(parse_session_line(b"$1\tname\t1\t0").is_err());
         assert!(parse_session_line(b"$1\tname\t1").is_err());
+        assert!(parse_session_line(b"$1|name|1").is_err());
+        assert!(parse_session_line(b"$1|name|0|1").is_err());
         assert!(parse_topology_line(b"$1\tname\t@2\t0").is_err());
         assert!(parse_topology_line(b"$1\t\xff\t@2\t1").is_err());
     }
@@ -1601,6 +1642,9 @@ mod tests {
         assert!(create.contains("#{session_id}"));
         assert!(create.contains("#{pid}"));
         assert!(create.contains("#{start_time}"));
+        assert!(create.contains("#{session_id}|#{q:session_name}|#{pid}|#{start_time}"));
+        assert!(!create.contains('\t'));
+        assert!(!create.contains("\\t"));
         assert!(!create.contains("new-session -A"));
         assert!(create_session_command("desk; # $HOME 日本語").is_err());
         assert_eq!(
@@ -1623,7 +1667,21 @@ mod tests {
         assert!(command.contains("work"));
         assert!(list_sessions_command().contains("#{pid}"));
         assert!(list_sessions_command().contains("#{start_time}"));
+        assert!(list_sessions_command().contains("#{session_id}|#{q:session_name}"));
+        assert!(!list_sessions_command().contains('\t'));
         assert!(!list_sessions_command().contains("new-session"));
+
+        let windows = list_windows_command_for_session("$7").unwrap();
+        let panes = list_panes_command_for_session("$7").unwrap();
+        assert!(windows.contains("#{window_id}\t#{q:window_name}"));
+        assert!(panes.contains("#{window_id}\t#{pane_id}"));
+        assert!(!windows.contains("\\t"));
+        assert!(!panes.contains("\\t"));
+        assert!(
+            capture_pane_command_for_session("$7", 9)
+                .unwrap()
+                .contains("-t '=$7:.%9'")
+        );
     }
 
     #[test]

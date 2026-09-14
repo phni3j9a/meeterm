@@ -18,16 +18,16 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use meeterm_core::workspace::Backend;
+use meeterm_core::workspace::{Backend, RuntimeDiscoverySnapshot, RuntimeState};
 use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
-    close_group, close_pane, close_workspace, connect_terminal, connection_snapshot, create_group,
+    close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
     create_pane, create_terminal, create_workspace, destroy_terminal, disconnect_terminal,
     meeterm_commit_utf8, meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key,
     meeterm_scroll_lines, meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
     meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
-    select_group, select_pane, session_snapshot, set_foreground, terminal_revision,
-    workspace_snapshot_json,
+    runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
+    set_foreground, terminal_revision, workspace_snapshot_json,
 };
 use russh::keys;
 use russh::server::{self, Auth, ChannelOpenHandle, Handler, Msg, Server as RusshServer, Session};
@@ -390,13 +390,29 @@ impl Handler for FixtureServer {
         session.channel_success(channel)?;
         let handle = session.handle();
         match parsed {
-            ExecCommand::Status { runtime } => {
+            ExecCommand::Resolve => {
+                let state = Arc::clone(&self.state);
+                tokio::spawn(async move {
+                    let resolved = format!("{}\tHerdr 0.9.0\n", state.binary.display());
+                    if resolved.len() <= 64 * 1024 {
+                        let _ = handle.data(channel, resolved.into_bytes()).await;
+                        let _ = handle.exit_status_request(channel, 0).await;
+                    } else {
+                        let _ = handle.exit_status_request(channel, 1).await;
+                    }
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                });
+            }
+            ExecCommand::Json { runtime, args } => {
                 let state = Arc::clone(&self.state);
                 tokio::spawn(async move {
                     let result = tokio::process::Command::new(&state.binary)
                         .env_clear()
                         .envs(&state.environment)
-                        .args(["--session", &runtime, "status", "--json"])
+                        .arg("--session")
+                        .arg(&runtime)
+                        .args(args)
                         .output()
                         .await;
                     if let Ok(output) = result {
@@ -506,8 +522,10 @@ impl Handler for FixtureServer {
 }
 
 enum ExecCommand {
-    Status {
+    Resolve,
+    Json {
         runtime: String,
+        args: Vec<String>,
     },
     Control {
         runtime: String,
@@ -518,33 +536,58 @@ enum ExecCommand {
 }
 
 fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> {
-    let words = command.split_whitespace().collect::<Vec<_>>();
-    if words.len() < 5 || words[0] != "herdr" || words[1] != "--session" {
-        return None;
+    if command == RESOLVER_COMMAND {
+        return Some(ExecCommand::Resolve);
     }
-    let runtime = words[2].to_owned();
+
+    let (runtime, args) = if let Some(rest) = command.strip_prefix(&format!(
+        "{} --session ",
+        shell_quote_executable(&state.binary)
+    )) {
+        let (runtime, args) = rest.split_once(' ')?;
+        (
+            runtime.to_owned(),
+            args.split_whitespace().collect::<Vec<_>>(),
+        )
+    } else {
+        let words = command.split_whitespace().collect::<Vec<_>>();
+        if words.len() < 5 || words[0] != "herdr" || words[1] != "--session" {
+            return None;
+        }
+        (words[2].to_owned(), words[3..].to_vec())
+    };
     if !state.runtimes.contains(&runtime) {
         return None;
     }
-    if words[3..] == ["status", "--json"] {
-        return Some(ExecCommand::Status { runtime });
+
+    if args == ["session", "list", "--json"] && runtime == "default" {
+        return Some(ExecCommand::Json {
+            runtime,
+            args: vec!["session".into(), "list".into(), "--json".into()],
+        });
     }
-    if words.len() != 11 || words[3..6] != ["terminal", "session", "control"] {
+    if args == ["status", "--json"] {
+        return Some(ExecCommand::Json {
+            runtime,
+            args: vec!["status".into(), "--json".into()],
+        });
+    }
+    if args.len() != 8 || args[0..3] != ["terminal", "session", "control"] {
         return None;
     }
-    let target = words[6].to_owned();
+    let target = args[3].to_owned();
     // The fixture starts with one root pane, but production exercises real
     // tab/pane creation before opening a controller for the new terminal.
     // Keep rejecting arbitrary target strings while accepting dynamically
     // created Herdr terminal IDs; Herdr itself remains the owner check.
     if (!state.targets.contains(&target) && !is_herdr_terminal_id(&target))
-        || words[7] != "--cols"
-        || words[9] != "--rows"
+        || args[4] != "--cols"
+        || args[6] != "--rows"
     {
         return None;
     }
-    let cols = words[8].parse().ok()?;
-    let rows = words[10].parse().ok()?;
+    let cols = args[5].parse().ok()?;
+    let rows = args[7].parse().ok()?;
     if !(1..=4096).contains(&cols) || !(1..=4096).contains(&rows) {
         return None;
     }
@@ -554,6 +597,115 @@ fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> 
         cols,
         rows,
     })
+}
+
+const RESOLVER_COMMAND: &str = r#"found=0; for candidate in "$(command -v herdr 2>/dev/null || true)" "$HOME/.cargo/bin/herdr" "$HOME/.local/bin/herdr" "/usr/local/bin/herdr" "/opt/homebrew/bin/herdr" "$HOME/.homebrew/bin/herdr" "$HOME/.linuxbrew/bin/herdr" "$HOME/.local/share/mise/installs/herdr/0.9.0/bin/herdr" "$HOME/.local/share/mise/installs/herdr/latest/bin/herdr" "$HOME/.nix-profile/bin/herdr" "/nix/var/nix/profiles/default/bin/herdr"; do case "$candidate" in /*) ;; *) continue ;; esac; [ -x "$candidate" ] || continue; found=1; version=$("$candidate" --version 2>/dev/null | head -n 1) || continue; case "$version" in *"0.9.0"*) printf '%s\t%s\n' "$candidate" "$version"; exit 0 ;; esac; done; [ "$found" -eq 1 ] && exit 78 || exit 127"#;
+
+fn shell_quote_executable(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"@%_+=:,./-".contains(&byte))
+    {
+        value.into_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn parser_fixture_state(binary: &str) -> RusshState {
+    RusshState {
+        binary: PathBuf::from(binary),
+        environment: HashMap::new(),
+        sockets: HashSet::new(),
+        runtimes: ["default", "named-probe"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        targets: ["term_root"].into_iter().map(str::to_owned).collect(),
+        clients: Arc::new(std::sync::Mutex::new(Vec::new())),
+    }
+}
+
+#[test]
+fn fixture_parser_matches_conditional_resolved_herdr_wire_quoting() {
+    let safe_state = parser_fixture_state("/opt/herdr/bin/herdr");
+    let safe_executable = shell_quote_executable(&safe_state.binary);
+    assert_eq!(safe_executable, "/opt/herdr/bin/herdr");
+    let safe_list = format!("{safe_executable} --session default session list --json");
+    assert!(matches!(
+        parse_exec_command(&safe_list, &safe_state),
+        Some(ExecCommand::Json { runtime, args })
+            if runtime == "default"
+                && args == ["session", "list", "--json"]
+    ));
+    let safe_status = format!("{safe_executable} --session named-probe status --json");
+    assert!(matches!(
+        parse_exec_command(&safe_status, &safe_state),
+        Some(ExecCommand::Json { runtime, args })
+            if runtime == "named-probe" && args == ["status", "--json"]
+    ));
+    let safe_control = format!(
+        "{safe_executable} --session named-probe terminal session control term_root --cols 80 --rows 24"
+    );
+    assert!(matches!(
+        parse_exec_command(&safe_control, &safe_state),
+        Some(ExecCommand::Control {
+            runtime,
+            target,
+            cols: 80,
+            rows: 24,
+        }) if runtime == "named-probe" && target == "term_root"
+    ));
+
+    let binary = "/opt/herdr fixture's bin/herdr";
+    let state = parser_fixture_state(binary);
+    let executable = shell_quote_executable(&state.binary);
+    assert_eq!(executable, "'/opt/herdr fixture'\\''s bin/herdr'");
+
+    assert!(matches!(
+        parse_exec_command(RESOLVER_COMMAND, &state),
+        Some(ExecCommand::Resolve)
+    ));
+    assert!(parse_exec_command(&format!("{RESOLVER_COMMAND} extra"), &state).is_none());
+
+    let list = format!("{executable} --session default session list --json");
+    assert!(matches!(
+        parse_exec_command(&list, &state),
+        Some(ExecCommand::Json { runtime, args })
+            if runtime == "default"
+                && args == ["session", "list", "--json"]
+    ));
+
+    let status = format!("{executable} --session named-probe status --json");
+    assert!(matches!(
+        parse_exec_command(&status, &state),
+        Some(ExecCommand::Json { runtime, args })
+            if runtime == "named-probe" && args == ["status", "--json"]
+    ));
+    let unquoted_executable = format!("{binary} --session default status --json");
+    assert!(parse_exec_command(&unquoted_executable, &state).is_none());
+    let incorrectly_quoted_safe =
+        "'/opt/herdr/bin/herdr' --session default status --json".to_string();
+    assert!(parse_exec_command(&incorrectly_quoted_safe, &safe_state).is_none());
+
+    let control = format!(
+        "{executable} --session named-probe terminal session control term_root --cols 80 --rows 24"
+    );
+    assert!(matches!(
+        parse_exec_command(&control, &state),
+        Some(ExecCommand::Control {
+            runtime,
+            target,
+            cols: 80,
+            rows: 24,
+        }) if runtime == "named-probe" && target == "term_root"
+    ));
+
+    let different_binary = "'/opt/other/herdr' --session default status --json";
+    assert!(parse_exec_command(different_binary, &state).is_none());
+    let arbitrary = format!("{executable} --session default shell -c whoami");
+    assert!(parse_exec_command(&arbitrary, &state).is_none());
 }
 
 fn is_herdr_terminal_id(target: &str) -> bool {
@@ -657,6 +809,60 @@ fn wait_ready_with_host_key(id: u64, label: &str) {
         assert!(Instant::now() < deadline, "timed out waiting for {label}");
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn wait_picker_with_host_key(id: u64, label: &str) -> RuntimeDiscoverySnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let mut answered = false;
+    loop {
+        let snapshot = connection_snapshot(id).expect("connection snapshot");
+        if snapshot.state == ConnectionState::HostKeyPending as u32 && !answered {
+            let fingerprint = field(&snapshot.fingerprint, snapshot.fingerprint_len);
+            let bytes = fingerprint.as_bytes();
+            let result = unsafe { meeterm_respond_host_key(id, bytes.as_ptr(), bytes.len(), 1) };
+            assert_eq!(result, 0, "host-key response");
+            answered = true;
+        }
+        if snapshot.state == ConnectionState::AwaitingRuntimeSelection as u32 {
+            return runtime_discovery_snapshot(id).expect("runtime discovery snapshot");
+        }
+        if snapshot.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: {} {}",
+                field(&snapshot.error_code, snapshot.error_code_len),
+                field(&snapshot.error_message, snapshot.error_message_len)
+            );
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn select_herdr_runtime_from_picker(id: u64, name: &str, label: &str) {
+    let discovery = wait_picker_with_host_key(id, label);
+    let mut names = discovery
+        .herdr
+        .candidates
+        .iter()
+        .map(|candidate| candidate.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["default".to_owned(), "named-probe".to_owned()],
+        "{label} must expose both Herdr candidates"
+    );
+    let candidate = discovery
+        .herdr
+        .candidates
+        .iter()
+        .find(|candidate| candidate.name == name)
+        .unwrap_or_else(|| panic!("{label} candidate {name:?} is missing"));
+    assert_eq!(candidate.state, RuntimeState::Running);
+    assert!(candidate.selectable, "{label} candidate is not selectable");
+    let candidate_id = candidate.id.clone();
+    select_runtime(id, &candidate_id).expect("select Herdr runtime candidate");
+    wait_ready_with_host_key(id, label);
 }
 
 fn field(bytes: &[u8], length: u16) -> String {
@@ -933,9 +1139,9 @@ fn real_herdr_native_backend_over_russh_fixture() {
 
     let default_id = create_terminal(40, 16).expect("create default Herdr terminal");
     let _default_guard = TerminalGuard { id: default_id };
-    connect_terminal(default_id, options(&driver.manifest, &ssh, None))
-        .expect("connect default Herdr runtime");
-    wait_ready_with_host_key(default_id, "default Herdr connection");
+    connect_host(default_id, options(&driver.manifest, &ssh, None))
+        .expect("connect default Herdr host");
+    select_herdr_runtime_from_picker(default_id, "default", "default Herdr picker");
     let initial = wait_session(default_id, "default hierarchy");
     let root = initial
         .panes
@@ -955,12 +1161,12 @@ fn real_herdr_native_backend_over_russh_fixture() {
 
     let named_id = create_terminal(40, 16).expect("create named Herdr terminal");
     let _named_guard = TerminalGuard { id: named_id };
-    connect_terminal(
+    connect_host(
         named_id,
         options(&driver.manifest, &ssh, Some("named-probe")),
     )
-    .expect("connect named Herdr runtime");
-    wait_ready_with_host_key(named_id, "named Herdr connection");
+    .expect("connect named Herdr host");
+    select_herdr_runtime_from_picker(named_id, "named-probe", "named Herdr picker");
     let named_json: Value =
         serde_json::from_str(&workspace_snapshot_json(named_id).unwrap()).unwrap();
     assert_eq!(named_json["workspaces"][0]["name"], "named-probe-workspace");
@@ -969,7 +1175,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
         runtime["workspaces"][0]["name"]
     );
     let named_before_disconnect = wait_session(named_id, "named hierarchy before disconnect");
-    let named_remote_terminal = named_before_disconnect
+    let named_before_terminal = named_before_disconnect
         .panes
         .iter()
         .find(|pane| pane.selected)
@@ -986,8 +1192,18 @@ fn real_herdr_native_backend_over_russh_fixture() {
         "named runtime disconnect",
     );
     reconnect_terminal(named_id).expect("reconnect named runtime");
-    wait_ready_with_host_key(named_id, "named runtime reconnect");
+    select_herdr_runtime_from_picker(named_id, "named-probe", "named runtime picker reconnect");
     let named_after_reconnect = wait_session(named_id, "named hierarchy after reconnect");
+    let named_after_terminal = named_after_reconnect
+        .panes
+        .iter()
+        .find(|pane| pane.selected)
+        .expect("selected named pane after reconnect")
+        .terminal_id;
+    assert_ne!(
+        named_after_terminal, named_before_terminal,
+        "manual runtime selection creates a fresh native named terminal binding"
+    );
     assert_eq!(
         named_after_reconnect
             .panes
@@ -995,7 +1211,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
             .find(|pane| pane.selected)
             .expect("selected named pane after reconnect")
             .terminal_id,
-        named_remote_terminal
+        named_after_terminal
     );
     let (mut wrong_runtime_controller, wrong_runtime_output) = start_external_control(
         &driver.manifest,
@@ -1338,7 +1554,8 @@ fn real_herdr_native_backend_over_russh_fixture() {
 
     // A second controller is rejected without takeover while the production
     // controller remains live. An explicit takeover then closes production's
-    // stream; reconnect must use the same stable remote terminal identity.
+    // stream; manual reconnect selects the runtime again and binds a fresh
+    // local terminal handle to the selected Herdr pane.
     let (mut rival, rejection) = start_external_control(
         &driver.manifest,
         "default",
@@ -1374,14 +1591,23 @@ fn real_herdr_native_backend_over_russh_fixture() {
     );
     stop_child(&mut takeover);
     reconnect_terminal(default_id).expect("reconnect after explicit takeover");
-    wait_ready_with_host_key(default_id, "Herdr reconnect after takeover");
+    select_herdr_runtime_from_picker(
+        default_id,
+        "default",
+        "Herdr picker reconnect after takeover",
+    );
     let reconnected = wait_session(default_id, "stable pane after takeover");
-    let same = reconnected
+    let previous_root_terminal = root.terminal_id;
+    let root = reconnected
         .panes
         .iter()
-        .find(|pane| pane.terminal_id == root.terminal_id)
-        .expect("stable remote terminal identity");
-    assert_eq!(same.terminal_id, root.terminal_id);
+        .find(|pane| pane.selected)
+        .expect("selected pane after manual runtime selection")
+        .clone();
+    assert_ne!(
+        root.terminal_id, previous_root_terminal,
+        "manual runtime selection creates a fresh native root terminal binding"
+    );
     wait_text(
         root.terminal_id,
         "PASTE_RESULT_READY",
@@ -1471,7 +1697,8 @@ fn real_herdr_native_backend_over_russh_fixture() {
                 final_command.len(),
             )
         },
-        6
+        1,
+        "the fresh manual runtime binding must reset its native input commit counter"
     );
     wait_text(root.terminal_id, final_marker, "post-resync input");
     let sticky = "export MEETERM_NATIVE_STICKY=6F19; printf '%s%s\\n' 'STICKY_' 'SET'\n";
@@ -1526,8 +1753,8 @@ fn real_herdr_native_backend_over_russh_fixture() {
     );
     let fresh_id = create_terminal(52, 20).unwrap();
     let _fresh_guard = TerminalGuard { id: fresh_id };
-    connect_terminal(fresh_id, options(&driver.manifest, &ssh, None)).unwrap();
-    wait_ready_with_host_key(fresh_id, "fresh owner Herdr reconnect");
+    connect_host(fresh_id, options(&driver.manifest, &ssh, None)).unwrap();
+    select_herdr_runtime_from_picker(fresh_id, "default", "fresh owner Herdr picker");
     let fresh = wait_session(fresh_id, "fresh owner pane");
     let fresh_pane = fresh.panes.iter().find(|pane| pane.selected).unwrap();
     assert_ne!(fresh_pane.terminal_id, root.terminal_id);
@@ -1679,7 +1906,11 @@ fn real_herdr_native_backend_over_russh_fixture() {
             "{operation} close changed remote topology"
         );
         reconnect_terminal(fresh_id).unwrap();
-        wait_ready_with_host_key(fresh_id, "reconnect after refused parent close");
+        select_herdr_runtime_from_picker(
+            fresh_id,
+            "default",
+            "picker reconnect after refused parent close",
+        );
     }
     // The child is not a cascading parent and remains closable. Once it is
     // gone, closing the parent's last pane is safe and is allowed again.
