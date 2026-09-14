@@ -259,6 +259,11 @@ class MeetermTerminalModule : Module() {
       "The native runtime discovery is invalid."
     }
     val root = JSONObject(raw)
+    val connectionGeneration = root.getString("connectionGeneration")
+    require(connectionGeneration.isNotEmpty() && connectionGeneration.length <= 20 &&
+      connectionGeneration.all { it in '0'..'9' } && connectionGeneration.toULongOrNull() != null) {
+      "The native runtime discovery is invalid."
+    }
     val revision = root.getLong("revision")
     require(revision in 0L..Int.MAX_VALUE.toLong()) { "The native runtime discovery is invalid." }
     val rawBackends = root.getJSONArray("backends")
@@ -311,7 +316,11 @@ class MeetermTerminalModule : Module() {
         "canCreate" to canCreate,
       )
     }
-    return mapOf("revision" to revision.toInt(), "backends" to backends)
+    return mapOf(
+      "connectionGeneration" to connectionGeneration,
+      "revision" to revision.toInt(),
+      "backends" to backends,
+    )
   }
 
   private fun ensureHandle(terminalId: String): Long {

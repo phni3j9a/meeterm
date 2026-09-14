@@ -404,6 +404,28 @@ impl Handler for FixtureServer {
                     let _ = handle.close(channel).await;
                 });
             }
+            ExecCommand::Schema => {
+                let state = Arc::clone(&self.state);
+                tokio::spawn(async move {
+                    let result = tokio::process::Command::new(&state.binary)
+                        .env_clear()
+                        .envs(&state.environment)
+                        .args(["api", "schema", "--json"])
+                        .output()
+                        .await;
+                    if let Ok(output) = result {
+                        let status = output.status.code().unwrap_or(1).max(0) as u32;
+                        if output.stdout.len() <= MAX_EXEC_OUTPUT {
+                            let _ = handle.data(channel, output.stdout).await;
+                        }
+                        let _ = handle.exit_status_request(channel, status).await;
+                    } else {
+                        let _ = handle.exit_status_request(channel, 1).await;
+                    }
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                });
+            }
             ExecCommand::Json { runtime, args } => {
                 let state = Arc::clone(&self.state);
                 tokio::spawn(async move {
@@ -523,6 +545,7 @@ impl Handler for FixtureServer {
 
 enum ExecCommand {
     Resolve,
+    Schema,
     Json {
         runtime: String,
         args: Vec<String>,
@@ -538,6 +561,15 @@ enum ExecCommand {
 fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> {
     if command == RESOLVER_COMMAND {
         return Some(ExecCommand::Resolve);
+    }
+
+    if command
+        == format!(
+            "{} api schema --json",
+            shell_quote_executable(&state.binary)
+        )
+    {
+        return Some(ExecCommand::Schema);
     }
 
     let (runtime, args) = if let Some(rest) = command.strip_prefix(&format!(
@@ -639,6 +671,10 @@ fn fixture_parser_matches_conditional_resolved_herdr_wire_quoting() {
             if runtime == "default"
                 && args == ["session", "list", "--json"]
     ));
+    assert!(matches!(
+        parse_exec_command(&format!("{safe_executable} api schema --json"), &safe_state),
+        Some(ExecCommand::Schema)
+    ));
     let safe_status = format!("{safe_executable} --session named-probe status --json");
     assert!(matches!(
         parse_exec_command(&safe_status, &safe_state),
@@ -666,6 +702,10 @@ fn fixture_parser_matches_conditional_resolved_herdr_wire_quoting() {
     assert!(matches!(
         parse_exec_command(RESOLVER_COMMAND, &state),
         Some(ExecCommand::Resolve)
+    ));
+    assert!(matches!(
+        parse_exec_command(&format!("{executable} api schema --json"), &state),
+        Some(ExecCommand::Schema)
     ));
     assert!(parse_exec_command(&format!("{RESOLVER_COMMAND} extra"), &state).is_none());
 
@@ -1715,15 +1755,22 @@ fn real_herdr_native_backend_over_russh_fixture() {
         unsafe { meeterm_commit_utf8(root.terminal_id, rejected.as_ptr(), rejected.len()) },
         0
     );
-    let before_foreground = terminal_revision(root.terminal_id).unwrap();
+    let before_foreground_terminal = root.terminal_id;
     set_foreground(default_id, true).expect("foreground Herdr connection");
-    wait_ready_with_host_key(default_id, "Herdr foreground reconnect");
-    wait_revision(
+    select_herdr_runtime_from_picker(
         default_id,
-        root.terminal_id,
-        before_foreground,
-        "fresh foreground frame",
+        "default",
+        "Herdr foreground reconnect requires explicit reselection",
     );
+    let foreground_session = wait_session(default_id, "Herdr foreground hierarchy");
+    let root = foreground_session
+        .panes
+        .iter()
+        .find(|pane| pane.selected)
+        .expect("selected pane after foreground reselection")
+        .clone();
+    assert_ne!(root.terminal_id, before_foreground_terminal);
+    wait_text(root.terminal_id, "STICKY_SET", "fresh foreground frame");
     commit_marker(
         root.terminal_id,
         "HERDR_FOREGROUND_OK_7E24",
@@ -1736,11 +1783,24 @@ fn real_herdr_native_backend_over_russh_fixture() {
         ConnectionState::Reconnecting,
         "server-side SSH connection loss",
     );
-    wait_ready_with_host_key(default_id, "automatic Herdr reconnect after SSH loss");
+    select_herdr_runtime_from_picker(
+        default_id,
+        "default",
+        "Herdr SSH recovery requires explicit reselection",
+    );
+    let transport_session = wait_session(default_id, "Herdr transport recovery hierarchy");
+    let previous_transport_terminal = root.terminal_id;
+    let root = transport_session
+        .panes
+        .iter()
+        .find(|pane| pane.selected)
+        .expect("selected pane after transport recovery reselection")
+        .clone();
+    assert_ne!(root.terminal_id, previous_transport_terminal);
     commit_marker(
         root.terminal_id,
         "HERDR_TRANSPORT_RECOVERED_32C4",
-        "automatic transport recovery input",
+        "explicitly reselected transport recovery input",
     );
 
     // A new connection owner has no old registry state, as after app process

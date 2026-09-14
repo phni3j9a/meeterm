@@ -47,6 +47,9 @@ automatic fallback to tmux are outside this issue.
 Automatic transport reconnect may reuse the selected `(backend, runtime)` only
 after identity and compatibility verification. A missing, restarted,
 same-name-replaced, incompatible, or uncertain runtime returns to the picker.
+Because Herdr 0.9.0 has no comparable public server-instance identity, every
+Herdr transport recovery is uncertain and waits for explicit picker selection;
+tmux can resume directly only after its server epoch is verified.
 Switching server/runtime releases the current controller before acquiring the
 next one, keeps one selected runtime actor per host connection, and leaves the
 remote runtime/process alive. Before linked/shared tmux workspace close or a

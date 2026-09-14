@@ -202,7 +202,9 @@ backend/runtime only after host identity, executable/capability, runtime
 identity, and compatibility are verified again. A missing runtime, tmux server
 restart, same-name replacement, or uncertain identity returns to the picker
 with an explanation and a fresh discovery. A manual reconnect is a fresh
-selection flow as well.
+selection flow as well. Herdr 0.9.0 does not publish a server-instance identity
+that meeterm can compare across transport loss, so Herdr automatic recovery is
+treated as uncertain and always requires explicit reselection in the picker.
 
 The profile stores SSH endpoint/authentication metadata. Existing backend and
 runtime fields represent a non-authoritative logical `lastUsedRuntime` hint;

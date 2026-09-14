@@ -22,6 +22,7 @@ const RUNTIME_DISPLAY_NAME_BYTES: usize = 256;
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeDiscoveryBridge {
+    connection_generation: String,
     revision: u64,
     backends: Vec<RuntimeBackendBridge>,
 }
@@ -134,6 +135,7 @@ fn runtime_backend_bridge(
 fn runtime_discovery_bytes(id: u64) -> Option<Vec<u8>> {
     let snapshot = crate::ssh::runtime_discovery_snapshot(id).ok()?;
     let bridge = RuntimeDiscoveryBridge {
+        connection_generation: snapshot.connection_generation.to_string(),
         revision: snapshot.discovery_revision,
         backends: vec![
             runtime_backend_bridge(Backend::Tmux, &snapshot.tmux, true),
@@ -783,7 +785,7 @@ fn copy_runtime_discovery(id: u64, output: *mut u8, capacity: usize) -> usize {
 }
 
 /// Return the bounded runtime picker payload size. The public bridge shape is
-/// `{revision, backends}`; it contains opaque candidate IDs and display state,
+/// `{connectionGeneration, revision, backends}`; it contains opaque candidate IDs and display state,
 /// never executable paths, sockets, session directories, or terminal bytes.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_runtime_discovery_size(id: u64) -> usize {
@@ -1212,6 +1214,7 @@ mod session_abi_tests {
         let copied = unsafe { meeterm_runtime_discovery(id, bytes.as_mut_ptr(), bytes.len()) };
         assert_eq!(copied, required);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["connectionGeneration"], "0");
         assert_eq!(value["revision"], 0);
         let backends = value["backends"].as_array().unwrap();
         assert_eq!(backends.len(), 2);

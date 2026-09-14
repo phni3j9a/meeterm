@@ -46,7 +46,8 @@ backend 境界を確認します。少なくとも次を、実装された sourc
   次を取得し、remote process を終了しないこと。
 - automatic reconnect が同じ `(backend, runtime)` へ戻る前に host、binary/capability、
   server epoch/runtime identity、compatibility を再検証し、missing/replaced/restarted/
-  uncertain なら picker へ戻ること。linked/shared tmux topology では workspace close
+  uncertain なら picker へ戻ること。Herdr 0.9.0 は比較可能な public server-instance
+  identity がないため transport recovery 後に必ず picker へ戻ること。linked/shared tmux topology では workspace close
   と final-pane close を実行直前に同じ Rust actor/control queue で確認し、安全を証明
   できなければ fail closed にすること。
 

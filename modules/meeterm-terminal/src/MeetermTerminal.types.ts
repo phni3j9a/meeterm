@@ -159,6 +159,8 @@ export type RuntimeBackendDiscovery = {
 
 /** Bounded, low-frequency runtime metadata; terminal data stays native. */
 export type RuntimeDiscovery = {
+  /** Decimal u64 identifying the native SSH connection lifecycle. */
+  connectionGeneration: string;
   revision: number;
   backends: RuntimeBackendDiscovery[];
 };

@@ -93,7 +93,8 @@ SHA-256指紋を比較してください。未確認の接続先から `ssh-keys
    ワークスペース一覧へ戻っても接続とリモート作業は継続します。
 8. 作業終了時は切断します。通信断からの自動再接続は、選択したruntimeのidentityを再確認
    できた場合だけ同じruntimeへ戻ります。runtimeが消失・置換・再起動した、またはidentityが
-   不明な場合はpickerへ戻ります。
+   不明な場合はpickerへ戻ります。Herdr 0.9.0ではserver instanceを比較できる公開identityが
+   ないため、通信復旧後もpickerで同じsessionを明示的に選び直します。
 9. PCでは同じユーザーでSSH接続し、tmuxなら `tmux attach -t <selected-session>`、Herdrなら
    選択したsessionを通常のHerdr clientで開きます。
 

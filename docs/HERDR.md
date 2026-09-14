@@ -63,6 +63,9 @@ tag の dereferenced source commit は `b99002ac99b09e00b4ca692436cb15a6b0d676f1
   status 確認で `default` と named session を列挙します。`listed/stopped` と起動中の
   candidate を区別し、runtime 名は Herdr の session 名として扱います。default は
   `default` です。socket が存在するだけでは互換性確認済みとはしません。
+- 解決時に同じ絶対pathの `herdr api schema --json` をboundedに読み、top-levelの
+  `protocol == 22` と `schema_version == 1` を必須にします。`status --json` はschema
+  versionを公開しないため、status fieldの欠落を互換性の証拠として扱いません。
 - 接続は SSH の direct stream-local public API です。1 channel につき 1 request を順番に
   処理します。購読は subscribe ack の後に snapshot を繰り返し受け、pane set が期待値と
   一致して安定するまで snapshot を確定状態へ適用しません。その後は event と resync で
@@ -175,11 +178,12 @@ process を終了させずに snapshot/frame を resync します。background �
 Rust が bounded reconnect します。別の server profile または runtime へ切り替える場合も、
 先に現在の controller を release してから新しい actor/binding を取得します。
 
-自動 reconnect が Herdr の同じ session に戻るのは、SSH host identity、解決済み binary、
-session identity、protocol 22、schema 1、direct operation、stream-local forwarding を
-再確認できた場合だけです。session が消えた、同名 session に置き換わった、server が再起動
-した、または identity が不明な場合は picker に戻し、Herdr へ tmux から自動 fallback しません。
-fresh manual connect と cold start も常に picker から選び直します。
+Herdr 0.9.0 の公開 API には、transport loss の前後で同じ server instance だと比較できる
+identity がありません。そのため Herdr の bounded automatic reconnect は SSH 認証と discovery
+までは行いますが、同名 session へ自動で接続せず picker で明示的な再選択を待ちます。
+session が消えた、同名 session に置き換わった、server が再起動した場合も同じです。
+Herdr から tmux への自動 fallback は行いません。fresh manual connect と cold start も常に
+picker から選び直します。
 
 tmux は選択した通常の session を PC から `tmux attach -t <selected-session>` で開き、同じ
 window/pane layout を使えます。Herdr は選択した session を通常の Herdr client から開けます。

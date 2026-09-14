@@ -1513,6 +1513,7 @@ enum ConnectionStart {
 impl ConnectionStart {
     fn enters_picker(&self) -> bool {
         matches!(self, Self::Host(_) | Self::ManualReconnect(_))
+            || matches!(self, Self::AutomaticReconnect(profile) if profile.backend == Backend::Herdr)
     }
 
     fn is_automatic_reconnect(&self) -> bool {
@@ -3676,7 +3677,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_reconnect_enters_picker_while_automatic_retry_keeps_binding() {
+    fn reconnect_picker_policy_requires_explicit_herdr_reselection() {
         let options = || ConnectOptions {
             host: "example.test".into(),
             port: 22,
@@ -3705,6 +3706,14 @@ mod tests {
         let automatic = ConnectionStart::AutomaticReconnect(profile.clone());
         assert!(!automatic.enters_picker());
         assert!(automatic.is_automatic_reconnect());
+
+        let mut herdr_profile = profile.clone();
+        herdr_profile.backend = Backend::Herdr;
+        herdr_profile.runtime = None;
+        herdr_profile.herdr_executable = Some("/home/fixture/.local/bin/herdr".into());
+        let herdr_automatic = ConnectionStart::AutomaticReconnect(herdr_profile);
+        assert!(herdr_automatic.enters_picker());
+        assert!(herdr_automatic.is_automatic_reconnect());
 
         let manual = ConnectionStart::ManualReconnect(profile);
         assert!(manual.enters_picker());

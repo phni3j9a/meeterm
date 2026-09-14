@@ -43,10 +43,12 @@ binary from the non-interactive PATH, the official `~/.local/bin` default, and
 common package-manager locations. Starting or creating Herdr sessions remains
 an ordinary Herdr-client action.
 
-Automatic transport reconnect retains the verified selected runtime. A fresh
-manual reconnect, or an uncertain/missing runtime identity, returns to the
-picker. The saved backend/runtime fields remain non-authoritative last-used
-hints and are updated only after the selected runtime reaches `Ready`.
+Automatic transport reconnect retains an exactly verified tmux runtime. Herdr
+0.9.0 does not expose a comparable server-instance identity through its public
+API, so Herdr transport recovery returns to the picker for explicit
+reselection. Fresh manual reconnects and uncertain/missing identities also
+return to the picker. The saved backend/runtime fields remain non-authoritative
+last-used hints and are updated only after the selected runtime reaches `Ready`.
 
 ## Architecture direction
 
@@ -81,7 +83,7 @@ The first evaluation app has passed real SSH connection, workspace/pane selectio
 
 The shared Rust terminal foundation has Android and iOS native adapters, with GLES on Android and Metal on iOS. Hosted iOS Simulators without Metal use an explicitly identified native CoreGraphics fallback. Both platforms have build/install/launch/first-frame smoke jobs. The original Android foundation was also exercised on a physical Pixel 3, including Japanese IME composition/commit and resize; that historical device evidence remains separate from later SSH validation.
 
-The session path uses a Rust-owned `russh` connection and an explicit backend. Use **Connect** to enter the SSH host, username, and OpenSSH private-key credential (with an optional passphrase) or SSH `password`, then explicitly verify the host key. After authentication, choose an existing tmux session or a running Herdr `default`/named session. tmux creation is a separate explicit action; Herdr creation and startup stay in the normal Herdr client. **Disconnect** leaves the selected remote runtime running. Native automatic reconnect may resume the same verified runtime, while a manual reconnect shows the picker again. Keyboard-interactive prompts and MFA are not added. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, resize, scroll, and rendering stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace/group/pane selection, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
+The session path uses a Rust-owned `russh` connection and an explicit backend. Use **Connect** to enter the SSH host, username, and OpenSSH private-key credential (with an optional passphrase) or SSH `password`, then explicitly verify the host key. After authentication, choose an existing tmux session or a running Herdr `default`/named session. tmux creation is a separate explicit action; Herdr creation and startup stay in the normal Herdr client. **Disconnect** leaves the selected remote runtime running. Native automatic reconnect may resume an exactly verified tmux runtime; Herdr recovery and manual reconnect show the picker again. Keyboard-interactive prompts and MFA are not added. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, resize, scroll, and rendering stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace/group/pane selection, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
 
 ## Quick start
 

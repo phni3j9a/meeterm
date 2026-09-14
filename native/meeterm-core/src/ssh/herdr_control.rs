@@ -370,6 +370,26 @@ async fn resolve_executable(
         // to another installation after reconnect.
         return Err(incompatible);
     }
+    let schema_command =
+        wire::api_schema_command_with_executable(&executable).map_err(|_| malformed)?;
+    let schema_output = super::run_remote_command_with_timeout(
+        shared,
+        session,
+        schema_command,
+        512 * 1024,
+        malformed,
+        if discovery {
+            FlowFailure::HerdrDiscoveryTimeout
+        } else {
+            FlowFailure::HerdrProtocol
+        },
+    )
+    .await?;
+    if schema_output.exit_status != Some(0) {
+        return Err(incompatible);
+    }
+    let schema: Value = serde_json::from_slice(&schema_output.stdout).map_err(|_| malformed)?;
+    wire::validate_api_schema(&schema).map_err(|_| incompatible)?;
     Ok(executable)
 }
 

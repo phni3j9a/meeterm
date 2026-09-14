@@ -146,6 +146,13 @@ capability, server-epoch/runtime-identity, and compatibility verification. A
 missing, replaced, restarted, incompatible, or uncertain runtime returns to
 discovery and explicit selection.
 
+tmux supplies a server PID/start-time epoch that can prove an unchanged server
+for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
+comparable server-instance identity through the selected public interfaces.
+That identity is therefore uncertain after a Herdr transport loss, and the
+automatic recovery path authenticates and discovers again but waits in the
+picker until the user explicitly reselects a running Herdr session.
+
 The saved server profile stores SSH endpoint and authentication metadata.
 Legacy backend/runtime fields represent a non-authoritative logical
 `lastUsedRuntime` hint. Profile IDs and credentials remain independent, secure

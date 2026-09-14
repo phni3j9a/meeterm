@@ -135,6 +135,7 @@ function makeNativeEnvironment() {
       terminals: [],
     },
     runtimeDiscovery: {
+      connectionGeneration: '1',
       revision: 1,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [] },
@@ -213,7 +214,17 @@ function makeNativeEnvironment() {
       environment.refreshRuntimeCalls += 1;
       if (environment.refreshRuntimeShouldFail) throw new Error('runtime refresh rejected');
       if (environment.refreshRuntimeMode === 'delayed') {
-        environment.pendingRefresh = {};
+        const finalDiscovery = clone(environment.runtimeDiscovery);
+        finalDiscovery.revision += 1;
+        environment.pendingRefresh = { finalDiscovery };
+        environment.runtimeDiscovery = {
+          connectionGeneration: finalDiscovery.connectionGeneration,
+          revision: finalDiscovery.revision,
+          backends: [
+            runtimeBackend('tmux', [], { state: 'loading' }),
+            runtimeBackend('herdr', [], { state: 'loading' }),
+          ],
+        };
         return;
       }
       completeRefresh(environment);
@@ -304,7 +315,7 @@ function makeNativeEnvironment() {
   };
   environment.resolvePendingRefresh = () => {
     assert.ok(environment.pendingRefresh, 'a runtime refresh should be pending');
-    completeRefresh(environment);
+    environment.runtimeDiscovery = environment.pendingRefresh.finalDiscovery;
     environment.pendingRefresh = null;
   };
   return { environment, native };
@@ -954,6 +965,7 @@ function pickerProfile(host = 'queued.example') {
 
 function pickerDiscovery(revision = 1, tmuxCandidates = [runtimeCandidate('queued-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]) {
   return {
+    connectionGeneration: '1',
     revision,
     backends: [
       runtimeBackend('tmux', tmuxCandidates),
@@ -1031,6 +1043,7 @@ test('saved-server connect authenticates first, then requires explicit runtime s
     environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
     environment.profiles = [profile];
     environment.runtimeDiscovery = {
+      connectionGeneration: '1',
       revision: 2,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
@@ -1069,6 +1082,7 @@ test('runtime picker cancellation disconnects provisional SSH and leaves backend
   const partial = await mountConfiguredForTest(t, (environment) => {
     environment.connection = { ...environment.connection, state: 'DiscoveringRuntimes', host: 'partial.example', port: 22 };
     environment.runtimeDiscovery = {
+      connectionGeneration: '1',
       revision: 3,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
@@ -1089,6 +1103,7 @@ test('runtime picker cancellation disconnects provisional SSH and leaves backend
   const stopped = await mountConfiguredForTest(t, (environment) => {
     environment.connection = { ...environment.connection, state: 'AwaitingRuntimeSelection', host: 'stopped.example', port: 22 };
     environment.runtimeDiscovery = {
+      connectionGeneration: '1',
       revision: 4,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [] },
@@ -1106,6 +1121,7 @@ test('runtime picker cancellation disconnects provisional SSH and leaves backend
     environment.connection = { ...environment.connection, state: 'AwaitingRuntimeSelection', host: 'stale.example', port: 22 };
     environment.selectRuntimeShouldFail = true;
     environment.runtimeDiscovery = {
+      connectionGeneration: '1',
       revision: 5,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
@@ -1132,6 +1148,7 @@ test('tmux creation is an explicit editable step and opens only after native con
   const fixture = await mountConfiguredForTest(t, (environment) => {
     environment.connection = { ...environment.connection, state: 'AwaitingRuntimeSelection', host: 'create.example', port: 22 };
     environment.runtimeDiscovery = {
+      connectionGeneration: '1',
       revision: 6,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [] },
@@ -1344,6 +1361,31 @@ test('repeated tmux creation failure clears the old section error and preserves 
   assert.equal(fixture.environment.profiles.find(item => item.id === profile.id).runtime, 'meeterm');
 });
 
+test('initial runtime discovery replaces a loading snapshot with the final rows from the same revision', async t => {
+  const finalDiscovery = pickerDiscovery(19);
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.connection = { ...environment.connection, state: 'DiscoveringRuntimes', host: 'slow.example', port: 22 };
+    environment.runtimeDiscovery = {
+      connectionGeneration: finalDiscovery.connectionGeneration,
+      revision: finalDiscovery.revision,
+      backends: [
+        runtimeBackend('tmux', [], { state: 'loading' }),
+        runtimeBackend('herdr', [], { state: 'loading' }),
+      ],
+    };
+  });
+
+  assert.equal(all(fixture.root, node => node.props?.testID === 'runtime-row-tmux-queued-tmux').length, 0);
+  fixture.environment.runtimeDiscovery = finalDiscovery;
+  fixture.environment.connection.state = 'AwaitingRuntimeSelection';
+  await poll(fixture.environment);
+  await settleAsync();
+
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
+  assert.ok(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr'));
+  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'getRuntimeDiscovery').length >= 2);
+});
+
 test('queued runtime refresh waits for a newer revision without repeating the command', async t => {
   const { fixture } = await mountSavedPicker(t, environment => {
     environment.refreshRuntimeMode = 'delayed';
@@ -1359,7 +1401,8 @@ test('queued runtime refresh waits for a newer revision without repeating the co
 
   await poll(fixture.environment);
   await settleAsync();
-  assert.equal(fixture.environment.runtimeDiscovery.revision, oldRevision);
+  assert.ok(fixture.environment.runtimeDiscovery.revision > oldRevision);
+  assert.ok(fixture.environment.runtimeDiscovery.backends.every(item => item.state === 'loading'));
   assert.equal(fixture.environment.refreshRuntimeCalls, 1);
   assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, true);
 
@@ -1369,9 +1412,10 @@ test('queued runtime refresh waits for a newer revision without repeating the co
   assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, true);
 
   fixture.environment.resolvePendingRefresh();
+  const finalRevision = fixture.environment.runtimeDiscovery.revision;
   await poll(fixture.environment);
   await settleAsync();
-  assert.ok(fixture.environment.runtimeDiscovery.revision > oldRevision);
+  assert.equal(fixture.environment.runtimeDiscovery.revision, finalRevision);
   assert.equal(fixture.environment.refreshRuntimeCalls, 1);
   assert.equal(fixture.environment.pendingRefresh, null);
   assert.equal(findTestId(fixture.root, 'runtime-refresh').props.disabled, false);
@@ -1424,6 +1468,7 @@ test('verified runtime reconnect skips the picker but a lost identity reopens it
   const fixture = await mountConfiguredForTest(t, (environment) => {
     environment.snapshot = makeSnapshot();
     environment.runtimeDiscovery = {
+      connectionGeneration: '1',
       revision: 8,
       backends: [
         { backend: 'tmux', state: 'ready', errorCode: '', errorMessage: '', canCreate: true, candidates: [
@@ -1447,7 +1492,7 @@ test('verified runtime reconnect skips the picker but a lost identity reopens it
   await poll(fixture.environment);
   await settleAsync();
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-reconnect-tmux'));
-  assert.ok(all(fixture.root, node => textContent(node).includes('selected runtime is no longer available')).length > 0);
+  assert.ok(all(fixture.root, node => textContent(node).includes('previous runtime needs to be selected again')).length > 0);
 });
 
 test('external cross-workspace move follows selected stable native terminal', async t => {

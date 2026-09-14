@@ -267,7 +267,11 @@ public final class MeetermTerminalModule: Module {
   /// native adapter rejects malformed/oversized fields instead of forwarding
   /// arbitrary CLI output, paths, sockets, or stderr.
   private static func runtimeDiscoveryRecord(_ value: [String: Any]) throws -> [String: Any] {
-    guard let revision = integer(value["revision"]), revision >= 0,
+    guard let connectionGeneration = value["connectionGeneration"] as? String,
+          !connectionGeneration.isEmpty, connectionGeneration.utf8.count <= 20,
+          connectionGeneration.allSatisfy({ $0.isASCII && $0.isNumber }),
+          UInt64(connectionGeneration) != nil,
+          let revision = integer(value["revision"]), revision >= 0,
           let rawBackends = value["backends"] as? [[String: Any]], rawBackends.count <= 2 else {
       throw error("The native runtime discovery is invalid.")
     }
@@ -322,7 +326,7 @@ public final class MeetermTerminalModule: Module {
         "canCreate": canCreate
       ])
     }
-    return ["revision": revision, "backends": backends]
+    return ["connectionGeneration": connectionGeneration, "revision": revision, "backends": backends]
   }
 
   private static func targetId(_ value: String, prefix: Character) throws -> UInt64 {

@@ -794,6 +794,41 @@ pub(crate) fn command_with_executable(
     Ok(parts.join(" "))
 }
 
+/// Build the public, read-only API schema command for the resolved binary.
+/// The bundled schema is shared by every Herdr session.
+pub(crate) fn api_schema_command_with_executable(executable: &str) -> Result<String, HerdrError> {
+    if !executable.starts_with('/')
+        || executable.len() > MAX_EXECUTABLE_PATH_BYTES
+        || executable.chars().any(char::is_control)
+    {
+        return Err(HerdrError::InvalidCommand(
+            "Herdr executable must be a bounded absolute path".to_owned(),
+        ));
+    }
+    Ok(format!("{} api schema --json", shell_quote(executable)?))
+}
+
+/// Validate the compatibility fields published by `herdr api schema --json`.
+pub(crate) fn validate_api_schema(value: &Value) -> Result<(), HerdrError> {
+    let root = as_object(value, "API schema")?;
+    let protocol = root
+        .get("protocol")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| HerdrError::InvalidResponse("API schema.protocol is missing".to_owned()))?;
+    let schema = root
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            HerdrError::InvalidResponse("API schema.schema_version is missing".to_owned())
+        })?;
+    if protocol != u64::from(HERDR_PROTOCOL) || schema != u64::from(HERDR_SCHEMA) {
+        return Err(HerdrError::InvalidResponse(format!(
+            "unsupported Herdr API protocol/schema {protocol}/{schema}"
+        )));
+    }
+    Ok(())
+}
+
 /// A fixed remote resolver. It checks the non-interactive SSH PATH first, then
 /// common direct/Homebrew/mise/Nix locations. Only an absolute executable and
 /// an exact 0.9.0 version line are accepted. Exit 127 means no candidate was
@@ -1334,5 +1369,27 @@ mod tests {
         assert!(resolver.contains("/opt/homebrew/bin/herdr"));
         assert!(resolver.contains("mise/installs/herdr/0.9.0"));
         assert!(resolver.contains(".nix-profile/bin/herdr"));
+    }
+
+    #[test]
+    fn api_schema_probe_requires_protocol_22_and_schema_1() {
+        let command = api_schema_command_with_executable("/opt/herdr bin/herdr").unwrap();
+        assert_eq!(command, "'/opt/herdr bin/herdr' api schema --json");
+        assert!(
+            validate_api_schema(&json!({
+                "protocol": 22,
+                "schema_version": 1,
+                "schemas": {},
+            }))
+            .is_ok()
+        );
+        for value in [
+            json!({"protocol": 22}),
+            json!({"protocol": 22, "schema_version": 2}),
+            json!({"protocol": 23, "schema_version": 1}),
+            json!({"protocol": "22", "schema_version": 1}),
+        ] {
+            assert!(validate_api_schema(&value).is_err());
+        }
     }
 }
