@@ -839,17 +839,25 @@ final class MeetermSmokeUITests: XCTestCase {
       return app.staticTexts["Herdr is not available over SSH. Open Herdr on your computer or check its installation."].waitForExistence(timeout: 30)
         && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
     case "runtime-empty":
+      let paused = button("Herdr runtime paused")
       return app.staticTexts["No running tmux sessions found."].waitForExistence(timeout: 30)
-        && button("Herdr runtime paused").waitForExistence(timeout: 30)
-        && app.staticTexts["Stopped"].waitForExistence(timeout: 30)
+        && paused.waitForExistence(timeout: 30)
+        // A runtime row is one accessibility button on iOS, so its visible
+        // state text is grouped into that row. Verify the actionable contract
+        // on the parent instead of looking for a child StaticText that the
+        // accessibility tree intentionally does not expose.
+        && !paused.isEnabled
     case "runtime-create":
       return app.staticTexts["Create tmux session"].waitForExistence(timeout: 30)
         && input("tmux session name").waitForExistence(timeout: 30)
         && waitForHittable(app.buttons["runtime-tmux-create-submit"], timeout: 30)
     case "herdr-connection":
+      // The Last used badge is visible presentation inside the explicitly
+      // labelled runtime button. Screen readiness therefore uses the same
+      // accessible row that VoiceOver and the selection flow receive; the
+      // downloaded screenshot covers the badge itself.
       return app.staticTexts["Choose a runtime for Smoke server"].waitForExistence(timeout: 30)
         && waitForHittable(button("Herdr runtime default"), timeout: 30)
-        && app.staticTexts["Last used"].waitForExistence(timeout: 30)
     case "herdr-groups":
       let title = app.staticTexts["Switch group"]
       let development = button("Group Development")

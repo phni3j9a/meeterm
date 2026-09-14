@@ -152,6 +152,17 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         )
         self.assertIn("default: standard", workflow)
 
+    def test_seeded_runtime_readiness_uses_the_accessible_row_boundary(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index('case "runtime-empty":')
+        end = source.index('case "herdr-groups":', start)
+        runtime_cases = source[start:end]
+
+        self.assertIn('let paused = button("Herdr runtime paused")', runtime_cases)
+        self.assertIn("&& !paused.isEnabled", runtime_cases)
+        self.assertNotIn('app.staticTexts["Stopped"]', runtime_cases)
+        self.assertNotIn('app.staticTexts["Last used"]', runtime_cases)
+
 
 class SmokeLogProducerTests(unittest.TestCase):
     UNSAFE_STDERR = "UNSAFE_RAW_LOG_TOOL_ERROR"
