@@ -206,15 +206,17 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             ("group_done_status", any("Agent status: finished" in value for value in normalized_values)),
         ]
     elif screen == "herdr-terminal":
+        # Representative-view boundary: the one-shot screenshot is taken at
+        # the initial horizontal position. Require the selected pane's owner,
+        # its visible status, and the native group/terminal surface here. The
+        # other four statuses stay seeded and are covered by App/component
+        # tests; offscreen tabs are not a screenshot-readiness prerequisite.
+        # This one screenshot does not visually prove all five statuses.
         checks = [
             ("terminal_group_switch", any(value.startswith("Switch terminal group") for value in normalized_values)),
             ("native_terminal", "Terminal" in values),
-            ("agent_claude_code", any("Claude Code" in value for value in normalized_values)),
-            ("agent_working", "Working" in values or any("Agent status: working" in value for value in normalized_values)),
-            ("agent_blocked", any("Agent status: blocked" in value for value in normalized_values)),
-            ("agent_done", any("Agent status: finished" in value for value in normalized_values)),
-            ("agent_idle", any("Agent status: idle" in value for value in normalized_values)),
-            ("agent_unknown", any("Agent status: unknown" in value for value in normalized_values)),
+            ("selected_agent_owner", "Claude Code, Agent status: working" in normalized_values),
+            ("selected_agent_status", "Working" in normalized_values),
         ]
     elif screen in ("workspaces", "herdr-workspaces"):
         checks = [

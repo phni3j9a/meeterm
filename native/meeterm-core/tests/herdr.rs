@@ -42,6 +42,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SNAPSHOT_HEADER_SIZE: usize = 28;
 const SNAPSHOT_CELL_METADATA_SIZE: usize = 28;
 const MAX_EXEC_OUTPUT: usize = 4 * 1024 * 1024;
+const API_RESPONSE_MAX_LINES: usize = 64;
+const API_RESPONSE_MAX_LINE_BYTES: usize = 1024 * 1024;
+const API_RESPONSE_ID: &str = "fixture-external";
 
 #[derive(Clone, Debug, Deserialize)]
 struct SessionManifest {
@@ -144,20 +147,27 @@ impl Driver {
         socket.set_read_timeout(Some(WAIT_TIMEOUT)).unwrap();
         socket.set_write_timeout(Some(WAIT_TIMEOUT)).unwrap();
         let mut request =
-            serde_json::to_vec(&json!({"id":"fixture-external", "method":method, "params":params}))
+            serde_json::to_vec(&json!({"id":API_RESPONSE_ID, "method":method, "params":params}))
                 .unwrap();
         request.push(b'\n');
         socket.write_all(&request).unwrap();
-        let mut line = String::new();
-        BufReader::new(socket).read_line(&mut line).unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(response["id"], "fixture-external");
+        let mut reader = BufReader::new(socket);
+        let response = read_api_response(
+            &mut reader,
+            API_RESPONSE_ID,
+            method,
+            Instant::now() + WAIT_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("fixture external API {method} response failed: {error}"));
         assert!(
             response.get("error").is_none(),
             "fixture external API {method} rejected: {}",
-            response["error"]["code"]
+            response.get("error").unwrap_or(&Value::Null)
         );
-        response["result"].clone()
+        response
+            .get("result")
+            .cloned()
+            .unwrap_or_else(|| panic!("fixture external API {method} response has no result"))
     }
 
     fn stop(&mut self) {
@@ -181,6 +191,149 @@ impl Driver {
                 Err(_) => break,
             }
         }
+    }
+}
+
+fn read_api_response<R: BufRead>(
+    reader: &mut R,
+    expected_id: &str,
+    method: &str,
+    deadline: Instant,
+) -> Result<Value, String> {
+    for line_number in 1..=API_RESPONSE_MAX_LINES {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "deadline exceeded after {} lines while waiting for response id {expected_id:?} to {method}",
+                line_number - 1
+            ));
+        }
+        let line = read_bounded_api_line(reader)
+            .map_err(|error| format!("line {line_number} while waiting for {method}: {error}"))?
+            .ok_or_else(|| {
+                format!(
+                    "EOF after {} lines while waiting for response id {expected_id:?} to {method}",
+                    line_number - 1
+                )
+            })?;
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "deadline exceeded after line {line_number} while waiting for response id {expected_id:?} to {method}"
+            ));
+        }
+        let value: Value = serde_json::from_slice(&line).map_err(|error| {
+            format!("malformed NDJSON on line {line_number} while waiting for {method}: {error}")
+        })?;
+        if is_api_event_or_notification(&value) {
+            continue;
+        }
+        let Some(id) = value.get("id") else {
+            return Err(format!(
+                "mismatched non-event response on line {line_number} while waiting for {method}: missing id"
+            ));
+        };
+        if id == expected_id {
+            return Ok(value);
+        }
+        return Err(format!(
+            "mismatched non-event response on line {line_number} while waiting for {method}: expected id {expected_id:?}, got {id}"
+        ));
+    }
+    Err(format!(
+        "response line limit ({API_RESPONSE_MAX_LINES}) exhausted while waiting for response id {expected_id:?} to {method}"
+    ))
+}
+
+fn read_bounded_api_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, String> {
+    let mut line = Vec::new();
+    loop {
+        let chunk = reader
+            .fill_buf()
+            .map_err(|error| format!("read error: {error}"))?;
+        if chunk.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "EOF before the NDJSON newline ({} bytes)",
+                    line.len()
+                ))
+            };
+        }
+        let consumed = chunk
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(chunk.len(), |position| position + 1);
+        if line.len().saturating_add(consumed) > API_RESPONSE_MAX_LINE_BYTES {
+            return Err(format!(
+                "NDJSON line exceeds {} bytes",
+                API_RESPONSE_MAX_LINE_BYTES
+            ));
+        }
+        line.extend_from_slice(&chunk[..consumed]);
+        reader.consume(consumed);
+        if line.last() == Some(&b'\n') {
+            return Ok(Some(line));
+        }
+    }
+}
+
+fn is_api_event_or_notification(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    !object.contains_key("id")
+        && (object.contains_key("type")
+            || object.contains_key("event")
+            || object.contains_key("method"))
+}
+
+#[test]
+fn api_response_reader_skips_events_before_matching_response() {
+    let input = concat!(
+        r#"{"type":"pane.agent_status_changed","pane_id":"fixture"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"session.updated","params":{}}"#,
+        "\n",
+        r#"{"id":"fixture-external","result":{"accepted":true}}"#,
+        "\n",
+    );
+    let mut reader = BufReader::new(input.as_bytes());
+    let response = read_api_response(
+        &mut reader,
+        API_RESPONSE_ID,
+        "pane.report_agent",
+        Instant::now() + WAIT_TIMEOUT,
+    )
+    .expect("matching API response after event records");
+    assert_eq!(response["id"], API_RESPONSE_ID);
+    assert_eq!(response["result"]["accepted"], true);
+}
+
+#[test]
+fn api_response_reader_reports_invalid_or_unmatched_records() {
+    let cases = [
+        ("EOF", "", "EOF after 0 lines while waiting for response id"),
+        (
+            "malformed JSON",
+            "{not-json}\n",
+            "malformed NDJSON on line 1",
+        ),
+        (
+            "wrong response id",
+            "{\"id\":\"other\",\"result\":{}}\n",
+            "mismatched non-event response on line 1",
+        ),
+    ];
+    for (name, input, expected) in cases {
+        let mut reader = BufReader::new(input.as_bytes());
+        let error = read_api_response(
+            &mut reader,
+            API_RESPONSE_ID,
+            "session.snapshot",
+            Instant::now() + WAIT_TIMEOUT,
+        )
+        .expect_err(name);
+        assert!(error.contains(expected), "{name}: {error}");
     }
 }
 

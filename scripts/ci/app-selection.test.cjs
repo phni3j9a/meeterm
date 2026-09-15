@@ -579,6 +579,17 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(environment.calls.length, 0);
 });
 
+test('Herdr terminal fixture keeps exactly five statuses and an agentless pane', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const smoke = loadApp(environment, native, true, true);
+  const fixture = smoke.smokeFixture('herdr-terminal');
+  const statuses = fixture.panes
+    .filter(pane => pane.agent)
+    .map(pane => pane.agent.status);
+  assert.deepEqual([...new Set(statuses)].sort(), ['blocked', 'done', 'idle', 'unknown', 'working']);
+  assert.ok(fixture.panes.some(pane => pane.agent === null), 'fixture must include an agentless pane');
+});
+
 test('smoke startup diagnostics classify URL and profile boundaries without fixture effects', async t => {
   const cases = [
     {
@@ -680,10 +691,21 @@ test('smoke startup diagnostics classify URL and profile boundaries without fixt
 test('agent status metadata keeps null, live, and unavailable states distinct', () => {
   const { environment, native } = makeNativeEnvironment();
   const { resolveAgentStatus, agentStatusPhrase, AGENT_STATUS_META } = loadApp(environment, native, true);
+  const expected = {
+    blocked: 'Agent status: blocked, needs attention',
+    done: 'Agent status: finished, not yet viewed',
+    working: 'Agent status: working',
+    idle: 'Agent status: idle',
+    unknown: 'Agent status: unknown',
+  };
+  for (const [status, phrase] of Object.entries(expected)) {
+    assert.equal(resolveAgentStatus(status, true), status);
+    assert.equal(agentStatusPhrase(status, true), phrase);
+    assert.equal(AGENT_STATUS_META[status].spoken, phrase);
+  }
   assert.equal(resolveAgentStatus(null, true), null);
   assert.equal(resolveAgentStatus('blocked', true), 'blocked');
   assert.equal(resolveAgentStatus('blocked', false), 'unavailable');
-  assert.equal(agentStatusPhrase('done', true), 'Agent status: finished, not yet viewed');
   assert.equal(agentStatusPhrase('working', false), 'Agent status unavailable');
   assert.equal(AGENT_STATUS_META.idle.shape, 'hollow');
   assert.equal(AGENT_STATUS_META.unknown.shape, 'dot');
@@ -696,12 +718,17 @@ test('status indicators expose the requested mark grammar and visible selected-l
   try {
     await act(async () => {
       root.render(React.createElement('View', null,
-        React.createElement(AgentStatusIndicator, { status: 'blocked', live: true, colors: LIGHT, testID: 'blocked' }),
-        React.createElement(AgentStatusIndicator, { status: 'idle', live: true, colors: LIGHT, testID: 'idle' }),
+        ...['blocked', 'done', 'working', 'idle', 'unknown'].map(status => React.createElement(
+          AgentStatusIndicator,
+          { key: status, status, live: true, colors: LIGHT, testID: status },
+        )),
         React.createElement(AgentStatusIndicator, { status: 'unknown', live: false, colors: DARK, showLabel: true, testID: 'unavailable' }),
         React.createElement(AgentStatusIndicator, { status: null, live: true, colors: LIGHT, testID: 'none' }),
       ));
     });
+    for (const status of ['blocked', 'done', 'working', 'idle', 'unknown']) {
+      assert.ok(findTestId(root, status), `${status} status indicator is missing`);
+    }
     assert.ok(all(root, node => node.props?.style?.some?.(style => style?.width === 8)).length > 0, 'blocked should use the filled circle size');
     assert.ok(all(root, node => node.props?.style?.some?.(style => style?.borderWidth === 1.5)).length > 0, 'idle should use a hollow mark');
     assert.equal(textContent(findTestId(root, 'unavailable')), 'Status unavailable');
