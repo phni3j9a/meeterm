@@ -140,18 +140,25 @@ There is one selected runtime actor per authenticated SSH host connection. A
 server switch or runtime switch releases the current controller in the actor's
 queue, drains/closes the stream as required by the backend, and only then
 acquires the next binding. Release, disconnect, or hidden terminal view does not
-destroy the remote runtime or its processes. An automatic transport reconnect
-may return directly only to a selected `(backend, runtime)` after host-key,
-capability, server-epoch/runtime-identity, and compatibility verification. A
-missing, replaced, restarted, incompatible, or uncertain runtime returns to
-discovery and explicit selection.
+destroy the remote runtime or its processes. After Ready, transport recovery
+keeps the last authoritative native terminal/workspace mounted but revokes its
+operation epoch. It may return directly only after host-key/authentication,
+backend capability, runtime identity, selected terminal, topology, and
+authoritative screen resynchronization are committed. A missing, replaced,
+restarted, incompatible, or uncertain target remains fail-closed in that stale
+work screen; only an explicit Change action enters a fresh picker.
 
 tmux supplies a server PID/start-time epoch that can prove an unchanged server
 for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
 comparable server-instance identity through the selected public interfaces.
-That identity is therefore uncertain after a Herdr transport loss, and the
-automatic recovery path authenticates and discovers again but waits in the
-picker until the user explicitly reselects a running Herdr session.
+That identity is therefore uncertain after a Herdr transport loss. Recovery
+authenticates and performs bounded read-only discovery, then waits for an
+explicit confirmation inside the retained work screen. Confirmation is scoped
+to the freshly validated candidate and does not prove instance continuity.
+Only a subsequent compatibility check, original stable-terminal resolution,
+ordinary controller acquisition without takeover, and authoritative first full
+frame can commit Ready. Failure keeps the stale work visible and never falls
+back to tmux.
 
 The saved server profile stores SSH endpoint and authentication metadata.
 Legacy backend/runtime fields represent a non-authoritative logical
@@ -411,11 +418,17 @@ only window/pane identities, labels, selection, and connection state. The same
 native view binds a `native:<id>` borrowed Rust terminal handle when the selected
 pane changes. View unmount does not disconnect or destroy the remote pane.
 
-`Reconnect` is an explicit native control command, supplemented by Rust-owned
-bounded automatic retry after transient transport loss and foreground return.
-Explicit disconnect cancels retry; host-key/authentication failures require user
-action. Rust retains the selected parsed key or a `Zeroizing` password buffer
-in process memory. The form clears credential inputs after submission. Optional
+Rust owns bounded automatic retry after transient transport loss and foreground
+return. The public recovery control plane distinguishes Retry of the same
+retained intent, one-use Herdr confirmation, and explicit Change to a fresh
+runtime picker. A connection generation scopes the actor; a separate monotonic
+operation epoch invalidates delayed key, paste, resize, terminal-generated
+reply, and topology-mutation callbacks. Cached native output can remain visible
+while that gate is closed, but only a complete authoritative resynchronization
+sets Ready and reopens input. Explicit disconnect/change cancels retry and
+confirmation; host-key/authentication failures require user action. Rust
+retains the selected parsed key or a `Zeroizing` password buffer in process
+memory. The form clears credential inputs after submission. Optional
 platform-secure credential storage supports reopening a saved server after
 process death without passing its secret back to JavaScript. Approved host
 identities remain pinned during every reconnect. See [DAILY_USE.md](DAILY_USE.md)
@@ -472,8 +485,11 @@ after the attach startup block succeeds and before `Ready` or input acceptance,
 it issues a read-only `display-message` format query on the same Control Mode
 stream for the exact `$N` target. A bounded byte parser reads
 `session_id|pid|start_time` and compares all three values with the selected
-`SessionIdentity`. A mismatch, malformed reply, command error, or uncertain
-result fails as `TmuxRuntimeMissing` and returns the actor to the picker.
+`SessionIdentity`. During fresh selection, a mismatch, malformed reply, command
+error, or uncertain result fails as `TmuxRuntimeMissing` and returns the actor
+to the picker. During retained-work recovery, the same failure instead leaves
+the cached terminal visible and fail-closed; only the explicit Change action
+starts a new picker flow.
 
 Control Mode provides structured notifications and identifies pane output by pane ID. The Rust core should parse Control Mode as a byte-oriented protocol and route each pane's output to its own terminal state.
 
@@ -641,6 +657,7 @@ Disconnected
 → Synchronizing
 → Ready
 → Reconnecting
+→ AwaitingRecoveryConfirmation / Resynchronizing / RecoveryStopped
 ```
 
 React Native observes a low-frequency snapshot of this state; React Native must not implement the reconnect state machine with timers and effects.
@@ -652,7 +669,14 @@ the selected ordinary tmux session for tmux and the selected running
 `default`/named session for Herdr. `meeterm` is only a suggested new-session
 name and legacy hint.
 
-When the app backgrounds or loses transport, meeterm may reconnect and resynchronize rather than attempt to keep a fragile mobile connection alive indefinitely.
+Backgrounding alone does not tear down a healthy controller; native input is
+closed while the view is inactive and the same live connection may continue on
+foreground return. If transport is actually lost, reconnect waits for the app
+to return to the foreground and then resynchronizes. During same-process
+recovery the last authoritative native view remains mounted as cached read-only
+output. A retained terminal is not live until backend identity/topology and an
+authoritative selected-terminal frame have been committed and its new operation
+epoch is ready.
 
 If the mobile process is killed, in-memory `Term` scrollback disappears while
 the selected remote runtime continues running. Reconstructing a useful
@@ -725,14 +749,19 @@ terminal data plane native. Continue to verify:
    linked/shared tmux topology-mutation tests.
 10. Android full and iOS `standard` plus the short `ssh` suite cover the
     applicable mobile connection lifecycle. The iOS `standard` source-level
-    manifest has 18 screens: the previous 14 plus `runtime-picker`,
-    `runtime-partial-error`, `runtime-empty`, and `runtime-create`; its
+    manifest has 22 screens: the previous 18 plus `recovery-progress`,
+    `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm`; its
     `herdr-connection` route is the picker with the Herdr `default` candidate's
     non-authoritative `Last used` hint. Android's observational `SCREEN_NAMES`
-    has 25 routes: the previous 21 plus those same four runtime routes. These
+    has 29 routes: the previous 25 plus those same four recovery routes. These
     counts define source scope only; they do not claim remote CI or visual
     review. Both platform screenshots must be downloaded and actually viewed
     before visual success is reported.
+11. Retained-work recovery changes additionally verify native Term/selection
+    preservation, operation-epoch invalidation, no queued input/mutation replay,
+    strict tmux runtime/pane identity, Herdr in-work confirmation before normal
+    lease acquisition, authoritative selected-terminal resynchronization before
+    Ready, and fail-closed retry exhaustion without an automatic picker.
 
 A simulator/emulator smoke result does not replace physical-device GPU, font,
 or IME validation. The [live native Herdr test](evidence/issue-17-herdr-native.md)

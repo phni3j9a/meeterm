@@ -45,6 +45,9 @@ rm -f \
   "${artifact_dir}/ios-polish-validation.txt" \
   "${artifact_dir}/ios-polish-navigation-validation.txt" \
   "${artifact_dir}/ios-ui-ssh-validation.txt" \
+  "${artifact_dir}/ios-transport-loss-validation.txt" \
+  "${artifact_dir}/ios-ui-transport-loss-observation.txt" \
+  "${artifact_dir}/transport-loss-validation.txt" \
   "${artifact_dir}/ios-ui-names-validation.txt" \
   "${artifact_dir}/ios-names-validation.txt" \
   "${artifact_dir}/terminal.png" \
@@ -66,6 +69,10 @@ rm -f \
   "${artifact_dir}/standard-herdr-groups.png" \
   "${artifact_dir}/standard-herdr-terminal.png" \
   "${artifact_dir}/standard-herdr-workspaces.png" \
+  "${artifact_dir}/standard-recovery-progress.png" \
+  "${artifact_dir}/standard-recovery-exhausted.png" \
+  "${artifact_dir}/standard-recovery-mismatch.png" \
+  "${artifact_dir}/standard-herdr-recovery-confirm.png" \
   "${artifact_dir}/polish-welcome.png" \
   "${artifact_dir}/polish-empty.png" \
   "${artifact_dir}/polish-search-empty.png" \

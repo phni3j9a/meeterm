@@ -167,6 +167,8 @@ case "${suite}" in
       standard-runtime-create
       standard-herdr-connection standard-herdr-groups standard-herdr-terminal
       standard-herdr-workspaces
+      standard-recovery-progress standard-recovery-exhausted
+      standard-recovery-mismatch standard-herdr-recovery-confirm
     )
     ;;
   polish)

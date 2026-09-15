@@ -33,6 +33,26 @@ int32_t meeterm_send_bytes(uint64_t terminal_id, const uint8_t *bytes, size_t le
 uint64_t meeterm_input_commit_count(uint64_t terminal_id);
 int32_t meeterm_destroy_terminal(uint64_t terminal_id);
 
+/* Append-only operation-epoch input ABI. The epoch is per native terminal,
+ * not the SSH/session recovery epoch; stale calls return a negative error. */
+uint64_t meeterm_operation_epoch(uint64_t terminal_id);
+int32_t meeterm_resize_terminal_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  uint16_t columns, uint16_t rows);
+uint64_t meeterm_commit_utf8_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  const uint8_t *bytes, size_t length);
+int32_t meeterm_paste_utf8_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  const uint8_t *bytes, size_t length);
+int32_t meeterm_scroll_lines_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  int32_t lines);
+int32_t meeterm_send_key_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  uint32_t key, uint32_t modifiers);
+int32_t meeterm_commit_modified_utf8_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  const uint8_t *bytes, size_t length, uint32_t modifiers);
+int32_t meeterm_send_special_key_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  uint32_t key);
+int32_t meeterm_send_bytes_at_epoch(uint64_t terminal_id, uint64_t expected_epoch,
+  const uint8_t *bytes, size_t length);
+
 /*
  * SSH is a Rust-owned lifecycle. These constants and the fixed-size state
  * record are deliberately part of the C ABI so Swift can expose a typed
@@ -127,6 +147,11 @@ int32_t meeterm_connect_host(
 
 int32_t meeterm_disconnect(uint64_t terminal_id);
 int32_t meeterm_reconnect(uint64_t terminal_id);
+/* Recovery controls consume a decimal epoch/token validated by the platform
+ * adapter before crossing this lossless u64/UTF-8 ABI. */
+int32_t meeterm_retry_recovery(uint64_t terminal_id, uint64_t expected_epoch);
+int32_t meeterm_confirm_recovery(uint64_t terminal_id, const uint8_t *token, size_t token_length);
+int32_t meeterm_change_runtime(uint64_t terminal_id, uint64_t expected_epoch);
 /* 0=create window, 1=rename window, 2=close window, 3=create pane,
  * 4=rename pane, 5=close pane, 6=redraw selected pane, 7=create group,
  * 8=rename group, 9=close group, 10=select group. Targets are numeric

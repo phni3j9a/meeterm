@@ -166,12 +166,19 @@ selects that backend. There is one selected runtime actor per SSH host
 connection. Switching or releasing it drains/closes the backend controller
 and preserves the remote process before another selection is acquired.
 
-Automatic transport reconnect may return to the selected `(backend, runtime)`
-only after the host identity, backend capability, runtime identity, and
-compatibility have been verified again. A missing runtime, server restart,
-same-name replacement, incompatible runtime, or uncertain identity returns to
-the picker with a refresh and explanation. A fresh manual connection never
-skips the picker.
+After a runtime has reached Ready, same-process transport recovery preserves
+the last authoritative workspace, selected terminal, native Term, and local
+history as a stale read-only work screen. Input, resize, and remote mutations
+remain blocked until the host identity/authentication, backend capability,
+runtime identity, topology, selected terminal, and authoritative screen are
+verified and committed. tmux recovery requires the exact stored session
+identity and pane ID. Herdr recovery requires an in-work explicit confirmation
+because 0.9.0 has no comparable server-instance identity, followed by fresh
+candidate/compatibility/stable-terminal/full-frame validation without
+takeover. A missing, replaced, restarted, incompatible, or uncertain target
+stays fail-closed on the stale screen with Retry and Change actions; it does not
+open the picker, create, retarget, or fall back automatically. A fresh manual
+connection and cold start never skip the picker.
 
 Saved server profiles own SSH endpoint and authentication metadata. Existing
 backend/runtime fields represent a non-authoritative logical `lastUsedRuntime`
@@ -276,11 +283,12 @@ and launch it, observe native readiness and a first terminal frame, and check
 that the process does not crash. It is not a substitute for final full and
 `standard` acceptance.
 
-The iOS `standard` source-level manifest is 18 screens: the previous 14 plus
-`runtime-picker`, `runtime-partial-error`, `runtime-empty`, and `runtime-create`.
+The iOS `standard` source-level manifest is 22 screens: the previous 18 plus
+`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
+`herdr-recovery-confirm`.
 Its existing `herdr-connection` route is now a picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` contains 25 routes: the previous 21 plus those same four runtime
+`SCREEN_NAMES` contains 29 routes: the previous 25 plus those same four recovery
 routes. These are source-level scopes, not remote CI or visual-review results.
 
 The explicit iOS `polish` diagnostic adds seven presentation states and native
@@ -330,9 +338,10 @@ backend failures, profile migration, reconnect identity, switch/release, and
 fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
 picker loading, duplicate-name, stale-selection, asynchronous refresh, and
 explicit selection/create state transitions in focused app/native tests. The
-18-screen iOS source manifest and 25-route Android observational `SCREEN_NAMES`
-add the four visual routes `runtime-picker`, `runtime-partial-error`,
-`runtime-empty`, and `runtime-create`. Android full and iOS `standard` plus `ssh`
+22-screen iOS source manifest and 29-route Android observational `SCREEN_NAMES`
+include the four recovery visual routes `recovery-progress`,
+`recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm` in
+addition to the runtime-picker routes. Android full and iOS `standard` plus `ssh`
 remain the required mobile paths for this connection-lifecycle change; both
 platform screenshots from the applicable exact-source acceptance runs must be
 downloaded and actually viewed before the corresponding evidence is reported.

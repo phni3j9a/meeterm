@@ -29,6 +29,10 @@ SCREEN_NAMES = (
     "herdr-groups",
     "herdr-terminal",
     "herdr-workspaces",
+    "recovery-progress",
+    "recovery-exhausted",
+    "recovery-mismatch",
+    "herdr-recovery-confirm",
     "welcome", "empty", "search-empty", "disconnected", "reconnecting",
     "connection-error", "long-workspaces",
 )
@@ -146,6 +150,14 @@ def normalized(value: str) -> str:
     return " ".join(value.split())
 
 
+def has_positive_ui_bounds(value: str) -> bool:
+    match = re.fullmatch(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", value)
+    if match is None:
+        return False
+    left, top, right, bottom = (int(part) for part in match.groups())
+    return right > left and bottom > top
+
+
 def ui_values(root: ET.Element) -> set[str]:
     values: set[str] = set()
     for node in root.iter():
@@ -154,13 +166,94 @@ def ui_values(root: ET.Element) -> set[str]:
             if value:
                 values.add(value)
                 values.add(normalized(value))
+        resource_id = node.attrib.get("resource-id", "").strip()
+        if (
+            resource_id
+            and node.attrib.get("visible-to-user", "true") == "true"
+            and has_positive_ui_bounds(node.attrib.get("bounds", ""))
+        ):
+            state = "enabled" if node.attrib.get("enabled", "true") == "true" else "disabled"
+            values.add(f"{resource_id}::{state}")
+            values.add(f"{normalized(resource_id)}::{state}")
     return values
+
+
+def has_visible_test_id(values: set[str], test_id: str, *, state: str = "enabled") -> bool:
+    """Match a visible Android resource ID and its UIAutomator state.
+
+    React Native exposes ``testID`` as a package-qualified resource ID on
+    Android.  The package prefix is an implementation detail, while the
+    ``::enabled`` suffix is added by :func:`ui_values` from the actual
+    UIAutomator node.  Keeping both in the readiness contract prevents a
+    hidden or disabled recovery action from satisfying a screenshot route.
+    """
+
+    expected = f"{test_id}::{state}"
+    qualified = f":id/{expected}"
+    return any(value == expected or value.endswith(qualified) for value in values)
+
+
+def recovery_screen_checks(values: set[str]) -> list[tuple[str, bool]]:
+    normalized_values = {normalized(value) for value in values}
+    return [
+        ("recovery_rail", has_visible_test_id(values, "recovery-rail")),
+        ("recovery_title", has_visible_test_id(values, "recovery-title")),
+        ("recovery_detail", has_visible_test_id(values, "recovery-detail")),
+        ("recovery_meta", has_visible_test_id(values, "recovery-meta")),
+        # Recovery screens deliberately retain the native terminal in its
+        # cached, read-only mode.  A generic "Terminal" node is not enough:
+        # it could be a stale toolbar label or a live surface.
+        ("native_cached_terminal", "Terminal, cached output, read only" in normalized_values),
+    ]
 
 
 def screen_checks(screen: str, values: set[str]) -> list[str]:
     checks: list[tuple[str, bool]]
     normalized_values = {normalized(value) for value in values}
-    if screen == "herdr-connection":
+    if screen in {
+        "recovery-progress",
+        "recovery-exhausted",
+        "recovery-mismatch",
+        "herdr-recovery-confirm",
+    }:
+        checks = recovery_screen_checks(values)
+        recovery_copy = {
+            "recovery-progress": (
+                "Verifying this workspace…",
+                "Checking the server, runtime, and terminal.",
+                "Last received output · Input paused",
+            ),
+            "recovery-exhausted": (
+                "Still offline",
+                "Couldn’t reach Smoke server.",
+                "Last received output · Input paused",
+            ),
+            "recovery-mismatch": (
+                "This runtime can’t be restored",
+                'The runtime named “meeterm” is not the same instance as before.',
+                "Last received output · Input paused",
+            ),
+            "herdr-recovery-confirm": (
+                "Confirmation needed",
+                'Herdr can’t verify that “meeterm” is the same instance.',
+                "Last received output · Input paused",
+            ),
+        }[screen]
+        checks.extend(
+            (f"recovery_copy_{index}", copy in normalized_values)
+            for index, copy in enumerate(recovery_copy)
+        )
+        actions = {
+            "recovery-progress": (),
+            "recovery-exhausted": ("recovery-retry", "recovery-change"),
+            "recovery-mismatch": ("recovery-retry", "recovery-change"),
+            "herdr-recovery-confirm": ("recovery-review", "recovery-change"),
+        }[screen]
+        checks.extend(
+            (f"recovery_action_{action}_enabled", has_visible_test_id(values, action))
+            for action in actions
+        )
+    elif screen == "herdr-connection":
         checks = [
             ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
             ("herdr_default", "Herdr runtime default" in normalized_values),

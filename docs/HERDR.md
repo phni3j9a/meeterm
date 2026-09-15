@@ -211,11 +211,17 @@ Rust が bounded reconnect します。別の server profile または runtime �
 先に現在の controller を release してから新しい actor/binding を取得します。
 
 Herdr 0.9.0 の公開 API には、transport loss の前後で同じ server instance だと比較できる
-identity がありません。そのため Herdr の bounded automatic reconnect は SSH 認証と discovery
-までは行いますが、同名 session へ自動で接続せず picker で明示的な再選択を待ちます。
-session が消えた、同名 session に置き換わった、server が再起動した場合も同じです。
-Herdr から tmux への自動 fallback は行いません。fresh manual connect と cold start も常に
-picker から選び直します。
+identity がありません。そのため一度 `Ready` になった作業の bounded recovery は、最後の
+workspace/terminal画面をread-onlyで保持し、SSH認証とside-effect-free discoveryの後に
+画面内の明示確認を待ちます。確認は同じinstanceの証明ではありません。確認後も候補と
+0.9.0 / protocol 22 / schema 1 / direct stream-local contractを再検証し、元のstable
+`terminal_id`を現在のpane aliasへ解決して通常取得し、最初のauthoritative full frameを
+受け取った時だけ `Ready` と入力許可を公開します。takeoverは行いません。
+
+session/capability/stable terminalが消えた、候補が停止・非互換になった、controllerが競合した、
+またはidentityが不確かな場合は、古い画面を残してfail closedに停止します。pickerやtmuxへ
+自動fallbackせず、RetryまたはChange connection/runtimeをユーザーが明示します。fresh
+manual connectとcold startは従来どおり常にpickerから選び直します。
 
 tmux は選択した通常の session を PC から `tmux attach -t <selected-session>` で開き、同じ
 window/pane layout を使えます。Herdr は選択した session を通常の Herdr client から開けます。
@@ -261,11 +267,12 @@ topology の安全性は、Herdr の既存 close contract と混同せず、tmux
 モバイルでは Android full、iOS `standard`、接続・認証・native input を含む短い iOS `ssh` を
 影響範囲に応じて実行します。runtime picker の loading、mixed、empty、partial error、重複名、
 明示的作成、stale selection の画面は fixture で確認します。iOS `standard` の source-level
-manifest は18画面で、以前の14画面に `runtime-picker`、`runtime-partial-error`、
-`runtime-empty`、`runtime-create` を加えたものです。既存の `herdr-connection` は、
+manifest は22画面で、Issue #21の18画面に `recovery-progress`、
+`recovery-exhausted`、`recovery-mismatch`、`herdr-recovery-confirm`を加えたものです。
+既存の `herdr-connection` は、
 Herdr `default` candidate に non-authoritative な `Last used` hint を表示する picker state
-です。Android の observational `SCREEN_NAMES` は25 routeで、以前の21 routeに同じ4 routeを
-加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
+です。Android の observational `SCREEN_NAMES` は29 routeで、Issue #21の25 routeに同じ4
+recovery routeを加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
 しません。seeded presentation は remote 操作の成功や pixel-diff の gate ではなく、iOS/Android
 の画像を実際に review するまで visual success と報告しません。
 

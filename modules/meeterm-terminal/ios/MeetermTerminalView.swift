@@ -16,9 +16,11 @@ final class MeetermTerminalView: ExpoView {
   private let terminalInputView = TerminalInputView(frame: .zero, textContainer: nil)
   private var terminalId = defaultTerminalId
   private var terminalHandle: UInt64 = 0
+  private var interactionMode = "live"
   private var keyboardOcclusion: CGFloat = 0
   private var lastColumns = 0
   private var lastRows = 0
+  private var lastOperationEpoch: UInt64?
   private var lastTerminalRevision: UInt64 = .max
   private var revisionTimer: Timer?
   private var fontSize: CGFloat = 15
@@ -34,6 +36,8 @@ final class MeetermTerminalView: ExpoView {
   private var cellSize: CGSize {
     TerminalRenderer.cellSize(fontSize: fontSize, scale: max(1, window?.screen.scale ?? contentScaleFactor))
   }
+
+  private var isCachedReadOnly: Bool { interactionMode == "cachedReadOnly" }
 
   required init(appContext: AppContext? = nil) {
     let selectedView: UIView
@@ -92,6 +96,7 @@ final class MeetermTerminalView: ExpoView {
     renderingView.isAccessibilityElement = true
     renderingView.accessibilityLabel = "Terminal"
     renderingView.accessibilityIdentifier = "native-terminal-surface"
+    updateSmokeNativeHandleObservation()
 
     renderingView.backgroundColor = backgroundColor
     addSubview(renderingView)
@@ -99,38 +104,39 @@ final class MeetermTerminalView: ExpoView {
     terminalInputView.onPreeditChanged = { [weak self] value in
       self?.renderer.setPreedit(value)
     }
-    terminalInputView.onCommit = { [weak self] text in
-      self?.commit(text)
+    terminalInputView.operationEpochProvider = { [weak self] in
+      self?.currentOperationEpoch()
     }
-    terminalInputView.onPaste = { [weak self] text in
-      guard let self, self.terminalHandle != 0 else { return }
-      self.clearSelection()
-      let accepted = MeetermCore.paste(terminalId: self.terminalHandle, text: text)
+    terminalInputView.onCommitAtEpoch = { [weak self] text, epoch in
+      self?.commit(text, epoch: epoch)
+    }
+    terminalInputView.onPasteAtEpoch = { [weak self] text, epoch in
+      guard let self, !self.isCachedReadOnly, self.terminalHandle != 0 else { return }
+      let accepted = MeetermCore.pasteAtEpoch(
+        terminalId: self.terminalHandle,
+        expectedEpoch: epoch,
+        text: text
+      )
       if self.observesInputLifecycle {
         NSLog("MEETERM_SMOKE_PASTE_RESULT accepted=%d", accepted ? 1 : 0)
       }
       if accepted {
+        // Selection is local state and is cleared only after Rust accepted the
+        // epoch-checked remote operation.
+        self.clearSelection()
         self.renderer.requestFrame()
       }
     }
-    terminalInputView.onSpecialKey = { [weak self] key in
-      self?.send(key)
+    terminalInputView.onSpecialKeyAtEpoch = { [weak self] key, epoch in
+      self?.send(key, epoch: epoch)
     }
     terminalInputView.onCopySelection = { [weak self] in self?.copySelection() }
     terminalInputView.hasTerminalSelection = { [weak self] in self?.selectionStart != nil }
-    terminalInputView.onModifiedCommit = { [weak self] text, modifiers in
-      guard let self, self.terminalHandle != 0 else { return }
-      self.clearSelection()
-      if MeetermCore.commitModified(terminalId: self.terminalHandle, text: text, modifiers: modifiers) {
-        self.renderer.requestFrame()
-      }
+    terminalInputView.onModifiedCommitAtEpoch = { [weak self] text, modifiers, epoch in
+      self?.commitModified(text, modifiers: modifiers, epoch: epoch)
     }
-    terminalInputView.onModifiedSpecialKey = { [weak self] key, modifiers in
-      guard let self, self.terminalHandle != 0 else { return }
-      self.clearSelection()
-      if MeetermCore.sendKey(terminalId: self.terminalHandle, key: key, modifiers: modifiers) {
-        self.renderer.requestFrame()
-      }
+    terminalInputView.onModifiedSpecialKeyAtEpoch = { [weak self] key, modifiers, epoch in
+      self?.sendModified(key, modifiers: modifiers, epoch: epoch)
     }
     addSubview(terminalInputView)
     configureSelectionControls()
@@ -200,6 +206,7 @@ final class MeetermTerminalView: ExpoView {
       columns: Self.defaultColumns,
       rows: Self.defaultRows
     )
+    updateSmokeNativeHandleObservation()
     guard terminalHandle != 0 else {
       renderer.requestFrame()
       return
@@ -208,6 +215,8 @@ final class MeetermTerminalView: ExpoView {
     renderer.attachTerminal(terminalHandle)
     applyAppearance()
     lastTerminalRevision = MeetermCore.terminalRevision(terminalId: terminalHandle)
+    lastOperationEpoch = MeetermCore.operationEpoch(terminalId: terminalHandle)
+    terminalInputView.operationEpochDidChange(lastOperationEpoch)
     NSLog("MEETERM_SMOKE_NATIVE_READY")
     onNativeReady([
       "terminalId": terminalId,
@@ -262,6 +271,17 @@ final class MeetermTerminalView: ExpoView {
       stopRevisionPolling()
       return
     }
+    let operationEpoch = MeetermCore.operationEpoch(terminalId: terminalHandle)
+    if operationEpoch != lastOperationEpoch {
+      lastOperationEpoch = operationEpoch
+      terminalInputView.operationEpochDidChange(operationEpoch)
+      // A rejected in-flight resize is intentionally not queued. Re-entering
+      // layout with a fresh epoch sends only the current measured dimensions.
+      lastColumns = 0
+      lastRows = 0
+      setNeedsLayout()
+      renderer.requestFrame()
+    }
     let revision = MeetermCore.terminalRevision(terminalId: terminalHandle)
     if revision != lastTerminalRevision {
       lastTerminalRevision = revision
@@ -280,6 +300,18 @@ final class MeetermTerminalView: ExpoView {
       return false
     }
     return true
+  }
+
+  private func updateSmokeNativeHandleObservation() {
+    // This is an opaque, test-only accessibility value. It is enabled only
+    // by the smoke launch argument and contains no terminal bytes, cells, or
+    // remote identifiers. The UI test compares it across the retained
+    // cached/live transition while the normal app exposes no handle.
+    if observesInputLifecycle, terminalHandle != 0 {
+      renderingView.accessibilityValue = "native-handle-\(terminalHandle)"
+    } else {
+      renderingView.accessibilityValue = nil
+    }
   }
 
   override func layoutSubviews() {
@@ -317,6 +349,28 @@ final class MeetermTerminalView: ExpoView {
     applyAppearance()
   }
 
+  /// Keep the same native terminal handle/surface while changing whether
+  /// remote-affecting input is allowed. Returning to live only prepares the
+  /// next native input session; it does not focus the keyboard or grant Rust
+  /// authority.
+  func setInteractionMode(_ mode: String) {
+    let nextMode = mode == "cachedReadOnly" ? "cachedReadOnly" : "live"
+    guard nextMode != interactionMode else { return }
+    interactionMode = nextMode
+    terminalInputView.setInteractionMode(nextMode)
+    lastColumns = 0
+    lastRows = 0
+    if isCachedReadOnly {
+      renderingView.accessibilityLabel = "Terminal, cached output, read only"
+      renderingView.accessibilityHint = "Input is paused until recovery finishes."
+    } else {
+      renderingView.accessibilityLabel = "Terminal"
+      renderingView.accessibilityHint = nil
+    }
+    setNeedsLayout()
+    renderer.requestFrame()
+  }
+
   func setScrollbackLines(_ lines: Int) {
     guard (1000...50000).contains(lines) else { return }
     MeetermCore.setScrollbackLimit(lines)
@@ -343,7 +397,8 @@ final class MeetermTerminalView: ExpoView {
 
   @discardableResult
   override func becomeFirstResponder() -> Bool {
-    terminalInputView.becomeFirstResponder()
+    guard !isCachedReadOnly else { return false }
+    return terminalInputView.becomeFirstResponder()
   }
 
   @discardableResult
@@ -352,6 +407,7 @@ final class MeetermTerminalView: ExpoView {
   }
 
   @objc private func focusTerminal() {
+    guard !isCachedReadOnly else { return }
     if selectionStart != nil { clearSelection(); return }
     terminalInputView.becomeFirstResponder()
   }
@@ -404,11 +460,18 @@ final class MeetermTerminalView: ExpoView {
     guard columns != lastColumns || rows != lastRows else {
       return
     }
-    clearSelection()
-    guard MeetermCore.resize(terminalId: terminalHandle, columns: columns, rows: rows) else {
+    guard !isCachedReadOnly,
+          let epoch = currentOperationEpoch(),
+          MeetermCore.resizeAtEpoch(
+            terminalId: terminalHandle,
+            expectedEpoch: epoch,
+            columns: columns,
+            rows: rows
+          ) else {
       return
     }
 
+    clearSelection()
     lastColumns = columns
     lastRows = rows
     let scale = window?.screen.scale ?? contentScaleFactor
@@ -431,29 +494,73 @@ final class MeetermTerminalView: ExpoView {
     let translation = gesture.translation(in: self)
     let lines = Int32((translation.y / cellSize.height).rounded(.towardZero))
     if lines != 0 {
-      if MeetermCore.scroll(terminalId: terminalHandle, lines: lines) {
+      if let epoch = currentOperationEpoch(),
+         MeetermCore.scrollAtEpoch(
+           terminalId: terminalHandle,
+           expectedEpoch: epoch,
+           lines: lines
+         ) {
         renderer.requestFrame()
       }
       gesture.setTranslation(CGPoint(x: 0, y: translation.y - CGFloat(lines) * cellSize.height), in: self)
     }
   }
 
-  private func commit(_ text: String) {
-    guard terminalHandle != 0 else {
+  private func currentOperationEpoch() -> UInt64? {
+    guard terminalHandle != 0 else { return nil }
+    return MeetermCore.operationEpoch(terminalId: terminalHandle)
+  }
+
+  private func commit(_ text: String, epoch: UInt64) {
+    guard !isCachedReadOnly, terminalHandle != 0 else {
       return
     }
-    clearSelection()
-    if MeetermCore.commit(terminalId: terminalHandle, text: text) > 0 {
+    if MeetermCore.commitAtEpoch(
+      terminalId: terminalHandle,
+      expectedEpoch: epoch,
+      text: text
+    ) > 0 {
+      clearSelection()
       renderer.requestFrame()
     }
   }
 
-  private func send(_ key: TerminalSpecialKey) {
-    guard terminalHandle != 0 else {
+  private func commitModified(_ text: String, modifiers: UInt32, epoch: UInt64) {
+    guard !isCachedReadOnly, terminalHandle != 0 else { return }
+    if MeetermCore.commitModifiedAtEpoch(
+      terminalId: terminalHandle,
+      expectedEpoch: epoch,
+      text: text,
+      modifiers: modifiers
+    ) {
+      clearSelection()
+      renderer.requestFrame()
+    }
+  }
+
+  private func send(_ key: TerminalSpecialKey, epoch: UInt64) {
+    guard !isCachedReadOnly, terminalHandle != 0 else {
       return
     }
-    clearSelection()
-    if MeetermCore.send(terminalId: terminalHandle, key: key) {
+    if MeetermCore.sendSpecialAtEpoch(
+      terminalId: terminalHandle,
+      expectedEpoch: epoch,
+      key: key
+    ) {
+      clearSelection()
+      renderer.requestFrame()
+    }
+  }
+
+  private func sendModified(_ key: TerminalSpecialKey, modifiers: UInt32, epoch: UInt64) {
+    guard !isCachedReadOnly, terminalHandle != 0 else { return }
+    if MeetermCore.sendKeyAtEpoch(
+      terminalId: terminalHandle,
+      expectedEpoch: epoch,
+      key: key,
+      modifiers: modifiers
+    ) {
+      clearSelection()
       renderer.requestFrame()
     }
   }

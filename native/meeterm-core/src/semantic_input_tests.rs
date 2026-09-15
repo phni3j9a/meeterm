@@ -119,6 +119,51 @@ fn semantic_transport_rejects_stale_generation_and_detach() {
 }
 
 #[test]
+fn semantic_paste_epoch_stays_stale_after_rebind() {
+    let (mut terminal, mut receiver) = semantic_terminal(78, 4);
+    let stale_epoch = terminal.operation_epoch();
+
+    assert_eq!(
+        terminal.paste_utf8_at_epoch(stale_epoch, b"before"),
+        Ok("before".len())
+    );
+    assert_eq!(
+        receiver.try_recv().expect("initial semantic paste"),
+        SemanticInput::Paste("before".into())
+    );
+
+    terminal.detach_transport(78);
+    assert_eq!(
+        terminal.paste_utf8_at_epoch(stale_epoch, b"after detach"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+
+    let (sender, mut fresh_receiver) = mpsc::channel(4);
+    let (resize, _) = watch::channel((24, 4));
+    terminal
+        .attach_semantic_transport(78, sender, resize)
+        .expect("fresh semantic transport");
+    terminal.mark_transport_ready(78);
+    let fresh_epoch = terminal.operation_epoch();
+    assert!(fresh_epoch > stale_epoch);
+
+    assert_eq!(
+        terminal.paste_utf8_at_epoch(stale_epoch, b"still stale"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(fresh_receiver.try_recv().is_err());
+    assert_eq!(
+        terminal.paste_utf8_at_epoch(fresh_epoch, b"fresh"),
+        Ok("fresh".len())
+    );
+    assert_eq!(
+        fresh_receiver.try_recv().expect("fresh semantic paste"),
+        SemanticInput::Paste("fresh".into())
+    );
+    assert!(fresh_receiver.try_recv().is_err());
+}
+
+#[test]
 fn semantic_queue_keeps_bounded_error_contract() {
     let (mut terminal, mut receiver) = semantic_terminal(76, 1);
     assert_eq!(terminal.commit_utf8(b"one"), Ok(1));

@@ -197,14 +197,27 @@ ordinary Herdr client and then refreshed. Herdr start/create is not promised by
 Issue #21; no meeterm action starts, creates, installs, or updates Herdr, and
 there is no automatic fallback from Herdr to tmux.
 
-An automatic transport reconnect may return directly to the already selected
-backend/runtime only after host identity, executable/capability, runtime
-identity, and compatibility are verified again. A missing runtime, tmux server
-restart, same-name replacement, or uncertain identity returns to the picker
-with an explanation and a fresh discovery. A manual reconnect is a fresh
-selection flow as well. Herdr 0.9.0 does not publish a server-instance identity
-that meeterm can compare across transport loss, so Herdr automatic recovery is
-treated as uncertain and always requires explicit reselection in the picker.
+After a runtime has reached `Ready`, same-process transport recovery keeps its
+last authoritative workspace, selected terminal, native `Term`, and local
+history visible but stale. Input, resize, and remote mutations remain closed
+until the SSH host/authentication, backend capability, exact runtime target,
+topology, selected terminal, and authoritative screen have been verified and
+committed together. Retry exhaustion and identity failure stay in that work
+screen with explicit Retry and Change connection/runtime actions; they do not
+open the picker, create a replacement, silently retarget, or fall back to the
+other backend.
+
+tmux recovery requires the previously selected session identity and pane ID.
+A missing runtime, tmux server restart, same-name replacement, missing pane, or
+uncertain identity therefore fails closed on the stale screen. Herdr 0.9.0 does
+not publish a server-instance identity that meeterm can compare across
+transport loss. Its recovery reauthenticates and performs bounded read-only
+discovery, then requires an explicit confirmation inside the existing work
+screen. Confirmation permits only a fresh compatible running candidate,
+original stable terminal ID, ordinary controller acquisition without takeover,
+and first authoritative full-frame check; it is not identity proof or a picker
+selection. A manual reconnect, fresh profile entry, and cold start remain fresh
+selection flows and always show the picker.
 
 The profile stores SSH endpoint/authentication metadata. Existing backend and
 runtime fields represent a non-authoritative logical `lastUsedRuntime` hint;

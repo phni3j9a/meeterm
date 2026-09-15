@@ -38,33 +38,53 @@ GitHub-hosted runners provide the required OS split: Android jobs can run on Ubu
 ## Focused execution and product reuse
 
 `Mobile smoke` accepts `platform=both|android|ios` and
-`ios_suite=standard|ssh|full|forms|native|names`. The default is `standard`.
+`ios_suite=standard|polish|polish-navigation|ssh|full|forms|native|names`. The
+default is `standard`.
 
-- `standard`: four production storage cases, seven native input cases, direct
-  screen captures from public deterministic state, and a fresh native foundation
+- `standard`: four production storage cases, eleven native input/recovery-bridge
+  cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
-  has 18 routes: the previous 14 plus `runtime-picker`,
-  `runtime-partial-error`, `runtime-empty`, and `runtime-create`. The existing
+  has 22 routes: the previous 18 plus `recovery-progress`,
+  `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm`. The existing
   `herdr-connection` route is the picker with the Herdr `default` candidate's
-  non-authoritative `Last used` hint. Runtime-picker states are seeded only for
-  presentation; no SSH fixture is started.
+  non-authoritative `Last used` hint. The four recovery presentation routes
+  are `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
+  `herdr-recovery-confirm`; they retain the native terminal and verify the
+  applicable recovery rail copy/action state. Runtime-picker and recovery
+  states are seeded only for presentation; no SSH fixture is started.
 - `ssh`: the actual connection and host-key boundary, runtime discovery and
-  explicit selection, plus one native input and remote acknowledgment, followed
-  by disconnect. No daily CRUD/copy/restart chain.
+  explicit selection, a healthy same-process app background/foreground return
+  while the selected tmux pane remains active, and a resumed native input and
+  remote acknowledgment. It also runs a separate deterministic transport-loss
+  case: the disposable fixture stops/restarts only its sshd through its
+  fixture-owned control files, while tmux remains alive. After the stop ACK,
+  the Android driver resets the selected serial's ADB transport with
+  `adb reconnect device`, waits for `wait-for-device` within a fixed bound,
+  recreates the exact `tcp:<port>` reverse pair, and verifies it with
+  `adb reverse --list`. The app must then show the retained read-only rail and
+  return Ready to the same pane/native handle without reopening the picker,
+  followed by one post-loss remote acknowledgment and disconnect. No daily
+  CRUD/copy/restart chain; this path does not claim arbitrary packet loss,
+  network handover, physical device, or Herdr mobile recovery. The healthy
+  foreground cycle and transport-loss case are separate evidence categories.
 - `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
   Full preserves its original assertions and result; a prior failed full remains failed.
 
-For Issue #21, Android `full` and iOS `standard` plus `ssh` are the applicable
+For Issue #26, Android `full` and iOS `standard` plus `ssh` are the applicable
 mobile paths. Shared/native tests separately cover bounded no-side-effect
 discovery, tmux list/create/select and identity races, Herdr executable
 resolution and running-only selection, profile migration, reconnect identity,
 switch/release, backend-local partial failures, and fail-closed linked/shared
-tmux mutations. The iOS `standard` source-level manifest has 18 routes and
-Android's observational `SCREEN_NAMES` has 25 routes: each includes the four
+tmux mutations. Retained-work checks additionally cover strict original tmux
+pane recovery, Herdr in-work confirmation, operation-epoch input gating, no
+automatic picker/fallback, and authoritative resynchronization before Ready.
+The iOS `standard` source-level manifest has 22 routes and Android's
+observational `SCREEN_NAMES` has 29 routes: each includes the four
 runtime-picker routes `runtime-picker`, `runtime-partial-error`, `runtime-empty`,
-and `runtime-create`, while `herdr-connection` is the repurposed picker state
-described above. These are source-level scopes only; this document does not
-claim remote CI or visual review.
+and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
+`recovery-mismatch`, and `herdr-recovery-confirm`, while `herdr-connection` is
+the repurposed picker state described above. These are source-level scopes only;
+this document does not claim remote CI or visual review.
 
 Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
 forms/names have 15, and optional full retains its 30-minute storage/UI budget.
@@ -119,6 +139,36 @@ transition requires the configured launcher, the same app PID on return and a
 fresh acknowledgment from the original remote shell. Recording starts after
 credential entry and restoration; detected unexpected foreground loss discards
 the recording rather than capturing another app.
+The HOME transition just described is the healthy foreground evidence and does
+not simulate a transport failure. The same Android `full` run separately sends
+`stop` and `start` requests through the fixture's mode-0600
+`sshd-control-request`/`sshd-control-status` files. After the stop ACK, the
+driver closes the selected ADB transport with `adb reconnect device`, waits for
+the same serial to become ready, and recreates/verifies only the exact
+`adb reverse tcp:<fixture-port> tcp:<fixture-port>` mapping. Only the fixture
+sshd process tree is stopped; the tmux server/session/shell and endpoint identity
+are left alive. ADB reverse removal alone is not used as the loss injection;
+the driver-owned mapping is removed only during safe final cleanup. The driver
+records sanitized fixed results for the pre-loss and post-loss markers, the
+cached read-only rail, the same native handle, the same selected pane, and the
+absence of input while stopped. On iOS, the final
+sanitized artifact carries the independent `native_handle_same` and
+`selected_pane_identifier_same` booleans in addition to the native surface
+binding boolean. This transport-loss
+branch is a remote acceptance check; local source/Python tests and this document
+do not claim that a GitHub run has passed.
+The iOS `ssh` suite records the same two categories separately: its existing
+Home/background → activate cycle is healthy foreground evidence, while the
+fixture control request is the intentional SSH/Control Mode loss. XCTest sends
+no input between the stop and start acknowledgements, checks the retained
+read-only terminal and smoke-only opaque native handle, records the stale and
+recovered handle comparison as `native_handle_same`, and records the independent
+selected-pane checks as `selected_pane_identifier_same`. It then sends the unique
+post-loss marker only after the same pane is authoritative Ready. The host
+driver verifies the marker pair against the live tmux pane and rejects any
+duplicate or other-pane occurrence. These checks remain remote-only until the
+app is run on the hosted Simulator; no local source result is a mobile
+acceptance claim.
 Before ssh, full or names iOS runtime testing, the runtime job installs fixture-only tmux if needed and runs
 `python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
 remote `tmux` resolution using the disposable host key. The fixture supplies

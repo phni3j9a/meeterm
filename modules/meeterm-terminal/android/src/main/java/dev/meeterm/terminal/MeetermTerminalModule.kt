@@ -127,6 +127,32 @@ class MeetermTerminalModule : Module() {
       check(MeetermNative.sshReconnect(handle) == 0) { "The reconnect request could not be started." }
     }
 
+    AsyncFunction("retryRecovery") { terminalId: String, operationEpoch: String ->
+      val epoch = parseOperationEpoch(operationEpoch)
+      check(MeetermNative.retryRecovery(ensureHandle(normalizeTerminalId(terminalId)), epoch) == 0) {
+        "The recovery retry could not be started."
+      }
+    }
+
+    AsyncFunction("confirmRecovery") { terminalId: String, confirmationToken: String ->
+      require(validRecoveryToken(confirmationToken)) {
+        "The recovery confirmation is invalid."
+      }
+      check(MeetermNative.confirmRecovery(
+        ensureHandle(normalizeTerminalId(terminalId)),
+        confirmationToken,
+      ) == 0) {
+        "The recovery confirmation is unavailable."
+      }
+    }
+
+    AsyncFunction("changeRuntime") { terminalId: String, operationEpoch: String ->
+      val epoch = parseOperationEpoch(operationEpoch)
+      check(MeetermNative.changeRuntime(ensureHandle(normalizeTerminalId(terminalId)), epoch) == 0) {
+        "The runtime could not be changed."
+      }
+    }
+
     AsyncFunction("selectPane") { terminalId: String, paneId: String ->
       val pane = targetId(paneId, '%')
       val handle = ensureHandle(normalizeTerminalId(terminalId))
@@ -188,6 +214,7 @@ class MeetermTerminalModule : Module() {
       Prop("fontSize", 15.0) { view: MeetermTerminalView, value: Double -> view.setFontSize(value) }
       Prop("theme", "dark") { view: MeetermTerminalView, value: String -> view.setTheme(value) }
       Prop("scrollbackLines", 10000) { view: MeetermTerminalView, value: Int -> view.setScrollbackLines(value) }
+      Prop("interactionMode", "live") { view: MeetermTerminalView, value: String -> view.setInteractionMode(value) }
       Prop("terminalId", "poc-main") { view: MeetermTerminalView, terminalId: String ->
         view.bindTerminal(terminalId)
       }
@@ -209,6 +236,13 @@ class MeetermTerminalModule : Module() {
     require(digits.isNotEmpty() && digits.all { it in '0'..'9' }) { "The tmux target is invalid." }
     return digits.toLongOrNull() ?: throw IllegalArgumentException("The tmux target is invalid.")
   }
+
+  private fun parseOperationEpoch(value: String): String {
+    return RecoveryBridgeValidation.parseOperationEpoch(value)
+  }
+
+  private fun validRecoveryToken(value: String): Boolean =
+    RecoveryBridgeValidation.validRecoveryToken(value)
 
   private fun numericId(value: String): Long {
     val normalized = value.trim()

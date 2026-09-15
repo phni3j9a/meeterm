@@ -1,6 +1,7 @@
 package dev.meeterm.terminal
 
 import java.nio.charset.StandardCharsets
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -11,6 +12,9 @@ class InputSessionTest {
     val modifiedCommits = mutableListOf<Pair<ByteArray, Int>>()
     val specials = mutableListOf<TerminalSpecialKey>()
     val modifiedKeys = mutableListOf<Pair<TerminalSpecialKey, Int>>()
+    var currentOperationEpoch: String? = null
+    val epochCommitAttempts = mutableListOf<String>()
+    val epochKeyAttempts = mutableListOf<String>()
 
     override fun commitUtf8(bytes: ByteArray): Boolean {
       commits += bytes
@@ -22,6 +26,22 @@ class InputSessionTest {
       return true
     }
 
+    override fun commitUtf8AtEpoch(operationEpoch: String, bytes: ByteArray): Boolean {
+      epochCommitAttempts += operationEpoch
+      if (operationEpoch != currentOperationEpoch) return false
+      return commitUtf8(bytes)
+    }
+
+    override fun commitModifiedUtf8AtEpoch(
+      operationEpoch: String,
+      bytes: ByteArray,
+      modifiers: Int,
+    ): Boolean {
+      epochCommitAttempts += operationEpoch
+      if (operationEpoch != currentOperationEpoch) return false
+      return commitModifiedUtf8(bytes, modifiers)
+    }
+
     override fun sendSpecial(key: TerminalSpecialKey): Boolean {
       specials += key
       return true
@@ -30,6 +50,22 @@ class InputSessionTest {
     override fun sendKey(key: TerminalSpecialKey, modifiers: Int): Boolean {
       modifiedKeys += key to modifiers
       return if (modifiers == 0) sendSpecial(key) else true
+    }
+
+    override fun sendSpecialAtEpoch(operationEpoch: String, key: TerminalSpecialKey): Boolean {
+      epochKeyAttempts += operationEpoch
+      if (operationEpoch != currentOperationEpoch) return false
+      return sendSpecial(key)
+    }
+
+    override fun sendKeyAtEpoch(
+      operationEpoch: String,
+      key: TerminalSpecialKey,
+      modifiers: Int,
+    ): Boolean {
+      epochKeyAttempts += operationEpoch
+      if (operationEpoch != currentOperationEpoch) return false
+      return sendKey(key, modifiers)
     }
   }
 
@@ -284,5 +320,72 @@ class InputSessionTest {
     assertTrue(session.commitText("a"))
     assertEquals(1, sink.commits.size)
     assertTrue(sink.modifiedCommits.isEmpty())
+  }
+
+  @Test
+  fun oldInputSessionIsRejectedAfterOperationEpochChanges() {
+    val sink = RecordingSink()
+    sink.currentOperationEpoch = "41"
+    val oldSession = InputSession(sink, operationEpoch = "41")
+
+    assertTrue(oldSession.commitText("before-revoke"))
+    assertEquals(1, sink.commits.size)
+
+    // Revoke/reacquire changes only the native operation epoch. The old
+    // session remains immutable and cannot send either IME text or a key.
+    sink.currentOperationEpoch = "42"
+    oldSession.setComposingText("stale-ime")
+    assertFalse(oldSession.commitText("stale-ime"))
+    assertFalse(oldSession.handleKey(InputSession.KEYCODE_ENTER))
+    assertEquals(1, sink.commits.size)
+    assertEquals(listOf("41", "41"), sink.epochCommitAttempts)
+    assertEquals(listOf("41"), sink.epochKeyAttempts)
+
+    val freshSession = InputSession(sink, operationEpoch = "42")
+    assertTrue(freshSession.commitText("after-reacquire"))
+    assertTrue(freshSession.handleKey(InputSession.KEYCODE_ENTER))
+    assertEquals(2, sink.commits.size)
+    assertEquals(listOf("41", "41", "42"), sink.epochCommitAttempts)
+    assertEquals(listOf("41", "42"), sink.epochKeyAttempts)
+  }
+
+  @Test
+  fun stalePasteEpochGateRejectsReacquiredTerminalButAllowsCurrentOne() {
+    assertTrue(OperationEpochGate.matches("41", "41"))
+    assertFalse(OperationEpochGate.matches("41", "42"))
+    assertFalse(OperationEpochGate.matches(null, "41"))
+    assertFalse(OperationEpochGate.matches("41", null))
+  }
+
+  @Test
+  fun recoveryBridgeArgumentsStayDecimalLosslessAndBounded() {
+    assertEquals(
+      "18446744073709551615",
+      RecoveryBridgeValidation.parseOperationEpoch("18446744073709551615"),
+    )
+    assertEquals("0007", RecoveryBridgeValidation.parseOperationEpoch("0007"))
+
+    assertInvalidEpoch("")
+    assertInvalidEpoch("18446744073709551616")
+    assertInvalidEpoch("1.0")
+    assertInvalidEpoch("＋1")
+    assertInvalidEpoch(" 1")
+
+    assertTrue(RecoveryBridgeValidation.validRecoveryToken("confirm-日本語"))
+    assertTrue(RecoveryBridgeValidation.validRecoveryToken("あ".repeat(42))) // 126 UTF-8 bytes
+    assertFalse(RecoveryBridgeValidation.validRecoveryToken("a".repeat(129)))
+    assertFalse(RecoveryBridgeValidation.validRecoveryToken("あ".repeat(43))) // 129 UTF-8 bytes
+    assertFalse(RecoveryBridgeValidation.validRecoveryToken("line\nfeed"))
+    assertFalse(RecoveryBridgeValidation.validRecoveryToken("nul\u0000token"))
+  }
+
+  private fun assertInvalidEpoch(value: String) {
+    var rejected = false
+    try {
+      RecoveryBridgeValidation.parseOperationEpoch(value)
+    } catch (_: IllegalArgumentException) {
+      rejected = true
+    }
+    assertTrue("Expected invalid operation epoch: $value", rejected)
   }
 }
