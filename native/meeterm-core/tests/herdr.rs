@@ -42,9 +42,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SNAPSHOT_HEADER_SIZE: usize = 28;
 const SNAPSHOT_CELL_METADATA_SIZE: usize = 28;
 const MAX_EXEC_OUTPUT: usize = 4 * 1024 * 1024;
-const API_RESPONSE_MAX_LINES: usize = 64;
 const API_RESPONSE_MAX_LINE_BYTES: usize = 1024 * 1024;
 const API_RESPONSE_ID: &str = "fixture-external";
+const API_RESPONSE_DIAGNOSTIC_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Deserialize)]
 struct SessionManifest {
@@ -152,18 +152,13 @@ impl Driver {
         request.push(b'\n');
         socket.write_all(&request).unwrap();
         let mut reader = BufReader::new(socket);
-        let response = read_api_response(
-            &mut reader,
-            API_RESPONSE_ID,
-            method,
-            Instant::now() + WAIT_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("fixture external API {method} response failed: {error}"));
-        assert!(
-            response.get("error").is_none(),
-            "fixture external API {method} rejected: {}",
-            response.get("error").unwrap_or(&Value::Null)
-        );
+        let response =
+            read_api_response(&mut reader, API_RESPONSE_ID, method).unwrap_or_else(|error| {
+                panic!("fixture external API {method} response failed: {error}")
+            });
+        if let Some(error) = response.get("error") {
+            panic!("fixture external API {method} rejected: {error}");
+        }
         response
             .get("result")
             .cloned()
@@ -198,49 +193,26 @@ fn read_api_response<R: BufRead>(
     reader: &mut R,
     expected_id: &str,
     method: &str,
-    deadline: Instant,
 ) -> Result<Value, String> {
-    for line_number in 1..=API_RESPONSE_MAX_LINES {
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "deadline exceeded after {} lines while waiting for response id {expected_id:?} to {method}",
-                line_number - 1
-            ));
-        }
-        let line = read_bounded_api_line(reader)
-            .map_err(|error| format!("line {line_number} while waiting for {method}: {error}"))?
-            .ok_or_else(|| {
-                format!(
-                    "EOF after {} lines while waiting for response id {expected_id:?} to {method}",
-                    line_number - 1
-                )
-            })?;
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "deadline exceeded after line {line_number} while waiting for response id {expected_id:?} to {method}"
-            ));
-        }
-        let value: Value = serde_json::from_slice(&line).map_err(|error| {
-            format!("malformed NDJSON on line {line_number} while waiting for {method}: {error}")
-        })?;
-        if is_api_event_or_notification(&value) {
-            continue;
-        }
-        let Some(id) = value.get("id") else {
-            return Err(format!(
-                "mismatched non-event response on line {line_number} while waiting for {method}: missing id"
-            ));
-        };
-        if id == expected_id {
-            return Ok(value);
-        }
+    let line = read_bounded_api_line(reader)
+        .map_err(|error| format!("response read for {method} failed: {error}"))?
+        .ok_or_else(|| format!("EOF while waiting for response id {expected_id:?} to {method}"))?;
+    let value: Value = serde_json::from_slice(&line).map_err(|error| {
+        format!(
+            "malformed NDJSON response to {method}: {error}; body={}",
+            bounded_api_body_bytes(&line)
+        )
+    })?;
+    let body = bounded_api_body(&value);
+    let Some(id) = value.get("id") else {
+        return Err(format!("response id missing for {method}; body={body}"));
+    };
+    if id != expected_id {
         return Err(format!(
-            "mismatched non-event response on line {line_number} while waiting for {method}: expected id {expected_id:?}, got {id}"
+            "response id mismatch for {method}: expected {expected_id:?}, got {id}; body={body}"
         ));
     }
-    Err(format!(
-        "response line limit ({API_RESPONSE_MAX_LINES}) exhausted while waiting for response id {expected_id:?} to {method}"
-    ))
+    Ok(value)
 }
 
 fn read_bounded_api_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, String> {
@@ -277,64 +249,127 @@ fn read_bounded_api_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, 
     }
 }
 
-fn is_api_event_or_notification(value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    !object.contains_key("id")
-        && (object.contains_key("type")
-            || object.contains_key("event")
-            || object.contains_key("method"))
+fn bounded_api_body(value: &Value) -> String {
+    let encoded = value.to_string();
+    bounded_api_body_bytes(encoded.as_bytes())
+}
+
+fn bounded_api_body_bytes(bytes: &[u8]) -> String {
+    let truncated = bytes.len() > API_RESPONSE_DIAGNOSTIC_BYTES;
+    let preview = &bytes[..bytes.len().min(API_RESPONSE_DIAGNOSTIC_BYTES)];
+    let mut body = String::from_utf8_lossy(preview).into_owned();
+    body = body.replace('\r', "\\r").replace('\n', "\\n");
+    if truncated {
+        body.push_str("…<truncated>");
+    }
+    body
 }
 
 #[test]
-fn api_response_reader_skips_events_before_matching_response() {
+fn api_response_reader_accepts_matching_success_and_api_error() {
     let input = concat!(
-        r#"{"type":"pane.agent_status_changed","pane_id":"fixture"}"#,
-        "\n",
-        r#"{"jsonrpc":"2.0","method":"session.updated","params":{}}"#,
-        "\n",
         r#"{"id":"fixture-external","result":{"accepted":true}}"#,
+        "\n"
+    );
+    let mut reader = BufReader::new(input.as_bytes());
+    let response = read_api_response(&mut reader, API_RESPONSE_ID, "pane.report_agent")
+        .expect("matching API response");
+    assert_eq!(response["id"], API_RESPONSE_ID);
+    assert_eq!(response["result"]["accepted"], true);
+
+    let input = concat!(
+        r#"{"id":"fixture-external","error":{"code":"invalid_request","message":"bad pane id"}}"#,
         "\n",
     );
     let mut reader = BufReader::new(input.as_bytes());
-    let response = read_api_response(
-        &mut reader,
-        API_RESPONSE_ID,
-        "pane.report_agent",
-        Instant::now() + WAIT_TIMEOUT,
-    )
-    .expect("matching API response after event records");
+    let response = read_api_response(&mut reader, API_RESPONSE_ID, "pane.report_agent")
+        .expect("matching API error response");
     assert_eq!(response["id"], API_RESPONSE_ID);
-    assert_eq!(response["result"]["accepted"], true);
+    assert_eq!(response["error"]["code"], "invalid_request");
+    assert_eq!(response["error"]["message"], "bad pane id");
 }
 
 #[test]
-fn api_response_reader_reports_invalid_or_unmatched_records() {
+fn api_response_reader_rejects_missing_or_unmatched_ids_without_skipping() {
     let cases = [
-        ("EOF", "", "EOF after 0 lines while waiting for response id"),
         (
-            "malformed JSON",
-            "{not-json}\n",
-            "malformed NDJSON on line 1",
+            "empty response id",
+            r#"{"id":"","error":{"code":"invalid_request","message":"invalid request: invalid type: integer `1000002`, expected a string"}}"#,
+            "response id mismatch",
+            "1000002",
         ),
         (
             "wrong response id",
-            "{\"id\":\"other\",\"result\":{}}\n",
-            "mismatched non-event response on line 1",
+            r#"{"id":"other","result":{}}"#,
+            "response id mismatch",
+            "other",
+        ),
+        (
+            "missing id result",
+            r#"{"result":{}}"#,
+            "response id missing",
+            "result",
+        ),
+        (
+            "id-less event",
+            r#"{"type":"pane.agent_status_changed","pane_id":"fixture"}"#,
+            "response id missing",
+            "pane.agent_status_changed",
+        ),
+        (
+            "id-less error",
+            r#"{"error":{"code":"invalid_request","message":"bad pane id"}}"#,
+            "response id missing",
+            "bad pane id",
+        ),
+        (
+            "id-less result",
+            r#"{"result":{"accepted":true}}"#,
+            "response id missing",
+            "accepted",
+        ),
+    ];
+    for (name, body, expected, body_marker) in cases {
+        let input = format!("{body}\n");
+        let mut reader = BufReader::new(input.as_bytes());
+        let error =
+            read_api_response(&mut reader, API_RESPONSE_ID, "session.snapshot").expect_err(name);
+        assert!(error.contains(expected), "{name}: {error}");
+        assert!(error.contains("body="), "{name}: {error}");
+        assert!(error.contains(body_marker), "{name}: {error}");
+    }
+}
+
+#[test]
+fn api_response_reader_reports_malformed_eof_partial_and_oversize_records() {
+    let cases = [
+        (
+            "malformed JSON",
+            "{not-json}\n",
+            "malformed NDJSON response",
+        ),
+        ("EOF", "", "EOF while waiting for response id"),
+        (
+            "partial NDJSON",
+            r#"{"id":"fixture-external","result":{}}"#,
+            "EOF before the NDJSON newline",
         ),
     ];
     for (name, input, expected) in cases {
         let mut reader = BufReader::new(input.as_bytes());
-        let error = read_api_response(
-            &mut reader,
-            API_RESPONSE_ID,
-            "session.snapshot",
-            Instant::now() + WAIT_TIMEOUT,
-        )
-        .expect_err(name);
+        let error =
+            read_api_response(&mut reader, API_RESPONSE_ID, "session.snapshot").expect_err(name);
         assert!(error.contains(expected), "{name}: {error}");
     }
+
+    let input = format!(
+        "{{\"id\":\"{API_RESPONSE_ID}\",\"result\":\"{}\"}}\n",
+        "x".repeat(API_RESPONSE_MAX_LINE_BYTES)
+    );
+    let mut reader = BufReader::new(input.as_bytes());
+    let error = read_api_response(&mut reader, API_RESPONSE_ID, "session.snapshot")
+        .expect_err("oversize NDJSON");
+    assert!(error.contains("NDJSON line exceeds"), "{error}");
 }
 
 impl Drop for Driver {
@@ -1543,6 +1578,16 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .expect("new Herdr pane identity");
     let extra_pane_id = extra_pane["id"].as_str().unwrap().parse().unwrap();
     let after_split = driver.api("default", "session.snapshot", json!({}));
+    let root_remote_terminal_id = driver.manifest.sessions["default"].terminal_id.as_str();
+    let root_remote_pane = after_split["snapshot"]["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["terminal_id"].as_str() == Some(root_remote_terminal_id))
+        .expect("root remote pane with stable terminal identity")["pane_id"]
+        .as_str()
+        .expect("root remote pane ID")
+        .to_owned();
     let remote_pane = after_split["snapshot"]["panes"]
         .as_array()
         .unwrap()
@@ -1562,7 +1607,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
         "default",
         "pane.report_agent",
         json!({
-            "pane_id": root.pane_id,
+            "pane_id": root_remote_pane,
             "source": "meeterm-fixture",
             "agent": "RootAgent",
             "state": "working",
