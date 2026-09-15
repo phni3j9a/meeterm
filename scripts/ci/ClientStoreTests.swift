@@ -130,14 +130,22 @@ final class ClientStoreTests: XCTestCase {
     stage("read_connection_options")
     let connection = try ClientStore.connectionOptions(id)
     XCTAssertEqual(connection["password"] as? String, "  fixture-only  ")
+    stage("write_last_used_runtime_hint")
+    let hinted = try ClientStore.setLastUsedRuntime(id, backend: "herdr", runtime: "dev-session")
+    XCTAssertEqual(hinted["backend"] as? String, "herdr")
+    XCTAssertEqual(hinted["runtime"] as? String, "dev-session")
+    XCTAssertEqual(hinted["credentialSaved"] as? Bool, true)
+    XCTAssertNil(hinted["password"])
+    let hintedConnection = try ClientStore.connectionOptions(id)
+    XCTAssertEqual(hintedConnection["backend"] as? String, "herdr")
+    XCTAssertEqual(hintedConnection["runtime"] as? String, "dev-session")
+    XCTAssertEqual(hintedConnection["password"] as? String, "  fixture-only  ")
     var renamed = profile
     renamed["name"] = "Renamed fixture"
-    renamed["backend"] = "herdr"
-    renamed["runtime"] = "dev-session"
     stage("rename_profile")
     let retained = try ClientStore.saveProfile(renamed, credential: nil, keepCredential: true)
     XCTAssertEqual(retained["credentialSaved"] as? Bool, true)
-    stage("herdr_runtime_preserves_same_ssh_credential")
+    stage("edit_without_runtime_fields_preserves_hint_and_credential")
     let herdr = try ClientStore.connectionOptions(id)
     XCTAssertEqual(herdr["backend"] as? String, "herdr")
     XCTAssertEqual(herdr["runtime"] as? String, "dev-session")
@@ -151,11 +159,65 @@ final class ClientStoreTests: XCTestCase {
     invalidRuntime["backend"] = 1
     XCTAssertThrowsError(try ClientStore.saveProfile(invalidRuntime, credential: nil, keepCredential: true))
     renamed["host"] = "different.invalid"
+    renamed.removeValue(forKey: "backend")
+    renamed.removeValue(forKey: "runtime")
     stage("reject_endpoint_change")
     let changed = try ClientStore.saveProfile(renamed, credential: nil, keepCredential: true)
     XCTAssertEqual(changed["credentialSaved"] as? Bool, false)
+    XCTAssertEqual(changed["backend"] as? String, "tmux")
+    XCTAssertEqual(changed["runtime"] as? String, "")
     XCTAssertThrowsError(try ClientStore.connectionOptions(id))
     if !recordedIssue { appendValidation("case=credential_endpoint_binding result=passed") }
+  }
+
+  func testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules() throws {
+    beginCase("runtime_hint_validation")
+    let id = UUID().uuidString.lowercased()
+    let tmuxRuntime = "release 東京 session"
+    let profile: [String: Any] = ["id": id, "name": "Runtime hint fixture", "host": "fixture.invalid",
+      "port": 22, "username": "fixture", "authMethod": "password",
+      "backend": "tmux", "runtime": tmuxRuntime]
+    defer { try? ClientStore.deleteProfile(id) }
+
+    stage("save_tmux_unicode_hint")
+    let saved = try ClientStore.saveProfile(profile, credential: nil, keepCredential: false)
+    XCTAssertEqual(saved["backend"] as? String, "tmux")
+    XCTAssertEqual(saved["runtime"] as? String, tmuxRuntime)
+    stage("write_tmux_unicode_hint")
+    let hinted = try ClientStore.setLastUsedRuntime(id, backend: "tmux", runtime: tmuxRuntime)
+    XCTAssertEqual(hinted["runtime"] as? String, tmuxRuntime)
+
+    let oversized = String(repeating: "あ", count: 86)
+    var oversizedProfile = profile
+    oversizedProfile["runtime"] = oversized
+    stage("reject_tmux_oversized_hint")
+    XCTAssertThrowsError(try ClientStore.saveProfile(oversizedProfile, credential: nil, keepCredential: false))
+    XCTAssertThrowsError(try ClientStore.setLastUsedRuntime(id, backend: "tmux", runtime: oversized))
+
+    let control = "release\nsession"
+    var controlProfile = profile
+    controlProfile["runtime"] = control
+    stage("reject_tmux_control_hint")
+    XCTAssertThrowsError(try ClientStore.saveProfile(controlProfile, credential: nil, keepCredential: false))
+    XCTAssertThrowsError(try ClientStore.setLastUsedRuntime(id, backend: "tmux", runtime: control))
+
+    var herdrProfile = profile
+    herdrProfile["backend"] = "herdr"
+    herdrProfile["runtime"] = "dev-session"
+    stage("preserve_herdr_ascii_hint")
+    let herdr = try ClientStore.saveProfile(herdrProfile, credential: nil, keepCredential: false)
+    XCTAssertEqual(herdr["backend"] as? String, "herdr")
+    XCTAssertEqual(herdr["runtime"] as? String, "dev-session")
+
+    for runtime in [tmuxRuntime, "release session", String(repeating: "a", count: 65),
+                    ".", "..", control] {
+      var invalid = herdrProfile
+      invalid["runtime"] = runtime
+      stage("reject_herdr_hint")
+      XCTAssertThrowsError(try ClientStore.saveProfile(invalid, credential: nil, keepCredential: false))
+      XCTAssertThrowsError(try ClientStore.setLastUsedRuntime(id, backend: "herdr", runtime: runtime))
+    }
+    if !recordedIssue { appendValidation("case=runtime_hint_validation result=passed") }
   }
 
   func testRemovingSavedCredentialAndProfile() throws {

@@ -7,6 +7,8 @@ import type {
   SshConnectionState,
   TerminalPreferences,
   TmuxSessionState,
+  RuntimeBackend,
+  RuntimeDiscovery,
 } from './MeetermTerminal.types';
 
 const WEB_UNAVAILABLE =
@@ -21,6 +23,10 @@ class MeetermTerminalModule extends NativeModule<{}> {
   async getProfiles(): Promise<ServerProfile[]> { return []; }
   async saveProfile(_profile: Omit<ServerProfile, 'credentialSaved'>, _credential: SavedCredential | null, _keepCredential: boolean): Promise<ServerProfile> { throw new Error(WEB_UNAVAILABLE); }
   async deleteProfile(_profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async connectHost(_terminalId: string, _options: SshConnectOptions): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async connectProfileHost(_terminalId: string, _profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  // The native implementation treats this legacy API as a host-only alias;
+  // keep the same unavailable web surface without introducing a runtime bind.
   async connectProfile(_terminalId: string, _profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async getPreferences(): Promise<TerminalPreferences> { return { fontSize: 15, theme: 'system', scrollbackLines: 10000, automaticReconnect: true }; }
   async setPreferences(_preferences: TerminalPreferences): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
@@ -65,6 +71,12 @@ class MeetermTerminalModule extends NativeModule<{}> {
       errorMessage: '',
     };
   }
+
+  async getRuntimeDiscovery(_connectionId: string): Promise<RuntimeDiscovery> { throw new Error(WEB_UNAVAILABLE); }
+  async refreshRuntimes(_connectionId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async selectRuntime(_connectionId: string, _candidateId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async createTmuxSession(_connectionId: string, _name: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async setLastUsedRuntime(_profileId: string, _backend: RuntimeBackend, _runtime: string): Promise<ServerProfile> { throw new Error(WEB_UNAVAILABLE); }
 
   async respondToHostKey(
     _terminalId: string,

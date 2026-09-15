@@ -96,4 +96,7 @@ tasks.named("preBuild").configure {
 
 dependencies {
   testImplementation("junit:junit:4.13.2")
+  // Android's local-unit-test android.jar contains throwing org.json stubs.
+  // Exercise profile migration with the same public API on the host JVM.
+  testImplementation("org.json:json:20260814")
 }

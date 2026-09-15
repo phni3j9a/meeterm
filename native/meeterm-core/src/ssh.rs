@@ -30,7 +30,10 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
 use crate::tmux::{self, PaneSnapshot, SessionSnapshot, WindowSnapshot};
-use crate::workspace::{self, Backend, RuntimeSnapshot};
+use crate::workspace::{
+    self, Backend, RuntimeCandidate, RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState,
+    RuntimeSnapshot, RuntimeState,
+};
 
 /// Maximum number of bytes used by each fixed-size string in the C snapshot.
 pub const HOST_CAPACITY: usize = 256;
@@ -54,6 +57,12 @@ pub enum ConnectionState {
     AttachingTmux = 8,
     Synchronizing = 9,
     Reconnecting = 10,
+    /// SSH is authenticated and the two backend runtime lists are being
+    /// collected. Values are appended to preserve the existing ABI.
+    DiscoveringRuntimes = 11,
+    AwaitingRuntimeSelection = 12,
+    AttachingRuntime = 13,
+    CreatingRuntime = 14,
 }
 
 /// A fixed-layout snapshot for C, Swift, Kotlin, and other native callers.
@@ -186,19 +195,27 @@ impl ConnectOptions {
             return Err(ConnectionError::InvalidArgument);
         }
         self.credentials.validate()?;
-        let runtime = self.runtime.filter(|value| {
-            !(value.is_empty() || self.backend == Backend::Herdr && value == "default")
-        });
-        if let Some(name) = runtime.as_deref()
-            && (self.backend != Backend::Herdr
-                || name.len() > 64
-                || name == "."
-                || name == ".."
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')))
-        {
-            return Err(ConnectionError::InvalidArgument);
+        let runtime = self.runtime.filter(|value| !value.is_empty());
+        if let Some(name) = runtime.as_deref() {
+            if name.len() > tmux::MAX_SESSION_NAME_BYTES
+                || invalid_runtime_name(name)
+                || (self.backend == Backend::Herdr
+                    && (name.len() > 64
+                        || name == "."
+                        || name == ".."
+                        || !name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))))
+            {
+                return Err(ConnectionError::InvalidArgument);
+            }
+            if self.backend == Backend::Herdr && name == "default" {
+                return Ok(Self {
+                    host,
+                    runtime: None,
+                    ..self
+                });
+            }
         }
         Ok(Self {
             host,
@@ -218,6 +235,11 @@ pub enum ConnectionError {
     HostKeyResponse,
     TrustStore,
     ReconnectUnavailable,
+    RuntimeSelectionUnavailable,
+    RuntimeStale,
+    RuntimeCreateCollision,
+    RuntimeCreateUnknown,
+    TopologyUnsafe,
 }
 
 impl ConnectionError {
@@ -230,6 +252,11 @@ impl ConnectionError {
             Self::HostKeyResponse => -5,
             Self::TrustStore => -6,
             Self::ReconnectUnavailable => -7,
+            Self::RuntimeSelectionUnavailable => -8,
+            Self::RuntimeStale => -9,
+            Self::RuntimeCreateCollision => -10,
+            Self::RuntimeCreateUnknown => -11,
+            Self::TopologyUnsafe => -12,
         }
     }
 
@@ -242,6 +269,11 @@ impl ConnectionError {
             Self::HostKeyResponse => "host_key_response",
             Self::TrustStore => "trust_store",
             Self::ReconnectUnavailable => "reconnect_unavailable",
+            Self::RuntimeSelectionUnavailable => "runtime_selection_unavailable",
+            Self::RuntimeStale => "runtime_stale",
+            Self::RuntimeCreateCollision => "runtime_create_collision",
+            Self::RuntimeCreateUnknown => "runtime_create_unknown",
+            Self::TopologyUnsafe => "tmux_topology_unsafe",
         }
     }
 }
@@ -256,6 +288,11 @@ impl fmt::Display for ConnectionError {
             Self::HostKeyResponse => "host-key response is stale or unexpected",
             Self::TrustStore => "host-key trust storage is unavailable",
             Self::ReconnectUnavailable => "no in-memory credentials are available for reconnect",
+            Self::RuntimeSelectionUnavailable => "the runtime candidate is no longer available",
+            Self::RuntimeStale => "the selected remote runtime changed or disappeared",
+            Self::RuntimeCreateCollision => "the requested runtime name is already in use",
+            Self::RuntimeCreateUnknown => "runtime creation outcome could not be verified",
+            Self::TopologyUnsafe => "the tmux topology may be shared with another session",
         })
     }
 }
@@ -276,6 +313,20 @@ struct ConnectionProfile {
     credentials: StoredCredentials,
     backend: Backend,
     runtime: Option<String>,
+    tmux_identity: Option<tmux::SessionIdentity>,
+    /// A resolved absolute Herdr executable. This capability is deliberately
+    /// kept out of all public snapshots and is revalidated on reconnect.
+    herdr_executable: Option<String>,
+}
+
+#[derive(Clone)]
+enum RuntimeBinding {
+    Tmux(tmux::SessionIdentity),
+    Herdr {
+        name: String,
+        default: bool,
+        executable: String,
+    },
 }
 
 /// The last explicitly requested endpoint.  This remains after credentials
@@ -304,6 +355,18 @@ impl SessionEndpoint {
         }
     }
 
+    fn from_profile(profile: &ConnectionProfile) -> Self {
+        Self {
+            host: profile.host.clone(),
+            port: profile.port,
+            username: profile.username.clone(),
+            known_hosts_path: profile.known_hosts_path.clone(),
+            backend: profile.backend,
+            runtime: profile.runtime.clone(),
+        }
+    }
+
+    #[cfg(test)]
     fn matches(&self, options: &ConnectOptions) -> bool {
         self.host == options.host
             && self.port == options.port
@@ -340,6 +403,12 @@ struct SessionState {
     foreground: bool,
     automatic_reconnect: bool,
     terminal_visible: bool,
+    runtime_discovery: RuntimeDiscoverySnapshot,
+    runtime_candidates: HashMap<String, RuntimeBinding>,
+    /// The Herdr executable resolved for this authenticated endpoint. Keep it
+    /// even while the picker is showing a tmux selection so a refresh cannot
+    /// silently move the same SSH lifecycle to another installation.
+    herdr_executable: Option<String>,
 }
 
 impl Default for SessionState {
@@ -358,6 +427,9 @@ impl Default for SessionState {
             foreground: true,
             automatic_reconnect: true,
             terminal_visible: true,
+            runtime_discovery: RuntimeDiscoverySnapshot::default(),
+            runtime_candidates: HashMap::new(),
+            herdr_executable: None,
         }
     }
 }
@@ -549,6 +621,15 @@ impl ConnectionShared {
             && session.generation == self.generation
             && !self.is_cancelled()
         {
+            // The endpoint is deliberately credential-free, but it must still
+            // follow the selected profile.  Picker selection can switch from
+            // tmux to Herdr after the host-stage endpoint was installed; all
+            // public workspace/selection paths consult this field to choose
+            // the backend-specific native snapshot and behavior.
+            session.endpoint = Some(SessionEndpoint::from_profile(&profile));
+            if let Some(executable) = profile.herdr_executable.clone() {
+                session.herdr_executable = Some(executable);
+            }
             session.profile = Some(profile);
         }
     }
@@ -675,6 +756,17 @@ impl ConnectionShared {
         self.ready_once.load(Ordering::Acquire)
     }
 
+    fn is_awaiting_runtime_selection(&self) -> bool {
+        self.info
+            .lock()
+            .map(|info| {
+                !info.finished
+                    && !self.is_cancelled()
+                    && info.state == ConnectionState::AwaitingRuntimeSelection
+            })
+            .unwrap_or(false)
+    }
+
     fn ready_epoch(&self) -> u64 {
         self.ready_epoch.load(Ordering::Acquire)
     }
@@ -784,6 +876,9 @@ impl ConnectionShared {
 }
 
 enum ControlCommand {
+    RefreshRuntimes,
+    SelectRuntime { candidate_id: String },
+    CreateRuntime { backend: Backend, name: String },
     SelectPane { window_id: u64, pane_id: u64 },
     CreateWorkspace { name: String },
     RenameWorkspace { window_id: u64, name: String },
@@ -825,14 +920,125 @@ fn connections() -> &'static Mutex<HashMap<TerminalId, ConnectionEntry>> {
     CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Start or replace the SSH session associated with a terminal ID.
-pub fn connect_terminal(
+/// Start or replace the SSH session associated with a terminal ID using the
+/// Rust-only direct-options path. Platform FFI/JNI bridges must use
+/// [`connect_host`] so a fresh connection always authenticates and discovers
+/// runtimes before an explicit bind. This test-only entry point remains for
+/// internal Rust lifecycle tests.
+#[cfg(test)]
+pub(crate) fn connect_terminal(
     terminal_id: TerminalId,
     options: ConnectOptions,
 ) -> Result<(), ConnectionError> {
     let options = options.validate()?;
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    start_connection(terminal_id, ConnectionStart::Options(options), false)
+    start_connection(terminal_id, ConnectionStart::Options(options))
+}
+
+/// Start the picker connection. This authenticates the SSH host and leaves
+/// the actor in `AwaitingRuntimeSelection` after independent tmux/Herdr
+/// discovery; it never creates or attaches a runtime on its own.
+pub fn connect_host(
+    terminal_id: TerminalId,
+    mut options: ConnectOptions,
+) -> Result<(), ConnectionError> {
+    // Host-stage options carry no authoritative backend/runtime. Reuse the
+    // existing validation and credential representation while forcing the
+    // endpoint metadata to remain unselected.
+    options.backend = Backend::Tmux;
+    options.runtime = None;
+    let options = options.validate()?;
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    start_connection(terminal_id, ConnectionStart::Host(options))
+}
+
+/// Request a fresh runtime list. The operation is low-frequency and is
+/// serialized with selection/creation by the owning Rust actor.
+pub fn list_runtimes(terminal_id: TerminalId) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let sender = current_connection(terminal_id)?
+        .command_sender()
+        .ok_or(ConnectionError::RuntimeSelectionUnavailable)?;
+    sender
+        .try_send(ControlCommand::RefreshRuntimes)
+        .map_err(|_| ConnectionError::RuntimeSelectionUnavailable)
+}
+
+/// Select one native-owned candidate from the current discovery revision. The
+/// remote session ID/name is resolved only inside the actor at execution time.
+pub fn select_runtime(terminal_id: TerminalId, candidate_id: &str) -> Result<(), ConnectionError> {
+    if candidate_id.is_empty() || candidate_id.len() > 128 || invalid_runtime_name(candidate_id) {
+        return Err(ConnectionError::InvalidArgument);
+    }
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let state = session_state(terminal_id);
+    let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    let Some(candidate) = state
+        .runtime_discovery
+        .tmux
+        .candidates
+        .iter()
+        .chain(state.runtime_discovery.herdr.candidates.iter())
+        .find(|candidate| candidate.id == candidate_id)
+    else {
+        return Err(ConnectionError::RuntimeSelectionUnavailable);
+    };
+    if !candidate.selectable || !state.runtime_candidates.contains_key(candidate_id) {
+        return Err(ConnectionError::RuntimeSelectionUnavailable);
+    }
+    drop(state);
+    let sender = current_connection(terminal_id)?
+        .command_sender()
+        .ok_or(ConnectionError::RuntimeSelectionUnavailable)?;
+    sender
+        .try_send(ControlCommand::SelectRuntime {
+            candidate_id: candidate_id.to_owned(),
+        })
+        .map_err(|_| ConnectionError::RuntimeSelectionUnavailable)
+}
+
+/// Explicitly create a tmux session. Herdr creation/start remains outside the
+/// first picker milestone because the upstream 0.9.0 detached-start proof is
+/// not part of this core operation.
+pub fn create_runtime(
+    terminal_id: TerminalId,
+    backend: Backend,
+    name: &str,
+) -> Result<(), ConnectionError> {
+    if backend != Backend::Tmux {
+        return Err(ConnectionError::RuntimeUnavailable);
+    }
+    tmux::validate_create_name(name).map_err(|_| ConnectionError::InvalidArgument)?;
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = current_connection(terminal_id)?;
+    if !shared.is_awaiting_runtime_selection() {
+        return Err(ConnectionError::RuntimeSelectionUnavailable);
+    }
+    // This is deliberately synchronous and local: a new accepted create
+    // request must make the prior operation result observable as "clear"
+    // before the actor can publish the next result. A discovery Error section
+    // is not cleared here.
+    clear_tmux_create_error(&shared)?;
+    let sender = shared
+        .command_sender()
+        .ok_or(ConnectionError::RuntimeSelectionUnavailable)?;
+    sender
+        .try_send(ControlCommand::CreateRuntime {
+            backend,
+            name: name.to_owned(),
+        })
+        .map_err(|_| ConnectionError::RuntimeSelectionUnavailable)
+}
+
+/// Return the bounded, native-owned runtime picker snapshot.
+pub fn runtime_discovery_snapshot(
+    terminal_id: TerminalId,
+) -> Result<RuntimeDiscoverySnapshot, ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    session_state(terminal_id)
+        .lock()
+        .map(|state| state.runtime_discovery.clone())
+        .map_err(|_| ConnectionError::Internal)
 }
 
 /// Reconnect using the parsed private key retained by this process after a
@@ -846,7 +1052,7 @@ pub fn reconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError
         .profile
         .clone()
         .ok_or(ConnectionError::ReconnectUnavailable)?;
-    start_connection(terminal_id, ConnectionStart::Profile(profile), true)
+    start_connection(terminal_id, ConnectionStart::ManualReconnect(profile))
 }
 
 /// Select a pane by its stable tmux numeric ID. The desired selection is kept
@@ -1188,11 +1394,18 @@ pub fn workspace_snapshot_json(terminal_id: TerminalId) -> Result<String, Connec
         snapshot.groups_supported = true;
         snapshot
     } else {
-        RuntimeSnapshot::tmux(&state.snapshot)
+        let runtime = state
+            .endpoint
+            .as_ref()
+            .filter(|endpoint| endpoint.backend == Backend::Tmux)
+            .and_then(|endpoint| endpoint.runtime.as_deref())
+            .unwrap_or(tmux::SESSION_NAME);
+        RuntimeSnapshot::tmux_for_runtime(&state.snapshot, runtime)
     };
     serde_json::to_string(&snapshot).map_err(|_| ConnectionError::Internal)
 }
 
+#[cfg(test)]
 fn prepare_session_endpoint(
     terminal_id: TerminalId,
     options: &ConnectOptions,
@@ -1213,6 +1426,9 @@ fn prepare_session_endpoint(
     // reconnect.
     state.endpoint = Some(SessionEndpoint::from_options(options));
     state.profile = None;
+    state.runtime_candidates.clear();
+    state.runtime_discovery = RuntimeDiscoverySnapshot::default();
+    state.herdr_executable = None;
     if !stale {
         return Ok(Vec::new());
     }
@@ -1230,21 +1446,111 @@ fn prepare_session_endpoint(
     Ok(stale_terminals)
 }
 
+fn prepare_host_endpoint(
+    terminal_id: TerminalId,
+    options: &ConnectOptions,
+) -> Result<Vec<TerminalId>, ConnectionError> {
+    let state = session_state(terminal_id);
+    let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    state.endpoint = Some(SessionEndpoint::from_options(options));
+    state.profile = None;
+    let stale_terminals = state
+        .pane_terminals
+        .drain()
+        .filter_map(|(_, id)| (id != terminal_id).then_some(id))
+        .collect::<Vec<_>>();
+    state.generation = 0;
+    state.snapshot = SessionSnapshot::default();
+    state.herdr = herdr_control::Metadata::default();
+    state.selected_pane = None;
+    state.meeterm_zoomed = false;
+    state.meeterm_zoomed_pane = None;
+    state.runtime_candidates.clear();
+    state.runtime_discovery = RuntimeDiscoverySnapshot::default();
+    state.herdr_executable = None;
+    Ok(stale_terminals)
+}
+
+fn prepare_manual_reconnect(
+    terminal_id: TerminalId,
+    profile: &ConnectionProfile,
+) -> Result<Vec<TerminalId>, ConnectionError> {
+    let state = session_state(terminal_id);
+    let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    // Keep the credentials in the ManualReconnect value while removing the
+    // selected runtime from the credential-free session metadata. The next
+    // authenticated flow must discover a fresh candidate list rather than
+    // briefly exposing or reusing the old binding.
+    state.endpoint = Some(SessionEndpoint {
+        host: profile.host.clone(),
+        port: profile.port,
+        username: profile.username.clone(),
+        known_hosts_path: profile.known_hosts_path.clone(),
+        backend: Backend::Tmux,
+        runtime: None,
+    });
+    state.profile = None;
+    state.runtime_candidates.clear();
+    state.runtime_discovery = RuntimeDiscoverySnapshot::default();
+    state.herdr_executable = None;
+    let stale_terminals = state
+        .pane_terminals
+        .drain()
+        .filter_map(|(_, id)| (id != terminal_id).then_some(id))
+        .collect::<Vec<_>>();
+    state.snapshot = SessionSnapshot::default();
+    state.herdr = herdr_control::Metadata::default();
+    state.selected_pane = None;
+    state.meeterm_zoomed = false;
+    state.meeterm_zoomed_pane = None;
+    Ok(stale_terminals)
+}
+
 enum ConnectionStart {
+    /// Rust-only direct-options compatibility path. It is intentionally not
+    /// reachable from the production FFI/JNI bridges; the host-only bridges
+    /// use [`ConnectionStart::Host`] and therefore enter the picker.
+    #[cfg(test)]
     Options(ConnectOptions),
-    Profile(ConnectionProfile),
+    Host(ConnectOptions),
+    /// A transport loss after Ready may retry the selected binding. This mode
+    /// is deliberately distinct from the public manual reconnect operation.
+    AutomaticReconnect(ConnectionProfile),
+    /// The UI-requested reconnect reauthenticates but must always rediscover
+    /// and wait for an explicit runtime choice, even if one candidate exists.
+    ManualReconnect(ConnectionProfile),
 }
 
 impl ConnectionStart {
+    fn enters_picker(&self) -> bool {
+        matches!(self, Self::Host(_) | Self::ManualReconnect(_))
+            || matches!(self, Self::AutomaticReconnect(profile) if profile.backend == Backend::Herdr)
+    }
+
+    fn is_automatic_reconnect(&self) -> bool {
+        matches!(self, Self::AutomaticReconnect(_))
+    }
+
+    fn is_manual_reconnect(&self) -> bool {
+        matches!(self, Self::ManualReconnect(_))
+    }
+
     fn endpoint(&self) -> (&str, u16, &str, &Path) {
         match self {
+            #[cfg(test)]
             Self::Options(options) => (
                 &options.host,
                 options.port,
                 &options.username,
                 &options.known_hosts_path,
             ),
-            Self::Profile(profile) => (
+            Self::Host(options) => (
+                &options.host,
+                options.port,
+                &options.username,
+                &options.known_hosts_path,
+            ),
+            Self::AutomaticReconnect(profile) | Self::ManualReconnect(profile) => (
                 &profile.host,
                 profile.port,
                 &profile.username,
@@ -1283,10 +1589,11 @@ fn wait_for_generation_finish(runtime: &'static Runtime, shared: Arc<ConnectionS
 fn start_connection(
     terminal_id: TerminalId,
     start: ConnectionStart,
-    reconnecting: bool,
 ) -> Result<(), ConnectionError> {
     let runtime = runtime()?;
     let generation = next_generation();
+    let reconnecting = start.is_automatic_reconnect();
+    let manual_reconnect = start.is_manual_reconnect();
 
     let (host, port, _username, known_hosts_path) = start.endpoint();
 
@@ -1307,10 +1614,21 @@ fn start_connection(
     }
 
     let stale_terminals = match &start {
+        #[cfg(test)]
         ConnectionStart::Options(options) => prepare_session_endpoint(terminal_id, options)?,
-        ConnectionStart::Profile(_) => Vec::new(),
+        ConnectionStart::Host(options) => prepare_host_endpoint(terminal_id, options)?,
+        ConnectionStart::AutomaticReconnect(_) => Vec::new(),
+        ConnectionStart::ManualReconnect(profile) => {
+            prepare_manual_reconnect(terminal_id, profile)?
+        }
     };
     registry::begin_remote(terminal_id, generation).map_err(map_terminal_error)?;
+    if manual_reconnect {
+        // A manual runtime picker is a new binding, not a reconnect capture.
+        // Replace the owner's native Term before authentication so stale
+        // cells/history cannot be observed while the fresh picker is loading.
+        registry::reset_remote_binding(terminal_id, generation).map_err(map_terminal_error)?;
+    }
     let shared = Arc::new(ConnectionShared::new(
         terminal_id,
         generation,
@@ -1328,6 +1646,11 @@ fn start_connection(
         state.generation = generation;
         state.meeterm_zoomed = false;
         state.meeterm_zoomed_pane = None;
+        // Candidate IDs are scoped to the connection generation. A reconnect
+        // must not expose or accept the previous generation's picker IDs
+        // before a fresh discovery pass publishes replacements.
+        state.runtime_candidates.clear();
+        state.runtime_discovery = RuntimeDiscoverySnapshot::default();
     }
     if reconnecting {
         shared.set_state(ConnectionState::Reconnecting);
@@ -1663,6 +1986,20 @@ enum FlowFailure {
     HerdrController,
     HerdrOperation,
     HerdrWorkspaceGroup,
+    TmuxRuntimeMissing,
+    TmuxRuntimeCollision,
+    TmuxRuntimeUnknown,
+    TmuxTopologyUnsafe,
+    TmuxDiscoveryMissing,
+    TmuxDiscoveryPermission,
+    TmuxDiscoveryMalformed,
+    TmuxDiscoveryTimeout,
+    RuntimeSelection,
+    HerdrDiscoveryMissing,
+    HerdrDiscoveryIncompatible,
+    HerdrDiscoveryMalformed,
+    HerdrDiscoveryPermission,
+    HerdrDiscoveryTimeout,
     Stale,
 }
 
@@ -1720,6 +2057,62 @@ impl FlowFailure {
                 "herdr_workspace_group",
                 "This parent workspace has linked worktree workspaces. Close its panes or groups in the ordinary Herdr client after checking the affected workspaces.",
             ),
+            Self::TmuxRuntimeMissing => (
+                "tmux_runtime_missing",
+                "The selected tmux session disappeared or its server was replaced. Choose a runtime again.",
+            ),
+            Self::TmuxRuntimeCollision => (
+                "tmux_runtime_collision",
+                "A tmux session with that name already exists.",
+            ),
+            Self::TmuxRuntimeUnknown => (
+                "tmux_runtime_unknown",
+                "The tmux session creation outcome could not be verified; no retry was attempted.",
+            ),
+            Self::TmuxTopologyUnsafe => (
+                "tmux_topology_unsafe",
+                "The tmux window may be linked to another session; the topology mutation was refused.",
+            ),
+            Self::TmuxDiscoveryMissing => (
+                "tmux_missing",
+                "tmux is not installed or is not available in the remote SSH command path.",
+            ),
+            Self::TmuxDiscoveryPermission => (
+                "tmux_permission",
+                "The remote tmux server could not be listed because access was denied.",
+            ),
+            Self::TmuxDiscoveryMalformed => (
+                "tmux_discovery_malformed",
+                "The remote tmux session list was malformed or exceeded its bound.",
+            ),
+            Self::TmuxDiscoveryTimeout => (
+                "tmux_discovery_timeout",
+                "The remote tmux session list did not finish before the discovery deadline.",
+            ),
+            Self::RuntimeSelection => (
+                "runtime_selection",
+                "The selected runtime candidate is no longer available. Refresh the runtime list.",
+            ),
+            Self::HerdrDiscoveryMissing => (
+                "herdr_missing",
+                "Herdr 0.9.0 was not found in the remote SSH command path or common install paths.",
+            ),
+            Self::HerdrDiscoveryIncompatible => (
+                "herdr_incompatible",
+                "A remote Herdr executable was found, but it is not compatible with 0.9.0.",
+            ),
+            Self::HerdrDiscoveryMalformed => (
+                "herdr_discovery_malformed",
+                "The Herdr session list was malformed or exceeded its bound.",
+            ),
+            Self::HerdrDiscoveryPermission => (
+                "herdr_permission",
+                "The remote Herdr session list could not be read.",
+            ),
+            Self::HerdrDiscoveryTimeout => (
+                "herdr_discovery_timeout",
+                "The remote Herdr session list did not finish before the discovery deadline.",
+            ),
         }
     }
 }
@@ -1734,6 +2127,7 @@ const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 6;
 const AUTO_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 const AUTO_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(15);
 const REPLACEMENT_GRACE_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_RUNTIME_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Cancellation and the deadline used by the pre-authentication russh task.
 ///
@@ -1986,6 +2380,107 @@ where
     }
 }
 
+/// Await one SSH setup operation while preserving the distinction between an
+/// operation error and an elapsed deadline. Runtime discovery uses the latter
+/// to report an uncertain picker section instead of labelling every failure as
+/// a permission or malformed-output problem.
+async fn await_stage_with_timeout<F, T, E>(
+    shared: &ConnectionShared,
+    future: F,
+    timeout: Duration,
+    failure: FlowFailure,
+    timeout_failure: FlowFailure,
+) -> Result<T, FlowFailure>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    if shared.is_cancelled() {
+        return Err(FlowFailure::Stale);
+    }
+    tokio::select! {
+        _ = shared.cancelled() => Err(FlowFailure::Stale),
+        result = tokio::time::timeout(timeout, future) => {
+            match result {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(_)) => Err(failure),
+                Err(_) => Err(timeout_failure),
+            }
+        }
+    }
+}
+
+/// Bounded output from one non-interactive SSH exec channel. Discovery uses
+/// this helper so tmux and Herdr can classify their own exit status without
+/// sharing a command, socket, or failure state.
+struct RemoteCommandOutput {
+    pub(super) stdout: Vec<u8>,
+    pub(super) stderr: Vec<u8>,
+    pub(super) exit_status: Option<u32>,
+}
+
+async fn run_remote_command_with_timeout(
+    shared: &ConnectionShared,
+    session: &client::Handle<HostKeyHandler>,
+    command: String,
+    max_bytes: usize,
+    overflow: FlowFailure,
+    timeout_failure: FlowFailure,
+) -> Result<RemoteCommandOutput, FlowFailure> {
+    let mut channel = await_stage_with_timeout(
+        shared,
+        session.channel_open_session(),
+        SSH_STAGE_TIMEOUT,
+        FlowFailure::Channel,
+        timeout_failure,
+    )
+    .await?;
+    await_stage_with_timeout(
+        shared,
+        channel.exec(true, command),
+        SSH_STAGE_TIMEOUT,
+        FlowFailure::Channel,
+        timeout_failure,
+    )
+    .await?;
+
+    let read = async {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_status = None;
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => {
+                    if stdout.len().saturating_add(data.len()) > max_bytes {
+                        return Err(overflow);
+                    }
+                    stdout.extend_from_slice(&data);
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    if stderr.len().saturating_add(data.len()) > max_bytes {
+                        return Err(overflow);
+                    }
+                    stderr.extend_from_slice(&data);
+                }
+                ChannelMsg::ExitStatus {
+                    exit_status: status,
+                } => exit_status = Some(status),
+                ChannelMsg::Failure => return Err(FlowFailure::Channel),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        Ok(RemoteCommandOutput {
+            stdout,
+            stderr,
+            exit_status,
+        })
+    };
+    tokio::select! {
+        _ = shared.cancelled() => Err(FlowFailure::Stale),
+        result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| timeout_failure)?,
+    }
+}
+
 async fn await_channel_message(
     shared: &ConnectionShared,
     reader: &mut russh::ChannelReadHalf,
@@ -2061,7 +2556,7 @@ async fn run_connection(
             break Err(failure);
         };
         retries = retries.saturating_add(1);
-        start = ConnectionStart::Profile(profile);
+        start = ConnectionStart::AutomaticReconnect(profile);
     };
     shared.clear_commands();
     detach_all(&shared);
@@ -2150,8 +2645,11 @@ async fn run_connection_flow(
     start: ConnectionStart,
     commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
-    let profile = match start {
-        ConnectionStart::Profile(profile) => profile,
+    let picker = start.enters_picker();
+    let mut profile = match start {
+        ConnectionStart::AutomaticReconnect(profile)
+        | ConnectionStart::ManualReconnect(profile) => profile,
+        #[cfg(test)]
         ConnectionStart::Options(ConnectOptions {
             host,
             port,
@@ -2195,9 +2693,32 @@ async fn run_connection_flow(
                 credentials,
                 backend,
                 runtime,
+                tmux_identity: None,
+                herdr_executable: None,
             };
             shared.set_profile(profile.clone());
             profile
+        }
+        ConnectionStart::Host(ConnectOptions {
+            host,
+            port,
+            username,
+            credentials,
+            known_hosts_path,
+            ..
+        }) => {
+            let credentials = decode_credentials(credentials)?;
+            ConnectionProfile {
+                host,
+                port,
+                username,
+                known_hosts_path,
+                credentials,
+                backend: Backend::Tmux,
+                runtime: None,
+                tmux_identity: None,
+                herdr_executable: None,
+            }
         }
     };
     if shared.is_cancelled() {
@@ -2253,7 +2774,8 @@ async fn run_connection_flow(
     let _connect_guard = guard;
     control.clear_deadline();
 
-    let result = run_tmux_authenticated_session(&shared, &profile, &mut session, commands).await;
+    let result =
+        run_authenticated_session(&shared, &mut profile, &mut session, commands, picker).await;
     // Dropping a russh Handle does not synchronously stop its event loop.  A
     // bounded disconnect gives normal failures and explicit cancellation a
     // chance to close the owned session before this task exits.
@@ -2266,11 +2788,34 @@ async fn run_connection_flow(
     result
 }
 
-async fn run_tmux_authenticated_session(
+fn decode_credentials(credentials: AuthOptions) -> Result<StoredCredentials, FlowFailure> {
+    match credentials {
+        AuthOptions::PublicKey {
+            mut private_key,
+            mut passphrase,
+        } => {
+            let decoded_key =
+                keys::decode_secret_key(&private_key, passphrase.as_deref().map(String::as_str));
+            // Clear the caller-provided PEM and passphrase before the first
+            // await. The reconnect profile retains only the parsed key.
+            private_key.zeroize();
+            if let Some(passphrase) = passphrase.as_mut() {
+                passphrase.zeroize();
+            }
+            let key = decoded_key.map_err(|_| FlowFailure::KeyFile)?;
+            Ok(StoredCredentials::PublicKey { key: Arc::new(key) })
+        }
+        AuthOptions::Password { password } => Ok(StoredCredentials::Password {
+            // Move the already zeroizing input into the reconnect profile.
+            password: Arc::new(password),
+        }),
+    }
+}
+
+async fn authenticate_session(
     shared: &Arc<ConnectionShared>,
     profile: &ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
-    commands: &mut mpsc::Receiver<ControlCommand>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::Authenticating);
     let authentication = match &profile.credentials {
@@ -2299,10 +2844,6 @@ async fn run_tmux_authenticated_session(
             .await?
         }
         StoredCredentials::Password { password } => {
-            // russh owns a transient String while it processes the SSH
-            // USERAUTH request; the retained reconnect copy remains wrapped
-            // in Zeroizing and is never logged or persisted. Passing the
-            // exact &str preserves whitespace passwords byte-for-byte.
             await_stage(
                 shared,
                 session.authenticate_password(profile.username.to_owned(), password.as_str()),
@@ -2318,10 +2859,472 @@ async fn run_tmux_authenticated_session(
     if shared.is_cancelled() {
         return Err(FlowFailure::Stale);
     }
+    Ok(())
+}
 
+async fn run_authenticated_session(
+    shared: &Arc<ConnectionShared>,
+    profile: &mut ConnectionProfile,
+    session: &mut client::Handle<HostKeyHandler>,
+    commands: &mut mpsc::Receiver<ControlCommand>,
+    picker: bool,
+) -> Result<(), FlowFailure> {
+    authenticate_session(shared, profile, session).await?;
+    if picker {
+        return run_runtime_picker(shared, profile, session, commands).await;
+    }
+    shared.set_profile(profile.clone());
+    let result = run_selected_backend(shared, profile, session, commands).await;
+    if let Err(failure) = result {
+        if !is_runtime_local_failure(failure) {
+            return Err(failure);
+        }
+        // A selected runtime can disappear during automatic reconnect. Keep
+        // the authenticated SSH handle and return to the same picker rather
+        // than creating or attaching a replacement.
+        return run_runtime_picker(shared, profile, session, commands).await;
+    }
+    Ok(())
+}
+
+async fn run_selected_backend(
+    shared: &Arc<ConnectionShared>,
+    profile: &mut ConnectionProfile,
+    session: &mut client::Handle<HostKeyHandler>,
+    commands: &mut mpsc::Receiver<ControlCommand>,
+) -> Result<(), FlowFailure> {
     match profile.backend {
-        Backend::Tmux => control::run(shared, session, commands).await,
+        Backend::Tmux => control::run(shared, profile, session, commands).await,
         Backend::Herdr => herdr_control::run(shared, profile, session, commands).await,
+    }
+}
+
+fn discovery_section_error(failure: FlowFailure) -> RuntimeSection {
+    let (code, message) = failure.details();
+    RuntimeSection {
+        state: RuntimeSectionState::Error,
+        candidates: Vec::new(),
+        error_code: Some(code.to_owned()),
+        error_message: Some(message.to_owned()),
+    }
+}
+
+fn discovery_section<T>(
+    result: Result<Vec<T>, FlowFailure>,
+    backend: Backend,
+    generation: u64,
+    revision: u64,
+    bindings: &mut HashMap<String, RuntimeBinding>,
+) -> Result<RuntimeSection, FlowFailure>
+where
+    T: RuntimeDiscoveryItem,
+{
+    match result {
+        Ok(items) => {
+            if items.len() > tmux::MAX_RUNTIME_SESSIONS {
+                return Ok(discovery_section_error(match backend {
+                    Backend::Tmux => FlowFailure::TmuxDiscoveryMalformed,
+                    Backend::Herdr => FlowFailure::HerdrDiscoveryMalformed,
+                }));
+            }
+            let mut candidates = Vec::with_capacity(items.len());
+            for (index, item) in items.into_iter().enumerate() {
+                let id = format!(
+                    "runtime-{generation}-{revision}-{}-{index}",
+                    match backend {
+                        Backend::Tmux => "tmux",
+                        Backend::Herdr => "herdr",
+                    }
+                );
+                let (name, state, selectable, suggested, binding) = item.into_picker_parts();
+                candidates.push(RuntimeCandidate {
+                    id: id.clone(),
+                    backend,
+                    name,
+                    state,
+                    selectable,
+                    suggested,
+                    error_code: None,
+                    error_message: None,
+                });
+                bindings.insert(id, binding);
+            }
+            Ok(RuntimeSection {
+                state: if candidates.is_empty() {
+                    RuntimeSectionState::Empty
+                } else {
+                    RuntimeSectionState::Success
+                },
+                candidates,
+                error_code: None,
+                error_message: None,
+            })
+        }
+        Err(failure) if matches!(failure, FlowFailure::Stale) => Err(failure),
+        Err(failure) => Ok(discovery_section_error(failure)),
+    }
+}
+
+trait RuntimeDiscoveryItem {
+    fn into_picker_parts(self) -> (String, RuntimeState, bool, bool, RuntimeBinding);
+}
+
+impl RuntimeDiscoveryItem for tmux::SessionIdentity {
+    fn into_picker_parts(self) -> (String, RuntimeState, bool, bool, RuntimeBinding) {
+        let suggested = self.name == tmux::SESSION_NAME;
+        let name = self.name.clone();
+        (
+            name,
+            RuntimeState::Running,
+            true,
+            suggested,
+            RuntimeBinding::Tmux(self),
+        )
+    }
+}
+
+impl RuntimeDiscoveryItem for herdr_control::DiscoveredSession {
+    fn into_picker_parts(self) -> (String, RuntimeState, bool, bool, RuntimeBinding) {
+        let suggested = self.default;
+        let state = if self.running {
+            RuntimeState::Running
+        } else {
+            RuntimeState::Stopped
+        };
+        let name = self.name.clone();
+        (
+            name.clone(),
+            state,
+            self.running,
+            suggested,
+            RuntimeBinding::Herdr {
+                name,
+                default: self.default,
+                executable: self.executable,
+            },
+        )
+    }
+}
+
+fn clear_runtime_binding(shared: &ConnectionShared) -> Result<(), FlowFailure> {
+    let stale_terminals = {
+        let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if state.generation != shared.generation {
+            return Err(FlowFailure::Stale);
+        }
+        state.profile = None;
+        let stale_terminals = state
+            .pane_terminals
+            .drain()
+            .filter_map(|(_, id)| (id != shared.terminal_id).then_some(id))
+            .collect::<Vec<_>>();
+        state.snapshot = SessionSnapshot::default();
+        state.herdr = herdr_control::Metadata::default();
+        state.selected_pane = None;
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_pane = None;
+        stale_terminals
+    };
+
+    // The old actor has already returned and dropped its backend client when
+    // this helper runs. Revoke the owner transport and reset its native Term
+    // before a new backend can attach in the same SSH generation.
+    registry::detach_transport(shared.terminal_id, shared.generation);
+    registry::reset_remote_binding(shared.terminal_id, shared.generation)
+        .map_err(|_| FlowFailure::Stale)?;
+    for id in stale_terminals {
+        registry::detach_transport(id, shared.generation);
+        registry::destroy_terminal(id);
+    }
+    Ok(())
+}
+
+fn mark_runtime_failure(shared: &ConnectionShared, candidate_id: &str, failure: FlowFailure) {
+    let (code, message) = failure.details();
+    if let Ok(mut state) = shared.session.lock()
+        && state.generation == shared.generation
+    {
+        if let Some(candidate) = state
+            .runtime_discovery
+            .tmux
+            .candidates
+            .iter_mut()
+            .find(|candidate| candidate.id == candidate_id)
+        {
+            candidate.selectable = false;
+            candidate.error_code = Some(code.to_owned());
+            candidate.error_message = Some(message.to_owned());
+        } else if let Some(candidate) = state
+            .runtime_discovery
+            .herdr
+            .candidates
+            .iter_mut()
+            .find(|candidate| candidate.id == candidate_id)
+        {
+            candidate.selectable = false;
+            candidate.error_code = Some(code.to_owned());
+            candidate.error_message = Some(message.to_owned());
+        }
+    }
+}
+
+fn mark_runtime_section_failure(shared: &ConnectionShared, backend: Backend, failure: FlowFailure) {
+    // Runtime creation is currently a tmux-only operation. In particular, a
+    // tmux create result must never replace or annotate the independent
+    // Herdr discovery section.
+    if backend != Backend::Tmux {
+        return;
+    }
+    if let Ok(mut state) = shared.session.lock()
+        && state.generation == shared.generation
+    {
+        let section = &mut state.runtime_discovery.tmux;
+        // Keep a successful/empty discovery visible while reporting the
+        // operation result beside it. A genuine discovery error stays
+        // authoritative and is not overwritten by a later create failure.
+        if matches!(
+            section.state,
+            RuntimeSectionState::Success | RuntimeSectionState::Empty
+        ) {
+            let (code, message) = failure.details();
+            section.error_code = Some(code.to_owned());
+            section.error_message = Some(message.to_owned());
+        }
+    }
+}
+
+fn clear_tmux_create_error(shared: &ConnectionShared) -> Result<(), ConnectionError> {
+    let mut state = shared
+        .session
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
+    if state.generation != shared.generation {
+        return Err(ConnectionError::RuntimeSelectionUnavailable);
+    }
+    let section = &mut state.runtime_discovery.tmux;
+    if matches!(
+        section.state,
+        RuntimeSectionState::Success | RuntimeSectionState::Empty
+    ) {
+        section.error_code = None;
+        section.error_message = None;
+    }
+    Ok(())
+}
+
+async fn discover_and_publish(
+    shared: &Arc<ConnectionShared>,
+    base: &ConnectionProfile,
+    session: &client::Handle<HostKeyHandler>,
+) -> Result<(), FlowFailure> {
+    let revision = {
+        let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if state.generation != shared.generation || shared.is_cancelled() {
+            return Err(FlowFailure::Stale);
+        }
+        let revision = state
+            .runtime_discovery
+            .discovery_revision
+            .saturating_add(1)
+            .max(1);
+        state.runtime_candidates.clear();
+        state.runtime_discovery = RuntimeDiscoverySnapshot::loading(shared.generation, revision);
+        revision
+    };
+    shared.set_state(ConnectionState::DiscoveringRuntimes);
+
+    // The two commands use separate SSH channels and have independent bounds
+    // and result mapping. A missing/broken backend therefore cannot hide the
+    // other backend's candidates.
+    let expected_herdr_executable = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        base.herdr_executable
+            .as_deref()
+            .or(state.herdr_executable.as_deref())
+            .map(str::to_owned)
+    };
+    let (tmux_result, herdr_result) = tokio::join!(
+        control::discover(shared, session),
+        herdr_control::discover(shared, session, expected_herdr_executable.as_deref()),
+    );
+    let mut bindings = HashMap::new();
+    let tmux = discovery_section(
+        tmux_result,
+        Backend::Tmux,
+        shared.generation,
+        revision,
+        &mut bindings,
+    )?;
+    let herdr = match herdr_result {
+        Ok(discovered) => {
+            let executable = discovered.executable.clone();
+            let section = discovery_section(
+                Ok(discovered.sessions),
+                Backend::Herdr,
+                shared.generation,
+                revision,
+                &mut bindings,
+            )?;
+            if let Ok(mut state) = shared.session.lock()
+                && state.generation == shared.generation
+            {
+                state.herdr_executable = Some(executable);
+            }
+            section
+        }
+        Err(failure) if matches!(failure, FlowFailure::Stale) => return Err(failure),
+        Err(failure) => discovery_section::<herdr_control::DiscoveredSession>(
+            Err(failure),
+            Backend::Herdr,
+            shared.generation,
+            revision,
+            &mut bindings,
+        )?,
+    };
+    let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+    if state.generation != shared.generation || shared.is_cancelled() {
+        return Err(FlowFailure::Stale);
+    }
+    state.runtime_candidates = bindings;
+    state.runtime_discovery = RuntimeDiscoverySnapshot {
+        connection_generation: shared.generation,
+        discovery_revision: revision,
+        tmux,
+        herdr,
+    };
+    Ok(())
+}
+
+fn profile_for_binding(base: &ConnectionProfile, binding: &RuntimeBinding) -> ConnectionProfile {
+    let mut profile = base.clone();
+    profile.tmux_identity = None;
+    profile.herdr_executable = None;
+    match binding {
+        RuntimeBinding::Tmux(identity) => {
+            profile.backend = Backend::Tmux;
+            profile.runtime = Some(identity.name.clone());
+            profile.tmux_identity = Some(identity.clone());
+        }
+        RuntimeBinding::Herdr {
+            name,
+            default,
+            executable,
+        } => {
+            profile.backend = Backend::Herdr;
+            profile.runtime = (!*default).then(|| name.clone());
+            profile.herdr_executable = Some(executable.clone());
+        }
+    }
+    profile
+}
+
+fn is_runtime_local_failure(failure: FlowFailure) -> bool {
+    matches!(
+        failure,
+        FlowFailure::TmuxRuntimeMissing
+            | FlowFailure::TmuxRuntimeCollision
+            | FlowFailure::TmuxRuntimeUnknown
+            | FlowFailure::TmuxDiscoveryMissing
+            | FlowFailure::TmuxDiscoveryPermission
+            | FlowFailure::TmuxDiscoveryMalformed
+            | FlowFailure::TmuxDiscoveryTimeout
+            | FlowFailure::HerdrMissing
+            | FlowFailure::HerdrSessionMissing
+            | FlowFailure::HerdrIncompatible
+            | FlowFailure::HerdrUnsupported
+            | FlowFailure::HerdrForwarding
+            | FlowFailure::HerdrProtocol
+            | FlowFailure::HerdrDiscoveryMissing
+            | FlowFailure::HerdrDiscoveryIncompatible
+            | FlowFailure::HerdrDiscoveryMalformed
+            | FlowFailure::HerdrDiscoveryPermission
+            | FlowFailure::HerdrDiscoveryTimeout
+            | FlowFailure::RuntimeSelection
+    )
+}
+
+async fn run_runtime_picker(
+    shared: &Arc<ConnectionShared>,
+    base: &ConnectionProfile,
+    session: &mut client::Handle<HostKeyHandler>,
+    commands: &mut mpsc::Receiver<ControlCommand>,
+) -> Result<(), FlowFailure> {
+    clear_runtime_binding(shared)?;
+    discover_and_publish(shared, base, session).await?;
+    loop {
+        shared.set_state(ConnectionState::AwaitingRuntimeSelection);
+        let command = tokio::select! {
+            _ = shared.cancelled() => return Err(FlowFailure::Stale),
+            command = commands.recv() => command,
+        };
+        let Some(command) = command else {
+            return Err(FlowFailure::Stale);
+        };
+        match command {
+            ControlCommand::RefreshRuntimes => {
+                discover_and_publish(shared, base, session).await?;
+            }
+            ControlCommand::SelectRuntime { candidate_id } => {
+                let binding = {
+                    let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+                    let selectable = state
+                        .runtime_discovery
+                        .tmux
+                        .candidates
+                        .iter()
+                        .chain(state.runtime_discovery.herdr.candidates.iter())
+                        .any(|candidate| candidate.id == candidate_id && candidate.selectable);
+                    selectable
+                        .then(|| state.runtime_candidates.get(&candidate_id).cloned())
+                        .flatten()
+                };
+                let Some(binding) = binding else {
+                    mark_runtime_failure(shared, &candidate_id, FlowFailure::RuntimeSelection);
+                    continue;
+                };
+                let mut selected = profile_for_binding(base, &binding);
+                shared.set_state(ConnectionState::AttachingRuntime);
+                shared.set_profile(selected.clone());
+                match run_selected_backend(shared, &mut selected, session, commands).await {
+                    Ok(()) => return Ok(()),
+                    Err(failure) if is_runtime_local_failure(failure) => {
+                        clear_runtime_binding(shared)?;
+                        mark_runtime_failure(shared, &candidate_id, failure);
+                    }
+                    Err(failure) => return Err(failure),
+                }
+            }
+            ControlCommand::CreateRuntime { backend, name } => {
+                if backend != Backend::Tmux {
+                    mark_runtime_section_failure(shared, backend, FlowFailure::RuntimeSelection);
+                    continue;
+                }
+                shared.set_state(ConnectionState::CreatingRuntime);
+                let identity = match control::create_runtime(shared, session, &name).await {
+                    Ok(identity) => identity,
+                    Err(failure) if is_runtime_local_failure(failure) => {
+                        mark_runtime_section_failure(shared, Backend::Tmux, failure);
+                        continue;
+                    }
+                    Err(failure) => return Err(failure),
+                };
+                let binding = RuntimeBinding::Tmux(identity);
+                let mut selected = profile_for_binding(base, &binding);
+                shared.set_state(ConnectionState::AttachingRuntime);
+                shared.set_profile(selected.clone());
+                match run_selected_backend(shared, &mut selected, session, commands).await {
+                    Ok(()) => return Ok(()),
+                    Err(failure) if is_runtime_local_failure(failure) => {
+                        clear_runtime_binding(shared)?;
+                        mark_runtime_section_failure(shared, Backend::Tmux, failure);
+                    }
+                    Err(failure) => return Err(failure),
+                }
+            }
+            // Pane/topology commands can be queued by a stale view while the
+            // picker is visible. They have no valid runtime target yet.
+            _ => {}
+        }
     }
 }
 
@@ -2345,6 +3348,10 @@ fn invalid_identity_component(value: &str) -> bool {
     value
         .chars()
         .any(|character| character.is_control() || character.is_whitespace())
+}
+
+fn invalid_runtime_name(value: &str) -> bool {
+    value.chars().any(char::is_control)
 }
 
 fn fingerprint(key: &PublicKey) -> String {
@@ -2668,7 +3675,12 @@ mod tests {
             herdr_endpoint.matches(&options(Backend::Herdr, Some("default")).validate().unwrap())
         );
         assert!(!herdr_endpoint.matches(&options(Backend::Herdr, Some("dev")).validate().unwrap()));
-        assert!(options(Backend::Tmux, Some("dev")).validate().is_err());
+        assert!(options(Backend::Tmux, Some("dev")).validate().is_ok());
+        assert!(
+            options(Backend::Tmux, Some("日本語 ; $HOME"))
+                .validate()
+                .is_ok()
+        );
         for name in ["../other", "..", ".", "a/b", "a b", "x;exit", "$(id)"] {
             assert!(options(Backend::Herdr, Some(name)).validate().is_err());
         }
@@ -2682,6 +3694,351 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn reconnect_picker_policy_requires_explicit_herdr_reselection() {
+        let options = || ConnectOptions {
+            host: "example.test".into(),
+            port: 22,
+            username: "fixture".into(),
+            credentials: AuthOptions::password("fixture-only".into()),
+            known_hosts_path: PathBuf::from("/tmp/fixture-known-hosts"),
+            backend: Backend::Tmux,
+            runtime: None,
+        };
+        assert!(!ConnectionStart::Options(options()).enters_picker());
+        assert!(ConnectionStart::Host(options()).enters_picker());
+
+        let profile = ConnectionProfile {
+            host: "example.test".into(),
+            port: 22,
+            username: "fixture".into(),
+            known_hosts_path: PathBuf::from("/tmp/fixture-known-hosts"),
+            credentials: StoredCredentials::Password {
+                password: Arc::new(Zeroizing::new("fixture-only".into())),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("meeterm".into()),
+            tmux_identity: None,
+            herdr_executable: None,
+        };
+        let automatic = ConnectionStart::AutomaticReconnect(profile.clone());
+        assert!(!automatic.enters_picker());
+        assert!(automatic.is_automatic_reconnect());
+
+        let mut herdr_profile = profile.clone();
+        herdr_profile.backend = Backend::Herdr;
+        herdr_profile.runtime = None;
+        herdr_profile.herdr_executable = Some("/home/fixture/.local/bin/herdr".into());
+        let herdr_automatic = ConnectionStart::AutomaticReconnect(herdr_profile);
+        assert!(herdr_automatic.enters_picker());
+        assert!(herdr_automatic.is_automatic_reconnect());
+
+        let manual = ConnectionStart::ManualReconnect(profile);
+        assert!(manual.enters_picker());
+        assert!(manual.is_manual_reconnect());
+        assert!(!manual.is_automatic_reconnect());
+    }
+
+    #[test]
+    fn manual_reconnect_clears_binding_metadata_before_authentication() {
+        let owner = registry::create_terminal(80, 24).expect("owner terminal");
+        let stale_pane = registry::create_terminal(80, 24).expect("stale pane terminal");
+        let profile = ConnectionProfile {
+            host: "example.test".into(),
+            port: 22,
+            username: "fixture".into(),
+            known_hosts_path: PathBuf::from("/tmp/fixture-known-hosts"),
+            credentials: StoredCredentials::Password {
+                password: Arc::new(Zeroizing::new("fixture-only".into())),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("meeterm".into()),
+            tmux_identity: None,
+            herdr_executable: None,
+        };
+        {
+            let state = session_state(owner);
+            let mut state = state.lock().expect("session state");
+            state.endpoint = Some(SessionEndpoint::from_profile(&profile));
+            state.profile = Some(profile.clone());
+            state.pane_terminals.insert(42, stale_pane);
+            state.snapshot.selected_pane = Some(42);
+            state.selected_pane = Some(42);
+            state.runtime_candidates.insert(
+                "stale".into(),
+                RuntimeBinding::Tmux(tmux::SessionIdentity {
+                    session_id: "$7".into(),
+                    name: "meeterm".into(),
+                    server_pid: 7,
+                    server_start_time: 1700000000,
+                }),
+            );
+        }
+
+        let stale = prepare_manual_reconnect(owner, &profile).expect("prepare manual reconnect");
+        assert_eq!(stale, vec![stale_pane]);
+        {
+            let state = session_state(owner);
+            let state = state.lock().expect("session state");
+            assert!(state.profile.is_none());
+            assert!(state.runtime_candidates.is_empty());
+            assert_eq!(state.runtime_discovery, RuntimeDiscoverySnapshot::default());
+            assert!(state.pane_terminals.is_empty());
+            assert_eq!(state.snapshot, SessionSnapshot::default());
+            assert_eq!(state.selected_pane, None);
+            assert_eq!(
+                state.endpoint.as_ref().map(|e| e.backend),
+                Some(Backend::Tmux)
+            );
+            assert_eq!(
+                state.endpoint.as_ref().and_then(|e| e.runtime.as_deref()),
+                None
+            );
+        }
+
+        // The caller-owned start value still contains the credentials after
+        // the selected runtime metadata has been removed from session state.
+        assert!(matches!(
+            profile.credentials,
+            StoredCredentials::Password { .. }
+        ));
+        registry::destroy_terminal(stale_pane);
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn tmux_create_failure_preserves_candidates_and_herdr_discovery() {
+        let owner = registry::create_terminal(80, 24).expect("owner terminal");
+        let shared = ConnectionShared::new(
+            owner,
+            1,
+            "example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/example-known-hosts"),
+        );
+        let tmux_candidate = RuntimeCandidate {
+            id: "runtime-tmux".into(),
+            backend: Backend::Tmux,
+            name: "meeterm".into(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: true,
+            ..RuntimeCandidate::default()
+        };
+        let herdr_candidate = RuntimeCandidate {
+            id: "runtime-herdr".into(),
+            backend: Backend::Herdr,
+            name: "default".into(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: true,
+            ..RuntimeCandidate::default()
+        };
+        {
+            let mut state = shared.session.lock().expect("session state");
+            state.generation = shared.generation;
+            state.runtime_discovery = RuntimeDiscoverySnapshot {
+                connection_generation: shared.generation,
+                discovery_revision: 4,
+                tmux: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![tmux_candidate],
+                    ..RuntimeSection::default()
+                },
+                herdr: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![herdr_candidate],
+                    ..RuntimeSection::default()
+                },
+            };
+        }
+        let (tmux_before, herdr_before) = shared
+            .session
+            .lock()
+            .map(|state| {
+                (
+                    state.runtime_discovery.tmux.clone(),
+                    state.runtime_discovery.herdr.clone(),
+                )
+            })
+            .expect("session state");
+
+        mark_runtime_section_failure(&shared, Backend::Tmux, FlowFailure::TmuxRuntimeCollision);
+
+        {
+            let state = shared.session.lock().expect("session state");
+            let tmux = &state.runtime_discovery.tmux;
+            assert_eq!(tmux.state, RuntimeSectionState::Success);
+            assert_eq!(tmux.candidates, tmux_before.candidates);
+            assert_eq!(tmux.error_code.as_deref(), Some("tmux_runtime_collision"));
+            assert_eq!(
+                tmux.error_message.as_deref(),
+                Some("A tmux session with that name already exists.")
+            );
+            assert_eq!(state.runtime_discovery.herdr, herdr_before);
+        }
+
+        // A discovery failure remains authoritative; a create result must
+        // not replace it with an operation error either.
+        let discovery_error = RuntimeSection {
+            state: RuntimeSectionState::Error,
+            error_code: Some("tmux_discovery_timeout".into()),
+            error_message: Some("discovery failed".into()),
+            ..RuntimeSection::default()
+        };
+        {
+            let mut state = shared.session.lock().expect("session state");
+            state.runtime_discovery.tmux = discovery_error.clone();
+        }
+        clear_tmux_create_error(&shared).expect("clear operation error");
+        mark_runtime_section_failure(&shared, Backend::Tmux, FlowFailure::TmuxRuntimeUnknown);
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("session state")
+                .runtime_discovery
+                .tmux,
+            discovery_error
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn accepted_tmux_create_clears_and_repeats_same_operation_error() {
+        let owner = registry::create_terminal(80, 24).expect("owner terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/example-known-hosts"),
+        ));
+        let candidate = RuntimeCandidate {
+            id: "runtime-tmux".into(),
+            backend: Backend::Tmux,
+            name: "meeterm".into(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: true,
+            ..RuntimeCandidate::default()
+        };
+        {
+            let mut state = shared.session.lock().expect("session state");
+            state.generation = generation;
+            state.runtime_discovery = RuntimeDiscoverySnapshot {
+                connection_generation: generation,
+                discovery_revision: 8,
+                tmux: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![candidate],
+                    error_code: Some("tmux_runtime_collision".into()),
+                    error_message: Some("A tmux session with that name already exists.".into()),
+                },
+                ..RuntimeDiscoverySnapshot::default()
+            };
+        }
+        let (sender, mut receiver) = mpsc::channel(4);
+        shared.set_commands(sender);
+        let test_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let abort = test_runtime
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort,
+            },
+        );
+
+        // A request outside the picker is not accepted and must not clear
+        // the previous operation result or enqueue a command.
+        assert_eq!(
+            create_runtime(owner, Backend::Tmux, "desk"),
+            Err(ConnectionError::RuntimeSelectionUnavailable)
+        );
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("session state")
+                .runtime_discovery
+                .tmux
+                .error_code
+                .as_deref(),
+            Some("tmux_runtime_collision")
+        );
+        assert!(receiver.try_recv().is_err());
+
+        shared.set_state(ConnectionState::AwaitingRuntimeSelection);
+        assert_eq!(create_runtime(owner, Backend::Tmux, "desk"), Ok(()));
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("session state")
+                .runtime_discovery
+                .tmux
+                .error_code,
+            None
+        );
+        assert!(matches!(
+            receiver.try_recv().expect("first create command"),
+            ControlCommand::CreateRuntime { .. }
+        ));
+
+        mark_runtime_section_failure(&shared, Backend::Tmux, FlowFailure::TmuxRuntimeCollision);
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("session state")
+                .runtime_discovery
+                .tmux
+                .error_code
+                .as_deref(),
+            Some("tmux_runtime_collision")
+        );
+
+        // The second accepted request gets the same synchronous clear, so a
+        // same-code failure produces a new clear -> error transition instead
+        // of leaving mobile with an unchanged snapshot.
+        assert_eq!(create_runtime(owner, Backend::Tmux, "desk"), Ok(()));
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("session state")
+                .runtime_discovery
+                .tmux
+                .error_code,
+            None
+        );
+        assert!(matches!(
+            receiver.try_recv().expect("second create command"),
+            ControlCommand::CreateRuntime { .. }
+        ));
+        mark_runtime_section_failure(&shared, Backend::Tmux, FlowFailure::TmuxRuntimeCollision);
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("session state")
+                .runtime_discovery
+                .tmux
+                .error_code
+                .as_deref(),
+            Some("tmux_runtime_collision")
+        );
+
+        registry::destroy_terminal(owner);
     }
 
     #[test]
@@ -2823,6 +4180,8 @@ mod tests {
             known_hosts_path: known_hosts_path.clone(),
             backend: Backend::Tmux,
             runtime: None,
+            tmux_identity: None,
+            herdr_executable: None,
             credentials: StoredCredentials::Password {
                 password: Arc::new(Zeroizing::new("old secret".to_owned())),
             },

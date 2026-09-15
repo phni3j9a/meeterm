@@ -22,6 +22,79 @@ impl Backend {
     }
 }
 
+/// The low-frequency state of one backend's runtime list.  This is a control
+/// plane model only: it contains display data and opaque native candidate IDs,
+/// never a tmux server identity, Herdr socket, session directory, or
+/// executable path.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeSectionState {
+    #[default]
+    Loading,
+    Success,
+    Empty,
+    Error,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeState {
+    #[default]
+    Running,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCandidate {
+    /// A native-owned ID. It is scoped to one connection generation and one
+    /// discovery revision and is not a remote session/socket identity.
+    pub id: String,
+    pub backend: Backend,
+    pub name: String,
+    pub state: RuntimeState,
+    pub selectable: bool,
+    pub suggested: bool,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSection {
+    pub state: RuntimeSectionState,
+    pub candidates: Vec<RuntimeCandidate>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiscoverySnapshot {
+    pub connection_generation: u64,
+    pub discovery_revision: u64,
+    pub tmux: RuntimeSection,
+    pub herdr: RuntimeSection,
+}
+
+impl RuntimeDiscoverySnapshot {
+    pub(crate) fn loading(generation: u64, revision: u64) -> Self {
+        Self {
+            connection_generation: generation,
+            discovery_revision: revision,
+            tmux: RuntimeSection {
+                state: RuntimeSectionState::Loading,
+                ..RuntimeSection::default()
+            },
+            herdr: RuntimeSection {
+                state: RuntimeSectionState::Loading,
+                ..RuntimeSection::default()
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSnapshot {
@@ -68,10 +141,10 @@ pub struct Agent {
 }
 
 impl RuntimeSnapshot {
-    pub(crate) fn tmux(snapshot: &crate::tmux::SessionSnapshot) -> Self {
+    pub(crate) fn tmux_for_runtime(snapshot: &crate::tmux::SessionSnapshot, runtime: &str) -> Self {
         Self {
             backend: Backend::Tmux,
-            runtime: crate::tmux::SESSION_NAME.to_owned(),
+            runtime: runtime.to_owned(),
             groups_supported: false,
             workspaces: snapshot
                 .windows
@@ -142,9 +215,13 @@ mod tests {
             }],
         };
         let original = source.clone();
-        let result = RuntimeSnapshot::tmux(&source);
+        let result = RuntimeSnapshot::tmux_for_runtime(&source, crate::tmux::SESSION_NAME);
         assert_eq!(source, original);
         assert_eq!(result.runtime, "meeterm");
+        assert_eq!(
+            RuntimeSnapshot::tmux_for_runtime(&source, "dev-日本語").runtime,
+            "dev-日本語"
+        );
         assert!(!result.groups_supported);
         assert_eq!(result.groups.len(), 1);
         assert_eq!(result.groups[0].workspace_id, result.workspaces[0].id);

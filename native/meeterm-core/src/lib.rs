@@ -15,15 +15,19 @@ pub mod workspace;
 
 pub use ffi::{
     meeterm_clear_selection, meeterm_commit_modified_utf8, meeterm_commit_utf8, meeterm_connect,
-    meeterm_connect_backend, meeterm_connection_snapshot, meeterm_connection_snapshot_size,
-    meeterm_create_terminal, meeterm_destroy_terminal, meeterm_disconnect, meeterm_forget_host_key,
-    meeterm_input_commit_count, meeterm_pane_record_size, meeterm_paste_utf8, meeterm_reconnect,
-    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_scroll_lines, meeterm_select_pane,
-    meeterm_select_start, meeterm_select_update, meeterm_selection_text, meeterm_send_bytes,
-    meeterm_send_key, meeterm_send_special_key, meeterm_session_panes,
-    meeterm_set_automatic_reconnect, meeterm_set_foreground, meeterm_set_scrollback_limit,
-    meeterm_set_terminal_visible, meeterm_set_theme, meeterm_snapshot, meeterm_snapshot_size,
-    meeterm_terminal_exists, meeterm_terminal_revision, meeterm_tmux_command,
+    meeterm_connect_host, meeterm_connection_snapshot, meeterm_connection_snapshot_size,
+    meeterm_create_runtime, meeterm_create_terminal, meeterm_create_tmux_session,
+    meeterm_destroy_terminal, meeterm_disconnect, meeterm_forget_host_key,
+    meeterm_input_commit_count, meeterm_list_runtimes, meeterm_pane_record_size,
+    meeterm_paste_utf8, meeterm_reconnect, meeterm_refresh_runtimes, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_runtime_discovery, meeterm_runtime_discovery_size,
+    meeterm_runtime_snapshot, meeterm_runtime_snapshot_size, meeterm_scroll_lines,
+    meeterm_select_pane, meeterm_select_runtime, meeterm_select_start, meeterm_select_update,
+    meeterm_selection_text, meeterm_send_bytes, meeterm_send_key, meeterm_send_special_key,
+    meeterm_session_panes, meeterm_set_automatic_reconnect, meeterm_set_foreground,
+    meeterm_set_scrollback_limit, meeterm_set_terminal_visible, meeterm_set_theme,
+    meeterm_snapshot, meeterm_snapshot_size, meeterm_terminal_exists, meeterm_terminal_revision,
+    meeterm_tmux_command,
 };
 pub use input::{
     KeyCode, Modifiers, SpecialKey, encode_key, encode_key_for_mode, encode_special_key,
@@ -38,11 +42,12 @@ pub use snapshot::{Snapshot, Theme};
 pub use ssh::{
     ALGORITHM_CAPACITY, AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot,
     ConnectionState, ERROR_CODE_CAPACITY, ERROR_MESSAGE_CAPACITY, FINGERPRINT_CAPACITY,
-    HOST_CAPACITY, close_group, close_pane, close_workspace, connect_terminal, connection_snapshot,
-    create_group, create_pane, create_workspace, disconnect_terminal, forget_host_key,
-    reconnect_terminal, refresh_terminal, rename_group, rename_pane, rename_workspace,
-    select_group, select_pane, send_bytes, session_snapshot, set_automatic_reconnect,
-    set_foreground, set_terminal_visible, terminal_revision, workspace_snapshot_json,
+    HOST_CAPACITY, close_group, close_pane, close_workspace, connect_host, connection_snapshot,
+    create_group, create_pane, create_runtime, create_workspace, disconnect_terminal,
+    forget_host_key, list_runtimes, reconnect_terminal, refresh_terminal, rename_group,
+    rename_pane, rename_workspace, runtime_discovery_snapshot, select_group, select_pane,
+    select_runtime, send_bytes, session_snapshot, set_automatic_reconnect, set_foreground,
+    set_terminal_visible, terminal_revision, workspace_snapshot_json,
 };
 pub use terminal::{
     DEFAULT_SCROLLBACK_LINES, FIXED_DEMO_BYTES, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES,

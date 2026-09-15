@@ -13,6 +13,10 @@ enum MeetermConnectionPhase: UInt32 {
   case attachingTmux = 8
   case synchronizing = 9
   case reconnecting = 10
+  case discoveringRuntimes = 11
+  case awaitingRuntimeSelection = 12
+  case attachingRuntime = 13
+  case creatingRuntime = 14
 
   var jsValue: String {
     switch self {
@@ -27,6 +31,10 @@ enum MeetermConnectionPhase: UInt32 {
     case .attachingTmux: return "AttachingTmux"
     case .synchronizing: return "Synchronizing"
     case .reconnecting: return "Reconnecting"
+    case .discoveringRuntimes: return "DiscoveringRuntimes"
+    case .awaitingRuntimeSelection: return "AwaitingRuntimeSelection"
+    case .attachingRuntime: return "AttachingRuntime"
+    case .creatingRuntime: return "CreatingRuntime"
     }
   }
 }
@@ -67,9 +75,9 @@ enum MeetermCore {
     return meeterm_create_terminal(columns, rows)
   }
 
-  /// Submit a native SSH request. Credential strings are copied only for this
-  /// call; this adapter never writes them to disk or logs them. The Rust core
-  /// owns the selected credential retained for an in-process reconnect.
+  /// Submit the legacy host-only SSH request. Credential strings are copied
+  /// only for this call; this adapter never writes them to disk or logs them.
+  /// The runtime picker performs the later backend/runtime selection.
   static func connect(
     terminalId: UInt64,
     host: String,
@@ -118,9 +126,9 @@ enum MeetermCore {
     }
   }
 
-  /// Submit a native SSH request with an explicit backend/runtime. The legacy
-  /// `connect` method above remains the tmux/default ABI for older callers.
-  static func connectBackend(
+  /// Authenticate and discover the host without binding a backend/runtime.
+  /// The selected runtime is attached only by an explicit later operation.
+  static func connectHost(
     terminalId: UInt64,
     host: String,
     port: Int,
@@ -129,9 +137,7 @@ enum MeetermCore {
     passphrase: String,
     knownHostsPath: String,
     authMethod: String,
-    password: String,
-    backend: String,
-    runtime: String
+    password: String
   ) -> Int32 {
     guard let port = UInt16(exactly: port) else {
       return -1
@@ -143,32 +149,24 @@ enum MeetermCore {
             withUTF8(knownHostsPath) { pathPointer, pathLength in
               withUTF8(authMethod) { authMethodPointer, authMethodLength in
                 withUTF8(password) { passwordPointer, passwordLength in
-                  withUTF8(backend) { backendPointer, backendLength in
-                    withUTF8(runtime) { runtimePointer, runtimeLength in
-                      meeterm_connect_backend(
-                        terminalId,
-                        hostPointer,
-                        hostLength,
-                        port,
-                        usernamePointer,
-                        usernameLength,
-                        keyPointer,
-                        keyLength,
-                        passphrasePointer,
-                        passphraseLength,
-                        pathPointer,
-                        pathLength,
-                        authMethodPointer,
-                        authMethodLength,
-                        passwordPointer,
-                        passwordLength,
-                        backendPointer,
-                        backendLength,
-                        runtimePointer,
-                        runtimeLength
-                      )
-                    }
-                  }
+                  meeterm_connect_host(
+                    terminalId,
+                    hostPointer,
+                    hostLength,
+                    port,
+                    usernamePointer,
+                    usernameLength,
+                    keyPointer,
+                    keyLength,
+                    passphrasePointer,
+                    passphraseLength,
+                    pathPointer,
+                    pathLength,
+                    authMethodPointer,
+                    authMethodLength,
+                    passwordPointer,
+                    passwordLength
+                  )
                 }
               }
             }
@@ -260,6 +258,42 @@ enum MeetermCore {
       return String(data: data, encoding: .utf8)
     }
     return nil
+  }
+
+  /// Read bounded, sanitized runtime metadata. No executable, socket, session
+  /// directory, stderr, or terminal data crosses this adapter.
+  static func runtimeDiscoveryJSON(terminalId: UInt64) -> String? {
+    guard terminalId != 0 else { return nil }
+    var capacity = Int(meeterm_runtime_discovery_size(terminalId))
+    for _ in 0..<4 {
+      guard capacity > 0, capacity <= 1 * 1024 * 1024 else { return nil }
+      var data = Data(count: capacity)
+      let copied = data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) -> Int in
+        guard let address = buffer.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+        return Int(meeterm_runtime_discovery(terminalId, address, buffer.count))
+      }
+      if copied > capacity { capacity = copied; continue }
+      guard copied > 0, copied <= 1 * 1024 * 1024 else { return nil }
+      if copied < data.count { data.removeSubrange(copied..<data.count) }
+      return String(data: data, encoding: .utf8)
+    }
+    return nil
+  }
+
+  static func refreshRuntimes(terminalId: UInt64) -> Int32 {
+    meeterm_refresh_runtimes(terminalId)
+  }
+
+  static func selectRuntime(terminalId: UInt64, candidateId: String) -> Int32 {
+    withUTF8(candidateId) { pointer, length in
+      meeterm_select_runtime(terminalId, pointer, length)
+    }
+  }
+
+  static func createTmuxSession(terminalId: UInt64, name: String) -> Int32 {
+    withUTF8(name) { pointer, length in
+      meeterm_create_tmux_session(terminalId, pointer, length)
+    }
   }
 
   static func connectionSnapshot(terminalId: UInt64) -> MeetermConnectionSnapshot? {

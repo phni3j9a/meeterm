@@ -24,6 +24,7 @@ UI_DUMP_PATH = "/sdcard/meeterm-screen-fixture.xml"
 SCREEN_NAMES = (
     "home", "servers", "connection", "password", "workspaces", "terminal",
     "settings", "workspace-name", "terminal-name", "handoff",
+    "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
     "herdr-connection",
     "herdr-groups",
     "herdr-terminal",
@@ -161,8 +162,40 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
     normalized_values = {normalized(value) for value in values}
     if screen == "herdr-connection":
         checks = [
-            ("herdr_backend_radio", "herdr backend" in normalized_values),
-            ("herdr_session_name_dev", "dev" in values or "dev" in normalized_values),
+            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
+            ("herdr_default", "Herdr runtime default" in normalized_values),
+            ("last_used_hint", "Last used" in normalized_values),
+        ]
+    elif screen == "runtime-picker":
+        checks = [
+            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
+            ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
+            ("herdr_default", "Herdr runtime default" in normalized_values),
+            ("herdr_paused", "Herdr runtime paused" in normalized_values),
+        ]
+    elif screen == "runtime-partial-error":
+        checks = [
+            ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
+            (
+                "herdr_error",
+                "Herdr is not available over SSH. Open Herdr on your computer or check its installation."
+                in normalized_values,
+            ),
+        ]
+    elif screen == "runtime-empty":
+        checks = [
+            ("tmux_empty", "No running tmux sessions found." in normalized_values),
+            ("herdr_paused", "Herdr runtime paused" in normalized_values),
+            ("stopped", "Stopped" in normalized_values),
+        ]
+    elif screen == "runtime-create":
+        checks = [
+            ("create_heading", "Create tmux session" in normalized_values),
+            ("session_name", "tmux session name" in normalized_values),
+            (
+                "create_submit",
+                any("runtime-tmux-create-submit" in value for value in normalized_values),
+            ),
         ]
     elif screen == "herdr-groups":
         checks = [

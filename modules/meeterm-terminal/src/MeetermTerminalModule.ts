@@ -7,6 +7,8 @@ import type {
   SshConnectionState,
   TerminalPreferences,
   TmuxSessionState,
+  RuntimeBackend,
+  RuntimeDiscovery,
   WorkspaceState,
 } from './MeetermTerminal.types';
 
@@ -15,6 +17,11 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   getProfiles(): Promise<ServerProfile[]>;
   saveProfile(profile: Omit<ServerProfile, 'credentialSaved'>, credential: SavedCredential | null, keepCredential: boolean): Promise<ServerProfile>;
   deleteProfile(profileId: string): Promise<void>;
+  /** Host-only authentication. Runtime binding happens after discovery. */
+  connectHost(terminalId: string, options: SshConnectOptions): Promise<void>;
+  /** Host-only saved-profile path; legacy hint fields are ignored for attach. */
+  connectProfileHost(terminalId: string, profileId: string): Promise<void>;
+  /** Legacy alias for connectProfileHost; it never selects a runtime. */
   connectProfile(terminalId: string, profileId: string): Promise<void>;
   getPreferences(): Promise<TerminalPreferences>;
   setPreferences(preferences: TerminalPreferences): Promise<void>;
@@ -27,6 +34,7 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   renamePane(terminalId: string, paneId: string, name: string): Promise<void>;
   closePane(terminalId: string, paneId: string): Promise<void>;
   refreshTerminal(terminalId: string): Promise<void>;
+  /** Legacy alias for connectHost; backend/runtime hints are ignored. */
   connect(terminalId: string, options: SshConnectOptions): Promise<void>;
   disconnect(terminalId: string): Promise<void>;
   reconnect(terminalId: string): Promise<void>;
@@ -39,6 +47,11 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   setTerminalVisible(terminalId: string, visible: boolean): Promise<void>;
   selectPane(terminalId: string, paneId: string): Promise<void>;
   getConnectionState(terminalId: string): Promise<SshConnectionState>;
+  getRuntimeDiscovery(connectionId: string): Promise<RuntimeDiscovery>;
+  refreshRuntimes(connectionId: string): Promise<void>;
+  selectRuntime(connectionId: string, candidateId: string): Promise<void>;
+  createTmuxSession(connectionId: string, name: string): Promise<void>;
+  setLastUsedRuntime(profileId: string, backend: RuntimeBackend, runtime: string): Promise<ServerProfile>;
   respondToHostKey(
     terminalId: string,
     fingerprint: string,

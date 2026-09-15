@@ -397,6 +397,10 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             mock.patch.object(smoke, "fill_multiline_key", side_effect=key_entry),
             mock.patch.object(smoke, "wait_for_saved_profile_absent") as wait_absent,
             mock.patch.object(smoke, "capture_optional_screenshot") as capture,
+            mock.patch.object(
+                smoke,
+                "select_fixture_tmux_runtime_and_wait_for_connected",
+            ) as select_runtime,
         ):
             smoke.exercise_saved_profile_management(
                 device,
@@ -463,6 +467,19 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             smoke.DAILY_PROFILE_NAME,
         )
         capture.assert_not_called()
+        self.assertEqual(
+            select_runtime.call_args_list,
+            [
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_runtime_selection",
+                ),
+                mock.call(
+                    device,
+                    "daily_profile_switch_primary_runtime_selection",
+                ),
+            ],
+        )
 
     def test_handoff_action_scrolls_the_server_sheet_before_tapping(self) -> None:
         clock = _FakeClock()
@@ -540,19 +557,22 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             (0, 0, 100, 100),
         )
         primary = self.profile_node(smoke.DAILY_PROFILE_NAME)
-        connected = smoke.Node("Connected", "", "android.view.View", (0, 0, 100, 100))
         completed: list[str] = []
 
         with (
             mock.patch.object(
                 smoke,
                 "wait_for_node",
-                side_effect=[saved_servers, primary, connected],
+                side_effect=[saved_servers, primary],
             ),
             mock.patch.object(smoke, "tap_node"),
             mock.patch.object(smoke, "wait_for_saved_profile_absent") as wait_absent,
             mock.patch.object(smoke, "wait_for_text_fragment"),
             mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(
+                smoke,
+                "select_fixture_tmux_runtime_and_wait_for_connected",
+            ) as select_runtime,
         ):
             restarted = smoke.reconnect_saved_profile_after_restart(
                 device,
@@ -576,6 +596,12 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
                 "daily_saved_profile_connected",
             ],
         )
+        select_runtime.assert_called_once()
+        self.assertEqual(
+            select_runtime.call_args.args[:2],
+            (device, "daily_saved_profile_connect_runtime_selection"),
+        )
+        self.assertIs(select_runtime.call_args.args[2], completed)
 
     def test_home_foreground_requires_the_resolved_launcher(self) -> None:
         output = b"com.google.android.apps.nexuslauncher/.NexusLauncherActivity\n"
@@ -710,6 +736,80 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             ("daily_foreground_return", "app_process_changed"),
         )
         terminal_line.assert_not_called()
+
+
+class RuntimeSelectionTests(unittest.TestCase):
+    def test_runtime_selection_taps_exact_fixture_row_even_with_one_candidate(self) -> None:
+        self.assertEqual(smoke.TMUX_RUNTIME_LABELS, ("tmux runtime meeterm",))
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        runtime = smoke.Node(
+            "",
+            smoke.TMUX_RUNTIME_LABELS[0],
+            "android.widget.Button",
+            (0, 100, 1080, 260),
+        )
+        completed: list[str] = []
+
+        with (
+            mock.patch.object(
+                smoke,
+                "wait_for_node_with_labels",
+                return_value=runtime,
+            ) as wait_picker,
+            mock.patch.object(smoke, "tap_node") as tap,
+            mock.patch.object(smoke, "wait_for_node") as wait_connected,
+        ):
+            smoke.select_fixture_tmux_runtime_and_wait_for_connected(
+                device,
+                "initial_runtime_selection",
+                completed,
+            )
+
+        wait_picker.assert_called_once_with(
+            device,
+            "initial_runtime_selection_runtime_picker",
+            smoke.TMUX_RUNTIME_LABELS,
+            timeout=smoke.RECONNECT_TIMEOUT,
+        )
+        tap.assert_called_once_with(
+            device,
+            runtime,
+            "initial_runtime_selection_runtime_select_tmux",
+        )
+        wait_connected.assert_called_once_with(
+            device,
+            "initial_runtime_selection_runtime_connected",
+            text="Connected",
+            timeout=smoke.RECONNECT_TIMEOUT,
+        )
+        self.assertEqual(
+            completed,
+            [
+                "initial_runtime_selection_runtime_picker_ready",
+                "initial_runtime_selection_runtime_picker_selected",
+                "initial_runtime_selection_runtime_connected",
+            ],
+        )
+
+    def test_runtime_picker_failure_keeps_a_specific_failure_stage(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        picker_failure = smoke.SmokeFailure("ignored", "ui_timeout")
+
+        with mock.patch.object(
+            smoke,
+            "wait_for_node_with_labels",
+            side_effect=picker_failure,
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.select_fixture_tmux_runtime_and_wait_for_connected(
+                    device,
+                    "manual_reconnect",
+                )
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("manual_reconnect_runtime_picker", "runtime_picker_ui_timeout"),
+        )
 
 
 class _ProbeEditorDevice:

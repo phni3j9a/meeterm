@@ -165,6 +165,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          # The legacy `tools` package was removed from Google's repository.
+          # Install every required package explicitly in the next step.
+          packages: ""
 
       - name: Install pinned Android packages
         run: |

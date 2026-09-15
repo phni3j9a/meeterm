@@ -30,10 +30,10 @@ Control bridge              Native Terminal View
 ═══════════════╪════════════════════
                ▼
           OpenSSH server
-          ├── tmux session: meeterm
+          ├── selected ordinary tmux session
           │   ├── window = Workspace
           │   └── pane   = Terminal
-          └── existing Herdr 0.9.0 session/socket
+          └── selected existing Herdr 0.9.0 session/socket
 ```
 
 There is no meeterm server-side component in the core architecture.
@@ -57,12 +57,14 @@ remote tabs. Herdr group deletion uses `tab.close`; workspace deletion uses
 `workspace.close` with `close_group: false`. Because Herdr 0.9.0 can implicitly
 close a Git workspace group from its parent when confirmation is disabled,
 pane/group closes in a parent with related workspaces are refused after a fresh
-snapshot. Normal workspaces and linked children remain operable. Backend/runtime selection
-is explicit; missing legacy profile fields default to the existing tmux path,
-and a missing Herdr capability is an explicit error rather than a silent tmux
-fallback. Remote identifiers remain opaque and scoped by connection, backend,
-and runtime. Local native terminal IDs remain separate because a Herdr pane ID
-may change when it moves.
+snapshot. Normal workspaces and linked children remain operable. Backend/runtime
+selection is explicit after authenticated runtime discovery. Legacy backend and
+runtime profile fields are a non-authoritative last-used hint, updated only
+after `Ready`; missing legacy fields may seed the tmux suggestion but never
+bypass the picker. A missing Herdr capability is an explicit error rather than
+a silent tmux fallback. Remote identifiers remain opaque and scoped by
+connection, backend, and runtime. Local native terminal IDs remain separate
+because a Herdr pane ID may change when it moves.
 
 The backend actor may differ, but terminal bytes, ANSI/VT parsing, cells,
 scrollback, render frames, and IME composition remain native. Only hierarchy,
@@ -78,6 +80,90 @@ tracks CI source revisions, actual screen review, and remaining limits. Input ad
 `send_keys`, and `send_input` operations; a modified Herdr or upstream API
 addition is not required. See [`HERDR.md`](HERDR.md) and the
 [`Issue #17 evidence record`](evidence/issue-17-herdr-feasibility.md).
+
+## Issue #21 runtime picker and lifecycle
+
+Issue #21 separates an authenticated SSH host connection from runtime
+selection. The native lifecycle is conceptually:
+
+```text
+Connecting
+  → HostKeyPending
+  → Authenticating
+  → HostAuthenticated / DiscoveringRuntimes
+  → RuntimeSelection
+  → AttachingSelectedBackend
+  → Synchronizing
+  → Ready
+```
+
+Fresh manual connection and cold start always enter `DiscoveringRuntimes` and
+show an explicit picker. The picker exposes only bounded, low-frequency
+candidate summaries: a native candidate ID, backend, display name, status,
+suggested/last-used state, and backend-local error. It also carries a
+connection generation and discovery revision so stale asynchronous results and
+double taps can be discarded. The user must explicitly select a candidate even
+when the list has only one row. Runtime discovery is read-only and must not
+create, start, attach, or mutate a runtime.
+
+The tmux section lists arbitrary sessions from the user's ordinary tmux server.
+Only a verified no-server/no-session result is an empty section; other exit
+statuses, malformed output, or timeouts remain errors. The native layer retains
+the discovered session ID `$N` and its tmux server epoch. `$N` is exact only
+within that epoch, while a name is a display and last-used hint. Selecting a
+row targets that exact live session. Explicit tmux creation is a separate
+detached `new-session` operation: it uses a safely encoded name (suggesting
+`meeterm`), verifies the returned identity, and then binds it. Normal selection
+must not use an attach-or-create operation that could create after a race.
+
+The Herdr section resolves the compatible Herdr 0.9.0 executable through PATH,
+the official `~/.local/bin` installer default, and common package-manager
+locations. The resolved path is retained
+as a native, connection-scoped capability and reused for runtime listing,
+per-session status, controller setup, and any later proof-gated operation. It
+is never exposed to JavaScript or ordinary logs, and is re-resolved and
+revalidated after transport reconnect. Herdr rows distinguish stopped sessions
+from running candidates; a running socket alone does not prove compatibility.
+Selection revalidates session identity, protocol 22, schema 1, direct
+operations, and stream-local forwarding. This issue does not promise a Herdr
+start or create action: stopped rows direct the user to open the session in the
+ordinary Herdr client and refresh. meeterm must not silently fall back to tmux
+when Herdr discovery or selection fails.
+
+Each backend owns independent bounds and error state, so a missing tmux binary,
+missing/incompatible Herdr executable, or one backend's malformed response does
+not hide candidates from the other section. Duplicate names remain distinct by
+backend. A runtime deleted between list and selection returns a stale-selection
+error and refreshes the picker; it never silently creates the missing runtime.
+
+There is one selected runtime actor per authenticated SSH host connection. A
+server switch or runtime switch releases the current controller in the actor's
+queue, drains/closes the stream as required by the backend, and only then
+acquires the next binding. Release, disconnect, or hidden terminal view does not
+destroy the remote runtime or its processes. An automatic transport reconnect
+may return directly only to a selected `(backend, runtime)` after host-key,
+capability, server-epoch/runtime-identity, and compatibility verification. A
+missing, replaced, restarted, incompatible, or uncertain runtime returns to
+discovery and explicit selection.
+
+tmux supplies a server PID/start-time epoch that can prove an unchanged server
+for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
+comparable server-instance identity through the selected public interfaces.
+That identity is therefore uncertain after a Herdr transport loss, and the
+automatic recovery path authenticates and discovers again but waits in the
+picker until the user explicitly reselects a running Herdr session.
+
+The saved server profile stores SSH endpoint and authentication metadata.
+Legacy backend/runtime fields represent a non-authoritative logical
+`lastUsedRuntime` hint. Profile IDs and credentials remain independent, secure
+credential identity is not changed by the hint migration, and the hint is
+written only after the selected runtime reaches `Ready`.
+
+Before any topology mutation that could affect another tmux session, the same
+Rust actor/control queue must check the current linked/shared topology
+immediately before execution. Workspace close and terminal close that could
+remove the final pane are included. If exact cross-session safety cannot be
+proved at execution time, the operation fails closed with a clear error.
 
 ## Architectural rule: JavaScript is not the terminal data plane
 
@@ -185,10 +271,13 @@ The control plane should use generated typed bindings rather than hand-written a
 Example conceptual API:
 
 ```text
-connectServer(...)
-disconnectServer(serverId)
-workspaceSnapshot(serverId)
-createWorkspace(serverId, name)
+connectHost(profileId)
+listRuntimes(connectionId)
+selectRuntime(connectionId, candidateId)
+createRuntime(connectionId, backend, name)  # tmux only in this issue
+disconnectHost(connectionId)
+workspaceSnapshot(runtimeId)
+createWorkspace(runtimeId, name)
 renameWorkspace(workspaceId, name)
 closeWorkspace(workspaceId)
 createGroup(workspaceId, name)
@@ -198,11 +287,14 @@ selectGroup(groupId)
 createTerminal(groupId)
 closeTerminal(terminalId)
 selectTerminal(terminalId)
-setTerminalVisible(serverId, visible)
+setTerminalVisible(connectionId, visible)
 respondToHostKeyPrompt(...)
 ```
 
-The exact public API should remain small. Do not expose low-level `russh` or `alacritty_terminal` objects to JavaScript.
+`connectHost` ends at authenticated host/discovery state; `selectRuntime` is the
+explicit binding transition to `Ready`. The exact public API should remain
+small. Do not expose low-level `russh`, resolved Herdr executable paths, or
+`alacritty_terminal` objects to JavaScript.
 
 ## Native TerminalView
 
@@ -306,9 +398,12 @@ See [`SSH.md`](SSH.md) for the real OpenSSH fixture, validation, and limitations
 ### Issue #6: durable session loop
 
 The production connection now starts tmux Control Mode over the authenticated
-SSH channel. The direct shell slice above describes the earlier validation
-boundary. The managed session remains `meeterm` on the ordinary tmux server;
-windows and panes are discovered from tmux rather than invented locally.
+SSH channel after an ordinary session has been explicitly selected. The direct
+shell slice above describes the earlier validation boundary. The selected
+session remains on the user's ordinary tmux server; windows and panes are
+discovered from that session rather than invented locally. A legacy `meeterm`
+value may seed the picker as a last-used suggestion, but it is not an automatic
+attach target.
 
 The shared Rust core owns the connection profile, decoder, topology snapshots,
 pane-to-terminal mapping, and reconnect/resynchronization. JavaScript receives
@@ -331,10 +426,12 @@ reconstruction and handoff boundaries.
 
 ## tmux model
 
-meeterm uses the user's ordinary tmux server and the canonical session name `meeterm`.
+meeterm uses the user's ordinary tmux server and the session selected in the
+runtime picker. `meeterm` is the suggested name for explicit creation and a
+legacy last-used hint, not a canonical or required session name.
 
 ```text
-session: meeterm
+selected session: <session-name>
 ├── window @1 = Workspace
 │   ├── pane %1 = Terminal
 │   └── pane %2 = Terminal
@@ -343,19 +440,24 @@ session: meeterm
     └── pane %4 = Terminal
 ```
 
-Do not create a separate tmux server/socket with `tmux -L meeterm` for the core product. A PC must be able to continue with the ordinary command:
+Do not create a separate tmux server/socket with `tmux -L meeterm` for the core product. A PC must be able to continue with the ordinary command for the selected session:
 
 ```bash
-tmux attach -t meeterm
+tmux attach -t <selected-session>
 ```
 
 The tmux mapping above is the current implementation contract. The common
-TerminalGroup is virtual for tmux and is not a new remote object.
+TerminalGroup is virtual for tmux and is not a new remote object. The selected
+session identity is passed to the control actor; normal selection does not use
+an attach-or-create command.
 
 ## tmux Control Mode
 
 The mobile client uses tmux Control Mode over an SSH exec channel without an
-outer PTY: `tmux -C -u new-session -A -s meeterm`. The original `-CC` direction
+outer PTY, targeting the exact session selected by the picker. Explicit tmux
+creation uses a separate detached `new-session` operation and verifies its
+returned identity before the Control Mode actor binds it. The normal selection
+path never creates a session as a side effect. The original `-CC` direction
 assumed a terminal-backed channel. On tmux 3.4, running `-CC` with stdin/stdout
 pipes fails with `tcgetattr failed: Inappropriate ioctl for device`; the same
 bounded test using `-C` emits `%begin` and detaches successfully. There is no
@@ -363,6 +465,15 @@ outer terminal echo or line discipline to disable on this channel. `-C`
 preserves the structured Control Mode boundary; pane contents remain bytes.
 See the [tmux Control Mode documentation](https://github.com/tmux/tmux/wiki/Control-Mode#entering-control-mode)
 for the terminal-attribute difference between the two flags.
+
+The shell discovery/preflight channel and the later Control Mode attach channel
+are separate, so the actor closes that replacement race before synchronization:
+after the attach startup block succeeds and before `Ready` or input acceptance,
+it issues a read-only `display-message` format query on the same Control Mode
+stream for the exact `$N` target. A bounded byte parser reads
+`session_id|pid|start_time` and compares all three values with the selected
+`SessionIdentity`. A mismatch, malformed reply, command error, or uncertain
+result fails as `TmuxRuntimeMissing` and returns the actor to the picker.
 
 Control Mode provides structured notifications and identifies pane output by pane ID. The Rust core should parse Control Mode as a byte-oriented protocol and route each pane's output to its own terminal state.
 
@@ -524,7 +635,8 @@ Disconnected
 → Connecting
 → HostKeyPending
 → Authenticating
-→ SSHConnected
+→ SSHConnected / DiscoveringRuntimes
+→ RuntimeSelection
 → AttachingSelectedBackend
 → Synchronizing
 → Ready
@@ -536,8 +648,9 @@ React Native observes a low-frequency snapshot of this state; React Native must 
 ## Backgrounding and process death
 
 The durable state is the selected remote runtime, not the SSH socket. This is
-tmux session `meeterm` for the default backend and Herdr `default`/named
-session for Herdr.
+the selected ordinary tmux session for tmux and the selected running
+`default`/named session for Herdr. `meeterm` is only a suggested new-session
+name and legacy hint.
 
 When the app backgrounds or loses transport, meeterm may reconnect and resynchronize rather than attempt to keep a fragile mobile connection alive indefinitely.
 
@@ -556,15 +669,16 @@ This is an early technical-risk item and must be validated before broad feature 
 Desktop handoff is a first-class requirement; simultaneous interactive multi-client use is not.
 
 A normal PC attach must be able to use the selected backend's ordinary client.
-For tmux:
+For tmux, use the selected session:
 
 ```bash
-tmux attach -t meeterm
+tmux attach -t <selected-session>
 ```
 
 and see the same windows/panes in their ordinary layout. For Herdr, the normal
-Herdr client opens the selected session; meeterm does not require a PC
-companion application.
+Herdr client opens the selected session. `meeterm` may be used in the command
+when it is the selected session. meeterm does not require a PC companion
+application.
 
 The mobile client must avoid leaving the session in a phone-specific layout state after graceful detach and should have a recovery strategy for ungraceful termination.
 
@@ -576,14 +690,16 @@ Remote workspace state comes from the selected backend runtime.
 
 Local persistence is for client concerns only, such as:
 
-- saved server profiles, including backend and optional runtime;
+- saved server profiles, including the non-authoritative legacy backend/runtime
+  last-used hint;
 - trusted host-key fingerprints;
 - user preferences;
 - non-secret UI settings.
 
 Secrets belong in platform secure storage. Credential identity remains scoped to
 SSH/auth/profile; backend and runtime are connection selectors rather than
-credential AAD. Do not introduce a local database as a shadow source of truth
+credential AAD. The hint is written only after `Ready`. Do not introduce a
+local database as a shadow source of truth
 for windows/panes unless a concrete later requirement demands it.
 
 ## Current native milestone and verification boundary
@@ -602,8 +718,21 @@ terminal data plane native. Continue to verify:
 8. The ignored real Herdr integration test runs through an isolated russh
    endpoint with an official Herdr 0.9.0 binary. Its OpenSSH/tmux integration
    remains a separate check; one does not substitute for the other.
-9. iOS `standard` includes 14 direct screen fixtures (four Herdr routes) and
-   Android captures the same four Herdr routes as observational evidence.
+9. Runtime-picker changes add bounded no-side-effect discovery tests, tmux
+   list/create/select and identity-race tests, Herdr executable PATH/list/status
+   and running-selection tests, independent backend-failure tests, profile
+   migration and switch/release tests, reconnect identity tests, and fail-closed
+   linked/shared tmux topology-mutation tests.
+10. Android full and iOS `standard` plus the short `ssh` suite cover the
+    applicable mobile connection lifecycle. The iOS `standard` source-level
+    manifest has 18 screens: the previous 14 plus `runtime-picker`,
+    `runtime-partial-error`, `runtime-empty`, and `runtime-create`; its
+    `herdr-connection` route is the picker with the Herdr `default` candidate's
+    non-authoritative `Last used` hint. Android's observational `SCREEN_NAMES`
+    has 25 routes: the previous 21 plus those same four runtime routes. These
+    counts define source scope only; they do not claim remote CI or visual
+    review. Both platform screenshots must be downloaded and actually viewed
+    before visual success is reported.
 
 A simulator/emulator smoke result does not replace physical-device GPU, font,
 or IME validation. The [live native Herdr test](evidence/issue-17-herdr-native.md)

@@ -14,14 +14,17 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use meeterm_core::workspace::{
+    Backend, RuntimeDiscoverySnapshot, RuntimeSectionState, RuntimeState,
+};
 use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, PaneSnapshot,
-    SessionSnapshot, SpecialKey, close_pane, close_workspace, connect_terminal,
-    connection_snapshot, create_pane, create_terminal, create_workspace, destroy_terminal,
+    SessionSnapshot, SpecialKey, close_pane, close_workspace, connect_host, connection_snapshot,
+    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
     disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
     meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
-    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace, select_pane, send_bytes,
-    session_snapshot,
+    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
+    runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
 };
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -89,12 +92,26 @@ struct DecodedCell {
 
 #[test]
 #[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
+fn real_openssh_existing_tmux_runtime_selection() {
+    let fixture = FixtureConfig::from_environment();
+    create_fixture_tmux_session(&fixture, "meeterm");
+    let id = create_terminal(80, 24).expect("create SSH terminal");
+    let _guard = TerminalGuard { id };
+
+    connect_host_and_select_meeterm(id, &fixture, "existing tmux runtime selection");
+    let session = wait_for_session(id, 1, "existing tmux runtime ready");
+    assert_eq!(session.windows.len(), 1);
+    assert_eq!(session.panes.len(), 1);
+}
+
+#[test]
+#[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
 fn real_openssh_tmux_session_loop() {
     let fixture = FixtureConfig::from_environment();
     let id = create_terminal(80, 24).expect("create SSH terminal");
     let _guard = TerminalGuard { id };
 
-    connect_terminal(id, fixture.options()).expect("start SSH connection");
+    connect_host(id, fixture.options()).expect("start SSH host connection");
     let host_prompt = wait_for_state(id, ConnectionState::HostKeyPending, "host-key prompt");
     assert_eq!(
         connection_string(&host_prompt.fingerprint, host_prompt.fingerprint_len),
@@ -105,16 +122,22 @@ fn real_openssh_tmux_session_loop() {
         "ssh-ed25519"
     );
     respond_to_host_key_ffi(id, &fixture.fingerprint, true);
-    let ready = wait_for_state(id, ConnectionState::Ready, "encrypted-key authentication");
+    let discovery = wait_for_runtime_picker_without_prompt(id, "initial runtime discovery");
+    let ready = create_tmux_meeterm_from_picker(
+        id,
+        &discovery,
+        "initial explicit meeterm runtime creation",
+    );
     assert_eq!(
         connection_string(&ready.algorithm, ready.algorithm_len),
         "ssh-ed25519"
     );
 
-    // Control Mode creates the durable session and the first pane.  The
-    // fixture's sshd SetEnv points every shell at the private ordinary tmux
-    // socket, so these extra windows/panes cannot touch a developer's own
-    // `tmux -t meeterm` session even when the test itself runs inside tmux.
+    // The explicit detached create above establishes the durable session;
+    // Control Mode now attaches to it and opens the first pane. The fixture's
+    // sshd SetEnv points every shell at the private ordinary tmux socket, so
+    // these extra windows/panes cannot touch a developer's own `tmux -t
+    // meeterm` session even when the test itself runs inside tmux.
     let initial = wait_for_session(id, 1, "initial meeterm session");
     assert_eq!(
         initial.windows.len(),
@@ -586,8 +609,21 @@ fn real_openssh_tmux_session_loop() {
     // Establish the desired reconnect selection while a live controller owns
     // the command stream.  Sending a selection immediately after disconnect
     // would race the cancelled controller's final zoom cleanup.
-    reconnect_terminal(id).expect("prepare main selection before zoom regression");
-    wait_for_ready_without_prompt(id, "prepare main selection before zoom regression");
+    let previous_main_terminal = main.terminal_id;
+    reconnect_and_select_meeterm(
+        id,
+        &fixture.fingerprint,
+        "prepare main selection before zoom regression",
+    );
+    let main = wait_for_pane_handle(
+        id,
+        main.pane_id,
+        "refresh main handle after manual runtime selection",
+    );
+    assert_eq!(
+        main.terminal_id, previous_main_terminal,
+        "the first tmux pane reuses the connection owner's reset native terminal"
+    );
     select_pane(id, main.pane_id).expect("select main before zoom regression");
     wait_for_selected_pane(id, main.pane_id, "select main before zoom regression");
     disconnect_terminal(id).expect("disconnect before preexisting zoom regression");
@@ -619,8 +655,11 @@ fn real_openssh_tmux_session_loop() {
         "preexisting desktop zoom",
         |output| output.trim() == "1",
     );
-    reconnect_terminal(id).expect("reconnect with preexisting desktop zoom");
-    wait_for_ready_without_prompt(id, "reconnect with preexisting desktop zoom");
+    reconnect_and_select_meeterm(
+        id,
+        &fixture.fingerprint,
+        "reconnect with preexisting desktop zoom",
+    );
     // Select the other pane in the already-zoomed window.  tmux would
     // otherwise drop the zoom as a side effect of select-pane; the native
     // controller must restore the zoom while leaving cleanup unowned.
@@ -664,13 +703,21 @@ fn real_openssh_tmux_session_loop() {
         "clear preexisting desktop zoom",
         |output| output.trim() == "0",
     );
-    reconnect_terminal(id).expect("resume meeterm-owned zoom checks");
-    wait_for_ready_without_prompt(id, "resume meeterm-owned zoom checks");
+    reconnect_and_select_meeterm(id, &fixture.fingerprint, "resume meeterm-owned zoom checks");
 
     // External pane removal invalidates the borrowed native handle and must
     // not leave a dead zoom target that breaks the next mobile selection.
-    reconnect_terminal(id).expect("reconnect before pane removal");
-    wait_for_ready_without_prompt(id, "reconnect before pane removal");
+    reconnect_and_select_meeterm(id, &fixture.fingerprint, "reconnect before pane removal");
+    let side = wait_for_pane_handle(
+        id,
+        side.pane_id,
+        "refresh side handle after manual runtime selection",
+    );
+    let main = wait_for_pane_handle(
+        id,
+        main.pane_id,
+        "refresh main handle after manual runtime selection",
+    );
     run_remote_tmux(
         &fixture,
         &format!("tmux kill-pane -t %{}", side.pane_id),
@@ -832,8 +879,7 @@ fn real_openssh_tmux_session_loop() {
 
     let cold_id = create_terminal(80, 24).expect("create cold TUI recovery owner");
     let _cold_guard = TerminalGuard { id: cold_id };
-    connect_terminal(cold_id, fixture.options()).expect("connect cold TUI recovery owner");
-    wait_for_ready_without_prompt(cold_id, "cold TUI recovery owner ready");
+    connect_host_and_select_meeterm(cold_id, &fixture, "cold TUI recovery owner picker");
     let cold_session = wait_for_snapshot(cold_id, "cold TUI recovery session", |snapshot| {
         snapshot
             .panes
@@ -897,10 +943,14 @@ fn real_openssh_tmux_session_loop() {
         "close final cold pane",
     );
 
-    // The same final-window path is exercised after a fresh attach. This
-    // catches a window-close implementation that only handles pane removal.
-    reconnect_terminal(cold_id).expect("recreate cold owner for final workspace close");
-    wait_for_ready_without_prompt(cold_id, "recreate cold owner for final workspace close");
+    // The same final-window path is exercised after a manual reconnect. The
+    // runtime is absent, so the picker must show empty tmux discovery and the
+    // test explicitly creates meeterm again before attaching.
+    reconnect_and_create_meeterm(
+        cold_id,
+        &fixture.fingerprint,
+        "recreate cold owner for final workspace close",
+    );
     let recreated = wait_for_session(cold_id, 1, "recreated one-pane session");
     let final_window = recreated
         .windows
@@ -918,7 +968,7 @@ fn real_openssh_tmux_session_loop() {
     let wrong_id = create_terminal(80, 24).expect("create wrong-passphrase terminal");
     let _wrong_guard = TerminalGuard { id: wrong_id };
     let wrong_options = fixture.options_with_passphrase("definitely-wrong-passphrase");
-    connect_terminal(wrong_id, wrong_options).expect("start wrong-passphrase connection");
+    connect_host(wrong_id, wrong_options).expect("start wrong-passphrase connection");
     let wrong = wait_for_state(
         wrong_id,
         ConnectionState::Failed,
@@ -935,7 +985,7 @@ fn real_openssh_tmux_session_loop() {
     let changed_id = create_terminal(80, 24).expect("create changed-key terminal");
     let _changed_guard = TerminalGuard { id: changed_id };
     write_alternate_trust_record(&fixture);
-    connect_terminal(changed_id, fixture.options()).expect("start changed-key connection");
+    connect_host(changed_id, fixture.options()).expect("start changed-key connection");
     let changed = wait_for_state(
         changed_id,
         ConnectionState::Failed,
@@ -965,8 +1015,9 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     let id = create_terminal(80, 24).expect("create password SSH terminal");
     let _guard = TerminalGuard { id };
 
-    connect_terminal(id, fixture.options()).expect("start password connection");
-    let ready = wait_for_ready_without_prompt(id, "password authentication");
+    connect_host(id, fixture.options()).expect("start password host connection");
+    let discovery = wait_for_runtime_picker(id, &fixture.fingerprint, "password authentication");
+    let ready = create_tmux_meeterm_from_picker(id, &discovery, "password authentication");
     assert_eq!(
         connection_string(&ready.algorithm, ready.algorithm_len),
         "ssh-ed25519"
@@ -987,13 +1038,13 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     );
     wait_for_pane_text(&pane, marker, "password authentication marker");
 
-    // A normal disconnect preserves the parsed password profile. Reconnect
-    // must use password authentication again and retain the same tmux pane /
-    // native terminal identity.
+    // A normal disconnect preserves the parsed password profile. Manual
+    // reconnect must use password authentication again, rediscover the
+    // picker, and retain the same tmux pane. The first pane reuses the
+    // connection owner's native ID after its terminal state is reset.
     disconnect_terminal(id).expect("disconnect password connection");
     wait_for_state(id, ConnectionState::Disconnected, "password disconnect");
-    reconnect_terminal(id).expect("reconnect with in-memory password");
-    wait_for_ready_without_prompt(id, "password reconnect");
+    reconnect_and_select_meeterm(id, &fixture.fingerprint, "password reconnect");
     let reconnected = wait_for_session(id, 1, "password reconnect session");
     let reconnected_pane = reconnected
         .panes
@@ -1003,7 +1054,7 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
         .clone();
     assert_eq!(
         reconnected_pane.terminal_id, pane.terminal_id,
-        "password reconnect retains native terminal identity"
+        "password reconnect reuses the reset connection-owner terminal ID"
     );
     let reconnect_marker = "MEETERM_PASSWORD_RECONNECT_OK_6D3B";
     send_line_retry(
@@ -1021,7 +1072,7 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     // method. The host key is already pinned, so this reaches authentication.
     let wrong_id = create_terminal(80, 24).expect("create wrong-password terminal");
     let _wrong_guard = TerminalGuard { id: wrong_id };
-    connect_terminal(
+    connect_host(
         wrong_id,
         fixture.options_with_password("wrong password that must be rejected"),
     )
@@ -1046,7 +1097,7 @@ fn real_openssh_password_auth_reconnect_and_host_key_gate() {
     write_alternate_password_trust_record(&fixture, &changed_trust);
     let changed_id = create_terminal(80, 24).expect("create changed-key terminal");
     let _changed_guard = TerminalGuard { id: changed_id };
-    connect_terminal(
+    connect_host(
         changed_id,
         fixture.options_with_password_and_trust(
             "wrong password must never be reached",
@@ -1249,6 +1300,33 @@ fn run_remote_tmux(fixture: &FixtureConfig, command: &str, label: &str) -> Outpu
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+fn create_fixture_tmux_session(fixture: &FixtureConfig, name: &str) {
+    let output = Command::new("tmux")
+        .arg("-S")
+        .arg(&fixture.tmux_socket)
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-n",
+            "smoke",
+            "/bin/sh",
+            "-i",
+        ])
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("TMUX_TMPDIR", &fixture.tmux_tmpdir)
+        .output()
+        .expect("create fixture tmux session");
+    assert!(
+        output.status.success(),
+        "create fixture tmux session failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn wait_for_remote_tmux<F>(
@@ -1469,6 +1547,176 @@ fn wait_for_snapshot(
     }
 }
 
+fn wait_for_runtime_picker(
+    id: u64,
+    expected_fingerprint: &str,
+    label: &str,
+) -> RuntimeDiscoverySnapshot {
+    wait_for_runtime_picker_with_optional_host_key(id, Some(expected_fingerprint), label)
+}
+
+fn wait_for_runtime_picker_without_prompt(id: u64, label: &str) -> RuntimeDiscoverySnapshot {
+    wait_for_runtime_picker_with_optional_host_key(id, None, label)
+}
+
+fn wait_for_runtime_picker_with_optional_host_key(
+    id: u64,
+    expected_fingerprint: Option<&str>,
+    label: &str,
+) -> RuntimeDiscoverySnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let mut answered = expected_fingerprint.is_none();
+    loop {
+        let snapshot = connection_snapshot(id).expect("connection snapshot");
+        if snapshot.state == ConnectionState::HostKeyPending as u32 && !answered {
+            let expected_fingerprint =
+                expected_fingerprint.expect("host-key prompt must have an expected fingerprint");
+            let fingerprint = connection_string(&snapshot.fingerprint, snapshot.fingerprint_len);
+            assert_eq!(
+                fingerprint, expected_fingerprint,
+                "{label} host-key fingerprint"
+            );
+            respond_to_host_key_ffi(id, expected_fingerprint, true);
+            answered = true;
+        }
+        if snapshot.state == ConnectionState::AwaitingRuntimeSelection as u32 {
+            return runtime_discovery_snapshot(id).expect("runtime discovery snapshot");
+        }
+        if snapshot.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: state={}, errorCode={}",
+                state_name(snapshot.state),
+                connection_string(&snapshot.error_code, snapshot.error_code_len)
+            );
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for {label}: state={}",
+                state_name(snapshot.state)
+            );
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn assert_empty_tmux_and_independent_herdr(discovery: &RuntimeDiscoverySnapshot, label: &str) {
+    assert_eq!(
+        discovery.tmux.state,
+        RuntimeSectionState::Empty,
+        "{label} must report an empty tmux section: code={:?}, message={:?}",
+        discovery.tmux.error_code,
+        discovery.tmux.error_message
+    );
+    assert!(
+        discovery.tmux.candidates.is_empty(),
+        "{label} empty tmux section must not contain candidates"
+    );
+    assert!(
+        discovery.tmux.error_code.is_none() && discovery.tmux.error_message.is_none(),
+        "{label} empty tmux discovery must not contain an error"
+    );
+
+    assert_ne!(
+        discovery.herdr.state,
+        RuntimeSectionState::Loading,
+        "{label} must publish an independent Herdr result"
+    );
+    assert!(
+        discovery
+            .herdr
+            .candidates
+            .iter()
+            .all(|candidate| candidate.backend == Backend::Herdr),
+        "{label} Herdr candidates must remain in the Herdr section"
+    );
+    match &discovery.herdr.state {
+        RuntimeSectionState::Loading => unreachable!("loading was rejected above"),
+        RuntimeSectionState::Success => assert!(
+            !discovery.herdr.candidates.is_empty(),
+            "{label} successful Herdr discovery must contain candidates"
+        ),
+        RuntimeSectionState::Empty => assert!(
+            discovery.herdr.candidates.is_empty(),
+            "{label} empty Herdr discovery must not contain candidates"
+        ),
+        RuntimeSectionState::Error => {
+            assert!(
+                discovery.herdr.candidates.is_empty(),
+                "{label} failed Herdr discovery must not contain candidates"
+            );
+            assert!(
+                discovery.herdr.error_code.is_some() && discovery.herdr.error_message.is_some(),
+                "{label} failed Herdr discovery must include bounded error details"
+            );
+        }
+    }
+}
+
+fn create_tmux_meeterm_from_picker(
+    id: u64,
+    discovery: &RuntimeDiscoverySnapshot,
+    label: &str,
+) -> ConnectionSnapshot {
+    assert_empty_tmux_and_independent_herdr(discovery, label);
+    create_runtime(id, Backend::Tmux, "meeterm").expect("create explicit tmux meeterm runtime");
+    wait_for_ready_without_prompt(id, label)
+}
+
+fn select_tmux_meeterm(id: u64, expected_fingerprint: &str, label: &str) {
+    let discovery = wait_for_runtime_picker(id, expected_fingerprint, label);
+    let candidates = discovery
+        .tmux
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.name == "meeterm")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "{label} must expose one meeterm candidate"
+    );
+    let candidate = candidates[0];
+    assert_eq!(candidate.backend, Backend::Tmux);
+    assert_eq!(candidate.state, RuntimeState::Running);
+    assert!(
+        candidate.selectable,
+        "{label} meeterm candidate is not selectable"
+    );
+    let candidate_id = candidate.id.clone();
+    select_runtime(id, &candidate_id).expect("select tmux meeterm runtime");
+    wait_for_ready_without_prompt(id, label);
+}
+
+fn connect_host_and_select_meeterm(id: u64, fixture: &FixtureConfig, label: &str) {
+    connect_host(id, fixture.options()).expect("start SSH host connection");
+    select_tmux_meeterm(id, &fixture.fingerprint, label);
+}
+
+fn reconnect_and_select_meeterm(id: u64, expected_fingerprint: &str, label: &str) {
+    reconnect_terminal(id).expect("start manual SSH reconnect");
+    select_tmux_meeterm(id, expected_fingerprint, label);
+}
+
+fn reconnect_and_create_meeterm(
+    id: u64,
+    expected_fingerprint: &str,
+    label: &str,
+) -> ConnectionSnapshot {
+    reconnect_terminal(id).expect("start manual SSH reconnect for explicit create");
+    let discovery = wait_for_runtime_picker(id, expected_fingerprint, label);
+    create_tmux_meeterm_from_picker(id, &discovery, label)
+}
+
+fn wait_for_pane_handle(id: u64, pane_id: u64, label: &str) -> PaneSnapshot {
+    wait_for_snapshot(id, label, |snapshot| {
+        snapshot.panes.iter().any(|pane| pane.pane_id == pane_id)
+    })
+    .panes
+    .into_iter()
+    .find(|pane| pane.pane_id == pane_id)
+    .expect("pane handle after runtime selection")
+}
+
 fn wait_for_selected_pane(id: u64, pane_id: u64, label: &str) {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
@@ -1642,9 +1890,10 @@ fn wait_for_state(id: u64, expected: ConnectionState, label: &str) -> Connection
         }
         if Instant::now() >= deadline {
             panic!(
-                "timed out waiting for {label}: state={}, errorCode={}",
+                "timed out waiting for {label}: state={}, errorCode={}, discovery={:?}",
                 state_name(snapshot.state),
-                connection_string(&snapshot.error_code, snapshot.error_code_len)
+                connection_string(&snapshot.error_code, snapshot.error_code_len),
+                runtime_discovery_snapshot(id).ok()
             );
         }
         sleep(POLL_INTERVAL);
@@ -1670,13 +1919,30 @@ fn wait_for_ready_without_prompt(id: u64, label: &str) -> ConnectionSnapshot {
         }
         if Instant::now() >= deadline {
             panic!(
-                "timed out waiting for {label}: state={}, errorCode={}",
+                "timed out waiting for {label}: state={}, errorCode={}, {}",
                 state_name(snapshot.state),
-                connection_string(&snapshot.error_code, snapshot.error_code_len)
+                connection_string(&snapshot.error_code, snapshot.error_code_len),
+                runtime_discovery_diagnostic(id)
             );
         }
         sleep(POLL_INTERVAL);
     }
+}
+
+fn runtime_discovery_diagnostic(id: u64) -> String {
+    let Ok(discovery) = runtime_discovery_snapshot(id) else {
+        return "runtimeDiscovery=unavailable".to_owned();
+    };
+    format!(
+        "runtimeDiscoveryRevision={}, tmuxState={:?}, tmuxCandidates={}, tmuxErrorCode={:?}, herdrState={:?}, herdrCandidates={}, herdrErrorCode={:?}",
+        discovery.discovery_revision,
+        discovery.tmux.state,
+        discovery.tmux.candidates.len(),
+        discovery.tmux.error_code,
+        discovery.herdr.state,
+        discovery.herdr.candidates.len(),
+        discovery.herdr.error_code,
+    )
 }
 
 fn printf_octal(value: &str) -> String {
@@ -1700,6 +1966,12 @@ fn state_name(state: u32) -> &'static str {
         value if value == ConnectionState::Ready as u32 => "Ready",
         value if value == ConnectionState::Closing as u32 => "Closing",
         value if value == ConnectionState::Failed as u32 => "Failed",
+        value if value == ConnectionState::DiscoveringRuntimes as u32 => "DiscoveringRuntimes",
+        value if value == ConnectionState::AwaitingRuntimeSelection as u32 => {
+            "AwaitingRuntimeSelection"
+        }
+        value if value == ConnectionState::AttachingRuntime as u32 => "AttachingRuntime",
+        value if value == ConnectionState::CreatingRuntime as u32 => "CreatingRuntime",
         _ => "Unknown",
     }
 }

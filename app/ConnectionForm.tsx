@@ -23,10 +23,13 @@ import { DARK, MONO, useReducedMotion } from './ui';
 import type { Palette } from './ui';
 
 type AuthMethod = 'publicKey' | 'password';
-type FormErrors = Partial<Record<'name' | 'host' | 'port' | 'username' | 'privateKey' | 'password' | 'runtime', string>>;
+type FormErrors = Partial<Record<'name' | 'host' | 'port' | 'username' | 'privateKey' | 'password', string>>;
+
+type EditableProfile = Omit<ServerProfile, 'credentialSaved' | 'backend' | 'runtime'>;
 
 export type ConnectionSubmission = {
-  profile: Omit<ServerProfile, 'credentialSaved'>;
+  /** Server/auth fields only. Runtime binding is a post-auth picker action. */
+  profile: EditableProfile;
   credential: SavedCredential | null;
   saveProfile: boolean;
   saveCredential: boolean;
@@ -67,8 +70,6 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   const [port, setPort] = useState('22');
   const [username, setUsername] = useState('');
   const [authMethod, setAuthMethod] = useState<AuthMethod>('publicKey');
-  const [backend, setBackend] = useState<'tmux' | 'herdr'>('tmux');
-  const [runtime, setRuntime] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [password, setPassword] = useState('');
@@ -87,7 +88,6 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   const usernameRef = useRef<TextInput>(null);
   const privateKeyRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
-  const runtimeRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
   const submitting = useRef(false);
 
@@ -130,8 +130,6 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
       setPort(String(initialProfile?.port ?? 22));
       setUsername(initialProfile?.username ?? '');
       setAuthMethod(initialProfile?.authMethod ?? 'publicKey');
-      setBackend(initialProfile?.backend ?? 'tmux');
-      setRuntime(initialProfile?.runtime ?? '');
       setSaveServer(true);
       setSaveCredential(Boolean(initialProfile?.credentialSaved));
       setReplaceCredential(false);
@@ -163,8 +161,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   const dirty = name !== (initialProfile?.name ?? '') || host !== (initialProfile?.host ?? '')
       || port !== String(initialProfile?.port ?? 22) || username !== (initialProfile?.username ?? '')
       || authMethod !== (initialProfile?.authMethod ?? 'publicKey') || Boolean(privateKey || passphrase || password)
-      || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved)
-      || backend !== (initialProfile?.backend ?? 'tmux') || runtime !== (initialProfile?.runtime ?? '');
+      || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved);
   const close = useCallback(() => {
     if (submitting.current) return;
     if (!dirty) { discard(); return; }
@@ -190,10 +187,6 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
     const trimmedUsername = username.trim();
     const trimmedKey = privateKey.trim();
     const nextErrors: FormErrors = {};
-    const sessionName = backend === 'herdr' ? runtime.trim() : '';
-    if (sessionName && (!/^[A-Za-z0-9._-]{1,64}$/.test(sessionName) || sessionName === '.' || sessionName === '..')) {
-      nextErrors.runtime = 'Use up to 64 letters, numbers, periods, hyphens, or underscores.';
-    }
     if (name.trim().length > 80 || /[\x00-\x1f\x7f]/.test(name)) nextErrors.name = 'Use up to 80 characters, without control characters.';
     if (!trimmedHost || /[\s\x00-\x1f\x7f]/.test(trimmedHost)) {
       nextErrors.host = 'Enter a hostname or IP address without spaces.';
@@ -216,8 +209,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
       setErrors(nextErrors);
       const target = nextErrors.name ? nameRef : nextErrors.host ? hostRef
         : nextErrors.port ? portRef
-          : nextErrors.username ? usernameRef
-            : nextErrors.runtime ? runtimeRef : nextErrors.privateKey ? privateKeyRef : passwordRef;
+            : nextErrors.username ? usernameRef : nextErrors.privateKey ? privateKeyRef : passwordRef;
       target.current?.focus();
       return;
     }
@@ -235,7 +227,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
     Keyboard.dismiss();
     try {
       const accepted = await onSubmit({
-        profile: { id: initialProfile?.id ?? '', name: name.trim() || trimmedHost.slice(0, 80), host: trimmedHost, port: parsedPort, username: trimmedUsername, authMethod, backend, runtime: sessionName },
+        profile: { id: initialProfile?.id ?? '', name: name.trim() || trimmedHost.slice(0, 80), host: trimmedHost, port: parsedPort, username: trimmedUsername, authMethod },
         credential, saveProfile: mode === 'save' || saveServer, saveCredential: saveServer && saveCredential,
         keepCredential: saveServer && usingSavedCredential, connect: mode === 'connect',
       });
@@ -243,7 +235,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
     } catch {
       setSubmissionError('Could not save or connect. Enter your credentials again and retry.');
     } finally { submitting.current = false; setBusy(false); }
-  }, [authMethod, backend, runtime, clearSecrets, host, initialProfile, mode, name, onSubmit, passphrase, password, port, privateKey, saveCredential, saveServer, username, usingSavedCredential]);
+  }, [authMethod, clearSecrets, host, initialProfile, mode, name, onSubmit, passphrase, password, port, privateKey, saveCredential, saveServer, username, usingSavedCredential]);
 
   const inputStyle = [styles.input, { color: colors.text, backgroundColor: colors.elevated, borderColor: colors.border }];
   const inputDefaults = { autoCapitalize: 'none' as const, autoComplete: 'off' as const, autoCorrect: false, spellCheck: false, placeholderTextColor: colors.placeholder, selectionColor: colors.accent };
@@ -280,20 +272,6 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
               <Field label="Username" colors={colors} error={errors.username}>
                 <TextInput ref={usernameRef} accessibilityLabel="Username" testID="ssh-username" {...inputDefaults} value={username} onChangeText={value => { setUsername(value); setErrors(current => ({ ...current, username: undefined })); }} onSubmitEditing={() => authMethod === 'publicKey' ? privateKeyRef.current?.focus() : passwordRef.current?.focus()} placeholder="developer" returnKeyType="next" style={[inputStyle, errors.username && { borderColor: colors.danger }]} />
               </Field>
-            </View>
-            <View style={styles.section}>
-              <Text style={[styles.sectionLabel, { color: colors.muted }]}>Workspace runtime</Text>
-              <View accessibilityRole="radiogroup" accessibilityLabel="Workspace backend" style={[styles.authChoices, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                {(['tmux', 'herdr'] as const).map(value => <Pressable key={value} accessibilityRole="radio" accessibilityLabel={`${value} backend`} testID={`ssh-backend-${value}`} accessibilityState={{ selected: backend === value, checked: backend === value }} disabled={busy} onPress={() => { setBackend(value); setErrors(current => ({ ...current, runtime: undefined })); }} style={({ pressed }) => [styles.authChoice, backend === value && { backgroundColor: colors.elevated }, pressed && styles.pressed]}>
-                  <Text style={[styles.authChoiceText, { color: backend === value ? colors.accent : colors.muted }]}>{value === 'herdr' ? 'Herdr' : 'tmux'}</Text>
-                </Pressable>)}
-              </View>
-              {backend === 'herdr' ? <>
-                <Field label="Herdr session" colors={colors} optional error={errors.runtime}>
-                  <TextInput ref={runtimeRef} accessibilityLabel="Herdr session name" testID="ssh-runtime" {...inputDefaults} value={runtime} maxLength={64} onChangeText={value => { setRuntime(value); setErrors(current => ({ ...current, runtime: undefined })); }} placeholder="default" returnKeyType="next" onSubmitEditing={() => authMethod === 'publicKey' ? privateKeyRef.current?.focus() : passwordRef.current?.focus()} style={[inputStyle, errors.runtime && { borderColor: colors.danger }]} />
-                </Field>
-                <Text style={[styles.helper, { color: colors.muted }]}>Connect to an existing Herdr session. Leave blank to use default.</Text>
-              </> : <Text style={[styles.helper, { color: colors.muted }]}>Uses the meeterm session in tmux. Your computer can open the same workspaces.</Text>}
             </View>
             <View style={styles.section}>
               <Text style={[styles.sectionLabel, { color: colors.muted }]}>Authentication</Text>

@@ -1,8 +1,12 @@
-# SSH and durable tmux sessions
+# SSH and selected runtime lifecycle
 
-The native connection attaches to or creates the session named `meeterm` on the
-remote user's ordinary tmux server. Workspaces are tmux windows and terminals
-are panes. A desktop user can continue with `tmux attach -t meeterm`.
+The native connection authenticates an SSH host first, then discovers and
+explicitly selects a runtime. For tmux, that runtime is an arbitrary session on
+the remote user's ordinary tmux server; for Herdr, it is a selected running
+session. Workspaces are tmux windows or Herdr workspaces, and terminals are
+panes. `meeterm` is the suggested name for an explicitly created tmux session
+and a legacy last-used hint, not a fixed runtime. A desktop user can continue
+with `tmux attach -t <selected-session>` or the ordinary Herdr client.
 
 ## Using the session loop
 
@@ -10,14 +14,22 @@ are panes. A desktop user can continue with `tmux attach -t meeterm`.
    **パスワード**, enter the selected credential, and submit the form. The key form also accepts an optional passphrase.
 2. Verify the displayed SHA-256 host-key fingerprint through a trusted channel
    before choosing **Trust and connect**. A changed trusted key fails closed.
-3. Once the status shows **接続中** (**Connected**), select a workspace and its terminal tabs. Existing
+3. After SSH authentication, review the bounded runtime picker. It lists
+ordinary tmux sessions and Herdr sessions in separate sections. A legacy or
+last-used row may be highlighted, but the user must select a runtime
+explicitly, even when there is only one candidate. Discovery does not create,
+start, attach, or mutate anything.
+4. Once the selected runtime reaches **接続中** (**Connected**), select a workspace and its terminal tabs. Existing
    windows and panes can be created or changed with ordinary remote tmux
    commands; the native core discovers the topology.
-4. **切断** (**Disconnect**) closes the mobile connection while the remote session and
-   its processes continue running. **再接続** (**Reconnect**) resumes that workspace.
-5. After a transport failure, use **再接続** (**Reconnect**). After the app process exits,
-   open **サーバーに接続** (**Connect**) and enter the connection details and selected credential again; the remote
-   tmux session is still the source of truth.
+5. **切断** (**Disconnect**) closes the mobile connection while the selected runtime and
+   its processes continue running. Switching server/runtime releases the current
+   controller before acquiring the next one.
+6. After a transport failure, native **再接続** (**Reconnect**) may resume the same
+   selected runtime only after identity and compatibility verification. If it is
+   missing, replaced, restarted, or uncertain, the picker opens again. After the
+   app process exits, open **サーバーに接続** (**Connect**) and authenticate again;
+   a fresh manual/cold connection always shows the picker.
 
 The form accepts the complete `BEGIN OPENSSH PRIVATE KEY` / `END OPENSSH PRIVATE KEY`
 block, not a `.pub` key or legacy PEM block. See the [first-app setup guide](FIRST_APP.md#接続先の準備と使い方)
@@ -56,12 +68,24 @@ storage and checked again during reconnect. Password authentication uses only
 the SSH `password` method; keyboard-interactive prompts, MFA and SSH-agent remain
 outside this slice. See [DAILY_USE.md](DAILY_USE.md) for the daily-use additions.
 
+Saved server profiles contain SSH endpoint/authentication metadata. Any legacy
+backend/runtime fields represent a non-authoritative logical `lastUsedRuntime`
+hint;
+profile IDs and credentials remain independent, and the hint is written only
+after the selected runtime reaches `Ready`. Changing or switching the hint
+must not invalidate the secure credential identity.
+
+For Herdr-specific executable resolution, stopped-session behavior, and the
+running-only selection boundary, see [HERDR.md](HERDR.md).
+
 ## Native data and lifecycle boundary
 
-SSH opens an exec channel for `tmux -C -u new-session -A -s meeterm`. It does not
-allocate an outer SSH PTY. `-CC` attempts to configure terminal attributes and
-fails without a terminal on tmux 3.4; `-C` supplies the same Control Mode
-protocol over pipes. See the measured explanation in
+After the user selects a tmux runtime, SSH opens an exec channel for tmux
+Control Mode targeting that exact ordinary session. It does not allocate an
+outer SSH PTY. Explicit session creation is a separate detached operation;
+normal discovery and selection never use an attach-or-create command. `-CC`
+attempts to configure terminal attributes and fails without a terminal on tmux
+3.4; `-C` supplies the same Control Mode protocol over pipes. See the measured explanation in
 [`ARCHITECTURE.md`](ARCHITECTURE.md#tmux-control-mode).
 
 Rust parses protocol framing and octal escaping as bytes. Each `%output` pane
@@ -76,8 +100,9 @@ registry. Platform adapters do not create a second copy of pane state. Removing
 a view leaves the remote pane running; removing a remote pane invalidates its
 borrowed local handle safely.
 
-Reconnect is explicitly requested, not a React timer or an unbounded background
-retry. React polls only low-frequency state. Native reconstruction after a
+Reconnect commands and bounded automatic retry are native-owned, not a React
+timer or an unbounded background retry. React polls only low-frequency state.
+Native reconstruction after a
 connection gap must obtain the current remote screen and topology before
 accepting terminal input again. Local display contents alone are not proof of
 remote reconnection.
@@ -120,7 +145,10 @@ tests do not load the developer's tmux configuration, key bindings, or hooks.
 Only this isolated server sets `default-shell` to `/bin/sh` and
 `default-command` to `exec /bin/sh -i`, preventing developer shell startup
 prompts from interfering with fixture input. No managed session exists
-initially: the native connection creates `meeterm`.
+initially: runtime discovery must report an empty tmux section without creating
+anything. Tests that need a session explicitly pre-create one or exercise the
+detached tmux create operation, then verify the returned identity. The fixture
+does not turn a normal connect into an implicit `meeterm` session.
 
 Prerequisites are Python 3.10+, `/usr/sbin/sshd`, `ssh`, `ssh-keygen`, and `tmux`.
 The fixture refuses to run as root. Missing prerequisites are environment setup
@@ -150,6 +178,16 @@ preexisting indexed user hooks, remote pane removal and borrowed-handle
 invalidation, alternate-screen capture, and post-reconnect no-wrap output at
 the right margin. It checks wrong-passphrase and changed-host-key rejection.
 A fixture passing does not establish physical-device parity.
+
+Issue #21 adds a separate lifecycle boundary to this fixture coverage:
+discovery must be read-only and bounded; tmux tests cover no-session and
+multiple-session listing, explicit detached create/select, exact identity, and
+selection races; Herdr tests cover PATH/known-location resolution, running and
+stopped rows, running selection revalidation, and backend-local errors. The
+same source must also test profile hint migration, verified reconnect and
+same-name replacement, switch/release, and fail-closed linked/shared tmux
+workspace/final-pane mutations. These are acceptance expectations, not claims
+that the existing legacy integration command above already covers them.
 
 ## Mobile fixture
 
@@ -196,11 +234,13 @@ python3 scripts/ssh/fixture.py -- \
 ```
 
 The driver verifies the displayed fingerprint, submits the disposable key,
-waits for the native session, discovers the workspace/pane identity, and sends
-input through Android's native terminal. A one-line server marker detects
-missing or duplicate execution. After disconnect/reconnect, the driver checks
-the same pane and a retained shell variable, then sends another native command.
-ANSI, Japanese, and terminal dimensions are shown for visual inspection.
+waits for the authenticated runtime picker, explicitly selects the test tmux
+session (or exercises the explicit detached-create path), discovers the
+workspace/pane identity, and sends input through Android's native terminal. A
+one-line server marker detects missing or duplicate execution. After
+disconnect/reconnect, the driver checks the same verified runtime/pane and a
+retained shell variable, then sends another native command. ANSI, Japanese,
+and terminal dimensions are shown for visual inspection.
 
 The prior `private_key_input (ui_timeout)` was a deterministic driver mismatch:
 React Native Android joins `accessibilityLabel` and `accessibilityValue.text`
@@ -235,8 +275,9 @@ captures are reported explicitly. See [`CI_MOBILE.md`](CI_MOBILE.md).
 
 The iOS hosted smoke now runs `scripts/ssh/ios-smoke.py` with a generated
 XCUITest target. It drives the real app against the disposable SSH fixture,
-including workspace/pane selection, input, disconnect/reconnect, and desktop
-handoff. It separately launches the explicit foundation preview for native
+including host-key approval, runtime discovery/selection, workspace/pane
+selection, input, disconnect/reconnect, and desktop handoff. It separately
+launches the explicit foundation preview for native
 readiness, first frame, and process survival. Implementing this driver is not
 proof that the hosted run passed; see `FIRST_APP.md` for current evidence.
 A CoreGraphics fallback frame is explicitly different from Metal execution.

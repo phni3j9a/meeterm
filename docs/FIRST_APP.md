@@ -1,7 +1,7 @@
 # 初版の実用評価
 
 HTMLモック第5版の画面を、既存のReact Native / Expo・共有Rust・
-ネイティブ端末・SSH / tmuxへ接続した実用評価版です。
+ネイティブ端末・SSH / 選択式のtmux・Herdr runtimeへ接続した実用評価版です。
 Android先行版に続き、[Issue #13の検証](evidence/issue-13-ios-acceptance.md)で
 iOS Simulatorの実SSH操作と最終native smokeの受け入れも完了しました。
 2026-09-09 JST（CI実行日は2026-09-08 UTC）の `012c987` で両OSのHosted jobが成功し、
@@ -12,11 +12,12 @@ iOS Simulatorの実SSH操作と最終native smokeの受け入れも完了しま�
 
 - SSHホスト・ポート・ユーザーを入力し、OpenSSH秘密鍵（必要ならパスフレーズ）またはSSHパスワードを選んで入力。
 - 初回ホスト鍵のSHA-256指紋を明示的に承認。承認済み鍵の変更は拒否。
-- 接続先の実際のtmux windowをワークスペース一覧として選択・検索。
-- 実際のtmux paneをターミナルタブで選択し、ネイティブ端末で表示・入力。
+- SSH認証後にtmux / Herdrのruntime pickerを表示し、選択したruntimeのwindow/workspaceを一覧・検索。
+- 選択runtimeの実paneをターミナルタブで選択し、ネイティブ端末で表示・入力。
 - 接続状態・エラーを表示し、明示的な切断・再接続を提供。
 - 戻る操作やpane切り替えでリモートプロセスを破棄しない。
-- PCへの引き継ぎはスマホを切断して `tmux attach -t meeterm`。
+- PCへの引き継ぎはスマホを切断し、選択したtmux sessionへ `tmux attach -t <selected-session>`、
+  または選択したHerdr sessionを通常のHerdr clientで開く。
 
 日常利用の追加実装では接続先を保存・編集・削除し、接続を切り替えられます。
 認証情報の保存は任意です。AndroidではKeystoreの端末固有鍵で暗号化し、
@@ -32,8 +33,8 @@ window / paneの作成・名前変更・終了、文字選択・コピー、Ctrl
 
 | モックの操作 | 初版での扱い |
 | --- | --- |
-| ワークスペース一覧・検索・picker | 実tmux windowを対象に提供 |
-| ターミナルタブ | 実pane IDを対象に提供 |
+| runtime picker → ワークスペース一覧・検索 | 認証済みSSH hostからtmux / Herdrをbackend別に列挙し、明示選択したruntimeの実window/workspaceを対象に提供 |
+| ターミナルタブ | 選択runtimeの実pane IDを対象に提供 |
 | サーバー追加・切り替え | 接続先を保存・編集・削除し切り替え。対話中の接続は1つ |
 | window / pane追加、名前変更、削除 | 実tmuxの作成・名前変更・終了を提供。終了は確認付き |
 | フォントサイズ・テーマ設定 | 10〜24pt、端末ライト／ダーク／OS追従を保存 |
@@ -44,11 +45,12 @@ window / paneの作成・名前変更・終了、文字選択・コピー、Ctrl
 
 ## 接続先の準備と使い方
 
-接続先は通常のOpenSSHサーバーとtmuxが必要です。認証方式はOpenSSH秘密鍵による
+接続先は通常のOpenSSHサーバーと、選択するruntime（tmuxまたは既存のHerdr 0.9.0）が必要です。認証方式はOpenSSH秘密鍵による
 公開鍵認証、またはSSHパスワード認証から選べます。パスワード認証はSSHの
 `password` メソッドだけを使い、keyboard-interactive、MFA、SSH-agentには対応しません。
 公開鍵認証を使う場合はサーバー側に対応する公開鍵を登録し、SSH経由のシェルから
-`tmux` を実行できるようにしてください。
+`tmux` またはHerdrの互換binaryを実行できるようにしてください。Herdrの準備と制限は
+[HERDR.md](HERDR.md)を参照してください。
 アプリ専用サーバーやソケットは不要です。
 
 秘密鍵欄には `-----BEGIN OPENSSH PRIVATE KEY-----` から
@@ -72,32 +74,43 @@ SHA-256指紋を比較してください。未確認の接続先から `ssh-keys
 1. 「サーバーに接続」から接続先と認証情報を入力します。初期設定では接続先が保存されます。
    認証情報も端末に保存したい場合は、保存スイッチを有効にします。
    次回からは「保存済みサーバー」で接続先を選びます。認証情報を保存しなかった場合は再入力します。
-2. ホスト鍵の指紋を信頼できる別の経路で確認して承認します。
-3. 接続後、ワークスペースを開いてpaneタブを選びます。
-4. 端末面をタップしてOSキーボードを開きます。Esc・Tab・矢印・Ctrl-Cは
+2. ホスト鍵の指紋を信頼できる別の経路で確認して承認し、SSH認証を完了します。
+3. 認証後にruntime pickerが開きます。tmuxとHerdrをbackend別に確認し、最後に使ったruntimeが
+   強調表示されていても、必ず一つを明示的に選びます。新規接続とcold startではこの選択を省略しません。
+4. tmuxでは既存の任意のsessionを選ぶか、明示的に新しいdetached sessionを作成します。
+   作成名の提案は `meeterm` ですが、固定名ではありません。Herdrでは起動中の互換性確認済み
+   `default` または named sessionだけを選べます。停止中rowは通常のHerdr clientで開いてから更新します。
+5. 選択したruntimeのワークスペースを開いてpaneタブを選びます。
+6. 端末面をタップしてOSキーボードを開きます。Esc・Tab・矢印・Ctrl-Cは
    ネイティブ補助キーから送信します。iOSは補助キーの列を左右にスワイプすると、
    Ctrl・Alt・矢印・Home・Endなどが現れます。Ctrl・Altは有効にしてから次のキーを入力すると解除されます。
    履歴は端末面の上下スワイプで読み、
    入力すると最新出力へ戻ります。貼り付けは端末の **Paste** 操作を使います。
    OSキーボード独自のクリップボード機能は通常の文字確定として届く場合があるため、
    bracketed pasteを保証しません。
-5. 文字をコピーする場合は端末面を長押しして範囲を選び、「コピー」を押します。
+7. 文字をコピーする場合は端末面を長押しして範囲を選び、「コピー」を押します。
    「設定」でフォントサイズ・テーマ・履歴行数・自動再接続を変更できます。
    ワークスペース一覧へ戻っても接続とリモート作業は継続します。
-6. 作業終了時は切断します。再接続は同じリモートtmuxへ戻ります。
-7. PCでは同じユーザーでSSH接続して `tmux attach -t meeterm` を実行します。
+8. 作業終了時は切断します。通信断からの自動再接続は、選択したruntimeのidentityを再確認
+   できた場合だけ同じruntimeへ戻ります。runtimeが消失・置換・再起動した、またはidentityが
+   不明な場合はpickerへ戻ります。Herdr 0.9.0ではserver instanceを比較できる公開identityが
+   ないため、通信復旧後もpickerで同じsessionを明示的に選び直します。
+9. PCでは同じユーザーでSSH接続し、tmuxなら `tmux attach -t <selected-session>`、Herdrなら
+   選択したsessionを通常のHerdr clientで開きます。
 
-接続時に `meeterm` セッションがなければ自動作成されます。「ワークスペースを作成」で
-作業場所を追加し、その中の追加ボタンでターミナルを増やせます。ワークスペースの
-メニューやターミナルのメニューから名前変更・終了ができます。終了は実行中の
+runtime discoveryはread-onlyで、一覧表示や選択だけでsessionを作成・開始・attachしません。
+tmuxの新規sessionは明示的なdetached createで作成し、戻ったidentityを検証してから選択します。
+Herdrの停止中sessionに対するstart/create/install/updateはこのissueでは提供しません。
+ワークスペースを作成するときは選択中runtimeへ作成し、その中の追加ボタンでターミナルを増やせます。
+ワークスペースのメニューやターミナルのメニューから名前変更・終了ができます。終了は実行中の
 リモートプロセスも止めるため、確認ダイアログが表示されます。「切断」は作業を残します。
 最後のターミナルを明示的に終了した場合、自動再接続で勝手に作り直すことはありません。
 
-PC側の通常のtmux操作も一覧へ反映されます。例えば以下でも追加できます。
+PC側の通常のtmux操作も選択したsessionの一覧へ反映されます。例えば以下でも追加できます。
 
 ```sh
-tmux new-window -t meeterm -n project
-tmux split-window -h -t meeterm:project
+tmux new-window -t <selected-session> -n project
+tmux split-window -h -t <selected-session>:project
 ```
 
 通信断・バックグラウンドからの復帰では、設定が有効なら自動再接続します。
@@ -156,7 +169,7 @@ adb shell monkey -p dev.meeterm.app 1
 
 Hosted iPhone 17 Pro Simulator／Xcode 26.6で、実フォームからのSSH接続、
 window／pane選択、ネイティブキーボード・Paste・Return、切断・再接続と
-同じshellへの入力を確認しました。通常の `tmux attach -t meeterm` による
+同じshellへの入力を確認しました。当時選択したtmux sessionへの通常の
 PC引き継ぎ、UIKit入力3テスト、新規起動のnative readiness／Metal first frame／
 no-crashも通過しています。詳細は[受け入れ記録](evidence/issue-13-ios-acceptance.md)を参照してください。
 以下はローカルの開発・Simulator実行手順です。

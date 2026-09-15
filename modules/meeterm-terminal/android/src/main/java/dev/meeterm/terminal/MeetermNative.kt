@@ -55,7 +55,7 @@ internal object MeetermNative {
   /** One row per pane: window ID, pane ID, terminal handle, window name, selected, active, pane name. */
   external fun tmuxSessionState(handle: Long): Array<String>?
 
-  /** Queue an SSH connect request; zero means the request was accepted. */
+  /** Queue the legacy host-only SSH connect request. */
   external fun sshConnect(
     handle: Long,
     host: String,
@@ -68,8 +68,8 @@ internal object MeetermNative {
     password: String,
   ): Int
 
-  /** Queue an SSH connect request for an explicit backend/runtime. */
-  external fun sshConnectBackend(
+  /** Queue host authentication/discovery without selecting a runtime. */
+  external fun sshConnectHost(
     handle: Long,
     host: String,
     port: Int,
@@ -79,8 +79,6 @@ internal object MeetermNative {
     knownHostsPath: String,
     authMethod: String,
     password: String,
-    backend: String,
-    runtime: String,
   ): Int
 
   /** Bounded low-frequency workspace metadata; terminal bytes stay native. */
@@ -98,6 +96,12 @@ internal object MeetermNative {
 
   /** Remove one endpoint's trusted key from the Rust-owned trust store. */
   external fun sshForgetHostKey(host: String, port: Int, knownHostsPath: String): Int
+
+  /** Bounded JSON containing only runtime candidate metadata. */
+  external fun runtimeDiscovery(handle: Long): String?
+  external fun refreshRuntimes(handle: Long): Int
+  external fun selectRuntime(handle: Long, candidateId: String): Int
+  external fun createTmuxSession(handle: Long, name: String): Int
 }
 
 internal class RustInputSink(

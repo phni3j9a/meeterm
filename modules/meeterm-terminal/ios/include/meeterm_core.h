@@ -51,7 +51,11 @@ enum {
   MEETERM_SSH_STATE_FAILED = 7,
   MEETERM_SSH_STATE_ATTACHING_TMUX = 8,
   MEETERM_SSH_STATE_SYNCHRONIZING = 9,
-  MEETERM_SSH_STATE_RECONNECTING = 10
+  MEETERM_SSH_STATE_RECONNECTING = 10,
+  MEETERM_SSH_STATE_DISCOVERING_RUNTIMES = 11,
+  MEETERM_SSH_STATE_AWAITING_RUNTIME_SELECTION = 12,
+  MEETERM_SSH_STATE_ATTACHING_RUNTIME = 13,
+  MEETERM_SSH_STATE_CREATING_RUNTIME = 14
 };
 
 enum {
@@ -81,6 +85,7 @@ typedef struct meeterm_ssh_connection_state {
 } meeterm_ssh_connection_state_t;
 
 /* The Rust ABI uses byte-pointer plus length pairs for all text. */
+/* Legacy fresh connect is host-only; runtime binding is explicit below. */
 int32_t meeterm_connect(
   uint64_t terminal_id,
   const uint8_t *host,
@@ -100,9 +105,8 @@ int32_t meeterm_connect(
   size_t password_length
 );
 
-/* Explicit backend/runtime variant. The legacy meeterm_connect ABI above
- * remains the tmux/default path for existing native callers. */
-int32_t meeterm_connect_backend(
+/* Authenticate and discover runtimes without selecting or creating one. */
+int32_t meeterm_connect_host(
   uint64_t terminal_id,
   const uint8_t *host,
   size_t host_length,
@@ -118,11 +122,7 @@ int32_t meeterm_connect_backend(
   const uint8_t *auth_method,
   size_t auth_method_length,
   const uint8_t *password,
-  size_t password_length,
-  const uint8_t *backend,
-  size_t backend_length,
-  const uint8_t *runtime,
-  size_t runtime_length
+  size_t password_length
 );
 
 int32_t meeterm_disconnect(uint64_t terminal_id);
@@ -180,6 +180,16 @@ int32_t meeterm_respond_host_key(
   size_t fingerprint_length,
   uint8_t accept
 );
+
+/* Bounded JSON runtime discovery; JSON contains only sanitized public metadata. */
+size_t meeterm_runtime_discovery_size(uint64_t terminal_id);
+size_t meeterm_runtime_discovery(uint64_t terminal_id, uint8_t *output, size_t capacity);
+enum { MEETERM_RUNTIME_DISCOVERY_MAX_BYTES = 1024 * 1024 };
+
+/* Explicit post-auth runtime controls. IDs/names are UTF-8 byte strings. */
+int32_t meeterm_refresh_runtimes(uint64_t terminal_id);
+int32_t meeterm_select_runtime(uint64_t terminal_id, const uint8_t *candidate_id, size_t candidate_id_length);
+int32_t meeterm_create_tmux_session(uint64_t terminal_id, const uint8_t *name, size_t name_length);
 
 /* Trust-store deletion is explicit and scoped to one endpoint. */
 int32_t meeterm_forget_host_key(

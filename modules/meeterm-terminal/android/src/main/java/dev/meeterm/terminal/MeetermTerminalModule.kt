@@ -14,8 +14,24 @@ class MeetermTerminalModule : Module() {
       ClientStore.saveProfile(storageContext(), profile, credential, keepCredential)
     }
     AsyncFunction("deleteProfile") { profileId: String -> ClientStore.deleteProfile(storageContext(), profileId) }
+    // Every fresh connection path authenticates the SSH host first. Persisted
+    // backend/runtime values are only last-used hints and never select a
+    // runtime on behalf of the caller.
+    AsyncFunction("connectHost") { terminalId: String, options: Map<String, Any?> ->
+      connectHostOptions(terminalId, options)
+    }
+    AsyncFunction("connectProfileHost") { terminalId: String, profileId: String ->
+      val options = ClientStore.connectionOptions(storageContext(), profileId).toMutableMap().apply {
+        remove("backend")
+        remove("runtime")
+      }
+      connectHostOptions(terminalId, options)
+    }
     AsyncFunction("connectProfile") { terminalId: String, profileId: String ->
-      connectOptions(terminalId, ClientStore.connectionOptions(storageContext(), profileId))
+      connectHostOptions(terminalId, ClientStore.connectionOptions(storageContext(), profileId))
+    }
+    AsyncFunction("setLastUsedRuntime") { profileId: String, backend: String, runtime: String ->
+      ClientStore.setLastUsedRuntime(storageContext(), profileId, backend, runtime)
     }
     AsyncFunction("getPreferences") {
       ClientStore.preferences(storageContext()).also {
@@ -64,7 +80,7 @@ class MeetermTerminalModule : Module() {
     }
 
     AsyncFunction("connect") { terminalId: String, options: Map<String, Any?> ->
-      connectOptions(terminalId, options)
+      connectHostOptions(terminalId, options)
     }
 
     AsyncFunction("disconnect") { terminalId: String ->
@@ -78,6 +94,32 @@ class MeetermTerminalModule : Module() {
       val normalizedId = normalizeTerminalId(terminalId)
       val handle = ensureHandle(normalizedId)
       connectionState(handle)
+    }
+
+    AsyncFunction("getRuntimeDiscovery") { terminalId: String ->
+      runtimeDiscovery(ensureHandle(normalizeTerminalId(terminalId)))
+    }
+
+    AsyncFunction("refreshRuntimes") { terminalId: String ->
+      check(MeetermNative.refreshRuntimes(ensureHandle(normalizeTerminalId(terminalId))) == 0) {
+        "Runtime discovery could not be refreshed."
+      }
+    }
+
+    AsyncFunction("selectRuntime") { terminalId: String, candidateId: String ->
+      require(candidateId.isNotEmpty() && candidateId.toByteArray(Charsets.UTF_8).size <= RUNTIME_ID_MAX_BYTES &&
+        candidateId.none(Char::isISOControl)) { "The selected runtime is invalid." }
+      check(MeetermNative.selectRuntime(ensureHandle(normalizeTerminalId(terminalId)), candidateId) == 0) {
+        "The selected runtime could not be opened."
+      }
+    }
+
+    AsyncFunction("createTmuxSession") { terminalId: String, name: String ->
+      require(name.isNotEmpty() && name.toByteArray(Charsets.UTF_8).size <= TMUX_CREATE_NAME_MAX_BYTES &&
+        name.none(Char::isISOControl)) { "The tmux session name is invalid." }
+      check(MeetermNative.createTmuxSession(ensureHandle(normalizeTerminalId(terminalId)), name) == 0) {
+        "The tmux session could not be created."
+      }
     }
 
     AsyncFunction("reconnect") { terminalId: String ->
@@ -180,18 +222,92 @@ class MeetermTerminalModule : Module() {
     }
   }
 
-  private fun connectOptions(terminalId: String, options: Map<String, Any?>) {
+  private fun connectHostOptions(terminalId: String, options: Map<String, Any?>) {
     val nativeOptions = SshOptions.from(options)
     val handle = ensureHandle(normalizeTerminalId(terminalId))
     val preferences = ClientStore.preferences(storageContext())
     check(MeetermNative.setScrollbackLimit((preferences["scrollbackLines"] as Number).toInt()) == 0)
     check(MeetermNative.setAutomaticReconnect(handle, preferences["automaticReconnect"] as Boolean) == 0)
-    check(MeetermNative.sshConnectBackend(handle, nativeOptions.host, nativeOptions.port,
+    check(MeetermNative.sshConnectHost(handle, nativeOptions.host, nativeOptions.port,
       nativeOptions.username, nativeOptions.privateKey, nativeOptions.passphrase,
-      KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password,
-      nativeOptions.backend, nativeOptions.runtime) == 0) {
-      "The SSH connection could not be started."
+      KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password) == 0) {
+      "The SSH host connection could not be started."
     }
+  }
+
+  /**
+   * Keep the JS boundary to a fixed, bounded runtime summary. Arbitrary CLI
+   * output, executable paths, socket paths, and stderr are never forwarded.
+   */
+  private fun runtimeDiscovery(handle: Long): Map<String, Any?> {
+    val raw = MeetermNative.runtimeDiscovery(handle)
+      ?: throw IllegalStateException("Native runtime discovery is unavailable.")
+    require(raw.toByteArray(Charsets.UTF_8).size <= RUNTIME_DISCOVERY_MAX_BYTES) {
+      "The native runtime discovery is invalid."
+    }
+    val root = JSONObject(raw)
+    val connectionGeneration = root.getString("connectionGeneration")
+    require(connectionGeneration.isNotEmpty() && connectionGeneration.length <= 20 &&
+      connectionGeneration.all { it in '0'..'9' } && connectionGeneration.toULongOrNull() != null) {
+      "The native runtime discovery is invalid."
+    }
+    val revision = root.getLong("revision")
+    require(revision in 0L..Int.MAX_VALUE.toLong()) { "The native runtime discovery is invalid." }
+    val rawBackends = root.getJSONArray("backends")
+    require(rawBackends.length() <= 2) { "The native runtime discovery is invalid." }
+    val backends = (0 until rawBackends.length()).map { backendIndex ->
+      val source = rawBackends.getJSONObject(backendIndex)
+      val backend = source.getString("backend")
+      require(backend == TMUX_BACKEND || backend == HERDR_BACKEND) { "The native runtime discovery is invalid." }
+      val state = source.getString("state")
+      require(state in listOf("loading", "ready", "error")) { "The native runtime discovery is invalid." }
+      val canCreate = source.getBoolean("canCreate")
+      require(canCreate == (backend == TMUX_BACKEND)) { "The native runtime discovery is invalid." }
+      val sourceCandidates = source.getJSONArray("candidates")
+      require(sourceCandidates.length() <= RUNTIME_CANDIDATE_LIMIT) { "The native runtime discovery is invalid." }
+      val candidates = (0 until sourceCandidates.length()).map { candidateIndex ->
+        val candidate = sourceCandidates.getJSONObject(candidateIndex)
+        val id = candidate.getString("id")
+        val name = candidate.getString("name")
+        val candidateBackend = candidate.getString("backend")
+        val candidateState = candidate.getString("state")
+        val selectableValue = candidate.opt("selectable")
+        val errorCodeValue = candidate.opt("errorCode")
+        val errorMessageValue = candidate.opt("errorMessage")
+        require(candidateBackend == backend && candidateState in listOf("running", "stopped") &&
+          id.isNotEmpty() && name.isNotEmpty() && id.toByteArray(Charsets.UTF_8).size <= RUNTIME_ID_MAX_BYTES &&
+          name.toByteArray(Charsets.UTF_8).size <= RUNTIME_NAME_MAX_BYTES &&
+          selectableValue is Boolean && errorCodeValue is String && errorMessageValue is String &&
+          errorCodeValue.toByteArray(Charsets.UTF_8).size <= RUNTIME_ERROR_CODE_MAX_BYTES &&
+          errorMessageValue.toByteArray(Charsets.UTF_8).size <= RUNTIME_ERROR_MAX_BYTES) {
+          "The native runtime discovery is invalid."
+        }
+        mapOf(
+          "id" to sanitize(id, RUNTIME_ID_MAX_BYTES),
+          "backend" to backend,
+          "name" to sanitize(name, RUNTIME_NAME_MAX_BYTES),
+          "state" to candidateState,
+          "selectable" to selectableValue,
+          "isDefault" to candidate.getBoolean("isDefault"),
+          "lastUsed" to candidate.getBoolean("lastUsed"),
+          "errorCode" to sanitizeErrorCode(errorCodeValue as String),
+          "errorMessage" to sanitize(errorMessageValue as String, RUNTIME_ERROR_MAX_BYTES),
+        )
+      }
+      mapOf(
+        "backend" to backend,
+        "state" to state,
+        "errorCode" to sanitizeErrorCode(source.optString("errorCode", "")),
+        "errorMessage" to sanitize(source.optString("errorMessage", ""), RUNTIME_ERROR_MAX_BYTES),
+        "candidates" to candidates,
+        "canCreate" to canCreate,
+      )
+    }
+    return mapOf(
+      "connectionGeneration" to connectionGeneration,
+      "revision" to revision.toInt(),
+      "backends" to backends,
+    )
   }
 
   private fun ensureHandle(terminalId: String): Long {
@@ -212,7 +328,7 @@ class MeetermTerminalModule : Module() {
     }
 
     val stateCode = fields[0].toIntOrNull()
-      ?.takeIf { it in STATE_DISCONNECTED..STATE_RECONNECTING }
+      ?.takeIf { it in STATE_DISCONNECTED..STATE_MAX }
       ?: throw IllegalStateException("Native connection state is unavailable.")
     val state = stateName(stateCode)
     val port = fields[2].toIntOrNull()
@@ -238,8 +354,6 @@ class MeetermTerminalModule : Module() {
     val privateKey: String,
     val passphrase: String,
     val password: String,
-    val backend: String,
-    val runtime: String,
   ) {
     companion object {
       fun from(values: Map<String, Any?>): SshOptions {
@@ -260,15 +374,6 @@ class MeetermTerminalModule : Module() {
           else -> throw IllegalArgumentException("The SSH connection options are invalid.")
         }
 
-        require(!values.containsKey("backend") || values["backend"] is String) { "The backend is invalid." }
-        require(!values.containsKey("runtime") || values["runtime"] is String) { "The runtime is invalid." }
-        val backend = values["backend"] as? String ?: MeetermTerminalModule.DEFAULT_BACKEND
-        require(backend == MeetermTerminalModule.TMUX_BACKEND || backend == MeetermTerminalModule.HERDR_BACKEND) {
-          "The SSH connection options are invalid."
-        }
-        val runtime = values["runtime"] as? String ?: ""
-        requireValidRuntime(backend, runtime)
-
         return when (authMethod) {
           PUBLIC_KEY_AUTH_METHOD -> {
             val privateKey = values["privateKey"] as? String
@@ -278,14 +383,14 @@ class MeetermTerminalModule : Module() {
             ) {
               throw IllegalArgumentException("The SSH connection options are invalid.")
             }
-            SshOptions(host, port, username, authMethod, privateKey, passphrase, "", backend, runtime)
+            SshOptions(host, port, username, authMethod, privateKey, passphrase, "")
           }
           PASSWORD_AUTH_METHOD -> {
             val password = values["password"] as? String
             if (password.isNullOrEmpty() || password.any { it == '\u0000' }) {
               throw IllegalArgumentException("The SSH connection options are invalid.")
             }
-            SshOptions(host, port, username, authMethod, "", "", password, backend, runtime)
+            SshOptions(host, port, username, authMethod, "", "", password)
           }
           else -> error("unreachable authentication method")
         }
@@ -298,16 +403,6 @@ class MeetermTerminalModule : Module() {
         return double.toInt()
       }
 
-      private fun requireValidRuntime(backend: String, runtime: String) {
-        require(runtime.toByteArray(Charsets.UTF_8).size <= MeetermTerminalModule.HERDR_RUNTIME_MAX_BYTES &&
-          runtime != "." && runtime != ".." &&
-          runtime.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '_' || it == '-' }) {
-          "The SSH connection options are invalid."
-        }
-        require(backend == MeetermTerminalModule.HERDR_BACKEND || runtime.isEmpty()) {
-          "The SSH connection options are invalid."
-        }
-      }
     }
   }
 
@@ -316,13 +411,19 @@ class MeetermTerminalModule : Module() {
     const val PASSWORD_AUTH_METHOD = "password"
     const val TMUX_BACKEND = "tmux"
     const val HERDR_BACKEND = "herdr"
-    const val DEFAULT_BACKEND = TMUX_BACKEND
-    const val HERDR_RUNTIME_MAX_BYTES = 64
     const val DEFAULT_COLUMNS = 80
     const val DEFAULT_ROWS = 24
     const val STATE_FIELD_COUNT = 8
     const val STATE_DISCONNECTED = 0
     const val STATE_RECONNECTING = 10
+    const val STATE_MAX = 14
+    const val RUNTIME_CANDIDATE_LIMIT = 256
+    const val RUNTIME_DISCOVERY_MAX_BYTES = 1024 * 1024
+    const val RUNTIME_ID_MAX_BYTES = 256
+    const val RUNTIME_NAME_MAX_BYTES = 256
+    const val RUNTIME_ERROR_CODE_MAX_BYTES = 64
+    const val RUNTIME_ERROR_MAX_BYTES = 256
+    const val TMUX_CREATE_NAME_MAX_BYTES = 64
 
     fun normalizeTerminalId(value: String): String {
       val normalized = value.trim()
@@ -349,6 +450,10 @@ class MeetermTerminalModule : Module() {
       8 -> "AttachingTmux"
       9 -> "Synchronizing"
       10 -> "Reconnecting"
+      11 -> "DiscoveringRuntimes"
+      12 -> "AwaitingRuntimeSelection"
+      13 -> "AttachingRuntime"
+      14 -> "CreatingRuntime"
       else -> "Failed"
     }
 

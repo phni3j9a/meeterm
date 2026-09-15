@@ -117,6 +117,8 @@ for checkpoint in \
   standard-home standard-servers standard-connection standard-password \
   standard-workspaces standard-terminal standard-settings \
   standard-workspace-name standard-terminal-name standard-handoff \
+  standard-runtime-picker standard-runtime-partial-error standard-runtime-empty \
+  standard-runtime-create \
   standard-herdr-connection standard-herdr-groups standard-herdr-terminal \
   standard-herdr-workspaces; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"

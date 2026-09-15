@@ -412,6 +412,44 @@ impl Terminal {
         Ok(())
     }
 
+    /// Start a different remote runtime binding within the same SSH
+    /// generation. Reconnects deliberately preserve native history, but a
+    /// runtime picker change must not let the new binding inherit the old
+    /// runtime's cells, parser state, or pending transport.
+    pub(crate) fn reset_remote_binding(&mut self, generation: u64) -> Result<(), TerminalError> {
+        if self
+            .remote_generation
+            .is_some_and(|current| generation < current)
+        {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        let columns =
+            u16::try_from(self.term.columns()).map_err(|_| TerminalError::InvalidDimensions)?;
+        let rows = u16::try_from(self.term.screen_lines())
+            .map_err(|_| TerminalError::InvalidDimensions)?;
+        validate_dimensions(columns, rows)?;
+
+        let mut binding = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?;
+        *binding = None;
+        drop(binding);
+        self.replace_term(columns, rows);
+        self.remote_mode = true;
+        self.remote_generation = Some(generation);
+        self.processor = Processor::new();
+        self.transport_ready = false;
+        self.transport_overloaded.store(false, Ordering::Release);
+        self.preserve_history_on_capture = false;
+        self.screen_initialized = false;
+        self.input_commit_count = 0;
+        self.content_revision = self.content_revision.saturating_add(1);
+        #[cfg(test)]
+        self.input_log.clear();
+        Ok(())
+    }
+
     fn replace_term(&mut self, columns: u16, rows: u16) {
         let dimensions = TerminalDimensions {
             columns: usize::from(columns),

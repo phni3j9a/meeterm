@@ -50,6 +50,12 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   48 dp tall, preserving its terminal sizing and native input contract.
 - Server management, naming, connection details, and settings have explicit
   close/cancel boundaries. Unsaved forms ask before discarding changes.
+- After SSH host-key verification and authentication, a runtime picker presents
+  independent tmux and Herdr sections. It highlights a last-used hint without
+  auto-selecting it, keeps loading/mixed/empty/partial-error and stale-selection
+  states explicit, and exposes tmux creation separately from running-only
+  Herdr selection. Herdr stopped rows explain the external-client refresh path;
+  they do not offer a meeterm start/create promise or fallback to tmux.
 - Connection progress, empty results, empty workspaces, lost connections,
   authentication problems, and host-key changes use English copy. Host-key
   verification and destructive remote actions remain explicit.
@@ -184,10 +190,17 @@ new fixed input diagnostics; local revalidation identified Metal without
 overwriting their artifacts. The complete sequence is retained in
 [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The normal iOS gate still has fourteen screens. The seven extra states and
-navigation belong to the separate `polish` diagnostic with independent
-completion markers and the unchanged 900-second ceiling. Fixture screenshots
-verify presentation, not the remote actions that normally create that state.
+The current iOS `standard` source-level manifest has 18 screens: the previous
+14 plus `runtime-picker`, `runtime-partial-error`, `runtime-empty`, and
+`runtime-create`. The existing `herdr-connection` route is now the picker state
+whose Herdr `default` candidate carries the non-authoritative `Last used` hint.
+Android's observational `SCREEN_NAMES` has 25 routes: the previous 21 plus
+those same four runtime routes. These counts describe source scope only; the
+historical run table above remains historical and does not establish new remote
+CI or visual-review results. The seven extra states and navigation belong to
+the separate `polish` diagnostic with independent completion markers and the
+unchanged 900-second ceiling. Fixture screenshots verify presentation, not the
+remote actions that normally create that state.
 Their terminal content still comes from the Rust/native demo: no terminal
 bytes, cells or mock terminal renderings cross JavaScript.
 

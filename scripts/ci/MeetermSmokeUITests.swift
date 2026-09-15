@@ -17,6 +17,13 @@ final class MeetermSmokeUITests: XCTestCase {
     case connectedTimeout = "connected_timeout"
   }
 
+  private enum RuntimePickerFailurePhase: String {
+    case pickerMissing = "picker_missing"
+    case runtimeMissing = "runtime_missing"
+    case runtimeNotHittable = "runtime_not_hittable"
+    case connectedTimeout = "connected_timeout"
+  }
+
   private enum HostSelectionCopyResult {
     case passed
     case rejected
@@ -132,6 +139,12 @@ final class MeetermSmokeUITests: XCTestCase {
       at: artifactDirectory.appendingPathComponent("ios-ui-host-trust-response-diagnostics.txt")
     )
     try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("ios-ui-runtime-picker-diagnostics.txt")
+    )
+    try? FileManager.default.removeItem(
+      at: artifactDirectory.appendingPathComponent("runtime-picker-failure.png")
+    )
+    try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("host-trust-timeout.png")
     )
     try? FileManager.default.removeItem(
@@ -155,6 +168,10 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-workspace-name.png",
       "standard-terminal-name.png",
       "standard-handoff.png",
+      "standard-runtime-picker.png",
+      "standard-runtime-partial-error.png",
+      "standard-runtime-empty.png",
+      "standard-runtime-create.png",
       "standard-herdr-connection.png",
       "standard-herdr-groups.png",
       "standard-herdr-terminal.png",
@@ -404,12 +421,7 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     record("host_trust_dismissed")
 
-    record("await_connected")
-    let connected = app.staticTexts["Connected"]
-    guard connected.waitForExistence(timeout: 90) else {
-      record("connected_timeout_after_host_trust")
-      writePostTrustDiagnostics(phase: .connectedTimeout, alert: alert, trust: trust)
-      XCTFail("The native SSH/tmux connection did not reach Connected.")
+    guard selectFixtureTmuxRuntimeAndWaitForConnected(stage: "real_ssh_initial_runtime") else {
       return
     }
 
@@ -510,10 +522,9 @@ final class MeetermSmokeUITests: XCTestCase {
 
     record("reconnect")
     tapConnectionAction("Reconnect")
-    XCTAssertTrue(
-      connected.waitForExistence(timeout: 90),
-      "The app did not reconnect to the fixture."
-    )
+    guard selectFixtureTmuxRuntimeAndWaitForConnected(stage: "real_ssh_manual_reconnect") else {
+      return
+    }
 
     record("close_reconnect_sheet")
     let reconnectSheetClose = button("Close sheet")
@@ -564,6 +575,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let screens = [
       "home", "servers", "connection", "password", "workspaces", "terminal",
       "settings", "workspace-name", "terminal-name", "handoff",
+      "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
     ]
     for screen in screens {
@@ -595,7 +607,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("standard_complete")
   }
 
-  /// Additional states and native navigation, separate from the 14-screen
+  /// Additional states and native navigation, separate from the 18-screen
   /// daily gate so both scopes retain their own bounded execution budget.
   func testPolishStatesAndNavigation() throws {
     for screen in ["welcome", "empty", "search-empty", "disconnected", "reconnecting", "connection-error", "long-workspaces"] {
@@ -821,14 +833,34 @@ final class MeetermSmokeUITests: XCTestCase {
     case "handoff":
       return app.staticTexts["Continue on your computer"].waitForExistence(timeout: 30)
         && waitForHittable(button("Disconnect"), timeout: 30)
+    case "runtime-picker":
+      return app.staticTexts["Choose a runtime for Smoke server"].waitForExistence(timeout: 30)
+        && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
+        && waitForHittable(button("Herdr runtime default"), timeout: 30)
+        && button("Herdr runtime paused").waitForExistence(timeout: 30)
+    case "runtime-partial-error":
+      return app.staticTexts["Herdr is not available over SSH. Open Herdr on your computer or check its installation."].waitForExistence(timeout: 30)
+        && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
+    case "runtime-empty":
+      let paused = button("Herdr runtime paused")
+      return app.staticTexts["No running tmux sessions found."].waitForExistence(timeout: 30)
+        && paused.waitForExistence(timeout: 30)
+        // A runtime row is one accessibility button on iOS, so its visible
+        // state text is grouped into that row. Verify the actionable contract
+        // on the parent instead of looking for a child StaticText that the
+        // accessibility tree intentionally does not expose.
+        && !paused.isEnabled
+    case "runtime-create":
+      return app.staticTexts["Create tmux session"].waitForExistence(timeout: 30)
+        && input("tmux session name").waitForExistence(timeout: 30)
+        && waitForHittable(app.buttons["runtime-tmux-create-submit"], timeout: 30)
     case "herdr-connection":
-      let backend = button("herdr backend")
-      let runtime = input("Herdr session name")
-      return app.staticTexts["Connect to server"].waitForExistence(timeout: 30)
-        && waitForHittable(backend, timeout: 30)
-        && waitForSelected(backend)
-        && runtime.waitForExistence(timeout: 30)
-        && waitForShortFieldValue(runtime, expected: "dev", timeout: 30)
+      // The Last used badge is visible presentation inside the explicitly
+      // labelled runtime button. Screen readiness therefore uses the same
+      // accessible row that VoiceOver and the selection flow receive; the
+      // downloaded screenshot covers the badge itself.
+      return app.staticTexts["Choose a runtime for Smoke server"].waitForExistence(timeout: 30)
+        && waitForHittable(button("Herdr runtime default"), timeout: 30)
     case "herdr-groups":
       let title = app.staticTexts["Switch group"]
       let development = button("Group Development")
@@ -894,13 +926,76 @@ final class MeetermSmokeUITests: XCTestCase {
       XCTFail("The host trust prompt did not dismiss.")
       return false
     }
-    let connected = app.staticTexts["Connected"]
-    guard connected.waitForExistence(timeout: 90) else {
-      writePostTrustDiagnostics(phase: .connectedTimeout, alert: alert, trust: trust)
-      XCTFail("The native SSH/tmux connection did not reach Connected.")
+    guard selectFixtureTmuxRuntimeAndWaitForConnected(stage: "ssh_initial_runtime") else {
       return false
     }
     record("ssh_connected")
+    return true
+  }
+
+  private func selectFixtureTmuxRuntimeAndWaitForConnected(stage: String) -> Bool {
+    let pickerTitle = app.staticTexts.matching(
+      NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
+    ).firstMatch
+    record("\(stage)_await_runtime_picker")
+    guard pickerTitle.waitForExistence(timeout: 60) else {
+      record("\(stage)_runtime_picker_missing")
+      writeRuntimePickerDiagnostics(
+        phase: .pickerMissing,
+        stage: stage,
+        pickerTitle: pickerTitle,
+        runtime: button("tmux runtime meeterm"),
+        connected: app.staticTexts["Connected"]
+      )
+      XCTFail("The runtime picker did not appear after SSH authentication.")
+      return false
+    }
+
+    let runtime = button("tmux runtime meeterm")
+    record("\(stage)_await_tmux_runtime")
+    guard runtime.waitForExistence(timeout: 30) else {
+      record("\(stage)_tmux_runtime_missing")
+      writeRuntimePickerDiagnostics(
+        phase: .runtimeMissing,
+        stage: stage,
+        pickerTitle: pickerTitle,
+        runtime: runtime,
+        connected: app.staticTexts["Connected"]
+      )
+      XCTFail("The fixture tmux runtime meeterm was not exposed by the runtime picker.")
+      return false
+    }
+    guard waitForHittable(runtime, timeout: 30) else {
+      record("\(stage)_tmux_runtime_not_hittable")
+      writeRuntimePickerDiagnostics(
+        phase: .runtimeNotHittable,
+        stage: stage,
+        pickerTitle: pickerTitle,
+        runtime: runtime,
+        connected: app.staticTexts["Connected"]
+      )
+      XCTFail("The fixture tmux runtime meeterm was not hittable.")
+      return false
+    }
+
+    record("\(stage)_tap_tmux_runtime")
+    runtime.tap()
+    record("\(stage)_tmux_runtime_tapped")
+    let connected = app.staticTexts["Connected"]
+    record("\(stage)_await_connected")
+    guard connected.waitForExistence(timeout: 90) else {
+      record("\(stage)_connected_timeout")
+      writeRuntimePickerDiagnostics(
+        phase: .connectedTimeout,
+        stage: stage,
+        pickerTitle: pickerTitle,
+        runtime: runtime,
+        connected: connected
+      )
+      XCTFail("The native SSH/tmux connection did not reach Connected after selecting meeterm.")
+      return false
+    }
+    record("\(stage)_connected")
     return true
   }
 
@@ -1003,8 +1098,9 @@ final class MeetermSmokeUITests: XCTestCase {
     capture("daily-servers")
     record("daily_cold_profile_connect")
     saved.tap()
-    record("daily_cold_connected_wait")
-    XCTAssertTrue(app.staticTexts["Connected"].waitForExistence(timeout: 90), "The saved native credential could not reconnect.")
+    guard selectFixtureTmuxRuntimeAndWaitForConnected(stage: "real_ssh_cold_saved_profile") else {
+      return
+    }
     XCTAssertFalse(input("Private OpenSSH key").exists, "Saved credentials must not be returned to the form.")
     XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 20))
     button(firstWorkspace).tap()
@@ -2036,6 +2132,10 @@ final class MeetermSmokeUITests: XCTestCase {
       ("opening_terminal", "Opening terminal…"),
       ("opening_workspace", "Opening workspace…"),
       ("restoring_terminals", "Restoring terminals…"),
+      ("discovering_runtimes", "Finding runtimes…"),
+      ("awaiting_runtime_selection", "Choose a runtime"),
+      ("attaching_runtime", "Opening runtime…"),
+      ("creating_runtime", "Creating runtime…"),
       ("connected", "Connected"),
       ("reconnecting", "Reconnecting…"),
       ("disconnecting", "Disconnecting…"),
@@ -2102,6 +2202,55 @@ final class MeetermSmokeUITests: XCTestCase {
     )
     if screenshotSafe {
       capture("host-trust-response-failure")
+    }
+  }
+
+  private func writeRuntimePickerDiagnostics(
+    phase: RuntimePickerFailurePhase,
+    stage: String,
+    pickerTitle: XCUIElement,
+    runtime: XCUIElement,
+    connected: XCUIElement
+  ) {
+    let observation = connectionStateObservation()
+    let appForeground = app.state == .runningForeground
+    // The Rust bridge already renders one bounded, non-secret connection
+    // error. Match only known fixed product copy so diagnostics can identify
+    // the native failure class without serializing the accessibility tree or
+    // any credential-bearing XCTest description.
+    let knownConnectionErrors: [(String, String)] = [
+      ("network", "The SSH connection could not be established."),
+      ("channel", "The SSH session channel could not be opened."),
+      ("transport", "The SSH terminal transport stopped."),
+      ("remote_closed", "The remote terminal closed the session."),
+      ("tmux_failed", "The managed tmux session could not be opened."),
+      ("tmux_protocol", "The tmux Control Mode stream was malformed."),
+      ("tmux_runtime_missing", "The selected tmux session disappeared or its server was replaced. Choose a runtime again."),
+      ("stale_connection", "The SSH connection was replaced."),
+    ]
+    let failureCodeHint = knownConnectionErrors.first { _, message in
+      app.staticTexts[message].exists
+    }?.0 ?? "unavailable"
+    writeConnectionStateArtifact(observation)
+    writeFixedArtifact(
+      "ios-ui-runtime-picker-diagnostics.txt",
+      lines: [
+        "phase=\(phase.rawValue)",
+        "stage=\(stage)",
+        "app_foreground=\(appForeground ? 1 : 0)",
+        "connection_state=\(observation.key)",
+        "connection_state_label_present=\(observation.present ? 1 : 0)",
+        "picker_title_exists=\(pickerTitle.exists ? 1 : 0)",
+        "picker_title_hittable=\(pickerTitle.exists && pickerTitle.isHittable ? 1 : 0)",
+        "tmux_runtime_exists=\(runtime.exists ? 1 : 0)",
+        "tmux_runtime_enabled=\(runtime.exists && runtime.isEnabled ? 1 : 0)",
+        "tmux_runtime_hittable=\(runtime.exists && runtime.isHittable ? 1 : 0)",
+        "connected_exists=\(connected.exists ? 1 : 0)",
+        "connection_error_code_hint=\(failureCodeHint)",
+      ]
+    )
+    if safeForPostFormScreenshot() {
+      capture("runtime-picker-failure")
     }
   }
 

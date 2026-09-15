@@ -76,6 +76,7 @@ STORAGE_CASES = (
     "credential_endpoint_binding",
     "remove_saved_credential",
     "preferences_validation",
+    "runtime_hint_validation",
 )
 NATIVE_INPUT_CASES = (
     "multiline",

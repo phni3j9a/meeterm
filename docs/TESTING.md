@@ -13,15 +13,60 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
-| Android | 既存のfull smokeと画像の実見。21状態はfresh processのoptional observational fixture | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
-| iOS `standard` | production保存4件、native入力7件＋scroll gesture 1件、14画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| Android | 既存のfull smokeと画像の実見。source-levelのobservational `SCREEN_NAMES` は25 route（従来21 route＋runtime picker 4 route） | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
+| iOS `standard` | production保存4件、native入力7件＋scroll gesture 1件、source-level 18画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
-| iOS `ssh` | 接続、ホスト鍵確認、短い端末入力、リモート側の到達確認、切断 | iOSの実SSHとnative端末入力の接続境界 |
+| iOS `ssh` | 接続、ホスト鍵確認、runtime picker/選択、短い端末入力、リモート側の到達確認、切断 | iOSの実SSH、runtime選択、native端末入力の接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
 今回の方針導入時は、fresh CNGでAndroid fullとiOS standardを確認し、同一ソースのiOS sshも確認します。
 `full`の全操作成功は、この新しい通常検証や日常利用マイルストーンの必須条件ではありません。
+`ssh`/`full`/`names` は Simulator を起動する前に、同じ macOS runner と tmux で
+共有Rustの既存runtime一覧・明示選択・Control Mode接続を実OpenSSH経由で確認します。
+このpreflightはXCTest runnerが起動できない場合も、remote tmux接続とiOS UI操作の
+どちらで失敗したかを分けるためのもので、iOS UI/input検証の代わりにはしません。
+
+## Issue #21 runtime picker の確認項目
+
+runtime picker の変更では、画面だけでなく Rust/native の lifecycle と
+backend 境界を確認します。少なくとも次を、実装された source と test の
+範囲を明記して記録します。
+
+- discovery が bounded・read-only で、list が runtime を作成・開始・attach
+  しないこと。tmux の no-server/no-session、複数 session、名前、明示的な
+  detached create、exact identity、list-to-select race を確認すること。
+- Herdr の PATH、公式installerの既定値 `~/.local/bin`、一般的なpackage manager locationの解決、同じ native binary capability
+  の list/status/controller 利用、`default`/named の running/stopped 表示、
+  running candidate の protocol 22/schema 1/direct operation 再検証を確認する
+  こと。停止中の start/create や Herdr から tmux への自動 fallback は成功条件に
+  含めないこと。
+- backend ごとの timeout/output/result bounds と partial failure を分離し、片方
+  の欠落・不互換・malformed response がもう片方の候補を隠さないこと。重複名は
+  backend を含む identity で区別すること。
+- legacy profile の backend/runtime を non-authoritative な last-used hint へ
+  移行し、profile ID/credential を保持し、選択 runtime が `Ready` になった後だけ
+  hint を更新すること。switch/release は一つの actor を drain/release してから
+  次を取得し、remote process を終了しないこと。
+- automatic reconnect が同じ `(backend, runtime)` へ戻る前に host、binary/capability、
+  server epoch/runtime identity、compatibility を再検証し、missing/replaced/restarted/
+  uncertain なら picker へ戻ること。Herdr 0.9.0 は比較可能な public server-instance
+  identity がないため transport recovery 後に必ず picker へ戻ること。linked/shared tmux topology では workspace close
+  と final-pane close を実行直前に同じ Rust actor/control queue で確認し、安全を証明
+  できなければ fail closed にすること。
+
+Mobile では picker の loading、duplicate-name、stale-selection、非同期refresh、
+explicit selection/create の状態遷移を focused app/native test で確認します。
+visual fixture では mixed picker、partial-error、empty、explicit-create の4 routeを
+確認します。
+Android full、iOS `standard`、接続変更を含む短い iOS `ssh` を適用し、両OSの
+スクリーンショットを実際にダウンロードして確認するまで visual success と報告
+しません。iOS `standard` の source-level manifest は18画面で、従来14画面に
+`runtime-picker`、`runtime-partial-error`、`runtime-empty`、`runtime-create` を加えます。
+`herdr-connection` は Herdr `default` candidate の non-authoritative な `Last used` hint
+を示す picker state です。Android の observational `SCREEN_NAMES` は25 routeで、従来21
+routeに同じ4 routeを加えます。これらは source scope であり、remote CI や visual review の
+結果ではありません。
 
 一般CIのRust jobは公式 Herdr v0.9.0 binary を `RUNNER_TEMP` にだけ取得し、SHA-256
 `4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f` を検証してから、
@@ -72,10 +117,14 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 
 対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
 ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎに加え、
-Herdr connection、groups、terminal、workspaces の14画面が `standard` です。
+`runtime-picker`、`runtime-partial-error`、`runtime-empty`、`runtime-create`、
+`herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces` を含む
+iOS `standard` のsource-level 18画面です。`herdr-connection` は旧backend/session formではなく、
+Herdr `default` candidate の `Last used` hint を示すpicker stateです。
 `meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
 名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
-`settings`、`workspace-name`、`terminal-name`、`handoff`、
+`settings`、`workspace-name`、`terminal-name`、`handoff`、`runtime-picker`、
+`runtime-partial-error`、`runtime-empty`、`runtime-create`、
 `herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces` です。
 撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
@@ -89,8 +138,10 @@ Herdr connection、groups、terminal、workspaces の14画面が `standard` で�
 この区間だけ既存の録画機構で `daily-interactions.mp4` を記録します。
 fixtureは既存 `poc-main` を開くことだけを許し、接続・遠隔操作・端末データの生成は行いません。
 これはnavigation/keyboard表示の検証であり、SSH入力の証拠にはしません。
-Androidも同じ21状態を任意の観測画像として採取し、既存full gateとdaily-use録画は維持します。
-通常の14画面と追加診断は別々に報告します。既存の900秒枠を延長せず、
+Android の observational `SCREEN_NAMES` は25 routeです。従来21 routeに `runtime-picker`、
+`runtime-partial-error`、`runtime-empty`、`runtime-create` を加えたsource-level scopeで、
+任意の画像を採取します。既存full gateとdaily-use録画は維持し、source scopeと実際のCI・画像確認は
+別々に報告します。既存の900秒枠を延長せず、
 検証範囲を分けて同一ソースのpristine test productsを再利用します。
 
 `polish-navigation` は上記の検索・端末keyboard・sheet・戻る操作を同じhelperで単独実行し、
@@ -105,7 +156,7 @@ Androidも同じ21状態を任意の観測画像として採取し、既存full 
 `-meeterm-ui-observation` 起動引数はこの三つと短い `ssh` テストだけが渡し、native入力の
 focus/window/bindingとPasteのrequest/provider/drop/delivery/accepted状態を固定形式の
 ログに残します。smoke iOS起動時にはJS module、initial URLの固定分類、AppContent、
-profile取得の到達phaseも、nativeのallowlistを通して記録します。URLそのもの、入力文字、
+profile取得とruntime discoveryの到達phaseも、nativeのallowlistを通して記録します。URLそのもの、入力文字、
 composition、clipboard、profileやremote IDは記録しません。
 短い `ssh` の撮影許可は公開fixtureと分離し、最初の接続情報の入力前だけに限定します。
 foreground到達後の `ssh-entry-initial.png`、接続入口で失敗した場合の
@@ -139,7 +190,7 @@ fixtureも実際のAppState通知に追従しますが、Rustへの接続・再�
 | `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
 | `polish-navigation` | 同じ操作helperとfresh foundationを、7状態の巡回から独立して確認 |
 | `ssh` | 実SSH接続と短いnative入出力の確認 |
-| `native` | 保存4件（legacy profileのbackend/runtime既定値を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
+| `native` | 保存4件（legacy profileのbackend/runtimeをlast-used hintへ移行する境界を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |

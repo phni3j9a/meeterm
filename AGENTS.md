@@ -7,11 +7,11 @@ Read `docs/PRODUCT.md` and `docs/ARCHITECTURE.md` before making architectural or
 ## Product invariants
 
 - The selected remote runtime is the durable workspace source of truth.
-- The default tmux runtime is session `meeterm`; Herdr uses `default` or a named session.
+- The tmux runtime is a user-selected session on the ordinary tmux server. `meeterm` is the suggested name for an explicitly created new session and the legacy last-used hint; it is not a fixed runtime. Herdr uses a selected running `default` or named session.
 - **Workspace = tmux window or Herdr workspace.**
 - **Terminal = tmux pane or Herdr pane.**
 - On mobile, panes are presented as tabs and the selected pane receives a phone-appropriate full-size experience.
-- On desktop, tmux remains usable through ordinary `tmux attach -t meeterm`, and Herdr remains usable through its normal client.
+- On desktop, tmux remains usable through ordinary `tmux attach -t <selected-session>`, and Herdr remains usable through its normal client for the selected session.
 - Smooth phone-to-PC handoff is required. Simultaneous interactive phone+PC use is not an initial requirement.
 
 Do not change the session/window/pane mapping merely because another mapping simplifies mobile implementation.
@@ -29,8 +29,10 @@ For tmux, a Workspace remains a tmux window, a Terminal remains a tmux pane,
 and TerminalGroup is one virtual mobile group per window. The virtual group
 must not create a remote tmux window or otherwise change the desktop layout.
 Herdr maps Workspace to a Herdr workspace, Group to a Herdr tab, and Terminal
-to a Herdr pane. Backend selection is explicit per profile/runtime; a missing
-legacy backend continues to mean tmux. The Rust/native path targets Herdr 0.9.0,
+to a Herdr pane. Backend selection is explicit after authenticated runtime
+discovery. Legacy backend/runtime fields are a non-authoritative last-used
+hint, updated only after Ready; a missing legacy backend seeds the tmux
+suggestion but does not bypass the picker. The Rust/native path targets Herdr 0.9.0,
 protocol 22, schema 1 through its existing direct public API. Keep acceptance
 evidence scoped to the tested source and suites in
 [`docs/evidence/issue-17-herdr-mobile.md`](docs/evidence/issue-17-herdr-mobile.md). See [`docs/HERDR.md`](docs/HERDR.md) and the historical
@@ -62,8 +64,8 @@ Rust native core
         │
         ▼
 ordinary SSH
-├── tmux session `meeterm`
-└── existing Herdr session/socket
+├── selected ordinary tmux session
+└── selected existing Herdr session/socket
 ```
 
 ### Keep the terminal data plane native
@@ -105,13 +107,16 @@ The target is `alacritty_terminal` plus a native GPU renderer.
 
 Do not isolate meeterm into a separate tmux server/socket such as `tmux -L meeterm` for the normal product path.
 
-A desktop user must be able to run:
+A desktop user must be able to run the ordinary client against the selected
+runtime, for example:
 
 ```bash
-tmux attach -t meeterm
+tmux attach -t <selected-session>
 ```
 
-without meeterm-specific desktop software.
+without meeterm-specific desktop software. `meeterm` may be substituted when
+it is the selected session or the name chosen by the explicit tmux create
+action; it is not assumed when listing or reconnecting.
 
 ## tmux integration
 
@@ -127,6 +132,53 @@ Herdr.
 - Do not install global tmux hooks or mutate user configuration without a demonstrated need and narrowly scoped design.
 
 Avoid shell command construction from untrusted or user-visible names. Prefer typed command/argument encoding and explicit tmux targets.
+
+## Runtime discovery and selection
+
+An authenticated SSH host connection and a selected runtime are separate
+native lifecycle stages. A fresh manual connection and a cold start always
+perform bounded, read-only discovery and show a picker grouped into tmux and
+Herdr sections. A last-used hint may highlight a row, but it never selects or
+attaches by itself. Discovery must not create, start, attach, or otherwise
+mutate a runtime.
+
+The tmux section lists arbitrary sessions from the ordinary server. A verified
+empty server/session result is an empty section; other command failures remain
+errors. Selecting a row targets its exact live session identity. Creating a
+tmux runtime is a separate detached action, suggests `meeterm` as its name,
+verifies the returned identity, and then selects it. A list-to-select race is a
+stale-selection error followed by refresh, never an implicit create.
+
+The Herdr section resolves the compatible 0.9.0 executable natively using PATH,
+the official `~/.local/bin` installer default, and common package-manager
+locations, and keeps that resolved path as a
+connection-scoped capability for list, status, controller setup, and later
+proof-gated operations. The path is not exposed to JavaScript or ordinary
+logs. Rows distinguish running candidates from stopped sessions; only running
+rows may be selected, and selection revalidates protocol 22, schema 1, and the
+direct stream-local contract. Herdr start/create is not promised by this
+issue, and meeterm never silently falls back to tmux when Herdr discovery or
+selection fails.
+
+Each backend has bounded, independent discovery and error state. A missing or
+incompatible tmux/Herdr capability is local to its section unless the user
+selects that backend. There is one selected runtime actor per SSH host
+connection. Switching or releasing it drains/closes the backend controller
+and preserves the remote process before another selection is acquired.
+
+Automatic transport reconnect may return to the selected `(backend, runtime)`
+only after the host identity, backend capability, runtime identity, and
+compatibility have been verified again. A missing runtime, server restart,
+same-name replacement, incompatible runtime, or uncertain identity returns to
+the picker with a refresh and explanation. A fresh manual connection never
+skips the picker.
+
+Saved server profiles own SSH endpoint and authentication metadata. Existing
+backend/runtime fields represent a non-authoritative logical `lastUsedRuntime`
+hint;
+profile IDs and credentials remain independent, and the hint is updated only
+after the selected runtime reaches `Ready`. Credential secure-storage identity
+must not change merely because the backend or runtime hint changes.
 
 The common backend target must keep remote identifiers opaque and scoped by
 connection, backend, and runtime. A Herdr pane identifier may change when a
@@ -170,8 +222,10 @@ Do not route IME composition through a JavaScript `TextInput` merely because it 
 
 ## State and lifecycle
 
-- SSH is transport; the selected remote runtime is durable state. tmux uses
-  session `meeterm`; Herdr uses its selected `default` or named session.
+- SSH is transport; the selected remote runtime is durable state. tmux uses the
+  selected ordinary session; Herdr uses its selected running `default` or
+  named session. `meeterm` is only a suggested new-session name and legacy
+  hint.
 - Each backend owns reconnect and resynchronization in the Rust core. Herdr
   release closes/EOFs the direct controller stream before a later stable-ID
   reacquire, while the remote process remains alive.
@@ -222,6 +276,13 @@ and launch it, observe native readiness and a first terminal frame, and check
 that the process does not crash. It is not a substitute for final full and
 `standard` acceptance.
 
+The iOS `standard` source-level manifest is 18 screens: the previous 14 plus
+`runtime-picker`, `runtime-partial-error`, `runtime-empty`, and `runtime-create`.
+Its existing `herdr-connection` route is now a picker state whose Herdr `default`
+candidate carries the non-authoritative `Last used` hint. Android's observational
+`SCREEN_NAMES` contains 25 routes: the previous 21 plus those same four runtime
+routes. These are source-level scopes, not remote CI or visual-review results.
+
 The explicit iOS `polish` diagnostic adds seven presentation states and native
 navigation/keyboard/back checks. `polish-navigation` independently exercises the
 same navigation helper and a fresh native foundation; it does not validate the
@@ -261,11 +322,27 @@ for every change. Keep UI fixtures behind the smoke build flag and an explicit
 test launch route; screenshots of seeded state verify presentation, not the user
 actions that would ordinarily create that state. Preserve real native terminal
 rendering and never send fixture terminal bytes/cells through JS.
+
+For the runtime picker, the applicable Rust/native checks also cover bounded
+side-effect-free discovery, tmux list/create/select and exact identity,
+Herdr executable resolution and running-session list/select, independent
+backend failures, profile migration, reconnect identity, switch/release, and
+fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
+picker loading, duplicate-name, stale-selection, asynchronous refresh, and
+explicit selection/create state transitions in focused app/native tests. The
+18-screen iOS source manifest and 25-route Android observational `SCREEN_NAMES`
+add the four visual routes `runtime-picker`, `runtime-partial-error`,
+`runtime-empty`, and `runtime-create`. Android full and iOS `standard` plus `ssh`
+remain the required mobile paths for this connection-lifecycle change; both
+platform screenshots from the applicable exact-source acceptance runs must be
+downloaded and actually viewed before the corresponding evidence is reported.
+
 The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
 suite by its actual scope; never rename an old full failure into a passing result.
 For another suite or diagnosis on identical source, reuse pristine iOS test
 products only through the workflow's commit/toolchain/hash checks. Record the
-original fresh build and the reuse run. Source changes require a new build.
+original fresh build and the reuse run. Changes to app, native, test, or build
+inputs require a new build.
 Investigate the first failed stage before rerunning; retain bounded state waits,
 exact completion evidence, and sanitized artifacts. Do not fix failures by
 silently skipping assertions, adding blind retries, or extending deadlines.

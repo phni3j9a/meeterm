@@ -62,9 +62,16 @@ reconnect and is never persisted to disk. Password authentication uses only the
 SSH `password` method; keyboard-interactive prompts and MFA are not implemented.
 The extended connect ABI appends auth_method and password pointer/length pairs
 after the existing known-hosts path; callers must rebuild all native adapters
-together. The selector accepts publicKey and password (an empty selector keeps
-the legacy public-key default), and rejects mixed credential fields. Password
-whitespace is preserved exactly.
+together. Both `meeterm_connect` and `meeterm_connect_host` are host-only
+entry points: they authenticate and discover runtimes, then wait for the
+picker. The production Android JNI and iOS C bridges expose no direct
+backend/runtime connect symbol. The selector accepts publicKey and password
+(an empty selector keeps the legacy public-key default), and rejects mixed
+credential fields. Password whitespace is preserved exactly. The crate-private
+`connect_terminal` direct-options helper remains only for internal Rust tests;
+it is not a production mobile binding path or part of the exported Rust API.
+There is no implicit tmux `new-session -A` fallback; tmux creation is exposed
+only through the explicit detached create operation after picker selection.
 Rust owns host-key trust decisions and the app-private trust file supplied by
 each platform. Unknown keys require explicit acceptance; changed or unreadable
 trust state fails closed. See [SSH validation](../../docs/SSH.md) for the real
@@ -85,9 +92,12 @@ tab, and pane from its public 0.9.0 protocol 22/schema 1 API. Both backends
 reuse the SSH lifecycle, terminal registry, `alacritty_terminal::Term`, native
 snapshot format, input/resize transport, and native visibility lifecycle.
 
-`ConnectOptions` carries the selected backend and an optional runtime. A missing
-backend in an old saved profile defaults to tmux; an empty Herdr runtime means
-`default`. The control bridge exposes the backend-independent workspace snapshot
+`ConnectOptions` carries the selected backend and an optional runtime for the
+Rust lifecycle, while host-only platform calls deliberately clear those
+selectors before entering discovery. A missing backend in an old saved profile
+defaults to tmux as a last-used hint; an empty Herdr runtime means `default`
+only when an explicit runtime selection supplies that meaning. The control
+bridge exposes the backend-independent workspace snapshot
 and group operations (`create_group`, `rename_group`, `close_group`,
 `select_group`) as well as `set_terminal_visible`. On Herdr, `close_group`
 maps to `tab.close`; `close_workspace` maps to `workspace.close` with

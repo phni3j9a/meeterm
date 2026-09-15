@@ -98,6 +98,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+        with:
+          # The legacy `tools` package was removed from Google's repository.
+          # Install every required package explicitly in the next step.
+          packages: ""
 
       - name: Install pinned Android native toolchain
         run: |
@@ -488,6 +492,19 @@ jobs:
           command -v ssh-keygen
           test "$(id -u)" -ne 0
           python3 scripts/ssh/fixture.py --check
+
+      - name: Install pinned Rust toolchain for SSH runtime preflight
+        if: env.MEETERM_IOS_SUITE == 'ssh' || env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup default "${RUST_VERSION}"
+
+      - name: Verify native runtime selection before Simulator SSH testing
+        if: env.MEETERM_IOS_SUITE == 'ssh' || env.MEETERM_IOS_SUITE == 'full' || env.MEETERM_IOS_SUITE == 'names'
+        run: |
+          python3 scripts/ssh/fixture.py -- \
+            cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
+            --test openssh real_openssh_existing_tmux_runtime_selection -- --ignored --nocapture
 
       - name: Boot an available iPhone Simulator
         env:
