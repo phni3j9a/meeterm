@@ -31,8 +31,8 @@ use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
 use crate::tmux::{self, PaneSnapshot, SessionSnapshot, WindowSnapshot};
 use crate::workspace::{
-    self, Backend, RuntimeCandidate, RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState,
-    RuntimeSnapshot, RuntimeState,
+    self, Backend, RecoveryPhase, RecoverySnapshot, RuntimeCandidate, RuntimeControlSnapshot,
+    RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState, RuntimeSnapshot, RuntimeState,
 };
 
 /// Maximum number of bytes used by each fixed-size string in the C snapshot.
@@ -240,6 +240,8 @@ pub enum ConnectionError {
     RuntimeCreateCollision,
     RuntimeCreateUnknown,
     TopologyUnsafe,
+    RecoveryUnavailable,
+    RecoveryStale,
 }
 
 impl ConnectionError {
@@ -257,6 +259,8 @@ impl ConnectionError {
             Self::RuntimeCreateCollision => -10,
             Self::RuntimeCreateUnknown => -11,
             Self::TopologyUnsafe => -12,
+            Self::RecoveryUnavailable => -13,
+            Self::RecoveryStale => -14,
         }
     }
 
@@ -274,6 +278,8 @@ impl ConnectionError {
             Self::RuntimeCreateCollision => "runtime_create_collision",
             Self::RuntimeCreateUnknown => "runtime_create_unknown",
             Self::TopologyUnsafe => "tmux_topology_unsafe",
+            Self::RecoveryUnavailable => "recovery_unavailable",
+            Self::RecoveryStale => "recovery_stale",
         }
     }
 }
@@ -293,6 +299,8 @@ impl fmt::Display for ConnectionError {
             Self::RuntimeCreateCollision => "the requested runtime name is already in use",
             Self::RuntimeCreateUnknown => "runtime creation outcome could not be verified",
             Self::TopologyUnsafe => "the tmux topology may be shared with another session",
+            Self::RecoveryUnavailable => "recovery is not available for this connection",
+            Self::RecoveryStale => "the recovery request belongs to an older operation epoch",
         })
     }
 }
@@ -409,6 +417,25 @@ struct SessionState {
     /// even while the picker is showing a tmux selection so a refresh cannot
     /// silently move the same SSH lifecycle to another installation.
     herdr_executable: Option<String>,
+    /// Monotonic native operation boundary.  It is serialized as a decimal
+    /// string in `RuntimeSnapshot::control` so JavaScript cannot round it.
+    operation_epoch: u64,
+    /// Recovery state and gates are kept under the same lock as the topology
+    /// to make one workspace JSON response coherent.
+    recovery: RecoverySnapshot,
+    /// A confirmation is consumed synchronously by the public API and handed
+    /// to the actor through this private slot.  Keeping the public token empty
+    /// closes the double-submit race before the command is dequeued.
+    pending_confirmation_token: Option<String>,
+    /// The last selected Herdr stable terminal identity.  Herdr pane aliases
+    /// are mutable and therefore never serve as the recovery identity.
+    recovery_terminal_id: Option<String>,
+    /// A selected Herdr group can legitimately have no panes. Keep that
+    /// distinction separate from a previously selected terminal that has
+    /// disappeared, so recovery never falls back to an unrelated pane.
+    recovery_group_id: Option<u64>,
+    runtime_operations_ready: bool,
+    terminal_input_ready: bool,
 }
 
 impl Default for SessionState {
@@ -430,8 +457,40 @@ impl Default for SessionState {
             runtime_discovery: RuntimeDiscoverySnapshot::default(),
             runtime_candidates: HashMap::new(),
             herdr_executable: None,
+            operation_epoch: 0,
+            recovery: RecoverySnapshot::default(),
+            pending_confirmation_token: None,
+            recovery_terminal_id: None,
+            recovery_group_id: None,
+            runtime_operations_ready: false,
+            terminal_input_ready: false,
         }
     }
+}
+
+impl SessionState {
+    fn has_retained_work(&self) -> bool {
+        !self.snapshot.windows.is_empty()
+            || !self.snapshot.panes.is_empty()
+            || !self.herdr.snapshot.workspaces.is_empty()
+            || !self.herdr.snapshot.groups.is_empty()
+            || !self.herdr.snapshot.terminals.is_empty()
+            || !self.pane_terminals.is_empty()
+    }
+
+    fn control_snapshot(&self) -> RuntimeControlSnapshot {
+        RuntimeControlSnapshot {
+            operation_epoch: self.operation_epoch.to_string(),
+            has_retained_work: self.has_retained_work(),
+            runtime_operations_ready: self.runtime_operations_ready,
+            terminal_input_ready: self.terminal_input_ready,
+            recovery: self.recovery.clone(),
+        }
+    }
+}
+
+fn control_snapshot(state: &SessionState) -> RuntimeControlSnapshot {
+    state.control_snapshot()
 }
 
 static SESSION_STATES: OnceLock<Mutex<HashMap<TerminalId, Arc<Mutex<SessionState>>>>> =
@@ -545,7 +604,7 @@ struct ConnectionShared {
     known_hosts_path: PathBuf,
     session: Arc<Mutex<SessionState>>,
     info: Mutex<ConnectionInfo>,
-    commands: Mutex<Option<mpsc::Sender<ControlCommand>>>,
+    commands: Mutex<Option<mpsc::Sender<ControlRequest>>>,
     cancelled: AtomicBool,
     cancel_notify: Arc<Notify>,
     finished_notify: Arc<Notify>,
@@ -554,6 +613,11 @@ struct ConnectionShared {
     automatic_reconnect: AtomicBool,
     ready_once: AtomicBool,
     ready_epoch: AtomicU64,
+    /// Serializes the one replacement actor that can be started by a stopped
+    /// recovery. Active recovery retries are already serialized by the actor's
+    /// command receiver; this guard closes the small race between two callers
+    /// pressing Retry after that actor has finished.
+    recovery_starting: AtomicBool,
 }
 
 impl ConnectionShared {
@@ -586,6 +650,7 @@ impl ConnectionShared {
             automatic_reconnect: AtomicBool::new(automatic_reconnect),
             ready_once: AtomicBool::new(false),
             ready_epoch: AtomicU64::new(0),
+            recovery_starting: AtomicBool::new(false),
         }
     }
 
@@ -634,7 +699,7 @@ impl ConnectionShared {
         }
     }
 
-    fn set_commands(&self, sender: mpsc::Sender<ControlCommand>) {
+    fn set_commands(&self, sender: mpsc::Sender<ControlRequest>) {
         if let Ok(mut commands) = self.commands.lock() {
             *commands = Some(sender);
         }
@@ -659,7 +724,7 @@ impl ConnectionShared {
         }
     }
 
-    fn command_sender(&self) -> Option<mpsc::Sender<ControlCommand>> {
+    fn command_sender(&self) -> Option<mpsc::Sender<ControlRequest>> {
         self.commands
             .lock()
             .ok()
@@ -700,28 +765,500 @@ impl ConnectionShared {
     }
 
     fn set_state(&self, state: ConnectionState) {
+        if state == ConnectionState::Ready {
+            if self.mark_ready() {
+                return;
+            }
+            // Keep the fixed C-state helper usable by focused tests and by
+            // pre-session trust/auth fixtures whose SessionState generation
+            // has not been installed yet.  Backend actors use `mark_ready`
+            // directly, so this compatibility path cannot bypass recovery
+            // validation in production.
+            let recovery_phase = self.recovery_phase();
+            if matches!(
+                recovery_phase,
+                RecoveryPhase::AwaitingConfirmation | RecoveryPhase::Stopped
+            ) {
+                return;
+            }
+            if let Ok(mut info) = self.info.lock() {
+                if self.is_cancelled() || info.finished {
+                    return;
+                }
+                info.state = ConnectionState::Ready;
+                self.ready_once.store(true, Ordering::Release);
+                self.ready_epoch.fetch_add(1, Ordering::AcqRel);
+            }
+            return;
+        }
         if let Ok(mut info) = self.info.lock() {
             if self.is_cancelled() || info.finished {
                 return;
             }
             info.state = state;
-            if state == ConnectionState::Ready {
-                self.ready_once.store(true, Ordering::Release);
-                self.ready_epoch.fetch_add(1, Ordering::AcqRel);
-            }
         }
     }
 
-    fn mark_reconnecting(&self) {
-        if let Ok(mut info) = self.info.lock() {
-            if self.is_cancelled() || info.finished {
-                return;
-            }
-            info.state = ConnectionState::Reconnecting;
-            info.error_code.clear();
-            info.error_message.clear();
-            info.pending = None;
+    fn operation_epoch(&self) -> u64 {
+        self.session
+            .lock()
+            .map(|state| state.operation_epoch)
+            .unwrap_or(0)
+    }
+
+    fn recovery_phase(&self) -> RecoveryPhase {
+        self.session
+            .lock()
+            .map(|state| state.recovery.phase)
+            .unwrap_or(RecoveryPhase::Stopped)
+    }
+
+    /// A backend may start with an already-committed recovery phase while it
+    /// reconstructs the retained runtime. That initial phase is allowed to
+    /// complete, but any later committed phase must interrupt the live
+    /// controller loop even when foreground has already returned to true.
+    /// Comparing the operation epoch also catches a foreground loss that
+    /// happens during the initial reconstruction before its first wake is
+    /// consumed.
+    fn recovery_requires_controller_exit(&self, initial_epoch: Option<u64>) -> bool {
+        self.session
+            .lock()
+            .map(|state| {
+                state.generation != self.generation
+                    || (state.recovery.phase != RecoveryPhase::None
+                        && initial_epoch.is_none_or(|epoch| state.operation_epoch != epoch))
+            })
+            .unwrap_or(true)
+    }
+
+    /// Invalidate all remote permissions at a recoverable loss boundary while
+    /// leaving the last coherent topology and native terminal objects intact.
+    /// The caller must detach transports immediately after this method.
+    fn begin_recovery(&self, reason: &'static str, attempt: u32) -> Option<u64> {
+        let Ok(mut info) = self.info.lock() else {
+            return None;
+        };
+        if self.is_cancelled() || info.finished {
+            return None;
         }
+        if info.state == ConnectionState::Failed && is_terminal_security_error(&info.error_code) {
+            // A host-key/auth failure is a user-action boundary. Do not let
+            // a concurrent lifecycle notification clear its diagnostics and
+            // turn it back into an automatic reconnect.
+            return None;
+        }
+        let Ok(mut state) = self.session.lock() else {
+            return None;
+        };
+        if state.generation != self.generation {
+            return None;
+        }
+        state.operation_epoch = next_operation_epoch(state.operation_epoch);
+        state.recovery = RecoverySnapshot {
+            phase: RecoveryPhase::Reconnecting,
+            reason: sanitize_recovery_reason(reason),
+            attempt: attempt.min(workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS),
+            max_attempts: workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS,
+            confirmation_token: String::new(),
+        };
+        state.pending_confirmation_token = None;
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
+        if state
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
+        {
+            let selected_group = state.herdr.active_group().or_else(|| {
+                state
+                    .selected_pane
+                    .and_then(|id| state.herdr.panes.get(&id).map(|pane| pane.group))
+            });
+            let selected_terminal = state.selected_pane.and_then(|id| {
+                state
+                    .herdr
+                    .panes
+                    .get(&id)
+                    .map(|pane| pane.terminal_id.clone())
+            });
+            state.recovery_terminal_id = selected_terminal;
+            state.recovery_group_id = selected_group
+                .filter(|group| !state.herdr.panes.values().any(|pane| pane.group == *group));
+        } else {
+            state.recovery_terminal_id = None;
+            state.recovery_group_id = None;
+        }
+        info.state = ConnectionState::Reconnecting;
+        info.error_code.clear();
+        info.error_message.clear();
+        info.pending = None;
+        Some(state.operation_epoch)
+    }
+
+    /// Re-open a stopped recovery after its actor has finished.  This is a
+    /// deliberate handoff boundary rather than a normal loss transition:
+    /// `begin_recovery` rejects finished actors so late transport callbacks
+    /// cannot mutate their state.  An explicit Retry, however, is allowed to
+    /// create one replacement generation, provided the caller still owns the
+    /// displayed epoch and the old actor is genuinely finished.
+    fn begin_stopped_recovery(&self, expected_epoch: u64) -> Result<u64, ConnectionError> {
+        let mut info = self.info.lock().map_err(|_| ConnectionError::Internal)?;
+        if self.is_cancelled() || !info.finished {
+            return Err(ConnectionError::RecoveryUnavailable);
+        }
+        let mut state = self.session.lock().map_err(|_| ConnectionError::Internal)?;
+        if state.generation != self.generation || state.recovery.phase != RecoveryPhase::Stopped {
+            return Err(ConnectionError::RecoveryUnavailable);
+        }
+        if state.operation_epoch != expected_epoch {
+            return Err(ConnectionError::RecoveryStale);
+        }
+
+        state.operation_epoch = next_operation_epoch(state.operation_epoch);
+        state.recovery = RecoverySnapshot {
+            phase: RecoveryPhase::Reconnecting,
+            reason: "manual_retry".to_owned(),
+            attempt: 0,
+            max_attempts: workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS,
+            confirmation_token: String::new(),
+        };
+        state.pending_confirmation_token = None;
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
+        if state
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
+        {
+            let selected_group = state.herdr.active_group().or_else(|| {
+                state
+                    .selected_pane
+                    .and_then(|id| state.herdr.panes.get(&id).map(|pane| pane.group))
+            });
+            let selected_terminal = state.selected_pane.and_then(|id| {
+                state
+                    .herdr
+                    .panes
+                    .get(&id)
+                    .map(|pane| pane.terminal_id.clone())
+            });
+            state.recovery_terminal_id = selected_terminal;
+            state.recovery_group_id = selected_group
+                .filter(|group| !state.herdr.panes.values().any(|pane| pane.group == *group));
+        } else {
+            state.recovery_terminal_id = None;
+            state.recovery_group_id = None;
+        }
+        // The old ConnectionInfo is not published after the replacement is
+        // installed, but keeping this snapshot coherent closes the interval
+        // in which a concurrent native poll could still observe the old map
+        // entry during the handoff.
+        info.state = ConnectionState::Reconnecting;
+        info.error_code.clear();
+        info.error_message.clear();
+        info.pending = None;
+        Ok(state.operation_epoch)
+    }
+
+    fn begin_binding_transition(&self) -> bool {
+        let Ok(mut info) = self.info.lock() else {
+            return false;
+        };
+        if self.is_cancelled() || info.finished {
+            return false;
+        }
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        if state.generation != self.generation {
+            return false;
+        }
+        state.operation_epoch = next_operation_epoch(state.operation_epoch);
+        state.recovery = RecoverySnapshot::default();
+        state.pending_confirmation_token = None;
+        state.recovery_terminal_id = None;
+        state.recovery_group_id = None;
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
+        info.state = ConnectionState::AttachingRuntime;
+        true
+    }
+
+    fn publish_recovery_confirmation(&self, token: String) -> Result<u64, FlowFailure> {
+        if token.is_empty() || token.len() > RECOVERY_TOKEN_MAX_BYTES {
+            return Err(FlowFailure::HerdrProtocol);
+        }
+        let Ok(mut info) = self.info.lock() else {
+            return Err(FlowFailure::Stale);
+        };
+        if self.is_cancelled() || info.finished {
+            return Err(FlowFailure::Stale);
+        }
+        let Ok(mut state) = self.session.lock() else {
+            return Err(FlowFailure::Stale);
+        };
+        if state.generation != self.generation
+            || state.recovery.phase != RecoveryPhase::Reconnecting
+        {
+            return Err(FlowFailure::Stale);
+        }
+        state.recovery.phase = RecoveryPhase::AwaitingConfirmation;
+        state.recovery.confirmation_token = token;
+        state.pending_confirmation_token = None;
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
+        info.state = ConnectionState::Reconnecting;
+        Ok(state.operation_epoch)
+    }
+
+    fn take_pending_confirmation(&self, token: &str) -> bool {
+        self.session
+            .lock()
+            .map(|mut state| {
+                state
+                    .pending_confirmation_token
+                    .take()
+                    .is_some_and(|pending| pending == token)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Publish a fully verified backend/frame commit for the operation that
+    /// started the synchronization. The backend-specific topology/projection
+    /// mutation runs while the same session lock is held as the Ready gate, so
+    /// a late capture/frame cannot complete a newer recovery attempt between
+    /// those two publications.
+    fn commit_ready_at_epoch(
+        &self,
+        expected_epoch: u64,
+        commit: impl FnOnce(&mut SessionState),
+    ) -> bool {
+        self.commit_ready_at_epoch_result(expected_epoch, |state| {
+            commit(state);
+            Ok(())
+        })
+        .is_ok()
+    }
+
+    /// Result-bearing variant used by backend transactions that must perform
+    /// a native commit while the session epoch lock is held.  In particular,
+    /// strict tmux capture application must not happen before this boundary:
+    /// if the expected epoch is stale, the callback is never run and the last
+    /// public Term remains untouched.
+    fn commit_ready_at_epoch_result(
+        &self,
+        expected_epoch: u64,
+        commit: impl FnOnce(&mut SessionState) -> Result<(), FlowFailure>,
+    ) -> Result<(), FlowFailure> {
+        let Ok(mut info) = self.info.lock() else {
+            return Err(FlowFailure::Stale);
+        };
+        if self.is_cancelled() || info.finished {
+            return Err(FlowFailure::Stale);
+        }
+        let Ok(mut state) = self.session.lock() else {
+            return Err(FlowFailure::Stale);
+        };
+        if state.generation != self.generation {
+            return Err(FlowFailure::Stale);
+        }
+        if state.operation_epoch != expected_epoch {
+            return Err(FlowFailure::Stale);
+        }
+        if matches!(
+            state.recovery.phase,
+            RecoveryPhase::AwaitingConfirmation | RecoveryPhase::Stopped
+        ) {
+            return Err(FlowFailure::Stale);
+        }
+        commit(&mut state)?;
+        state.recovery = RecoverySnapshot::default();
+        state.pending_confirmation_token = None;
+        state.recovery_terminal_id = None;
+        state.recovery_group_id = None;
+        state.runtime_operations_ready = true;
+        state.terminal_input_ready = state.terminal_visible
+            && state.foreground
+            && state.selected_pane.is_some_and(|selected| {
+                state.pane_terminals.contains_key(&selected)
+                    && state
+                        .snapshot
+                        .panes
+                        .iter()
+                        .any(|pane| pane.pane_id == selected)
+            });
+        info.state = ConnectionState::Ready;
+        info.error_code.clear();
+        info.error_message.clear();
+        info.pending = None;
+        self.ready_once.store(true, Ordering::Release);
+        self.ready_epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Mark a fully verified backend/frame commit for the operation that
+    /// started the synchronization. A late capture/frame cannot complete a
+    /// newer recovery attempt because the epoch is checked under the session
+    /// lock before any Ready state is published.
+    fn mark_ready_at_epoch(&self, expected_epoch: u64) -> bool {
+        self.commit_ready_at_epoch(expected_epoch, |_| {})
+    }
+
+    /// Compatibility wrapper for callers that have no asynchronous boundary.
+    /// Backend actors use `mark_ready_at_epoch` with a captured epoch.
+    fn mark_ready(&self) -> bool {
+        let expected_epoch = self.operation_epoch();
+        self.mark_ready_at_epoch(expected_epoch)
+    }
+
+    fn stop_recovery(&self, reason: &'static str) {
+        let Ok(mut info) = self.info.lock() else {
+            return;
+        };
+        if self.is_cancelled() || info.finished {
+            return;
+        }
+        // Host-key and authentication callbacks can publish a terminal
+        // security failure before the transport future returns. Keep that
+        // bounded error (and its fingerprints) intact while committing the
+        // retained-work recovery stop below.
+        let preserve_security_failure =
+            info.state == ConnectionState::Failed && is_terminal_security_error(&info.error_code);
+        let Ok(mut state) = self.session.lock() else {
+            return;
+        };
+        if state.generation != self.generation {
+            return;
+        }
+        state.operation_epoch = next_operation_epoch(state.operation_epoch);
+        state.recovery.phase = RecoveryPhase::Stopped;
+        state.recovery.reason = sanitize_recovery_reason(reason);
+        state.recovery.confirmation_token.clear();
+        state.pending_confirmation_token = None;
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
+        if !preserve_security_failure {
+            info.state = ConnectionState::Failed;
+            info.error_code = sanitize_recovery_reason(reason);
+            info.error_message = recovery_reason_message(reason);
+        }
+        info.pending = None;
+    }
+
+    /// Explicit disconnect/runtime switch boundary.  Unlike recoverable loss,
+    /// cancellation is terminal for this actor; a later foreground event can
+    /// therefore never resurrect it.
+    fn invalidate_explicitly(&self, reason: &'static str) {
+        let Ok(mut info) = self.info.lock() else {
+            return;
+        };
+        if info.finished {
+            return;
+        }
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+        {
+            state.operation_epoch = next_operation_epoch(state.operation_epoch);
+            state.recovery.phase = RecoveryPhase::Stopped;
+            state.recovery.reason = sanitize_recovery_reason(reason);
+            state.recovery.confirmation_token.clear();
+            state.pending_confirmation_token = None;
+            state.runtime_operations_ready = false;
+            state.terminal_input_ready = false;
+        }
+        info.pending = None;
+    }
+
+    fn current_request_is_ready(&self, epoch: u64) -> bool {
+        if self.is_cancelled() {
+            return false;
+        }
+        self.session
+            .lock()
+            .map(|state| {
+                state.generation == self.generation
+                    && state.operation_epoch == epoch
+                    && state.recovery.phase == RecoveryPhase::None
+                    && state.runtime_operations_ready
+            })
+            .unwrap_or(false)
+    }
+
+    fn current_terminal_input_is_ready(&self, epoch: u64) -> bool {
+        if self.is_cancelled() {
+            return false;
+        }
+        self.session
+            .lock()
+            .map(|state| {
+                state.generation == self.generation
+                    && state.operation_epoch == epoch
+                    && state.recovery.phase == RecoveryPhase::None
+                    && state.runtime_operations_ready
+                    && state.terminal_input_ready
+            })
+            .unwrap_or(false)
+    }
+
+    fn current_request_epoch(&self, epoch: u64) -> bool {
+        !self.is_cancelled()
+            && self
+                .session
+                .lock()
+                .map(|state| state.generation == self.generation && state.operation_epoch == epoch)
+                .unwrap_or(false)
+    }
+
+    fn refresh_terminal_input_ready(&self) {
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+            && state.recovery.phase == RecoveryPhase::None
+            && state.runtime_operations_ready
+        {
+            state.terminal_input_ready = state.terminal_visible
+                && state.foreground
+                && state.selected_pane.is_some_and(|selected| {
+                    state.pane_terminals.contains_key(&selected)
+                        && state
+                            .snapshot
+                            .panes
+                            .iter()
+                            .any(|pane| pane.pane_id == selected)
+                });
+        }
+    }
+
+    fn set_terminal_visible(&self, visible: bool) -> Result<(), ConnectionError> {
+        let mut state = self.session.lock().map_err(|_| ConnectionError::Internal)?;
+        if state.generation != self.generation {
+            return Err(ConnectionError::RecoveryStale);
+        }
+        state.terminal_visible = visible;
+        if !visible || state.recovery.phase != RecoveryPhase::None {
+            state.terminal_input_ready = false;
+        } else if state
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.backend == Backend::Tmux)
+            && state.runtime_operations_ready
+        {
+            // tmux's Control Mode stream remains the durable selected-runtime
+            // connection while the native view is hidden. Re-arm input only
+            // after the caller has made the view visible again; Herdr instead
+            // reacquires its direct controller after a fresh frame.
+            state.terminal_input_ready = state.foreground
+                && state.selected_pane.is_some_and(|selected| {
+                    state.pane_terminals.contains_key(&selected)
+                        && state
+                            .snapshot
+                            .panes
+                            .iter()
+                            .any(|pane| pane.pane_id == selected)
+                });
+        } else {
+            state.terminal_input_ready = false;
+        }
+        Ok(())
     }
 
     fn set_foreground(&self, foreground: bool) {
@@ -730,6 +1267,37 @@ impl ConnectionShared {
             && state.generation == self.generation
         {
             state.foreground = foreground;
+            if !foreground {
+                state.terminal_input_ready = false;
+                // A confirmation token is tied to the visible recovery
+                // attempt. If the app backgrounds while that token is shown,
+                // revoke it synchronously and let the Herdr coordinator run a
+                // fresh bounded discovery on the next wake. A healthy live
+                // controller is not torn down merely because the app changed
+                // foreground state.
+                if state.recovery.phase == RecoveryPhase::AwaitingConfirmation {
+                    state.operation_epoch = next_operation_epoch(state.operation_epoch);
+                    state.recovery.phase = RecoveryPhase::Reconnecting;
+                    state.recovery.confirmation_token.clear();
+                    state.pending_confirmation_token = None;
+                    state.runtime_operations_ready = false;
+                }
+            } else if state.recovery.phase == RecoveryPhase::None
+                && state.runtime_operations_ready
+                && state
+                    .endpoint
+                    .as_ref()
+                    .is_some_and(|endpoint| endpoint.backend == Backend::Tmux)
+            {
+                state.terminal_input_ready = state.selected_pane.is_some_and(|selected| {
+                    state.pane_terminals.contains_key(&selected)
+                        && state
+                            .snapshot
+                            .panes
+                            .iter()
+                            .any(|pane| pane.pane_id == selected)
+                });
+            }
         }
         self.retry_notify.notify_waiters();
     }
@@ -862,6 +1430,27 @@ impl ConnectionShared {
                 }
                 Err(_) => {}
             }
+            if !self.is_cancelled()
+                && let Err(failure) = result
+                && let Ok(mut state) = self.session.lock()
+                && state.generation == self.generation
+                && state.recovery.phase != RecoveryPhase::None
+                && state.recovery.phase != RecoveryPhase::Stopped
+            {
+                let reason = recovery_reason_for_failure(failure);
+                state.operation_epoch = next_operation_epoch(state.operation_epoch);
+                state.recovery.phase = RecoveryPhase::Stopped;
+                state.recovery.reason = sanitize_recovery_reason(reason);
+                state.recovery.confirmation_token.clear();
+                state.pending_confirmation_token = None;
+                state.runtime_operations_ready = false;
+                state.terminal_input_ready = false;
+                if info.state != ConnectionState::Disconnected {
+                    info.state = ConnectionState::Failed;
+                    info.error_code = sanitize_recovery_reason(reason);
+                    info.error_message = recovery_reason_message(reason);
+                }
+            }
             info.pending = None;
         }
         self.finished_notify.notify_waiters();
@@ -873,6 +1462,14 @@ impl ConnectionShared {
             .map(|info| info.snapshot())
             .map_err(|_| ConnectionError::Internal)
     }
+}
+
+/// A command is tagged at acceptance time.  The actor checks the tag again
+/// immediately before any remote operation, so a command accepted just
+/// before a transport loss can never be replayed in a later operation epoch.
+struct ControlRequest {
+    epoch: u64,
+    command: ControlCommand,
 }
 
 enum ControlCommand {
@@ -892,6 +1489,8 @@ enum ControlCommand {
     CloseGroup { group_id: u64 },
     SelectGroup { group_id: u64 },
     SetTerminalVisible { visible: bool },
+    RetryRecovery,
+    ConfirmRecovery { token: String },
 }
 
 struct ConnectionEntry {
@@ -899,8 +1498,113 @@ struct ConnectionEntry {
     abort: tokio::task::AbortHandle,
 }
 
+/// Per-terminal lifecycle ownership for connect/replace/disconnect. The
+/// serial mutex prevents two synchronous starts from preparing the same
+/// SessionState concurrently; the short commit mutex closes the remove/check/
+/// install race without holding the global connection map while SSH cleanup
+/// or network waits are in progress.
+struct OwnerTransition {
+    serial: Mutex<()>,
+    commit: Mutex<()>,
+    next_ticket: AtomicU64,
+    active_ticket: AtomicU64,
+    cancelled_ticket: AtomicU64,
+    /// Monotonic cancellation fence for starts that have entered `begin` but
+    /// have not published their active ticket yet.  A single active-ticket
+    /// slot cannot represent that interval by itself.
+    cancel_epoch: AtomicU64,
+}
+
+impl OwnerTransition {
+    fn new() -> Self {
+        Self {
+            serial: Mutex::new(()),
+            commit: Mutex::new(()),
+            next_ticket: AtomicU64::new(1),
+            active_ticket: AtomicU64::new(0),
+            cancelled_ticket: AtomicU64::new(0),
+            cancel_epoch: AtomicU64::new(0),
+        }
+    }
+
+    fn begin(&self) -> Result<(std::sync::MutexGuard<'_, ()>, u64), ConnectionError> {
+        self.begin_impl(None)
+    }
+
+    #[cfg(test)]
+    fn begin_with_barriers(
+        &self,
+        entered: &std::sync::Barrier,
+        release: &std::sync::Barrier,
+    ) -> Result<(std::sync::MutexGuard<'_, ()>, u64), ConnectionError> {
+        self.begin_impl(Some((entered, release)))
+    }
+
+    fn begin_impl(
+        &self,
+        barriers: Option<(&std::sync::Barrier, &std::sync::Barrier)>,
+    ) -> Result<(std::sync::MutexGuard<'_, ()>, u64), ConnectionError> {
+        // Capture the fence before waiting for the per-owner serial lock.  If
+        // Disconnect/Change is accepted while another start is using the
+        // serial lock, this start still belongs to the older owner attempt
+        // and must not publish/install after that cancellation returns.
+        let request_epoch = self.cancel_epoch.load(Ordering::Acquire);
+        let ticket = self.next_ticket.fetch_add(1, Ordering::AcqRel).max(1);
+        let serial = self.serial.lock().map_err(|_| ConnectionError::Internal)?;
+        if let Some((entered, release)) = barriers {
+            // Test-only pause: the caller can accept Disconnect while this
+            // start has captured the old fence but before publication enters
+            // the commit mutex.
+            entered.wait();
+            release.wait();
+        }
+        // Ticket publication and the cancellation judgement share this short
+        // commit boundary.  Disconnect never observes the old active=0 state
+        // and then loses the newly published owner.
+        let _commit = self.commit.lock().map_err(|_| ConnectionError::Internal)?;
+        if self.cancel_epoch.load(Ordering::Acquire) != request_epoch {
+            // Keep the ticket visibly rejected for the caller's subsequent
+            // install checks.  The next begin gets a fresh ticket/fence and
+            // cannot inherit this cancellation.
+            self.cancelled_ticket.store(ticket, Ordering::Release);
+            self.active_ticket.store(0, Ordering::Release);
+        } else {
+            self.active_ticket.store(ticket, Ordering::Release);
+        }
+        Ok((serial, ticket))
+    }
+
+    fn cancel_current_locked(&self) {
+        self.cancel_epoch.fetch_add(1, Ordering::AcqRel);
+        let active = self.active_ticket.load(Ordering::Acquire);
+        if active != 0 {
+            self.cancelled_ticket.store(active, Ordering::Release);
+        }
+    }
+
+    fn cancel_current(&self) {
+        if let Ok(_commit) = self.commit.lock() {
+            self.cancel_current_locked();
+        }
+    }
+
+    fn install_allowed(&self, ticket: u64) -> bool {
+        ticket != 0
+            && self.active_ticket.load(Ordering::Acquire) == ticket
+            && self.cancelled_ticket.load(Ordering::Acquire) != ticket
+    }
+
+    fn finish(&self, ticket: u64) {
+        let _ = self
+            .active_ticket
+            .compare_exchange(ticket, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
 static RUNTIME: OnceLock<Result<Runtime, ()>> = OnceLock::new();
 static CONNECTIONS: OnceLock<Mutex<HashMap<TerminalId, ConnectionEntry>>> = OnceLock::new();
+static OWNER_TRANSITIONS: OnceLock<Mutex<HashMap<TerminalId, Arc<OwnerTransition>>>> =
+    OnceLock::new();
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn runtime() -> Result<&'static Runtime, ConnectionError> {
@@ -918,6 +1622,17 @@ fn runtime() -> Result<&'static Runtime, ConnectionError> {
 
 fn connections() -> &'static Mutex<HashMap<TerminalId, ConnectionEntry>> {
     CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn owner_transition(terminal_id: TerminalId) -> Result<Arc<OwnerTransition>, ConnectionError> {
+    let mut owners = OWNER_TRANSITIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
+    Ok(owners
+        .entry(terminal_id)
+        .or_insert_with(|| Arc::new(OwnerTransition::new()))
+        .clone())
 }
 
 /// Start or replace the SSH session associated with a terminal ID using the
@@ -956,11 +1671,19 @@ pub fn connect_host(
 /// serialized with selection/creation by the owning Rust actor.
 pub fn list_runtimes(terminal_id: TerminalId) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    let sender = current_connection(terminal_id)?
+    let shared = current_connection(terminal_id)?;
+    if !shared.is_awaiting_runtime_selection() {
+        return Err(ConnectionError::RuntimeSelectionUnavailable);
+    }
+    let epoch = shared.operation_epoch();
+    let sender = shared
         .command_sender()
         .ok_or(ConnectionError::RuntimeSelectionUnavailable)?;
     sender
-        .try_send(ControlCommand::RefreshRuntimes)
+        .try_send(ControlRequest {
+            epoch,
+            command: ControlCommand::RefreshRuntimes,
+        })
         .map_err(|_| ConnectionError::RuntimeSelectionUnavailable)
 }
 
@@ -971,6 +1694,10 @@ pub fn select_runtime(terminal_id: TerminalId, candidate_id: &str) -> Result<(),
         return Err(ConnectionError::InvalidArgument);
     }
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = current_connection(terminal_id)?;
+    if !shared.is_awaiting_runtime_selection() {
+        return Err(ConnectionError::RuntimeSelectionUnavailable);
+    }
     let state = session_state(terminal_id);
     let state = state.lock().map_err(|_| ConnectionError::Internal)?;
     let Some(candidate) = state
@@ -987,12 +1714,16 @@ pub fn select_runtime(terminal_id: TerminalId, candidate_id: &str) -> Result<(),
         return Err(ConnectionError::RuntimeSelectionUnavailable);
     }
     drop(state);
-    let sender = current_connection(terminal_id)?
+    let epoch = shared.operation_epoch();
+    let sender = shared
         .command_sender()
         .ok_or(ConnectionError::RuntimeSelectionUnavailable)?;
     sender
-        .try_send(ControlCommand::SelectRuntime {
-            candidate_id: candidate_id.to_owned(),
+        .try_send(ControlRequest {
+            epoch,
+            command: ControlCommand::SelectRuntime {
+                candidate_id: candidate_id.to_owned(),
+            },
         })
         .map_err(|_| ConnectionError::RuntimeSelectionUnavailable)
 }
@@ -1022,10 +1753,14 @@ pub fn create_runtime(
     let sender = shared
         .command_sender()
         .ok_or(ConnectionError::RuntimeSelectionUnavailable)?;
+    let epoch = shared.operation_epoch();
     sender
-        .try_send(ControlCommand::CreateRuntime {
-            backend,
-            name: name.to_owned(),
+        .try_send(ControlRequest {
+            epoch,
+            command: ControlCommand::CreateRuntime {
+                backend,
+                name: name.to_owned(),
+            },
         })
         .map_err(|_| ConnectionError::RuntimeSelectionUnavailable)
 }
@@ -1055,15 +1790,165 @@ pub fn reconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError
     start_connection(terminal_id, ConnectionStart::ManualReconnect(profile))
 }
 
+/// Retry the retained recovery intent for the current owner.  An active actor
+/// receives a tagged command and joins the existing attempt; only a stopped,
+/// still-authenticated actor starts a replacement generation.
+pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = current_connection(terminal_id)?;
+    if shared.is_cancelled() {
+        // Explicit disconnect is a one-way lifecycle boundary.  A later
+        // foreground notification or stale Retry button must not resurrect
+        // the cancelled actor; a fresh connect is required instead.
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
+    let (phase, profile, epoch) = {
+        let state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        (
+            state.recovery.phase,
+            state.profile.clone(),
+            state.operation_epoch,
+        )
+    };
+    if epoch != expected_epoch {
+        return Err(ConnectionError::RecoveryStale);
+    }
+    if !shared.has_been_ready() || phase == RecoveryPhase::None {
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
+
+    if phase != RecoveryPhase::Stopped {
+        let sender = shared
+            .command_sender()
+            .ok_or(ConnectionError::RecoveryUnavailable)?;
+        sender
+            .try_send(ControlRequest {
+                epoch,
+                command: ControlCommand::RetryRecovery,
+            })
+            .map_err(|_| ConnectionError::RecoveryUnavailable)?;
+        return Ok(());
+    }
+
+    let profile = profile.ok_or(ConnectionError::ReconnectUnavailable)?;
+    // The old actor is left in the map until start_connection performs its
+    // bounded cancellation/drain.  The retained SessionState and native Term
+    // are intentionally not cleared by this automatic-recovery path.
+    if shared.recovery_starting.swap(true, Ordering::AcqRel) {
+        // A second Retry arriving while the first replacement is draining is
+        // already represented by that in-flight operation. Do not replace
+        // the replacement actor with another parallel generation.
+        return Ok(());
+    }
+    // The stopped actor has already committed `finished=true`, so the normal
+    // loss transition intentionally cannot be reused here.  Commit the
+    // explicit handoff while the old generation is still the map owner; this
+    // both makes the fresh epoch visible before the replacement starts and
+    // prevents a duplicate Retry from observing another Stopped boundary.
+    if let Err(error) = shared.begin_stopped_recovery(expected_epoch) {
+        shared.recovery_starting.store(false, Ordering::Release);
+        return Err(error);
+    }
+    let result = start_connection(terminal_id, ConnectionStart::AutomaticReconnect(profile));
+    if result.is_err() {
+        shared.recovery_starting.store(false, Ordering::Release);
+    }
+    result
+}
+
+/// Confirm the currently displayed Herdr recovery candidate.  Token
+/// consumption and the operation-epoch bump happen synchronously, before the
+/// actor is allowed to perform any controller acquisition.
+pub fn confirm_recovery(terminal_id: TerminalId, token: &str) -> Result<(), ConnectionError> {
+    if token.is_empty()
+        || token.len() > RECOVERY_TOKEN_MAX_BYTES
+        || token.chars().any(char::is_control)
+    {
+        return Err(ConnectionError::InvalidArgument);
+    }
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = current_connection(terminal_id)?;
+    let sender = shared
+        .command_sender()
+        .ok_or(ConnectionError::RecoveryUnavailable)?;
+    let epoch = {
+        let mut state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        if state.recovery.phase != RecoveryPhase::AwaitingConfirmation
+            || state.recovery.confirmation_token != token
+        {
+            return Err(ConnectionError::RecoveryUnavailable);
+        }
+        let next = next_operation_epoch(state.operation_epoch);
+        state.operation_epoch = next;
+        state.recovery.phase = RecoveryPhase::Resynchronizing;
+        state.recovery.confirmation_token.clear();
+        state.pending_confirmation_token = Some(token.to_owned());
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
+        next
+    };
+    if sender
+        .try_send(ControlRequest {
+            epoch,
+            command: ControlCommand::ConfirmRecovery {
+                token: token.to_owned(),
+            },
+        })
+        .is_err()
+    {
+        shared.stop_recovery("recovery_unavailable");
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
+    Ok(())
+}
+
+/// Explicitly leave the retained runtime and enter the existing authenticated
+/// picker path.  This is the only recovery API that clears the cached runtime
+/// binding/native view, and it does so before a new runtime can be acquired.
+pub fn change_runtime(terminal_id: TerminalId, expected_epoch: u64) -> Result<(), ConnectionError> {
+    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let shared = current_connection(terminal_id)?;
+    let profile = {
+        let state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        if state.operation_epoch != expected_epoch {
+            return Err(ConnectionError::RecoveryStale);
+        }
+        state
+            .profile
+            .clone()
+            .ok_or(ConnectionError::RecoveryUnavailable)?
+    };
+    // Cancel a possible in-flight replacement before starting the explicit
+    // runtime change. The owner ticket is checked again by start_connection,
+    // so a late handoff cannot install the old actor after this boundary.
+    owner_transition(terminal_id)?.cancel_current();
+    shared.invalidate_explicitly("runtime_changed");
+    detach_all(&shared);
+    start_connection(terminal_id, ConnectionStart::ManualReconnect(profile))
+}
+
 /// Select a pane by its stable tmux numeric ID. The desired selection is kept
 /// while disconnected so the next reconnect restores the same mobile tab.
 pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    let sender = current_connection(terminal_id)
-        .ok()
-        .and_then(|shared| shared.command_sender());
+    let shared = current_connection(terminal_id)?;
+    let sender = shared
+        .command_sender()
+        .ok_or(ConnectionError::RecoveryUnavailable)?;
     let state = session_state(terminal_id);
     let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    if state.recovery.phase != RecoveryPhase::None || !state.runtime_operations_ready {
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
     let pane = state
         .snapshot
         .panes
@@ -1071,15 +1956,13 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
         .find(|pane| pane.pane_id == pane_id)
         .cloned()
         .ok_or(ConnectionError::InvalidArgument)?;
-    if let Some(sender) = sender {
-        sender
-            .try_send(ControlCommand::SelectPane {
-                window_id: pane.window_id,
-                pane_id,
-            })
-            .map_err(|_| ConnectionError::Internal)?;
-    }
+    let epoch = state.operation_epoch;
+    // Commit the desired local selection before enqueueing the actor request.
+    // Otherwise a Herdr actor can dequeue `SelectPane` between the send and
+    // this update, release the old controller, and observe the old selection
+    // with no later event that would activate the new one.
     state.selected_pane = Some(pane_id);
+    state.terminal_input_ready = false;
     mark_selected(&mut state.snapshot, pane_id);
     if state
         .endpoint
@@ -1091,6 +1974,16 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
         }
         state.herdr.select(pane_id);
     }
+    drop(state);
+    sender
+        .try_send(ControlRequest {
+            epoch,
+            command: ControlCommand::SelectPane {
+                window_id: pane.window_id,
+                pane_id,
+            },
+        })
+        .map_err(|_| ConnectionError::RecoveryUnavailable)?;
     Ok(())
 }
 
@@ -1221,26 +2114,44 @@ pub fn select_group(terminal_id: TerminalId, group_id: u64) -> Result<(), Connec
 
 pub fn set_terminal_visible(terminal_id: TerminalId, visible: bool) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    {
+    let shared = current_connection(terminal_id).ok();
+    if let Some(shared) = &shared {
+        shared.set_terminal_visible(visible)?;
+        if !visible {
+            // Hiding is an unconditional revoke boundary.  Showing is only a
+            // display desire; the actor decides whether a verified controller
+            // may be reacquired for the current epoch.
+            let herdr = shared
+                .session
+                .lock()
+                .map(|state| {
+                    state
+                        .endpoint
+                        .as_ref()
+                        .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
+                })
+                .unwrap_or(true);
+            if herdr {
+                detach_all(shared);
+            }
+        }
+    } else {
         let state = session_state(terminal_id);
         let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
         state.terminal_visible = visible;
-        if !visible
-            && state
-                .endpoint
-                .as_ref()
-                .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
-        {
-            for id in state.pane_terminals.values() {
-                registry::detach_transport(*id, state.generation);
-            }
+        if !visible {
+            state.terminal_input_ready = false;
         }
     }
-    if let Ok(shared) = current_connection(terminal_id)
+    if let Some(shared) = shared
         && let Some(sender) = shared.command_sender()
     {
+        let epoch = shared.operation_epoch();
         sender
-            .try_send(ControlCommand::SetTerminalVisible { visible })
+            .try_send(ControlRequest {
+                epoch,
+                command: ControlCommand::SetTerminalVisible { visible },
+            })
             .map_err(|_| ConnectionError::Internal)?;
     }
     Ok(())
@@ -1332,6 +2243,9 @@ fn ensure_window_target(terminal_id: TerminalId, window_id: u64) -> Result<(), C
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
     let state = session_state(terminal_id);
     let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    if state.recovery.phase != RecoveryPhase::None || !state.runtime_operations_ready {
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
     state
         .snapshot
         .windows
@@ -1345,6 +2259,9 @@ fn ensure_pane_target(terminal_id: TerminalId, pane_id: u64) -> Result<(), Conne
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
     let state = session_state(terminal_id);
     let state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    if state.recovery.phase != RecoveryPhase::None || !state.runtime_operations_ready {
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
     state
         .snapshot
         .panes
@@ -1359,12 +2276,23 @@ fn enqueue_control(
     command: ControlCommand,
 ) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    let sender = current_connection(terminal_id)?
+    let shared = current_connection(terminal_id)?;
+    let epoch = {
+        let state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        if state.recovery.phase != RecoveryPhase::None || !state.runtime_operations_ready {
+            return Err(ConnectionError::RecoveryUnavailable);
+        }
+        state.operation_epoch
+    };
+    let sender = shared
         .command_sender()
-        .ok_or(ConnectionError::Internal)?;
+        .ok_or(ConnectionError::RecoveryUnavailable)?;
     sender
-        .try_send(command)
-        .map_err(|_| ConnectionError::Internal)
+        .try_send(ControlRequest { epoch, command })
+        .map_err(|_| ConnectionError::RecoveryUnavailable)
 }
 
 /// Return the latest coherent tmux topology known to the native core.
@@ -1402,6 +2330,8 @@ pub fn workspace_snapshot_json(terminal_id: TerminalId) -> Result<String, Connec
             .unwrap_or(tmux::SESSION_NAME);
         RuntimeSnapshot::tmux_for_runtime(&state.snapshot, runtime)
     };
+    let mut snapshot = snapshot;
+    snapshot.control = control_snapshot(&state);
     serde_json::to_string(&snapshot).map_err(|_| ConnectionError::Internal)
 }
 
@@ -1429,6 +2359,13 @@ fn prepare_session_endpoint(
     state.runtime_candidates.clear();
     state.runtime_discovery = RuntimeDiscoverySnapshot::default();
     state.herdr_executable = None;
+    state.operation_epoch = next_operation_epoch(state.operation_epoch);
+    state.recovery = RecoverySnapshot::default();
+    state.pending_confirmation_token = None;
+    state.recovery_terminal_id = None;
+    state.recovery_group_id = None;
+    state.runtime_operations_ready = false;
+    state.terminal_input_ready = false;
     if !stale {
         return Ok(Vec::new());
     }
@@ -1468,6 +2405,13 @@ fn prepare_host_endpoint(
     state.runtime_candidates.clear();
     state.runtime_discovery = RuntimeDiscoverySnapshot::default();
     state.herdr_executable = None;
+    state.operation_epoch = next_operation_epoch(state.operation_epoch);
+    state.recovery = RecoverySnapshot::default();
+    state.pending_confirmation_token = None;
+    state.recovery_terminal_id = None;
+    state.recovery_group_id = None;
+    state.runtime_operations_ready = false;
+    state.terminal_input_ready = false;
     Ok(stale_terminals)
 }
 
@@ -1503,6 +2447,13 @@ fn prepare_manual_reconnect(
     state.selected_pane = None;
     state.meeterm_zoomed = false;
     state.meeterm_zoomed_pane = None;
+    state.operation_epoch = next_operation_epoch(state.operation_epoch);
+    state.recovery = RecoverySnapshot::default();
+    state.pending_confirmation_token = None;
+    state.recovery_terminal_id = None;
+    state.recovery_group_id = None;
+    state.runtime_operations_ready = false;
+    state.terminal_input_ready = false;
     Ok(stale_terminals)
 }
 
@@ -1524,7 +2475,6 @@ enum ConnectionStart {
 impl ConnectionStart {
     fn enters_picker(&self) -> bool {
         matches!(self, Self::Host(_) | Self::ManualReconnect(_))
-            || matches!(self, Self::AutomaticReconnect(profile) if profile.backend == Backend::Herdr)
     }
 
     fn is_automatic_reconnect(&self) -> bool {
@@ -1586,21 +2536,50 @@ fn wait_for_generation_finish(runtime: &'static Runtime, shared: Arc<ConnectionS
         .unwrap_or(false)
 }
 
+fn destroy_stale_terminals(generation: u64, terminals: impl IntoIterator<Item = TerminalId>) {
+    for id in terminals {
+        registry::detach_transport(id, generation);
+        registry::destroy_terminal(id);
+    }
+}
+
+/// Tear down a prepared generation that lost its owner ticket before the
+/// connection entry could be installed. This is deliberately separate from a
+/// normal actor drop: there is no map entry for Disconnect to cancel, so the
+/// local transport and its child native terminals must be revoked here.
+fn abandon_uninstalled_connection(
+    shared: &ConnectionShared,
+    stale_terminals: impl IntoIterator<Item = TerminalId>,
+) {
+    shared.invalidate_explicitly("explicit_disconnect");
+    shared.cancel();
+    registry::detach_transport(shared.terminal_id, shared.generation);
+    destroy_stale_terminals(shared.generation, stale_terminals);
+}
+
 fn start_connection(
     terminal_id: TerminalId,
     start: ConnectionStart,
 ) -> Result<(), ConnectionError> {
     let runtime = runtime()?;
+    let owner = owner_transition(terminal_id)?;
+    let (_serial, ticket) = owner.begin()?;
     let generation = next_generation();
     let reconnecting = start.is_automatic_reconnect();
     let manual_reconnect = start.is_manual_reconnect();
 
     let (host, port, _username, known_hosts_path) = start.endpoint();
 
-    let old = connections()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .remove(&terminal_id);
+    let old = {
+        let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+        if !owner.install_allowed(ticket) {
+            return Err(ConnectionError::RecoveryUnavailable);
+        }
+        connections()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .remove(&terminal_id)
+    };
     if let Some(old) = old {
         old.shared.mark_closing();
         old.shared.cancel();
@@ -1613,6 +2592,10 @@ fn start_connection(
         }
     }
 
+    if !owner.install_allowed(ticket) {
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
+
     let stale_terminals = match &start {
         #[cfg(test)]
         ConnectionStart::Options(options) => prepare_session_endpoint(terminal_id, options)?,
@@ -1622,12 +2605,26 @@ fn start_connection(
             prepare_manual_reconnect(terminal_id, profile)?
         }
     };
-    registry::begin_remote(terminal_id, generation).map_err(map_terminal_error)?;
+    if !owner.install_allowed(ticket) {
+        destroy_stale_terminals(generation, stale_terminals);
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
+    if let Err(error) = registry::begin_remote(terminal_id, generation).map_err(map_terminal_error)
+    {
+        destroy_stale_terminals(generation, stale_terminals);
+        return Err(error);
+    }
     if manual_reconnect {
         // A manual runtime picker is a new binding, not a reconnect capture.
         // Replace the owner's native Term before authentication so stale
         // cells/history cannot be observed while the fresh picker is loading.
-        registry::reset_remote_binding(terminal_id, generation).map_err(map_terminal_error)?;
+        if let Err(error) =
+            registry::reset_remote_binding(terminal_id, generation).map_err(map_terminal_error)
+        {
+            registry::detach_transport(terminal_id, generation);
+            destroy_stale_terminals(generation, stale_terminals);
+            return Err(error);
+        }
     }
     let shared = Arc::new(ConnectionShared::new(
         terminal_id,
@@ -1636,6 +2633,14 @@ fn start_connection(
         port,
         known_hosts_path.to_owned(),
     ));
+    if reconnecting {
+        // `ready_once` belongs to the actor, while the retained topology and
+        // recovery phase belong to SessionState.  A replacement actor must
+        // inherit the fact that its intent was already Ready; otherwise its
+        // first failed reconstruction would be mistaken for a pre-Ready
+        // connection and native retry would stop after one attempt.
+        shared.ready_once.store(true, Ordering::Release);
+    }
     {
         let mut state = shared
             .session
@@ -1644,36 +2649,68 @@ fn start_connection(
         // Abort completion is asynchronous. Install the new generation and
         // discard the old actor's local cleanup authority in one operation.
         state.generation = generation;
-        state.meeterm_zoomed = false;
-        state.meeterm_zoomed_pane = None;
+        if !reconnecting {
+            state.meeterm_zoomed = false;
+            state.meeterm_zoomed_pane = None;
+        }
         // Candidate IDs are scoped to the connection generation. A reconnect
         // must not expose or accept the previous generation's picker IDs
         // before a fresh discovery pass publishes replacements.
         state.runtime_candidates.clear();
         state.runtime_discovery = RuntimeDiscoverySnapshot::default();
+        if reconnecting && state.recovery.phase != RecoveryPhase::Reconnecting {
+            state.operation_epoch = next_operation_epoch(state.operation_epoch);
+            state.recovery = RecoverySnapshot {
+                phase: RecoveryPhase::Reconnecting,
+                reason: "reconnecting".to_owned(),
+                attempt: 0,
+                max_attempts: workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS,
+                confirmation_token: String::new(),
+            };
+            state.runtime_operations_ready = false;
+            state.terminal_input_ready = false;
+        }
     }
     if reconnecting {
         shared.set_state(ConnectionState::Reconnecting);
     }
+    if !owner.install_allowed(ticket) {
+        abandon_uninstalled_connection(&shared, stale_terminals);
+        return Err(ConnectionError::RecoveryUnavailable);
+    }
     let (command_sender, command_receiver) = mpsc::channel(32);
     shared.set_commands(command_sender);
+    let (start_gate_sender, start_gate_receiver) = oneshot::channel();
     let task_shared = Arc::clone(&shared);
     let join = runtime.spawn(async move {
-        run_connection(task_shared, start, command_receiver).await;
+        run_connection(task_shared, start, command_receiver, start_gate_receiver).await;
     });
-    connections()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .insert(
-            terminal_id,
-            ConnectionEntry {
-                shared,
-                abort: join.abort_handle(),
-            },
-        );
-    for id in stale_terminals {
-        registry::destroy_terminal(id);
+    {
+        let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+        if !owner.install_allowed(ticket) {
+            drop(start_gate_sender);
+            abandon_uninstalled_connection(&shared, stale_terminals);
+            join.abort();
+            return Err(ConnectionError::RecoveryUnavailable);
+        }
+        connections()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .insert(
+                terminal_id,
+                ConnectionEntry {
+                    shared,
+                    abort: join.abort_handle(),
+                },
+            );
+        owner.finish(ticket);
+        // Keep the gate closed until both the map install and ticket finish
+        // are committed.  Disconnect cannot interleave while this lock is
+        // held; if it wins later, the actor is already the map owner and its
+        // shared cancellation flag stops it at the next lifecycle boundary.
+        let _ = start_gate_sender.send(());
     }
+    destroy_stale_terminals(generation, stale_terminals);
     Ok(())
 }
 
@@ -1681,13 +2718,17 @@ fn start_connection(
 /// disabled.  The registry entry remains available for state polling.
 pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
+    let owner = owner_transition(terminal_id)?;
     let shared = {
+        let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+        owner.cancel_current_locked();
         let entries = connections()
             .lock()
             .map_err(|_| ConnectionError::Internal)?;
         let Some(entry) = entries.get(&terminal_id) else {
             return Ok(());
         };
+        entry.shared.invalidate_explicitly("explicit_disconnect");
         entry.shared.mark_closing();
         entry.shared.cancel();
         Arc::clone(&entry.shared)
@@ -1717,11 +2758,13 @@ fn cancel_entry_locked(
 /// explicitly destroyed.  View unmounts do not call this path; they retain the
 /// stable terminal ID and its connection.
 pub(crate) fn terminal_destroyed(terminal_id: TerminalId) {
-    if let Some(entry) = connections()
-        .lock()
-        .ok()
-        .and_then(|mut entries| entries.remove(&terminal_id))
-    {
+    let owner = owner_transition(terminal_id).ok();
+    let entry = owner.as_ref().and_then(|owner| {
+        let _commit = owner.commit.lock().ok()?;
+        owner.cancel_current_locked();
+        connections().lock().ok()?.remove(&terminal_id)
+    });
+    if let Some(entry) = entry {
         entry.shared.mark_closing();
         entry.shared.cancel();
         entry.abort.abort();
@@ -2128,6 +3171,113 @@ const AUTO_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 const AUTO_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(15);
 const REPLACEMENT_GRACE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RUNTIME_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const RECOVERY_TOKEN_MAX_BYTES: usize = 128;
+
+fn next_operation_epoch(current: u64) -> u64 {
+    let next = current.wrapping_add(1);
+    if next == 0 { 1 } else { next }
+}
+
+fn sanitize_recovery_reason(reason: &str) -> String {
+    let mut sanitized = String::with_capacity(reason.len().min(ERROR_CODE_CAPACITY));
+    for byte in reason.bytes().take(ERROR_CODE_CAPACITY) {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' {
+            sanitized.push(byte as char);
+        } else {
+            sanitized.push('_');
+        }
+    }
+    sanitized
+}
+
+fn recovery_reason_message(reason: &str) -> String {
+    match reason {
+        "transport" | "network" | "channel" | "remote_closed" => {
+            "The remote connection was lost; the retained workspace is available for retry."
+                .to_owned()
+        }
+        "host_key_changed" => "The server host key changed; connection refused.".to_owned(),
+        "host_key_rejected" => "The server host key was not accepted.".to_owned(),
+        "host_key_timeout" => "The host-key confirmation timed out.".to_owned(),
+        "host_key_store" => "The host-key trust file could not be updated safely.".to_owned(),
+        "authentication_failed" | "auth_failed" => "SSH authentication failed.".to_owned(),
+        "foreground_lost" => {
+            "The connection is being checked after returning to the foreground.".to_owned()
+        }
+        "runtime_identity_uncertain" => {
+            "The selected runtime could not be verified safely.".to_owned()
+        }
+        "herdr_terminal_missing" => {
+            "The selected Herdr terminal is no longer available.".to_owned()
+        }
+        "controller_conflict" => "Another controller owns the selected Herdr terminal.".to_owned(),
+        "explicit_disconnect" => "The connection was disconnected.".to_owned(),
+        "runtime_changed" => "The runtime selection is being changed.".to_owned(),
+        "retry_exhausted" => {
+            "Automatic recovery stopped; retry or choose another runtime.".to_owned()
+        }
+        _ => "Recovery stopped while preserving the last known workspace.".to_owned(),
+    }
+}
+
+fn is_terminal_security_error(code: &str) -> bool {
+    matches!(
+        code,
+        "host_key_changed"
+            | "host_key_rejected"
+            | "host_key_timeout"
+            | "host_key_store"
+            | "authentication_failed"
+            | "auth_failed"
+            | "host_authentication_failed"
+    )
+}
+
+/// Keep a callback-published host/auth failure authoritative when the SSH
+/// transport returns a less specific error (for example Network). The
+/// recovery snapshot uses the canonical authentication spelling while the
+/// fixed connection snapshot keeps its existing `auth_failed` compatibility
+/// code when that is what the callback published.
+fn preserved_recovery_reason(shared: &ConnectionShared) -> Option<&'static str> {
+    let info = shared.info.lock().ok()?;
+    if info.state != ConnectionState::Failed {
+        return None;
+    }
+    match info.error_code.as_str() {
+        "host_key_changed" => Some("host_key_changed"),
+        "host_key_rejected" => Some("host_key_rejected"),
+        "host_key_timeout" => Some("host_key_timeout"),
+        "host_key_store" => Some("host_key_store"),
+        "authentication_failed" | "auth_failed" | "host_authentication_failed" => {
+            Some("authentication_failed")
+        }
+        _ => None,
+    }
+}
+
+fn recovery_reason_for_failure(failure: FlowFailure) -> &'static str {
+    match failure {
+        FlowFailure::HerdrController => "controller_conflict",
+        FlowFailure::HerdrSessionMissing => "herdr_terminal_missing",
+        FlowFailure::HerdrIncompatible
+        | FlowFailure::HerdrUnsupported
+        | FlowFailure::HerdrDiscoveryIncompatible => "herdr_incompatible",
+        FlowFailure::HerdrProtocol
+        | FlowFailure::HerdrDiscoveryMalformed
+        | FlowFailure::HerdrDiscoveryPermission
+        | FlowFailure::HerdrDiscoveryTimeout
+        | FlowFailure::TmuxProtocol
+        | FlowFailure::TmuxRuntimeMissing
+        | FlowFailure::TmuxRuntimeCollision
+        | FlowFailure::TmuxRuntimeUnknown
+        | FlowFailure::TmuxTopologyUnsafe => "runtime_identity_uncertain",
+        FlowFailure::HerdrMissing
+        | FlowFailure::HerdrForwarding
+        | FlowFailure::HerdrDiscoveryMissing => "herdr_session_missing",
+        FlowFailure::Authentication => "authentication_failed",
+        _ => failure.details().0,
+    }
+}
 
 /// Cancellation and the deadline used by the pre-authentication russh task.
 ///
@@ -2426,6 +3576,30 @@ async fn run_remote_command_with_timeout(
     overflow: FlowFailure,
     timeout_failure: FlowFailure,
 ) -> Result<RemoteCommandOutput, FlowFailure> {
+    run_remote_command_with_timeout_at_epoch(
+        shared,
+        session,
+        command,
+        max_bytes,
+        overflow,
+        timeout_failure,
+        None,
+    )
+    .await
+}
+
+async fn run_remote_command_with_timeout_at_epoch(
+    shared: &ConnectionShared,
+    session: &client::Handle<HostKeyHandler>,
+    command: String,
+    max_bytes: usize,
+    overflow: FlowFailure,
+    timeout_failure: FlowFailure,
+    expected_epoch: Option<u64>,
+) -> Result<RemoteCommandOutput, FlowFailure> {
+    if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
+        return Err(FlowFailure::Stale);
+    }
     let mut channel = await_stage_with_timeout(
         shared,
         session.channel_open_session(),
@@ -2434,6 +3608,10 @@ async fn run_remote_command_with_timeout(
         timeout_failure,
     )
     .await?;
+    if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
+        let _ = channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
     await_stage_with_timeout(
         shared,
         channel.exec(true, command),
@@ -2442,6 +3620,10 @@ async fn run_remote_command_with_timeout(
         timeout_failure,
     )
     .await?;
+    if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
+        let _ = channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
 
     let read = async {
         let mut stdout = Vec::new();
@@ -2475,10 +3657,14 @@ async fn run_remote_command_with_timeout(
             exit_status,
         })
     };
-    tokio::select! {
+    let result = tokio::select! {
         _ = shared.cancelled() => Err(FlowFailure::Stale),
         result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| timeout_failure)?,
+    }?;
+    if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
+        return Err(FlowFailure::Stale);
     }
+    Ok(result)
 }
 
 async fn await_channel_message(
@@ -2517,15 +3703,54 @@ async fn wait_channel_message(
 /// byte stream. This is `-C`, rather than `-CC`; `-CC` additionally disables
 /// tmux's client-side echo behavior for an embedded terminal and is not needed
 /// when the command is executed over a non-PTY SSH channel.
+async fn wait_for_start_gate(shared: &ConnectionShared, gate: oneshot::Receiver<()>) -> bool {
+    tokio::select! {
+        _ = shared.cancelled() => false,
+        result = gate => result.is_ok() && !shared.is_cancelled(),
+    }
+}
+
 async fn run_connection(
     shared: Arc<ConnectionShared>,
     mut start: ConnectionStart,
-    mut commands: mpsc::Receiver<ControlCommand>,
+    mut commands: mpsc::Receiver<ControlRequest>,
+    start_gate: oneshot::Receiver<()>,
 ) {
-    let mut retries = 0;
+    // A spawned actor is not an owner until its ConnectionEntry and ticket
+    // commit have both been installed.  In particular, Disconnect can remove
+    // an empty map slot and cancel the ticket without allowing this task to
+    // open SSH channels, discover runtimes, or acquire a controller first.
+    let gate_open = wait_for_start_gate(&shared, start_gate).await;
+    if !gate_open {
+        shared.clear_commands();
+        detach_all(&shared);
+        shared.clear_owned_zoom();
+        shared.finish(Err(FlowFailure::Stale));
+        return;
+    }
+    let mut retries: u32 = 0;
     let result = loop {
         let ready_epoch = shared.ready_epoch();
         let result = run_connection_flow(Arc::clone(&shared), start, &mut commands).await;
+        let disposition = match result {
+            Ok(()) => None,
+            Err(failure) => Some(retry_disposition(&shared, failure)),
+        };
+        if let Some(RetryDisposition::Retry) = disposition
+            && shared.has_been_ready()
+            && !shared.is_cancelled()
+            && shared.recovery_phase() != RecoveryPhase::Stopped
+        {
+            let attempt = retries.saturating_add(1);
+            let _ = shared.begin_recovery(
+                recovery_reason_for_failure(match result {
+                    Err(failure) => failure,
+                    Ok(()) => unreachable!("successful flow has no retry disposition"),
+                }),
+                attempt,
+            );
+            while commands.try_recv().is_ok() {}
+        }
         detach_all(&shared);
 
         // A flow may stay alive for hours after reaching Ready. Reset the
@@ -2540,14 +3765,31 @@ async fn run_connection(
             shared.clear_owned_zoom();
             break Ok(());
         };
-        if !automatic_retry_allowed(&shared, failure) || retries >= AUTO_RECONNECT_MAX_ATTEMPTS {
+        let disposition = disposition.expect("failed flow has a retry disposition");
+        if !matches!(disposition, RetryDisposition::Retry) || retries >= AUTO_RECONNECT_MAX_ATTEMPTS
+        {
+            if shared.has_been_ready()
+                && !shared.is_cancelled()
+                && shared.recovery_phase() != RecoveryPhase::Stopped
+            {
+                let reason = match disposition {
+                    RetryDisposition::Stop(reason) => reason,
+                    RetryDisposition::Retry => "retry_exhausted",
+                };
+                shared.stop_recovery(reason);
+            }
             shared.clear_owned_zoom();
             break Err(failure);
         }
 
         let delay = reconnect_delay(retries);
-        shared.mark_reconnecting();
         if !wait_for_reconnect(&shared, delay).await {
+            if shared.has_been_ready()
+                && !shared.is_cancelled()
+                && shared.recovery_phase() != RecoveryPhase::Stopped
+            {
+                shared.stop_recovery("automatic_reconnect_disabled");
+            }
             shared.clear_owned_zoom();
             break Err(failure);
         }
@@ -2570,6 +3812,23 @@ fn retained_profile(shared: &ConnectionShared) -> Option<ConnectionProfile> {
         .lock()
         .ok()
         .and_then(|state| state.profile.clone())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetryDisposition {
+    Retry,
+    Stop(&'static str),
+}
+
+fn retry_disposition(shared: &ConnectionShared, failure: FlowFailure) -> RetryDisposition {
+    if automatic_retry_allowed(shared, failure) {
+        RetryDisposition::Retry
+    } else {
+        RetryDisposition::Stop(
+            preserved_recovery_reason(shared)
+                .unwrap_or_else(|| recovery_reason_for_failure(failure)),
+        )
+    }
 }
 
 fn automatic_retry_allowed(shared: &ConnectionShared, failure: FlowFailure) -> bool {
@@ -2643,8 +3902,9 @@ async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool 
 async fn run_connection_flow(
     shared: Arc<ConnectionShared>,
     start: ConnectionStart,
-    commands: &mut mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
 ) -> Result<(), FlowFailure> {
+    let automatic_reconnect = start.is_automatic_reconnect();
     let picker = start.enters_picker();
     let mut profile = match start {
         ConnectionStart::AutomaticReconnect(profile)
@@ -2774,8 +4034,15 @@ async fn run_connection_flow(
     let _connect_guard = guard;
     control.clear_deadline();
 
-    let result =
-        run_authenticated_session(&shared, &mut profile, &mut session, commands, picker).await;
+    let result = run_authenticated_session(
+        &shared,
+        &mut profile,
+        &mut session,
+        commands,
+        picker,
+        automatic_reconnect,
+    )
+    .await;
     // Dropping a russh Handle does not synchronously stop its event loop.  A
     // bounded disconnect gives normal failures and explicit cancellation a
     // chance to close the owned session before this task exits.
@@ -2854,6 +4121,11 @@ async fn authenticate_session(
         }
     };
     if !matches!(authentication, client::AuthResult::Success) {
+        // Publish the terminal credential failure before the outer transport
+        // loop classifies the result. This also protects the fatal state if a
+        // lower russh layer reports the refusal through a generic transport
+        // error rather than `FlowFailure::Authentication`.
+        shared.fail("auth_failed", "SSH authentication failed.");
         return Err(FlowFailure::Authentication);
     }
     if shared.is_cancelled() {
@@ -2866,23 +4138,27 @@ async fn run_authenticated_session(
     shared: &Arc<ConnectionShared>,
     profile: &mut ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
-    commands: &mut mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
     picker: bool,
+    automatic_reconnect: bool,
 ) -> Result<(), FlowFailure> {
     authenticate_session(shared, profile, session).await?;
     if picker {
         return run_runtime_picker(shared, profile, session, commands).await;
     }
     shared.set_profile(profile.clone());
+    if automatic_reconnect && profile.backend == Backend::Herdr {
+        return herdr_control::recover(shared, profile, session, commands).await;
+    }
     let result = run_selected_backend(shared, profile, session, commands).await;
     if let Err(failure) = result {
-        if !is_runtime_local_failure(failure) {
-            return Err(failure);
+        if !automatic_reconnect && should_return_to_runtime_picker(shared, failure) {
+            return run_runtime_picker(shared, profile, session, commands).await;
         }
-        // A selected runtime can disappear during automatic reconnect. Keep
-        // the authenticated SSH handle and return to the same picker rather
-        // than creating or attaching a replacement.
-        return run_runtime_picker(shared, profile, session, commands).await;
+        // A selected runtime disappearing during automatic recovery is a
+        // retained-screen stop. Fresh/manual picker flows are the only place
+        // where a local runtime failure may return to runtime selection.
+        return Err(failure);
     }
     Ok(())
 }
@@ -2891,7 +4167,7 @@ async fn run_selected_backend(
     shared: &Arc<ConnectionShared>,
     profile: &mut ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
-    commands: &mut mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
 ) -> Result<(), FlowFailure> {
     match profile.backend {
         Backend::Tmux => control::run(shared, profile, session, commands).await,
@@ -3007,6 +4283,13 @@ impl RuntimeDiscoveryItem for herdr_control::DiscoveredSession {
 }
 
 fn clear_runtime_binding(shared: &ConnectionShared) -> Result<(), FlowFailure> {
+    if shared.has_been_ready() {
+        // Picker reset is only a pre-Ready transition. Keeping this defensive
+        // boundary here as well as at its call sites prevents a post-Ready
+        // runtime-local failure from destroying the retained Term if a future
+        // lifecycle path accidentally reuses the picker helper.
+        return Err(FlowFailure::Stale);
+    }
     let stale_terminals = {
         let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
         if state.generation != shared.generation {
@@ -3023,6 +4306,12 @@ fn clear_runtime_binding(shared: &ConnectionShared) -> Result<(), FlowFailure> {
         state.selected_pane = None;
         state.meeterm_zoomed = false;
         state.meeterm_zoomed_pane = None;
+        state.operation_epoch = next_operation_epoch(state.operation_epoch);
+        state.recovery = RecoverySnapshot::default();
+        state.pending_confirmation_token = None;
+        state.recovery_terminal_id = None;
+        state.runtime_operations_ready = false;
+        state.terminal_input_ready = false;
         stale_terminals
     };
 
@@ -3243,12 +4532,26 @@ fn is_runtime_local_failure(failure: FlowFailure) -> bool {
     )
 }
 
+/// Only a runtime that has never published Ready may return to the picker.
+/// Once the selected backend has become durable, a local runtime failure is a
+/// retained-work recovery/stop result; the picker path would clear the native
+/// Term and selected binding before the user can recover it.
+fn should_return_to_runtime_picker(shared: &ConnectionShared, failure: FlowFailure) -> bool {
+    is_runtime_local_failure(failure) && !shared.has_been_ready()
+}
+
 async fn run_runtime_picker(
     shared: &Arc<ConnectionShared>,
     base: &ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
-    commands: &mut mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
 ) -> Result<(), FlowFailure> {
+    // This helper is intentionally pre-Ready only. A defensive guard keeps a
+    // future call site from turning a post-Ready runtime-local error into the
+    // destructive picker reset below.
+    if shared.has_been_ready() {
+        return Err(FlowFailure::Stale);
+    }
     clear_runtime_binding(shared)?;
     discover_and_publish(shared, base, session).await?;
     loop {
@@ -3257,10 +4560,13 @@ async fn run_runtime_picker(
             _ = shared.cancelled() => return Err(FlowFailure::Stale),
             command = commands.recv() => command,
         };
-        let Some(command) = command else {
+        let Some(request) = command else {
             return Err(FlowFailure::Stale);
         };
-        match command {
+        if !shared.current_request_epoch(request.epoch) {
+            continue;
+        }
+        match request.command {
             ControlCommand::RefreshRuntimes => {
                 discover_and_publish(shared, base, session).await?;
             }
@@ -3283,11 +4589,22 @@ async fn run_runtime_picker(
                     continue;
                 };
                 let mut selected = profile_for_binding(base, &binding);
+                if !shared.begin_binding_transition() {
+                    return Err(FlowFailure::Stale);
+                }
                 shared.set_state(ConnectionState::AttachingRuntime);
                 shared.set_profile(selected.clone());
                 match run_selected_backend(shared, &mut selected, session, commands).await {
                     Ok(()) => return Ok(()),
                     Err(failure) if is_runtime_local_failure(failure) => {
+                        if !should_return_to_runtime_picker(shared, failure) {
+                            // The selected runtime has become the durable
+                            // owner. Let the outer connection lifecycle
+                            // retain its snapshot and stop/recover it; a
+                            // picker retry here would destroy the handoff
+                            // screen and native Term.
+                            return Err(failure);
+                        }
                         clear_runtime_binding(shared)?;
                         mark_runtime_failure(shared, &candidate_id, failure);
                     }
@@ -3310,11 +4627,17 @@ async fn run_runtime_picker(
                 };
                 let binding = RuntimeBinding::Tmux(identity);
                 let mut selected = profile_for_binding(base, &binding);
+                if !shared.begin_binding_transition() {
+                    return Err(FlowFailure::Stale);
+                }
                 shared.set_state(ConnectionState::AttachingRuntime);
                 shared.set_profile(selected.clone());
                 match run_selected_backend(shared, &mut selected, session, commands).await {
                     Ok(()) => return Ok(()),
                     Err(failure) if is_runtime_local_failure(failure) => {
+                        if !should_return_to_runtime_picker(shared, failure) {
+                            return Err(failure);
+                        }
                         clear_runtime_binding(shared)?;
                         mark_runtime_section_failure(shared, Backend::Tmux, failure);
                     }
@@ -3697,7 +5020,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_picker_policy_requires_explicit_herdr_reselection() {
+    fn runtime_picker_policy_distinguishes_fresh_and_retained_flows() {
         let options = || ConnectOptions {
             host: "example.test".into(),
             port: 22,
@@ -3732,7 +5055,7 @@ mod tests {
         herdr_profile.runtime = None;
         herdr_profile.herdr_executable = Some("/home/fixture/.local/bin/herdr".into());
         let herdr_automatic = ConnectionStart::AutomaticReconnect(herdr_profile);
-        assert!(herdr_automatic.enters_picker());
+        assert!(!herdr_automatic.enters_picker());
         assert!(herdr_automatic.is_automatic_reconnect());
 
         let manual = ConnectionStart::ManualReconnect(profile);
@@ -3990,7 +5313,7 @@ mod tests {
             None
         );
         assert!(matches!(
-            receiver.try_recv().expect("first create command"),
+            receiver.try_recv().expect("first create command").command,
             ControlCommand::CreateRuntime { .. }
         ));
 
@@ -4022,7 +5345,7 @@ mod tests {
             None
         );
         assert!(matches!(
-            receiver.try_recv().expect("second create command"),
+            receiver.try_recv().expect("second create command").command,
             ControlCommand::CreateRuntime { .. }
         ));
         mark_runtime_section_failure(&shared, Backend::Tmux, FlowFailure::TmuxRuntimeCollision);
@@ -4166,6 +5489,858 @@ mod tests {
             shared.set_automatic_reconnect(false);
             assert!(!wait_for_reconnect(&shared, Duration::from_millis(1)).await);
         });
+    }
+
+    fn recovery_fixture() -> (TerminalId, Arc<ConnectionShared>) {
+        let owner = registry::create_terminal(80, 24).expect("recovery owner terminal");
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            next_generation(),
+            "recovery.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/recovery-known-hosts"),
+        ));
+        {
+            let mut state = shared.session.lock().expect("recovery session state");
+            state.generation = shared.generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "recovery.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/recovery-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("meeterm".to_owned()),
+            });
+            state.pane_terminals.insert(owner, owner);
+            state.selected_pane = Some(owner);
+            state.snapshot = SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 1,
+                    name: "retained".to_owned(),
+                    panes: vec![PaneSnapshot {
+                        window_id: 1,
+                        pane_id: owner,
+                        terminal_id: owner,
+                        window_name: "retained".to_owned(),
+                        active: true,
+                        selected: true,
+                        index: 0,
+                        columns: 80,
+                        rows: 24,
+                        pane_name: "shell".to_owned(),
+                        title: "shell".to_owned(),
+                    }],
+                    selected: true,
+                    zoomed: false,
+                }],
+                panes: vec![PaneSnapshot {
+                    window_id: 1,
+                    pane_id: owner,
+                    terminal_id: owner,
+                    window_name: "retained".to_owned(),
+                    active: true,
+                    selected: true,
+                    index: 0,
+                    columns: 80,
+                    rows: 24,
+                    pane_name: "shell".to_owned(),
+                    title: "shell".to_owned(),
+                }],
+                selected_pane: Some(owner),
+            };
+        }
+        assert!(shared.mark_ready());
+        (owner, shared)
+    }
+
+    #[test]
+    fn post_ready_runtime_failure_keeps_retained_state_out_of_picker_reset() {
+        let (owner, shared) = recovery_fixture();
+        let retained_snapshot = session_snapshot(owner).expect("retained runtime snapshot");
+        let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
+        let before_epoch = shared.operation_epoch();
+
+        assert!(!should_return_to_runtime_picker(
+            &shared,
+            FlowFailure::HerdrProtocol
+        ));
+        assert!(matches!(
+            clear_runtime_binding(&shared),
+            Err(FlowFailure::Stale)
+        ));
+
+        let recovery_epoch = shared
+            .begin_recovery("herdr_session_missing", 1)
+            .expect("retained runtime should enter recovery");
+        shared.stop_recovery("herdr_session_missing");
+        assert!(recovery_epoch > before_epoch);
+        assert_eq!(
+            session_snapshot(owner).expect("retained snapshot after failure"),
+            retained_snapshot
+        );
+        assert!(Arc::ptr_eq(
+            &retained_terminal,
+            &registry::shared_terminal(owner).expect("same native terminal after failure")
+        ));
+        let session = session_state(owner);
+        let state = session.lock().expect("retained state");
+        assert_eq!(state.selected_pane, Some(owner));
+        assert_eq!(state.pane_terminals.get(&owner), Some(&owner));
+        assert_eq!(state.recovery.phase, RecoveryPhase::Stopped);
+        drop(state);
+        registry::destroy_terminal(owner);
+
+        let fresh_owner = registry::create_terminal(80, 24).expect("fresh owner terminal");
+        let fresh_shared = ConnectionShared::new(
+            fresh_owner,
+            next_generation(),
+            "fresh.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/fresh-known-hosts"),
+        );
+        assert!(should_return_to_runtime_picker(
+            &fresh_shared,
+            FlowFailure::HerdrProtocol
+        ));
+        registry::destroy_terminal(fresh_owner);
+    }
+
+    #[test]
+    fn final_capture_barrier_rejects_ready_from_an_older_session_epoch() {
+        let (owner, shared) = recovery_fixture();
+        let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
+        let expected_epoch = shared.operation_epoch();
+        let captured = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let old_shared = Arc::clone(&shared);
+        let old_captured = Arc::clone(&captured);
+        let old_release = Arc::clone(&release);
+        let old_ready = std::thread::spawn(move || {
+            // This represents the final capture response being available but
+            // not yet allowed to publish the session Ready state.
+            old_captured.wait();
+            old_release.wait();
+            old_shared.mark_ready_at_epoch(expected_epoch)
+        });
+        captured.wait();
+        let recovery_epoch = shared
+            .begin_recovery("transport", 1)
+            .expect("new recovery epoch");
+        release.wait();
+        assert!(!old_ready.join().expect("old capture thread"));
+        assert!(recovery_epoch > expected_epoch);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
+        assert_eq!(
+            session_snapshot(owner).expect("last committed snapshot"),
+            retained_snapshot
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn cancelled_owner_handoff_cannot_install_after_disconnect_barrier() {
+        let owner = Arc::new(OwnerTransition::new());
+        let reached_handoff = Arc::new(std::sync::Barrier::new(2));
+        let release_handoff = Arc::new(std::sync::Barrier::new(2));
+        let worker_owner = Arc::clone(&owner);
+        let worker_reached = Arc::clone(&reached_handoff);
+        let worker_release = Arc::clone(&release_handoff);
+        let worker = std::thread::spawn(move || {
+            let (_serial, ticket) = worker_owner.begin().expect("handoff ticket");
+            worker_reached.wait();
+            worker_release.wait();
+            assert!(!worker_owner.install_allowed(ticket));
+        });
+
+        reached_handoff.wait();
+        // Disconnect/change owns the commit boundary while the old map entry
+        // is absent. Cancelling the ticket here is the map-remove barrier.
+        owner.cancel_current();
+        release_handoff.wait();
+        worker.join().expect("handoff worker");
+
+        let (_serial, replacement_ticket) = owner.begin().expect("next owner ticket");
+        assert!(owner.install_allowed(replacement_ticket));
+        owner.finish(replacement_ticket);
+    }
+
+    #[test]
+    fn disconnect_fence_rejects_start_that_entered_before_publication() {
+        let owner = Arc::new(OwnerTransition::new());
+        // Hold the commit boundary while the start has already captured its
+        // request fence. The release ordering below lets Disconnect acquire
+        // and complete its cancellation before publication is allowed to run.
+        let commit_guard = owner.commit.lock().expect("owner commit barrier");
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let worker_owner = Arc::clone(&owner);
+        let worker_entered = Arc::clone(&entered);
+        let worker_release = Arc::clone(&release);
+        let worker = std::thread::spawn(move || {
+            let (_serial, ticket) = worker_owner
+                .begin_with_barriers(&worker_entered, &worker_release)
+                .expect("fenced start");
+            worker_owner.install_allowed(ticket)
+        });
+
+        entered.wait();
+        drop(commit_guard);
+        // The worker remains behind `release`, so this call deterministically
+        // wins the commit mutex before the old start can publish its ticket.
+        owner.cancel_current();
+        release.wait();
+        assert!(!worker.join().expect("fenced start worker"));
+
+        let (_serial, replacement_ticket) = owner.begin().expect("replacement start");
+        assert!(owner.install_allowed(replacement_ticket));
+        owner.finish(replacement_ticket);
+    }
+
+    #[test]
+    fn cancelled_preinstall_actor_cannot_acquire_remote_before_start_gate() {
+        let owner = registry::create_terminal(80, 24).expect("preinstall owner terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "preinstall.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/preinstall-known-hosts"),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("preinstall session state")
+            .generation = generation;
+        let (gate_sender, gate_receiver) = oneshot::channel();
+        let remote_started = Arc::new(AtomicBool::new(false));
+        let worker_shared = Arc::clone(&shared);
+        let worker_started = Arc::clone(&remote_started);
+        let worker = runtime().expect("native runtime").spawn(async move {
+            if wait_for_start_gate(&worker_shared, gate_receiver).await {
+                // This represents the first remote acquisition operation
+                // after actor installation (channel/discovery/controller).
+                worker_started.store(true, Ordering::Release);
+            }
+        });
+
+        // Disconnect is accepted before map install/gate release. Dropping
+        // the sender models the canceled pre-install start path; the actor
+        // must observe cancellation and never reach the side-effect marker.
+        shared.cancel();
+        drop(gate_sender);
+        runtime()
+            .expect("native runtime")
+            .block_on(async { worker.await.expect("preinstall actor") });
+        assert!(!remote_started.load(Ordering::Acquire));
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn hidden_herdr_selection_publishes_metadata_before_first_frame() {
+        let owner = registry::create_terminal(80, 24).expect("hidden Herdr owner terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "hidden-herdr.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/hidden-herdr-known-hosts"),
+        ));
+        {
+            let mut state = shared.session.lock().expect("hidden Herdr state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "hidden-herdr.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/hidden-herdr-known-hosts"),
+                backend: Backend::Herdr,
+                runtime: None,
+            });
+            state.terminal_visible = false;
+            state.pane_terminals.insert(owner, owner);
+            state.selected_pane = Some(owner);
+            state.snapshot = SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 10,
+                    name: "workspace".to_owned(),
+                    panes: vec![PaneSnapshot {
+                        window_id: 10,
+                        pane_id: owner,
+                        terminal_id: owner,
+                        window_name: "workspace".to_owned(),
+                        active: true,
+                        selected: true,
+                        index: 0,
+                        columns: 80,
+                        rows: 24,
+                        pane_name: "shell".to_owned(),
+                        title: "shell".to_owned(),
+                    }],
+                    selected: true,
+                    zoomed: false,
+                }],
+                panes: vec![PaneSnapshot {
+                    window_id: 10,
+                    pane_id: owner,
+                    terminal_id: owner,
+                    window_name: "workspace".to_owned(),
+                    active: true,
+                    selected: true,
+                    index: 0,
+                    columns: 80,
+                    rows: 24,
+                    pane_name: "shell".to_owned(),
+                    title: "shell".to_owned(),
+                }],
+                selected_pane: Some(owner),
+            };
+        }
+        assert!(shared.mark_ready_at_epoch(shared.operation_epoch()));
+        {
+            let state = shared.session.lock().expect("metadata-ready state");
+            assert!(state.runtime_operations_ready);
+            assert!(!state.terminal_input_ready);
+            assert_eq!(state.selected_pane, Some(owner));
+        }
+
+        let (sender, mut receiver) = mpsc::channel(2);
+        shared.set_commands(sender);
+        let abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort,
+            },
+        );
+        // This is the public call order after the picker has been published:
+        // make the native view visible, then let the Herdr actor acquire a
+        // controller and open input only after its first full frame.
+        assert_eq!(set_terminal_visible(owner, true), Ok(()));
+        assert!(matches!(
+            receiver.try_recv().expect("visible command").command,
+            ControlCommand::SetTerminalVisible { visible: true }
+        ));
+        let state = shared.session.lock().expect("visible but pre-frame state");
+        assert!(state.runtime_operations_ready);
+        assert!(!state.terminal_input_ready);
+        drop(state);
+
+        connections()
+            .lock()
+            .expect("connection registry")
+            .remove(&owner)
+            .expect("hidden test connection")
+            .abort
+            .abort();
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn awaiting_confirmation_foreground_loss_revokes_old_token_and_wakes_recovery() {
+        let (owner, shared) = recovery_fixture();
+        let recovery_epoch = shared
+            .begin_recovery("transport", 1)
+            .expect("recovery epoch");
+        assert!(
+            shared
+                .publish_recovery_confirmation("old-token".to_owned())
+                .is_ok()
+        );
+        let (sender, _receiver) = mpsc::channel(2);
+        shared.set_commands(sender);
+        let abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort,
+            },
+        );
+
+        assert_eq!(set_foreground(owner, false), Ok(()));
+        assert!(shared.operation_epoch() > recovery_epoch);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
+        assert_eq!(
+            confirm_recovery(owner, "old-token"),
+            Err(ConnectionError::RecoveryUnavailable)
+        );
+        assert_eq!(set_foreground(owner, true), Ok(()));
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
+        {
+            let state = shared.session.lock().expect("revoked confirmation state");
+            assert!(state.recovery.confirmation_token.is_empty());
+            assert!(state.pending_confirmation_token.is_none());
+        }
+
+        connections()
+            .lock()
+            .expect("connection registry")
+            .remove(&owner)
+            .expect("confirmation test connection")
+            .abort
+            .abort();
+        registry::destroy_terminal(owner);
+    }
+
+    fn retry_profile() -> ConnectionProfile {
+        ConnectionProfile {
+            // Port 1 keeps the replacement actor away from any fixture
+            // service. The test observes the synchronous handoff before the
+            // asynchronous SSH attempt can matter.
+            host: "127.0.0.1".to_owned(),
+            port: 1,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/recovery-retry-known-hosts"),
+            credentials: StoredCredentials::Password {
+                password: Arc::new(Zeroizing::new("fixture-only".to_owned())),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("meeterm".to_owned()),
+            tmux_identity: None,
+            herdr_executable: None,
+        }
+    }
+
+    #[test]
+    fn stopped_retry_restarts_finished_actor_once_and_retains_native_term() {
+        let (owner, shared) = recovery_fixture();
+        shared.set_profile(retry_profile());
+
+        let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
+        let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
+        let old_generation = shared.generation;
+        shared
+            .begin_recovery("transport", 1)
+            .expect("initial recovery");
+        shared.finish(Err(FlowFailure::Transport));
+        assert!(shared.info.lock().expect("old connection info").finished);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
+        let stopped_epoch = shared.operation_epoch();
+
+        // `wait_for_generation_finish` trusts the finished marker. Abort the
+        // fixture task up front so the test does not leave a pending task
+        // behind when the old entry is replaced without a drain wait.
+        let old_abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        old_abort.abort();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort: old_abort,
+            },
+        );
+
+        retry_recovery(owner, stopped_epoch).expect("first retry starts replacement");
+
+        let replacement = connections()
+            .lock()
+            .expect("connection registry")
+            .get(&owner)
+            .expect("replacement actor")
+            .shared
+            .clone();
+        assert_ne!(replacement.generation, old_generation);
+        assert!(!Arc::ptr_eq(&replacement, &shared));
+        let (new_generation, new_epoch) = {
+            let state = session_state(owner);
+            let state = state.lock().expect("replacement session state");
+            assert_eq!(state.generation, replacement.generation);
+            assert_eq!(state.recovery.phase, RecoveryPhase::Reconnecting);
+            assert_eq!(state.recovery.reason, "manual_retry");
+            assert!(state.operation_epoch != stopped_epoch);
+            assert!(state.has_retained_work());
+            assert_eq!(state.snapshot, retained_snapshot);
+            assert_eq!(state.pane_terminals.get(&owner), Some(&owner));
+            (state.generation, state.operation_epoch)
+        };
+        assert_eq!(new_generation, replacement.generation);
+        assert!(new_epoch != stopped_epoch);
+        assert!(Arc::ptr_eq(
+            &retained_terminal,
+            &registry::shared_terminal(owner).expect("replacement terminal")
+        ));
+
+        // Race duplicate callers with the pre-handoff epoch. They must be
+        // rejected before starting anything, and the first replacement must
+        // remain uncancelled. Checking only the finally visible map entry
+        // would miss a buggy second start that cancelled this actor first.
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let first_barrier = Arc::clone(&barrier);
+            let second_barrier = Arc::clone(&barrier);
+            let first = scope.spawn(move || {
+                first_barrier.wait();
+                retry_recovery(owner, stopped_epoch)
+            });
+            let second = scope.spawn(move || {
+                second_barrier.wait();
+                retry_recovery(owner, stopped_epoch)
+            });
+            [
+                first.join().expect("first duplicate retry caller"),
+                second.join().expect("second duplicate retry caller"),
+            ]
+        });
+        assert_eq!(
+            results,
+            [
+                Err(ConnectionError::RecoveryStale),
+                Err(ConnectionError::RecoveryStale)
+            ]
+        );
+        assert!(
+            !replacement.is_cancelled(),
+            "a duplicate Retry must not cancel the first replacement actor"
+        );
+        assert_eq!(
+            connections()
+                .lock()
+                .expect("connection registry")
+                .get(&owner)
+                .expect("single replacement actor")
+                .shared
+                .generation,
+            new_generation
+        );
+
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn retry_recovery_reports_unavailable_when_command_sender_is_gone() {
+        let (owner, shared) = recovery_fixture();
+        shared.set_profile(retry_profile());
+        let epoch = shared
+            .begin_recovery("transport", 1)
+            .expect("active recovery");
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
+
+        let abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort,
+            },
+        );
+        assert_eq!(
+            retry_recovery(owner, epoch),
+            Err(ConnectionError::RecoveryUnavailable)
+        );
+        assert!(Arc::ptr_eq(
+            &shared,
+            &connections()
+                .lock()
+                .expect("connection registry")
+                .get(&owner)
+                .expect("unchanged active actor")
+                .shared
+        ));
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn changed_host_key_stops_retained_recovery_without_retry() {
+        let (owner, shared) = recovery_fixture();
+        let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
+        let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
+        let before_epoch = shared.operation_epoch();
+
+        // This is the callback state committed before russh reports the
+        // refusal. The presented and known fingerprints must remain visible
+        // while the retained workspace is stopped for user review.
+        shared.set_changed_key(
+            "SHA256/presented".to_owned(),
+            "ssh-ed25519".to_owned(),
+            "SHA256/known".to_owned(),
+        );
+        let connection = shared.snapshot().expect("changed-key snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.fingerprint[..usize::from(connection.fingerprint_len)],
+            b"SHA256/presented"
+        );
+        assert_eq!(
+            &connection.known_fingerprint[..usize::from(connection.known_fingerprint_len)],
+            b"SHA256/known"
+        );
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"host_key_changed"
+        );
+
+        // Classify before begin_recovery can clear the Failed state. A
+        // generic Network result from russh must not enter the retry wait.
+        let disposition = retry_disposition(&shared, FlowFailure::Network);
+        assert_eq!(disposition, RetryDisposition::Stop("host_key_changed"));
+        assert!(!automatic_retry_allowed(&shared, FlowFailure::Network));
+        assert_eq!(shared.operation_epoch(), before_epoch);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
+        assert!(
+            shared.begin_recovery("network", 1).is_none(),
+            "a changed host key must reject every automatic recovery entry"
+        );
+        assert!(
+            connections()
+                .lock()
+                .expect("connection registry")
+                .get(&owner)
+                .is_none()
+        );
+
+        if let RetryDisposition::Stop(reason) = disposition {
+            shared.stop_recovery(reason);
+        } else {
+            panic!("changed host key must not be retried");
+        }
+
+        let connection = shared.snapshot().expect("stopped changed-key snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"host_key_changed"
+        );
+        assert_eq!(
+            &connection.fingerprint[..usize::from(connection.fingerprint_len)],
+            b"SHA256/presented"
+        );
+        assert_eq!(
+            &connection.known_fingerprint[..usize::from(connection.known_fingerprint_len)],
+            b"SHA256/known"
+        );
+        {
+            let state = session_state(owner);
+            let state = state.lock().expect("changed-key recovery state");
+            assert_eq!(state.recovery.phase, RecoveryPhase::Stopped);
+            assert_eq!(state.recovery.reason, "host_key_changed");
+            assert!(!state.runtime_operations_ready);
+            assert!(!state.terminal_input_ready);
+            assert_eq!(state.snapshot, retained_snapshot);
+            assert_eq!(state.selected_pane, Some(owner));
+            assert!(state.has_retained_work());
+            assert!(state.runtime_discovery == RuntimeDiscoverySnapshot::default());
+        }
+        assert!(Arc::ptr_eq(
+            &retained_terminal,
+            &registry::shared_terminal(owner).expect("retained terminal after key failure")
+        ));
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn authentication_failure_stops_retained_recovery_without_retry() {
+        let (owner, shared) = recovery_fixture();
+        let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
+        let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
+        let before_epoch = shared.operation_epoch();
+        shared.set_host_key("SHA256/authenticated".to_owned(), "ssh-ed25519".to_owned());
+
+        // A failed credential exchange is terminal. Keep the established
+        // host fingerprint and publish the existing bounded auth error before
+        // simulating a generic transport result from the SSH layer.
+        shared.fail("auth_failed", "SSH authentication failed.");
+        let connection = shared.snapshot().expect("authentication snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"auth_failed"
+        );
+        assert_eq!(
+            &connection.fingerprint[..usize::from(connection.fingerprint_len)],
+            b"SHA256/authenticated"
+        );
+
+        let disposition = retry_disposition(&shared, FlowFailure::Network);
+        assert_eq!(disposition, RetryDisposition::Stop("authentication_failed"));
+        assert!(!automatic_retry_allowed(&shared, FlowFailure::Network));
+        assert_eq!(shared.operation_epoch(), before_epoch);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
+        assert!(
+            shared.begin_recovery("network", 1).is_none(),
+            "an authentication failure must reject every automatic recovery entry"
+        );
+        assert!(
+            connections()
+                .lock()
+                .expect("connection registry")
+                .get(&owner)
+                .is_none()
+        );
+
+        if let RetryDisposition::Stop(reason) = disposition {
+            shared.stop_recovery(reason);
+        } else {
+            panic!("authentication failure must not be retried");
+        }
+
+        let connection = shared.snapshot().expect("stopped authentication snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        // `stop_recovery` preserves the established public error spelling and
+        // message for the connection-details UI, while the recovery control
+        // uses the canonical authentication_failed reason below.
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"auth_failed"
+        );
+        assert_eq!(
+            &connection.fingerprint[..usize::from(connection.fingerprint_len)],
+            b"SHA256/authenticated"
+        );
+        {
+            let state = session_state(owner);
+            let state = state.lock().expect("authentication recovery state");
+            assert_eq!(state.recovery.phase, RecoveryPhase::Stopped);
+            assert_eq!(state.recovery.reason, "authentication_failed");
+            assert!(!state.runtime_operations_ready);
+            assert!(!state.terminal_input_ready);
+            assert_eq!(state.snapshot, retained_snapshot);
+            assert_eq!(state.selected_pane, Some(owner));
+            assert!(state.has_retained_work());
+            assert!(state.runtime_discovery == RuntimeDiscoverySnapshot::default());
+        }
+        assert!(Arc::ptr_eq(
+            &retained_terminal,
+            &registry::shared_terminal(owner).expect("retained terminal after auth failure")
+        ));
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn rapid_foreground_transition_keeps_a_live_controller_authoritative() {
+        let (owner, shared) = recovery_fixture();
+        let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
+        let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
+        let initial_epoch = shared.operation_epoch();
+        let (sender, _receiver) = mpsc::channel(4);
+        shared.set_commands(sender);
+        let abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort,
+            },
+        );
+
+        // A foreground transition is not itself transport loss. Keep the
+        // established controller and retained topology authoritative while
+        // still revoking input during the hidden interval.
+        assert_eq!(set_foreground(owner, false), Ok(()));
+        assert_eq!(shared.operation_epoch(), initial_epoch);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
+        assert!(!shared.current_terminal_input_is_ready(initial_epoch));
+        assert_eq!(set_foreground(owner, true), Ok(()));
+        assert!(shared.is_foreground());
+        assert_eq!(shared.operation_epoch(), initial_epoch);
+        assert!(shared.current_terminal_input_is_ready(initial_epoch));
+
+        // A live controller remains usable after a rapid false -> true
+        // transition. A real transport loss still enters recovery through the
+        // backend's loss boundary, which is tested separately below.
+        assert!(!shared.recovery_requires_controller_exit(Some(initial_epoch)));
+        assert!(!shared.recovery_requires_controller_exit(None));
+        assert_eq!(set_terminal_visible(owner, true), Ok(()));
+        {
+            let state = session_state(owner);
+            let state = state.lock().expect("foreground recovery state");
+            assert_eq!(state.recovery.phase, RecoveryPhase::None);
+            assert!(state.terminal_input_ready);
+            assert_eq!(state.snapshot, retained_snapshot);
+            assert!(state.has_retained_work());
+        }
+        assert!(Arc::ptr_eq(
+            &retained_terminal,
+            &registry::shared_terminal(owner).expect("retained terminal after recovery")
+        ));
+
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn recovery_epoch_revokes_commands_but_retains_native_topology() {
+        let (owner, shared) = recovery_fixture();
+        let before = shared.operation_epoch();
+        let recovery_epoch = shared
+            .begin_recovery("transport", 1)
+            .expect("recovery should start");
+        assert!(recovery_epoch > before);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
+        assert!(!shared.current_request_is_ready(recovery_epoch));
+        let json: serde_json::Value =
+            serde_json::from_str(&workspace_snapshot_json(owner).expect("retained workspace JSON"))
+                .expect("workspace control JSON");
+        assert_eq!(
+            json["control"]["operationEpoch"],
+            recovery_epoch.to_string()
+        );
+        assert_eq!(json["control"]["hasRetainedWork"], true);
+        assert_eq!(json["control"]["runtimeOperationsReady"], false);
+        assert_eq!(json["control"]["recovery"]["phase"], "reconnecting");
+        {
+            let state = shared.session.lock().expect("recovery session state");
+            assert!(state.has_retained_work());
+            assert_eq!(state.selected_pane, Some(owner));
+            assert!(state.pane_terminals.contains_key(&owner));
+        }
+        assert!(matches!(
+            shared.publish_recovery_confirmation("token-1".to_owned()),
+            Ok(epoch) if epoch == recovery_epoch
+        ));
+        let state = shared.session.lock().expect("recovery session state");
+        assert_eq!(state.recovery.phase, RecoveryPhase::AwaitingConfirmation);
+        assert_eq!(state.recovery.confirmation_token, "token-1");
+        drop(state);
+        shared.invalidate_explicitly("runtime_changed");
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
+        assert!(
+            !shared.mark_ready(),
+            "explicit invalidation must not resurrect Ready"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn confirmation_token_consumption_is_single_use_across_epoch_bump() {
+        let (owner, shared) = recovery_fixture();
+        let epoch = shared
+            .begin_recovery("transport", 1)
+            .expect("recovery epoch");
+        shared
+            .publish_recovery_confirmation("opaque".to_owned())
+            .ok()
+            .expect("recovery confirmation");
+        let next = {
+            let mut state = shared.session.lock().expect("recovery session state");
+            assert_eq!(state.operation_epoch, epoch);
+            state.operation_epoch = next_operation_epoch(state.operation_epoch);
+            state.recovery.phase = RecoveryPhase::Resynchronizing;
+            state.recovery.confirmation_token.clear();
+            state.pending_confirmation_token = Some("opaque".to_owned());
+            state.operation_epoch
+        };
+        assert!(shared.current_request_epoch(next));
+        assert!(shared.take_pending_confirmation("opaque"));
+        assert!(!shared.take_pending_confirmation("opaque"));
+        assert!(!shared.current_request_is_ready(next));
+        registry::destroy_terminal(owner);
     }
 
     #[test]

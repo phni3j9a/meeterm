@@ -635,6 +635,16 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         device.run.return_value = b""
         workspace = smoke.Node("", "Workspace smoke", "android.view.View", (0, 0, 100, 100))
         terminal = smoke.Node("", "Terminal", "android.view.SurfaceView", (0, 100, 100, 300))
+        connected = smoke.Node("Connected", "", "android.widget.TextView", (0, 0, 100, 40))
+        pane = smoke.Node(
+            "",
+            "",
+            "android.widget.Button",
+            (0, 40, 100, 100),
+            resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+            selected=True,
+        )
+        device.dump_ui.return_value = [connected, pane, terminal]
         completed: list[str] = []
         marker = Path("/tmp/meeterm-ssh-fixture-test/foreground.txt")
 
@@ -689,7 +699,7 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         )
         terminal_line.assert_called_once_with(
             device,
-            smoke.session_marker_command("fresh-ack", marker, 1201),
+            smoke.session_marker_command("fresh-ack", marker, 1201, append=True),
         )
         wait_marker.assert_called_once_with(
             marker,
@@ -699,9 +709,57 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         focus.assert_called_once_with(device, terminal, "daily_foreground_return")
         self.assertEqual(
             completed,
-            ["daily_app_backgrounded", "daily_foreground_terminal_resumed"],
+            [
+                "daily_app_backgrounded",
+                "daily_foreground_authoritative_ready",
+                "daily_foreground_native_binding_verified",
+                "daily_foreground_marker_exactly_once",
+                "daily_foreground_terminal_resumed",
+            ],
         )
         self.assertFalse(device.foreground_evidence_lost)
+
+    def test_foreground_recovery_ready_rejects_picker_and_cached_terminal(self) -> None:
+        picker = smoke.Node(
+            "Choose a runtime for Smoke server",
+            "",
+            "android.widget.TextView",
+            (0, 0, 100, 40),
+        )
+        self.assertTrue(smoke.runtime_picker_is_visible([picker]))
+        self.assertFalse(smoke.foreground_recovery_ready([picker], "%12"))
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [picker]
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.wait_for_foreground_recovery_ready(
+                device,
+                "daily_foreground_return",
+                "%12",
+                timeout=1.0,
+            )
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("daily_foreground_return", "runtime_picker_reappeared"),
+        )
+
+        connected = smoke.Node("Connected", "", "android.widget.TextView", (0, 0, 100, 40))
+        pane = smoke.Node(
+            "",
+            "",
+            "android.widget.Button",
+            (0, 40, 100, 100),
+            resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+            selected=True,
+        )
+        cached_terminal = smoke.Node(
+            "",
+            "Terminal, cached output, read only",
+            "android.view.SurfaceView",
+            (0, 100, 100, 300),
+        )
+        self.assertFalse(
+            smoke.foreground_recovery_ready([connected, pane, cached_terminal], "%12")
+        )
 
     def test_foreground_return_rejects_a_restarted_process_before_ack(self) -> None:
         fixture = smoke.parse_tmux_panes(
@@ -712,6 +770,17 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         device.process_id.side_effect = ["4312", "4312", "9000"]
         device.run.return_value = b""
         node = smoke.Node("", "fixture", "android.view.View", (0, 0, 100, 100))
+        connected = smoke.Node("Connected", "", "android.widget.TextView", (0, 0, 100, 40))
+        pane = smoke.Node(
+            "",
+            "",
+            "android.widget.Button",
+            (0, 40, 100, 100),
+            resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+            selected=True,
+        )
+        terminal = smoke.Node("", "Terminal", "android.view.SurfaceView", (0, 100, 100, 300))
+        device.dump_ui.return_value = [connected, pane, terminal]
         with (
             mock.patch.object(smoke, "wait_for_workspace", return_value=node),
             mock.patch.object(smoke, "tap_node"),
@@ -2326,8 +2395,10 @@ class CommandTests(unittest.TestCase):
 
         with_pid = smoke.session_marker_command(marker, path, 1202)
         resumed_with_pid = smoke.resumed_marker_command(marker, path, 1202)
+        appended = smoke.session_marker_command(marker, path, append=True)
         self.assertIn(":$$", with_pid)
         self.assertIn('[ "$$" = 1202 ]', resumed_with_pid)
+        self.assertIn(" >> ", appended)
 
     def test_marker_commands_reject_input_text_unsafe_marker(self) -> None:
         with self.assertRaises(smoke.SmokeFailure) as first_error:

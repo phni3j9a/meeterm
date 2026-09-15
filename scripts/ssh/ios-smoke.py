@@ -277,14 +277,21 @@ def write_short_ssh_input_diagnostics(
 ) -> None:
     """Observe only the disposable, post-auth SSH fixture; never publish its text.
 
-    The keyboard prefix, pasted suffix and Return have separate native paths.
-    Echo evidence helps locate a missing command without sending more input or
-    turning a failed marker assertion into a pass. Unexpected clipboard/terminal
-    contents may contain credentials, so the artifact contains only fixed keys,
-    booleans and counts, including on a successful run for comparison.
+    The app is foregrounded again after a real background/foreground cycle
+    before the keyboard prefix, pasted suffix and Return have separate native
+    paths. Echo evidence helps locate a missing command without sending more
+    input or turning a failed marker assertion into a pass. Unexpected
+    clipboard/terminal contents may contain credentials, so the artifact
+    contains only fixed keys, booleans and counts, including on a successful
+    run for comparison.
     """
     stages = (artifact_dir / "ios-ui-stages.txt").read_text().splitlines()
-    input_stages = {"ssh_native_input_paste_tapped", "ssh_native_input_await_remote_marker"}
+    input_stages = {
+        "ssh_native_input_paste_tapped",
+        "ssh_native_input_await_remote_marker",
+        "ssh_resumed_native_input_paste_tapped",
+        "ssh_resumed_native_input_await_remote_marker",
+    }
     if "ssh_connected" not in stages or not input_stages.intersection(stages):
         return
     if socket_path != fixture_socket():
@@ -326,10 +333,13 @@ def write_short_ssh_input_diagnostics(
             "shell_syntax_error": "syntax error" in capture.lower(),
         })
     marker_exists = marker_path.is_file()
-    marker_matches = marker_exists and marker_path.read_text() == marker + "\n"
+    marker_lines = marker_path.read_text(encoding="utf-8").splitlines() if marker_exists else []
+    marker_matches = marker_lines == [marker]
     write_text(artifact_dir / INPUT_DIAGNOSTICS_NAME, json.dumps({
         "marker_file_exists": marker_exists,
         "marker_file_matches": marker_matches,
+        "marker_line_count": len(marker_lines),
+        "marker_exactly_once": marker_matches,
         "panes": evidence,
     }, indent=2) + "\n")
 
@@ -1523,9 +1533,11 @@ def main() -> int:
                 return 0
 
             if suite == "ssh":
-                # The short SSH suite keeps only connection, one native input
-                # acknowledgement, and explicit disconnect. It deliberately
-                # omits full-flow handoff, copy, reconnect, and daily CRUD.
+                # The short SSH suite keeps connection, explicit runtime
+                # selection, one real app background/foreground recovery, the
+                # resumed native input acknowledgement, and explicit
+                # disconnect. It deliberately omits full-flow handoff, copy,
+                # manual reconnect, and daily CRUD.
                 run_status = run_xcuitest(
                     derived_data=args.derived_data,
                     simulator_udid=args.simulator_udid,

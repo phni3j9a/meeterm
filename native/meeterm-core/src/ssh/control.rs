@@ -4,9 +4,80 @@ use std::collections::{HashSet, VecDeque};
 
 const MAX_PANES: usize = 4096;
 
+fn selected_pane_for_sync(
+    panes: &[tmux::PaneInfo],
+    requested: Option<u64>,
+    strict: bool,
+) -> Result<u64, FlowFailure> {
+    if strict {
+        return requested
+            .filter(|id| panes.iter().any(|pane| pane.pane_id == *id))
+            .ok_or(FlowFailure::TmuxRuntimeMissing);
+    }
+    Ok(requested
+        .filter(|id| panes.iter().any(|pane| pane.pane_id == *id))
+        .or_else(|| {
+            panes
+                .iter()
+                .find(|pane| pane.active && pane.window_active)
+                .map(|pane| pane.pane_id)
+        })
+        .unwrap_or(panes[0].pane_id))
+}
+
+fn strict_final_readback_required(
+    strict_recovery: bool,
+    strict_sync_pending: bool,
+    initial: bool,
+) -> bool {
+    strict_recovery && strict_sync_pending && !initial
+}
+
+/// Mark a set of newly reconstructed pane transports as usable only after
+/// every one has passed the generation/binding check. If one pane was revoked
+/// while the batch was in flight, roll back the marks made by this attempt so
+/// a caller cannot publish a partially-ready session.
+fn mark_transport_ids_ready(
+    shared: &ConnectionShared,
+    ids: &[TerminalId],
+    expected_epoch: u64,
+) -> Result<(), FlowFailure> {
+    let mut marked = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !shared.current_request_epoch(expected_epoch) {
+            for marked_id in marked {
+                registry::detach_transport(marked_id, shared.generation);
+            }
+            return Err(FlowFailure::Stale);
+        }
+        if !registry::mark_transport_ready(*id, shared.generation) {
+            for marked_id in marked {
+                registry::detach_transport(marked_id, shared.generation);
+            }
+            return Err(FlowFailure::Stale);
+        }
+        marked.push(*id);
+    }
+    if !shared.current_request_epoch(expected_epoch) {
+        for marked_id in marked {
+            registry::detach_transport(marked_id, shared.generation);
+        }
+        return Err(FlowFailure::Stale);
+    }
+    Ok(())
+}
+
 enum PaneEvent {
     Input(u64, Vec<u8>),
     Resize(u64, u16, u16),
+}
+
+struct StagedCapture {
+    native: u64,
+    columns: u16,
+    rows: u16,
+    bytes: Vec<u8>,
+    trailing_output: Vec<u8>,
 }
 
 struct ControlClient {
@@ -26,12 +97,28 @@ struct ControlClient {
     capture_output: Vec<u8>,
     command_number: u64,
     zoom_hooks: Option<tmux::ZoomRecoveryHookAllocation>,
+    strict_recovery: bool,
+    mapping: HashMap<u64, u64>,
+    staged_native: Vec<u64>,
+    command_epoch: Option<u64>,
+    /// Epoch captured for a strict recovery actor. Routine syncs use the
+    /// command/current epoch at their own start, while strict reconstruction
+    /// must never adopt a newer one after an awaited capture.
+    operation_epoch: u64,
+    staged_captures: Vec<StagedCapture>,
+    strict_sync_pending: bool,
 }
 
 impl Drop for ControlClient {
     fn drop(&mut self) {
         for task in self.routes.values() {
             task.abort();
+        }
+        for native in self.staged_native.drain(..) {
+            if native != self.shared.terminal_id {
+                registry::detach_transport(native, self.shared.generation);
+                registry::destroy_terminal(native);
+            }
         }
         detach_all(&self.shared);
         // Zoom ownership is retained across a recoverable transport loss so
@@ -45,11 +132,26 @@ pub(super) async fn run(
     shared: &Arc<ConnectionShared>,
     profile: &mut ConnectionProfile,
     session: &mut client::Handle<HostKeyHandler>,
-    commands: &mut mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
 ) -> Result<(), FlowFailure> {
     shared.set_state(ConnectionState::AttachingTmux);
 
     let exact_runtime = profile.tmux_identity.is_some() || profile.runtime.is_some();
+    let initial_recovery_epoch = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        (state.recovery.phase != RecoveryPhase::None).then_some(state.operation_epoch)
+    };
+    let strict_recovery = initial_recovery_epoch.is_some();
+    if strict_recovery
+        && shared
+            .session
+            .lock()
+            .map_err(|_| FlowFailure::Stale)?
+            .selected_pane
+            .is_none()
+    {
+        return Err(FlowFailure::TmuxRuntimeMissing);
+    }
     let (runtime_session, startup, selected_identity) =
         if let Some(identity) = profile.tmux_identity.clone() {
             verify_selected_runtime(shared, session, &identity).await?;
@@ -73,8 +175,8 @@ pub(super) async fn run(
         } else {
             // A tmux actor without a selected identity must not fall back to
             // the historical `new-session -A` command. Fresh/manual host
-            // flows enter the picker, and an automatic reconnect with no
-            // verifiable binding is handled as a local runtime loss there.
+            // flows enter the picker. An automatic reconnect with no
+            // verifiable binding remains a fail-closed retained-work loss.
             return Err(FlowFailure::TmuxRuntimeMissing);
         };
     let channel = await_stage(
@@ -116,6 +218,13 @@ pub(super) async fn run(
         capture_output: Vec::new(),
         command_number: 0,
         zoom_hooks: None,
+        strict_recovery,
+        mapping: HashMap::new(),
+        staged_native: Vec::new(),
+        command_epoch: None,
+        operation_epoch: initial_recovery_epoch.unwrap_or_else(|| shared.operation_epoch()),
+        staged_captures: Vec::new(),
+        strict_sync_pending: false,
     };
     await_stage(
         shared,
@@ -156,6 +265,13 @@ pub(super) async fn run(
         while let Some(event) = client.events.pop_front() {
             client.dispatch(event)?;
         }
+        if shared.recovery_requires_controller_exit(initial_recovery_epoch) {
+            for task in client.routes.values() {
+                task.abort();
+            }
+            detach_all(shared);
+            return Err(FlowFailure::Transport);
+        }
         if client.dirty {
             client.synchronize(false).await?;
             continue;
@@ -166,8 +282,22 @@ pub(super) async fn run(
                 client.restore_zoom().await;
                 return Err(FlowFailure::Stale);
             }
+            _ = shared.retry_notify.notified() => {}
             command = commands.recv() => {
-                match command {
+                let Some(request) = command else {
+                    return Err(FlowFailure::Stale);
+                };
+                if !shared.current_request_epoch(request.epoch) {
+                    continue;
+                }
+                let command = request.command;
+                if !matches!(&command, ControlCommand::SetTerminalVisible { visible: false })
+                    && !shared.current_request_is_ready(request.epoch)
+                {
+                    continue;
+                }
+                client.command_epoch = Some(request.epoch);
+                match Some(command) {
                     Some(ControlCommand::SelectPane { window_id, pane_id }) => {
                         client.select(window_id, pane_id).await?;
                         client.synchronize(false).await?;
@@ -315,29 +445,48 @@ pub(super) async fn run(
                     Some(ControlCommand::CreateGroup { .. } | ControlCommand::RenameGroup { .. }
                         | ControlCommand::CloseGroup { .. } | ControlCommand::SelectGroup { .. }) => return Err(FlowFailure::TmuxProtocol),
                     Some(ControlCommand::SetTerminalVisible { .. }) => {},
+                    Some(ControlCommand::RetryRecovery)
+                    | Some(ControlCommand::ConfirmRecovery { .. }) => {}
                     None => return Err(FlowFailure::Stale),
                 }
+                client.command_epoch = None;
             }
             event = client.pane_receiver.recv() => {
                 match event {
                     Some(PaneEvent::Input(pane, bytes)) => {
-                        if client.routes.contains_key(&pane) {
+                        let epoch = shared.operation_epoch();
+                        if shared.current_terminal_input_is_ready(epoch)
+                            && client.routes.contains_key(&pane)
+                        {
                             let command = tmux::send_bytes_command_for_session(
                                 &client.session,
                                 pane,
                                 &bytes,
                             )
                             .map_err(|_| FlowFailure::TmuxProtocol)?;
-                            client.query(&command).await?;
+                            client.command_epoch = Some(epoch);
+                            let result = client.query(&command).await;
+                            client.command_epoch = None;
+                            result?;
                         }
                     }
                     Some(PaneEvent::Resize(pane, columns, rows)) => {
+                        let epoch = shared.operation_epoch();
+                        if !shared.current_terminal_input_is_ready(epoch) {
+                            continue;
+                        }
                         let selected = shared.session.lock().map_err(|_| FlowFailure::Stale)?.selected_pane;
                         if selected == Some(pane) && client.viewport != (columns, rows) {
                             client.viewport = (columns, rows);
                             shared.session.lock().map_err(|_| FlowFailure::Stale)?.viewport = Some((columns, rows));
-                            client.resize_client().await?;
-                            client.synchronize(false).await?;
+                            client.command_epoch = Some(epoch);
+                            let result = async {
+                                client.resize_client().await?;
+                                client.synchronize(false).await
+                            }
+                            .await;
+                            client.command_epoch = None;
+                            result?;
                         }
                     }
                     None => return Err(FlowFailure::Transport),
@@ -570,14 +719,7 @@ impl ControlClient {
                     }
                     return Ok(());
                 }
-                let id = self
-                    .shared
-                    .session
-                    .lock()
-                    .map_err(|_| FlowFailure::Stale)?
-                    .pane_terminals
-                    .get(&pane_id)
-                    .copied();
+                let id = self.mapping.get(&pane_id).copied();
                 // Output for a newly discovered pane is included in its first
                 // capture; it must never be applied to the selected old pane.
                 if let Some(id) = id
@@ -612,6 +754,14 @@ impl ControlClient {
     }
 
     async fn query(&mut self, command: &str) -> Result<Vec<tmux::CommandBlock>, FlowFailure> {
+        let expected_epoch = self.command_epoch.unwrap_or_else(|| {
+            self.strict_recovery
+                .then_some(self.operation_epoch)
+                .unwrap_or_else(|| self.shared.operation_epoch())
+        });
+        if !self.shared.current_request_epoch(expected_epoch) {
+            return Err(FlowFailure::Stale);
+        }
         self.command_number += 1;
         // tmux emits one block per command, including commands nested in an
         // if-shell. A trailing sentinel delimits the whole request, so a
@@ -628,6 +778,9 @@ impl ControlClient {
             FlowFailure::Transport,
         )
         .await?;
+        if !self.shared.current_request_epoch(expected_epoch) {
+            return Err(FlowFailure::Stale);
+        }
         let deadline = tokio::time::Instant::now() + SSH_STAGE_TIMEOUT;
         let mut blocks = Vec::new();
         let mut reply_bytes = 0usize;
@@ -764,6 +917,11 @@ impl ControlClient {
     /// the terminal lifecycle boundary; cancellation makes run_connection
     /// finish as Disconnected even if the remote channel closes immediately.
     async fn close_last_session(&mut self, command: String) -> Result<(), FlowFailure> {
+        if let Some(epoch) = self.command_epoch
+            && !self.shared.current_request_is_ready(epoch)
+        {
+            return Err(FlowFailure::Stale);
+        }
         let request = format!("{command}\n");
         await_stage(
             &self.shared,
@@ -848,6 +1006,19 @@ impl ControlClient {
     }
 
     async fn select(&mut self, window: u64, pane: u64) -> Result<(), FlowFailure> {
+        self.select_impl(window, pane, true).await
+    }
+
+    async fn select_without_publish(&mut self, window: u64, pane: u64) -> Result<(), FlowFailure> {
+        self.select_impl(window, pane, false).await
+    }
+
+    async fn select_impl(
+        &mut self,
+        window: u64,
+        pane: u64,
+        publish: bool,
+    ) -> Result<(), FlowFailure> {
         let previous = self
             .shared
             .session
@@ -937,11 +1108,13 @@ impl ControlClient {
             .join(" ; ");
             self.query(&transition).await?;
         }
-        let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        state.selected_pane = Some(pane);
-        state.meeterm_zoomed = !zoomed;
-        state.meeterm_zoomed_pane = (!zoomed).then_some(pane);
-        mark_selected(&mut state.snapshot, pane);
+        if publish {
+            let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            state.selected_pane = Some(pane);
+            state.meeterm_zoomed = !zoomed;
+            state.meeterm_zoomed_pane = (!zoomed).then_some(pane);
+            mark_selected(&mut state.snapshot, pane);
+        }
         Ok(())
     }
 
@@ -1018,15 +1191,28 @@ impl ControlClient {
     }
 
     async fn synchronize(&mut self, initial: bool) -> Result<(), FlowFailure> {
+        let expected_epoch = self.command_epoch.unwrap_or_else(|| {
+            self.strict_recovery
+                .then_some(self.operation_epoch)
+                .unwrap_or_else(|| self.shared.operation_epoch())
+        });
+        if !self.shared.current_request_epoch(expected_epoch) {
+            return Err(FlowFailure::Stale);
+        }
+        let strict_final_readback =
+            strict_final_readback_required(self.strict_recovery, self.strict_sync_pending, initial);
+        if strict_final_readback {
+            // Captures collected before the recovery selection mutation are
+            // only probes. The final dirty readback must be the sole display
+            // source that can reach the retained Term.
+            self.staged_captures.clear();
+        }
         // Routine refreshes keep the live transport usable. Reporting a new
         // connection phase here would make the UI unmount its terminal view.
         if initial {
             self.shared.set_state(ConnectionState::Synchronizing);
         }
         self.dirty = false;
-        if initial {
-            self.resize_client().await?;
-        }
         let windows_command = tmux::list_windows_command_for_session(&self.session)
             .map_err(|_| FlowFailure::TmuxProtocol)?;
         let panes_command = tmux::list_panes_command_for_session(&self.session)
@@ -1052,52 +1238,47 @@ impl ControlClient {
         if panes.is_empty() || panes.len() > MAX_PANES {
             return Err(FlowFailure::TmuxProtocol);
         }
-        let old = self
-            .shared
-            .session
-            .lock()
-            .map_err(|_| FlowFailure::Stale)?
-            .snapshot
-            .clone();
-        let mut mapping = self
-            .shared
-            .session
-            .lock()
-            .map_err(|_| FlowFailure::Stale)?
-            .pane_terminals
-            .clone();
+        let (old, mut mapping) = {
+            let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            (
+                state.snapshot.clone(),
+                if self.strict_recovery && self.strict_sync_pending {
+                    self.mapping.clone()
+                } else {
+                    state.pane_terminals.clone()
+                },
+            )
+        };
+        self.mapping = mapping.clone();
         let ids = panes.iter().map(|p| p.pane_id).collect::<HashSet<_>>();
         let stale = mapping
             .keys()
             .filter(|id| !ids.contains(id))
             .copied()
             .collect::<Vec<_>>();
-        for pane in stale {
-            if let Some(task) = self.routes.remove(&pane) {
-                task.abort();
+        let selected = {
+            let requested = self
+                .shared
+                .session
+                .lock()
+                .map_err(|_| FlowFailure::Stale)?
+                .selected_pane;
+            selected_pane_for_sync(&panes, requested, self.strict_recovery)?
+        };
+        // In strict recovery, prove that the original pane is still present
+        // before any client resize or selection mutation. A replacement pane
+        // must never receive the old owner's geometry.
+        if initial {
+            if self.strict_recovery && !panes.iter().any(|pane| pane.pane_id == selected) {
+                return Err(FlowFailure::TmuxRuntimeMissing);
             }
-            if let Some(id) = mapping.remove(&pane) {
-                registry::detach_transport(id, self.shared.generation);
-                if id != self.shared.terminal_id {
-                    registry::destroy_terminal(id);
-                }
+            self.resize_client().await?;
+            if !self.shared.current_request_epoch(expected_epoch) {
+                return Err(FlowFailure::Stale);
             }
         }
-        let selected = self
-            .shared
-            .session
-            .lock()
-            .map_err(|_| FlowFailure::Stale)?
-            .selected_pane
-            .filter(|id| ids.contains(id))
-            .or_else(|| {
-                panes
-                    .iter()
-                    .find(|p| p.active && p.window_active)
-                    .map(|p| p.pane_id)
-            })
-            .unwrap_or(panes[0].pane_id);
         let mut capture = Vec::new();
+        let mut newly_attached = Vec::new();
         for pane in &panes {
             let id = match mapping.get(&pane.pane_id).copied() {
                 Some(id) => id,
@@ -1105,15 +1286,24 @@ impl ControlClient {
                     let id = if mapping.is_empty() && old.panes.is_empty() {
                         self.shared.terminal_id
                     } else {
-                        registry::create_terminal(pane.columns, pane.rows)
-                            .map_err(|_| FlowFailure::TmuxProtocol)?
+                        let id = registry::create_terminal(pane.columns, pane.rows)
+                            .map_err(|_| FlowFailure::TmuxProtocol)?;
+                        self.staged_native.push(id);
+                        id
                     };
                     mapping.insert(pane.pane_id, id);
                     id
                 }
             };
             if !self.routes.contains_key(&pane.pane_id) {
-                self.attach(pane.pane_id, id, (pane.columns, pane.rows))?;
+                if !self.strict_recovery {
+                    self.attach(pane.pane_id, id, (pane.columns, pane.rows))?;
+                    newly_attached.push(id);
+                }
+                capture.push(pane.pane_id);
+            } else if strict_final_readback {
+                // Reconcile every pane after the selection/zoom mutation;
+                // this is the final authoritative frame set.
                 capture.push(pane.pane_id);
             } else if old
                 .panes
@@ -1124,6 +1314,7 @@ impl ControlClient {
                 capture.push(pane.pane_id);
             }
         }
+        self.mapping = mapping.clone();
         let names = windows
             .iter()
             .map(|w| (w.window_id, w.name.clone()))
@@ -1144,64 +1335,219 @@ impl ControlClient {
                 pane_name: pane.pane_name.clone(),
             })
             .collect::<Vec<_>>();
-        {
-            let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-            if self.shared.is_cancelled() || state.generation != self.shared.generation {
+        for pane in capture {
+            if !self.shared.current_request_epoch(expected_epoch) {
                 return Err(FlowFailure::Stale);
             }
-            if state.meeterm_zoomed_pane.is_some_and(|owned| {
-                !panes
-                    .iter()
-                    .any(|pane| pane.pane_id == owned && pane.zoomed)
-            }) {
-                state.meeterm_zoomed = false;
-                state.meeterm_zoomed_pane = None;
-            }
-            state.pane_terminals = mapping;
-            state.selected_pane = Some(selected);
-            state.snapshot = SessionSnapshot {
-                windows: windows
-                    .iter()
-                    .map(|w| WindowSnapshot {
-                        window_id: w.window_id,
-                        name: w.name.clone(),
-                        panes: flat
-                            .iter()
-                            .filter(|p| p.window_id == w.window_id)
-                            .cloned()
-                            .collect(),
-                        selected: flat
-                            .iter()
-                            .any(|p| p.window_id == w.window_id && p.selected),
-                        zoomed: panes.iter().any(|p| p.window_id == w.window_id && p.zoomed),
-                    })
-                    .collect(),
-                panes: flat,
-                selected_pane: Some(selected),
-            };
-        }
-        for pane in capture {
             self.capture(pane).await?;
         }
         if initial {
             let pane = panes.iter().find(|p| p.pane_id == selected).unwrap();
-            self.select(pane.window_id, selected).await?;
+            if self.strict_recovery {
+                self.select_without_publish(pane.window_id, selected)
+                    .await?;
+            } else {
+                self.select(pane.window_id, selected).await?;
+            }
             self.dirty = true; // selection/zoom sizes are read back before input readiness
+            if self.strict_recovery {
+                // Do not expose topology, selection, native capture, or
+                // stale-terminal cleanup until the dirty final readback below
+                // has completed successfully.
+                self.strict_sync_pending = true;
+                return Ok(());
+            }
         }
-        for id in self
-            .shared
-            .session
-            .lock()
-            .map_err(|_| FlowFailure::Stale)?
-            .pane_terminals
-            .values()
-        {
-            registry::mark_transport_ready(*id, self.shared.generation);
+        let stale_native = stale
+            .iter()
+            .filter_map(|pane| mapping.remove(pane))
+            .collect::<Vec<_>>();
+        self.mapping = mapping.clone();
+        if strict_final_readback {
+            // Rebind every retained/native pane to this actor generation only
+            // after the final topology readback has succeeded. The operation
+            // is local and keeps the existing Term/cells intact; no public
+            // topology or readiness is changed until the commit below.
+            for native in mapping.values().copied() {
+                registry::begin_remote(native, self.shared.generation)
+                    .map_err(|_| FlowFailure::Stale)?;
+            }
+            for pane in &panes {
+                self.attach(
+                    pane.pane_id,
+                    mapping[&pane.pane_id],
+                    (pane.columns, pane.rows),
+                )?;
+            }
+            let ids = mapping.values().copied().collect::<Vec<_>>();
+            let staged_captures = std::mem::take(&mut self.staged_captures);
+            let shared = Arc::clone(&self.shared);
+            let commit = self
+                .shared
+                .commit_ready_at_epoch_result(expected_epoch, |state| {
+                    // This closure runs only after the expected epoch has been
+                    // checked and while the session lock is held. The registry
+                    // batch keeps every pane Attached while it preflights and
+                    // replays all captures, then marks every transport Ready
+                    // only after the last replay succeeds. VT replies emitted
+                    // by capture replay therefore hit the closed gate and are
+                    // deliberately discarded; no stale query is buffered.
+                    apply_staged_captures_locked(&shared, &staged_captures)?;
+                    apply_topology_state(state, &mapping, &windows, &panes, &flat, selected);
+                    Ok(())
+                });
+            if let Err(failure) = commit {
+                for id in ids {
+                    registry::detach_transport(id, self.shared.generation);
+                }
+                return Err(failure);
+            }
+            self.strict_sync_pending = false;
+            self.strict_recovery = false;
+            for pane in stale {
+                if let Some(task) = self.routes.remove(&pane) {
+                    task.abort();
+                }
+            }
+            for id in stale_native {
+                registry::detach_transport(id, self.shared.generation);
+                if id != self.shared.terminal_id {
+                    registry::destroy_terminal(id);
+                }
+            }
+            self.staged_native.clear();
+            return Ok(());
         }
-        self.shared.set_state(ConnectionState::Ready);
+        self.commit_topology(&mapping, &windows, &panes, &flat, selected, expected_epoch)?;
+        for pane in stale.iter().copied() {
+            if let Some(task) = self.routes.remove(&pane) {
+                task.abort();
+            }
+        }
+        for id in stale_native.iter().copied() {
+            registry::detach_transport(id, self.shared.generation);
+            if id != self.shared.terminal_id {
+                registry::destroy_terminal(id);
+            }
+        }
+        if !initial && (!self.shared.has_been_ready() || self.strict_recovery) {
+            let ids = self
+                .shared
+                .session
+                .lock()
+                .map_err(|_| FlowFailure::Stale)?
+                .pane_terminals
+                .values()
+                .copied()
+                .collect::<Vec<_>>();
+            mark_transport_ids_ready(&self.shared, &ids, expected_epoch)?;
+            if !self.shared.mark_ready_at_epoch(expected_epoch) {
+                for id in ids {
+                    registry::detach_transport(id, self.shared.generation);
+                }
+                return Err(FlowFailure::Stale);
+            }
+            self.staged_native.clear();
+            self.strict_recovery = false;
+        } else if !initial {
+            // A routine topology refresh can discover a new pane after the
+            // session is already Ready. Its authoritative capture is the
+            // readiness proof for that pane; existing panes keep their live
+            // transport gates untouched.
+            mark_transport_ids_ready(&self.shared, &newly_attached, expected_epoch)?;
+            self.staged_native.clear();
+            self.shared.refresh_terminal_input_ready();
+        }
         Ok(())
     }
 
+    fn commit_topology(
+        &self,
+        mapping: &HashMap<u64, u64>,
+        windows: &[tmux::WindowInfo],
+        panes: &[tmux::PaneInfo],
+        flat: &[PaneSnapshot],
+        selected: u64,
+        expected_epoch: u64,
+    ) -> Result<(), FlowFailure> {
+        let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if self.shared.is_cancelled()
+            || state.generation != self.shared.generation
+            || state.operation_epoch != expected_epoch
+        {
+            return Err(FlowFailure::Stale);
+        }
+        apply_topology_state(&mut state, mapping, windows, panes, flat, selected);
+        Ok(())
+    }
+}
+
+fn apply_topology_state(
+    state: &mut SessionState,
+    mapping: &HashMap<u64, u64>,
+    windows: &[tmux::WindowInfo],
+    panes: &[tmux::PaneInfo],
+    flat: &[PaneSnapshot],
+    selected: u64,
+) {
+    if state.meeterm_zoomed_pane.is_some_and(|owned| {
+        !panes
+            .iter()
+            .any(|pane| pane.pane_id == owned && pane.zoomed)
+    }) {
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_pane = None;
+    }
+    state.pane_terminals = mapping.clone();
+    state.selected_pane = Some(selected);
+    state.snapshot = SessionSnapshot {
+        windows: windows
+            .iter()
+            .map(|window| WindowSnapshot {
+                window_id: window.window_id,
+                name: window.name.clone(),
+                panes: flat
+                    .iter()
+                    .filter(|pane| pane.window_id == window.window_id)
+                    .cloned()
+                    .collect(),
+                selected: flat
+                    .iter()
+                    .any(|pane| pane.window_id == window.window_id && pane.selected),
+                zoomed: panes
+                    .iter()
+                    .any(|pane| pane.window_id == window.window_id && pane.zoomed),
+            })
+            .collect(),
+        panes: flat.to_vec(),
+        selected_pane: Some(selected),
+    };
+}
+
+/// Apply capture records only from inside the strict final commit. The
+/// registry-level transaction resolves and locks every target in deterministic
+/// order, validates all generations/bindings/dimensions first, applies every
+/// Term, and changes all Attached gates to Ready last. Thus an error is
+/// pre-apply and cannot leave one pane with newer cells/history than another.
+fn apply_staged_captures_locked(
+    shared: &ConnectionShared,
+    captures: &[StagedCapture],
+) -> Result<(), FlowFailure> {
+    let captures = captures
+        .iter()
+        .map(|capture| registry::ScreenCapture {
+            terminal_id: capture.native,
+            columns: capture.columns,
+            rows: capture.rows,
+            bytes: &capture.bytes,
+            trailing_output: &capture.trailing_output,
+        })
+        .collect::<Vec<_>>();
+    registry::restore_strict_capture_batch(shared.generation, &captures)
+        .map_err(|_| FlowFailure::Stale)
+}
+
+impl ControlClient {
     async fn capture(&mut self, pane: u64) -> Result<(), FlowFailure> {
         self.capturing = Some(pane);
         self.capture_complete = false;
@@ -1258,22 +1604,27 @@ impl ControlClient {
             )
             .as_bytes(),
         );
-        let id = self
-            .shared
-            .session
-            .lock()
-            .map_err(|_| FlowFailure::Stale)?
-            .pane_terminals[&pane];
-        registry::restore_screen(id, self.shared.generation, fields[0], fields[1], &bytes)
-            .map_err(|_| FlowFailure::Stale)?;
+        let id = self.mapping.get(&pane).copied().ok_or(FlowFailure::Stale)?;
+        let trailing_output = std::mem::take(&mut self.capture_output);
         self.capturing = None;
-        // Output delivered after the capture response is newer than that
-        // snapshot. Replay it exactly once instead of dropping it during the
-        // following metadata/sentinel responses.
-        if !registry::feed_remote(id, self.shared.generation, &self.capture_output) {
-            return Err(FlowFailure::Transport);
+        if self.strict_recovery {
+            self.staged_captures.push(StagedCapture {
+                native: id,
+                columns: fields[0],
+                rows: fields[1],
+                bytes,
+                trailing_output,
+            });
+        } else {
+            registry::restore_screen(id, self.shared.generation, fields[0], fields[1], &bytes)
+                .map_err(|_| FlowFailure::Stale)?;
+            // Output delivered after the capture response is newer than that
+            // snapshot. Replay it exactly once instead of dropping it during
+            // the following metadata/sentinel responses.
+            if !registry::feed_remote(id, self.shared.generation, &trailing_output) {
+                return Err(FlowFailure::Transport);
+            }
         }
-        self.capture_output.clear();
         Ok(())
     }
 }
@@ -1281,6 +1632,7 @@ impl ControlClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alacritty_terminal::grid::Dimensions;
 
     #[test]
     fn topology_safety_ignores_unlinked_nonselected_session() {
@@ -1340,5 +1692,420 @@ mod tests {
             }],
             "$1"
         ));
+    }
+
+    fn pane(id: u64, active: bool, window_active: bool) -> tmux::PaneInfo {
+        tmux::PaneInfo {
+            window_id: 1,
+            pane_id: id,
+            index: 0,
+            active,
+            columns: 80,
+            rows: 24,
+            pane_name: format!("pane-{id}"),
+            title: format!("pane-{id}"),
+            zoomed: false,
+            window_active,
+        }
+    }
+
+    #[test]
+    fn strict_recovery_never_falls_back_to_another_tmux_pane() {
+        let panes = vec![pane(17, true, true), pane(23, false, false)];
+        assert!(matches!(
+            selected_pane_for_sync(&panes, Some(23), true),
+            Ok(23)
+        ));
+        assert!(matches!(
+            selected_pane_for_sync(&panes, Some(99), true),
+            Err(FlowFailure::TmuxRuntimeMissing)
+        ));
+        assert!(matches!(
+            selected_pane_for_sync(&panes, Some(99), false),
+            Ok(17)
+        ));
+    }
+
+    #[test]
+    fn strict_recovery_stages_until_the_final_dirty_readback() {
+        assert!(!strict_final_readback_required(true, true, true));
+        assert!(strict_final_readback_required(true, true, false));
+        assert!(!strict_final_readback_required(false, true, false));
+        assert!(!strict_final_readback_required(true, false, false));
+    }
+
+    #[test]
+    fn strict_final_epoch_abort_keeps_native_term_before_commit() {
+        let owner = registry::create_terminal(80, 24).expect("strict atomic owner terminal");
+        let generation = 77_003;
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "tmux-atomic.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/tmux-atomic-known-hosts"),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("strict atomic session")
+            .generation = generation;
+        registry::begin_remote(owner, generation).expect("remote owner");
+        registry::restore_screen(owner, generation, 80, 24, b"committed-screen")
+            .expect("committed capture");
+        let before = registry::snapshot(owner).expect("committed native snapshot");
+        let expected_epoch = shared.operation_epoch();
+        let prepared = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let callback_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_shared = Arc::clone(&shared);
+        let worker_prepared = Arc::clone(&prepared);
+        let worker_release = Arc::clone(&release);
+        let worker_called = Arc::clone(&callback_called);
+        let worker = std::thread::spawn(move || {
+            let capture = StagedCapture {
+                native: owner,
+                columns: 80,
+                rows: 24,
+                bytes: b"stale-screen".to_vec(),
+                trailing_output: Vec::new(),
+            };
+            // The final capture is completely prepared, but it has not been
+            // allowed to enter the native Term commit yet.
+            worker_prepared.wait();
+            worker_release.wait();
+            let callback_shared = Arc::clone(&worker_shared);
+            worker_shared.commit_ready_at_epoch_result(expected_epoch, |state| {
+                worker_called.store(true, std::sync::atomic::Ordering::Release);
+                apply_staged_captures_locked(&callback_shared, &[capture])?;
+                state.snapshot = SessionSnapshot::default();
+                Ok(())
+            })
+        });
+
+        prepared.wait();
+        // Invalidate the epoch after capture preparation but before the
+        // transaction lock is entered. The callback must not run, and the
+        // old Term must retain both its visible cells and its history.
+        assert!(shared.begin_recovery("transport", 1).is_some());
+        release.wait();
+        assert!(matches!(
+            worker.join().expect("strict atomic worker"),
+            Err(FlowFailure::Stale)
+        ));
+        assert!(!callback_called.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            registry::snapshot(owner).expect("native snapshot after stale commit"),
+            before
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn strict_capture_replay_drops_vt_replies_until_ready_commit() {
+        let first = registry::create_terminal(20, 4).expect("first strict pane");
+        let second = registry::create_terminal(20, 4).expect("second strict pane");
+        let generation = 77_004;
+        let shared = Arc::new(ConnectionShared::new(
+            first,
+            generation,
+            "tmux-replay.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/tmux-replay-known-hosts"),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("strict replay session")
+            .generation = generation;
+
+        let (first_input, mut first_receiver) = mpsc::channel(8);
+        let (first_resize, _first_sizes) = watch::channel((20, 4));
+        registry::prepare_pane_transport(first, generation, (20, 4), first_input, first_resize)
+            .expect("first attached transport");
+        let (second_input, mut second_receiver) = mpsc::channel(8);
+        let (second_resize, _second_sizes) = watch::channel((20, 4));
+        registry::prepare_pane_transport(second, generation, (20, 4), second_input, second_resize)
+            .expect("second attached transport");
+
+        let captures = vec![
+            StagedCapture {
+                native: first,
+                columns: 20,
+                rows: 4,
+                bytes: b"first-capture\r\n\x1b[6n".to_vec(),
+                trailing_output: b"\x1b[c".to_vec(),
+            },
+            StagedCapture {
+                native: second,
+                columns: 20,
+                rows: 4,
+                bytes: b"second-capture\r\n\x1b[6n".to_vec(),
+                trailing_output: b"\x1b[c".to_vec(),
+            },
+        ];
+        let expected_epoch = shared
+            .begin_recovery("strict-replay", 1)
+            .expect("recovery epoch");
+
+        // The callback runs before commit_ready_at_epoch_result publishes the
+        // session Ready state. Both DSR/DA replies generated by capture and
+        // trailing replay must therefore be absent from the input channels.
+        let result = shared.commit_ready_at_epoch_result(expected_epoch, |state| {
+            apply_staged_captures_locked(&shared, &captures)?;
+            assert!(first_receiver.try_recv().is_err());
+            assert!(second_receiver.try_recv().is_err());
+            assert!(!state.runtime_operations_ready);
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            shared.info.lock().expect("replay connection info").state,
+            ConnectionState::Ready
+        );
+
+        // A query generated by a new live frame after the commit is the only
+        // reply allowed to reach the newly Ready transport.
+        assert!(registry::feed_remote(first, generation, b"\x1b[6n"));
+        assert_eq!(
+            first_receiver.try_recv().expect("post-commit DSR reply"),
+            b"\x1b[2;1R"
+        );
+        assert!(second_receiver.try_recv().is_err());
+
+        registry::destroy_terminal(second);
+        registry::destroy_terminal(first);
+    }
+
+    #[test]
+    fn strict_capture_batch_preflights_second_pane_before_any_term_changes() {
+        let first = registry::create_terminal(20, 4).expect("first atomic pane");
+        let second = registry::create_terminal(20, 4).expect("second atomic pane");
+        let generation = 77_005;
+        let stale_generation = generation + 1;
+        let shared = Arc::new(ConnectionShared::new(
+            first,
+            generation,
+            "tmux-batch.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/tmux-batch-known-hosts"),
+        ));
+        {
+            let mut state = shared.session.lock().expect("batch session");
+            state.generation = generation;
+            state.pane_terminals.insert(101, first);
+            state.pane_terminals.insert(102, second);
+            state.selected_pane = Some(101);
+        }
+
+        let (first_input, mut first_receiver) = mpsc::channel(8);
+        let (first_resize, _first_sizes) = watch::channel((20, 4));
+        registry::prepare_pane_transport(first, generation, (20, 4), first_input, first_resize)
+            .expect("first attached transport");
+        let (second_input, mut second_receiver) = mpsc::channel(8);
+        let (second_resize, _second_sizes) = watch::channel((20, 4));
+        // Inject a real per-terminal generation mismatch at the second pane.
+        // The shared session still expects `generation`, while the second
+        // Terminal is attached to a newer actor generation.
+        registry::prepare_pane_transport(
+            second,
+            stale_generation,
+            (20, 4),
+            second_input,
+            second_resize,
+        )
+        .expect("stale second transport");
+
+        registry::restore_screen(
+            first,
+            generation,
+            20,
+            4,
+            b"first-old-01\r\nfirst-old-02\r\nfirst-old-03\r\nfirst-old-04\r\nfirst-old-05\r\nfirst-old-06",
+        )
+        .expect("first baseline capture");
+        registry::restore_screen(
+            second,
+            stale_generation,
+            20,
+            4,
+            b"second-old-01\r\nsecond-old-02\r\nsecond-old-03\r\nsecond-old-04\r\nsecond-old-05\r\nsecond-old-06",
+        )
+        .expect("second baseline capture");
+        let native_state = |id| {
+            registry::with_terminal_for_test(id, |terminal| {
+                (
+                    terminal.snapshot().expect("native snapshot"),
+                    terminal.content_revision(),
+                    terminal.term().grid().history_size(),
+                    terminal.term().grid().display_offset(),
+                )
+            })
+            .expect("native state")
+        };
+        let first_before = native_state(first);
+        let second_before = native_state(second);
+        let expected_epoch = shared
+            .begin_recovery("strict-batch", 1)
+            .expect("batch recovery epoch");
+        let (topology_before, mapping_before, selected_before, phase_before) = {
+            let state = shared.session.lock().expect("batch state before");
+            (
+                state.snapshot.clone(),
+                state.pane_terminals.clone(),
+                state.selected_pane,
+                state.recovery.phase,
+            )
+        };
+        let info_before = shared.info.lock().expect("batch info before").state;
+
+        let captures = vec![
+            StagedCapture {
+                native: first,
+                columns: 20,
+                rows: 4,
+                bytes: b"first-new\r\n\x1b[6n".to_vec(),
+                trailing_output: Vec::new(),
+            },
+            StagedCapture {
+                native: second,
+                columns: 20,
+                rows: 4,
+                bytes: b"second-new\r\n\x1b[6n".to_vec(),
+                trailing_output: Vec::new(),
+            },
+        ];
+        let result = shared.commit_ready_at_epoch_result(expected_epoch, |_state| {
+            apply_staged_captures_locked(&shared, &captures)
+        });
+        assert!(matches!(result, Err(FlowFailure::Stale)));
+
+        // The second pane's generation failure was found during the all-pane
+        // preflight. Neither Term has new cells, history, or revision, and no
+        // capture-generated reply was queued. Session topology and Ready state
+        // are equally untouched because the callback returned before applying.
+        assert_eq!(native_state(first), first_before);
+        assert_eq!(native_state(second), second_before);
+        assert!(first_receiver.try_recv().is_err());
+        assert!(second_receiver.try_recv().is_err());
+        {
+            let state = shared.session.lock().expect("batch state after");
+            assert_eq!(state.snapshot, topology_before);
+            assert_eq!(state.pane_terminals, mapping_before);
+            assert_eq!(state.selected_pane, selected_before);
+            assert_eq!(state.recovery.phase, phase_before);
+        }
+        assert_eq!(
+            shared.info.lock().expect("batch info after").state,
+            info_before
+        );
+        assert!(registry::send_bytes(first, b"must-stay-attached").is_err());
+        assert!(registry::send_bytes(second, b"must-stay-attached").is_err());
+
+        registry::destroy_terminal(second);
+        registry::destroy_terminal(first);
+    }
+
+    #[test]
+    fn routine_sync_marks_a_new_pane_without_disturbing_existing_input() {
+        let owner = registry::create_terminal(80, 24).expect("owner terminal");
+        let existing = registry::create_terminal(80, 24).expect("existing pane terminal");
+        let created = registry::create_terminal(80, 24).expect("new pane terminal");
+        let generation = 77_001;
+        let shared = ConnectionShared::new(
+            owner,
+            generation,
+            "tmux-test.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/tmux-test-known-hosts"),
+        );
+        shared.session.lock().expect("session state").generation = generation;
+
+        let (existing_input, mut existing_receiver) = mpsc::channel(4);
+        let (existing_resize, _existing_sizes) = watch::channel((80, 24));
+        registry::prepare_pane_transport(
+            existing,
+            generation,
+            (80, 24),
+            existing_input,
+            existing_resize,
+        )
+        .expect("existing transport");
+        assert!(registry::mark_transport_ready(existing, generation));
+        registry::send_bytes(existing, b"existing-marker").expect("existing input");
+        assert_eq!(
+            existing_receiver.try_recv().expect("existing marker"),
+            b"existing-marker"
+        );
+
+        let (created_input, mut created_receiver) = mpsc::channel(4);
+        let (created_resize, _created_sizes) = watch::channel((80, 24));
+        registry::prepare_pane_transport(
+            created,
+            generation,
+            (80, 24),
+            created_input,
+            created_resize,
+        )
+        .expect("new pane transport");
+        assert!(
+            registry::send_bytes(created, b"before-ready").is_err(),
+            "an attached pane cannot accept input before its capture marker"
+        );
+
+        let expected_epoch = shared.operation_epoch();
+        assert!(matches!(
+            mark_transport_ids_ready(&shared, &[created], expected_epoch),
+            Ok(())
+        ));
+        registry::send_bytes(created, b"new-marker").expect("new pane input");
+        assert_eq!(
+            created_receiver.try_recv().expect("new pane marker"),
+            b"new-marker"
+        );
+        // The helper only marks the newly attached list; the already live pane
+        // remains able to carry its marker through the same backend sync.
+        registry::send_bytes(existing, b"existing-again").expect("existing input again");
+        assert_eq!(
+            existing_receiver.try_recv().expect("existing marker again"),
+            b"existing-again"
+        );
+
+        registry::destroy_terminal(created);
+        registry::destroy_terminal(existing);
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn a_revoked_pane_rolls_back_partial_ready_marks() {
+        let owner = registry::create_terminal(80, 24).expect("owner terminal");
+        let first = registry::create_terminal(80, 24).expect("first pane terminal");
+        let second = registry::create_terminal(80, 24).expect("second pane terminal");
+        let generation = 77_002;
+        let shared = ConnectionShared::new(
+            owner,
+            generation,
+            "tmux-test.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/tmux-test-known-hosts"),
+        );
+        shared.session.lock().expect("session state").generation = generation;
+        for id in [first, second] {
+            let (input, _receiver) = mpsc::channel(2);
+            let (resize, _sizes) = watch::channel((80, 24));
+            registry::prepare_pane_transport(id, generation, (80, 24), input, resize)
+                .expect("prepared pane");
+        }
+        // Inject loss at the second pane boundary. The first mark must be
+        // rolled back, so the caller cannot publish a partially-ready batch.
+        registry::detach_transport(second, generation);
+        let result = mark_transport_ids_ready(&shared, &[first, second], shared.operation_epoch());
+        assert!(matches!(result, Err(FlowFailure::Stale)));
+        assert!(!registry::mark_transport_ready(first, generation));
+        assert!(!registry::mark_transport_ready(second, generation));
+
+        registry::destroy_terminal(second);
+        registry::destroy_terminal(first);
+        registry::destroy_terminal(owner);
     }
 }

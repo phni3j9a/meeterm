@@ -107,6 +107,11 @@ RECONNECT_LABELS = (
 TMUX_RUNTIME_LABELS = (
     "tmux runtime meeterm",
 )
+RUNTIME_PICKER_HEADING_PREFIX = "Choose a runtime for "
+RUNTIME_PICKER_ROW_PREFIXES = (
+    "tmux runtime ",
+    "Herdr runtime ",
+)
 HANDOFF_COMMAND = "tmux attach -t meeterm"
 PRIVATE_KEY_ACCESSIBILITY_LABELS = (
     "Private OpenSSH key",
@@ -1325,6 +1330,70 @@ def find_node_with_labels(nodes: list[Node], labels: tuple[str, ...]) -> Node | 
     return None
 
 
+def runtime_picker_is_visible(nodes: list[Node]) -> bool:
+    """Detect the runtime picker, including disabled/stopped candidate rows."""
+
+    for node in nodes:
+        if not node.visible_to_user:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        labels = (node.text, node.content_description)
+        if any(label.startswith(RUNTIME_PICKER_HEADING_PREFIX) for label in labels):
+            return True
+        if any(
+            label.startswith(prefix)
+            for label in labels
+            for prefix in RUNTIME_PICKER_ROW_PREFIXES
+        ):
+            return True
+    return False
+
+
+def foreground_recovery_ready(
+    nodes: list[Node], expected_pane_id: str
+) -> bool:
+    """Require the live selected pane and native surface after reactivation."""
+
+    if runtime_picker_is_visible(nodes):
+        return False
+    return (
+        find_node(nodes, text="Connected") is not None
+        and find_pane_node(nodes, expected_pane_id, selected=True) is not None
+        and find_labeled_terminal_surface(nodes) is not None
+    )
+
+
+def wait_for_foreground_recovery_ready(
+    device: AndroidDevice,
+    stage: str,
+    expected_pane_id: str,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> None:
+    """Wait for strong Ready without allowing a picker to replace the target."""
+
+    deadline = time.monotonic() + timeout
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        if runtime_picker_is_visible(nodes):
+            raise SmokeFailure(stage, "runtime_picker_reappeared")
+        if foreground_recovery_ready(nodes, expected_pane_id):
+            device.assert_foreground(stage)
+            return
+        time.sleep(0.2)
+    if not hierarchy_seen:
+        raise SmokeFailure(stage, "ui_unavailable")
+    raise SmokeFailure(stage, "authoritative_ready_timeout")
+
+
 def wait_for_node_with_labels(
     device: AndroidDevice,
     stage: str,
@@ -2381,21 +2450,26 @@ def session_marker_command(
     marker: str,
     path: Path,
     pane_pid: int | None = None,
+    *,
+    append: bool = False,
 ) -> str:
     """Build the one-shot marker command sent through the terminal.
 
     Android's ``input text`` reserves ``%s`` for spaces, so the generated
     command never includes a percent character. The marker is generated
-    locally and the path is quoted as a shell argument.
+    locally and the path is quoted as a shell argument. ``append`` is used for
+    resumed markers so a duplicate remote execution becomes observable as a
+    second line instead of silently overwriting the first one.
     """
 
     if not marker or any(character in marker for character in "\r\n%"):
         raise SmokeFailure("remote_marker", "invalid_marker")
     _validate_marker_pid(pane_pid, "remote_marker")
     pid_suffix = ":$$" if pane_pid is not None else ""
+    redirect = ">>" if append else ">"
     return (
         f"export MEETERM_ANDROID_SESSION_MARKER={shell_quote(marker)}; "
-        f"printf \"$MEETERM_ANDROID_SESSION_MARKER{pid_suffix}\\n\" > "
+        f"printf \"$MEETERM_ANDROID_SESSION_MARKER{pid_suffix}\\n\" {redirect} "
         f"{shell_quote(str(path))}"
     )
 
@@ -3143,7 +3217,11 @@ def exercise_foreground_return(
         selected=True,
         timeout=RECONNECT_TIMEOUT,
     )
-    wait_for_labeled_terminal_surface(device, stage, timeout=RECONNECT_TIMEOUT)
+    initial_terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
     device.assert_foreground(stage)
     if device.process_id(stage) != expected_pid:
         raise SmokeFailure(stage, "app_process_changed")
@@ -3167,9 +3245,16 @@ def exercise_foreground_return(
         timeout=15.0,
     )
     # Foreground return exercises automatic transport recovery. It retains
-    # the verified runtime binding and must not require a new picker choice.
-    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
-    device.assert_foreground(stage)
+    # the verified runtime/pane binding and must not require a new picker
+    # choice. The native surface must be live again, rather than the retained
+    # cached/read-only recovery surface, before input is resumed.
+    wait_for_foreground_recovery_ready(
+        device,
+        stage,
+        expected_pane_id=expected_pane.pane_id,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_foreground_authoritative_ready")
     if device.process_id(stage) != expected_pid:
         raise SmokeFailure(stage, "app_process_changed")
     wait_for_pane(
@@ -3184,16 +3269,28 @@ def exercise_foreground_return(
         stage,
         timeout=RECONNECT_TIMEOUT,
     )
+    if terminal.content_description != initial_terminal.content_description:
+        raise SmokeFailure(stage, "native_terminal_binding_changed")
+    if initial_terminal.resource_id and terminal.resource_id:
+        if initial_terminal.resource_id != terminal.resource_id:
+            raise SmokeFailure(stage, "native_terminal_binding_changed")
+    completed.append("daily_foreground_native_binding_verified")
     focus_terminal(device, terminal, stage)
     terminal_line(
         device,
-        session_marker_command(marker_value, marker_path, expected_pane.pane_pid),
+        session_marker_command(
+            marker_value,
+            marker_path,
+            expected_pane.pane_pid,
+            append=True,
+        ),
     )
     wait_for_file_contents(
         marker_path,
         f"{marker_value}:{expected_pane.pane_pid}\n",
         stage,
     )
+    completed.append("daily_foreground_marker_exactly_once")
     completed.append("daily_foreground_terminal_resumed")
     tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
     wait_for_workspace(

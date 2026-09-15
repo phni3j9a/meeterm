@@ -66,6 +66,10 @@ rm -f \
   "${artifact_dir}/standard-herdr-groups.png" \
   "${artifact_dir}/standard-herdr-terminal.png" \
   "${artifact_dir}/standard-herdr-workspaces.png" \
+  "${artifact_dir}/standard-recovery-progress.png" \
+  "${artifact_dir}/standard-recovery-exhausted.png" \
+  "${artifact_dir}/standard-recovery-mismatch.png" \
+  "${artifact_dir}/standard-herdr-recovery-confirm.png" \
   "${artifact_dir}/polish-welcome.png" \
   "${artifact_dir}/polish-empty.png" \
   "${artifact_dir}/polish-search-empty.png" \

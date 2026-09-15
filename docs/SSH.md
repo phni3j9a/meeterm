@@ -25,11 +25,16 @@ start, attach, or mutate anything.
 5. **切断** (**Disconnect**) closes the mobile connection while the selected runtime and
    its processes continue running. Switching server/runtime releases the current
    controller before acquiring the next one.
-6. After a transport failure, native **再接続** (**Reconnect**) may resume the same
-   selected runtime only after identity and compatibility verification. If it is
-   missing, replaced, restarted, or uncertain, the picker opens again. After the
-   app process exits, open **サーバーに接続** (**Connect**) and authenticate again;
-   a fresh manual/cold connection always shows the picker.
+6. After a transport failure, the last synchronized terminal remains visible
+   but read-only while Rust performs bounded recovery. tmux resumes only after
+   the exact session and pane identities plus an authoritative screen are
+   verified. Herdr asks for an in-workspace confirmation before reacquiring the
+   compatible candidate and original stable terminal. Missing, replaced,
+   restarted, incompatible, or uncertain targets remain on the stale work
+   screen with **Retry** and **Change connection or runtime**; they do not open
+   the picker automatically. After the app process exits, open **サーバーに接続**
+   (**Connect**) and authenticate again; a fresh manual/cold connection always
+   shows the picker.
 
 The form accepts the complete `BEGIN OPENSSH PRIVATE KEY` / `END OPENSSH PRIVATE KEY`
 block, not a `.pub` key or legacy PEM block. See the [first-app setup guide](FIRST_APP.md#接続先の準備と使い方)

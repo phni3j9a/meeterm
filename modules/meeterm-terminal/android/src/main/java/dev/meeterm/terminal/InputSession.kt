@@ -3,6 +3,33 @@ package dev.meeterm.terminal
 import java.nio.charset.StandardCharsets
 
 /**
+ * Compare native input-session epochs without converting them through a
+ * platform number type. A null/current-null epoch is never accepted for
+ * remote input; the native view must have observed a real terminal epoch.
+ */
+internal object OperationEpochGate {
+  fun matches(captured: String?, current: String?): Boolean =
+    captured != null && current != null && captured == current
+}
+
+/** Strict, lossless validation for values that cross the Expo recovery bridge. */
+internal object RecoveryBridgeValidation {
+  fun parseOperationEpoch(value: String): String {
+    require(
+      value.isNotEmpty() &&
+        value.toByteArray(Charsets.UTF_8).size <= 20 &&
+        value.all { it in '0'..'9' } &&
+        value.toULongOrNull() != null,
+    ) { "The operation epoch is invalid." }
+    return value
+  }
+
+  fun validRecoveryToken(value: String): Boolean =
+    value.isNotEmpty() && value.toByteArray(Charsets.UTF_8).size <= 128 &&
+      value.none(Char::isISOControl) && !value.contains('\u0000')
+}
+
+/**
  * Native-only text composition and key translation state.
  *
  * Android IMEs often call setComposingText several times before one
@@ -14,12 +41,17 @@ internal class InputSession(
   private val sink: NativeInputSink,
   private val onPreeditChanged: (String) -> Unit = {},
   private val onModifiersChanged: (Int) -> Unit = {},
+  /** Immutable epoch captured when this native input session is created. */
+  private val operationEpoch: String? = null,
 ) {
   private var preedit = ""
   private var oneShotModifiers = 0
 
   val composingText: String
     get() = preedit
+
+  val capturedOperationEpoch: String?
+    get() = operationEpoch
 
   /** Toggle a native toolbar modifier for the next input operation only. */
   fun toggleModifier(modifier: Int) {
@@ -229,12 +261,25 @@ internal class InputSession(
   private fun commitBytes(text: String, modifiers: Int): Boolean {
     if (text.isEmpty()) return true
     val bytes = text.toByteArray(StandardCharsets.UTF_8)
-    return if (modifiers == 0) sink.commitUtf8(bytes)
-    else sink.commitModifiedUtf8(bytes, modifiers)
+    return if (operationEpoch != null) {
+      if (modifiers == 0) sink.commitUtf8AtEpoch(operationEpoch, bytes)
+      else sink.commitModifiedUtf8AtEpoch(operationEpoch, bytes, modifiers)
+    } else if (modifiers == 0) {
+      sink.commitUtf8(bytes)
+    } else {
+      sink.commitModifiedUtf8(bytes, modifiers)
+    }
   }
 
   private fun sendWithModifiers(key: TerminalSpecialKey, modifiers: Int): Boolean =
-    if (modifiers == 0) sink.sendSpecial(key) else sink.sendKey(key, modifiers)
+    if (operationEpoch != null) {
+      if (modifiers == 0) sink.sendSpecialAtEpoch(operationEpoch, key)
+      else sink.sendKeyAtEpoch(operationEpoch, key, modifiers)
+    } else if (modifiers == 0) {
+      sink.sendSpecial(key)
+    } else {
+      sink.sendKey(key, modifiers)
+    }
 
   private fun String.dropLastCodePoints(count: Int): String {
     if (count == 0 || isEmpty()) return this

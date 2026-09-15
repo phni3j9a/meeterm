@@ -164,7 +164,33 @@ impl TransportBinding {
     }
 }
 
-type TransportSlot = Arc<Mutex<Option<TransportBinding>>>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransportReadiness {
+    /// There is no remote binding.  The cached `Term` remains drawable, but
+    /// neither remote input nor terminal-generated replies may leave it.
+    Revoked,
+    /// A binding exists, but its first authoritative frame has not completed.
+    Attached,
+    /// The binding and its authoritative frame are current and may carry I/O.
+    Ready,
+}
+
+#[derive(Clone)]
+struct TransportGate {
+    binding: Option<TransportBinding>,
+    readiness: TransportReadiness,
+}
+
+impl Default for TransportGate {
+    fn default() -> Self {
+        Self {
+            binding: None,
+            readiness: TransportReadiness::Revoked,
+        }
+    }
+}
+
+type TransportSlot = Arc<Mutex<TransportGate>>;
 
 #[derive(Clone)]
 pub(crate) struct TerminalEventListener {
@@ -178,16 +204,20 @@ impl EventListener for TerminalEventListener {
             return;
         };
 
-        let binding = self
-            .outbound
-            .lock()
-            .ok()
-            .and_then(|binding| binding.as_ref().cloned());
-        match binding {
+        let Ok(gate) = self.outbound.lock() else {
+            return;
+        };
+        if gate.readiness != TransportReadiness::Ready {
+            return;
+        }
+        match gate.binding.as_ref() {
             Some(TransportBinding::Bytes { input, .. }) => {
-                // EventListener is synchronous.  Never block the terminal mutex;
-                // mark a full or closed queue so the SSH actor can fail the
-                // transport instead of silently waiting for a lost reply.
+                // EventListener is synchronous.  Never block the terminal
+                // mutex; mark a full or closed queue so the SSH actor can fail
+                // the transport instead of silently waiting for a lost reply.
+                // Holding the small gate lock across this nonblocking send
+                // makes readiness revocation linear with the enqueue: a reply
+                // cannot be sent after detach has returned.
                 if input.try_send(text.into_bytes()).is_err() {
                     self.overloaded.store(true, Ordering::Release);
                 }
@@ -254,7 +284,13 @@ pub struct Terminal {
     content_revision: u64,
     remote_mode: bool,
     remote_generation: Option<u64>,
-    transport_ready: bool,
+    /// Nonzero token for the currently usable native operation boundary.
+    ///
+    /// This is deliberately separate from the SSH connection generation.  A
+    /// controller can be revoked and reacquired within one SSH generation, so
+    /// delayed native input must carry this token and be checked again when it
+    /// completes.
+    operation_epoch: u64,
     transport_overloaded: Arc<AtomicBool>,
     outbound: TransportSlot,
     /// A generation change on an already remote terminal is a same-process
@@ -280,7 +316,7 @@ impl Terminal {
             columns: usize::from(columns),
             screen_lines: usize::from(rows),
         };
-        let outbound = Arc::new(Mutex::new(None));
+        let outbound = Arc::new(Mutex::new(TransportGate::default()));
         let transport_overloaded = Arc::new(AtomicBool::new(false));
 
         let mut terminal = Self {
@@ -298,7 +334,7 @@ impl Terminal {
             content_revision: 0,
             remote_mode: false,
             remote_generation: None,
-            transport_ready: false,
+            operation_epoch: 1,
             transport_overloaded,
             outbound,
             preserve_history_on_capture: false,
@@ -322,6 +358,16 @@ impl Terminal {
         self.resize_inner(columns, rows, true)
     }
 
+    pub(crate) fn resize_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        columns: u16,
+        rows: u16,
+    ) -> Result<(), TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.resize(columns, rows)
+    }
+
     pub(crate) fn resize_from_remote(
         &mut self,
         columns: u16,
@@ -332,6 +378,34 @@ impl Terminal {
 
     fn resize_inner(&mut self, columns: u16, rows: u16, notify: bool) -> Result<(), TerminalError> {
         validate_dimensions(columns, rows)?;
+
+        // A public resize is a remote operation as well as a local display
+        // change.  Do the readiness check before touching `Term` or the watch
+        // sender so an offline view cannot mutate local dimensions or leave a
+        // resize queued for a later binding.  Backend reconstruction uses
+        // `resize_from_remote`, which intentionally passes `notify = false`.
+        let resize_sender = if self.remote_mode && notify {
+            let gate = self
+                .outbound
+                .lock()
+                .map_err(|_| TerminalError::RegistryPoisoned)?;
+            if gate.readiness != TransportReadiness::Ready {
+                return Err(TerminalError::InputNotReady);
+            }
+            let binding = gate.binding.as_ref().ok_or(TerminalError::InputNotReady)?;
+            if self.remote_generation != Some(binding.generation()) {
+                return Err(TerminalError::RemoteGenerationMismatch);
+            }
+            Some(binding.resize_sender().clone())
+        } else {
+            None
+        };
+
+        self.resize_validated(columns, rows, resize_sender);
+        Ok(())
+    }
+
+    fn resize_validated(&mut self, columns: u16, rows: u16, resize_sender: Option<ResizeSender>) {
         let changed = self.term.columns() != usize::from(columns)
             || self.term.screen_lines() != usize::from(rows);
         self.term.resize(TerminalDimensions {
@@ -342,18 +416,38 @@ impl Terminal {
             self.content_revision = self.content_revision.saturating_add(1);
         }
 
-        if self.remote_mode && notify {
-            let resize_sender = self.outbound.lock().ok().and_then(|binding| {
-                binding
-                    .as_ref()
-                    .map(|binding| binding.resize_sender().clone())
-            });
-            if let Some(resize_sender) = resize_sender {
-                // `watch` retains only the latest size and therefore naturally
-                // coalesces rotations and pre-ready layout changes.
-                let _ = resize_sender.send((columns, rows));
-            }
+        if let Some(resize_sender) = resize_sender {
+            // `watch` retains only the latest size and therefore naturally
+            // coalesces rotations while the transport remains authoritative.
+            let _ = resize_sender.send((columns, rows));
         }
+    }
+
+    /// Resize after a registry batch has validated the dimensions.  The
+    /// validation is deliberately separated from the mutation so the batch's
+    /// apply phase has no fallible terminal operation left in it.
+    fn resize_validated_from_batch(&mut self, columns: u16, rows: u16) {
+        debug_assert!(validate_dimensions(columns, rows).is_ok());
+        self.resize_validated(columns, rows, None);
+    }
+
+    fn advance_operation_epoch(&mut self) {
+        // Exhausting a u64 epoch is not reachable through the bounded native
+        // lifecycle.  Saturation nevertheless keeps the public invariant that
+        // the value is never zero and never moves backwards.
+        self.operation_epoch = self.operation_epoch.saturating_add(1).max(1);
+    }
+
+    fn revoke_transport(&mut self) -> Result<(), TerminalError> {
+        let mut gate = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?;
+        gate.binding = None;
+        gate.readiness = TransportReadiness::Revoked;
+        drop(gate);
+        self.transport_overloaded.store(false, Ordering::Release);
+        self.advance_operation_epoch();
         Ok(())
     }
 
@@ -378,11 +472,9 @@ impl Terminal {
             .map_err(|_| TerminalError::InvalidDimensions)?;
         validate_dimensions(columns, rows)?;
 
-        if let Ok(mut binding) = self.outbound.lock() {
-            *binding = None;
-        }
         let was_remote = self.remote_mode;
         let generation_changed = self.remote_generation != Some(generation);
+        self.revoke_transport()?;
         if !was_remote {
             self.replace_term(columns, rows);
             self.screen_initialized = false;
@@ -394,8 +486,6 @@ impl Terminal {
         }
         self.remote_mode = true;
         self.remote_generation = Some(generation);
-        self.transport_ready = false;
-        self.transport_overloaded.store(false, Ordering::Release);
         if generation_changed && was_remote {
             // A reconnect can arrive before its first capture. In that case
             // there is no native viewport/history to reconcile yet, so leave
@@ -429,18 +519,11 @@ impl Terminal {
             .map_err(|_| TerminalError::InvalidDimensions)?;
         validate_dimensions(columns, rows)?;
 
-        let mut binding = self
-            .outbound
-            .lock()
-            .map_err(|_| TerminalError::RegistryPoisoned)?;
-        *binding = None;
-        drop(binding);
+        self.revoke_transport()?;
         self.replace_term(columns, rows);
         self.remote_mode = true;
         self.remote_generation = Some(generation);
         self.processor = Processor::new();
-        self.transport_ready = false;
-        self.transport_overloaded.store(false, Ordering::Release);
         self.preserve_history_on_capture = false;
         self.screen_initialized = false;
         self.input_commit_count = 0;
@@ -479,12 +562,17 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?;
-        *binding = Some(TransportBinding::Bytes {
+        binding.binding = Some(TransportBinding::Bytes {
             generation,
             input,
             resize,
         });
+        binding.readiness = TransportReadiness::Attached;
+        drop(binding);
         self.transport_overloaded.store(false, Ordering::Release);
+        // Attaching a fresh sender is a new operation boundary even when the
+        // SSH connection generation is unchanged.
+        self.advance_operation_epoch();
         Ok(())
     }
 
@@ -501,12 +589,17 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?;
-        *binding = Some(TransportBinding::Semantic {
+        binding.binding = Some(TransportBinding::Semantic {
             generation,
             input,
             resize,
         });
+        binding.readiness = TransportReadiness::Attached;
+        drop(binding);
         self.transport_overloaded.store(false, Ordering::Release);
+        // Attaching a fresh sender is a new operation boundary even when the
+        // SSH connection generation is unchanged.
+        self.advance_operation_epoch();
         Ok(())
     }
 
@@ -517,25 +610,93 @@ impl Terminal {
         rows: u16,
         bytes: &[u8],
     ) -> Result<(), TerminalError> {
+        self.validate_restore_screen(generation, columns, rows)?;
+        self.restore_screen_after_preflight(generation, columns, rows, bytes, &[]);
+        Ok(())
+    }
+
+    fn validate_restore_screen(
+        &self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+    ) -> Result<(), TerminalError> {
         if self.remote_generation != Some(generation) {
             return Err(TerminalError::RemoteGenerationMismatch);
         }
-        let binding = self
+        validate_dimensions(columns, rows)
+    }
+
+    /// Validate the complete binding contract used by the strict tmux capture
+    /// transaction.  A strict replay is only allowed while the transport is
+    /// still Attached; Ready would let parser-generated replies escape before
+    /// the session Ready publication.  The registry batch holds this Terminal
+    /// lock from this check through the non-fallible apply and Ready transition.
+    pub(crate) fn preflight_strict_capture(
+        &self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+        bytes: &[u8],
+        trailing_output: &[u8],
+    ) -> Result<(), TerminalError> {
+        self.validate_restore_screen(generation, columns, rows)?;
+        // The slices are already owned by the staged capture.  Keep an
+        // explicit checked sum here so the batch's byte precondition is
+        // complete even if its representation changes to multiple buffers.
+        bytes
+            .len()
+            .checked_add(trailing_output.len())
+            .ok_or(TerminalError::SnapshotTooLarge)?;
+
+        let gate = self
             .outbound
             .lock()
-            .map_err(|_| TerminalError::RegistryPoisoned)?
-            .clone();
+            .map_err(|_| TerminalError::RegistryPoisoned)?;
+        if gate.readiness != TransportReadiness::Attached {
+            return Err(TerminalError::InputNotReady);
+        }
+        let Some(binding) = gate.binding.as_ref() else {
+            return Err(TerminalError::InputNotReady);
+        };
+        if binding.generation() != generation {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        Ok(())
+    }
+
+    /// Apply a capture after `preflight_strict_capture` has succeeded for
+    /// every pane in the registry batch.  No operation below can reject the
+    /// already validated dimensions/generation, and the terminal mutex held by
+    /// the batch prevents detach, destroy, resize, or input from changing the
+    /// preconditions between validation and application.
+    pub(crate) fn restore_screen_after_preflight(
+        &mut self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+        bytes: &[u8],
+        trailing_output: &[u8],
+    ) {
+        debug_assert!(
+            self.validate_restore_screen(generation, columns, rows)
+                .is_ok()
+        );
         let commits = self.input_commit_count;
-        let transport_ready = self.transport_ready;
         let display_offset = self.term.grid().display_offset();
         let preserve_history = self.preserve_history_on_capture && self.screen_initialized;
         if preserve_history {
-            self.restore_viewport_preserving_history(columns, rows, bytes, display_offset)?;
+            self.restore_viewport_preserving_history_after_preflight(
+                columns,
+                rows,
+                bytes,
+                display_offset,
+            );
         } else {
             self.replace_term(columns, rows);
             self.remote_mode = true;
             self.remote_generation = Some(generation);
-            self.resize_from_remote(columns, rows)?;
+            self.resize_validated_from_batch(columns, rows);
             self.feed(bytes);
             // A pane zoom/resize rebuilds its viewport from tmux. Retain the
             // reader's history position, bounded by the captured history.
@@ -547,14 +708,14 @@ impl Terminal {
         self.screen_initialized = true;
         self.preserve_history_on_capture = true;
         self.input_commit_count = commits;
-        *self
-            .outbound
-            .lock()
-            .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
+        // Output that arrived after the tmux capture is newer than the frame
+        // and must be replayed exactly once. The strict batch invokes this
+        // while the gate is still Attached, so any VT reply generated while
+        // replaying either buffer is intentionally discarded.
+        self.feed(trailing_output);
         // Rebuilding a viewport must not reject live input while other panes
-        // are still being captured. Initial/offline panes remain unready.
-        self.transport_ready = transport_ready;
-        Ok(())
+        // are still being captured. Initial/offline panes retain their
+        // `Attached`/`Revoked` gate state.
     }
 
     /// Replace the native display with a full frame owned by a semantic
@@ -572,13 +733,12 @@ impl Terminal {
             return Err(TerminalError::RemoteGenerationMismatch);
         }
         validate_dimensions(columns, rows)?;
-        let binding = self
+        let gate = self
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?
             .clone();
         let commits = self.input_commit_count;
-        let transport_ready = self.transport_ready;
 
         self.replace_term(columns, rows);
         self.remote_mode = true;
@@ -591,23 +751,23 @@ impl Terminal {
         *self
             .outbound
             .lock()
-            .map_err(|_| TerminalError::RegistryPoisoned)? = binding;
-        self.transport_ready = transport_ready;
+            .map_err(|_| TerminalError::RegistryPoisoned)? = gate;
         Ok(())
     }
 
     /// Reconcile a same-process reconnect without replaying tmux's bounded
     /// capture into the existing scrollback. The capture contains history as
     /// well as the viewport; only its final visible rows are needed when the
-    /// previous native `Term` is still present.
-    fn restore_viewport_preserving_history(
+    /// previous native `Term` is still present. Callers must validate the
+    /// dimensions before entering this non-fallible apply path.
+    fn restore_viewport_preserving_history_after_preflight(
         &mut self,
         columns: u16,
         rows: u16,
         bytes: &[u8],
         display_offset: usize,
-    ) -> Result<(), TerminalError> {
-        self.resize_from_remote(columns, rows)?;
+    ) {
+        self.resize_validated_from_batch(columns, rows);
         self.term.scroll_display(Scroll::Bottom);
 
         let capture_is_alt = bytes.starts_with(b"\x1b[?1049h");
@@ -645,31 +805,86 @@ impl Terminal {
         let viewport = viewport.strip_prefix(b"\x1b[?1049h").unwrap_or(viewport);
         self.feed(viewport);
         self.scroll_local(i32::try_from(display_offset).unwrap_or(i32::MAX));
-        Ok(())
     }
 
     pub(crate) fn detach_transport(&mut self, generation: u64) {
         if self.remote_generation != Some(generation) {
             return;
         }
-        if let Ok(mut binding) = self.outbound.lock()
-            && binding
+        let revoked = if let Ok(mut gate) = self.outbound.lock() {
+            // The generation check above rejects an older actor, while a
+            // matching binding generation revokes the current operation
+            // boundary—even if the binding was already waiting for its first
+            // frame.  Keep the binding-level check as well: an older actor
+            // must not revoke a newer binding if an intermediate lifecycle
+            // step ever leaves the two generations out of sync.
+            let binding_matches = gate
+                .binding
                 .as_ref()
-                .is_some_and(|binding| binding.generation() == generation)
-        {
-            *binding = None;
-            self.transport_ready = false;
+                .is_some_and(|binding| binding.generation() == generation);
+            if !binding_matches {
+                false
+            } else {
+                gate.binding = None;
+                gate.readiness = TransportReadiness::Revoked;
+                true
+            }
+        } else {
+            false
+        };
+        if revoked {
             self.transport_overloaded.store(false, Ordering::Release);
+            self.advance_operation_epoch();
         }
     }
 
     pub(crate) fn mark_transport_ready(&mut self, generation: u64) -> bool {
-        if self.remote_mode && self.remote_generation == Some(generation) {
-            self.transport_ready = true;
-            true
-        } else {
-            false
+        if !self.remote_mode || self.remote_generation != Some(generation) {
+            return false;
         }
+        let Ok(mut gate) = self.outbound.lock() else {
+            return false;
+        };
+        let Some(binding) = gate.binding.as_ref() else {
+            return false;
+        };
+        if binding.generation() != generation {
+            return false;
+        }
+        if gate.readiness != TransportReadiness::Ready {
+            gate.readiness = TransportReadiness::Ready;
+            drop(gate);
+            // Ready is a distinct boundary from merely having a sender.  A
+            // callback that captured the attached epoch cannot become valid
+            // just because its completion races with the first frame.
+            self.advance_operation_epoch();
+        }
+        true
+    }
+
+    /// Complete the Ready half of a strict capture batch.  The registry batch
+    /// has already checked the binding while holding this Terminal mutex, and
+    /// no code invoked by capture replay can mutate the gate, so this helper is
+    /// intentionally infallible.
+    pub(crate) fn mark_transport_ready_after_preflight(&mut self, generation: u64) {
+        debug_assert!(self.remote_mode && self.remote_generation == Some(generation));
+        // A poisoned gate is recoverable here: the preflight already proved
+        // that the binding exists, and this is the final non-fallible state
+        // transition of the batch. Do not turn an impossible post-preflight
+        // poison into a silent partially-ready return.
+        let mut gate = self
+            .outbound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert_eq!(gate.readiness, TransportReadiness::Attached);
+        debug_assert!(
+            gate.binding
+                .as_ref()
+                .is_some_and(|binding| binding.generation() == generation)
+        );
+        gate.readiness = TransportReadiness::Ready;
+        drop(gate);
+        self.advance_operation_epoch();
     }
 
     pub(crate) fn feed_remote(&mut self, generation: u64, bytes: &[u8]) -> bool {
@@ -685,6 +900,20 @@ impl Terminal {
         self.transport_overloaded.load(Ordering::Acquire)
     }
 
+    fn transport_ready(&self) -> Result<bool, TerminalError> {
+        self.outbound
+            .lock()
+            .map(|gate| gate.readiness == TransportReadiness::Ready)
+            .map_err(|_| TerminalError::RegistryPoisoned)
+    }
+
+    fn require_operation_epoch(&self, expected_epoch: u64) -> Result<(), TerminalError> {
+        if expected_epoch == 0 || self.operation_epoch != expected_epoch {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        Ok(())
+    }
+
     fn semantic_sender(&self) -> Result<Option<SemanticInputSender>, TerminalError> {
         if !self.remote_mode {
             return Ok(None);
@@ -693,6 +922,7 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?
+            .binding
             .clone();
         match binding {
             Some(TransportBinding::Semantic {
@@ -713,7 +943,7 @@ impl Terminal {
                 .outbound
                 .lock()
                 .ok()
-                .and_then(|binding| binding.as_ref().map(TransportBinding::is_semantic))
+                .and_then(|gate| gate.binding.as_ref().map(TransportBinding::is_semantic))
                 .unwrap_or(false)
     }
 
@@ -728,13 +958,14 @@ impl Terminal {
         if !self.remote_mode {
             return Err(TerminalError::InputNotReady);
         }
-        if !self.transport_ready {
+        if !self.transport_ready()? {
             return Err(TerminalError::InputNotReady);
         }
         let binding = self
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?
+            .binding
             .clone()
             .ok_or(TerminalError::InputNotReady)?;
         let sender = match binding {
@@ -789,6 +1020,19 @@ impl Terminal {
         Ok(self.input_commit_count)
     }
 
+    /// Complete a potentially delayed UTF-8 commit only if it belongs to the
+    /// operation boundary captured by the caller.  The epoch check happens
+    /// immediately before the normal readiness check, so a loss followed by a
+    /// fresh Ready binding cannot accept an old completion.
+    pub(crate) fn commit_utf8_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        bytes: &[u8],
+    ) -> Result<u64, TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.commit_utf8(bytes)
+    }
+
     /// Commit text with native Ctrl/Alt handling. IME composition remains
     /// entirely in the platform view until this method receives committed
     /// Unicode text.
@@ -819,6 +1063,16 @@ impl Terminal {
         self.send_bytes(&encoded)?;
         self.input_commit_count = self.input_commit_count.saturating_add(1);
         Ok(encoded.len())
+    }
+
+    pub(crate) fn commit_modified_utf8_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        bytes: &[u8],
+        modifiers: Modifiers,
+    ) -> Result<usize, TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.commit_modified_utf8(bytes, modifiers)
     }
 
     /// Paste is distinct from IME commitment. Strip terminal control characters
@@ -852,17 +1106,29 @@ impl Terminal {
         self.send_bytes(&bytes)
     }
 
+    /// Complete a potentially delayed paste only for the captured operation
+    /// epoch.  Paste normalization remains exactly the same as the immediate
+    /// API and no rejected paste is retained for replay.
+    pub(crate) fn paste_utf8_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        bytes: &[u8],
+    ) -> Result<usize, TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.paste_utf8(bytes)
+    }
+
     /// Move the native viewport, retaining an independent offset per pane.
     pub fn scroll_lines(&mut self, lines: i32) {
         if self.semantic_transport_bound() {
-            if !self.transport_ready {
+            if !self.transport_ready().unwrap_or(false) {
                 return;
             }
             let sender = self
                 .outbound
                 .lock()
                 .ok()
-                .and_then(|binding| match binding.as_ref() {
+                .and_then(|gate| match gate.binding.as_ref() {
                     Some(TransportBinding::Semantic {
                         generation, input, ..
                     }) if self.remote_generation == Some(*generation) => Some(input.clone()),
@@ -878,6 +1144,16 @@ impl Terminal {
             return;
         }
         self.scroll_local(lines);
+    }
+
+    pub(crate) fn scroll_lines_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        lines: i32,
+    ) -> Result<(), TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.scroll_lines(lines);
+        Ok(())
     }
 
     fn scroll_local(&mut self, lines: i32) {
@@ -904,6 +1180,15 @@ impl Terminal {
         self.send_bytes(bytes)
     }
 
+    pub(crate) fn send_special_key_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        key: SpecialKey,
+    ) -> Result<usize, TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.send_special_key(key)
+    }
+
     /// Send a generic key with Ctrl/Alt/Shift modifiers.
     pub fn send_key(&mut self, key: KeyCode, modifiers: Modifiers) -> Result<usize, TerminalError> {
         if self.semantic_sender()?.is_some() {
@@ -912,6 +1197,16 @@ impl Terminal {
         let application_cursor = self.term.mode().contains(TermMode::APP_CURSOR);
         let bytes = encode_key(key, modifiers, application_cursor);
         self.send_bytes(&bytes)
+    }
+
+    pub(crate) fn send_key_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        key: KeyCode,
+        modifiers: Modifiers,
+    ) -> Result<usize, TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.send_key(key, modifiers)
     }
 
     pub(crate) fn send_bytes(&mut self, bytes: &[u8]) -> Result<usize, TerminalError> {
@@ -923,13 +1218,14 @@ impl Terminal {
         }
 
         if self.remote_mode {
-            if !self.transport_ready {
+            if !self.transport_ready()? {
                 return Err(TerminalError::InputNotReady);
             }
             let binding = self
                 .outbound
                 .lock()
                 .map_err(|_| TerminalError::RegistryPoisoned)?
+                .binding
                 .as_ref()
                 .cloned()
                 .ok_or(TerminalError::InputNotReady)?;
@@ -958,6 +1254,15 @@ impl Terminal {
         #[cfg(test)]
         self.input_log.extend_from_slice(bytes);
         Ok(bytes.len())
+    }
+
+    pub(crate) fn send_bytes_at_epoch(
+        &mut self,
+        expected_epoch: u64,
+        bytes: &[u8],
+    ) -> Result<usize, TerminalError> {
+        self.require_operation_epoch(expected_epoch)?;
+        self.send_bytes(bytes)
     }
 
     pub fn snapshot(&self) -> Result<Snapshot, TerminalError> {
@@ -1062,6 +1367,11 @@ impl Terminal {
 
     pub fn input_commit_count(&self) -> u64 {
         self.input_commit_count
+    }
+
+    /// Return the current nonzero operation epoch for delayed native input.
+    pub(crate) fn operation_epoch(&self) -> u64 {
+        self.operation_epoch
     }
 
     pub(crate) fn content_revision(&self) -> u64 {

@@ -11,16 +11,40 @@ internal interface NativeInputSink {
   /** Returns false when Rust rejected the input because transport is closed. */
   fun commitUtf8(bytes: ByteArray): Boolean
 
+  /** Epoch-checked commit used by production native input sessions. */
+  fun commitUtf8AtEpoch(operationEpoch: String, bytes: ByteArray): Boolean =
+    commitUtf8(bytes)
+
   /** Commit text with the Rust-owned Ctrl/Alt/Shift encoding contract. */
   fun commitModifiedUtf8(bytes: ByteArray, modifiers: Int): Boolean =
     if (modifiers == 0) commitUtf8(bytes) else false
 
+  /** Epoch-checked modified commit used by production native input sessions. */
+  fun commitModifiedUtf8AtEpoch(
+    operationEpoch: String,
+    bytes: ByteArray,
+    modifiers: Int,
+  ): Boolean =
+    if (modifiers == 0) commitUtf8AtEpoch(operationEpoch, bytes) else false
+
   /** Returns false when Rust rejected the input because transport is closed. */
   fun sendSpecial(key: TerminalSpecialKey): Boolean
+
+  /** Epoch-checked special key used by production native input sessions. */
+  fun sendSpecialAtEpoch(operationEpoch: String, key: TerminalSpecialKey): Boolean =
+    sendSpecial(key)
 
   /** Send one key with the shared native modifier bit field. */
   fun sendKey(key: TerminalSpecialKey, modifiers: Int): Boolean =
     if (modifiers == 0) sendSpecial(key) else false
+
+  /** Epoch-checked modified key used by production native input sessions. */
+  fun sendKeyAtEpoch(
+    operationEpoch: String,
+    key: TerminalSpecialKey,
+    modifiers: Int,
+  ): Boolean =
+    if (modifiers == 0) sendSpecialAtEpoch(operationEpoch, key) else false
 }
 
 internal enum class TerminalSpecialKey(val nativeCode: Int) {

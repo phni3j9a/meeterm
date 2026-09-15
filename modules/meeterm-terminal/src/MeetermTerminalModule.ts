@@ -47,6 +47,9 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   setTerminalVisible(terminalId: string, visible: boolean): Promise<void>;
   selectPane(terminalId: string, paneId: string): Promise<void>;
   getConnectionState(terminalId: string): Promise<SshConnectionState>;
+  retryRecovery(terminalId: string, operationEpoch: string): Promise<void>;
+  confirmRecovery(terminalId: string, confirmationToken: string): Promise<void>;
+  changeRuntime(terminalId: string, operationEpoch: string): Promise<void>;
   getRuntimeDiscovery(connectionId: string): Promise<RuntimeDiscovery>;
   refreshRuntimes(connectionId: string): Promise<void>;
   selectRuntime(connectionId: string, candidateId: string): Promise<void>;

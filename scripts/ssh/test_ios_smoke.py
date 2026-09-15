@@ -172,6 +172,53 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertNotIn('app.staticTexts["Stopped"]', runtime_cases)
         self.assertNotIn('app.staticTexts["Last used"]', runtime_cases)
 
+    def test_standard_manifest_covers_the_four_recovery_presentation_routes(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index("let screens = [")
+        end = source.index("    ]", start)
+        manifest = re.findall(r'"([^"\\]+)"', source[start:end])
+        self.assertEqual(
+            manifest,
+            [
+                "home", "servers", "connection", "password", "workspaces", "terminal",
+                "settings", "workspace-name", "terminal-name", "handoff",
+                "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
+                "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
+                "recovery-progress", "recovery-exhausted", "recovery-mismatch",
+                "herdr-recovery-confirm",
+            ],
+        )
+        self.assertEqual(len(manifest), 22)
+        for identifier in (
+            "recovery-rail", "recovery-title", "recovery-detail", "recovery-meta",
+            "recovery-retry", "recovery-review", "recovery-change",
+        ):
+            self.assertIn(f'"{identifier}"', source)
+        self.assertIn("waitForEnabledHittable", source)
+
+    def test_short_ssh_proves_same_process_foreground_recovery_before_unique_ack(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index("func testShortSshInputAndDisconnect")
+        end = source.index("private func waitForStandardScreen", start)
+        workflow = source[start:end]
+        self.assertIn("XCUIDevice.shared.press(.home)", workflow)
+        self.assertIn("waitForBackground(timeout: 30)", workflow)
+        self.assertIn("app.activate()", workflow)
+        self.assertIn("waitForAuthoritativeReady(paneIdentifier: selectedPaneIdentifier, timeout: 90)", workflow)
+        self.assertIn('record("ssh_background_same_process")', workflow)
+        self.assertIn('record("ssh_authoritative_ready")', workflow)
+        self.assertIn('enterTerminalCommand(markerCommand, stage: "ssh_resumed_native_input")', workflow)
+        self.assertIn("markerCommand = \"printf '%s\\\\n'", workflow)
+        self.assertIn(">> \\(shellQuote(markerPath.path))\"", workflow)
+        self.assertIn("waitForMarkerLines([markerValue])", workflow)
+        self.assertIn('tapConnectionAction("Disconnect")', workflow)
+
+        driver = (Path(__file__).with_name("ios-smoke.py")).read_text(encoding="utf-8")
+        self.assertIn('"ssh_resumed_native_input_paste_tapped"', driver)
+        self.assertIn('"ssh_resumed_native_input_await_remote_marker"', driver)
+        self.assertIn('"marker_line_count": len(marker_lines)', driver)
+        self.assertIn('"marker_exactly_once": marker_matches', driver)
+
 
 class SmokeLogProducerTests(unittest.TestCase):
     UNSAFE_STDERR = "UNSAFE_RAW_LOG_TOOL_ERROR"
@@ -2102,6 +2149,8 @@ class ShortSshInputDiagnosticsTests(unittest.TestCase):
                     report = json.loads(output)
                     self.assertEqual(report["marker_file_exists"], marker_exists)
                     self.assertEqual(report["marker_file_matches"], marker_exists)
+                    self.assertEqual(report["marker_line_count"], 1 if marker_exists else 0)
+                    self.assertEqual(report["marker_exactly_once"], marker_exists)
                     complete, missing_prefix, missing_paste = report["panes"]
                     self.assertTrue(complete["command_echo_seen"])
                     self.assertEqual(complete["keyboard_prefix_suffix_length"], 6)

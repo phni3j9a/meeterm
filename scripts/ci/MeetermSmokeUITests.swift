@@ -176,6 +176,10 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-herdr-groups.png",
       "standard-herdr-terminal.png",
       "standard-herdr-workspaces.png",
+      "standard-recovery-progress.png",
+      "standard-recovery-exhausted.png",
+      "standard-recovery-mismatch.png",
+      "standard-herdr-recovery-confirm.png",
       "polish-welcome.png",
       "polish-empty.png",
       "polish-search-empty.png",
@@ -578,6 +582,7 @@ final class MeetermSmokeUITests: XCTestCase {
       "settings", "workspace-name", "terminal-name", "handoff",
       "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
+      "recovery-progress", "recovery-exhausted", "recovery-mismatch", "herdr-recovery-confirm",
     ]
     for screen in screens {
       record("standard_screen_\(screen)_open")
@@ -608,7 +613,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("standard_complete")
   }
 
-  /// Additional states and native navigation, separate from the 18-screen
+  /// Additional states and native navigation, separate from the 22-screen
   /// daily gate so both scopes retain their own bounded execution budget.
   func testPolishStatesAndNavigation() throws {
     for screen in ["welcome", "empty", "search-empty", "disconnected", "reconnecting", "connection-error", "long-workspaces"] {
@@ -747,13 +752,57 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     XCTAssertTrue(waitForTerminal(), "The first fixture workspace did not open a terminal.")
 
-    record("ssh_native_input")
+    record("ssh_recovery_binding_before_background")
     let terminal = try terminalElement()
-    terminal.tap()
-    let markerCommand = "printf '%s\\n' '\(markerValue)' > \(shellQuote(markerPath.path))"
-    enterTerminalCommand(markerCommand, stage: "ssh_native_input")
-    XCTAssertTrue(waitForMarkerLines([markerValue]), "Native terminal input did not reach the fixture shell.")
-    record("ssh_remote_ack")
+    let terminalTabs = waitForTerminalTabs(minimum: 1)
+    guard let selectedTerminalTab = terminalTabs.first(where: { $0.isSelected }) else {
+      XCTFail("The fixture did not expose a selected terminal tab before backgrounding.")
+      return
+    }
+    let selectedPaneIdentifier = selectedTerminalTab.identifier
+    XCTAssertFalse(selectedPaneIdentifier.isEmpty, "The selected terminal pane identity is unavailable.")
+
+    // This is the real foreground/background lifecycle path. The app is
+    // suspended and activated without terminating it, so a changed native
+    // binding or a newly opened picker cannot be hidden by a cold launch.
+    record("ssh_background")
+    XCUIDevice.shared.press(.home)
+    guard waitForBackground(timeout: 30) else {
+      XCTFail("The app did not reach a background state after pressing Home.")
+      return
+    }
+    record("ssh_background_same_process")
+
+    record("ssh_foreground")
+    app.activate()
+    guard app.wait(for: .runningForeground, timeout: 30) else {
+      XCTFail("The app did not return to the foreground.")
+      return
+    }
+    guard waitForAuthoritativeReady(paneIdentifier: selectedPaneIdentifier, timeout: 90) else {
+      XCTFail("Foreground recovery did not restore the same live runtime and terminal pane.")
+      return
+    }
+    record("ssh_authoritative_ready")
+
+    record("ssh_resumed_native_input")
+    let resumedTerminal = try terminalElement()
+    XCTAssertEqual(
+      resumedTerminal.identifier,
+      terminal.identifier,
+      "Foreground recovery replaced the native terminal surface binding."
+    )
+    resumedTerminal.tap()
+    // The short-suite marker starts from the file removed in setUp. Append so
+    // a duplicate remote execution becomes two lines and fails the exact-once
+    // host-side assertion instead of silently overwriting the first marker.
+    let markerCommand = "printf '%s\\n' '\(markerValue)' >> \(shellQuote(markerPath.path))"
+    enterTerminalCommand(markerCommand, stage: "ssh_resumed_native_input")
+    XCTAssertTrue(
+      waitForMarkerLines([markerValue]),
+      "Foreground-recovered native terminal input did not reach the fixture shell exactly once."
+    )
+    record("ssh_resumed_remote_ack")
     capture("ssh-terminal-input")
 
     record("ssh_disconnect")
@@ -914,8 +963,86 @@ final class MeetermSmokeUITests: XCTestCase {
       return total.waitForExistence(timeout: 30)
         && waitForHittable(main, timeout: 30)
         && waitForHittable(tools, timeout: 30)
+    case "recovery-progress":
+      return waitForRecoveryScreen(
+        title: "Verifying this workspace…",
+        detail: "Checking the server, runtime, and terminal.",
+        actions: []
+      )
+    case "recovery-exhausted":
+      return waitForRecoveryScreen(
+        title: "Still offline",
+        detail: "Couldn’t reach Smoke server.",
+        actions: ["recovery-retry", "recovery-change"]
+      )
+    case "recovery-mismatch":
+      return waitForRecoveryScreen(
+        title: "This runtime can’t be restored",
+        detail: "The runtime named “meeterm” is not the same instance as before.",
+        actions: ["recovery-retry", "recovery-change"]
+      )
+    case "herdr-recovery-confirm":
+      return waitForRecoveryScreen(
+        title: "Confirmation needed",
+        detail: "Herdr can’t verify that “meeterm” is the same instance.",
+        actions: ["recovery-review", "recovery-change"]
+      )
     default:
       return false
+    }
+  }
+
+  private func recoveryElement(_ identifier: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier == %@", identifier)
+    ).firstMatch
+  }
+
+  private func waitForVisible(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if element.exists && !element.frame.isNull && !element.frame.isInfinite
+        && element.frame.width > 0 && element.frame.height > 0 {
+        return true
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return element.exists && !element.frame.isNull && !element.frame.isInfinite
+      && element.frame.width > 0 && element.frame.height > 0
+  }
+
+  private func waitForEnabledHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if element.exists && element.isEnabled && element.isHittable { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return element.exists && element.isEnabled && element.isHittable
+  }
+
+  private func waitForRecoveryScreen(
+    title: String,
+    detail: String,
+    actions: [String]
+  ) -> Bool {
+    let rail = recoveryElement("recovery-rail")
+    let titleElement = recoveryElement("recovery-title")
+    let detailElement = recoveryElement("recovery-detail")
+    let metaElement = recoveryElement("recovery-meta")
+    let terminal = app.otherElements["Terminal"]
+    guard waitForVisible(rail, timeout: 30),
+          waitForVisible(titleElement, timeout: 30),
+          waitForVisible(detailElement, timeout: 30),
+          waitForVisible(metaElement, timeout: 30),
+          waitForVisible(terminal, timeout: 30),
+          app.staticTexts[title].waitForExistence(timeout: 30),
+          app.staticTexts[detail].waitForExistence(timeout: 30),
+          app.staticTexts["Last received output · Input paused"].waitForExistence(timeout: 30)
+    else {
+      return false
+    }
+    return actions.allSatisfy { identifier in
+      waitForEnabledHittable(recoveryElement(identifier), timeout: 30)
     }
   }
 
@@ -2120,6 +2247,65 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return element.isSelected
+  }
+
+  private func waitForBackground(timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if app.state == .runningBackground || app.state == .runningBackgroundSuspended {
+        return true
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return app.state == .runningBackground || app.state == .runningBackgroundSuspended
+  }
+
+  private func waitForAuthoritativeReady(
+    paneIdentifier: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    let pickerTitle = app.staticTexts.matching(
+      NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
+    ).firstMatch
+    let recoveryRail = recoveryElement("recovery-rail")
+    let connected = app.staticTexts["Connected"]
+    let terminal = app.otherElements["Terminal"]
+    let pickerRuntime = app.buttons.matching(
+      NSPredicate(
+        format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@",
+        "tmux runtime ", "Herdr runtime "
+      )
+    ).firstMatch
+    while Date() < deadline {
+      let selectedPane = terminalTab(identifier: paneIdentifier)
+      if app.state == .runningForeground
+        && connected.exists
+        && !pickerTitle.exists
+        && !pickerRuntime.exists
+        && !recoveryRail.exists
+        && selectedPane.exists
+        && selectedPane.isSelected
+        && terminal.exists
+        && !terminal.frame.isNull
+        && !terminal.frame.isInfinite
+        && terminal.frame.width > 0
+        && terminal.frame.height > 0 {
+        return true
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    let selectedPane = terminalTab(identifier: paneIdentifier)
+    return app.state == .runningForeground
+      && connected.exists
+      && !pickerTitle.exists
+      && !pickerRuntime.exists
+      && !recoveryRail.exists
+      && selectedPane.exists
+      && selectedPane.isSelected
+      && terminal.exists
+      && terminal.frame.width > 0
+      && terminal.frame.height > 0
   }
 
   private func waitForConnectionFormDismissal(timeout: TimeInterval) -> Bool {

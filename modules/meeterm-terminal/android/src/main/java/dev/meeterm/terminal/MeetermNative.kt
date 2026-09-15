@@ -16,19 +16,35 @@ internal object MeetermNative {
   /** Returns zero on success. */
   external fun resize(handle: Long, columns: Int, rows: Int): Int
 
+  /** Returns zero on success for the supplied per-terminal epoch. */
+  external fun resizeAtEpoch(handle: Long, operationEpoch: String, columns: Int, rows: Int): Int
+
   /** Returns the native commit count after accepting the byte array. */
   external fun commit(handle: Long, bytes: ByteArray): Long
+
+  /** Returns the native commit count only for the supplied per-terminal epoch. */
+  external fun commitAtEpoch(handle: Long, operationEpoch: String, bytes: ByteArray): Long
 
   /** Returns accepted UTF-8 byte count, or a negative transport rejection. */
   external fun paste(handle: Long, bytes: ByteArray): Int
 
+  /** Returns accepted UTF-8 byte count only for the supplied epoch. */
+  external fun pasteAtEpoch(handle: Long, operationEpoch: String, bytes: ByteArray): Int
+
   /** Scroll history by terminal lines; positive is older history. */
   external fun scrollLines(handle: Long, lines: Int): Int
 
+  /** Scroll only for the supplied per-terminal operation epoch. */
+  external fun scrollLinesAtEpoch(handle: Long, operationEpoch: String, lines: Int): Int
+
   /** Returns the encoded byte count, or a negative error value. */
   external fun sendSpecial(handle: Long, key: Int): Int
+  external fun sendSpecialAtEpoch(handle: Long, operationEpoch: String, key: Int): Int
   external fun sendKey(handle: Long, key: Int, modifiers: Int): Int
+  external fun sendKeyAtEpoch(handle: Long, operationEpoch: String, key: Int, modifiers: Int): Int
   external fun commitModified(handle: Long, bytes: ByteArray, modifiers: Int): Int
+  external fun commitModifiedAtEpoch(handle: Long, operationEpoch: String, bytes: ByteArray, modifiers: Int): Int
+  external fun sendBytesAtEpoch(handle: Long, operationEpoch: String, bytes: ByteArray): Int
   external fun selectStart(handle: Long, row: Int, column: Int): Int
   external fun selectUpdate(handle: Long, row: Int, column: Int): Int
   external fun clearSelection(handle: Long): Int
@@ -44,9 +60,14 @@ internal object MeetermNative {
 
   /** Monotonic Rust-owned terminal-content revision. */
   external fun terminalRevision(handle: Long): Long
+  /** Decimal per-terminal operation epoch; null means an invalid handle. */
+  external fun operationEpoch(handle: Long): String?
   external fun terminalExists(handle: Long): Boolean
 
   external fun sshReconnect(handle: Long): Int
+  external fun retryRecovery(handle: Long, operationEpoch: String): Int
+  external fun confirmRecovery(handle: Long, confirmationToken: String): Int
+  external fun changeRuntime(handle: Long, operationEpoch: String): Int
   external fun tmuxCommand(handle: Long, operation: Int, target: Long, name: String): Int
   external fun setForeground(handle: Long, foreground: Boolean): Int
   external fun setTerminalVisible(handle: Long, visible: Boolean): Int
@@ -115,7 +136,6 @@ internal class RustInputSink(
     }
 
     val count = try {
-      MeetermNative.clearSelection(handle)
       MeetermNative.commit(handle, bytes)
     } catch (_: RuntimeException) {
       // The JNI boundary may surface a transient Rust queue rejection as a
@@ -128,18 +148,57 @@ internal class RustInputSink(
       // Keep the existing observability signal, but never claim success for a
       // transport rejection (Rust returns zero in that case).
       Log.i(TAG, "IME commit accepted; nativeCount=$count byteCount=${bytes.size}")
+      clearSelectionAfterAccepted(handle)
       return true
     }
     Log.i(TAG, "IME commit rejected; reason=native_rejection")
     return false
   }
 
+  override fun commitUtf8AtEpoch(operationEpoch: String, bytes: ByteArray): Boolean {
+    val handle = handleProvider()
+    if (handle == 0L) {
+      Log.i(TAG, "IME commit rejected; reason=unbound")
+      return false
+    }
+    val count = try {
+      MeetermNative.commitAtEpoch(handle, operationEpoch, bytes)
+    } catch (_: RuntimeException) {
+      Log.i(TAG, "IME commit rejected; reason=native_exception")
+      return false
+    }
+    if (count <= 0L) {
+      Log.i(TAG, "IME commit rejected; reason=stale_or_native_rejection")
+      return false
+    }
+    clearSelectionAfterAccepted(handle)
+    Log.i(TAG, "IME commit accepted; nativeCount=$count byteCount=${bytes.size}")
+    return true
+  }
+
   override fun commitModifiedUtf8(bytes: ByteArray, modifiers: Int): Boolean {
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
-      MeetermNative.clearSelection(handle)
-      MeetermNative.commitModified(handle, bytes, modifiers) >= 0
+      val accepted = MeetermNative.commitModified(handle, bytes, modifiers) >= 0
+      if (accepted) clearSelectionAfterAccepted(handle)
+      accepted
+    } catch (_: RuntimeException) {
+      false
+    }
+  }
+
+  override fun commitModifiedUtf8AtEpoch(
+    operationEpoch: String,
+    bytes: ByteArray,
+    modifiers: Int,
+  ): Boolean {
+    val handle = handleProvider()
+    if (handle == 0L) return false
+    return try {
+      val accepted = MeetermNative.commitModifiedAtEpoch(handle, operationEpoch, bytes, modifiers) > 0
+      if (accepted) clearSelectionAfterAccepted(handle)
+      accepted
     } catch (_: RuntimeException) {
       false
     }
@@ -149,8 +208,21 @@ internal class RustInputSink(
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
-      MeetermNative.clearSelection(handle)
-      MeetermNative.sendSpecial(handle, key.nativeCode) >= 0
+      val accepted = MeetermNative.sendSpecial(handle, key.nativeCode) >= 0
+      if (accepted) clearSelectionAfterAccepted(handle)
+      accepted
+    } catch (_: RuntimeException) {
+      false
+    }
+  }
+
+  override fun sendSpecialAtEpoch(operationEpoch: String, key: TerminalSpecialKey): Boolean {
+    val handle = handleProvider()
+    if (handle == 0L) return false
+    return try {
+      val accepted = MeetermNative.sendSpecialAtEpoch(handle, operationEpoch, key.nativeCode) > 0
+      if (accepted) clearSelectionAfterAccepted(handle)
+      accepted
     } catch (_: RuntimeException) {
       false
     }
@@ -160,10 +232,36 @@ internal class RustInputSink(
     val handle = handleProvider()
     if (handle == 0L) return false
     return try {
-      MeetermNative.clearSelection(handle)
-      MeetermNative.sendKey(handle, key.nativeCode, modifiers) >= 0
+      val accepted = MeetermNative.sendKey(handle, key.nativeCode, modifiers) >= 0
+      if (accepted) clearSelectionAfterAccepted(handle)
+      accepted
     } catch (_: RuntimeException) {
       false
+    }
+  }
+
+  override fun sendKeyAtEpoch(
+    operationEpoch: String,
+    key: TerminalSpecialKey,
+    modifiers: Int,
+  ): Boolean {
+    val handle = handleProvider()
+    if (handle == 0L) return false
+    return try {
+      val accepted = MeetermNative.sendKeyAtEpoch(handle, operationEpoch, key.nativeCode, modifiers) > 0
+      if (accepted) clearSelectionAfterAccepted(handle)
+      accepted
+    } catch (_: RuntimeException) {
+      false
+    }
+  }
+
+  private fun clearSelectionAfterAccepted(handle: Long) {
+    try {
+      MeetermNative.clearSelection(handle)
+    } catch (_: RuntimeException) {
+      // The remote operation was already accepted. Selection cleanup is local
+      // presentation state and must not turn that accepted input into a retry.
     }
   }
 

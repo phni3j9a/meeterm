@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 
 const FFI_ERROR: i32 = -1;
 const FFI_INVALID_KEY: i32 = -2;
+const MAX_RECOVERY_TOKEN_BYTES: usize = 128;
 pub const MAX_WORKSPACE_STATE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_RUNTIME_DISCOVERY_BYTES: usize = 1024 * 1024;
 const RUNTIME_DISPLAY_NAME_BYTES: usize = 256;
@@ -170,6 +171,29 @@ unsafe fn utf8_argument(pointer: *const u8, length: usize) -> Result<String, ()>
     String::from_utf8(bytes.to_vec()).map_err(|_| ())
 }
 
+/// Parse the decimal representation used by the JavaScript-facing recovery
+/// bridge without passing through a platform number type.  The native
+/// adapters call this before invoking the u64 ABI, while JNI uses the same
+/// helper after copying a Java string.
+#[cfg(target_os = "android")]
+pub(crate) fn parse_decimal_u64(value: &str) -> Option<u64> {
+    if value.is_empty() || value.len() > 20 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u64>().ok()
+}
+
+unsafe fn recovery_token_argument(pointer: *const u8, length: usize) -> Result<String, ()> {
+    if length == 0 || length > MAX_RECOVERY_TOKEN_BYTES {
+        return Err(());
+    }
+    let token = unsafe { utf8_argument(pointer, length) }?;
+    if token.is_empty() || token.contains('\0') || token.chars().any(char::is_control) {
+        return Err(());
+    }
+    Ok(token)
+}
+
 fn connection_error_code(error: ConnectionError) -> i32 {
     error.code()
 }
@@ -229,6 +253,21 @@ pub extern "C" fn meeterm_resize_terminal(id: u64, columns: u16, rows: u16) -> i
         .unwrap_or(FFI_ERROR)
 }
 
+/// Resize only for the operation epoch captured by the native layout pass.
+/// A stale resize is rejected without changing the cached terminal layout or
+/// replaying the dimensions after recovery.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_resize_terminal_at_epoch(
+    id: u64,
+    expected_epoch: u64,
+    columns: u16,
+    rows: u16,
+) -> i32 {
+    registry::resize_terminal_at_epoch(id, expected_epoch, columns, rows)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
 /// Commit a native UTF-8 string exactly once. The return value is the new
 /// commit count, or zero on invalid UTF-8, a null pointer, or an unknown ID.
 ///
@@ -248,6 +287,38 @@ pub unsafe extern "C" fn meeterm_commit_utf8(id: u64, bytes: *const u8, length: 
         unsafe { slice::from_raw_parts(bytes, length) }
     };
     registry::commit_utf8(id, input).unwrap_or(0)
+}
+
+/// Return the current nonzero per-terminal operation epoch, or zero for an
+/// unknown terminal.  This is deliberately separate from the SSH/session
+/// recovery epoch and is consumed only by native input adapters.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_operation_epoch(id: u64) -> u64 {
+    registry::operation_epoch(id).unwrap_or(0)
+}
+
+/// Commit UTF-8 only when the caller's native operation epoch is still
+/// current.  A stale completion returns zero and is never queued for replay.
+///
+/// # Safety
+/// For nonzero length, bytes must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_commit_utf8_at_epoch(
+    id: u64,
+    expected_epoch: u64,
+    bytes: *const u8,
+    length: usize,
+) -> u64 {
+    if length != 0 && bytes.is_null() {
+        return 0;
+    }
+    let input = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller promises a readable buffer for this call.
+        unsafe { slice::from_raw_parts(bytes, length) }
+    };
+    registry::commit_utf8_at_epoch(id, expected_epoch, input).unwrap_or(0)
 }
 
 /// Enqueue native terminal bytes without UTF-8 validation.  This path is used
@@ -275,6 +346,32 @@ pub unsafe extern "C" fn meeterm_send_bytes(id: u64, bytes: *const u8, length: u
         .unwrap_or_else(terminal_error_code)
 }
 
+/// Enqueue raw native bytes only for the captured per-terminal operation
+/// epoch.  Stale callbacks are rejected and are not retained.
+///
+/// # Safety
+/// For nonzero length, bytes must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_send_bytes_at_epoch(
+    id: u64,
+    expected_epoch: u64,
+    bytes: *const u8,
+    length: usize,
+) -> i32 {
+    if length != 0 && bytes.is_null() {
+        return FFI_ERROR;
+    }
+    let input = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller promises a readable buffer for this call.
+        unsafe { slice::from_raw_parts(bytes, length) }
+    };
+    registry::send_bytes_at_epoch(id, expected_epoch, input)
+        .map(|accepted| i32::try_from(accepted).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
 /// Native paste input, encoded using the terminal's current bracketed-paste mode.
 ///
 /// # Safety
@@ -294,6 +391,32 @@ pub unsafe extern "C" fn meeterm_paste_utf8(id: u64, bytes: *const u8, length: u
         .unwrap_or_else(terminal_error_code)
 }
 
+/// Paste UTF-8 only for the operation epoch captured before an asynchronous
+/// native provider completed.
+///
+/// # Safety
+/// For nonzero length, bytes must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_paste_utf8_at_epoch(
+    id: u64,
+    expected_epoch: u64,
+    bytes: *const u8,
+    length: usize,
+) -> i32 {
+    if length != 0 && bytes.is_null() {
+        return FFI_ERROR;
+    }
+    let bytes = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller promises a readable buffer for this call.
+        unsafe { slice::from_raw_parts(bytes, length) }
+    };
+    registry::paste_utf8_at_epoch(id, expected_epoch, bytes)
+        .map(|accepted| i32::try_from(accepted).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
 /// Positive lines scroll toward history; negative lines toward live output.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_scroll_lines(id: u64, lines: i32) -> i32 {
@@ -302,10 +425,31 @@ pub extern "C" fn meeterm_scroll_lines(id: u64, lines: i32) -> i32 {
         .unwrap_or_else(terminal_error_code)
 }
 
+/// Move the native viewport only for the captured operation epoch.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_scroll_lines_at_epoch(id: u64, expected_epoch: u64, lines: i32) -> i32 {
+    registry::scroll_lines_at_epoch(id, expected_epoch, lines)
+        .map(|()| 0)
+        .unwrap_or_else(terminal_error_code)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_send_key(id: u64, key: u32, modifiers: u32) -> i32 {
     registry::send_key(id, key, modifiers)
         .map(|length| i32::try_from(length).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
+/// Send a generic key only for the captured operation epoch.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_send_key_at_epoch(
+    id: u64,
+    expected_epoch: u64,
+    key: u32,
+    modifiers: u32,
+) -> i32 {
+    registry::send_key_at_epoch(id, expected_epoch, key, modifiers)
+        .map(|accepted| i32::try_from(accepted).unwrap_or(FFI_ERROR))
         .unwrap_or_else(terminal_error_code)
 }
 
@@ -328,6 +472,32 @@ pub unsafe extern "C" fn meeterm_commit_modified_utf8(
     };
     registry::commit_modified_utf8(id, bytes, modifiers)
         .map(|length| i32::try_from(length).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
+}
+
+/// Commit modified UTF-8 only for the captured operation epoch.
+///
+/// # Safety
+/// For nonzero length, bytes must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_commit_modified_utf8_at_epoch(
+    id: u64,
+    expected_epoch: u64,
+    bytes: *const u8,
+    length: usize,
+    modifiers: u32,
+) -> i32 {
+    if length > 65536 || (length != 0 && bytes.is_null()) {
+        return FFI_ERROR;
+    }
+    let bytes = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller promises a readable buffer for this call.
+        unsafe { slice::from_raw_parts(bytes, length) }
+    };
+    registry::commit_modified_utf8_at_epoch(id, expected_epoch, bytes, modifiers)
+        .map(|accepted| i32::try_from(accepted).unwrap_or(FFI_ERROR))
         .unwrap_or_else(terminal_error_code)
 }
 
@@ -405,6 +575,17 @@ pub extern "C" fn meeterm_send_special_key(id: u64, key: u32) -> i32 {
     registry::send_special_key(id, key)
         .map(|length| i32::try_from(length).unwrap_or(FFI_ERROR))
         .unwrap_or(FFI_ERROR)
+}
+
+/// Send a special key only for the captured operation epoch.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_send_special_key_at_epoch(id: u64, expected_epoch: u64, key: u32) -> i32 {
+    let Ok(key) = SpecialKey::try_from(key) else {
+        return FFI_INVALID_KEY;
+    };
+    registry::send_special_key_at_epoch(id, expected_epoch, key)
+        .map(|accepted| i32::try_from(accepted).unwrap_or(FFI_ERROR))
+        .unwrap_or_else(terminal_error_code)
 }
 
 /// Return the number of successful non-empty UTF-8 commits for a terminal.
@@ -812,6 +993,45 @@ pub extern "C" fn meeterm_disconnect(id: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_reconnect(id: u64) -> i32 {
     crate::ssh::reconnect_terminal(id)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Retry the retained recovery flow for the exact decimal epoch observed by
+/// the caller.  This append-only symbol is separate from the legacy reconnect
+/// request and never performs optimistic state changes in the adapter.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_retry_recovery(id: u64, expected_epoch: u64) -> i32 {
+    crate::ssh::retry_recovery(id, expected_epoch)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Confirm a native recovery token. Tokens are bounded UTF-8 values and may
+/// not contain controls or NUL; the Rust recovery core consumes them only
+/// after validating the current awaiting-confirmation state.
+///
+/// # Safety
+/// For nonzero length, token must point to that many readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_confirm_recovery(
+    id: u64,
+    token: *const u8,
+    token_length: usize,
+) -> i32 {
+    let Ok(token) = (unsafe { recovery_token_argument(token, token_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    crate::ssh::confirm_recovery(id, &token)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Leave the retained runtime and start the authenticated runtime picker for
+/// the exact epoch observed by the caller.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_change_runtime(id: u64, expected_epoch: u64) -> i32 {
+    crate::ssh::change_runtime(id, expected_epoch)
         .map(|()| 0)
         .unwrap_or_else(connection_error_code)
 }
@@ -1259,6 +1479,58 @@ mod session_abi_tests {
             )
         };
         assert_eq!(result, ConnectionError::InvalidArgument.code());
+        assert_eq!(meeterm_destroy_terminal(id), 1);
+    }
+
+    #[test]
+    fn operation_epoch_abi_rejects_stale_input_and_recovery_tokens() {
+        let id = meeterm_create_terminal(80, 24);
+        assert_ne!(id, 0);
+        let epoch = meeterm_operation_epoch(id);
+        assert_ne!(epoch, 0);
+
+        let input = b"epoch";
+        // SAFETY: the byte slice remains valid for the synchronous call.
+        assert_eq!(
+            unsafe { meeterm_commit_utf8_at_epoch(id, epoch, input.as_ptr(), input.len()) },
+            1
+        );
+        // A delayed callback from the prior terminal epoch is rejected before
+        // it can change the native commit count.
+        assert_eq!(
+            unsafe {
+                meeterm_commit_utf8_at_epoch(
+                    id,
+                    epoch.saturating_add(1),
+                    input.as_ptr(),
+                    input.len(),
+                )
+            },
+            0
+        );
+        assert_eq!(meeterm_input_commit_count(id), 1);
+        assert_eq!(
+            meeterm_resize_terminal_at_epoch(id, epoch.saturating_add(1), 80, 24),
+            FFI_ERROR
+        );
+
+        let control_token = b"token\n";
+        // SAFETY: the token slice remains valid for the synchronous call.
+        assert_eq!(
+            unsafe { meeterm_confirm_recovery(id, control_token.as_ptr(), control_token.len()) },
+            ConnectionError::InvalidArgument.code()
+        );
+        assert_eq!(
+            unsafe { meeterm_confirm_recovery(id, std::ptr::null(), 0) },
+            ConnectionError::InvalidArgument.code()
+        );
+        let oversized_token = vec![b'x'; MAX_RECOVERY_TOKEN_BYTES + 1];
+        assert_eq!(
+            unsafe {
+                meeterm_confirm_recovery(id, oversized_token.as_ptr(), oversized_token.len())
+            },
+            ConnectionError::InvalidArgument.code()
+        );
         assert_eq!(meeterm_destroy_terminal(id), 1);
     }
 }

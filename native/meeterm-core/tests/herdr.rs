@@ -23,11 +23,12 @@ use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
     close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
     create_pane, create_terminal, create_workspace, destroy_terminal, disconnect_terminal,
-    meeterm_commit_utf8, meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key,
-    meeterm_scroll_lines, meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
-    meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
-    runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
-    set_foreground, terminal_revision, workspace_snapshot_json,
+    meeterm_commit_utf8, meeterm_confirm_recovery, meeterm_paste_utf8, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_scroll_lines, meeterm_send_special_key,
+    meeterm_set_terminal_visible, meeterm_snapshot, meeterm_snapshot_size, reconnect_terminal,
+    rename_group, rename_pane, rename_workspace, runtime_discovery_snapshot, select_group,
+    select_pane, select_runtime, session_snapshot, set_foreground, terminal_revision,
+    workspace_snapshot_json,
 };
 use russh::keys;
 use russh::server::{self, Auth, ChannelOpenHandle, Handler, Msg, Server as RusshServer, Session};
@@ -1133,6 +1134,66 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
+fn wait_recovery_confirmation(id: u64, label: &str) -> (Value, String) {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let state = connection_snapshot(id).expect("connection snapshot");
+        let value: Value =
+            serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
+                .expect("workspace snapshot JSON");
+        if value["control"]["recovery"]["phase"] == "awaitingConfirmation" {
+            let token = value["control"]["recovery"]["confirmationToken"]
+                .as_str()
+                .expect("recovery confirmation token")
+                .to_owned();
+            assert!(!token.is_empty(), "{label} published an empty token");
+            assert_eq!(value["control"]["runtimeOperationsReady"], false);
+            assert_eq!(value["control"]["terminalInputReady"], false);
+            return (value, token);
+        }
+        if state.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: {} {}",
+                field(&state.error_code, state.error_code_len),
+                field(&state.error_message, state.error_message_len)
+            );
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn confirm_recovery(id: u64, token: &str, label: &str) {
+    let result = unsafe { meeterm_confirm_recovery(id, token.as_ptr(), token.len()) };
+    assert_eq!(result, 0, "{label} recovery confirmation");
+}
+
+fn wait_recovery_ready(id: u64, label: &str) -> Value {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let state = connection_snapshot(id).expect("connection snapshot");
+        let value: Value =
+            serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
+                .expect("workspace snapshot JSON");
+        if value["control"]["recovery"]["phase"] == "none"
+            && value["control"]["runtimeOperationsReady"] == true
+            && value["control"]["terminalInputReady"] == true
+            && state.state == ConnectionState::Ready as u32
+        {
+            return value;
+        }
+        if state.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: {} {}",
+                field(&state.error_code, state.error_code_len),
+                field(&state.error_message, state.error_message_len)
+            );
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn common_agent_status<'a>(value: &'a Value, collection: &str, id: u64) -> Option<&'a str> {
     value[collection]
         .as_array()?
@@ -2082,19 +2143,21 @@ fn real_herdr_native_backend_over_russh_fixture() {
     );
     let before_foreground_terminal = root.terminal_id;
     set_foreground(default_id, true).expect("foreground Herdr connection");
-    select_herdr_runtime_from_picker(
-        default_id,
-        "default",
-        "Herdr foreground reconnect requires explicit reselection",
-    );
+    let (_, foreground_token) =
+        wait_recovery_confirmation(default_id, "Herdr foreground recovery confirmation");
+    confirm_recovery(default_id, &foreground_token, "Herdr foreground recovery");
+    let _foreground_json = wait_recovery_ready(default_id, "Herdr foreground recovery");
     let foreground_session = wait_session(default_id, "Herdr foreground hierarchy");
     let root = foreground_session
         .panes
         .iter()
         .find(|pane| pane.selected)
-        .expect("selected pane after foreground reselection")
+        .expect("selected pane after foreground recovery")
         .clone();
-    assert_ne!(root.terminal_id, before_foreground_terminal);
+    assert_eq!(
+        root.terminal_id, before_foreground_terminal,
+        "confirmed foreground recovery preserves the native terminal identity"
+    );
     wait_text(root.terminal_id, "STICKY_SET", "fresh foreground frame");
     commit_marker(
         root.terminal_id,
@@ -2108,24 +2171,26 @@ fn real_herdr_native_backend_over_russh_fixture() {
         ConnectionState::Reconnecting,
         "server-side SSH connection loss",
     );
-    select_herdr_runtime_from_picker(
-        default_id,
-        "default",
-        "Herdr SSH recovery requires explicit reselection",
-    );
+    let (_, transport_token) =
+        wait_recovery_confirmation(default_id, "Herdr transport recovery confirmation");
+    confirm_recovery(default_id, &transport_token, "Herdr transport recovery");
+    let _transport_json = wait_recovery_ready(default_id, "Herdr transport recovery");
     let transport_session = wait_session(default_id, "Herdr transport recovery hierarchy");
     let previous_transport_terminal = root.terminal_id;
     let root = transport_session
         .panes
         .iter()
         .find(|pane| pane.selected)
-        .expect("selected pane after transport recovery reselection")
+        .expect("selected pane after transport recovery")
         .clone();
-    assert_ne!(root.terminal_id, previous_transport_terminal);
+    assert_eq!(
+        root.terminal_id, previous_transport_terminal,
+        "confirmed Herdr recovery preserves the native terminal identity"
+    );
     commit_marker(
         root.terminal_id,
         "HERDR_TRANSPORT_RECOVERED_32C4",
-        "explicitly reselected transport recovery input",
+        "confirmed transport recovery input",
     );
 
     // A new connection owner has no old registry state, as after app process
