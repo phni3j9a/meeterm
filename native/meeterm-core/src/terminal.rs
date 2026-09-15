@@ -173,12 +173,18 @@ enum TransportReadiness {
     Attached,
     /// The binding and its authoritative frame are current and may carry I/O.
     Ready,
+    /// The binding and cached native display remain owned by this terminal,
+    /// but the app is backgrounded. The previous readiness is retained so a
+    /// foreground transition can restore Attached without skipping the first
+    /// frame, or Ready without requiring a new frame.
+    Suspended,
 }
 
 #[derive(Clone)]
 struct TransportGate {
     binding: Option<TransportBinding>,
     readiness: TransportReadiness,
+    suspended_from: Option<TransportReadiness>,
 }
 
 impl Default for TransportGate {
@@ -186,6 +192,7 @@ impl Default for TransportGate {
         Self {
             binding: None,
             readiness: TransportReadiness::Revoked,
+            suspended_from: None,
         }
     }
 }
@@ -445,6 +452,7 @@ impl Terminal {
             .map_err(|_| TerminalError::RegistryPoisoned)?;
         gate.binding = None;
         gate.readiness = TransportReadiness::Revoked;
+        gate.suspended_from = None;
         drop(gate);
         self.transport_overloaded.store(false, Ordering::Release);
         self.advance_operation_epoch();
@@ -568,6 +576,7 @@ impl Terminal {
             resize,
         });
         binding.readiness = TransportReadiness::Attached;
+        binding.suspended_from = None;
         drop(binding);
         self.transport_overloaded.store(false, Ordering::Release);
         // Attaching a fresh sender is a new operation boundary even when the
@@ -595,6 +604,7 @@ impl Terminal {
             resize,
         });
         binding.readiness = TransportReadiness::Attached;
+        binding.suspended_from = None;
         drop(binding);
         self.transport_overloaded.store(false, Ordering::Release);
         // Attaching a fresh sender is a new operation boundary even when the
@@ -628,10 +638,11 @@ impl Terminal {
     }
 
     /// Validate the complete binding contract used by the strict tmux capture
-    /// transaction.  A strict replay is only allowed while the transport is
-    /// still Attached; Ready would let parser-generated replies escape before
-    /// the session Ready publication.  The registry batch holds this Terminal
-    /// lock from this check through the non-fallible apply and Ready transition.
+    /// transaction. A strict replay is only allowed while the transport is
+    /// still Attached (or Suspended while the app is backgrounded); Ready
+    /// would let parser-generated replies escape before the session Ready
+    /// publication. The registry batch holds this Terminal lock from this
+    /// check through the non-fallible apply and Ready transition.
     pub(crate) fn preflight_strict_capture(
         &self,
         generation: u64,
@@ -653,7 +664,10 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?;
-        if gate.readiness != TransportReadiness::Attached {
+        if !matches!(
+            gate.readiness,
+            TransportReadiness::Attached | TransportReadiness::Suspended
+        ) {
             return Err(TerminalError::InputNotReady);
         }
         let Some(binding) = gate.binding.as_ref() else {
@@ -710,8 +724,8 @@ impl Terminal {
         self.input_commit_count = commits;
         // Output that arrived after the tmux capture is newer than the frame
         // and must be replayed exactly once. The strict batch invokes this
-        // while the gate is still Attached, so any VT reply generated while
-        // replaying either buffer is intentionally discarded.
+        // while the gate is still Attached/Suspended, so any VT reply
+        // generated while replaying either buffer is intentionally discarded.
         self.feed(trailing_output);
         // Rebuilding a viewport must not reject live input while other panes
         // are still being captured. Initial/offline panes retain their
@@ -748,8 +762,8 @@ impl Terminal {
 
     /// Validate the narrow Herdr first-frame contract before entering the
     /// epoch-atomic native commit. The selected semantic binding must remain
-    /// Attached: a Ready transition before the session projection would let a
-    /// stale frame become an input target.
+    /// Attached or Suspended: a Ready transition before the session projection
+    /// would let a stale frame become an input target.
     pub(crate) fn preflight_remote_display(
         &self,
         generation: u64,
@@ -764,7 +778,10 @@ impl Terminal {
             .outbound
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?;
-        if gate.readiness != TransportReadiness::Attached {
+        if !matches!(
+            gate.readiness,
+            TransportReadiness::Attached | TransportReadiness::Suspended
+        ) {
             return Err(TerminalError::InputNotReady);
         }
         let Some(binding) = gate.binding.as_ref() else {
@@ -882,6 +899,7 @@ impl Terminal {
             } else {
                 gate.binding = None;
                 gate.readiness = TransportReadiness::Revoked;
+                gate.suspended_from = None;
                 true
             }
         } else {
@@ -906,6 +924,15 @@ impl Terminal {
         if binding.generation() != generation {
             return false;
         }
+        if gate.readiness == TransportReadiness::Suspended {
+            // A first frame may arrive after the app backgrounds. It proves
+            // the controller's frame boundary, but must not rearm native
+            // input until the dedicated foreground resume operation runs.
+            // Record that proof so resume can choose Ready even though the
+            // gate remains closed for the rest of this hidden interval.
+            gate.suspended_from = Some(TransportReadiness::Ready);
+            return true;
+        }
         if gate.readiness != TransportReadiness::Ready {
             gate.readiness = TransportReadiness::Ready;
             drop(gate);
@@ -914,6 +941,70 @@ impl Terminal {
             // just because its completion races with the first frame.
             self.advance_operation_epoch();
         }
+        true
+    }
+
+    /// Suspend a matching transport without dropping its binding or cached
+    /// native terminal. This is the synchronous native input boundary for an
+    /// app background transition. The previous Attached/Ready state is kept
+    /// so resume cannot make an unfetched controller look input-ready.
+    pub(crate) fn suspend_transport(&mut self, generation: u64) -> bool {
+        if !self.remote_mode || self.remote_generation != Some(generation) {
+            return false;
+        }
+        let Ok(mut gate) = self.outbound.lock() else {
+            return false;
+        };
+        let Some(binding) = gate.binding.as_ref() else {
+            return false;
+        };
+        if binding.generation() != generation {
+            return false;
+        }
+        if !matches!(
+            gate.readiness,
+            TransportReadiness::Attached | TransportReadiness::Ready
+        ) {
+            return true;
+        }
+        gate.suspended_from = Some(gate.readiness);
+        gate.readiness = TransportReadiness::Suspended;
+        drop(gate);
+        self.advance_operation_epoch();
+        true
+    }
+
+    /// Re-arm a matching transport after the app returns to the foreground.
+    /// A binding that was Attached remains Attached until its first complete
+    /// frame; a previously Ready binding becomes Ready immediately. Repeated
+    /// resumes are harmless and do not advance the terminal operation epoch.
+    pub(crate) fn resume_transport(&mut self, generation: u64) -> bool {
+        if !self.remote_mode || self.remote_generation != Some(generation) {
+            return false;
+        }
+        let Ok(mut gate) = self.outbound.lock() else {
+            return false;
+        };
+        let Some(binding) = gate.binding.as_ref() else {
+            return false;
+        };
+        if binding.generation() != generation {
+            return false;
+        }
+        if gate.readiness != TransportReadiness::Suspended {
+            return true;
+        }
+        let previous = gate
+            .suspended_from
+            .take()
+            .unwrap_or(TransportReadiness::Ready);
+        debug_assert!(matches!(
+            previous,
+            TransportReadiness::Attached | TransportReadiness::Ready
+        ));
+        gate.readiness = previous;
+        drop(gate);
+        self.advance_operation_epoch();
         true
     }
 
@@ -931,15 +1022,28 @@ impl Terminal {
             .outbound
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        debug_assert_eq!(gate.readiness, TransportReadiness::Attached);
+        debug_assert!(matches!(
+            gate.readiness,
+            TransportReadiness::Attached | TransportReadiness::Suspended
+        ));
         debug_assert!(
             gate.binding
                 .as_ref()
                 .is_some_and(|binding| binding.generation() == generation)
         );
-        gate.readiness = TransportReadiness::Ready;
+        let was_suspended = gate.readiness == TransportReadiness::Suspended;
+        if was_suspended {
+            // The full capture is the first-frame proof even while the app is
+            // hidden. Keep the gate Suspended, but let the later actor wake
+            // restore Ready instead of waiting for another frame.
+            gate.suspended_from = Some(TransportReadiness::Ready);
+        } else {
+            gate.readiness = TransportReadiness::Ready;
+        }
         drop(gate);
-        self.advance_operation_epoch();
+        if !was_suspended {
+            self.advance_operation_epoch();
+        }
     }
 
     pub(crate) fn feed_remote(&mut self, generation: u64, bytes: &[u8]) -> bool {

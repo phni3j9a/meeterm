@@ -1494,6 +1494,7 @@ impl ControlClient {
         let (resize, mut sizes) = watch::channel(size);
         registry::prepare_pane_transport(id, self.shared.generation, size, input, resize)
             .map_err(|_| FlowFailure::Stale)?;
+        self.shared.suspend_terminal_if_background(id);
         let sender = self.pane_sender.clone();
         let shared = Arc::clone(&self.shared);
         let task = tokio::spawn(async move {
@@ -1748,11 +1749,12 @@ impl ControlClient {
                 .commit_ready_at_epoch_result(expected_epoch, |state| {
                     // This closure runs only after the expected epoch has been
                     // checked and while the session lock is held. The registry
-                    // batch keeps every pane Attached while it preflights and
-                    // replays all captures, then marks every transport Ready
-                    // only after the last replay succeeds. VT replies emitted
-                    // by capture replay therefore hit the closed gate and are
-                    // deliberately discarded; no stale query is buffered.
+                    // batch keeps every pane Attached/Suspended while it
+                    // preflights and replays all captures, then marks Attached
+                    // transports Ready only after the last replay succeeds.
+                    // VT replies emitted by capture replay therefore hit the
+                    // closed gate and are deliberately discarded; no stale
+                    // query is buffered.
                     apply_staged_captures_locked(&shared, &staged_captures)?;
                     apply_topology_state(state, &mapping, &windows, &panes, &flat, selected);
                     // This is part of the same lock/epoch transaction as the
@@ -1897,8 +1899,9 @@ fn apply_topology_state(
 /// Apply capture records only from inside the strict final commit. The
 /// registry-level transaction resolves and locks every target in deterministic
 /// order, validates all generations/bindings/dimensions first, applies every
-/// Term, and changes all Attached gates to Ready last. Thus an error is
-/// pre-apply and cannot leave one pane with newer cells/history than another.
+/// Term, and changes Attached gates to Ready last. Suspended gates remain
+/// closed until foreground resumes them. Thus an error is pre-apply and
+/// cannot leave one pane with newer cells/history than another.
 fn apply_staged_captures_locked(
     shared: &ConnectionShared,
     captures: &[StagedCapture],

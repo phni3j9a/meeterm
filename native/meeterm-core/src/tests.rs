@@ -544,6 +544,131 @@ fn registry_exposes_and_enforces_terminal_operation_epoch() {
 }
 
 #[test]
+fn suspended_transport_retains_binding_and_requires_a_fresh_operation_epoch() {
+    let id = create_terminal(24, 4).expect("suspended terminal");
+    let shared = crate::registry::shared_terminal(id).expect("shared suspended terminal");
+    let before_term = with_terminal_for_test(id, |terminal| terminal.term() as *const _ as usize)
+        .expect("term identity before suspend");
+    let (input_sender, mut input_receiver) = mpsc::channel(8);
+    let (resize_sender, _resize_receiver) = watch::channel((24, 4));
+    crate::registry::prepare_pane_transport(id, 48, (24, 4), input_sender, resize_sender)
+        .expect("matching suspended transport");
+    let attached_epoch = crate::registry::operation_epoch(id).expect("attached epoch");
+
+    // Suspending before the first frame retains Attached rather than making
+    // the later foreground transition look like a completed frame proof.
+    assert!(crate::registry::suspend_transport(id, 48));
+    let suspended_attached_epoch = crate::registry::operation_epoch(id).expect("suspended epoch");
+    assert_eq!(
+        suspended_attached_epoch,
+        attached_epoch.saturating_add(1),
+        "Attached -> Suspended advances exactly once"
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(crate::registry::resume_transport(id, 48));
+    let resumed_attached_epoch = crate::registry::operation_epoch(id).expect("resumed epoch");
+    assert_eq!(
+        resumed_attached_epoch,
+        suspended_attached_epoch.saturating_add(1),
+        "Suspended -> Attached advances exactly once"
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(crate::registry::mark_transport_ready(id, 48));
+    let ready_epoch = crate::registry::operation_epoch(id).expect("ready epoch");
+    assert_eq!(ready_epoch, resumed_attached_epoch.saturating_add(1));
+    assert!(crate::registry::transport_ready(id, 48));
+
+    let before_snapshot = crate::registry::snapshot(id).expect("snapshot before suspend");
+    assert!(crate::registry::suspend_transport(id, 48));
+    let suspended_epoch = crate::registry::operation_epoch(id).expect("ready suspended epoch");
+    assert_eq!(suspended_epoch, ready_epoch.saturating_add(1));
+    assert!(crate::registry::suspend_transport(id, 48));
+    assert_eq!(
+        crate::registry::operation_epoch(id).expect("repeated suspended epoch"),
+        suspended_epoch,
+        "repeating a no-op suspend must not advance the epoch"
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(std::sync::Arc::ptr_eq(
+        &shared,
+        &crate::registry::shared_terminal(id).expect("retained shared terminal")
+    ));
+    assert_eq!(
+        with_terminal_for_test(id, |terminal| terminal.term() as *const _ as usize)
+            .expect("term identity after suspend"),
+        before_term,
+        "suspend retains the native Term"
+    );
+    assert_eq!(
+        crate::registry::snapshot(id).expect("snapshot after suspend"),
+        before_snapshot,
+        "suspend retains the cached display"
+    );
+
+    // Both immediate APIs and delayed callbacks captured at the old Ready
+    // boundary must be rejected without enqueueing anything.
+    assert_eq!(
+        crate::registry::send_bytes(id, b"raw"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::commit_utf8(id, b"commit"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::paste_utf8(id, b"paste"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::send_special_key(id, SpecialKey::Up),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::resize_terminal(id, 40, 5),
+        Err(TerminalError::InputNotReady)
+    );
+    assert!(crate::registry::feed_remote(id, 48, b"\x1b[6n"));
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(id, ready_epoch, b"stale commit"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        crate::registry::paste_utf8_at_epoch(id, ready_epoch, b"stale paste"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        crate::registry::send_special_key_at_epoch(id, ready_epoch, SpecialKey::Enter),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        crate::registry::resize_terminal_at_epoch(id, ready_epoch, 40, 5),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(input_receiver.try_recv().is_err());
+
+    // The normal mark is still harmless while suspended; only the dedicated
+    // resume opens the retained binding and creates a fresh operation epoch.
+    assert!(crate::registry::mark_transport_ready(id, 48));
+    assert_eq!(
+        crate::registry::operation_epoch(id).expect("normal mark epoch"),
+        suspended_epoch
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(crate::registry::resume_transport(id, 48));
+    let fresh_epoch = crate::registry::operation_epoch(id).expect("fresh epoch");
+    assert_eq!(fresh_epoch, suspended_epoch.saturating_add(1));
+    assert!(crate::registry::transport_ready(id, 48));
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(id, fresh_epoch, b"fresh"),
+        Ok(1)
+    );
+    assert_eq!(input_receiver.try_recv().expect("fresh input"), b"fresh");
+    assert!(input_receiver.try_recv().is_err());
+
+    assert!(destroy_terminal(id));
+}
+
+#[test]
 fn stale_transport_generation_cannot_attach_or_feed_new_terminal_state() {
     let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
     terminal.begin_remote(44).expect("remote mode");

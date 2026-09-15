@@ -112,6 +112,32 @@ pub(crate) fn detach_transport(id: TerminalId, generation: u64) {
     }
 }
 
+/// Suspend a matching native transport without dropping its binding or
+/// terminal state. The terminal operation epoch advances only when the gate
+/// changes from Attached/Ready to Suspended.
+pub(crate) fn suspend_transport(id: TerminalId, generation: u64) -> bool {
+    let Ok(terminal) = shared_terminal(id) else {
+        return false;
+    };
+    terminal
+        .lock()
+        .map(|mut terminal| terminal.suspend_transport(generation))
+        .unwrap_or(false)
+}
+
+/// Re-arm a matching native transport after a foreground transition. A
+/// suspended Attached binding remains Attached until its first frame; a
+/// suspended Ready binding becomes Ready.
+pub(crate) fn resume_transport(id: TerminalId, generation: u64) -> bool {
+    let Ok(terminal) = shared_terminal(id) else {
+        return false;
+    };
+    terminal
+        .lock()
+        .map(|mut terminal| terminal.resume_transport(generation))
+        .unwrap_or(false)
+}
+
 pub(crate) fn mark_transport_ready(id: TerminalId, generation: u64) -> bool {
     let Ok(terminal) = shared_terminal(id) else {
         return false;
@@ -224,11 +250,12 @@ pub(crate) fn restore_screen(
 /// first preflight means a missing target, generation mismatch, binding loss,
 /// invalid dimensions, or poisoned lock fails before any Term is changed. The
 /// apply phase calls only prevalidated, infallible Terminal operations. Each
-/// transport remains Attached while all capture bytes (including parser
-/// replay) are fed; only after every capture succeeds are all gates changed to
-/// Ready. This function never calls back into `ssh`, `SessionState`, or
-/// `ConnectionInfo`, so the strict caller's `info -> session -> registry`
-/// order has no reverse edge.
+/// transport remains Attached/Suspended while all capture bytes (including
+/// parser replay) are fed; only after every capture succeeds are Attached
+/// gates changed to Ready. A Suspended gate remains closed until its
+/// foreground resume. This function never calls back into `ssh`,
+/// `SessionState`, or `ConnectionInfo`, so the strict caller's
+/// `info -> session -> registry` order has no reverse edge.
 pub(crate) fn restore_strict_capture_batch(
     generation: u64,
     captures: &[ScreenCapture<'_>],

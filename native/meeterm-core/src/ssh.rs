@@ -617,6 +617,10 @@ struct ConnectionShared {
     cancel_notify: Arc<Notify>,
     finished_notify: Arc<Notify>,
     retry_notify: Arc<Notify>,
+    /// Serializes foreground transitions with backend wake handling. The
+    /// guard is held only across synchronous session/gate updates; no network
+    /// await occurs while it is held.
+    foreground_transition: Mutex<()>,
     foreground: AtomicBool,
     automatic_reconnect: AtomicBool,
     ready_once: AtomicBool,
@@ -656,6 +660,7 @@ impl ConnectionShared {
             cancel_notify: Arc::new(Notify::new()),
             finished_notify: Arc::new(Notify::new()),
             retry_notify: Arc::new(Notify::new()),
+            foreground_transition: Mutex::new(()),
             foreground: AtomicBool::new(foreground),
             automatic_reconnect: AtomicBool::new(automatic_reconnect),
             ready_once: AtomicBool::new(false),
@@ -1116,6 +1121,9 @@ impl ConnectionShared {
                         .panes
                         .iter()
                         .any(|pane| pane.pane_id == selected)
+                    && state.pane_terminals.get(&selected).is_some_and(|native| {
+                        registry::transport_ready_or_local(*native, state.generation)
+                    })
             });
         info.state = ConnectionState::Ready;
         info.error_code.clear();
@@ -1277,48 +1285,93 @@ impl ConnectionShared {
         }
     }
 
+    /// Serialize the synchronous foreground gate with a backend actor's
+    /// same-controller wake. This prevents a wake that observed `true` from
+    /// rearming a terminal after a newer background transition has completed.
+    fn foreground_transition_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.foreground_transition
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A controller may finish attaching after the app has already gone into
+    /// the background. Recheck under the same transition boundary used by
+    /// `set_foreground` so a newly attached binding cannot become an input
+    /// path that the earlier suspend pass could not have seen.
+    fn suspend_terminal_if_background(&self, terminal_id: TerminalId) {
+        let _transition = self.foreground_transition_lock();
+        if !self.is_foreground() {
+            registry::suspend_transport(terminal_id, self.generation);
+        }
+    }
+
     fn set_foreground(&self, foreground: bool) {
+        let _transition = self.foreground_transition_lock();
         self.foreground.store(foreground, Ordering::Release);
-        if let Ok(mut state) = self.session.lock()
-            && state.generation == self.generation
-        {
-            state.foreground = foreground;
-            if !foreground {
-                state.terminal_input_ready = false;
-                // A confirmation token is tied to the visible recovery
-                // attempt. If the app backgrounds while that token is shown,
-                // revoke it synchronously and let the Herdr coordinator run a
-                // fresh bounded discovery on the next wake. A healthy live
-                // controller is not torn down merely because the app changed
-                // foreground state.
-                if state.recovery.phase == RecoveryPhase::AwaitingConfirmation {
-                    state.operation_epoch = next_operation_epoch(state.operation_epoch);
-                    state.recovery.phase = RecoveryPhase::Reconnecting;
-                    state.recovery.confirmation_token.clear();
-                    state.pending_confirmation_token = None;
-                    state.runtime_operations_ready = false;
+
+        let (generation, backend, terminal_ids) = match self.session.lock() {
+            Ok(mut state) if state.generation == self.generation => {
+                state.foreground = foreground;
+                if !foreground {
+                    state.terminal_input_ready = false;
+                    // A confirmation token is tied to the visible recovery
+                    // attempt. If the app backgrounds while that token is
+                    // shown, revoke it synchronously and let the Herdr
+                    // coordinator run a fresh bounded discovery on the next
+                    // wake. A healthy live controller is not torn down merely
+                    // because the app changed foreground state.
+                    if state.recovery.phase == RecoveryPhase::AwaitingConfirmation {
+                        state.operation_epoch = next_operation_epoch(state.operation_epoch);
+                        state.recovery.phase = RecoveryPhase::Reconnecting;
+                        state.recovery.confirmation_token.clear();
+                        state.pending_confirmation_token = None;
+                        state.runtime_operations_ready = false;
+                    }
                 }
-            } else if state.recovery.phase == RecoveryPhase::None
-                && state.runtime_operations_ready
-                && state
-                    .endpoint
-                    .as_ref()
-                    .is_some_and(|endpoint| endpoint.backend == Backend::Tmux)
-            {
-                state.terminal_input_ready = state.selected_pane.is_some_and(|selected| {
-                    state.pane_terminals.contains_key(&selected)
-                        && state
-                            .snapshot
-                            .panes
-                            .iter()
-                            .any(|pane| pane.pane_id == selected)
-                        && state.pane_terminals.get(&selected).is_some_and(|native| {
-                            registry::transport_ready_or_local(*native, state.generation)
-                        })
-                });
+
+                // Do not call into the registry while holding SessionState.
+                // The established lock order is session -> registry ->
+                // Terminal, and this list is the only state needed for the
+                // synchronous gate pass below.
+                let mut terminal_ids = state.pane_terminals.values().copied().collect::<Vec<_>>();
+                terminal_ids.push(self.terminal_id);
+                terminal_ids.sort_unstable();
+                terminal_ids.dedup();
+                (
+                    state.generation,
+                    state.endpoint.as_ref().map(|endpoint| endpoint.backend),
+                    terminal_ids,
+                )
+            }
+            _ => {
+                self.retry_notify.notify_one();
+                return;
+            }
+        };
+
+        if foreground {
+            // A tmux actor has independent pane routes, so all existing
+            // bindings can be rearmed synchronously. Herdr's controller is
+            // resumed only by its live actor after this method wakes it.
+            if backend == Some(Backend::Tmux) {
+                for terminal_id in terminal_ids {
+                    registry::resume_transport(terminal_id, generation);
+                }
+                self.refresh_terminal_input_ready();
+            }
+        } else {
+            // The session flags already reject connection-level sends. This
+            // terminal pass closes the direct native registry boundary before
+            // this synchronous API returns, while retaining every binding and
+            // cached Term.
+            for terminal_id in terminal_ids {
+                registry::suspend_transport(terminal_id, generation);
             }
         }
-        self.retry_notify.notify_waiters();
+        // Retain one wake permit when the actor is between awaits; a
+        // waiters-only notification could be lost while Herdr is processing a
+        // frame/input request and leave its suspended controller asleep.
+        self.retry_notify.notify_one();
     }
 
     fn set_automatic_reconnect(&self, enabled: bool) {
@@ -6902,9 +6955,28 @@ mod tests {
     #[test]
     fn rapid_foreground_transition_keeps_a_live_controller_authoritative() {
         let (owner, shared) = recovery_fixture();
+        let (input_sender, mut input_receiver) = mpsc::channel(8);
+        let (resize_sender, _resize_receiver) = watch::channel((80, 24));
+        registry::prepare_pane_transport(
+            owner,
+            shared.generation,
+            (80, 24),
+            input_sender,
+            resize_sender,
+        )
+        .expect("live tmux fixture transport");
+        assert!(registry::mark_transport_ready(owner, shared.generation));
+        shared.refresh_terminal_input_ready();
         let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
         let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
+        let retained_term = registry::with_terminal_for_test(owner, |terminal| {
+            terminal.term() as *const _ as usize
+        })
+        .expect("retained native term");
+        let retained_native_snapshot = registry::snapshot(owner).expect("retained native snapshot");
         let initial_epoch = shared.operation_epoch();
+        let initial_terminal_epoch =
+            registry::operation_epoch(owner).expect("initial terminal epoch");
         let (sender, _receiver) = mpsc::channel(4);
         shared.set_commands(sender);
         let abort = runtime()
@@ -6924,12 +6996,34 @@ mod tests {
         // still revoking input during the hidden interval.
         assert_eq!(set_foreground(owner, false), Ok(()));
         assert_eq!(shared.operation_epoch(), initial_epoch);
+        let suspended_terminal_epoch =
+            registry::operation_epoch(owner).expect("suspended terminal epoch");
+        assert!(suspended_terminal_epoch > initial_terminal_epoch);
+        assert!(!registry::transport_ready(owner, shared.generation));
         assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
         assert!(!shared.current_terminal_input_is_ready(initial_epoch));
+        assert_eq!(
+            registry::send_bytes(owner, b"hidden-input"),
+            Err(crate::terminal::TerminalError::InputNotReady)
+        );
+        assert!(input_receiver.try_recv().is_err());
+        assert_eq!(
+            registry::snapshot(owner).expect("hidden retained terminal"),
+            retained_native_snapshot
+        );
         assert_eq!(set_foreground(owner, true), Ok(()));
         assert!(shared.is_foreground());
         assert_eq!(shared.operation_epoch(), initial_epoch);
+        let foreground_terminal_epoch =
+            registry::operation_epoch(owner).expect("foreground terminal epoch");
+        assert!(foreground_terminal_epoch > suspended_terminal_epoch);
+        assert!(registry::transport_ready(owner, shared.generation));
         assert!(shared.current_terminal_input_is_ready(initial_epoch));
+        registry::send_bytes(owner, b"foreground-input").expect("fresh foreground input");
+        assert_eq!(
+            input_receiver.try_recv().expect("foreground input message"),
+            b"foreground-input"
+        );
 
         // A live controller remains usable after a rapid false -> true
         // transition. A real transport loss still enters recovery through the
@@ -6949,6 +7043,13 @@ mod tests {
             &retained_terminal,
             &registry::shared_terminal(owner).expect("retained terminal after recovery")
         ));
+        assert_eq!(
+            registry::with_terminal_for_test(owner, |terminal| terminal.term() as *const _
+                as usize)
+            .expect("native term after foreground"),
+            retained_term,
+            "foreground transitions retain the native Term"
+        );
 
         registry::destroy_terminal(owner);
     }

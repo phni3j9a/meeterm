@@ -2024,6 +2024,23 @@ impl HerdrClient<'_> {
         self.activate(Some(pane_id)).await
     }
 
+    /// Finish a foreground wake for the live controller without opening a new
+    /// Herdr lease. The transition guard closes the race with a concurrent
+    /// background call; the native terminal lock has already been released
+    /// before the session readiness refresh below.
+    fn resume_controller_on_foreground(&self) {
+        let _transition = self.shared.foreground_transition_lock();
+        if !self.shared.is_foreground() {
+            return;
+        }
+        if let Some(controller) = self.controller.as_ref()
+            && controller.ready
+        {
+            registry::resume_transport(controller.native, self.shared.generation);
+        }
+        self.shared.refresh_terminal_input_ready();
+    }
+
     async fn activate(&mut self, requested_pane: Option<u64>) -> Result<(), FlowFailure> {
         let operation_epoch = self.request_epoch();
         if !self.shared.current_request_epoch(operation_epoch) {
@@ -2085,9 +2102,11 @@ impl HerdrClient<'_> {
             .as_ref()
             .is_some_and(|controller| Some(controller.pane) == selected)
         {
-            if self.shared.is_foreground() {
-                self.shared.refresh_terminal_input_ready();
-            }
+            // A healthy Herdr controller stays attached while hidden; only
+            // the live actor's foreground wake re-arms its native gate. If
+            // the first frame arrived while hidden, `ready` is already true
+            // but the Suspended gate remains closed until this point.
+            self.resume_controller_on_foreground();
             return Ok(());
         }
         self.release().await?;
@@ -2152,6 +2171,7 @@ impl HerdrClient<'_> {
                 .attach_semantic_transport(self.shared.generation, input, resize)
                 .map_err(|_| FlowFailure::Stale)?;
         }
+        self.shared.suspend_terminal_if_background(native);
         self.controller = Some(Controller {
             pane: selected,
             native,
@@ -2285,6 +2305,10 @@ impl HerdrClient<'_> {
             }
             self.staged_projection = None;
             self.strict_terminal = None;
+            // The first full frame can race a foreground transition. Let the
+            // live actor finish the native rearm even if the notify edge was
+            // consumed while this strict commit was in progress.
+            self.resume_controller_on_foreground();
             return Ok(());
         }
 
@@ -2305,20 +2329,28 @@ impl HerdrClient<'_> {
         }
         let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
         controller.seq = Some(seq);
-        if !controller.ready {
+        let became_ready = if !controller.ready {
             controller.ready = terminal.mark_transport_ready(self.shared.generation);
             if !controller.ready {
                 // A queued hide/show edge can revoke the binding while the
                 // desired pane stays the same. Its command will reacquire.
                 return Ok(());
             }
-            let controller_native = controller.native;
-            drop(terminal);
-            if !self.shared.mark_ready_at_epoch(controller_epoch) {
-                registry::detach_transport(controller_native, self.shared.generation);
-                return Err(FlowFailure::Stale);
-            }
+            true
+        } else {
+            false
+        };
+        let controller_native = controller.native;
+        drop(terminal);
+        if became_ready && !self.shared.mark_ready_at_epoch(controller_epoch) {
+            registry::detach_transport(controller_native, self.shared.generation);
+            return Err(FlowFailure::Stale);
         }
+        // If foreground returned while this frame was being decoded, the
+        // actor may have missed the edge-triggered notify while it was not in
+        // the select loop. Recheck the live controller here so a valid first
+        // frame still completes the Suspended -> Ready wake safely.
+        self.resume_controller_on_foreground();
         Ok(())
     }
 
