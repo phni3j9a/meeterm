@@ -220,6 +220,189 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('"marker_exactly_once": marker_matches', driver)
 
 
+class TransportLossContractTests(unittest.TestCase):
+    PRE_VALUE = "ios-ssh-loss-pre-0123456789abcdef"
+    POST_VALUE = "ios-ssh-loss-post-0123456789abcdef"
+
+    @staticmethod
+    def write_transport_observation(artifact_dir: Path) -> None:
+        (artifact_dir / "ios-ui-transport-loss-observation.txt").write_text(
+            "native_terminal_identifier_same=yes\n"
+            "native_handle_same=yes\n"
+            "selected_pane_identifier_same=yes\n"
+            "cached_read_only_surface=yes\n"
+            "picker_visible_during_loss=no\n"
+            "input_during_loss=none\n",
+            encoding="utf-8",
+        )
+
+    def test_ios_transport_loss_path_has_no_input_between_control_edges(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        workflow_start = source.index("func testShortSshInputAndDisconnect")
+        stop = source.index('guard requestFixtureTransport("stop")', workflow_start)
+        start = source.index('guard requestFixtureTransport("start")', stop)
+        stopped_segment = source[stop:start]
+        self.assertNotIn("enterTerminalCommand", stopped_segment)
+        self.assertNotIn(".tap()", stopped_segment)
+        self.assertIn("waitForTransportLossStale", stopped_segment)
+        self.assertIn("nativeHandleBeforeLoss", source[workflow_start:start])
+        self.assertIn("nativeHandleBeforeLoss", source[start:])
+        self.assertIn("stalePaneIdentifierSame", source)
+        self.assertIn("recoveredPaneIdentifierSame", source)
+        self.assertIn("nativeHandleSame", source)
+        self.assertIn('"native_handle_same=\\(nativeHandleSame', source)
+        self.assertIn('"selected_pane_identifier_same=\\(selectedPaneIdentifierSame', source)
+        self.assertIn('record("ssh_transport_loss_remote_ack")', source)
+
+        driver = (Path(__file__).with_name("ios-smoke.py")).read_text(encoding="utf-8")
+        self.assertIn("validate_transport_loss_markers", driver)
+        self.assertIn("same_pane_pid=yes", driver)
+        self.assertIn("other_panes_clean=yes", driver)
+        self.assertIn("native_terminal_identifier_same", driver)
+        self.assertIn("input_during_loss=none", driver)
+
+    def test_marker_validation_writes_only_fixed_sanitized_artifact(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            socket = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            marker = root / "transport-marker"
+            marker.write_text(
+                f"{self.PRE_VALUE}:12:1201\n{self.POST_VALUE}:12:1201\n",
+                encoding="utf-8",
+            )
+            self.write_transport_observation(artifact_dir)
+            panes = [("%12", 1201), ("%13", 1202), ("%14", 1203)]
+            with (
+                mock.patch.object(smoke, "fixture_socket", return_value=socket),
+                mock.patch.object(smoke, "fixture_pane_processes", return_value=panes),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux",
+                    return_value=subprocess.CompletedProcess([], 0, "clean\n", ""),
+                ),
+            ):
+                smoke.validate_transport_loss_markers(
+                    artifact_dir,
+                    socket,
+                    marker,
+                    self.PRE_VALUE,
+                    self.POST_VALUE,
+                )
+
+            validation = (artifact_dir / smoke.TRANSPORT_LOSS_VALIDATION_NAME).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("transport_loss=passed\n", validation)
+            self.assertIn("same_pane=yes\n", validation)
+            self.assertIn("other_panes_clean=yes\n", validation)
+            self.assertIn("native_terminal_identifier_same=yes\n", validation)
+            self.assertIn("native_handle_same=yes\n", validation)
+            self.assertIn("selected_pane_identifier_same=yes\n", validation)
+            self.assertNotIn(self.PRE_VALUE, validation)
+            self.assertNotIn(self.POST_VALUE, validation)
+            self.assertNotIn(str(marker), validation)
+            self.assertNotIn("1201", validation)
+            self.assertNotIn("%12", validation)
+
+    def test_marker_validation_rejects_duplicate_and_other_pane_occurrence(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            socket = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            marker = root / "transport-marker"
+            self.write_transport_observation(artifact_dir)
+            panes = [("%12", 1201), ("%13", 1202), ("%14", 1203)]
+            with mock.patch.object(smoke, "fixture_socket", return_value=socket):
+                marker.write_text(
+                    f"{self.PRE_VALUE}:12:1201\n"
+                    f"{self.POST_VALUE}:12:1201\n"
+                    f"{self.POST_VALUE}:12:1201\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(smoke.SmokeFailure) as duplicate:
+                    smoke.validate_transport_loss_markers(
+                        artifact_dir,
+                        socket,
+                        marker,
+                        self.PRE_VALUE,
+                        self.POST_VALUE,
+                    )
+                self.assertEqual(duplicate.exception.reason, "marker_sequence_invalid")
+
+                marker.write_text(
+                    f"{self.PRE_VALUE}:12:1201\n{self.POST_VALUE}:12:1201\n",
+                    encoding="utf-8",
+                )
+                with (
+                    mock.patch.object(smoke, "fixture_pane_processes", return_value=panes),
+                    mock.patch.object(
+                        smoke,
+                        "run_tmux",
+                        return_value=subprocess.CompletedProcess(
+                            [], 0, f"{self.PRE_VALUE}\n", ""
+                        ),
+                    ),
+                ):
+                    with self.assertRaises(smoke.SmokeFailure) as other_pane:
+                        smoke.validate_transport_loss_markers(
+                            artifact_dir,
+                            socket,
+                            marker,
+                            self.PRE_VALUE,
+                            self.POST_VALUE,
+                        )
+                self.assertEqual(other_pane.exception.reason, "marker_in_other_pane")
+
+    def test_fixed_observation_requires_handle_and_selected_pane_booleans(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            artifact_dir = Path(directory)
+            (artifact_dir / "ios-ui-transport-loss-observation.txt").write_text(
+                "native_terminal_identifier_same=yes\n"
+                "selected_pane_identifier_same=yes\n"
+                "cached_read_only_surface=yes\n"
+                "picker_visible_during_loss=no\n"
+                "input_during_loss=none\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(smoke.SmokeFailure) as missing:
+                smoke._read_fixed_transport_observation(artifact_dir)
+            self.assertEqual(missing.exception.reason, "observation_invalid")
+
+            self.write_transport_observation(artifact_dir)
+            contents = (artifact_dir / "ios-ui-transport-loss-observation.txt").read_text(
+                encoding="utf-8"
+            ).replace("native_handle_same=yes", "native_handle_same=no")
+            (artifact_dir / "ios-ui-transport-loss-observation.txt").write_text(
+                contents,
+                encoding="utf-8",
+            )
+            with self.assertRaises(smoke.SmokeFailure) as mismatch:
+                smoke._read_fixed_transport_observation(artifact_dir)
+            self.assertEqual(mismatch.exception.reason, "observation_mismatch")
+
+    def test_stage_validation_requires_each_loss_edge_once_and_in_order(self):
+        expected = (
+            "ssh_transport_loss_pre_marker",
+            "ssh_transport_loss_injected",
+            "ssh_transport_loss_stale_read_only",
+            "ssh_transport_loss_restored",
+            "ssh_transport_loss_authoritative_ready",
+            "ssh_transport_loss_remote_ack",
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            stages = root / "ios-ui-stages.txt"
+            stages.write_text("healthy_foreground\n" + "\n".join(expected) + "\n", encoding="utf-8")
+            smoke.require_transport_loss_stage_sequence(root)
+            stages.write_text("\n".join(reversed(expected)) + "\n", encoding="utf-8")
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.require_transport_loss_stage_sequence(root)
+            self.assertEqual(error.exception.reason, "stage_sequence_invalid")
+
+
 class SmokeLogProducerTests(unittest.TestCase):
     UNSAFE_STDERR = "UNSAFE_RAW_LOG_TOOL_ERROR"
     MARKER_OUTPUT = (

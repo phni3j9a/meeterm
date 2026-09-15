@@ -96,6 +96,7 @@ final class MeetermTerminalView: ExpoView {
     renderingView.isAccessibilityElement = true
     renderingView.accessibilityLabel = "Terminal"
     renderingView.accessibilityIdentifier = "native-terminal-surface"
+    updateSmokeNativeHandleObservation()
 
     renderingView.backgroundColor = backgroundColor
     addSubview(renderingView)
@@ -205,6 +206,7 @@ final class MeetermTerminalView: ExpoView {
       columns: Self.defaultColumns,
       rows: Self.defaultRows
     )
+    updateSmokeNativeHandleObservation()
     guard terminalHandle != 0 else {
       renderer.requestFrame()
       return
@@ -298,6 +300,18 @@ final class MeetermTerminalView: ExpoView {
       return false
     }
     return true
+  }
+
+  private func updateSmokeNativeHandleObservation() {
+    // This is an opaque, test-only accessibility value. It is enabled only
+    // by the smoke launch argument and contains no terminal bytes, cells, or
+    // remote identifiers. The UI test compares it across the retained
+    // cached/live transition while the normal app exposes no handle.
+    if observesInputLifecycle, terminalHandle != 0 {
+      renderingView.accessibilityValue = "native-handle-\(terminalHandle)"
+    } else {
+      renderingView.accessibilityValue = nil
+    }
   }
 
   override func layoutSubviews() {

@@ -1224,41 +1224,11 @@ impl ConnectionShared {
                             .panes
                             .iter()
                             .any(|pane| pane.pane_id == selected)
+                        && state.pane_terminals.get(&selected).is_some_and(|native| {
+                            registry::transport_ready_or_local(*native, state.generation)
+                        })
                 });
         }
-    }
-
-    fn set_terminal_visible(&self, visible: bool) -> Result<(), ConnectionError> {
-        let mut state = self.session.lock().map_err(|_| ConnectionError::Internal)?;
-        if state.generation != self.generation {
-            return Err(ConnectionError::RecoveryStale);
-        }
-        state.terminal_visible = visible;
-        if !visible || state.recovery.phase != RecoveryPhase::None {
-            state.terminal_input_ready = false;
-        } else if state
-            .endpoint
-            .as_ref()
-            .is_some_and(|endpoint| endpoint.backend == Backend::Tmux)
-            && state.runtime_operations_ready
-        {
-            // tmux's Control Mode stream remains the durable selected-runtime
-            // connection while the native view is hidden. Re-arm input only
-            // after the caller has made the view visible again; Herdr instead
-            // reacquires its direct controller after a fresh frame.
-            state.terminal_input_ready = state.foreground
-                && state.selected_pane.is_some_and(|selected| {
-                    state.pane_terminals.contains_key(&selected)
-                        && state
-                            .snapshot
-                            .panes
-                            .iter()
-                            .any(|pane| pane.pane_id == selected)
-                });
-        } else {
-            state.terminal_input_ready = false;
-        }
-        Ok(())
     }
 
     fn set_foreground(&self, foreground: bool) {
@@ -1296,6 +1266,9 @@ impl ConnectionShared {
                             .panes
                             .iter()
                             .any(|pane| pane.pane_id == selected)
+                        && state.pane_terminals.get(&selected).is_some_and(|native| {
+                            registry::transport_ready_or_local(*native, state.generation)
+                        })
                 });
             }
         }
@@ -1944,8 +1917,14 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
     let sender = shared
         .command_sender()
         .ok_or(ConnectionError::RecoveryUnavailable)?;
-    let state = session_state(terminal_id);
-    let mut state = state.lock().map_err(|_| ConnectionError::Internal)?;
+    // Keep the queue acceptance and the synchronous input revoke under the
+    // session lock. A full queue therefore leaves both the authoritative
+    // selection and every transport untouched; an accepted request prevents
+    // old input before the actor can commit the payload's new selection.
+    let mut state = shared
+        .session
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
     if state.recovery.phase != RecoveryPhase::None || !state.runtime_operations_ready {
         return Err(ConnectionError::RecoveryUnavailable);
     }
@@ -1957,24 +1936,10 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
         .cloned()
         .ok_or(ConnectionError::InvalidArgument)?;
     let epoch = state.operation_epoch;
-    // Commit the desired local selection before enqueueing the actor request.
-    // Otherwise a Herdr actor can dequeue `SelectPane` between the send and
-    // this update, release the old controller, and observe the old selection
-    // with no later event that would activate the new one.
-    state.selected_pane = Some(pane_id);
-    state.terminal_input_ready = false;
-    mark_selected(&mut state.snapshot, pane_id);
-    if state
+    let herdr = state
         .endpoint
         .as_ref()
-        .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
-    {
-        for id in state.pane_terminals.values() {
-            registry::detach_transport(*id, state.generation);
-        }
-        state.herdr.select(pane_id);
-    }
-    drop(state);
+        .is_some_and(|endpoint| endpoint.backend == Backend::Herdr);
     sender
         .try_send(ControlRequest {
             epoch,
@@ -1984,6 +1949,22 @@ pub fn select_pane(terminal_id: TerminalId, pane_id: u64) -> Result<(), Connecti
             },
         })
         .map_err(|_| ConnectionError::RecoveryUnavailable)?;
+
+    // Selection itself is committed by the serialized backend actor after it
+    // has accepted this exact payload. Only the input gate is revoked here so
+    // a queued command cannot race with a user keystroke. Detach while the
+    // session lock is still held: the actor may already be waiting on the
+    // queue, but it cannot acquire the state lock and attach a new target
+    // before this accepted request's old bindings are revoked.
+    state.terminal_input_ready = false;
+    if herdr {
+        let generation = state.generation;
+        let ids = state.pane_terminals.values().copied().collect::<Vec<_>>();
+        for id in ids {
+            registry::detach_transport(id, generation);
+        }
+        registry::detach_transport(shared.terminal_id, generation);
+    }
     Ok(())
 }
 
@@ -2116,24 +2097,43 @@ pub fn set_terminal_visible(terminal_id: TerminalId, visible: bool) -> Result<()
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
     let shared = current_connection(terminal_id).ok();
     if let Some(shared) = &shared {
-        shared.set_terminal_visible(visible)?;
-        if !visible {
-            // Hiding is an unconditional revoke boundary.  Showing is only a
-            // display desire; the actor decides whether a verified controller
-            // may be reacquired for the current epoch.
-            let herdr = shared
-                .session
-                .lock()
-                .map(|state| {
-                    state
-                        .endpoint
-                        .as_ref()
-                        .is_some_and(|endpoint| endpoint.backend == Backend::Herdr)
-                })
-                .unwrap_or(true);
-            if herdr {
-                detach_all(shared);
+        let sender = shared
+            .command_sender()
+            .ok_or(ConnectionError::RecoveryUnavailable)?;
+        // Queue acceptance and the visibility/revoke transition are one
+        // synchronous ownership boundary. The actor cannot observe the
+        // request before this lock is released, and a full queue returns with
+        // the prior visibility and registry gate unchanged.
+        let mut state = shared
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        if state.generation != shared.generation {
+            return Err(ConnectionError::RecoveryStale);
+        }
+        let epoch = state.operation_epoch;
+        let herdr = state
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.backend == Backend::Herdr);
+        sender
+            .try_send(ControlRequest {
+                epoch,
+                command: ControlCommand::SetTerminalVisible { visible },
+            })
+            .map_err(|_| ConnectionError::RecoveryUnavailable)?;
+
+        apply_terminal_visibility_state(&mut state, visible);
+        if !visible && herdr {
+            // Hiding is an unconditional revoke boundary. Detach only after
+            // the command has been accepted, and while the state lock blocks
+            // the actor from reacquiring a controller in the gap.
+            let generation = state.generation;
+            let ids = state.pane_terminals.values().copied().collect::<Vec<_>>();
+            for id in ids {
+                registry::detach_transport(id, generation);
             }
+            registry::detach_transport(shared.terminal_id, generation);
         }
     } else {
         let state = session_state(terminal_id);
@@ -2142,17 +2142,6 @@ pub fn set_terminal_visible(terminal_id: TerminalId, visible: bool) -> Result<()
         if !visible {
             state.terminal_input_ready = false;
         }
-    }
-    if let Some(shared) = shared
-        && let Some(sender) = shared.command_sender()
-    {
-        let epoch = shared.operation_epoch();
-        sender
-            .try_send(ControlRequest {
-                epoch,
-                command: ControlCommand::SetTerminalVisible { visible },
-            })
-            .map_err(|_| ConnectionError::Internal)?;
     }
     Ok(())
 }
@@ -2883,6 +2872,39 @@ fn mark_selected(snapshot: &mut SessionSnapshot, pane_id: u64) {
         for pane in &mut window.panes {
             pane.selected = pane.pane_id == pane_id;
         }
+    }
+}
+
+fn apply_terminal_visibility_state(state: &mut SessionState, visible: bool) {
+    state.terminal_visible = visible;
+    if !visible || state.recovery.phase != RecoveryPhase::None {
+        state.terminal_input_ready = false;
+    } else if state
+        .endpoint
+        .as_ref()
+        .is_some_and(|endpoint| endpoint.backend == Backend::Tmux)
+        && state.runtime_operations_ready
+    {
+        // tmux keeps its ordinary Control Mode transport while the native
+        // view is hidden. Re-arm input only when the selected registry binding
+        // is still Ready; this prevents a show command from publishing a
+        // session-ready gate over a revoked native transport.
+        state.terminal_input_ready = state.foreground
+            && state.selected_pane.is_some_and(|selected| {
+                state
+                    .snapshot
+                    .panes
+                    .iter()
+                    .any(|pane| pane.pane_id == selected)
+                    && state.pane_terminals.get(&selected).is_some_and(|native| {
+                        registry::transport_ready_or_local(*native, state.generation)
+                    })
+            });
+    } else {
+        // Herdr must reacquire its semantic controller and complete a fresh
+        // full frame before the selected native terminal becomes an input
+        // target again.
+        state.terminal_input_ready = false;
     }
 }
 
@@ -4950,12 +4972,361 @@ mod trust {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::Modifiers;
+    use crate::terminal::SemanticInput;
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     const KEY_ONE: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     const KEY_TWO: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
+
+    enum FixtureInputReceiver {
+        Bytes(mpsc::Receiver<Vec<u8>>),
+        Semantic(mpsc::Receiver<SemanticInput>),
+    }
+
+    struct BoundedControlFixture {
+        owner: TerminalId,
+        target: TerminalId,
+        shared: Arc<ConnectionShared>,
+        generation: u64,
+        command_receiver: mpsc::Receiver<ControlRequest>,
+        input_receiver: FixtureInputReceiver,
+    }
+
+    impl BoundedControlFixture {
+        fn fill_command_queue(&self) {
+            let epoch = self.shared.operation_epoch();
+            for _ in 0..32 {
+                self.shared
+                    .command_sender()
+                    .expect("bounded fixture command sender")
+                    .try_send(ControlRequest {
+                        epoch,
+                        command: ControlCommand::RefreshTerminal,
+                    })
+                    .expect("test command queue capacity");
+            }
+        }
+    }
+
+    impl Drop for BoundedControlFixture {
+        fn drop(&mut self) {
+            if let Some(entry) = connections()
+                .lock()
+                .expect("bounded fixture connection registry")
+                .remove(&self.owner)
+            {
+                entry.abort.abort();
+            }
+            registry::destroy_terminal(self.target);
+            registry::destroy_terminal(self.owner);
+        }
+    }
+
+    fn bounded_control_fixture(backend: Backend) -> BoundedControlFixture {
+        let owner = registry::create_terminal(80, 24).expect("bounded owner terminal");
+        let target = registry::create_terminal(80, 24).expect("bounded target terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "bounded-control.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/bounded-control-known-hosts"),
+        ));
+        let old = PaneSnapshot {
+            window_id: 1,
+            pane_id: owner,
+            terminal_id: owner,
+            window_name: "bounded".to_owned(),
+            active: true,
+            selected: true,
+            index: 0,
+            columns: 80,
+            rows: 24,
+            pane_name: "old".to_owned(),
+            title: "old".to_owned(),
+        };
+        let new = PaneSnapshot {
+            window_id: 1,
+            pane_id: target,
+            terminal_id: target,
+            window_name: "bounded".to_owned(),
+            active: false,
+            selected: false,
+            index: 1,
+            columns: 80,
+            rows: 24,
+            pane_name: "new".to_owned(),
+            title: "new".to_owned(),
+        };
+        {
+            let mut state = shared.session.lock().expect("bounded session state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "bounded-control.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/bounded-control-known-hosts"),
+                backend,
+                runtime: Some(
+                    match backend {
+                        Backend::Tmux => "meeterm",
+                        Backend::Herdr => "default",
+                    }
+                    .to_owned(),
+                ),
+            });
+            state.pane_terminals.insert(owner, owner);
+            state.pane_terminals.insert(target, target);
+            state.selected_pane = Some(owner);
+            state.snapshot = SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 1,
+                    name: "bounded".to_owned(),
+                    panes: vec![old.clone(), new.clone()],
+                    selected: true,
+                    zoomed: false,
+                }],
+                panes: vec![old, new],
+                selected_pane: Some(owner),
+            };
+            state.runtime_operations_ready = true;
+            state.terminal_input_ready = true;
+        }
+
+        let input_receiver = match backend {
+            Backend::Tmux => {
+                let (input, receiver) = mpsc::channel(8);
+                let (resize, _sizes) = watch::channel((80, 24));
+                registry::prepare_pane_transport(owner, generation, (80, 24), input, resize)
+                    .expect("bounded tmux transport");
+                assert!(registry::mark_transport_ready(owner, generation));
+                FixtureInputReceiver::Bytes(receiver)
+            }
+            Backend::Herdr => {
+                registry::begin_remote(owner, generation).expect("bounded Herdr remote terminal");
+                let (input, receiver) = mpsc::channel(8);
+                let (resize, _sizes) = watch::channel((80, 24));
+                registry::with_terminal_for_test(owner, |terminal| {
+                    terminal
+                        .attach_semantic_transport(generation, input, resize)
+                        .expect("bounded Herdr semantic transport");
+                })
+                .expect("bounded Herdr terminal");
+                assert!(registry::mark_transport_ready(owner, generation));
+                FixtureInputReceiver::Semantic(receiver)
+            }
+        };
+
+        let (sender, command_receiver) = mpsc::channel(32);
+        shared.set_commands(sender);
+        let abort = runtime()
+            .expect("bounded fixture native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections()
+            .lock()
+            .expect("bounded fixture connection registry")
+            .insert(
+                owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&shared),
+                    abort,
+                },
+            );
+
+        BoundedControlFixture {
+            owner,
+            target,
+            shared,
+            generation,
+            command_receiver,
+            input_receiver,
+        }
+    }
+
+    #[test]
+    fn full_control_queue_rejects_selection_without_changing_backend_target() {
+        for backend in [Backend::Tmux, Backend::Herdr] {
+            let fixture = bounded_control_fixture(backend);
+            fixture.fill_command_queue();
+            let before_snapshot = session_snapshot(fixture.owner).expect("selection snapshot");
+            let before_epoch = registry::operation_epoch(fixture.owner).expect("selection epoch");
+
+            assert!(select_pane(fixture.owner, fixture.target).is_err());
+
+            let state = fixture
+                .shared
+                .session
+                .lock()
+                .expect("selection rejection state");
+            assert_eq!(state.selected_pane, Some(fixture.owner));
+            assert_eq!(state.snapshot, before_snapshot);
+            assert!(state.terminal_input_ready);
+            drop(state);
+            assert!(registry::transport_ready(fixture.owner, fixture.generation));
+            assert!(!registry::transport_ready(
+                fixture.target,
+                fixture.generation
+            ));
+            assert_eq!(
+                registry::operation_epoch(fixture.owner).expect("selection epoch after reject"),
+                before_epoch
+            );
+        }
+    }
+
+    #[test]
+    fn full_control_queue_rejects_hide_without_revoking_visibility_or_transport() {
+        for backend in [Backend::Tmux, Backend::Herdr] {
+            let fixture = bounded_control_fixture(backend);
+            fixture.fill_command_queue();
+            let before_snapshot = session_snapshot(fixture.owner).expect("visibility snapshot");
+            let before_epoch = registry::operation_epoch(fixture.owner).expect("visibility epoch");
+
+            assert!(set_terminal_visible(fixture.owner, false).is_err());
+
+            let state = fixture
+                .shared
+                .session
+                .lock()
+                .expect("visibility rejection state");
+            assert!(state.terminal_visible);
+            assert!(state.terminal_input_ready);
+            assert_eq!(state.snapshot, before_snapshot);
+            drop(state);
+            assert!(registry::transport_ready(fixture.owner, fixture.generation));
+            assert_eq!(
+                registry::operation_epoch(fixture.owner).expect("visibility epoch after reject"),
+                before_epoch
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_hide_show_keeps_session_and_registry_gates_coherent_for_both_backends() {
+        for backend in [Backend::Tmux, Backend::Herdr] {
+            let mut fixture = bounded_control_fixture(backend);
+            let before_epoch =
+                registry::operation_epoch(fixture.owner).expect("initial input epoch");
+
+            assert_eq!(set_terminal_visible(fixture.owner, false), Ok(()));
+            {
+                let state = fixture
+                    .shared
+                    .session
+                    .lock()
+                    .expect("hidden visibility state");
+                assert!(!state.terminal_visible);
+                assert!(!state.terminal_input_ready);
+            }
+            match backend {
+                Backend::Tmux => {
+                    assert!(registry::transport_ready(fixture.owner, fixture.generation));
+                    assert_eq!(
+                        registry::operation_epoch(fixture.owner).expect("tmux hidden epoch"),
+                        before_epoch
+                    );
+                }
+                Backend::Herdr => {
+                    assert!(!registry::transport_ready(
+                        fixture.owner,
+                        fixture.generation
+                    ));
+                    assert!(
+                        registry::operation_epoch(fixture.owner).expect("Herdr hidden epoch")
+                            > before_epoch
+                    );
+                }
+            }
+
+            assert_eq!(set_terminal_visible(fixture.owner, true), Ok(()));
+            {
+                let state = fixture
+                    .shared
+                    .session
+                    .lock()
+                    .expect("shown visibility state");
+                assert!(state.terminal_visible);
+                assert_eq!(state.selected_pane, Some(fixture.owner));
+                if backend == Backend::Tmux {
+                    assert!(state.terminal_input_ready);
+                } else {
+                    // Herdr opens a new controller only after its first full
+                    // frame; the public show edge must not fabricate Ready.
+                    assert!(!state.terminal_input_ready);
+                }
+            }
+            assert!(matches!(
+                fixture
+                    .command_receiver
+                    .try_recv()
+                    .expect("accepted hide command")
+                    .command,
+                ControlCommand::SetTerminalVisible { visible: false }
+            ));
+            assert!(matches!(
+                fixture
+                    .command_receiver
+                    .try_recv()
+                    .expect("accepted show command")
+                    .command,
+                ControlCommand::SetTerminalVisible { visible: true }
+            ));
+
+            if backend == Backend::Herdr {
+                // The stopped receiver above models an actor between command
+                // acceptance and its next wake. Rebind the selected semantic
+                // transport exactly as the actor does after a fresh full
+                // frame, then verify that only this fresh binding accepts
+                // input.
+                registry::begin_remote(fixture.owner, fixture.generation)
+                    .expect("Herdr show remote binding");
+                let (input, receiver) = mpsc::channel(8);
+                let (resize, _sizes) = watch::channel((80, 24));
+                registry::with_terminal_for_test(fixture.owner, |terminal| {
+                    terminal
+                        .attach_semantic_transport(fixture.generation, input, resize)
+                        .expect("Herdr show semantic binding");
+                })
+                .expect("Herdr show terminal");
+                assert!(registry::mark_transport_ready(
+                    fixture.owner,
+                    fixture.generation
+                ));
+                fixture.input_receiver = FixtureInputReceiver::Semantic(receiver);
+                fixture.shared.refresh_terminal_input_ready();
+            }
+
+            let fresh_epoch = registry::operation_epoch(fixture.owner).expect("fresh input epoch");
+            assert!(registry::transport_ready(fixture.owner, fixture.generation));
+            assert!(
+                fixture
+                    .shared
+                    .current_terminal_input_is_ready(fixture.shared.operation_epoch())
+            );
+            match &mut fixture.input_receiver {
+                FixtureInputReceiver::Bytes(receiver) => {
+                    assert_eq!(registry::send_bytes(fixture.owner, b"fresh").unwrap(), 5);
+                    assert_eq!(receiver.try_recv().expect("fresh tmux input"), b"fresh");
+                }
+                FixtureInputReceiver::Semantic(receiver) => {
+                    assert!(
+                        registry::commit_utf8_at_epoch(fixture.owner, fresh_epoch, b"fresh")
+                            .is_ok()
+                    );
+                    assert!(matches!(
+                        receiver.try_recv().expect("fresh Herdr input"),
+                        SemanticInput::Text(text, modifiers)
+                            if text == "fresh" && modifiers == Modifiers::NONE
+                    ));
+                }
+            }
+        }
+    }
 
     fn path(name: &str) -> PathBuf {
         let process_id = std::process::id();

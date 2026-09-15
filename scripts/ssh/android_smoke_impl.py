@@ -112,6 +112,21 @@ RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",
 )
+FIXTURE_CONTROL_REQUEST_ENV = "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
+FIXTURE_CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
+FIXTURE_CONTROL_TIMEOUT_SECONDS = 25.0
+ANDROID_TRANSPORT_LOSS_PRE_PATTERN = re.compile(r"android-ssh-loss-pre-[0-9a-f]{16}")
+ANDROID_TRANSPORT_LOSS_POST_PATTERN = re.compile(r"android-ssh-loss-post-[0-9a-f]{16}")
+TRANSPORT_LOSS_COMPLETION_STAGES = (
+    "daily_transport_loss_pre_marker_once",
+    "daily_transport_loss_injected",
+    "daily_transport_loss_stale_read_only",
+    "daily_transport_loss_restored",
+    "daily_transport_loss_authoritative_ready",
+    "daily_transport_loss_post_marker_once",
+    "daily_transport_loss_remote_ack",
+    "daily_transport_loss_complete",
+)
 HANDOFF_COMMAND = "tmux attach -t meeterm"
 PRIVATE_KEY_ACCESSIBILITY_LABELS = (
     "Private OpenSSH key",
@@ -681,6 +696,38 @@ def required_environment(name: str) -> str:
     if not value:
         raise SmokeFailure("fixture_environment", "missing_value")
     return value
+
+
+def request_fixture_transport(action: str, stage: str) -> None:
+    """Ask the parent fixture to stop/start only its disposable sshd."""
+
+    if action not in {"stop", "start"}:
+        raise SmokeFailure(stage, "fixture_control_action_invalid")
+    try:
+        environment = {
+            name: os.environ[name]
+            for name in (
+                FIXTURE_CONTROL_REQUEST_ENV,
+                FIXTURE_CONTROL_STATUS_ENV,
+            )
+        }
+    except KeyError as error:
+        raise SmokeFailure(stage, "fixture_control_unavailable") from error
+    fixture_script = Path(__file__).with_name("fixture.py")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(fixture_script), "--control", action],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=FIXTURE_CONTROL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SmokeFailure(stage, "fixture_control_failed") from error
+    if result.returncode != 0:
+        raise SmokeFailure(stage, "fixture_control_failed")
 
 
 def load_fixture() -> tuple[str, int, str, str, Path]:
@@ -1519,6 +1566,40 @@ def find_pane_node(
     return None
 
 
+def find_recovery_pane_node(
+    nodes: list[Node], pane_id: str, *, selected: bool = True
+) -> Node | None:
+    """Find a retained pane tab even when cached/read-only disables it."""
+
+    candidates: list[Node] = []
+    for node in nodes:
+        if not node.visible_to_user or pane_id_from_node(node) != pane_id:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if selected and not node.selected:
+            continue
+        candidates.append(node)
+    return candidates[0] if candidates else None
+
+
+def find_visible_test_id(nodes: list[Node], identifier: str) -> Node | None:
+    """Find one visible exact testID without requiring it to be enabled."""
+
+    for node in nodes:
+        resource_id = node.resource_id.removeprefix(f"{PACKAGE}:id/")
+        left, top, right, bottom = node.bounds
+        if (
+            node.visible_to_user
+            and resource_id == identifier
+            and right > left
+            and bottom > top
+        ):
+            return node
+    return None
+
+
 def wait_for_pane(
     device: AndroidDevice,
     stage: str,
@@ -1630,6 +1711,85 @@ def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
         * (node.bounds[3] - node.bounds[1]),
         default=None,
     )
+
+
+def find_cached_terminal_surface(nodes: list[Node]) -> Node | None:
+    """Locate the native retained surface without requiring live input."""
+
+    candidates = []
+    for node in nodes:
+        left, top, right, bottom = node.bounds
+        if (
+            node.content_description == "Terminal, cached output, read only"
+            and node.visible_to_user
+            and right > left
+            and bottom > top
+        ):
+            candidates.append(node)
+    return max(
+        candidates,
+        key=lambda node: (node.bounds[2] - node.bounds[0])
+        * (node.bounds[3] - node.bounds[1]),
+        default=None,
+    )
+
+
+def same_terminal_surface_binding(before: Node, after: Node) -> bool:
+    """Compare only sanitized accessibility binding metadata."""
+
+    if before.resource_id and after.resource_id:
+        return before.resource_id == after.resource_id
+    return before.class_name == after.class_name and before.bounds == after.bounds
+
+
+def transport_loss_recovery_ready(nodes: list[Node], expected_pane_id: str) -> bool:
+    """Require the stale rail and the same selected pane, not live input."""
+
+    if runtime_picker_is_visible(nodes):
+        return False
+    return (
+        find_visible_test_id(nodes, "recovery-rail") is not None
+        and find_visible_test_id(nodes, "recovery-title") is not None
+        and find_visible_test_id(nodes, "recovery-detail") is not None
+        and find_visible_test_id(nodes, "recovery-meta") is not None
+        and find_cached_terminal_surface(nodes) is not None
+        and find_recovery_pane_node(nodes, expected_pane_id, selected=True) is not None
+    )
+
+
+def wait_for_transport_loss_stale(
+    device: AndroidDevice,
+    stage: str,
+    expected_pane_id: str,
+    initial_terminal: Node,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> Node:
+    """Wait for cached/read-only recovery while preserving foreground evidence."""
+
+    deadline = time.monotonic() + timeout
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        if runtime_picker_is_visible(nodes):
+            raise SmokeFailure(stage, "runtime_picker_reappeared")
+        cached = find_cached_terminal_surface(nodes)
+        if (
+            cached is not None
+            and transport_loss_recovery_ready(nodes, expected_pane_id)
+            and same_terminal_surface_binding(initial_terminal, cached)
+        ):
+            device.assert_foreground(stage)
+            return cached
+        time.sleep(0.2)
+    if not hierarchy_seen:
+        raise SmokeFailure(stage, "ui_unavailable")
+    raise SmokeFailure(stage, "stale_read_only_timeout")
 
 
 def wait_for_terminal(device: AndroidDevice, stage: str, timeout: float = DEFAULT_UI_TIMEOUT) -> Node:
@@ -2497,6 +2657,150 @@ def resumed_marker_command(
     )
 
 
+def transport_loss_marker_command(
+    marker: str,
+    path: Path,
+    pane_id: str,
+    *,
+    append: bool = False,
+) -> str:
+    """Build an ASCII marker carrying the selected pane and shell identity."""
+
+    pattern = (
+        ANDROID_TRANSPORT_LOSS_PRE_PATTERN
+        if marker.startswith("android-ssh-loss-pre-")
+        else ANDROID_TRANSPORT_LOSS_POST_PATTERN
+    )
+    if pattern.fullmatch(marker) is None:
+        raise SmokeFailure("transport_loss_marker", "invalid_marker")
+    if re.fullmatch(r"%[0-9]+", pane_id) is None:
+        raise SmokeFailure("transport_loss_marker", "invalid_pane_id")
+    redirect = ">>" if append else ">"
+    # Keep the command free of Android input's reserved ``%s`` escape. The
+    # shell concatenates a quoted fixed marker, the expanded shell PID, and a
+    # quoted newline into printf's format string.
+    format_prefix = shell_quote(f"{marker}:{pane_id[1:]}:")
+    return (
+        f"printf {format_prefix}\"$$\"'\\n' {redirect} "
+        f"{shell_quote(str(path))}"
+    )
+
+
+def _transport_loss_marker_lines(
+    path: Path,
+    values: tuple[str, ...],
+    pane_id: str,
+    stage: str,
+) -> list[str] | None:
+    if re.fullmatch(r"%[0-9]+", pane_id) is None:
+        raise SmokeFailure(stage, "invalid_pane_id")
+    if len(values) not in (1, 2):
+        raise SmokeFailure(stage, "invalid_marker_sequence")
+    pattern_by_value = {
+        value: re.compile(rf"{re.escape(value)}:{re.escape(pane_id[1:])}:(?P<pid>[1-9][0-9]*)\Z")
+        for value in values
+    }
+    try:
+        content = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_read_failed") from error
+    lines = content.splitlines()
+    if len(lines) > len(values):
+        raise SmokeFailure(stage, "marker_repeated")
+    if len(lines) != len(values):
+        return None
+    for line, value in zip(lines, values):
+        if pattern_by_value[value].fullmatch(line) is None:
+            raise SmokeFailure(stage, "marker_sequence_invalid")
+    # Keep a second read as an exact-once check. It carries no terminal text
+    # into an artifact and catches a duplicate command before acceptance.
+    time.sleep(0.5)
+    try:
+        stable = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_read_failed") from error
+    if stable != content:
+        raise SmokeFailure(stage, "marker_repeated")
+    return lines
+
+
+def wait_for_transport_loss_marker_lines(
+    path: Path,
+    values: tuple[str, ...],
+    pane_id: str,
+    stage: str,
+    *,
+    timeout: float = REMOTE_MARKER_TIMEOUT,
+) -> list[str]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lines = _transport_loss_marker_lines(path, values, pane_id, stage)
+        if lines is not None:
+            return lines
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "marker_timeout")
+
+
+def validate_transport_loss_marker_scope(
+    tmux_socket: Path,
+    pane_id: str,
+    marker_path: Path,
+    pre_value: str,
+    post_value: str,
+    stage: str,
+) -> None:
+    """Prove both markers belong exactly once to the same live tmux pane."""
+
+    if ANDROID_TRANSPORT_LOSS_PRE_PATTERN.fullmatch(pre_value) is None:
+        raise SmokeFailure(stage, "pre_marker_invalid")
+    if ANDROID_TRANSPORT_LOSS_POST_PATTERN.fullmatch(post_value) is None:
+        raise SmokeFailure(stage, "post_marker_invalid")
+    if pre_value == post_value:
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+    lines = _transport_loss_marker_lines(
+        marker_path,
+        (pre_value, post_value),
+        pane_id,
+        stage,
+    )
+    if lines is None:
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+    expected_pattern = re.compile(
+        rf"(?:{re.escape(pre_value)}|{re.escape(post_value)}):{re.escape(pane_id[1:])}:[1-9][0-9]*\Z"
+    )
+    if any(expected_pattern.fullmatch(line) is None for line in lines):
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+    current_panes = list_tmux_panes(tmux_socket, stage)
+    target = next((pane for pane in current_panes if pane.pane_id == pane_id), None)
+    if target is None:
+        raise SmokeFailure(stage, "pane_identity_missing")
+    marker_pid = int(lines[0].rsplit(":", 1)[1])
+    if marker_pid != target.pane_pid or lines[1].rsplit(":", 1)[1] != str(marker_pid):
+        raise SmokeFailure(stage, "pane_identity_changed")
+    for pane in current_panes:
+        if pane.pane_id == pane_id:
+            continue
+        capture = run_tmux_command(
+            tmux_socket,
+            ("capture-pane", "-p", "-J", "-S", "-30", "-t", pane.pane_id),
+            stage,
+        ).stdout.decode("utf-8", errors="replace")
+        if pre_value in capture or post_value in capture:
+            raise SmokeFailure(stage, "marker_in_other_pane")
+
+
+def require_transport_loss_completion(completed: list[str], stage: str) -> None:
+    """Require one ordered, bounded completion record for each loss edge."""
+
+    positions: list[int] = []
+    for name in TRANSPORT_LOSS_COMPLETION_STAGES:
+        if completed.count(name) != 1:
+            raise SmokeFailure(stage, "completion_sequence_invalid")
+        positions.append(completed.index(name))
+    if positions != sorted(positions):
+        raise SmokeFailure(stage, "completion_sequence_invalid")
+
+
 def printf_octal(value: str) -> str:
     return "".join(f"\\{byte:03o}" for byte in value.encode("utf-8"))
 
@@ -2631,6 +2935,23 @@ def wait_for_marker(path: Path, marker: str) -> None:
     """Wait for exactly one marker line (kept for existing smoke callers)."""
 
     wait_for_file_contents(path, f"{marker}\n", "remote_marker")
+
+
+def latest_native_terminal_handle(device: AndroidDevice, stage: str) -> str:
+    """Read one sanitized opaque native handle observation from logcat."""
+
+    output = device.run(
+        ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalView:I"),
+        stage,
+        timeout=20.0,
+    ).decode("utf-8", errors="replace")
+    handles = re.findall(
+        r"\bbound terminalId=[^\r\n]*\bhandle=([1-9][0-9]*)\b",
+        output,
+    )
+    if not handles:
+        raise SmokeFailure(stage, "native_terminal_handle_unavailable")
+    return handles[-1]
 
 
 def write_artifact(path: Path, contents: str) -> None:
@@ -3301,6 +3622,174 @@ def exercise_foreground_return(
     )
 
 
+def exercise_transport_loss_recovery(
+    device: AndroidDevice,
+    tmux_socket: Path,
+    fixture_layout: list[TmuxPaneRecord],
+    marker_path: Path,
+    pre_value: str,
+    post_value: str,
+    artifact_dir: Path,
+    completed: list[str],
+    expected_pid: str,
+) -> None:
+    """Cut fixture sshd, retain one native pane, and recover without a picker."""
+
+    stage = "daily_transport_loss_prepare"
+    active_panes = [
+        pane for pane in fixture_layout if pane.active and pane.window_active
+    ]
+    if len(active_panes) != 1:
+        raise SmokeFailure(stage, "pane_selection_unavailable")
+    expected_pane = active_panes[0]
+    workspace = wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {expected_pane.window_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, stage)
+    wait_for_pane(
+        device,
+        stage,
+        pane_id=expected_pane.pane_id,
+        selected=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    initial_terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    device.assert_foreground(stage)
+    if device.process_id(stage) != expected_pid:
+        raise SmokeFailure(stage, "app_process_changed")
+    initial_handle = latest_native_terminal_handle(device, stage)
+    focus_terminal(device, initial_terminal, stage)
+    terminal_line(
+        device,
+        transport_loss_marker_command(
+            pre_value,
+            marker_path,
+            expected_pane.pane_id,
+        ),
+    )
+    wait_for_transport_loss_marker_lines(
+        marker_path,
+        (pre_value,),
+        expected_pane.pane_id,
+        "daily_transport_loss_pre_marker",
+    )
+    completed.append("daily_transport_loss_pre_marker_once")
+
+    transport_stopped = False
+    try:
+        request_fixture_transport("stop", "daily_transport_loss_inject")
+        transport_stopped = True
+        completed.append("daily_transport_loss_injected")
+
+        stage = "daily_transport_loss_stale"
+        stale_terminal = wait_for_transport_loss_stale(
+            device,
+            stage,
+            expected_pane.pane_id,
+            initial_terminal,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        stale_handle = latest_native_terminal_handle(device, stage)
+        if stale_handle != initial_handle:
+            raise SmokeFailure(stage, "native_terminal_handle_changed")
+        if not same_terminal_surface_binding(initial_terminal, stale_terminal):
+            raise SmokeFailure(stage, "native_terminal_binding_changed")
+        completed.append("daily_transport_loss_stale_read_only")
+
+        request_fixture_transport("start", "daily_transport_loss_restore")
+        transport_stopped = False
+        completed.append("daily_transport_loss_restored")
+
+        stage = "daily_transport_loss_ready"
+        wait_for_foreground_recovery_ready(
+            device,
+            stage,
+            expected_pane_id=expected_pane.pane_id,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        if device.process_id(stage) != expected_pid:
+            raise SmokeFailure(stage, "app_process_changed")
+        recovered_terminal = wait_for_labeled_terminal_surface(
+            device,
+            stage,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        recovered_handle = latest_native_terminal_handle(device, stage)
+        if recovered_handle != initial_handle:
+            raise SmokeFailure(stage, "native_terminal_handle_changed")
+        if not same_terminal_surface_binding(initial_terminal, recovered_terminal):
+            raise SmokeFailure(stage, "native_terminal_binding_changed")
+        wait_for_pane(
+            device,
+            stage,
+            pane_id=expected_pane.pane_id,
+            selected=True,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        completed.append("daily_transport_loss_authoritative_ready")
+
+        stage = "daily_transport_loss_post_marker"
+        focus_terminal(device, recovered_terminal, stage)
+        terminal_line(
+            device,
+            transport_loss_marker_command(
+                post_value,
+                marker_path,
+                expected_pane.pane_id,
+                append=True,
+            ),
+        )
+        wait_for_transport_loss_marker_lines(
+            marker_path,
+            (pre_value, post_value),
+            expected_pane.pane_id,
+            stage,
+        )
+        validate_transport_loss_marker_scope(
+            tmux_socket,
+            expected_pane.pane_id,
+            marker_path,
+            pre_value,
+            post_value,
+            stage,
+        )
+        write_artifact(
+            artifact_dir / "transport-loss-validation.txt",
+            "transport_loss=passed\n"
+            "fixture_control=stopped_and_started\n"
+            "recovery_surface=cached_read_only\n"
+            "native_handle_same=yes\n"
+            "pane_identity_same=yes\n"
+            "pre_marker_exactly_once=yes\n"
+            "post_marker_exactly_once=yes\n"
+            "other_panes_clean=yes\n"
+            "input_during_loss=none\n",
+        )
+        completed.append("daily_transport_loss_post_marker_once")
+        completed.append("daily_transport_loss_remote_ack")
+    finally:
+        if transport_stopped:
+            try:
+                request_fixture_transport("start", "daily_transport_loss_cleanup")
+            except SmokeFailure:
+                pass
+
+    tap_action(device, "daily_transport_loss_complete", BACK_TO_WORKSPACES_LABELS)
+    wait_for_workspace(
+        device,
+        "daily_transport_loss_complete",
+        label=f"Workspace {expected_pane.window_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+
+
 def reconnect_saved_profile_after_restart(
     device: AndroidDevice,
     artifact_dir: Path,
@@ -3940,6 +4429,10 @@ def main(argv: list[str] | None = None) -> int:
     second_marker_value: str | None = None
     foreground_marker_path: Path | None = None
     foreground_marker_value: str | None = None
+    transport_loss_marker_path: Path | None = None
+    transport_loss_pre_value: str | None = None
+    transport_loss_post_value: str | None = None
+    transport_loss_evidence = "not_run"
     selection_setup_marker_path: Path | None = None
     selection_setup_marker_value: str | None = None
     copy_marker_path: Path | None = None
@@ -3956,6 +4449,12 @@ def main(argv: list[str] | None = None) -> int:
             args.artifact_dir.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise SmokeFailure("artifacts", "artifact_write_failed") from error
+        try:
+            (args.artifact_dir / "transport-loss-validation.txt").unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise SmokeFailure("artifacts", "artifact_write_failed") from error
 
         host, port, username, key, key_path = load_fixture()
         expected_fingerprint = required_environment("MEETERM_SSH_FINGERPRINT")
@@ -3966,6 +4465,9 @@ def main(argv: list[str] | None = None) -> int:
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
         foreground_marker_path, foreground_marker_value = make_marker_file(key_path)
+        transport_loss_marker_path, _transport_loss_seed = make_marker_file(key_path)
+        transport_loss_pre_value = f"android-ssh-loss-pre-{secrets.token_hex(8)}"
+        transport_loss_post_value = f"android-ssh-loss-post-{secrets.token_hex(8)}"
         selection_setup_marker_path, selection_setup_marker_value = make_marker_file(
             key_path
         )
@@ -4110,6 +4612,25 @@ def main(argv: list[str] | None = None) -> int:
             completed,
             initial_app_pid,
         )
+        if (
+            transport_loss_marker_path is None
+            or transport_loss_pre_value is None
+            or transport_loss_post_value is None
+        ):
+            raise SmokeFailure("daily_transport_loss_prepare", "marker_unavailable")
+        exercise_transport_loss_recovery(
+            device,
+            tmux_socket,
+            fixture_layout,
+            transport_loss_marker_path,
+            transport_loss_pre_value,
+            transport_loss_post_value,
+            args.artifact_dir,
+            completed,
+            initial_app_pid,
+        )
+        require_transport_loss_completion(completed, "daily_transport_loss_complete")
+        transport_loss_evidence = "passed"
         initial_app_pid = reconnect_saved_profile_after_restart(
             device,
             args.artifact_dir,
@@ -4672,6 +5193,13 @@ def main(argv: list[str] | None = None) -> int:
                 glyph_done_marker_path.unlink()
             except FileNotFoundError:
                 pass
+        if transport_loss_marker_path is not None:
+            try:
+                transport_loss_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
             except OSError:
                 pass
         if device is not None:
@@ -4721,6 +5249,20 @@ def main(argv: list[str] | None = None) -> int:
                 except SmokeFailure:
                     pass
 
+        transport_loss_artifact = args.artifact_dir / "transport-loss-validation.txt"
+        if not transport_loss_artifact.exists():
+            write_artifact(
+                transport_loss_artifact,
+                "transport_loss=unavailable\n"
+                "fixture_control=unavailable\n"
+                "recovery_surface=unavailable\n"
+                "native_handle_same=unavailable\n"
+                "pane_identity_same=unavailable\n"
+                "pre_marker_exactly_once=unavailable\n"
+                "post_marker_exactly_once=unavailable\n"
+                "other_panes_clean=unavailable\n"
+                "input_during_loss=unavailable\n",
+            )
         summary_lines = [
             f"result={result}",
             f"stage={stage}",
@@ -4729,6 +5271,7 @@ def main(argv: list[str] | None = None) -> int:
             f"screenshot={'written' if screenshot_written else 'unavailable'}",
             f"screenshot_reason={screenshot_reason}",
             f"screenrecord_reason={screenrecord_reason}",
+            f"transport_loss_evidence={transport_loss_evidence}",
             "completed=" + (",".join(completed) if completed else "none"),
         ]
         write_artifact(args.artifact_dir / "ssh-validation.txt", "\n".join(summary_lines) + "\n")

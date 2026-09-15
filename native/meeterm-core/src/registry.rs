@@ -122,6 +122,21 @@ pub(crate) fn mark_transport_ready(id: TerminalId, generation: u64) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+pub(crate) fn transport_ready(id: TerminalId, generation: u64) -> bool {
+    with_terminal(id, |terminal| {
+        Ok(terminal.transport_ready_for_generation(generation))
+    })
+    .unwrap_or(false)
+}
+
+pub(crate) fn transport_ready_or_local(id: TerminalId, generation: u64) -> bool {
+    with_terminal(id, |terminal| {
+        Ok(terminal.transport_ready_for_generation_or_local(generation))
+    })
+    .unwrap_or(false)
+}
+
 pub(crate) fn feed_remote(id: TerminalId, generation: u64, bytes: &[u8]) -> bool {
     let Ok(terminal) = shared_terminal(id) else {
         return false;
@@ -130,6 +145,34 @@ pub(crate) fn feed_remote(id: TerminalId, generation: u64, bytes: &[u8]) -> bool
         .lock()
         .map(|mut terminal| terminal.feed_remote(generation, bytes))
         .unwrap_or(false)
+}
+
+/// Apply the first Herdr full frame and make its semantic transport usable as
+/// one selected-terminal transaction. The registry map and Terminal lock stay
+/// held from preflight through the non-fallible Term replacement and Ready
+/// transition; callers may wrap this in `ConnectionShared`'s
+/// `info -> session` epoch commit without introducing a reverse lock edge.
+pub(crate) fn restore_remote_display_and_ready(
+    id: TerminalId,
+    generation: u64,
+    columns: u16,
+    rows: u16,
+    bytes: &[u8],
+) -> Result<(), TerminalError> {
+    let terminals = registry()
+        .lock()
+        .map_err(|_| TerminalError::RegistryPoisoned)?;
+    let terminal = terminals
+        .get(&id)
+        .cloned()
+        .ok_or(TerminalError::UnknownTerminal)?;
+    let mut terminal = terminal
+        .lock()
+        .map_err(|_| TerminalError::RegistryPoisoned)?;
+    terminal.preflight_remote_display(generation, columns, rows)?;
+    terminal.restore_remote_display_after_preflight(generation, columns, rows, bytes);
+    terminal.mark_transport_ready_after_preflight(generation);
+    Ok(())
 }
 
 pub(crate) fn terminal_revision(id: TerminalId) -> Result<u64, TerminalError> {

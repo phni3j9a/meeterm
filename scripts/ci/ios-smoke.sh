@@ -45,6 +45,9 @@ rm -f \
   "${artifact_dir}/ios-polish-validation.txt" \
   "${artifact_dir}/ios-polish-navigation-validation.txt" \
   "${artifact_dir}/ios-ui-ssh-validation.txt" \
+  "${artifact_dir}/ios-transport-loss-validation.txt" \
+  "${artifact_dir}/ios-ui-transport-loss-observation.txt" \
+  "${artifact_dir}/transport-loss-validation.txt" \
   "${artifact_dir}/ios-ui-names-validation.txt" \
   "${artifact_dir}/ios-names-validation.txt" \
   "${artifact_dir}/terminal.png" \

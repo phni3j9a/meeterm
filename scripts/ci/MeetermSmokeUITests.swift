@@ -76,6 +76,18 @@ final class MeetermSmokeUITests: XCTestCase {
     requiredEnvironment("MEETERM_IOS_HANDOFF_VALUE")
   }
 
+  private var transportLossMarkerPath: URL {
+    URL(fileURLWithPath: requiredEnvironment("MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH"))
+  }
+
+  private var transportLossPreValue: String {
+    requiredEnvironment("MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE")
+  }
+
+  private var transportLossPostValue: String {
+    requiredEnvironment("MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE")
+  }
+
   override func setUpWithError() throws {
     continueAfterFailure = false
     preCredentialObservationAllowed = false
@@ -99,6 +111,12 @@ final class MeetermSmokeUITests: XCTestCase {
       ]
     )
     try? FileManager.default.removeItem(at: markerPath)
+    if observesInitialConnectionEntry {
+      try? FileManager.default.removeItem(at: transportLossMarkerPath)
+      try? FileManager.default.removeItem(
+        at: artifactDirectory.appendingPathComponent("ios-ui-transport-loss-observation.txt")
+      )
+    }
     try? FileManager.default.removeItem(
       at: artifactDirectory.appendingPathComponent("ios-ui-failure.txt")
     )
@@ -805,6 +823,117 @@ final class MeetermSmokeUITests: XCTestCase {
     record("ssh_resumed_remote_ack")
     capture("ssh-terminal-input")
 
+    // This is a separate, deterministic transport-loss branch. The fixture
+    // controller stops only its sshd process tree; the ordinary tmux server,
+    // selected window, pane, shell, and host key remain in place. No XCTest
+    // input is sent between the stop acknowledgement and the start
+    // acknowledgement.
+    let nativeHandleBeforeLoss = nativeTerminalHandleObservation()
+    let terminalIdentifierBeforeLoss = nativeTerminalSurfaceElement().identifier
+    guard let preLossCommand = transportLossMarkerCommand(
+      value: transportLossPreValue,
+      paneIdentifier: selectedPaneIdentifier,
+      append: false
+    ) else {
+      XCTFail("The selected fixture pane identity is unavailable for transport-loss evidence.")
+      return
+    }
+    resumedTerminal.tap()
+    record("ssh_transport_loss_pre_marker")
+    enterTerminalCommand(preLossCommand, stage: "ssh_transport_loss_pre_marker")
+    guard waitForTransportLossMarkerLines(
+      values: [transportLossPreValue], paneIdentifier: selectedPaneIdentifier, timeout: 30
+    ) else {
+      XCTFail("The pre-loss fixture marker did not reach the selected pane exactly once.")
+      return
+    }
+
+    var transportStopped = false
+    defer {
+      // A failed stale-screen assertion must not leave the disposable fixture
+      // stopped while XCTest is unwinding. This is one bounded cleanup action,
+      // not a retry of a product recovery assertion.
+      if transportStopped {
+        _ = requestFixtureTransport("start")
+        transportStopped = false
+      }
+    }
+    guard requestFixtureTransport("stop") else { return }
+    transportStopped = true
+    record("ssh_transport_loss_injected")
+    guard waitForTransportLossStale(
+      paneIdentifier: selectedPaneIdentifier,
+      terminalIdentifier: terminalIdentifierBeforeLoss,
+      timeout: 90
+    ) else {
+      XCTFail("The app did not retain the selected terminal as cached read-only output after transport loss.")
+      return
+    }
+    let staleHandle = nativeTerminalHandleObservation()
+    let staleTerminalIdentifierSame = nativeTerminalSurfaceElement().identifier == terminalIdentifierBeforeLoss
+    let stalePane = terminalTab(identifier: selectedPaneIdentifier)
+    let stalePaneIdentifierSame = stalePane.exists
+      && stalePane.identifier == selectedPaneIdentifier
+      && stalePane.isSelected
+    let staleNativeHandleSame = staleHandle == nativeHandleBeforeLoss
+    record("ssh_transport_loss_stale_read_only")
+
+    guard requestFixtureTransport("start") else { return }
+    transportStopped = false
+    record("ssh_transport_loss_restored")
+    guard waitForAuthoritativeReady(paneIdentifier: selectedPaneIdentifier, timeout: 90) else {
+      XCTFail("Transport recovery did not restore the selected runtime without reopening the picker.")
+      return
+    }
+    let recoveredTerminal = try terminalElement()
+    let recoveredHandle = nativeTerminalHandleObservation()
+    let recoveredTerminalIdentifierSame = nativeTerminalSurfaceElement().identifier == terminalIdentifierBeforeLoss
+    let recoveredPane = terminalTab(identifier: selectedPaneIdentifier)
+    let recoveredPaneIdentifierSame = recoveredPane.exists
+      && recoveredPane.identifier == selectedPaneIdentifier
+      && recoveredPane.isSelected
+    let recoveredNativeHandleSame = recoveredHandle == nativeHandleBeforeLoss
+    let nativeHandleSame = staleNativeHandleSame && recoveredNativeHandleSame
+    let selectedPaneIdentifierSame = stalePaneIdentifierSame && recoveredPaneIdentifierSame
+    writeFixedArtifact(
+      "ios-ui-transport-loss-observation.txt",
+      lines: [
+        "native_terminal_identifier_same=\(recoveredTerminalIdentifierSame && staleTerminalIdentifierSame ? "yes" : "no")",
+        "native_handle_same=\(nativeHandleSame ? "yes" : "no")",
+        "selected_pane_identifier_same=\(selectedPaneIdentifierSame ? "yes" : "no")",
+        "cached_read_only_surface=yes",
+        "picker_visible_during_loss=no",
+        "input_during_loss=none",
+      ]
+    )
+    XCTAssertTrue(staleTerminalIdentifierSame, "Transport loss replaced the retained terminal surface binding.")
+    XCTAssertTrue(staleNativeHandleSame, "Transport loss changed the retained native terminal handle.")
+    XCTAssertTrue(recoveredTerminalIdentifierSame, "Transport recovery replaced the native terminal surface binding.")
+    XCTAssertTrue(recoveredNativeHandleSame, "Transport recovery changed the native terminal handle.")
+    XCTAssertTrue(stalePaneIdentifierSame, "Transport loss changed the selected terminal pane.")
+    XCTAssertTrue(recoveredPaneIdentifierSame, "Transport recovery changed the selected terminal pane.")
+    record("ssh_transport_loss_authoritative_ready")
+
+    guard let postLossCommand = transportLossMarkerCommand(
+      value: transportLossPostValue,
+      paneIdentifier: selectedPaneIdentifier,
+      append: true
+    ) else {
+      XCTFail("The selected fixture pane identity is unavailable for the post-loss marker.")
+      return
+    }
+    recoveredTerminal.tap()
+    enterTerminalCommand(postLossCommand, stage: "ssh_transport_loss_post_marker")
+    guard waitForTransportLossMarkerLines(
+      values: [transportLossPreValue, transportLossPostValue],
+      paneIdentifier: selectedPaneIdentifier,
+      timeout: 30
+    ) else {
+      XCTFail("The post-loss fixture marker did not reach the same pane exactly once.")
+      return
+    }
+    record("ssh_transport_loss_remote_ack")
+
     record("ssh_disconnect")
     tapConnectionAction("Disconnect")
     XCTAssertTrue(app.staticTexts["Not connected"].waitForExistence(timeout: 60), "The app did not complete the explicit disconnect.")
@@ -1044,6 +1173,215 @@ final class MeetermSmokeUITests: XCTestCase {
     return actions.allSatisfy { identifier in
       waitForEnabledHittable(recoveryElement(identifier), timeout: 30)
     }
+  }
+
+  private func nativeTerminalHandleObservation() -> String {
+    let surface = nativeTerminalSurfaceElement()
+    XCTAssertTrue(waitForVisible(surface, timeout: 30), "The native terminal surface is unavailable.")
+    guard let value = surface.value as? String,
+          value.hasPrefix("native-handle-"),
+          value.count > "native-handle-".count else {
+      XCTFail("The test-only native terminal handle observation is unavailable.")
+      return ""
+    }
+    return value
+  }
+
+  private func nativeTerminalSurfaceElement() -> XCUIElement {
+    app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier == %@", "native-terminal-surface")
+    ).firstMatch
+  }
+
+  private func fixtureControlURLs() -> (request: URL, status: URL)? {
+    guard let requestValue = ProcessInfo.processInfo.environment[
+      "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
+    ], !requestValue.isEmpty,
+    let statusValue = ProcessInfo.processInfo.environment[
+      "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
+    ], !statusValue.isEmpty else {
+      XCTFail("The fixture transport control is unavailable.")
+      return nil
+    }
+    let request = URL(fileURLWithPath: requestValue)
+    let status = URL(fileURLWithPath: statusValue)
+    let root = request.deletingLastPathComponent()
+    guard request.path.hasPrefix("/"), status.path.hasPrefix("/"),
+          request.lastPathComponent == "sshd-control-request",
+          status.lastPathComponent == "sshd-control-status",
+          root.path == status.deletingLastPathComponent().path,
+          root.lastPathComponent.hasPrefix("meeterm-ssh-fixture-") else {
+      XCTFail("The fixture transport control path is invalid.")
+      return nil
+    }
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: root.path),
+          let permissions = attributes[.posixPermissions] as? NSNumber,
+          permissions.intValue & 0o077 == 0 else {
+      XCTFail("The fixture transport control directory is not private.")
+      return nil
+    }
+    return (request, status)
+  }
+
+  private func requestFixtureTransport(_ action: String) -> Bool {
+    guard action == "stop" || action == "start" else {
+      XCTFail("The fixture transport action is invalid.")
+      return false
+    }
+    guard let paths = fixtureControlURLs() else { return false }
+    let token = "ios-transport-loss-" + UUID().uuidString
+      .replacingOccurrences(of: "-", with: "")
+      .lowercased()
+    let requestContents = "\(token)\t\(action)\n"
+    let temporary = paths.request.deletingLastPathComponent().appendingPathComponent(
+      ".sshd-control-request-\(token)"
+    )
+    let fileManager = FileManager.default
+    do {
+      guard !fileManager.fileExists(atPath: paths.request.path) else {
+        XCTFail("The fixture transport control is busy.")
+        return false
+      }
+      try Data(requestContents.utf8).write(to: temporary, options: .atomic)
+      try fileManager.setAttributes(
+        [.posixPermissions: NSNumber(value: 0o600)],
+        ofItemAtPath: temporary.path
+      )
+      try fileManager.moveItem(at: temporary, to: paths.request)
+    } catch {
+      try? fileManager.removeItem(at: temporary)
+      XCTFail("The fixture transport request could not be written.")
+      return false
+    }
+
+    let expected = "\(token)\tok\t\(action == "stop" ? "stopped" : "started")\n"
+    let errorStatus = "\(token)\terror\n"
+    let deadline = Date().addingTimeInterval(20)
+    while Date() < deadline {
+      if let observed = try? String(contentsOf: paths.status, encoding: .utf8) {
+        if observed == expected { return true }
+        if observed == errorStatus {
+          XCTFail("The fixture transport action failed.")
+          return false
+        }
+        if observed.hasPrefix(token + "\t") {
+          XCTFail("The fixture transport returned an invalid status.")
+          return false
+        }
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    if (try? String(contentsOf: paths.request, encoding: .utf8)) == requestContents {
+      try? fileManager.removeItem(at: paths.request)
+    }
+    XCTFail("The fixture transport action timed out.")
+    return false
+  }
+
+  private func transportLossMarkerCommand(
+    value: String,
+    paneIdentifier: String,
+    append: Bool
+  ) -> String? {
+    let validValue = value.range(
+      of: #"^ios-ssh-loss-(pre|post)-[0-9a-f]{16}$"#,
+      options: .regularExpression
+    ) != nil
+    guard validValue,
+          !value.contains("'"), !value.contains("\n"), !value.contains("\r"),
+          paneIdentifier.hasPrefix("terminal-tab-") else {
+      return nil
+    }
+    let pane = String(paneIdentifier.dropFirst("terminal-tab-".count))
+    guard pane.hasPrefix("%"), pane.dropFirst().allSatisfy({ $0.isNumber }) else {
+      return nil
+    }
+    let redirect = append ? ">>" : ">"
+    return "printf '%s:%s:%s\\n' '\(value)' '\(pane.dropFirst())' \"$$\" \(redirect) \(shellQuote(transportLossMarkerPath.path))"
+  }
+
+  private func waitForTransportLossMarkerLines(
+    values: [String],
+    paneIdentifier: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    let pane = String(paneIdentifier.dropFirst("terminal-tab-".count)).dropFirst()
+    guard !pane.isEmpty, pane.allSatisfy({ $0.isNumber }) else { return false }
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if let contents = try? String(contentsOf: transportLossMarkerPath, encoding: .utf8) {
+        let lines = contents.split(whereSeparator: { $0.isNewline }).map(String.init)
+        let valid = lines.count == values.count && zip(lines, values).allSatisfy { line, value in
+          let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+          return fields.count == 3
+            && String(fields[0]) == value
+            && String(fields[1]) == String(pane)
+            && !fields[2].isEmpty
+            && fields[2].allSatisfy({ $0.isNumber })
+        }
+        if valid { return true }
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return false
+  }
+
+  private func waitForTransportLossStale(
+    paneIdentifier: String,
+    terminalIdentifier: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    let pickerTitle = app.staticTexts.matching(
+      NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
+    ).firstMatch
+    let pickerRuntime = app.buttons.matching(
+      NSPredicate(
+        format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@",
+        "tmux runtime ", "Herdr runtime "
+      )
+    ).firstMatch
+    let rail = recoveryElement("recovery-rail")
+    let title = recoveryElement("recovery-title")
+    let detail = recoveryElement("recovery-detail")
+    let meta = recoveryElement("recovery-meta")
+    let terminal = nativeTerminalSurfaceElement()
+    while Date() < deadline {
+      let pane = terminalTab(identifier: paneIdentifier)
+      let cached = terminal.exists
+        && terminal.label == "Terminal, cached output, read only"
+        && !terminal.frame.isNull
+        && !terminal.frame.isInfinite
+        && terminal.frame.width > 0
+        && terminal.frame.height > 0
+      if app.state == .runningForeground
+        && !pickerTitle.exists
+        && !pickerRuntime.exists
+        && rail.exists
+        && title.exists
+        && detail.exists
+        && meta.exists
+        && cached
+        && pane.exists
+        && pane.isSelected
+        && terminal.identifier == terminalIdentifier {
+        return true
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    let pane = terminalTab(identifier: paneIdentifier)
+    return app.state == .runningForeground
+      && !pickerTitle.exists
+      && !pickerRuntime.exists
+      && rail.exists
+      && title.exists
+      && detail.exists
+      && meta.exists
+      && terminal.exists
+      && terminal.label == "Terminal, cached output, read only"
+      && pane.exists
+      && pane.isSelected
+      && terminal.identifier == terminalIdentifier
   }
 
   private func acceptFixtureHostKey() -> Bool {

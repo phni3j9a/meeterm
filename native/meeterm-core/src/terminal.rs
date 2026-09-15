@@ -738,6 +738,63 @@ impl Terminal {
             .lock()
             .map_err(|_| TerminalError::RegistryPoisoned)?
             .clone();
+        self.restore_remote_display_after_preflight(generation, columns, rows, bytes);
+        *self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)? = gate;
+        Ok(())
+    }
+
+    /// Validate the narrow Herdr first-frame contract before entering the
+    /// epoch-atomic native commit. The selected semantic binding must remain
+    /// Attached: a Ready transition before the session projection would let a
+    /// stale frame become an input target.
+    pub(crate) fn preflight_remote_display(
+        &self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+    ) -> Result<(), TerminalError> {
+        if self.remote_generation != Some(generation) {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        validate_dimensions(columns, rows)?;
+        let gate = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?;
+        if gate.readiness != TransportReadiness::Attached {
+            return Err(TerminalError::InputNotReady);
+        }
+        let Some(binding) = gate.binding.as_ref() else {
+            return Err(TerminalError::InputNotReady);
+        };
+        if !binding.is_semantic() {
+            return Err(TerminalError::InputNotReady);
+        }
+        if binding.generation() != generation {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        Ok(())
+    }
+
+    /// Apply a Herdr full frame after `preflight_remote_display` succeeded
+    /// while the registry/Terminal lock is held by the same commit boundary as
+    /// the session Ready publication. There is intentionally no fallible
+    /// operation here: replacing the native Term and feeding the already
+    /// decoded frame cannot leave a partially committed readiness transition.
+    pub(crate) fn restore_remote_display_after_preflight(
+        &mut self,
+        generation: u64,
+        columns: u16,
+        rows: u16,
+        bytes: &[u8],
+    ) {
+        debug_assert!(
+            self.remote_generation == Some(generation)
+                && validate_dimensions(columns, rows).is_ok()
+        );
         let commits = self.input_commit_count;
 
         self.replace_term(columns, rows);
@@ -746,13 +803,11 @@ impl Terminal {
         self.preserve_history_on_capture = false;
         self.screen_initialized = true;
         self.content_revision = self.content_revision.saturating_add(1);
+        // Herdr owns the remote scrollback and the semantic listener drops
+        // local VT replies, so this frame is a display replacement rather than
+        // a replay into the retained local history.
         self.feed(bytes);
         self.input_commit_count = commits;
-        *self
-            .outbound
-            .lock()
-            .map_err(|_| TerminalError::RegistryPoisoned)? = gate;
-        Ok(())
     }
 
     /// Reconcile a same-process reconnect without replaying tmux's bounded
@@ -905,6 +960,26 @@ impl Terminal {
             .lock()
             .map(|gate| gate.readiness == TransportReadiness::Ready)
             .map_err(|_| TerminalError::RegistryPoisoned)
+    }
+
+    pub(crate) fn transport_ready_for_generation(&self, generation: u64) -> bool {
+        if self.remote_generation != Some(generation) {
+            return false;
+        }
+        self.outbound
+            .lock()
+            .map(|gate| {
+                gate.readiness == TransportReadiness::Ready
+                    && gate
+                        .binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.generation() == generation)
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn transport_ready_for_generation_or_local(&self, generation: u64) -> bool {
+        !self.remote_mode || self.transport_ready_for_generation(generation)
     }
 
     fn require_operation_epoch(&self, expected_epoch: u64) -> Result<(), TerminalError> {

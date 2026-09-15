@@ -13,11 +13,11 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
-| Android | 既存のfull smokeと画像の実見。source-levelのobservational `SCREEN_NAMES` は29 route（従来25 route＋recovery 4 route） | Androidの自動操作とnative境界。fixtureは表示確認でmachine gateではない |
+| Android | full smoke（healthy foreground と fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker）と画像の実見。source-levelのobservational `SCREEN_NAMES` は29 route（従来25 route＋recovery 4 route） | Androidの自動操作とnative境界。transport-lossの実証はremote emulator実行に限り、fixtureは表示確認だけの代替ではない |
 | iOS `standard` | production保存4件、native入力／復旧bridge 11件＋scroll gesture 1件、source-level 22画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
-| iOS `ssh` | 接続、ホスト鍵確認、runtime picker/選択、短い端末入力、リモート側の到達確認、切断 | iOSの実SSH、runtime選択、native端末入力の接続境界 |
+| iOS `ssh` | 接続、ホスト鍵確認、runtime picker/選択、healthy foreground復帰、fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker、切断 | iOSの実SSH、runtime選択、native端末入力とtransport-loss接続境界 |
 
 `standard`をiOSの既定suiteにします。`ssh`は接続・認証・入力・native連携に影響する変更と配布前に実行します。
 今回の方針導入時は、fresh CNGでAndroid fullとiOS standardを確認し、同一ソースのiOS sshも確認します。
@@ -74,6 +74,19 @@ Android full、iOS `standard`、接続変更を含む短い iOS `ssh` を適用�
 
 同一プロセスで一度Readyになった接続の復旧では、次を一つの受入境界として確認します。
 
+ここでいう復旧には、異なる二つの証拠を分けて記録します。healthy foreground は
+Home/background → activate の同一プロセス復帰と、復帰後の native input marker です。
+これはOS lifecycleと既存接続の復帰を確認しますが、SSH/Control Mode transportを
+切断した証拠ではありません。transport-loss recovery は Android `full` と iOS
+`ssh` の実fixture経路で、fixture-owned control fileから disposable `sshd` だけを
+停止・再開します。tmux server/session/shell、同じhost key/endpointを維持したまま、
+pre-loss marker、cached/read-only rail、同じTerminalViewのtest-only native handle、
+同じpaneのReady、post-loss markerを順に確認します。切断中のinputは送らず、markerは
+各一回で別paneに現れないことをfixture側で検証します。iOSの固定artifactには、surface
+bindingとは別に実際のstale/recovered handle比較を表す
+`native_handle_same=yes`と、stale/recovered各時点のselected pane観測を表す
+`selected_pane_identifier_same=yes`を出力します。
+
 - transport loss/foreground復帰から、最後のworkspace、選択terminal、native handle、Term、
   history/scroll/selectionを保持し、pickerを自動表示しないこと。stale画面は必ずread-only表示とし、
   key、IME、paste、terminal自動応答、resize、pane/group/workspaceのremote mutationを拒否します。
@@ -90,7 +103,9 @@ Android full、iOS `standard`、接続変更を含む短い iOS `ssh` を適用�
   fresh manual/cold connectだけが従来どおりpickerを通ります。
 
 focused Rust/App/native adapter testsの後、exact candidate commitで実OpenSSH/tmux、公式Herdr
-0.9.0 ignored integration、Android full、iOS `standard`、iOS `ssh`を実行します。4つの
+0.9.0 ignored integration、Android full、iOS `standard`、iOS `ssh`を実行します。Android fullと
+iOS `ssh`のtransport-loss caseはそれぞれのremote jobで初めて実transport証拠になります。
+ローカルのsource/PythonテストだけではCI mobile successを主張しません。4つの
 recovery fixture routeはpresentation evidenceであり、実loss、identity確認、入力拒否の証拠には
 代用しません。Android/iOS両方の最終screenshotをdownloadして実際に開くまでvisual successを
 報告しません。

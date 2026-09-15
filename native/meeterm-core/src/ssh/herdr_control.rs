@@ -1511,10 +1511,10 @@ impl HerdrClient<'_> {
             if self.shared.is_cancelled() || state.generation != self.shared.generation {
                 return Err(FlowFailure::Stale);
             }
-            // Public select_pane updates the desired state synchronously while
-            // this actor is waiting for a snapshot. Preserve that newer intent
-            // at the commit boundary instead of overwriting it with the
-            // snapshot's older clone.
+            // A serialized selection command may have committed a newer
+            // intent while this snapshot was being prepared. Preserve that
+            // actor-owned selection at the commit boundary instead of
+            // overwriting it with the snapshot's older clone.
             if state.selected_pane != old_selected {
                 selected = state
                     .selected_pane
@@ -1625,19 +1625,6 @@ impl HerdrClient<'_> {
         drop(state);
         Ok(())
     }
-
-    fn commit_projection_and_ready(
-        &self,
-        projection: &SnapshotProjection,
-        expected_epoch: u64,
-    ) -> Result<(), FlowFailure> {
-        if !self.shared.commit_ready_at_epoch(expected_epoch, |state| {
-            apply_projection_state(state, projection);
-        }) {
-            return Err(FlowFailure::Stale);
-        }
-        Ok(())
-    }
 }
 
 fn apply_projection_state(state: &mut SessionState, projection: &SnapshotProjection) {
@@ -1661,6 +1648,48 @@ impl HerdrClient<'_> {
         }
     }
 
+    /// Commit a pane selection only after the serialized actor has accepted
+    /// the request. The payload is the source of truth for both the local
+    /// projection and the controller target; this deliberately does not look
+    /// up a replacement selection from a shared field that a later request
+    /// could have changed.
+    async fn select_pane_payload(
+        &mut self,
+        window_id: u64,
+        pane_id: u64,
+    ) -> Result<(), FlowFailure> {
+        let expected_epoch = self.request_epoch();
+        if !self.shared.current_request_epoch(expected_epoch) {
+            return Err(FlowFailure::Stale);
+        }
+        {
+            let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            if state.operation_epoch != expected_epoch {
+                return Err(FlowFailure::Stale);
+            }
+            if !state
+                .herdr
+                .panes
+                .get(&pane_id)
+                .is_some_and(|pane| pane.workspace == window_id)
+                || !state
+                    .snapshot
+                    .panes
+                    .iter()
+                    .any(|pane| pane.pane_id == pane_id && pane.window_id == window_id)
+                || !state.pane_terminals.contains_key(&pane_id)
+            {
+                return Err(FlowFailure::HerdrOperation);
+            }
+            state.selected_pane = Some(pane_id);
+            state.herdr.select(pane_id);
+            mark_selected(&mut state.snapshot, pane_id);
+            state.terminal_input_ready = false;
+        }
+        self.release().await?;
+        self.activate_pane(pane_id).await
+    }
+
     async fn command(&mut self, command: ControlCommand) -> Result<(), FlowFailure> {
         match command {
             ControlCommand::SetTerminalVisible { visible } => {
@@ -1670,9 +1699,8 @@ impl HerdrClient<'_> {
                 }
                 return self.activate_selected().await;
             }
-            ControlCommand::SelectPane { .. } => {
-                self.release().await?;
-                return self.activate_selected().await;
+            ControlCommand::SelectPane { window_id, pane_id } => {
+                return self.select_pane_payload(window_id, pane_id).await;
             }
             ControlCommand::SelectGroup { group_id } => {
                 {
@@ -1973,12 +2001,42 @@ impl HerdrClient<'_> {
     }
 
     async fn activate_selected(&mut self) -> Result<(), FlowFailure> {
+        self.activate(None).await
+    }
+
+    async fn activate_pane(&mut self, pane_id: u64) -> Result<(), FlowFailure> {
+        self.activate(Some(pane_id)).await
+    }
+
+    async fn activate(&mut self, requested_pane: Option<u64>) -> Result<(), FlowFailure> {
         let operation_epoch = self.request_epoch();
         if !self.shared.current_request_epoch(operation_epoch) {
             return Err(FlowFailure::Stale);
         }
         let (selected, remote, native, visible) = {
-            if let Some(projection) = self.staged_projection.as_ref() {
+            if let Some(requested_pane) = requested_pane {
+                let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+                if state.selected_pane != Some(requested_pane) {
+                    return Err(FlowFailure::Stale);
+                }
+                let remote = state
+                    .herdr
+                    .panes
+                    .get(&requested_pane)
+                    .cloned()
+                    .ok_or(FlowFailure::HerdrOperation)?;
+                let native = state
+                    .pane_terminals
+                    .get(&requested_pane)
+                    .copied()
+                    .ok_or(FlowFailure::HerdrOperation)?;
+                (
+                    Some(requested_pane),
+                    Some(remote),
+                    Some(native),
+                    state.terminal_visible,
+                )
+            } else if let Some(projection) = self.staged_projection.as_ref() {
                 let visible = self
                     .shared
                     .session
@@ -2100,29 +2158,32 @@ impl HerdrClient<'_> {
     }
 
     fn frame(&mut self, value: Value) -> Result<(), FlowFailure> {
-        // Selection/visibility changes synchronously revoke native input.
-        // Keep the same lock until this frame is applied so it cannot rearm
-        // a controller the UI has just hidden or replaced.
-        let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        let controller_epoch = self
-            .controller
-            .as_ref()
-            .map(|controller| controller.epoch)
-            .ok_or(FlowFailure::Stale)?;
-        if self.shared.is_cancelled()
-            || state.generation != self.shared.generation
-            || state.operation_epoch != controller_epoch
-        {
-            return Err(FlowFailure::Stale);
-        }
-        if (!state.terminal_visible && self.strict_terminal.is_none())
-            || self
-                .controller
-                .as_ref()
-                .is_none_or(|controller| state.selected_pane != Some(controller.pane))
-        {
-            return Ok(());
-        }
+        // Validate the controller epoch and current target before decoding the
+        // record. The strict first-frame path below rechecks the same target
+        // while holding the session lock in the Ready transaction; no native
+        // Term mutation occurs in this preliminary stage.
+        let (controller_epoch, controller_pane, controller_native, controller_ready, old_seq) = {
+            let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            let controller = self.controller.as_ref().ok_or(FlowFailure::Stale)?;
+            if self.shared.is_cancelled()
+                || state.generation != self.shared.generation
+                || state.operation_epoch != controller.epoch
+            {
+                return Err(FlowFailure::Stale);
+            }
+            if (!state.terminal_visible && self.strict_terminal.is_none())
+                || state.selected_pane != Some(controller.pane)
+            {
+                return Ok(());
+            }
+            (
+                controller.epoch,
+                controller.pane,
+                controller.native,
+                controller.ready,
+                controller.seq,
+            )
+        };
         let frame =
             match wire::decode_terminal_record(&value).map_err(|_| FlowFailure::HerdrProtocol)? {
                 wire::TerminalRecord::Frame(frame) => frame,
@@ -2145,7 +2206,6 @@ impl HerdrClient<'_> {
                 }
                 _ => return Err(FlowFailure::HerdrProtocol),
             };
-        let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
         let wire::TerminalFrame {
             seq,
             width: cols,
@@ -2153,11 +2213,66 @@ impl HerdrClient<'_> {
             full,
             bytes,
         } = frame;
-        if controller.seq.is_some_and(|old| seq <= old) || (!full && controller.seq.is_none()) {
+        if old_seq.is_some_and(|old| seq <= old) || (!full && old_seq.is_none()) {
             return Err(FlowFailure::HerdrProtocol);
         }
+
+        if self.strict_terminal.is_some() && !controller_ready {
+            if !full {
+                return Err(FlowFailure::HerdrProtocol);
+            }
+            let projection = self
+                .staged_projection
+                .as_ref()
+                .ok_or(FlowFailure::HerdrProtocol)?;
+            let stale = projection.stale.clone();
+            let commit = self
+                .shared
+                .commit_ready_at_epoch_result(controller_epoch, |state| {
+                    // `commit_ready_at_epoch_result` owns the `info -> session`
+                    // boundary. Recheck visibility/selection inside it so a
+                    // queued hide or selection cannot let this prepared frame
+                    // become a controller target without a fresh command.
+                    if state.selected_pane != Some(controller_pane) || !state.terminal_visible {
+                        return Err(FlowFailure::Stale);
+                    }
+                    // The registry helper keeps its map and selected Terminal
+                    // lock through preflight, Term replacement, and transport
+                    // Ready. It has no fallible step after the native apply;
+                    // projection and session Ready are committed immediately
+                    // in this same callback.
+                    registry::restore_remote_display_and_ready(
+                        controller_native,
+                        self.shared.generation,
+                        cols,
+                        rows,
+                        &bytes,
+                    )
+                    .map_err(|_| FlowFailure::HerdrProtocol)?;
+                    apply_projection_state(state, projection);
+                    Ok(())
+                });
+            if let Err(failure) = commit {
+                registry::detach_transport(controller_native, self.shared.generation);
+                return Err(failure);
+            }
+
+            let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
+            controller.seq = Some(seq);
+            controller.ready = true;
+            for native in stale {
+                registry::detach_transport(native, self.shared.generation);
+                if native != self.shared.terminal_id {
+                    registry::destroy_terminal(native);
+                }
+            }
+            self.staged_projection = None;
+            self.strict_terminal = None;
+            return Ok(());
+        }
+
         let terminal =
-            registry::shared_terminal(controller.native).map_err(|_| FlowFailure::Stale)?;
+            registry::shared_terminal(controller_native).map_err(|_| FlowFailure::Stale)?;
         let mut terminal = terminal.lock().map_err(|_| FlowFailure::Stale)?;
         if full {
             terminal
@@ -2171,6 +2286,7 @@ impl HerdrClient<'_> {
                 return Err(FlowFailure::Transport);
             }
         }
+        let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
         controller.seq = Some(seq);
         if !controller.ready {
             controller.ready = terminal.mark_transport_ready(self.shared.generation);
@@ -2181,34 +2297,9 @@ impl HerdrClient<'_> {
             }
             let controller_native = controller.native;
             drop(terminal);
-            drop(state);
-            let strict_stale = if self.strict_terminal.is_some() {
-                let projection = self
-                    .staged_projection
-                    .as_ref()
-                    .ok_or(FlowFailure::HerdrProtocol)?;
-                if let Err(failure) = self.commit_projection_and_ready(projection, controller_epoch)
-                {
-                    registry::detach_transport(controller_native, self.shared.generation);
-                    return Err(failure);
-                }
-                Some(projection.stale.clone())
-            } else {
-                None
-            };
-            if strict_stale.is_none() && !self.shared.mark_ready_at_epoch(controller_epoch) {
+            if !self.shared.mark_ready_at_epoch(controller_epoch) {
                 registry::detach_transport(controller_native, self.shared.generation);
                 return Err(FlowFailure::Stale);
-            }
-            if let Some(stale) = strict_stale {
-                for native in stale {
-                    registry::detach_transport(native, self.shared.generation);
-                    if native != self.shared.terminal_id {
-                        registry::destroy_terminal(native);
-                    }
-                }
-                self.staged_projection = None;
-                self.strict_terminal = None;
             }
         }
         Ok(())
@@ -2790,6 +2881,379 @@ mod tests {
                 registry::destroy_terminal(id);
             }
         }
+    }
+
+    struct StrictFrameFixture {
+        owner: u64,
+        generation: u64,
+        shared: Arc<ConnectionShared>,
+        input_receiver: mpsc::Receiver<SemanticInput>,
+    }
+
+    impl StrictFrameFixture {
+        fn reattach_semantic(&mut self) {
+            registry::begin_remote(self.owner, self.generation)
+                .expect("strict-frame remote binding");
+            let (input, receiver) = mpsc::channel(8);
+            let (resize, _sizes) = watch::channel((80, 4));
+            registry::with_terminal_for_test(self.owner, |terminal| {
+                terminal
+                    .attach_semantic_transport(self.generation, input, resize)
+                    .expect("strict-frame semantic binding");
+            })
+            .expect("strict-frame terminal");
+            self.input_receiver = receiver;
+        }
+    }
+
+    impl Drop for StrictFrameFixture {
+        fn drop(&mut self) {
+            registry::detach_transport(self.owner, self.generation);
+            registry::destroy_terminal(self.owner);
+        }
+    }
+
+    fn strict_frame_projection(owner: u64, label: &str) -> SnapshotProjection {
+        let workspace_name = format!("workspace-{label}");
+        let group_name = format!("group-{label}");
+        let terminal_name = format!("terminal-{label}");
+        let mut metadata = Metadata {
+            snapshot: RuntimeSnapshot {
+                control: RuntimeControlSnapshot::default(),
+                backend: Backend::Herdr,
+                runtime: "default".to_owned(),
+                groups_supported: true,
+                workspaces: vec![workspace::Workspace {
+                    id: "100".to_owned(),
+                    name: workspace_name.clone(),
+                    agent_status: None,
+                }],
+                groups: vec![workspace::TerminalGroup {
+                    id: "200".to_owned(),
+                    workspace_id: "100".to_owned(),
+                    name: group_name.clone(),
+                    selected: true,
+                    agent_status: None,
+                }],
+                terminals: vec![workspace::Terminal {
+                    id: owner.to_string(),
+                    workspace_id: "100".to_owned(),
+                    group_id: "200".to_owned(),
+                    terminal_id: "stable-terminal".to_owned(),
+                    name: terminal_name.clone(),
+                    active: true,
+                    selected: true,
+                    agent: None,
+                }],
+            },
+            ..Metadata::default()
+        };
+        metadata.workspaces.insert(100, workspace_name.clone());
+        metadata.groups.insert(200, group_name.clone());
+        metadata.panes.insert(
+            owner,
+            RemotePane {
+                pane_id: "pane-alias".to_owned(),
+                terminal_id: "stable-terminal".to_owned(),
+                workspace: 100,
+                group: 200,
+            },
+        );
+        metadata.selected_groups.insert(100, 200);
+        metadata.active_group = Some(200);
+
+        let pane = PaneSnapshot {
+            window_id: 100,
+            pane_id: owner,
+            terminal_id: owner,
+            window_name: workspace_name,
+            active: true,
+            selected: true,
+            index: 0,
+            columns: 80,
+            rows: 4,
+            pane_name: terminal_name.clone(),
+            title: terminal_name,
+        };
+        SnapshotProjection {
+            metadata,
+            mapping: HashMap::from([(owner, owner)]),
+            selected: Some(owner),
+            flat: vec![pane.clone()],
+            windows: vec![WindowSnapshot {
+                window_id: 100,
+                name: pane.window_name.clone(),
+                panes: vec![pane],
+                selected: true,
+                zoomed: false,
+            }],
+            stale: Vec::new(),
+        }
+    }
+
+    fn strict_frame_fixture() -> StrictFrameFixture {
+        let owner = registry::create_terminal(80, 4).expect("strict-frame terminal");
+        let generation = 93_000 + owner;
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "strict-frame-herdr.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/strict-frame-herdr-known-hosts"),
+        ));
+        let old = strict_frame_projection(owner, "old");
+        {
+            let mut state = shared.session.lock().expect("strict-frame session state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "strict-frame-herdr.example".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: std::path::PathBuf::from("/tmp/strict-frame-herdr-known-hosts"),
+                backend: Backend::Herdr,
+                runtime: Some("default".to_owned()),
+            });
+            state.viewport = Some((80, 4));
+            state.herdr = old.metadata.clone();
+            state.pane_terminals = old.mapping.clone();
+            state.selected_pane = old.selected;
+            state.snapshot = SessionSnapshot {
+                windows: old.windows.clone(),
+                panes: old.flat.clone(),
+                selected_pane: old.selected,
+            };
+            state.runtime_operations_ready = true;
+            state.terminal_input_ready = false;
+        }
+
+        registry::begin_remote(owner, generation).expect("strict-frame initial remote mode");
+        let (input, input_receiver) = mpsc::channel(8);
+        let (resize, _sizes) = watch::channel((80, 4));
+        registry::with_terminal_for_test(owner, |terminal| {
+            terminal
+                .attach_semantic_transport(generation, input, resize)
+                .expect("strict-frame initial semantic binding");
+        })
+        .expect("strict-frame initial terminal");
+        registry::restore_remote_display_and_ready(owner, generation, 80, 4, b"old-frame\r\n")
+            .expect("strict-frame retained frame");
+        shared
+            .session
+            .lock()
+            .expect("strict-frame ready state")
+            .terminal_input_ready = true;
+
+        StrictFrameFixture {
+            owner,
+            generation,
+            shared,
+            input_receiver,
+        }
+    }
+
+    fn strict_full_frame_value(bytes: &[u8]) -> Value {
+        use base64::Engine as _;
+
+        json!({
+            "type": "terminal.frame",
+            "encoding": "ansi",
+            "seq": 1,
+            "width": 80,
+            "height": 4,
+            "full": true,
+            "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+
+    #[test]
+    fn strict_first_full_frame_barrier_rejects_stale_epoch_before_native_apply() {
+        let mut fixture = strict_frame_fixture();
+        let (old_snapshot, old_herdr, old_mapping, old_selected) = {
+            let state = fixture
+                .shared
+                .session
+                .lock()
+                .expect("strict-frame retained state");
+            (
+                state.snapshot.clone(),
+                state.herdr.snapshot.clone(),
+                state.pane_terminals.clone(),
+                state.selected_pane,
+            )
+        };
+        let old_native = registry::snapshot(fixture.owner).expect("strict-frame native snapshot");
+        let old_revision =
+            registry::terminal_revision(fixture.owner).expect("strict-frame native revision");
+        let expected_epoch = fixture
+            .shared
+            .begin_recovery("strict_frame", 1)
+            .expect("strict-frame recovery epoch");
+        registry::detach_transport(fixture.owner, fixture.generation);
+        fixture.reattach_semantic();
+
+        // Decode and stage the complete frame before the barrier. The commit
+        // callback below is the only place allowed to mutate Term/projection.
+        let wire::TerminalRecord::Frame(frame) =
+            wire::decode_terminal_record(&strict_full_frame_value(b"new-frame\r\n\x1b[6n"))
+                .expect("strict-frame decode")
+        else {
+            panic!("strict-frame decoder returned a non-frame record");
+        };
+        let projection = strict_frame_projection(fixture.owner, "new");
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let worker_shared = Arc::clone(&fixture.shared);
+        let worker_entered = Arc::clone(&entered);
+        let worker_release = Arc::clone(&release);
+        let owner = fixture.owner;
+        let generation = fixture.generation;
+        let worker = std::thread::spawn(move || {
+            worker_entered.wait();
+            worker_release.wait();
+            worker_shared.commit_ready_at_epoch_result(expected_epoch, move |state| {
+                registry::restore_remote_display_and_ready(
+                    owner,
+                    generation,
+                    frame.width,
+                    frame.height,
+                    &frame.bytes,
+                )
+                .map_err(|_| FlowFailure::HerdrProtocol)?;
+                apply_projection_state(state, &projection);
+                Ok(())
+            })
+        });
+
+        entered.wait();
+        // This models Change/Disconnect after decode/prepare but before the
+        // native apply callback. The stale callback must never run.
+        fixture.shared.invalidate_explicitly("runtime_changed");
+        registry::detach_transport(fixture.owner, fixture.generation);
+        release.wait();
+        assert!(matches!(
+            worker.join().expect("strict-frame stale worker"),
+            Err(FlowFailure::Stale)
+        ));
+
+        let state = fixture
+            .shared
+            .session
+            .lock()
+            .expect("strict-frame stale state");
+        assert_eq!(state.snapshot, old_snapshot);
+        assert_eq!(state.herdr.snapshot, old_herdr);
+        assert_eq!(state.pane_terminals, old_mapping);
+        assert_eq!(state.selected_pane, old_selected);
+        assert!(!state.runtime_operations_ready);
+        assert!(!state.terminal_input_ready);
+        assert_eq!(state.recovery.phase, RecoveryPhase::Stopped);
+        drop(state);
+        assert!(!registry::transport_ready(
+            fixture.owner,
+            fixture.generation
+        ));
+        assert_eq!(
+            registry::snapshot(fixture.owner).expect("strict-frame old native snapshot"),
+            old_native
+        );
+        assert_eq!(
+            registry::terminal_revision(fixture.owner).expect("strict-frame old native revision"),
+            old_revision
+        );
+    }
+
+    #[test]
+    fn strict_first_full_frame_commit_publishes_projection_ready_and_fresh_input() {
+        let mut fixture = strict_frame_fixture();
+        let old_native = registry::snapshot(fixture.owner).expect("strict-frame old snapshot");
+        let old_revision =
+            registry::terminal_revision(fixture.owner).expect("strict-frame old revision");
+        let expected_epoch = fixture
+            .shared
+            .begin_recovery("strict_frame", 1)
+            .expect("strict-frame success epoch");
+        registry::detach_transport(fixture.owner, fixture.generation);
+        fixture.reattach_semantic();
+
+        let wire::TerminalRecord::Frame(frame) =
+            wire::decode_terminal_record(&strict_full_frame_value(b"new-frame\r\n\x1b[6n"))
+                .expect("strict-frame success decode")
+        else {
+            panic!("strict-frame decoder returned a non-frame record");
+        };
+        let projection = strict_frame_projection(fixture.owner, "new");
+        let expected_metadata = projection.metadata.snapshot.clone();
+        let expected_flat = projection.flat.clone();
+        let expected_windows = projection.windows.clone();
+        let expected_mapping = projection.mapping.clone();
+        let result = fixture
+            .shared
+            .commit_ready_at_epoch_result(expected_epoch, move |state| {
+                registry::restore_remote_display_and_ready(
+                    fixture.owner,
+                    fixture.generation,
+                    frame.width,
+                    frame.height,
+                    &frame.bytes,
+                )
+                .map_err(|_| FlowFailure::HerdrProtocol)?;
+                apply_projection_state(state, &projection);
+                Ok(())
+            });
+        assert!(
+            result.is_ok(),
+            "strict-frame success commit returned an error"
+        );
+
+        let state = fixture
+            .shared
+            .session
+            .lock()
+            .expect("strict-frame success state");
+        assert_eq!(state.snapshot.panes, expected_flat);
+        assert_eq!(state.snapshot.windows, expected_windows);
+        assert_eq!(state.pane_terminals, expected_mapping);
+        assert_eq!(state.selected_pane, Some(fixture.owner));
+        assert_eq!(state.herdr.snapshot, expected_metadata);
+        assert_eq!(state.recovery.phase, RecoveryPhase::None);
+        assert!(state.runtime_operations_ready);
+        assert!(state.terminal_input_ready);
+        drop(state);
+        assert_eq!(
+            fixture
+                .shared
+                .snapshot()
+                .expect("strict-frame connection state")
+                .state,
+            ConnectionState::Ready as u32
+        );
+        assert!(registry::transport_ready(fixture.owner, fixture.generation));
+        assert_ne!(
+            registry::snapshot(fixture.owner).expect("strict-frame new snapshot"),
+            old_native
+        );
+        assert!(
+            registry::terminal_revision(fixture.owner).expect("strict-frame new revision")
+                > old_revision
+        );
+
+        // The frame contained a device-status query. It was applied while
+        // the semantic gate was Attached, so no local VT reply was sent.
+        assert!(fixture.input_receiver.try_recv().is_err());
+        let fresh_epoch =
+            registry::operation_epoch(fixture.owner).expect("strict-frame input epoch");
+        assert!(
+            fixture
+                .shared
+                .current_terminal_input_is_ready(fixture.shared.operation_epoch())
+        );
+        registry::commit_utf8_at_epoch(fixture.owner, fresh_epoch, b"fresh")
+            .expect("strict-frame fresh input");
+        assert!(matches!(
+            fixture.input_receiver.try_recv().expect("strict-frame input record"),
+            SemanticInput::Text(text, modifiers)
+                if text == "fresh" && modifiers == Modifiers::NONE
+        ));
     }
 
     fn herdr_pane(

@@ -361,6 +361,29 @@ function sameConnection(a: SshConnectionState, b: SshConnectionState) {
     && a.knownFingerprint === b.knownFingerprint && a.errorCode === b.errorCode
     && a.errorMessage === b.errorMessage;
 }
+
+// Operation epochs are native u64 values serialized as decimal strings. Keep
+// their ordering exact without converting them through Number, which would
+// lose precision for a long-lived connection.
+function compareOperationEpochs(leftValue: string, rightValue: string): number | null {
+  const left = leftValue.replace(/^0+(?=\d)/, '');
+  const right = rightValue.replace(/^0+(?=\d)/, '');
+  if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) return leftValue === rightValue ? 0 : null;
+  if (left.length !== right.length) return left.length > right.length ? 1 : -1;
+  if (left === right) return 0;
+  return left > right ? 1 : -1;
+}
+
+function operationEpochAtLeast(candidate: string, reference: string): boolean {
+  const comparison = compareOperationEpochs(candidate, reference);
+  return comparison !== null && comparison >= 0;
+}
+
+function operationEpochNewer(candidate: string, reference: string): boolean {
+  const comparison = compareOperationEpochs(candidate, reference);
+  return comparison !== null && comparison > 0;
+}
+
 const EMPTY_WORKSPACES: WorkspaceState = {
   backend: 'tmux', runtime: 'meeterm', groupsSupported: false, workspaces: [], groups: [], terminals: [],
   control: { ...DEFAULT_WORKSPACE_CONTROL, recovery: { ...DEFAULT_WORKSPACE_CONTROL.recovery } },
@@ -850,7 +873,7 @@ function recoveryRailCopy(control: WorkspaceControl, backend: RuntimeBackend, ru
     case 'runtimeMissing':
       return { title: 'This runtime can’t be restored', detail: `The runtime named “${runtimeLabel}” is no longer available.`, meta, progress: false, danger: true, assertive: true, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: true };
     case 'terminalMissing':
-      return { title: 'This terminal no longer exists', detail: 'Choose another terminal before sending anything.', meta, progress: false, danger: true, assertive: true, retry: false, review: false, connectionDetails: false, chooseTerminal: true, change: true };
+      return { title: 'This terminal no longer exists', detail: 'Use Change… for a fresh runtime or server selection before sending anything.', meta: 'Last received output · Input paused · Change for fresh selection', progress: false, danger: true, assertive: true, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: true };
     case 'hostKeyChanged':
       return { title: 'Server identity changed', detail: 'Review the host key before connecting again.', meta, progress: false, danger: false, assertive: true, retry: false, review: true, reviewLabel: 'Review key', reviewAccessibilityLabel: 'Review key change', connectionDetails: false, chooseTerminal: false, change: false };
     case 'authentication':
@@ -995,7 +1018,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const workspaceObservationRef = useRef(Boolean(fixture?.hasConnected && fixture.panes.length > 0));
   const retainedPaneRef = useRef<RemoteTerminal | null>(null);
   const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, confirm: null, change: null });
-  const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; retained: boolean; strongReady: boolean } | null>(null);
+  const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
+  const completedRecoveryEpochRef = useRef('');
   const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const announcedRecoveryRef = useRef('');
 
@@ -1394,9 +1418,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       && !previous.strongReady
       && !recoveryInvalidatedRef.current
       && control.operationEpoch
-      && (previous.phase !== 'none' || previous.retained));
+      // A normal live surface can briefly lose the input gate while a view or
+      // sheet is hidden. Only a real recovery phase with its native epoch and
+      // attempt may authorize a recovered announcement.
+      && previous.phase !== 'none'
+      && previous.epoch
+      && previous.attempt >= 0
+      && operationEpochAtLeast(control.operationEpoch, previous.epoch)
+      // Do not replay the same recovery after a healthy visibility cycle or
+      // accept an old epoch that arrives after a newer recovery completed.
+      && (!completedRecoveryEpochRef.current
+        || operationEpochNewer(control.operationEpoch, completedRecoveryEpochRef.current)));
     if (completedRecovery) {
       const epoch = control.operationEpoch;
+      completedRecoveryEpochRef.current = epoch;
       setRecoveredEpoch(epoch);
       if (recoveredTimerRef.current) clearTimeout(recoveredTimerRef.current);
       recoveredTimerRef.current = setTimeout(() => {
@@ -1417,6 +1452,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     recoveryMilestoneRef.current = {
       epoch: control.operationEpoch,
       phase: control.recovery.phase,
+      attempt: control.recovery.attempt,
       retained: retainedWorkAvailable,
       strongReady,
     };
@@ -1596,6 +1632,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       runtimeSelectionRequired.current = true;
       setRecoveryInvalidated(true);
       setRecoveredEpoch('');
+      recoveryMilestoneRef.current = null;
+      completedRecoveryEpochRef.current = '';
       retainedPaneRef.current = null;
       setSession(EMPTY_WORKSPACES);
       setSelectedPaneIds({});
@@ -1883,6 +1921,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     recoveryInvalidatedRef.current = false;
     setRecoveryInvalidated(false);
     setRecoveredEpoch('');
+    recoveryMilestoneRef.current = null;
+    completedRecoveryEpochRef.current = '';
     retainedPaneRef.current = null;
     recoveryPendingRef.current = { retry: null, confirm: null, change: null };
     setRecoveryPending({ retry: false, confirm: false, change: false });
@@ -1953,6 +1993,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     recoveryInvalidatedRef.current = true;
     setRecoveryInvalidated(true);
     setRecoveredEpoch('');
+    recoveryMilestoneRef.current = null;
+    completedRecoveryEpochRef.current = '';
     retainedPaneRef.current = null;
     setSheet(null);
     const previous = connection;
@@ -1970,6 +2012,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       recoveryInvalidatedRef.current = true;
       setRecoveryInvalidated(true);
       setRecoveredEpoch('');
+      recoveryMilestoneRef.current = null;
+      completedRecoveryEpochRef.current = '';
       retainedPaneRef.current = null;
     }
     setSheet(null);
@@ -1980,8 +2024,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     });
   }, [connection, recoveryPhaseActive, runCommand]);
 
+  const retainedWorkspaceId = retainedWorkAvailable && retainedPane ? retainedPane.workspaceId : '';
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
-    if (commandPending.current || !runtimeReady) return false;
+    const retainedSelection = Boolean(recoveryPhaseActive && retainedWorkAvailable
+      && retainedPane && pane.terminalId === retainedPane.terminalId);
+    if (commandPending.current || (!runtimeReady && !retainedSelection)) return false;
     Keyboard.dismiss();
     const previous = selectedPaneIds[pane.groupId];
     setSelectedPaneIds(current => ({ ...current, [pane.groupId]: pane.id }));
@@ -1989,22 +2036,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // restored selection follows an offline workspace choice.
     // Presentation fixtures may navigate only to their existing native demo
     // terminal. They never issue a remote selection or create a fake JS buffer.
-    const success = smokeFixtureActive ? pane.terminalId === CONNECTION_ID : await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
+    const success = smokeFixtureActive
+      ? pane.terminalId === CONNECTION_ID
+      : retainedSelection
+        ? true
+        : await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
     if (!success) setSelectedPaneIds(current => {
         const next = { ...current };
         if (previous) next[pane.groupId] = previous; else delete next[pane.groupId];
         return next;
       });
     return success;
-  }, [runCommand, runtimeReady, selectedPaneIds, smokeFixtureActive]);
+  }, [recoveryPhaseActive, retainedPane, retainedWorkAvailable, runCommand, runtimeReady, selectedPaneIds, smokeFixtureActive]);
 
   const openWorkspace = useCallback((item: Workspace) => {
-    if (commandPending.current || !runtimeReady) return;
+    const retainedWorkspace = Boolean(recoveryPhaseActive && retainedWorkAvailable
+      && retainedPane && item.id === retainedWorkspaceId);
+    if (commandPending.current || (!runtimeReady && !retainedWorkspace)) return;
     Keyboard.dismiss();
     const chosenGroup = session.groups.find(candidate => candidate.workspaceId === item.id && candidate.selected)
       ?? session.groups.find(candidate => candidate.workspaceId === item.id);
     const candidates = item.panes.filter(candidate => candidate.groupId === chosenGroup?.id);
-    const pane = candidates.find(candidate => candidate.id === selectedPaneIds[chosenGroup?.id ?? ''])
+    const pane = (retainedWorkspace ? retainedPane : null)
+      ?? candidates.find(candidate => candidate.id === selectedPaneIds[chosenGroup?.id ?? ''])
       ?? candidates.find(candidate => candidate.active)
       ?? candidates.find(candidate => candidate.selected)
       ?? candidates[0];
@@ -2021,7 +2075,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         if (success) { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
       });
     } else { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
-  }, [choosePane, runtimeReady, selectedPaneIds, session.groups, session.groupsSupported, runCommand]);
+  }, [choosePane, recoveryPhaseActive, retainedPane, retainedWorkAvailable, retainedWorkspaceId, runtimeReady, selectedPaneIds, session.groups, session.groupsSupported, runCommand]);
 
   const backToWorkspaces = useCallback(() => {
     Keyboard.dismiss();
@@ -2267,6 +2321,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={feedbackColors} onPress={() => setControlMessage('')} /> : null}
   </View> : null;
 
+  const recoveryRail = showRecoveryRail
+    ? <RecoveryRail copy={recoveryCopy!} colors={DARK} busy={{ retry: recoveryPending.retry, review: recoveryPending.confirm, change: recoveryPending.change }} onRetry={retryRecovery} onReview={recoveryReasonKind(control.recovery.reason) === 'hostKeyChanged' ? reviewChangedHostKey : reviewRecovery} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} />
+    : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, review: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
+    : null;
+
   const listHeader = <View>
     {searching ? <View style={styles.searchHeader}>
       <View style={styles.flex}>
@@ -2294,6 +2353,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       </View> : null}
     </>}
     {statusNotice ? <View style={styles.horizontal}>{statusNotice}</View> : null}
+    {recoveryRail ? <View style={styles.horizontal}>{recoveryRail}</View> : null}
     {feedback ? <View style={styles.horizontal}>{feedback}</View> : null}
     {searching ? <View style={styles.horizontal}>
       <SearchField value={query} colors={homeColors} onChange={value => { setQuery(value); listOffsets.current.search = 0; workspaceList.current?.scrollToOffset({ offset: 0, animated: false }); }} autoFocus />
@@ -2338,7 +2398,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ref={workspaceList}
       data={filteredWorkspaces}
       keyExtractor={item => item.id}
-      renderItem={({ item }) => <View style={styles.horizontal}><WorkspaceRow connected={strongReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>}
+      renderItem={({ item }) => {
+        const retainedWorkspace = Boolean(recoveryPhaseActive && retainedWorkAvailable
+          && retainedPane && item.id === retainedWorkspaceId);
+        const disabled = commandBusy || (!runtimeReady && !retainedWorkspace)
+          || (presentation.pending && !retainedWorkspace);
+        return <View style={styles.horizontal}><WorkspaceRow connected={strongReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={disabled} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>;
+      }}
       ListHeaderComponent={listHeader}
       ListEmptyComponent={emptyList}
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 24 }}
@@ -2373,7 +2439,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
         <AgentStatusIndicator status={selectedPane.agent.status} live={strongReady} colors={DARK} showLabel testID="selected-agent-status" />
       </View>; })() : null}
-      {showRecoveryRail ? <RecoveryRail copy={recoveryCopy!} colors={DARK} busy={{ retry: recoveryPending.retry, review: recoveryPending.confirm, change: recoveryPending.change }} onRetry={retryRecovery} onReview={recoveryReasonKind(control.recovery.reason) === 'hostKeyChanged' ? reviewChangedHostKey : reviewRecovery} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} /> : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, review: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} /> : null}
+      {recoveryRail}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {surfaceAvailable ? (
         // Unmounting a surface cancels composition; the shared native registry

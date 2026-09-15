@@ -807,6 +807,202 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         terminal_line.assert_not_called()
 
 
+class TransportLossTests(unittest.TestCase):
+    def fixture_nodes(self, *, picker: bool = False) -> list[smoke.Node]:
+        nodes = [
+            smoke.Node(
+                "",
+                "",
+                "android.widget.Button",
+                (0, 40, 100, 100),
+                resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+                enabled=False,
+                selected=True,
+            ),
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.view.SurfaceView",
+                (0, 100, 100, 300),
+                enabled=False,
+            ),
+        ]
+        for identifier in ("recovery-rail", "recovery-title", "recovery-detail", "recovery-meta"):
+            nodes.append(
+                smoke.Node(
+                    "",
+                    "",
+                    "android.view.View",
+                    (0, 0, 100, 40),
+                    resource_id=f"{smoke.PACKAGE}:id/{identifier}",
+                )
+            )
+        if picker:
+            nodes.append(smoke.Node("Choose a runtime for fixture", "", "android.widget.TextView", (0, 0, 100, 20)))
+        return nodes
+
+    def test_stale_recovery_requires_cached_surface_rail_and_disabled_same_pane(self) -> None:
+        nodes = self.fixture_nodes()
+        self.assertTrue(smoke.transport_loss_recovery_ready(nodes, "%12"))
+        self.assertIsNotNone(smoke.find_recovery_pane_node(nodes, "%12"))
+        self.assertFalse(smoke.transport_loss_recovery_ready(self.fixture_nodes(picker=True), "%12"))
+
+    def test_transport_marker_command_is_ascii_and_avoids_android_percent_escape(self) -> None:
+        command = smoke.transport_loss_marker_command(
+            "android-ssh-loss-pre-0123456789abcdef",
+            Path("/tmp/meeterm-ssh-fixture-test/loss-marker"),
+            "%12",
+        )
+        self.assertNotIn("%", command)
+        self.assertNotIn("\n", command)
+        self.assertIn("android-ssh-loss-pre-0123456789abcdef:12:", command)
+        self.assertIn('"$$"', command)
+        self.assertIn(" > ", command)
+        appended = smoke.transport_loss_marker_command(
+            "android-ssh-loss-post-0123456789abcdef",
+            Path("/tmp/meeterm-ssh-fixture-test/loss-marker"),
+            "%12",
+            append=True,
+        )
+        self.assertIn(" >> ", appended)
+
+    def test_transport_marker_command_rejects_wrong_pane_or_marker(self) -> None:
+        with self.assertRaises(smoke.SmokeFailure) as marker_error:
+            smoke.transport_loss_marker_command("not-a-loss-marker", Path("/tmp/x"), "%12")
+        self.assertEqual(marker_error.exception.reason, "invalid_marker")
+        with self.assertRaises(smoke.SmokeFailure) as pane_error:
+            smoke.transport_loss_marker_command(
+                "android-ssh-loss-pre-0123456789abcdef", Path("/tmp/x"), "%bad"
+            )
+        self.assertEqual(pane_error.exception.reason, "invalid_pane_id")
+
+    def test_transport_marker_scope_rejects_duplicate_and_other_pane_output(self) -> None:
+        records = smoke.parse_tmux_panes(
+            b"@4\tsmoke\t%12\t1201\t0\t1\t40\t24\t0\t0\t39\t23\t1\t0\n"
+            b"@4\tsmoke\t%13\t1202\t1\t0\t40\t24\t40\t0\t79\t23\t1\t0\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t80\t24\t0\t0\t79\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t80\t24\t0\t0\t79\t23\t0\t0\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            marker = Path(root) / "marker"
+            marker.write_text(
+                "android-ssh-loss-pre-0123456789abcdef:12:1201\n"
+                "android-ssh-loss-post-0123456789abcdef:12:1201\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(smoke, "list_tmux_panes", return_value=records),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    return_value=subprocess.CompletedProcess([], 0, b"clean\n"),
+                ),
+                mock.patch.object(smoke.time, "sleep"),
+            ):
+                smoke.validate_transport_loss_marker_scope(
+                    Path(root) / "tmux.sock",
+                    "%12",
+                    marker,
+                    "android-ssh-loss-pre-0123456789abcdef",
+                    "android-ssh-loss-post-0123456789abcdef",
+                    "transport_loss_scope",
+                )
+
+            marker.write_text(marker.read_text(encoding="utf-8") + "duplicate\n", encoding="utf-8")
+            with self.assertRaises(smoke.SmokeFailure) as duplicate_error:
+                smoke.validate_transport_loss_marker_scope(
+                    Path(root) / "tmux.sock",
+                    "%12",
+                    marker,
+                    "android-ssh-loss-pre-0123456789abcdef",
+                    "android-ssh-loss-post-0123456789abcdef",
+                    "transport_loss_scope",
+                )
+            self.assertEqual(duplicate_error.exception.reason, "marker_repeated")
+
+    def test_transport_marker_scope_rejects_marker_in_another_pane(self) -> None:
+        records = smoke.parse_tmux_panes(
+            b"@4\tsmoke\t%12\t1201\t0\t1\t40\t24\t0\t0\t39\t23\t1\t0\n"
+            b"@4\tsmoke\t%13\t1202\t1\t0\t40\t24\t40\t0\t79\t23\t1\t0\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t80\t24\t0\t0\t79\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t80\t24\t0\t0\t79\t23\t0\t0\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            marker = Path(root) / "marker"
+            marker.write_text(
+                "android-ssh-loss-pre-0123456789abcdef:12:1201\n"
+                "android-ssh-loss-post-0123456789abcdef:12:1201\n",
+                encoding="utf-8",
+            )
+            captures = iter((b"android-ssh-loss-pre-0123456789abcdef\n", b"clean\n", b"clean\n"))
+            with (
+                mock.patch.object(smoke, "list_tmux_panes", return_value=records),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    side_effect=lambda *args, **kwargs: subprocess.CompletedProcess(
+                        [], 0, next(captures)
+                    ),
+                ),
+                mock.patch.object(smoke.time, "sleep"),
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.validate_transport_loss_marker_scope(
+                        Path(root) / "tmux.sock",
+                        "%12",
+                        marker,
+                        "android-ssh-loss-pre-0123456789abcdef",
+                        "android-ssh-loss-post-0123456789abcdef",
+                        "transport_loss_scope",
+                    )
+            self.assertEqual(error.exception.reason, "marker_in_other_pane")
+
+    def test_fixture_transport_driver_passes_only_control_paths(self) -> None:
+        with mock.patch.dict(
+            smoke.os.environ,
+            {
+                smoke.FIXTURE_CONTROL_REQUEST_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-request",
+                smoke.FIXTURE_CONTROL_STATUS_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-status",
+                "MEETERM_SSH_PASSPHRASE": "must-not-be-forwarded",
+            },
+            clear=False,
+        ), mock.patch.object(
+            smoke.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ) as run:
+            smoke.request_fixture_transport("stop", "transport_loss_inject")
+        self.assertEqual(
+            run.call_args.args[0][-2:],
+            ["--control", "stop"],
+        )
+        self.assertEqual(
+            run.call_args.kwargs["env"],
+            {
+                smoke.FIXTURE_CONTROL_REQUEST_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-request",
+                smoke.FIXTURE_CONTROL_STATUS_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-status",
+            },
+        )
+        self.assertNotIn("MEETERM_SSH_PASSPHRASE", run.call_args.kwargs["env"])
+
+    def test_transport_loss_driver_source_has_no_input_between_stop_and_start(self) -> None:
+        source = Path(smoke.__file__).read_text(encoding="utf-8")
+        start = source.index("def exercise_transport_loss_recovery")
+        stop = source.index('request_fixture_transport("stop"', start)
+        restore = source.index('request_fixture_transport("start"', stop)
+        self.assertNotIn("terminal_line", source[stop:restore])
+        self.assertNotIn("input_", source[stop:restore])
+        self.assertIn("wait_for_transport_loss_stale", source[stop:restore])
+
+    def test_transport_loss_completion_is_exactly_once_and_ordered(self) -> None:
+        completed = list(smoke.TRANSPORT_LOSS_COMPLETION_STAGES)
+        smoke.require_transport_loss_completion(completed, "transport_loss_complete")
+        completed.insert(3, smoke.TRANSPORT_LOSS_COMPLETION_STAGES[0])
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.require_transport_loss_completion(completed, "transport_loss_complete")
+        self.assertEqual(error.exception.reason, "completion_sequence_invalid")
+
+
 class RuntimeSelectionTests(unittest.TestCase):
     def test_runtime_selection_taps_exact_fixture_row_even_with_one_candidate(self) -> None:
         self.assertEqual(smoke.TMUX_RUNTIME_LABELS, ("tmux runtime meeterm",))

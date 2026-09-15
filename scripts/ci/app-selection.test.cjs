@@ -244,6 +244,9 @@ function makeNativeEnvironment() {
     visibility: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
+    fakeTimers: false,
+    timeoutCallbacks: [],
+    nextTimeoutId: 1,
     alert: null,
     accessibilityAnnouncements: [],
     recoveryRetryMode: 'ready',
@@ -453,6 +456,11 @@ function makeNativeEnvironment() {
       pending.resolve();
     }
   };
+  environment.runFakeTimers = (maxDelay = Infinity) => {
+    const due = environment.timeoutCallbacks.filter(timer => !timer.canceled && timer.delay <= maxDelay);
+    environment.timeoutCallbacks = environment.timeoutCallbacks.filter(timer => !due.includes(timer));
+    due.forEach(timer => timer.callback());
+  };
   return { environment, native };
 }
 
@@ -632,6 +640,19 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const ui = makeUiMocks();
   const forms = makeFormMocks();
   const terminal = makeTerminalModule(native, environment);
+  const scheduleTimeout = environment.fakeTimers
+    ? (callback, delay) => {
+      const id = environment.nextTimeoutId++;
+      environment.timeoutCallbacks.push({ id, callback, delay, canceled: false });
+      return id;
+    }
+    : setTimeout;
+  const cancelTimeout = environment.fakeTimers
+    ? id => {
+      const timer = environment.timeoutCallbacks.find(item => item.id === id);
+      if (timer) timer.canceled = true;
+    }
+    : clearTimeout;
   const moduleMap = new Map([
     ['react', React],
     ['react/jsx-runtime', require('react/jsx-runtime')],
@@ -661,8 +682,8 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     __dirname: path.dirname(APP_SOURCE),
     process: processForApp,
     console,
-    setTimeout,
-    clearTimeout,
+    setTimeout: scheduleTimeout,
+    clearTimeout: cancelTimeout,
     setImmediate,
     clearImmediate,
     setInterval(callback) {
@@ -1237,9 +1258,10 @@ function groupTitle(root) {
   return switcher ? textContent(switcher) : '';
 }
 
-async function mountApp(snapshot) {
+async function mountApp(snapshot, configure) {
   const { environment, native } = makeNativeEnvironment();
   environment.snapshot = clone(snapshot);
+  configure?.(environment, native);
   const App = loadApp(environment, native);
   const root = createRoot();
   await act(async () => {
@@ -1248,8 +1270,8 @@ async function mountApp(snapshot) {
   return { root, environment, native };
 }
 
-async function mountForTest(t, snapshot) {
-  const fixture = await mountApp(snapshot);
+async function mountForTest(t, snapshot, configure) {
+  const fixture = await mountApp(snapshot, configure);
   t.after(async () => {
     await act(async () => {
       fixture.root.unmount();
@@ -1348,8 +1370,8 @@ async function updateSnapshot(env, snapshot) {
   await poll(env);
 }
 
-async function mountRecovering(t, control, connectionState = 'Reconnecting') {
-  const fixture = await mountForTest(t, makeSnapshot());
+async function mountRecovering(t, control, connectionState = 'Reconnecting', configure) {
+  const fixture = await mountForTest(t, makeSnapshot(), configure);
   await openWorkspace(fixture.root, 'W1');
   fixture.environment.connection.state = connectionState;
   fixture.environment.snapshot = makeSnapshot({ control });
@@ -2179,6 +2201,143 @@ test('strong Ready restores native input and live agent status with a short reco
   assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'live');
   assert.equal(terminalViews(fixture.root)[0].props.autoFocus, undefined);
   assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Claude Code, Agent status: working');
+});
+
+test('retained recovery rail stays reachable from Workspaces and reopens only the cached terminal', async t => {
+  const fixture = await mountForTest(t, makeSnapshot());
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+
+  const control = workspaceControl({
+    operationEpoch: '141',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  });
+  fixture.environment.connection.state = 'Failed';
+  await updateSnapshot(fixture.environment, makeSnapshot({ control }));
+
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.equal(findTestId(fixture.root, 'recovery-retry').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'workspace-row-W1').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'workspace-row-W2').props.disabled, true);
+
+  const callsBeforeOtherWorkspace = fixture.environment.calls.length;
+  await press(fixture.root, findTestId(fixture.root, 'workspace-row-W2'));
+  assert.deepEqual(fixture.environment.calls.slice(callsBeforeOtherWorkspace), []);
+  assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Back to workspaces').length, 0);
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  assert.ok(findTestId(fixture.root, 'recovery-change-intro'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+
+  const callsBeforeRetainedWorkspace = fixture.environment.calls.length;
+  await press(fixture.root, findTestId(fixture.root, 'workspace-row-W1'));
+  await settleAsync();
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+  assert.deepEqual(fixture.environment.calls.slice(callsBeforeRetainedWorkspace).filter(call => call.method === 'selectPane'), []);
+});
+
+test('healthy visibility and foreground cycles never announce Back online', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), environment => { environment.fakeTimers = true; });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await act(async () => { fixture.environment.emitAppState('background'); fixture.environment.emitAppState('active'); });
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await act(async () => { fixture.environment.emitAppState('inactive'); fixture.environment.emitAppState('active'); });
+
+  const gatesClosed = workspaceControl({
+    operationEpoch: '151',
+    runtimeOperationsReady: true,
+    terminalInputReady: false,
+    recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6 },
+  });
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: gatesClosed }));
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '151' }) }));
+  await settleAsync();
+
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 0);
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 0);
+});
+
+test('a real recovery announces Back online once, expires after two seconds, and ignores an old epoch', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '161',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'resynchronizing', reason: 'screen_resync', attempt: 2, maxAttempts: 6 },
+  }), 'Reconnecting', environment => { environment.fakeTimers = true; });
+
+  fixture.environment.connection.state = 'Ready';
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '162' }) }));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 1);
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
+  assert.deepEqual(fixture.environment.timeoutCallbacks.filter(timer => !timer.canceled).map(timer => timer.delay).sort((a, b) => a - b), [2000]);
+
+  const healthyHidden = workspaceControl({
+    operationEpoch: '162',
+    runtimeOperationsReady: true,
+    terminalInputReady: false,
+    recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6 },
+  });
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: healthyHidden }));
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '162' }) }));
+  await settleAsync();
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
+  assert.deepEqual(fixture.environment.timeoutCallbacks.filter(timer => !timer.canceled).map(timer => timer.delay), [2000]);
+
+  await act(async () => { fixture.environment.runFakeTimers(2000); });
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 0);
+
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({
+    operationEpoch: '161',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'resynchronizing', reason: 'late_old_epoch', attempt: 2, maxAttempts: 6 },
+  }) }));
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '161' }) }));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 0);
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
+});
+
+test('terminal_missing recovery offers Change instead of a fake terminal picker', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '171',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'terminal_missing', attempt: 1, maxAttempts: 6 },
+  }), 'Failed');
+
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-choose-terminal').length, 0);
+  assert.ok(findTestId(fixture.root, 'recovery-change'));
+  assert.match(findTestId(fixture.root, 'recovery-detail').children[0], /Change/);
+  assert.match(findTestId(fixture.root, 'recovery-meta').children[0], /Change/);
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  assert.ok(findTestId(fixture.root, 'recovery-change-intro'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  fixture.environment.changeRuntimeMode = 'pending';
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
+  await settleAsync();
+  assert.ok(fixture.environment.pendingChangeRuntime);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  fixture.environment.resolvePendingChangeRuntime('accept');
+  await settleAsync();
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
 });
 
 test('external cross-workspace move follows selected stable native terminal', async t => {
