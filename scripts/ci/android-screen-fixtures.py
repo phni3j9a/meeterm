@@ -200,15 +200,23 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
     elif screen == "herdr-groups":
         checks = [
             ("group_sheet_title", "Switch group" in values),
-            ("group_development", "Group Development" in values),
-            ("group_tests_review", "Group Tests & review" in values),
+            ("group_development", any(value.startswith("Group Development") for value in normalized_values)),
+            ("group_tests_review", any(value.startswith("Group Tests & review") for value in normalized_values)),
+            ("group_working_status", any("Agent status: working" in value for value in normalized_values)),
+            ("group_done_status", any("Agent status: finished" in value for value in normalized_values)),
         ]
     elif screen == "herdr-terminal":
+        # Representative-view boundary: the one-shot screenshot is taken at
+        # the initial horizontal position. Require the selected pane's owner,
+        # its visible status, and the native group/terminal surface here. The
+        # other four statuses stay seeded and are covered by App/component
+        # tests; offscreen tabs are not a screenshot-readiness prerequisite.
+        # This one screenshot does not visually prove all five statuses.
         checks = [
-            ("terminal_group_switch", "Switch terminal group" in values),
+            ("terminal_group_switch", any(value.startswith("Switch terminal group") for value in normalized_values)),
             ("native_terminal", "Terminal" in values),
-            ("agent_claude_code", "Claude Code" in values),
-            ("agent_working", "Working" in values),
+            ("selected_agent_owner", "Claude Code, Agent status: working" in normalized_values),
+            ("selected_agent_status", "Working" in normalized_values),
         ]
     elif screen in ("workspaces", "herdr-workspaces"):
         checks = [
@@ -216,8 +224,24 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 "workspace_total_two",
                 any(re.fullmatch(r"All\s+2", value) for value in normalized_values),
             ),
-            ("main_workspace_row", "Workspace Main workspace" in normalized_values),
-            ("tools_workspace_row", "Workspace Tools workspace" in normalized_values),
+            ("main_workspace_row", any(value.startswith("Workspace Main workspace") for value in normalized_values)),
+            ("tools_workspace_row", any(value.startswith("Workspace Tools workspace") for value in normalized_values)),
+        ]
+        if screen == "herdr-workspaces":
+            checks.extend([
+                ("main_workspace_status", any("Agent status: blocked" in value for value in normalized_values)),
+                ("tools_workspace_status", any("Agent status: idle" in value for value in normalized_values)),
+            ])
+    elif screen == "long-workspaces":
+        checks = [
+            (
+                "main_long_workspace_row",
+                any(value.startswith("Workspace Production infrastructure — migration and release preparation") for value in normalized_values),
+            ),
+            (
+                "tools_long_workspace_row",
+                any(value.startswith("Workspace Research / terminal typography and international text") for value in normalized_values),
+            ),
         ]
     else:
         required = {
@@ -236,10 +260,6 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             "disconnected": ("Disconnected", "Reconnect"),
             "reconnecting": ("Reconnecting…", "Cancel connection"),
             "connection-error": ("Connection failed", "Reconnect"),
-            "long-workspaces": (
-                "Workspace Production infrastructure — migration and release preparation",
-                "Workspace Research / terminal typography and international text",
-            ),
         }
         checks = [(f"screen_element_{index}", value in normalized_values)
                   for index, value in enumerate(required[screen])]

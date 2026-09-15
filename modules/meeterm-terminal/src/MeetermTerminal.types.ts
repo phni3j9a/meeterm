@@ -105,9 +105,10 @@ export type TmuxSessionState = {
 };
 
 /** Opaque IDs are resolved within the owning connection/backend/runtime. */
-export type RemoteWorkspace = { id: string; name: string };
-export type TerminalGroup = { id: string; workspaceId: string; name: string; selected: boolean };
-export type AgentInfo = { name: string; status: 'working' | 'blocked' | 'done' | 'idle' | 'unknown' };
+export type AgentStatus = 'blocked' | 'done' | 'working' | 'idle' | 'unknown';
+export type RemoteWorkspace = { id: string; name: string; agentStatus: AgentStatus | null };
+export type TerminalGroup = { id: string; workspaceId: string; name: string; selected: boolean; agentStatus: AgentStatus | null };
+export type AgentInfo = { name: string; status: AgentStatus };
 export type RemoteTerminal = {
   id: string;
   workspaceId: string;

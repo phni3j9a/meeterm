@@ -117,6 +117,38 @@ hint として扱えますが、picker を省略しません。Herdr runtime が
 upstream の session 名規則で検証します。選択した runtime が `Ready` になった後だけ
 `lastUsedRuntime` hint を更新します。
 
+## Agent status metadata (Issue #24)
+
+Herdr 0.9.0 の公開 snapshot に含まれる workspace の `agent_status` と tab の
+`agent_status` を、Rust の共通 snapshot へそのまま投影します。wire enum から共通 enum
+への変換は native の一つの変換境界で行い、workspace/tab の値を pane の走査や
+JavaScript の集約で作り直しません。Herdr が返す `unknown` は値のある状態なので
+`Some(Unknown)` として保持し、tmux と agent のない pane は `null` です。互換性の根拠は
+この文書冒頭で固定している [v0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0)
+と [v0.9.0 source](https://github.com/herdrdev/herdr/tree/v0.9.0) です。
+
+共通 bridge の JSON は次の shape です。
+
+```json
+{
+  "workspaces": [{"id": "…", "name": "…", "agentStatus": "blocked"}],
+  "groups": [{"id": "…", "workspaceId": "…", "name": "…", "selected": true, "agentStatus": "working"}],
+  "terminals": [{"id": "…", "agent": {"name": "Claude Code", "status": "done"}}]
+}
+```
+
+`blocked`、`done`、`working`、`idle`、`unknown` が共通の小文字 vocabulary です。Herdr
+の workspace/tab rollup は空の階層でも `Some(status)` を維持し、pane は agent 名がある
+場合だけ `agent` を持ちます。`pane.agent_status_changed` は既存の subscribe と coherent
+full resync を通るため、workspace、tab、pane は同じ native snapshot で更新されます。
+`done` を pane 選択時に `idle` へ変更したり、status の優先度で一覧を並べ替えたりしません。
+
+表示側では `Ready` 以外（切断、再接続、runtime 選択中、失敗を含む）の間だけ、保持している
+status を灰色の `Status unavailable` として解決します。これは presentation-only の解決で、
+native snapshot の値を `unknown` や別 status に書き換えるものではありません。`Ready` に
+戻り新しい snapshot を受け取ると、元の status を表示します。値が `null` の場合は mark も
+文言も描画しません。
+
 ## Native data path
 
 ```text

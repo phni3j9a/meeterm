@@ -254,6 +254,21 @@ pub(crate) enum AgentStatus {
     Unknown,
 }
 
+/// Convert the fixed wire vocabulary once at the backend boundary. Herdr's
+/// workspace/tab rollups and pane status all use the same common enum after
+/// this point; callers must not re-aggregate status in the UI.
+impl From<AgentStatus> for crate::workspace::AgentStatus {
+    fn from(status: AgentStatus) -> Self {
+        match status {
+            AgentStatus::Idle => Self::Idle,
+            AgentStatus::Working => Self::Working,
+            AgentStatus::Blocked => Self::Blocked,
+            AgentStatus::Done => Self::Done,
+            AgentStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HerdrSessionSnapshot {
     pub(crate) version: String,

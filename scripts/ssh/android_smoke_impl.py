@@ -82,7 +82,6 @@ DAILY_GLYPH_STRESS_COLUMNS = 16
 GLYPH_ATLAS_RESET_PATTERN = re.compile(
     r"\bMEETERM_GLYPH_ATLAS_RESET count=[1-9][0-9]*\b"
 )
-PANE_LABEL_PATTERN = re.compile(r"^Terminal (%[0-9]+)$")
 WORKSPACE_LABEL_PATTERN = re.compile(r"^Workspace .+$")
 BACK_TO_WORKSPACES_LABELS = (
     "Back to workspaces",
@@ -1274,9 +1273,10 @@ def accessible_label(node: Node) -> str:
 
 
 def pane_id_from_node(node: Node) -> str | None:
-    """Extract a tmux pane ID from the required accessibility label."""
+    """Extract a tmux pane ID from the non-spoken terminal tab test ID."""
 
-    match = PANE_LABEL_PATTERN.fullmatch(accessible_label(node).strip())
+    resource_id = node.resource_id.removeprefix(f"{PACKAGE}:id/")
+    match = re.fullmatch(r"terminal-tab-(%[0-9]+)", resource_id)
     return match.group(1) if match is not None else None
 
 

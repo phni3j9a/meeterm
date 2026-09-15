@@ -62,6 +62,37 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
 
+### Agent status metadata
+
+Herdr の workspace/tab rollup と pane status は native snapshot の metadata として扱い、
+JavaScript で pane 数を数えて rollup を推測しない。tmux の workspace/group と agentless
+pane は `null`、Herdr が返す `unknown` は有効な status であり、両者を同じ意味にしない。
+status は一覧順、check、tab underline、selected text、connection dot の代わりには使わない。
+
+| 状態 | mark | selected agent line の表示 | accessibility phrase |
+| --- | --- | --- | --- |
+| `blocked` | semantic red の filled 8 pt circle | `Needs attention` | `Agent status: blocked, needs attention` |
+| `done` | semantic teal の filled 8 pt circle | `Finished` | `Agent status: finished, not yet viewed` |
+| `working` | semantic yellow の filled 8 pt circle | `Working` | `Agent status: working` |
+| `idle` | semantic green の hollow 8 pt circle | `Idle` | `Agent status: idle` |
+| `unknown` | gray の filled 4 pt dot | `Unknown` | `Agent status: unknown` |
+| Ready 以外 | gray の filled 4 pt dot | `Status unavailable` | `Agent status unavailable` |
+
+すべての mark は 12 pt の非操作 slot 内に置きます。workspace row と group picker/sheet
+では名前の前、terminal tab では terminal icon の後かつ名前の前に置きます。selected
+terminal の agent line は agent 名を先に省略し、mark と status label の cluster は省略せず、
+必要なら次行へ wrap します。status が `null` の場合は slot 自体を追加しません。選択対象の
+row/group/tab が既存の 44/48 pt 操作領域と `accessibilityState.selected` を持ち、mark 自体は
+VoiceOver/TalkBack の個別 focus target になりません。
+
+各 owning element は opaque ID を読み上げず、上表の phrase を既存の名前へ付加します。
+selected agent line だけが一つの `polite` live region で、既存の
+`Status reported by Herdr. This does not verify task correctness or passing tests.` という
+correctness hint を維持します。server row、runtime picker、connection indicator、terminal
+header には agent mark を表示しません。status の色は selection accent/danger と別 token で、
+小さな non-text mark の視認性は各使用背景に対して 3:1 以上を確認しています。これは実機の
+色覚差、フォント、GPU、IME を検証したことを意味しません。
+
 ## Research, 2026-09-13
 
 Fresh Appllama queries retrieved and locally preserved all 19 Termius,

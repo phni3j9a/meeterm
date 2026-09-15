@@ -42,6 +42,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SNAPSHOT_HEADER_SIZE: usize = 28;
 const SNAPSHOT_CELL_METADATA_SIZE: usize = 28;
 const MAX_EXEC_OUTPUT: usize = 4 * 1024 * 1024;
+const API_RESPONSE_MAX_LINE_BYTES: usize = 1024 * 1024;
+const API_RESPONSE_ID: &str = "fixture-external";
+const API_RESPONSE_DIAGNOSTIC_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Deserialize)]
 struct SessionManifest {
@@ -144,20 +147,22 @@ impl Driver {
         socket.set_read_timeout(Some(WAIT_TIMEOUT)).unwrap();
         socket.set_write_timeout(Some(WAIT_TIMEOUT)).unwrap();
         let mut request =
-            serde_json::to_vec(&json!({"id":"fixture-external", "method":method, "params":params}))
+            serde_json::to_vec(&json!({"id":API_RESPONSE_ID, "method":method, "params":params}))
                 .unwrap();
         request.push(b'\n');
         socket.write_all(&request).unwrap();
-        let mut line = String::new();
-        BufReader::new(socket).read_line(&mut line).unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(response["id"], "fixture-external");
-        assert!(
-            response.get("error").is_none(),
-            "fixture external API {method} rejected: {}",
-            response["error"]["code"]
-        );
-        response["result"].clone()
+        let mut reader = BufReader::new(socket);
+        let response =
+            read_api_response(&mut reader, API_RESPONSE_ID, method).unwrap_or_else(|error| {
+                panic!("fixture external API {method} response failed: {error}")
+            });
+        if let Some(error) = response.get("error") {
+            panic!("fixture external API {method} rejected: {error}");
+        }
+        response
+            .get("result")
+            .cloned()
+            .unwrap_or_else(|| panic!("fixture external API {method} response has no result"))
     }
 
     fn stop(&mut self) {
@@ -182,6 +187,189 @@ impl Driver {
             }
         }
     }
+}
+
+fn read_api_response<R: BufRead>(
+    reader: &mut R,
+    expected_id: &str,
+    method: &str,
+) -> Result<Value, String> {
+    let line = read_bounded_api_line(reader)
+        .map_err(|error| format!("response read for {method} failed: {error}"))?
+        .ok_or_else(|| format!("EOF while waiting for response id {expected_id:?} to {method}"))?;
+    let value: Value = serde_json::from_slice(&line).map_err(|error| {
+        format!(
+            "malformed NDJSON response to {method}: {error}; body={}",
+            bounded_api_body_bytes(&line)
+        )
+    })?;
+    let body = bounded_api_body(&value);
+    let Some(id) = value.get("id") else {
+        return Err(format!("response id missing for {method}; body={body}"));
+    };
+    if id != expected_id {
+        return Err(format!(
+            "response id mismatch for {method}: expected {expected_id:?}, got {id}; body={body}"
+        ));
+    }
+    Ok(value)
+}
+
+fn read_bounded_api_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, String> {
+    let mut line = Vec::new();
+    loop {
+        let chunk = reader
+            .fill_buf()
+            .map_err(|error| format!("read error: {error}"))?;
+        if chunk.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "EOF before the NDJSON newline ({} bytes)",
+                    line.len()
+                ))
+            };
+        }
+        let consumed = chunk
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(chunk.len(), |position| position + 1);
+        if line.len().saturating_add(consumed) > API_RESPONSE_MAX_LINE_BYTES {
+            return Err(format!(
+                "NDJSON line exceeds {} bytes",
+                API_RESPONSE_MAX_LINE_BYTES
+            ));
+        }
+        line.extend_from_slice(&chunk[..consumed]);
+        reader.consume(consumed);
+        if line.last() == Some(&b'\n') {
+            return Ok(Some(line));
+        }
+    }
+}
+
+fn bounded_api_body(value: &Value) -> String {
+    let encoded = value.to_string();
+    bounded_api_body_bytes(encoded.as_bytes())
+}
+
+fn bounded_api_body_bytes(bytes: &[u8]) -> String {
+    let truncated = bytes.len() > API_RESPONSE_DIAGNOSTIC_BYTES;
+    let preview = &bytes[..bytes.len().min(API_RESPONSE_DIAGNOSTIC_BYTES)];
+    let mut body = String::from_utf8_lossy(preview).into_owned();
+    body = body.replace('\r', "\\r").replace('\n', "\\n");
+    if truncated {
+        body.push_str("…<truncated>");
+    }
+    body
+}
+
+#[test]
+fn api_response_reader_accepts_matching_success_and_api_error() {
+    let input = concat!(
+        r#"{"id":"fixture-external","result":{"accepted":true}}"#,
+        "\n"
+    );
+    let mut reader = BufReader::new(input.as_bytes());
+    let response = read_api_response(&mut reader, API_RESPONSE_ID, "pane.report_agent")
+        .expect("matching API response");
+    assert_eq!(response["id"], API_RESPONSE_ID);
+    assert_eq!(response["result"]["accepted"], true);
+
+    let input = concat!(
+        r#"{"id":"fixture-external","error":{"code":"invalid_request","message":"bad pane id"}}"#,
+        "\n",
+    );
+    let mut reader = BufReader::new(input.as_bytes());
+    let response = read_api_response(&mut reader, API_RESPONSE_ID, "pane.report_agent")
+        .expect("matching API error response");
+    assert_eq!(response["id"], API_RESPONSE_ID);
+    assert_eq!(response["error"]["code"], "invalid_request");
+    assert_eq!(response["error"]["message"], "bad pane id");
+}
+
+#[test]
+fn api_response_reader_rejects_missing_or_unmatched_ids_without_skipping() {
+    let cases = [
+        (
+            "empty response id",
+            r#"{"id":"","error":{"code":"invalid_request","message":"invalid request: invalid type: integer `1000002`, expected a string"}}"#,
+            "response id mismatch",
+            "1000002",
+        ),
+        (
+            "wrong response id",
+            r#"{"id":"other","result":{}}"#,
+            "response id mismatch",
+            "other",
+        ),
+        (
+            "missing id result",
+            r#"{"result":{}}"#,
+            "response id missing",
+            "result",
+        ),
+        (
+            "id-less event",
+            r#"{"type":"pane.agent_status_changed","pane_id":"fixture"}"#,
+            "response id missing",
+            "pane.agent_status_changed",
+        ),
+        (
+            "id-less error",
+            r#"{"error":{"code":"invalid_request","message":"bad pane id"}}"#,
+            "response id missing",
+            "bad pane id",
+        ),
+        (
+            "id-less result",
+            r#"{"result":{"accepted":true}}"#,
+            "response id missing",
+            "accepted",
+        ),
+    ];
+    for (name, body, expected, body_marker) in cases {
+        let input = format!("{body}\n");
+        let mut reader = BufReader::new(input.as_bytes());
+        let error =
+            read_api_response(&mut reader, API_RESPONSE_ID, "session.snapshot").expect_err(name);
+        assert!(error.contains(expected), "{name}: {error}");
+        assert!(error.contains("body="), "{name}: {error}");
+        assert!(error.contains(body_marker), "{name}: {error}");
+    }
+}
+
+#[test]
+fn api_response_reader_reports_malformed_eof_partial_and_oversize_records() {
+    let cases = [
+        (
+            "malformed JSON",
+            "{not-json}\n",
+            "malformed NDJSON response",
+        ),
+        ("EOF", "", "EOF while waiting for response id"),
+        (
+            "partial NDJSON",
+            r#"{"id":"fixture-external","result":{}}"#,
+            "EOF before the NDJSON newline",
+        ),
+    ];
+    for (name, input, expected) in cases {
+        let mut reader = BufReader::new(input.as_bytes());
+        let error =
+            read_api_response(&mut reader, API_RESPONSE_ID, "session.snapshot").expect_err(name);
+        assert!(error.contains(expected), "{name}: {error}");
+    }
+
+    let input = format!(
+        "{{\"id\":\"{API_RESPONSE_ID}\",\"result\":\"{}\"}}\n",
+        "x".repeat(API_RESPONSE_MAX_LINE_BYTES)
+    );
+    let mut reader = BufReader::new(input.as_bytes());
+    let error = read_api_response(&mut reader, API_RESPONSE_ID, "session.snapshot")
+        .expect_err("oversize NDJSON");
+    assert!(error.contains("NDJSON line exceeds"), "{error}");
 }
 
 impl Drop for Driver {
@@ -945,6 +1133,30 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
+fn common_agent_status<'a>(value: &'a Value, collection: &str, id: u64) -> Option<&'a str> {
+    value[collection]
+        .as_array()?
+        .iter()
+        .find(|item| entity_id(&item["id"]) == id)
+        .and_then(|item| item["agentStatus"].as_str())
+}
+
+fn common_terminal_agent_status(value: &Value, id: u64) -> Option<&str> {
+    value["terminals"]
+        .as_array()?
+        .iter()
+        .find(|item| entity_id(&item["id"]) == id)
+        .and_then(|item| item["agent"].get("status"))
+        .and_then(Value::as_str)
+}
+
+fn common_terminal_has_no_agent(value: &Value, id: u64) -> bool {
+    value["terminals"]
+        .as_array()
+        .and_then(|terminals| terminals.iter().find(|item| entity_id(&item["id"]) == id))
+        .is_some_and(|terminal| terminal["agent"].is_null())
+}
+
 fn wait_revision(owner: u64, id: u64, previous: u64, label: &str) -> u64 {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
@@ -1297,6 +1509,36 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .unwrap()
         .parse()
         .unwrap();
+    let root_common_id = grouped["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["terminalId"] == format!("native:{}", root.terminal_id))
+        .expect("common root terminal identity")["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let root_group_id = grouped["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| entity_id(&terminal["id"]) == root_common_id)
+        .expect("common root group identity")["groupId"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let secondary_root_common_id = grouped["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| entity_id(&terminal["groupId"]) == group_id)
+        .expect("common secondary root terminal identity")["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     select_group(default_id, group_id).expect("select Herdr group");
     wait_json(default_id, "selected Herdr group", |value| {
         value["groups"]
@@ -1336,6 +1578,16 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .expect("new Herdr pane identity");
     let extra_pane_id = extra_pane["id"].as_str().unwrap().parse().unwrap();
     let after_split = driver.api("default", "session.snapshot", json!({}));
+    let root_remote_terminal_id = driver.manifest.sessions["default"].terminal_id.as_str();
+    let root_remote_pane = after_split["snapshot"]["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["terminal_id"].as_str() == Some(root_remote_terminal_id))
+        .expect("root remote pane with stable terminal identity")["pane_id"]
+        .as_str()
+        .expect("root remote pane ID")
+        .to_owned();
     let remote_pane = after_split["snapshot"]["panes"]
         .as_array()
         .unwrap()
@@ -1351,18 +1603,91 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .as_str()
         .unwrap()
         .to_owned();
+    driver.api(
+        "default",
+        "pane.report_agent",
+        json!({
+            "pane_id": root_remote_pane,
+            "source": "meeterm-fixture",
+            "agent": "RootAgent",
+            "state": "working",
+            "seq": 1,
+        }),
+    );
+    let root_reported = wait_json(default_id, "root pane agent status event", |value| {
+        common_agent_status(value, "workspaces", workspace_id) == Some("working")
+            && common_agent_status(value, "groups", root_group_id) == Some("working")
+            && common_terminal_agent_status(value, root_common_id) == Some("working")
+    });
+    assert_eq!(
+        common_agent_status(&root_reported, "workspaces", workspace_id),
+        Some("working")
+    );
+    assert_eq!(
+        common_agent_status(&root_reported, "groups", root_group_id),
+        Some("working")
+    );
+    assert_eq!(
+        common_terminal_agent_status(&root_reported, root_common_id),
+        Some("working")
+    );
+    assert!(common_terminal_has_no_agent(
+        &root_reported,
+        secondary_root_common_id
+    ));
     for (seq, state) in [(1, "working"), (2, "blocked"), (3, "unknown")] {
-        driver.api("default", "pane.report_agent", json!({"pane_id":remote_pane,"source":"meeterm-fixture", "agent":"Claude", "state":state,"seq":seq}));
-        wait_json(default_id, "new pane agent status event", |value| {
-            value["terminals"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|terminal| {
-                    entity_id(&terminal["id"]) == extra_pane_id
-                        && terminal["agent"]["status"] == state
-                })
+        driver.api(
+            "default",
+            "pane.report_agent",
+            json!({
+                "pane_id": remote_pane,
+                "source": "meeterm-fixture",
+                "agent": "Claude",
+                "state": state,
+                "seq": seq,
+            }),
+        );
+        let expected_workspace = if state == "blocked" {
+            "blocked"
+        } else {
+            "working"
+        };
+        let transitioned = wait_json(default_id, "new pane agent status event", |value| {
+            // One common snapshot must expose the direct pane status, its
+            // tab rollup, the workspace rollup, and the untouched agentless
+            // sibling. The root pane keeps workspace status intentionally
+            // different from the secondary tab for the unknown transition.
+            common_agent_status(value, "workspaces", workspace_id) == Some(expected_workspace)
+                && common_agent_status(value, "groups", group_id) == Some(state)
+                && common_agent_status(value, "groups", root_group_id) == Some("working")
+                && common_terminal_agent_status(value, extra_pane_id) == Some(state)
+                && common_terminal_agent_status(value, root_common_id) == Some("working")
+                && common_terminal_has_no_agent(value, secondary_root_common_id)
         });
+        assert_eq!(
+            common_agent_status(&transitioned, "workspaces", workspace_id),
+            Some(expected_workspace)
+        );
+        assert_eq!(
+            common_agent_status(&transitioned, "groups", group_id),
+            Some(state)
+        );
+        assert_eq!(
+            common_agent_status(&transitioned, "groups", root_group_id),
+            Some("working")
+        );
+        assert_eq!(
+            common_terminal_agent_status(&transitioned, extra_pane_id),
+            Some(state)
+        );
+        assert_eq!(
+            common_terminal_agent_status(&transitioned, root_common_id),
+            Some("working")
+        );
+        assert!(common_terminal_has_no_agent(
+            &transitioned,
+            secondary_root_common_id
+        ));
     }
 
     rename_pane(default_id, extra_pane_id, "secondary-pane-renamed").expect("rename Herdr pane");

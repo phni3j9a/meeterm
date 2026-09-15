@@ -26,6 +26,13 @@ export const LIGHT = {
   onAccent: '#FFFFFF',
   danger: '#AD4437',
   terminal: '#211f1b',
+  agentStatus: {
+    blocked: '#B4232F',
+    done: '#087E8B',
+    working: '#826A00',
+    idle: '#2F7D32',
+    unknown: '#73695C',
+  },
 };
 
 export const DARK: typeof LIGHT = {
@@ -41,6 +48,13 @@ export const DARK: typeof LIGHT = {
   onAccent: '#352719',
   danger: '#dfa79a',
   terminal: '#211f1b',
+  agentStatus: {
+    blocked: '#F08A91',
+    done: '#77D5D1',
+    working: '#E5C94F',
+    idle: '#8DD18A',
+    unknown: '#8F887F',
+  },
 };
 
 export type Palette = typeof LIGHT;

@@ -23,16 +23,37 @@ class PresentationReadinessTests(unittest.TestCase):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
 
     def test_workspace_rows_do_not_depend_on_replaced_count_subtitles(self):
-        values = {"All  2", "Workspace Main workspace", "Workspace Tools workspace"}
+        values = {
+            "All  2",
+            "Workspace Main workspace, Agent status: blocked, 2 terminals",
+            "Workspace Tools workspace, Agent status: idle, 1 terminal",
+        }
         self.assertEqual(fixtures.screen_checks("herdr-workspaces", values), [])
-        values.remove("Workspace Tools workspace")
+        values.remove("Workspace Tools workspace, Agent status: idle, 1 terminal")
         self.assertIn("tools_workspace_row", fixtures.screen_checks("herdr-workspaces", values))
+        self.assertIn("tools_workspace_status", fixtures.screen_checks("herdr-workspaces", values))
 
-    def test_agent_route_still_requires_both_identity_and_status(self):
-        values = {"Switch terminal group", "Terminal", "Claude Code", "Working"}
+    def test_agent_route_uses_selected_visible_status_not_offscreen_tabs(self):
+        values = {
+            "Switch terminal group, Group Development, Agent status: working",
+            "Terminal",
+            "Claude Code, Agent status: working",
+            "Working",
+        }
         self.assertEqual(fixtures.screen_checks("herdr-terminal", values), [])
+        values.update({
+            "Terminal Tests, Agent status: blocked",
+            "Terminal Review, Agent status: finished, not yet viewed",
+            "Terminal Monitor, Agent status: idle",
+            "Terminal Logs, Agent status: unknown",
+        })
+        self.assertEqual(fixtures.screen_checks("herdr-terminal", values), [])
+
+        values.remove("Claude Code, Agent status: working")
+        self.assertIn("selected_agent_owner", fixtures.screen_checks("herdr-terminal", values))
+        values.add("Claude Code, Agent status: working")
         values.remove("Working")
-        self.assertIn("agent_working", fixtures.screen_checks("herdr-terminal", values))
+        self.assertIn("selected_agent_status", fixtures.screen_checks("herdr-terminal", values))
 
     def test_empty_state_is_not_confused_with_disconnected_state(self):
         empty = {"A fresh workspace starts here.", "Create workspace"}

@@ -22,7 +22,7 @@ import {
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
-import type { RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
+import type { AgentStatus, RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -67,7 +67,7 @@ const INITIAL_CONNECTION: SshConnectionState = {
   state: 'Disconnected', host: '', port: 0, fingerprint: '', algorithm: '',
   knownFingerprint: '', errorCode: '', errorMessage: '',
 };
-type Workspace = { id: string; name: string; panes: RemoteTerminal[] };
+type Workspace = RemoteWorkspace & { panes: RemoteTerminal[] };
 type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
@@ -96,6 +96,20 @@ const SMOKE_PANES: RemoteTerminal[] = [
   { workspaceId: '@smoke-main', id: '%smoke-main-1', terminalId: CONNECTION_ID, groupId: '@smoke-main', agent: null, name: 'Shell', active: true, selected: true },
   { workspaceId: '@smoke-main', id: '%smoke-main-2', terminalId: 'smoke-terminal-2', groupId: '@smoke-main', agent: null, name: 'Logs', active: false, selected: false },
   { workspaceId: '@smoke-tools', id: '%smoke-tools-1', terminalId: 'smoke-terminal-3', groupId: '@smoke-tools', agent: null, name: 'Console', active: true, selected: true },
+];
+
+// Herdr presentation data is an explicit snapshot fixture. Rollups are kept
+// separate from descendant pane status so the fixture exercises the same
+// source boundary as the native snapshot (and never relies on JS counting).
+const SMOKE_HERDR_PANES: RemoteTerminal[] = [
+  { workspaceId: '@smoke-main', id: 'smoke-code-working', terminalId: CONNECTION_ID, groupId: 'smoke-code', agent: { name: 'Claude Code', status: 'working' }, name: 'Code', active: true, selected: true },
+  { workspaceId: '@smoke-main', id: 'smoke-code-agentless', terminalId: 'smoke-terminal-agentless', groupId: 'smoke-code', agent: null, name: 'Shell', active: false, selected: false },
+  { workspaceId: '@smoke-main', id: 'smoke-code-blocked', terminalId: 'smoke-terminal-blocked', groupId: 'smoke-code', agent: { name: 'Codex', status: 'blocked' }, name: 'Tests', active: false, selected: false },
+  { workspaceId: '@smoke-main', id: 'smoke-code-done', terminalId: 'smoke-terminal-done', groupId: 'smoke-code', agent: { name: 'Codex', status: 'done' }, name: 'Review', active: false, selected: false },
+  { workspaceId: '@smoke-main', id: 'smoke-code-idle', terminalId: 'smoke-terminal-idle', groupId: 'smoke-code', agent: { name: 'Runner', status: 'idle' }, name: 'Monitor', active: false, selected: false },
+  { workspaceId: '@smoke-main', id: 'smoke-code-unknown', terminalId: 'smoke-terminal-unknown', groupId: 'smoke-code', agent: { name: 'Claude Code', status: 'unknown' }, name: 'Logs', active: false, selected: false },
+  { workspaceId: '@smoke-main', id: 'smoke-tests-done', terminalId: 'smoke-terminal-tests-done', groupId: 'smoke-tests', agent: { name: 'Codex', status: 'done' }, name: 'Audit', active: false, selected: false },
+  { workspaceId: '@smoke-tools', id: 'smoke-logs-unknown', terminalId: 'smoke-terminal-logs', groupId: 'smoke-logs', agent: { name: 'Claude Code', status: 'unknown' }, name: 'Console', active: true, selected: false },
 ];
 
 type SmokeFixtureState = {
@@ -175,7 +189,7 @@ function smokeReadyConnection(): SshConnectionState {
 function smokePanes(): RemoteTerminal[] { return SMOKE_PANES.map(pane => ({ ...pane })); }
 
 function smokeWorkspace(panes: RemoteTerminal[], workspaceId: string): Workspace {
-  return { id: workspaceId, name: workspaceId === '@smoke-main' ? 'Main workspace' : 'Tools workspace', panes: panes.filter(pane => pane.workspaceId === workspaceId) };
+  return { id: workspaceId, name: workspaceId === '@smoke-main' ? 'Main workspace' : 'Tools workspace', agentStatus: null, panes: panes.filter(pane => pane.workspaceId === workspaceId) };
 }
 
 function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
@@ -208,7 +222,17 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.runtimeDiscovery = discovery;
     return base;
   }
-  if (['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces'].includes(screen)) {
+  if (screen === 'long-workspaces') {
+    const base = smokeFixture('herdr-workspaces');
+    base.panes = base.panes.map(pane => ({
+      ...pane,
+      name: pane.workspaceId === '@smoke-main'
+        ? `Terminal ${pane.name} — international status review and release preparation`
+        : `Terminal ${pane.name} — long-running diagnostics`,
+    }));
+    return base;
+  }
+  if (['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error'].includes(screen)) {
     const base = smokeFixture(screen === 'welcome' ? 'home' : 'workspaces');
     if (screen === 'welcome') base.profiles = [];
     if (screen === 'empty') base.panes = [];
@@ -223,13 +247,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
   }
   if (screen.startsWith('herdr-')) {
     const base = smokeFixture(screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
-    base.panes = [
-      { ...SMOKE_PANES[0], groupId: 'smoke-code', name: 'Code', agent: { name: 'Claude Code', status: 'working' } },
-      { ...SMOKE_PANES[1], groupId: 'smoke-code', name: 'Shell' },
-      { ...SMOKE_PANES[1], id: 'smoke-test-1', groupId: 'smoke-tests', name: 'Tests', agent: { name: 'Codex', status: 'blocked' } },
-      { ...SMOKE_PANES[1], id: 'smoke-test-2', groupId: 'smoke-tests', name: 'Review', agent: { name: 'Codex', status: 'done' } },
-      { ...SMOKE_PANES[2], groupId: 'smoke-logs', agent: { name: 'Claude Code', status: 'unknown' } },
-    ];
+    base.panes = SMOKE_HERDR_PANES.map(pane => ({ ...pane, selected: pane.id === SMOKE_HERDR_PANES[0].id }));
     base.selectedPaneIds = { 'smoke-code': base.panes[0].id };
     base.sheet = screen === 'herdr-groups' ? 'groups' : null;
     return base;
@@ -292,13 +310,13 @@ const EMPTY_WORKSPACES: WorkspaceState = { backend: 'tmux', runtime: 'meeterm', 
 function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false, longNames = false): WorkspaceState {
   const ids = [...new Set(panes.map(pane => pane.workspaceId))];
   return { ...EMPTY_WORKSPACES, terminals: panes,
-    workspaces: ids.map(id => ({ id, name: longNames ? id === '@smoke-main' ? 'Production infrastructure — migration and release preparation' : 'Research / terminal typography and international text' : id === '@smoke-main' ? 'Main workspace' : 'Tools workspace' })),
+    workspaces: ids.map(id => ({ id, name: longNames ? id === '@smoke-main' ? 'Production infrastructure — migration and release preparation' : 'Research / terminal typography and international text' : id === '@smoke-main' ? 'Main workspace' : 'Tools workspace', agentStatus: herdr ? id === '@smoke-main' ? 'blocked' : 'idle' : null })),
     backend: herdr ? 'herdr' : 'tmux', runtime: herdr ? 'dev' : 'meeterm', groupsSupported: herdr,
     groups: herdr ? [
-      { id: 'smoke-code', workspaceId: '@smoke-main', name: 'Development', selected: true },
-      { id: 'smoke-tests', workspaceId: '@smoke-main', name: 'Tests & review', selected: false },
-      { id: 'smoke-logs', workspaceId: '@smoke-tools', name: 'Logs', selected: true },
-    ] : ids.map(id => ({ id, workspaceId: id, name: '', selected: true })),
+      { id: 'smoke-code', workspaceId: '@smoke-main', name: 'Development', selected: true, agentStatus: 'working' },
+      { id: 'smoke-tests', workspaceId: '@smoke-main', name: 'Tests & review', selected: false, agentStatus: 'done' },
+      { id: 'smoke-logs', workspaceId: '@smoke-tools', name: 'Logs', selected: true, agentStatus: 'unknown' },
+    ] : ids.map(id => ({ id, workspaceId: id, name: '', selected: true, agentStatus: null })),
   };
 }
 function sameSession(a: WorkspaceState, b: WorkspaceState) { return JSON.stringify(a) === JSON.stringify(b); }
@@ -359,16 +377,55 @@ function ConnectionStatus({ connection, colors }: { connection: SshConnectionSta
   </View>;
 }
 
-const AGENT_LABELS = { working: 'Working', blocked: 'Needs attention', done: 'Finished', idle: 'Idle', unknown: 'Status unavailable' };
-function agentSummary(panes: RemoteTerminal[], connected: boolean) {
-  const agents = panes.flatMap(pane => pane.agent ? [pane.agent] : []);
-  if (!agents.length) return '';
-  if (!connected) return `Status unavailable\u00a0${agents.length}`;
-  const statuses = ['blocked', 'working', 'done', 'idle', 'unknown'] as const;
-  return statuses.flatMap(status => {
-    const count = agents.filter(agent => agent.status === status).length;
-    return count ? [`${AGENT_LABELS[status]}\u00a0${count}`] : [];
-  }).join(' · ');
+type ResolvedAgentStatus = AgentStatus | 'unavailable';
+type AgentStatusMeta = {
+  label: string;
+  spoken: string;
+  color: keyof Palette['agentStatus'];
+  shape: 'filled' | 'hollow' | 'dot';
+};
+
+// Keep visual grammar, visible words, and screen-reader copy in one table.
+// `unavailable` is presentation-only: the stored Herdr status remains intact.
+const AGENT_STATUS_META: Record<ResolvedAgentStatus, AgentStatusMeta> = {
+  blocked: { label: 'Needs attention', spoken: 'Agent status: blocked, needs attention', color: 'blocked', shape: 'filled' },
+  done: { label: 'Finished', spoken: 'Agent status: finished, not yet viewed', color: 'done', shape: 'filled' },
+  working: { label: 'Working', spoken: 'Agent status: working', color: 'working', shape: 'filled' },
+  idle: { label: 'Idle', spoken: 'Agent status: idle', color: 'idle', shape: 'hollow' },
+  unknown: { label: 'Unknown', spoken: 'Agent status: unknown', color: 'unknown', shape: 'dot' },
+  unavailable: { label: 'Status unavailable', spoken: 'Agent status unavailable', color: 'unknown', shape: 'dot' },
+};
+
+function resolveAgentStatus(status: AgentStatus | null | undefined, live: boolean): ResolvedAgentStatus | null {
+  if (status == null) return null;
+  return live ? status : 'unavailable';
+}
+
+function agentStatusPhrase(status: AgentStatus | null | undefined, live: boolean): string {
+  const resolved = resolveAgentStatus(status, live);
+  return resolved ? AGENT_STATUS_META[resolved].spoken : '';
+}
+
+function AgentStatusIndicator({ status, live, colors, showLabel = false, testID }: {
+  status: AgentStatus | null | undefined;
+  live: boolean;
+  colors: Palette;
+  showLabel?: boolean;
+  testID?: string;
+}) {
+  const resolved = resolveAgentStatus(status, live);
+  if (!resolved) return null;
+  const meta = AGENT_STATUS_META[resolved];
+  const color = colors.agentStatus[meta.color];
+  const markStyle = meta.shape === 'hollow'
+    ? { backgroundColor: 'transparent', borderColor: color, borderWidth: 1.5 }
+    : { backgroundColor: color };
+  return <View testID={testID} accessible={false} importantForAccessibility="no" style={showLabel ? styles.agentStatusCluster : styles.agentStatusIndicator}>
+    <View accessible={false} importantForAccessibility="no-hide-descendants" style={styles.agentStatusSlot}>
+      <View accessible={false} style={[styles.agentStatusMark, meta.shape === 'dot' ? styles.agentStatusSmallMark : styles.agentStatusCircleMark, markStyle]} />
+    </View>
+    {showLabel ? <Text accessible={false} style={[styles.agentStatusLabel, { color: colors.muted }]}>{meta.label}</Text> : null}
+  </View>;
 }
 
 function SearchField({ value, onChange, colors, label = 'Search workspaces', autoFocus = false }: { value: string; onChange: (value: string) => void; colors: Palette; label?: string; autoFocus?: boolean }) {
@@ -380,14 +437,17 @@ function SearchField({ value, onChange, colors, label = 'Search workspaces', aut
 }
 
 function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker = false, disabled = false, optionsDisabled = false, connected = false }: { workspace: Workspace; selected: boolean; colors: Palette; onPress: () => void; onOptions?: () => void; picker?: boolean; disabled?: boolean; optionsDisabled?: boolean; connected?: boolean }) {
-  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={`Workspace ${workspace.name}`} accessibilityHint={`${workspace.panes.length} ${workspace.panes.length === 1 ? 'terminal' : 'terminals'}`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
-    <Icon name="terminal" color={colors.muted} size={23} />
-    <View style={styles.rowCopy}>
+  const statusPhrase = agentStatusPhrase(workspace.agentStatus, connected);
+  const accessibilityLabel = `Workspace ${workspace.name}${statusPhrase ? `, ${statusPhrase}` : ''}`;
+  const faded = disabled ? styles.workspaceRowDisabledContent : undefined;
+  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityHint={`${workspace.panes.length} ${workspace.panes.length === 1 ? 'terminal' : 'terminals'}`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }]}>
+    <View style={faded}><Icon name="terminal" color={colors.muted} size={23} /></View>
+    <AgentStatusIndicator status={workspace.agentStatus} live={connected} colors={colors} testID={`workspace-agent-status-${workspace.id}`} />
+    <View style={[styles.rowCopy, faded]}>
       <Text numberOfLines={picker ? undefined : 2} style={[styles.rowTitle, { color: colors.text }]}>{workspace.name}</Text>
       <Text numberOfLines={1} style={[styles.rowSubtitle, { color: colors.muted }]}>{workspace.panes.length ? workspace.panes.map((pane, index) => pane.name || `Terminal ${index + 1}`).join(' · ') : 'No terminals'}</Text>
-      {agentSummary(workspace.panes, connected) ? <Text style={[styles.rowSubtitle, { color: colors.muted }]}>{agentSummary(workspace.panes, connected)}</Text> : null}
     </View>
-    <Icon name={selected ? 'check' : 'chevron'} color={selected ? colors.accent : colors.muted} size={18} />
+    <View style={faded}><Icon name={selected ? 'check' : 'chevron'} color={selected ? colors.accent : colors.muted} size={18} /></View>
   </Pressable>{onOptions ? <IconButton icon="menu" label={`Workspace options ${workspace.name}`} onPress={onOptions} disabled={disabled || optionsDisabled} colors={colors} /> : null}</View>;
 }
 
@@ -570,7 +630,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [connection, setConnection] = useState<SshConnectionState>(() => fixture?.connection ?? INITIAL_CONNECTION);
-  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-'), smokeScreen === 'long-workspaces') : EMPTY_WORKSPACES);
+  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-') || smokeScreen === 'long-workspaces', smokeScreen === 'long-workspaces') : EMPTY_WORKSPACES);
   const panes = session.terminals;
   const [screen, setScreen] = useState<'workspaces' | 'terminal'>(() => fixture?.screen ?? 'workspaces');
   const [rememberedWorkspaceId, setWorkspaceId] = useState(() => fixture?.workspaceId ?? '');
@@ -1694,17 +1754,18 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
         <Text style={[styles.groupLabel, { color: DARK.muted }]}>Group</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Switch terminal group" accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, pressed && { opacity: .65 }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, runtimeReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, pressed && { opacity: .65 }]}>
+          <AgentStatusIndicator status={group?.agentStatus} live={runtimeReady} colors={DARK} testID={group ? `group-agent-status-${group.id}` : undefined} />
           <Text numberOfLines={1} style={[styles.groupName, { color: DARK.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={DARK.muted} size={12} />
         </Pressable>
       </View> : null}
       {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: DARK.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => <Pressable key={pane.id} accessibilityRole="tab" accessibilityLabel={`Terminal ${pane.id}`} accessibilityHint={pane.name || `Terminal ${index + 1}`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{pane.name || `Terminal ${index + 1}`}</Text></Pressable>)}
+        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, runtimeReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={name} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={runtimeReady} colors={DARK} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{name}</Text></Pressable>; })}
       </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
-      {selectedPane?.agent ? <View style={styles.agentLine}>
-        <Text numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
-        <Text accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." style={[styles.agentStatus, { color: runtimeReady && selectedPane.agent.status === 'blocked' ? DARK.accent : DARK.muted }]}>{AGENT_LABELS[runtimeReady ? selectedPane.agent.status : 'unknown']}</Text>
-      </View> : null}
+      {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, runtimeReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
+        <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
+        <AgentStatusIndicator status={selectedPane.agent.status} live={runtimeReady} colors={DARK} showLabel testID="selected-agent-status" />
+      </View>; })() : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {runtimeReady && workspace && selectedPane ? (
         // Unmounting a surface cancels composition; the shared native registry
@@ -1754,13 +1815,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Keep related terminals together. Select a group to switch.</Text>
-        {groups.map(item => <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name}`} accessibilityState={{ selected: item.id === group?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
-            <Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text>
+        {groups.map(item => { const phrase = agentStatusPhrase(item.agentStatus, runtimeReady); return <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name || 'Untitled group'}${phrase ? `, ${phrase}` : ''}`} accessibilityState={{ selected: item.id === group?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
+            <View style={styles.groupNameRow}><AgentStatusIndicator status={item.agentStatus} live={runtimeReady} colors={homeColors} testID={`group-agent-status-${item.id}`} /><Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text></View>
             <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} {panes.filter(pane => pane.groupId === item.id).length === 1 ? 'terminal' : 'terminals'}{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
           <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
-        </View>)}
+        </View>; })}
         {workspace ? <Button label="Create group" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button> : null}
       </ScrollView> : sheet === 'handoff' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.handoffTitle, { color: homeColors.text }]}>Same work. Bigger screen.</Text>
@@ -1876,12 +1937,19 @@ const styles = StyleSheet.create({
   groupBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingBottom: 4 },
   groupLabel: { fontSize: 12, fontWeight: '500' },
   groupPicker: { flexShrink: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, borderRadius: 10, borderCurve: 'continuous' },
+  groupNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 },
   groupName: { fontSize: 15, lineHeight: 22, fontWeight: '500', flexShrink: 1 },
   groupRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth },
   groupChoice: { flex: 1, minHeight: 64, paddingVertical: 12, gap: 4 },
-  agentLine: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 20, paddingVertical: 5 },
-  agentName: { fontSize: 12, lineHeight: 18, flexShrink: 1 },
-  agentStatus: { fontSize: 12, lineHeight: 18 },
+  agentLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', columnGap: 12, rowGap: 4, paddingHorizontal: 20, paddingVertical: 5 },
+  agentName: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 18, flexShrink: 1 },
+  agentStatusIndicator: { width: 12, height: 12, flexShrink: 0, alignItems: 'center', justifyContent: 'center' },
+  agentStatusCluster: { flexDirection: 'row', alignItems: 'center', columnGap: 6, flexShrink: 0 },
+  agentStatusSlot: { width: 12, height: 12, alignItems: 'center', justifyContent: 'center' },
+  agentStatusMark: { borderRadius: 999 },
+  agentStatusCircleMark: { width: 8, height: 8 },
+  agentStatusSmallMark: { width: 4, height: 4 },
+  agentStatusLabel: { fontSize: 12, lineHeight: 18, flexShrink: 0 },
   horizontal: { paddingHorizontal: 24 },
   brandRow: { minHeight: 56, paddingHorizontal: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
   topActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -1900,6 +1968,7 @@ const styles = StyleSheet.create({
   sectionLabel: { fontSize: 13, lineHeight: 20, fontVariant: ['tabular-nums'] },
   workspaceContainer: { flexDirection: 'row', alignItems: 'center', gap: 4, borderBottomWidth: StyleSheet.hairlineWidth },
   workspaceRow: { flex: 1, minWidth: 0, minHeight: 88, paddingVertical: 20, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  workspaceRowDisabledContent: { opacity: .5 },
   rowCopy: { flex: 1, minWidth: 0, gap: 4 },
   rowTitle: { fontSize: 18, lineHeight: 26, fontWeight: '600', letterSpacing: -.3 },
   rowSubtitle: { fontSize: 13, lineHeight: 20, fontVariant: ['tabular-nums'] },
@@ -1936,7 +2005,7 @@ const styles = StyleSheet.create({
   paneStrip: { borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', paddingRight: 4 },
   paneTabs: { paddingHorizontal: 12, gap: 4 },
   paneTab: { minHeight: 48, paddingHorizontal: 12, borderBottomWidth: 2, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  paneTabText: { fontSize: 14, lineHeight: 23, maxWidth: 200 },
+  paneTabText: { fontSize: 14, lineHeight: 23, maxWidth: 200, flexShrink: 1 },
   terminalFeedback: { paddingHorizontal: 12, paddingTop: 8 },
   terminalActions: { gap: 12, paddingTop: 20, borderTopWidth: StyleSheet.hairlineWidth },
   terminalUnavailable: { flexGrow: 1, padding: 24 },
