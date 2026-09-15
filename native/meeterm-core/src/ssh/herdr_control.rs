@@ -589,10 +589,11 @@ pub(super) async fn recover(
     // is alive self-deadlocks on the same mutex. An empty selected group is a
     // valid metadata-only target; a group with panes but no selected stable
     // terminal means the previously selected terminal disappeared.
-    let (expected_terminal, empty_group) = match {
+    let target = {
         let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
         recovery_target(&state)
-    } {
+    };
+    let (expected_terminal, empty_group) = match target {
         RecoveryTarget::Terminal(terminal) => (Some(terminal), None),
         RecoveryTarget::EmptyGroup(group) => (None, Some(group)),
         RecoveryTarget::Missing => (None, None),
@@ -669,6 +670,7 @@ pub(super) async fn recover(
             }
             let request = tokio::select! {
                 _ = shared.cancelled() => return Err(FlowFailure::Stale),
+                _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
                 _ = shared.retry_notify.notified() => {
                     if shared.recovery_phase() != RecoveryPhase::AwaitingConfirmation {
                         break;
@@ -890,7 +892,7 @@ async fn run_impl(
         }
     }
     loop {
-        if shared.is_cancelled() {
+        if shared.is_cancelled() || shared.explicit_cleanup_requested() {
             let _ = client.release().await;
             return Err(FlowFailure::Stale);
         }
@@ -908,6 +910,7 @@ async fn run_impl(
         };
         tokio::select! {
             _ = shared.cancelled() => { let _ = client.release().await; return Err(FlowFailure::Stale); },
+            _ = shared.explicit_cleanup() => { let _ = client.release().await; return Err(FlowFailure::Stale); },
             _ = shared.retry_notify.notified() => {
                 if shared.is_foreground() {
                     client.activate_selected().await?;
@@ -1074,7 +1077,11 @@ async fn command_output(
             _ => Err(FlowFailure::HerdrOperation),
         }
     };
-    let result = tokio::select! { _ = shared.cancelled() => Err(FlowFailure::Stale), result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| FlowFailure::Transport)? }?;
+    let result = tokio::select! {
+        _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
+        result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| FlowFailure::Transport)?,
+    }?;
     if !shared.current_request_epoch(expected_epoch) {
         return Err(FlowFailure::Stale);
     }
@@ -1422,7 +1429,11 @@ async fn subscribe(
         channel.close().await;
         return Err(FlowFailure::Stale);
     }
-    let response = tokio::select! { _ = shared.cancelled() => return Err(FlowFailure::Stale), response = tokio::time::timeout(SSH_STAGE_TIMEOUT, channel.next()) => response.map_err(|_| FlowFailure::Transport)?? };
+    let response = tokio::select! {
+        _ = shared.cancelled() => return Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
+        response = tokio::time::timeout(SSH_STAGE_TIMEOUT, channel.next()) => response.map_err(|_| FlowFailure::Transport)??,
+    };
     if !shared.current_request_epoch(expected_epoch) {
         channel.close().await;
         return Err(FlowFailure::Stale);
@@ -1667,11 +1678,11 @@ impl HerdrClient<'_> {
             if state.operation_epoch != expected_epoch {
                 return Err(FlowFailure::Stale);
             }
-            if !state
+            if state
                 .herdr
                 .panes
                 .get(&pane_id)
-                .is_some_and(|pane| pane.workspace == window_id)
+                .is_none_or(|pane| pane.workspace != window_id)
                 || !state
                     .snapshot
                     .panes
@@ -1943,6 +1954,7 @@ impl HerdrClient<'_> {
         channel.request(&id, method, &params).await?;
         let response = tokio::select! {
             _ = self.shared.cancelled() => return Err(FlowFailure::Stale),
+            _ = self.shared.explicit_cleanup() => return Err(FlowFailure::Stale),
             response = tokio::time::timeout(SSH_STAGE_TIMEOUT, channel.next()) => response.map_err(|_| FlowFailure::Transport)??,
         };
         // The response wait is another awaited boundary. The API response may
@@ -1969,15 +1981,19 @@ impl HerdrClient<'_> {
         // Drop queued input immediately. Do not reacquire until the existing
         // CLI confirms that Herdr has removed this direct controller's lease.
         controller.input.close();
-        // A release is a remote mutation too. If the controller belongs to an
-        // invalidated epoch, close the stream locally and do not send a stale
-        // terminal.release request into the newly selected/recovering runtime.
-        if !self.shared.current_request_epoch(controller_epoch) {
+        // A release is a remote mutation too. A normal epoch invalidation
+        // closes the stream locally, but an explicit shutdown is the ordered
+        // handoff boundary: no newer generation is installed until this old
+        // actor finishes, so release its controller before SSH teardown.
+        let explicit_shutdown = self.shared.explicit_cleanup_requested();
+        if !self.shared.current_request_epoch(controller_epoch) && !explicit_shutdown {
             controller.stream.close().await;
             return Ok(());
         }
         let released = tokio::time::timeout(Duration::from_secs(3), async {
-            if !self.shared.current_request_epoch(controller_epoch) {
+            if !self.shared.current_request_epoch(controller_epoch)
+                && !self.shared.explicit_cleanup_requested()
+            {
                 return Ok(());
             }
             controller
@@ -2150,6 +2166,7 @@ impl HerdrClient<'_> {
         // A competing direct controller fails here, with no --takeover.
         let frame = tokio::select! {
             _ = self.shared.cancelled() => return Err(FlowFailure::Stale),
+            _ = self.shared.explicit_cleanup() => return Err(FlowFailure::Stale),
             frame = tokio::time::timeout(SSH_STAGE_TIMEOUT, self.controller.as_mut().unwrap().stream.next()) => {
                 frame.map_err(|_| FlowFailure::Transport)??
             },
@@ -2717,8 +2734,10 @@ mod tests {
 
     #[test]
     fn recovery_target_distinguishes_empty_group_from_disappeared_terminal() {
-        let mut state = SessionState::default();
-        state.recovery_group_id = Some(2);
+        let mut state = SessionState {
+            recovery_group_id: Some(2),
+            ..SessionState::default()
+        };
         state.herdr.snapshot.groups = vec![group(2, 100, true)];
         assert_eq!(recovery_target(&state), RecoveryTarget::EmptyGroup(2));
 

@@ -606,6 +606,14 @@ struct ConnectionShared {
     info: Mutex<ConnectionInfo>,
     commands: Mutex<Option<mpsc::Sender<ControlRequest>>>,
     cancelled: AtomicBool,
+    /// Set before an explicit disconnect/runtime handoff changes recovery
+    /// state. The controller uses this intent to keep its bounded zoom/hook
+    /// cleanup ahead of the transport-loss exit. It is deliberately separate
+    /// from `cancelled`: explicit shutdown first wakes the established actor,
+    /// then hard cancellation is used only after cleanup/session teardown or
+    /// the bounded fallback.
+    explicit_cleanup_requested: AtomicBool,
+    explicit_cleanup_notify: Arc<Notify>,
     cancel_notify: Arc<Notify>,
     finished_notify: Arc<Notify>,
     retry_notify: Arc<Notify>,
@@ -643,6 +651,8 @@ impl ConnectionShared {
             info: Mutex::new(ConnectionInfo::new(host, port)),
             commands: Mutex::new(None),
             cancelled: AtomicBool::new(false),
+            explicit_cleanup_requested: AtomicBool::new(false),
+            explicit_cleanup_notify: Arc::new(Notify::new()),
             cancel_notify: Arc::new(Notify::new()),
             finished_notify: Arc::new(Notify::new()),
             retry_notify: Arc::new(Notify::new()),
@@ -656,6 +666,25 @@ impl ConnectionShared {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn explicit_cleanup_requested(&self) -> bool {
+        self.explicit_cleanup_requested.load(Ordering::Acquire)
+    }
+
+    async fn explicit_cleanup(&self) {
+        loop {
+            let notified = self.explicit_cleanup_notify.notified();
+            tokio::pin!(notified);
+            // `notify_waiters` does not retain a permit. Register before the
+            // flag check so an explicit request cannot be lost between the
+            // two operations.
+            notified.as_mut().enable();
+            if self.explicit_cleanup_requested() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     fn cancel(&self) {
@@ -678,6 +707,7 @@ impl ConnectionShared {
             self.cancelled.store(true, Ordering::Release);
         }
         self.cancel_notify.notify_waiters();
+        self.explicit_cleanup_notify.notify_waiters();
         self.retry_notify.notify_waiters();
     }
 
@@ -1145,9 +1175,11 @@ impl ConnectionShared {
         info.pending = None;
     }
 
-    /// Explicit disconnect/runtime switch boundary.  Unlike recoverable loss,
-    /// cancellation is terminal for this actor; a later foreground event can
-    /// therefore never resurrect it.
+    /// Explicit disconnect/runtime switch boundary. This revokes operation
+    /// gates and wakes the established actor, but intentionally does not set
+    /// `cancelled` yet: the controller must retain a usable SSH stream long
+    /// enough to acknowledge its bounded cleanup. Callers force cancellation
+    /// if the actor misses the shutdown deadline.
     fn invalidate_explicitly(&self, reason: &'static str) {
         let Ok(mut info) = self.info.lock() else {
             return;
@@ -1158,13 +1190,26 @@ impl ConnectionShared {
         if let Ok(mut state) = self.session.lock()
             && state.generation == self.generation
         {
-            state.operation_epoch = next_operation_epoch(state.operation_epoch);
-            state.recovery.phase = RecoveryPhase::Stopped;
-            state.recovery.reason = sanitize_recovery_reason(reason);
-            state.recovery.confirmation_token.clear();
-            state.pending_confirmation_token = None;
-            state.runtime_operations_ready = false;
-            state.terminal_input_ready = false;
+            // Publish the explicit lifecycle intent before changing the
+            // recovery phase. The actor can then choose its cleanup branch
+            // while the transport remains usable. Repeated callers (for
+            // example Change followed by replacement) keep the first epoch
+            // boundary and only re-wake the same actor.
+            if !self.explicit_cleanup_requested() {
+                self.explicit_cleanup_requested
+                    .store(true, Ordering::Release);
+                state.operation_epoch = next_operation_epoch(state.operation_epoch);
+                state.recovery.phase = RecoveryPhase::Stopped;
+                state.recovery.reason = sanitize_recovery_reason(reason);
+                state.recovery.confirmation_token.clear();
+                state.pending_confirmation_token = None;
+                state.runtime_operations_ready = false;
+                state.terminal_input_ready = false;
+            }
+            info.state = ConnectionState::Closing;
+            info.pending = None;
+            self.explicit_cleanup_notify.notify_waiters();
+            return;
         }
         info.pending = None;
     }
@@ -1202,6 +1247,7 @@ impl ConnectionShared {
 
     fn current_request_epoch(&self, epoch: u64) -> bool {
         !self.is_cancelled()
+            && !self.explicit_cleanup_requested()
             && self
                 .session
                 .lock()
@@ -1393,7 +1439,9 @@ impl ConnectionShared {
             // disconnect must not leave a finished actor permanently Closing.
             info.finished = true;
             match result {
-                _ if self.is_cancelled() => info.state = ConnectionState::Disconnected,
+                _ if self.is_cancelled() || self.explicit_cleanup_requested() => {
+                    info.state = ConnectionState::Disconnected
+                }
                 Ok(()) => info.state = ConnectionState::Disconnected,
                 Err(failure) if info.state != ConnectionState::Failed => {
                     let (code, message) = failure.details();
@@ -1404,6 +1452,7 @@ impl ConnectionShared {
                 Err(_) => {}
             }
             if !self.is_cancelled()
+                && !self.explicit_cleanup_requested()
                 && let Err(failure) = result
                 && let Ok(mut state) = self.session.lock()
                 && state.generation == self.generation
@@ -2499,13 +2548,21 @@ impl ConnectionStart {
     }
 }
 
-/// Give the previous generation a bounded chance to send its tmux cleanup
-/// before a replacement generation changes the shared session generation.
-/// This runs the wait on a short-lived blocking helper thread so a native
-/// caller that happens to be on a Tokio worker cannot starve the cancelled
-/// Control Mode actor. The timeout is only a last-resort bound for a dead
-/// transport; normal disconnects complete through `ConnectionShared::finish`.
+/// Give the previous generation a bounded chance to finish its explicit
+/// cleanup/session teardown before a replacement generation changes the
+/// shared session generation. This runs the wait on a short-lived blocking
+/// helper thread so a native caller that happens to be on a Tokio worker
+/// cannot starve the actor. The timeout is only a last-resort bound for a
+/// dead transport; normal disconnects complete through `ConnectionShared::finish`.
 fn wait_for_generation_finish(runtime: &'static Runtime, shared: Arc<ConnectionShared>) -> bool {
+    wait_for_generation_finish_with_timeout(runtime, shared, REPLACEMENT_GRACE_TIMEOUT)
+}
+
+fn wait_for_generation_finish_with_timeout(
+    runtime: &'static Runtime,
+    shared: Arc<ConnectionShared>,
+    timeout: Duration,
+) -> bool {
     let already_finished = shared.info.lock().map(|info| info.finished).unwrap_or(true);
     if already_finished {
         return true;
@@ -2514,15 +2571,46 @@ fn wait_for_generation_finish(runtime: &'static Runtime, shared: Arc<ConnectionS
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let finished = runtime.block_on(async {
-            tokio::time::timeout(REPLACEMENT_GRACE_TIMEOUT, shared.finished())
+            tokio::time::timeout(timeout, shared.finished())
                 .await
                 .is_ok()
         });
         let _ = sender.send(finished);
     });
     receiver
-        .recv_timeout(REPLACEMENT_GRACE_TIMEOUT + Duration::from_millis(100))
+        .recv_timeout(timeout.saturating_add(Duration::from_millis(100)))
         .unwrap_or(false)
+}
+
+/// Finish the ordered explicit shutdown when possible, otherwise revoke the
+/// remaining transport and abort the actor. Keeping this fallback in one
+/// helper makes Disconnect and runtime replacement share the same bound.
+fn finish_or_force_explicit_shutdown(
+    runtime: &'static Runtime,
+    shared: Arc<ConnectionShared>,
+    abort: tokio::task::AbortHandle,
+) -> bool {
+    let finished = wait_for_generation_finish(runtime, Arc::clone(&shared));
+    if !finished {
+        shared.cancel();
+        abort.abort();
+    }
+    finished
+}
+
+#[cfg(test)]
+fn finish_or_force_explicit_shutdown_with_timeout(
+    runtime: &'static Runtime,
+    shared: Arc<ConnectionShared>,
+    abort: tokio::task::AbortHandle,
+    timeout: Duration,
+) -> bool {
+    let finished = wait_for_generation_finish_with_timeout(runtime, Arc::clone(&shared), timeout);
+    if !finished {
+        shared.cancel();
+        abort.abort();
+    }
+    finished
 }
 
 fn destroy_stale_terminals(generation: u64, terminals: impl IntoIterator<Item = TerminalId>) {
@@ -2570,15 +2658,12 @@ fn start_connection(
             .remove(&terminal_id)
     };
     if let Some(old) = old {
-        old.shared.mark_closing();
-        old.shared.cancel();
-        if !wait_for_generation_finish(runtime, Arc::clone(&old.shared)) {
-            // A transport that never acknowledges cancellation cannot safely
-            // retain the old generation. Cleanup is best effort in this
-            // branch; the new generation still receives a fresh ownership
-            // guard below.
-            old.abort.abort();
-        }
+        old.shared.invalidate_explicitly("runtime_replaced");
+        // A controller/transport that never acknowledges the explicit
+        // cleanup cannot safely retain the old generation. The shared helper
+        // forces both cancellation and task abort before the new generation
+        // is allowed to touch SessionState.
+        let _ = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
     }
 
     if !owner.install_allowed(ticket) {
@@ -2708,7 +2793,7 @@ fn start_connection(
 pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
     let owner = owner_transition(terminal_id)?;
-    let shared = {
+    let (shared, abort) = {
         let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
         owner.cancel_current_locked();
         let entries = connections()
@@ -2718,12 +2803,25 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
             return Ok(());
         };
         entry.shared.invalidate_explicitly("explicit_disconnect");
-        entry.shared.mark_closing();
-        entry.shared.cancel();
-        Arc::clone(&entry.shared)
+        (Arc::clone(&entry.shared), entry.abort.clone())
     };
 
     detach_all(&shared);
+    // The normal path hard-cancels only after the controller has sent and
+    // acknowledged its cleanup and the authenticated session has closed. A
+    // dead transport gets the bounded force path so Disconnect cannot remain
+    // pending forever.
+    match runtime() {
+        Ok(runtime) => {
+            let _ = finish_or_force_explicit_shutdown(runtime, shared, abort);
+        }
+        Err(_) => {
+            // An active connection implies the native runtime exists, but a
+            // poisoned/unavailable runtime must still fail closed.
+            shared.cancel();
+            abort.abort();
+        }
+    }
     Ok(())
 }
 
@@ -2737,6 +2835,7 @@ fn cancel_entry_locked(
     // connect therefore either replaces this entry before we select it, or
     // waits until this exact entry has been cancelled; it cannot have its new
     // generation aborted by a stale disconnect.
+    entry.shared.invalidate_explicitly("explicit_disconnect");
     entry.shared.mark_closing();
     entry.shared.cancel();
     entry.abort.abort();
@@ -2927,7 +3026,10 @@ impl Handler for HostKeyHandler {
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        if self.shared.is_cancelled() || self.setup.is_cancelled() {
+        if self.shared.is_cancelled()
+            || self.shared.explicit_cleanup_requested()
+            || self.setup.is_cancelled()
+        {
             return Ok(false);
         }
 
@@ -2941,14 +3043,20 @@ impl Handler for HostKeyHandler {
             &self.shared.known_hosts_path,
         ) {
             Ok(trust::Decision::Trusted) => {
-                if self.shared.is_cancelled() || self.setup.is_cancelled() {
+                if self.shared.is_cancelled()
+                    || self.shared.explicit_cleanup_requested()
+                    || self.setup.is_cancelled()
+                {
                     return Ok(false);
                 }
                 self.shared.set_host_key(fingerprint, algorithm);
                 Ok(true)
             }
             Ok(trust::Decision::Changed { known_fingerprint }) => {
-                if self.shared.is_cancelled() || self.setup.is_cancelled() {
+                if self.shared.is_cancelled()
+                    || self.shared.explicit_cleanup_requested()
+                    || self.setup.is_cancelled()
+                {
                     return Ok(false);
                 }
                 self.shared
@@ -2956,7 +3064,10 @@ impl Handler for HostKeyHandler {
                 Ok(false)
             }
             Ok(trust::Decision::Unknown) => {
-                if self.shared.is_cancelled() || self.setup.is_cancelled() {
+                if self.shared.is_cancelled()
+                    || self.shared.explicit_cleanup_requested()
+                    || self.setup.is_cancelled()
+                {
                     return Ok(false);
                 }
                 let (sender, receiver) = oneshot::channel();
@@ -2969,12 +3080,16 @@ impl Handler for HostKeyHandler {
 
                 let decision = tokio::select! {
                     _ = self.shared.cancelled() => return Ok(false),
+                    _ = self.shared.explicit_cleanup() => return Ok(false),
                     _ = self.setup.cancelled() => return Ok(false),
                     result = tokio::time::timeout(HOST_KEY_PROMPT_TIMEOUT, receiver) => result,
                 };
                 match decision {
                     Ok(Ok(HostKeyDecision { accept: true })) => {
-                        if self.shared.is_cancelled() || self.setup.is_cancelled() {
+                        if self.shared.is_cancelled()
+                            || self.shared.explicit_cleanup_requested()
+                            || self.setup.is_cancelled()
+                        {
                             return Ok(false);
                         }
                         match trust::learn(
@@ -2984,7 +3099,10 @@ impl Handler for HostKeyHandler {
                             &self.shared.known_hosts_path,
                         ) {
                             Ok(()) => {
-                                if self.shared.is_cancelled() || self.setup.is_cancelled() {
+                                if self.shared.is_cancelled()
+                                    || self.shared.explicit_cleanup_requested()
+                                    || self.setup.is_cancelled()
+                                {
                                     return Ok(false);
                                 }
                                 self.shared
@@ -3001,7 +3119,10 @@ impl Handler for HostKeyHandler {
                         }
                     }
                     Ok(Ok(HostKeyDecision { accept: false })) => {
-                        if self.shared.is_cancelled() || self.setup.is_cancelled() {
+                        if self.shared.is_cancelled()
+                            || self.shared.explicit_cleanup_requested()
+                            || self.setup.is_cancelled()
+                        {
                             return Ok(false);
                         }
                         self.shared
@@ -3538,11 +3659,12 @@ async fn await_stage<F, T, E>(
 where
     F: Future<Output = Result<T, E>>,
 {
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
     tokio::select! {
         _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
         result = tokio::time::timeout(timeout, future) => {
             match result {
                 Ok(Ok(value)) => Ok(value),
@@ -3566,11 +3688,12 @@ async fn await_stage_with_timeout<F, T, E>(
 where
     F: Future<Output = Result<T, E>>,
 {
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
     tokio::select! {
         _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
         result = tokio::time::timeout(timeout, future) => {
             match result {
                 Ok(Ok(value)) => Ok(value),
@@ -3681,6 +3804,7 @@ async fn run_remote_command_with_timeout_at_epoch(
     };
     let result = tokio::select! {
         _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
         result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| timeout_failure)?,
     }?;
     if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
@@ -3693,11 +3817,12 @@ async fn await_channel_message(
     shared: &ConnectionShared,
     reader: &mut russh::ChannelReadHalf,
 ) -> Result<Option<ChannelMsg>, FlowFailure> {
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
     tokio::select! {
         _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
         result = tokio::time::timeout(SSH_STAGE_TIMEOUT, reader.wait()) => {
             result.map_err(|_| FlowFailure::Transport)
         }
@@ -3711,11 +3836,12 @@ async fn wait_channel_message(
     shared: &ConnectionShared,
     reader: &mut russh::ChannelReadHalf,
 ) -> Result<Option<ChannelMsg>, FlowFailure> {
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
     tokio::select! {
         _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
         message = reader.wait() => Ok(message),
     }
 }
@@ -3728,7 +3854,8 @@ async fn wait_channel_message(
 async fn wait_for_start_gate(shared: &ConnectionShared, gate: oneshot::Receiver<()>) -> bool {
     tokio::select! {
         _ = shared.cancelled() => false,
-        result = gate => result.is_ok() && !shared.is_cancelled(),
+        _ = shared.explicit_cleanup() => false,
+        result = gate => result.is_ok() && !shared.is_cancelled() && !shared.explicit_cleanup_requested(),
     }
 }
 
@@ -3761,6 +3888,7 @@ async fn run_connection(
         if let Some(RetryDisposition::Retry) = disposition
             && shared.has_been_ready()
             && !shared.is_cancelled()
+            && !shared.explicit_cleanup_requested()
             && shared.recovery_phase() != RecoveryPhase::Stopped
         {
             let attempt = retries.saturating_add(1);
@@ -3825,6 +3953,13 @@ async fn run_connection(
     shared.clear_commands();
     detach_all(&shared);
     shared.clear_owned_zoom();
+    // Explicit shutdown is a two-phase boundary. The controller/backend has
+    // already had its cleanup opportunity and the authenticated session has
+    // unwound by this point; hard cancellation now closes any remaining
+    // russh/CancellableStream task before publishing the final state.
+    if shared.explicit_cleanup_requested() {
+        shared.cancel();
+    }
     shared.finish(result);
 }
 
@@ -3854,7 +3989,11 @@ fn retry_disposition(shared: &ConnectionShared, failure: FlowFailure) -> RetryDi
 }
 
 fn automatic_retry_allowed(shared: &ConnectionShared, failure: FlowFailure) -> bool {
-    if shared.is_cancelled() || !shared.automatic_reconnect_enabled() || !shared.has_been_ready() {
+    if shared.is_cancelled()
+        || shared.explicit_cleanup_requested()
+        || !shared.automatic_reconnect_enabled()
+        || !shared.has_been_ready()
+    {
         return false;
     }
     // A host-key or authentication failure is terminal even when russh
@@ -3888,14 +4027,20 @@ fn reconnect_delay(retry: u32) -> Duration {
 async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + delay;
     loop {
-        if shared.is_cancelled() || !shared.automatic_reconnect_enabled() {
+        if shared.is_cancelled()
+            || shared.explicit_cleanup_requested()
+            || !shared.automatic_reconnect_enabled()
+        {
             return false;
         }
         if !shared.is_foreground() {
             let notified = shared.retry_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if shared.is_cancelled() || !shared.automatic_reconnect_enabled() {
+            if shared.is_cancelled()
+                || shared.explicit_cleanup_requested()
+                || !shared.automatic_reconnect_enabled()
+            {
                 return false;
             }
             if shared.is_foreground() {
@@ -3903,6 +4048,7 @@ async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool 
             }
             tokio::select! {
                 _ = shared.cancelled() => return false,
+                _ = shared.explicit_cleanup() => return false,
                 _ = notified => {}
             }
             continue;
@@ -3915,6 +4061,7 @@ async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool 
         notified.as_mut().enable();
         tokio::select! {
             _ = shared.cancelled() => return false,
+            _ = shared.explicit_cleanup() => return false,
             _ = &mut notified => {},
             _ = tokio::time::sleep_until(deadline) => return true,
         }
@@ -4003,7 +4150,7 @@ async fn run_connection_flow(
             }
         }
     };
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
 
@@ -4037,6 +4184,13 @@ async fn run_connection_flow(
     ));
     let mut session = tokio::select! {
         _ = shared.cancelled() => {
+            control.cancel();
+            return Err(FlowFailure::Stale);
+        }
+        _ = shared.explicit_cleanup() => {
+            // No authenticated backend exists yet, so there is no remote
+            // cleanup to preserve. Cancel only this pre-auth russh stream;
+            // established sessions take the two-phase path below.
             control.cancel();
             return Err(FlowFailure::Stale);
         }
@@ -4150,7 +4304,7 @@ async fn authenticate_session(
         shared.fail("auth_failed", "SSH authentication failed.");
         return Err(FlowFailure::Authentication);
     }
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
     Ok(())
@@ -4559,7 +4713,9 @@ fn is_runtime_local_failure(failure: FlowFailure) -> bool {
 /// retained-work recovery/stop result; the picker path would clear the native
 /// Term and selected binding before the user can recover it.
 fn should_return_to_runtime_picker(shared: &ConnectionShared, failure: FlowFailure) -> bool {
-    is_runtime_local_failure(failure) && !shared.has_been_ready()
+    is_runtime_local_failure(failure)
+        && !shared.has_been_ready()
+        && !shared.explicit_cleanup_requested()
 }
 
 async fn run_runtime_picker(
@@ -4571,7 +4727,7 @@ async fn run_runtime_picker(
     // This helper is intentionally pre-Ready only. A defensive guard keeps a
     // future call site from turning a post-Ready runtime-local error into the
     // destructive picker reset below.
-    if shared.has_been_ready() {
+    if shared.has_been_ready() || shared.explicit_cleanup_requested() {
         return Err(FlowFailure::Stale);
     }
     clear_runtime_binding(shared)?;
@@ -4580,6 +4736,7 @@ async fn run_runtime_picker(
         shared.set_state(ConnectionState::AwaitingRuntimeSelection);
         let command = tokio::select! {
             _ = shared.cancelled() => return Err(FlowFailure::Stale),
+            _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
             command = commands.recv() => command,
         };
         let Some(request) = command else {
@@ -5860,6 +6017,157 @@ mod tests {
             shared.set_automatic_reconnect(false);
             assert!(!wait_for_reconnect(&shared, Duration::from_millis(1)).await);
         });
+    }
+
+    #[test]
+    fn explicit_shutdown_revokes_gates_before_hard_cancellation() {
+        let owner = registry::create_terminal(80, 24).expect("explicit shutdown terminal");
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            next_generation(),
+            "explicit-shutdown.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/explicit-shutdown-known-hosts"),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("explicit shutdown session")
+            .generation = shared.generation;
+        let old_epoch = shared.operation_epoch();
+
+        // The accepted boundary revokes normal operations and wakes the
+        // actor, but leaves the SSH stream usable for the final cleanup.
+        shared.invalidate_explicitly("explicit_disconnect");
+        assert!(shared.explicit_cleanup_requested());
+        assert!(!shared.is_cancelled());
+        assert!(!shared.current_request_epoch(old_epoch));
+        assert_eq!(
+            shared.snapshot().expect("explicit shutdown snapshot").state,
+            ConnectionState::Closing as u32
+        );
+
+        // The actor may publish completion before the caller needs to use the
+        // hard fallback. Explicit completion is terminal even without cancel.
+        shared.finish(Err(FlowFailure::Stale));
+        assert!(!shared.is_cancelled());
+        assert_eq!(
+            shared.snapshot().expect("finished shutdown snapshot").state,
+            ConnectionState::Disconnected as u32
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn explicit_shutdown_keeps_established_stream_writable_until_fallback() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind cleanup peer");
+            let address = listener.local_addr().expect("cleanup peer address");
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.expect("accept cleanup client");
+                let mut bytes = [0_u8; 7];
+                socket
+                    .read_exact(&mut bytes)
+                    .await
+                    .expect("read cleanup bytes");
+                assert_eq!(&bytes, b"cleanup");
+            });
+
+            let owner = registry::create_terminal(80, 24).expect("stream cleanup terminal");
+            let generation = next_generation();
+            let shared = Arc::new(ConnectionShared::new(
+                owner,
+                generation,
+                "stream-cleanup.example.test".to_owned(),
+                address.port(),
+                PathBuf::from("/tmp/stream-cleanup-known-hosts"),
+            ));
+            shared
+                .session
+                .lock()
+                .expect("stream cleanup session")
+                .generation = generation;
+            let socket = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("connect cleanup peer");
+            let control = Arc::new(ConnectIoControl::new(
+                Instant::now() + Duration::from_secs(10),
+            ));
+            let mut stream = CancellableStream::new(socket, Arc::clone(&shared), control);
+            shared.invalidate_explicitly("explicit_disconnect");
+            stream
+                .write_all(b"cleanup")
+                .await
+                .expect("explicit shutdown rejected established write");
+            server.await.expect("cleanup peer task");
+            registry::destroy_terminal(owner);
+        });
+    }
+
+    #[test]
+    fn explicit_shutdown_forces_cancellation_after_bounded_wait() {
+        let owner = registry::create_terminal(80, 24).expect("forced shutdown terminal");
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            next_generation(),
+            "forced-shutdown.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/forced-shutdown-known-hosts"),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("forced shutdown session")
+            .generation = shared.generation;
+        shared.invalidate_explicitly("explicit_disconnect");
+        let runtime = runtime().expect("native runtime");
+        let abort = runtime.spawn(std::future::pending::<()>()).abort_handle();
+
+        // Zero is a deterministic test bound for the same helper used by the
+        // production three-second fallback. A non-finishing actor is hard
+        // cancelled and aborted rather than leaving Disconnect blocked.
+        assert!(!finish_or_force_explicit_shutdown_with_timeout(
+            runtime,
+            Arc::clone(&shared),
+            abort,
+            Duration::ZERO,
+        ));
+        assert!(shared.is_cancelled());
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn transport_recovery_does_not_request_explicit_cleanup() {
+        let owner = registry::create_terminal(80, 24).expect("recovery shutdown terminal");
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            next_generation(),
+            "transport-recovery.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/transport-recovery-known-hosts"),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("transport recovery session")
+            .generation = shared.generation;
+
+        shared
+            .begin_recovery("transport", 1)
+            .expect("transport recovery should begin");
+        assert!(!shared.explicit_cleanup_requested());
+        assert!(!shared.is_cancelled());
+        shared.finish(Err(FlowFailure::Transport));
+        assert!(!shared.explicit_cleanup_requested());
+        assert!(!shared.is_cancelled());
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
+        registry::destroy_terminal(owner);
     }
 
     fn recovery_fixture() -> (TerminalId, Arc<ConnectionShared>) {
