@@ -79,7 +79,9 @@ Home/background → activate の同一プロセス復帰と、復帰後の nativ
 これはOS lifecycleと既存接続の復帰を確認しますが、SSH/Control Mode transportを
 切断した証拠ではありません。transport-loss recovery は Android `full` と iOS
 `ssh` の実fixture経路で、fixture-owned control fileから disposable `sshd` だけを
-停止・再開します。tmux server/session/shell、同じhost key/endpointを維持したまま、
+停止・再開します。Androidはstop ACK後に対象serialの `adb reconnect device`、bounded
+`wait-for-device`、exact `tcp:<port>` reverse再作成と `reverse --list` 検証を行います。
+tmux server/session/shell、同じhost key/endpointを維持したまま、
 pre-loss marker、cached/read-only rail、同じTerminalViewのtest-only native handle、
 同じpaneのReady、post-loss markerを順に確認します。切断中のinputは送らず、markerは
 各一回で別paneに現れないことをfixture側で検証します。iOSの固定artifactには、surface

@@ -278,7 +278,7 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func writePublicPresentationDiagnostics() {
-    let terminal = app.otherElements["Terminal"]
+    let terminal = visibleTerminalElement() ?? terminalQuery().firstMatch
     let keyboard = app.keyboards.firstMatch
     let hide = app.buttons.matching(NSPredicate(format: "label == %@", "Hide keyboard")).firstMatch
     let foreground = app.state == .runningForeground
@@ -997,9 +997,9 @@ final class MeetermSmokeUITests: XCTestCase {
       ).firstMatch
       return waitForHittable(firstRow, timeout: 30)
     case "terminal":
-      let terminal = app.otherElements["Terminal"]
-      return app.staticTexts["Connected"].waitForExistence(timeout: 30)
-        && waitForHittable(terminal, timeout: 30)
+      guard connectedElement().waitForExistence(timeout: 30),
+            let terminal = waitForTerminalElement(timeout: 30) else { return false }
+      return waitForHittable(terminal, timeout: 30)
     case "settings":
       return app.staticTexts["Settings"].waitForExistence(timeout: 30)
         && waitForHittable(app.buttons["settings-submit"], timeout: 30)
@@ -1051,7 +1051,7 @@ final class MeetermSmokeUITests: XCTestCase {
         && tests.label.contains("Agent status: finished")
     case "herdr-terminal":
       let groupPicker = buttonStarting(with: "Switch terminal group")
-      let terminal = app.otherElements["Terminal"]
+      guard let terminal = waitForTerminalElement(timeout: 30) else { return false }
       let selectedAgentLine = app.descendants(matching: .any).matching(
         NSPredicate(format: "identifier == %@", "selected-agent-line")
       ).firstMatch
@@ -1067,7 +1067,7 @@ final class MeetermSmokeUITests: XCTestCase {
       // review rather than this one-shot readiness check. This one screenshot
       // does not visually prove all five statuses.
       return waitForHittable(groupPicker, timeout: 30)
-        && terminal.waitForExistence(timeout: 30)
+        && terminalHasValidFrame(terminal)
         && XCTWaiter.wait(for: [selectedAgentLineReady], timeout: 30) == .completed
     case "herdr-workspaces":
       let total = app.staticTexts.matching(
@@ -1158,7 +1158,7 @@ final class MeetermSmokeUITests: XCTestCase {
     let titleElement = recoveryElement("recovery-title")
     let detailElement = recoveryElement("recovery-detail")
     let metaElement = recoveryElement("recovery-meta")
-    let terminal = app.otherElements["Terminal"]
+    guard let terminal = waitForTerminalElement(timeout: 30) else { return false }
     guard waitForVisible(rail, timeout: 30),
           waitForVisible(titleElement, timeout: 30),
           waitForVisible(detailElement, timeout: 30),
@@ -1429,7 +1429,7 @@ final class MeetermSmokeUITests: XCTestCase {
         stage: stage,
         pickerTitle: pickerTitle,
         runtime: button("tmux runtime meeterm"),
-        connected: app.staticTexts["Connected"]
+        connected: connectedElement()
       )
       XCTFail("The runtime picker did not appear after SSH authentication.")
       return false
@@ -1444,7 +1444,7 @@ final class MeetermSmokeUITests: XCTestCase {
         stage: stage,
         pickerTitle: pickerTitle,
         runtime: runtime,
-        connected: app.staticTexts["Connected"]
+        connected: connectedElement()
       )
       XCTFail("The fixture tmux runtime meeterm was not exposed by the runtime picker.")
       return false
@@ -1456,7 +1456,7 @@ final class MeetermSmokeUITests: XCTestCase {
         stage: stage,
         pickerTitle: pickerTitle,
         runtime: runtime,
-        connected: app.staticTexts["Connected"]
+        connected: connectedElement()
       )
       XCTFail("The fixture tmux runtime meeterm was not hittable.")
       return false
@@ -1465,7 +1465,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("\(stage)_tap_tmux_runtime")
     runtime.tap()
     record("\(stage)_tmux_runtime_tapped")
-    let connected = app.staticTexts["Connected"]
+    let connected = connectedElement()
     record("\(stage)_await_connected")
     guard connected.waitForExistence(timeout: 90) else {
       record("\(stage)_connected_timeout")
@@ -2499,14 +2499,50 @@ final class MeetermSmokeUITests: XCTestCase {
     ).firstMatch
   }
 
+  private func terminalQuery() -> XCUIElementQuery {
+    app.otherElements.matching(
+      NSPredicate(format: "identifier == %@ OR label == %@", "Terminal", "Terminal")
+    )
+  }
+
+  private func connectedElement() -> XCUIElement {
+    app.staticTexts.matching(
+      NSPredicate(format: "identifier == %@ OR label == %@", "Connected", "Connected")
+    ).firstMatch
+  }
+
+  private func terminalHasValidFrame(_ element: XCUIElement) -> Bool {
+    guard element.exists else { return false }
+    let frame = element.frame
+    return !frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0
+  }
+
+  private func visibleTerminalElement() -> XCUIElement? {
+    let visibleCandidates = terminalQuery().allElementsBoundByIndex.filter {
+      terminalHasValidFrame($0)
+    }
+    return visibleCandidates.first(where: { $0.isHittable }) ?? visibleCandidates.first
+  }
+
+  private func waitForTerminalElement(timeout: TimeInterval) -> XCUIElement? {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if let terminal = visibleTerminalElement() { return terminal }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return visibleTerminalElement()
+  }
+
   private func terminalElement() throws -> XCUIElement {
-    let terminal = app.otherElements["Terminal"]
-    XCTAssertTrue(terminal.waitForExistence(timeout: 30), "The native terminal view is unavailable.")
+    guard let terminal = waitForTerminalElement(timeout: 30) else {
+      XCTFail("The native terminal view is unavailable.")
+      return terminalQuery().firstMatch
+    }
     return terminal
   }
 
   private func waitForTerminal() -> Bool {
-    app.otherElements["Terminal"].waitForExistence(timeout: 30)
+    waitForTerminalElement(timeout: 30) != nil
   }
 
   private func waitForWorkspaceLabels(minimum: Int) -> [String] {
@@ -2607,8 +2643,7 @@ final class MeetermSmokeUITests: XCTestCase {
       NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
     ).firstMatch
     let recoveryRail = recoveryElement("recovery-rail")
-    let connected = app.staticTexts["Connected"]
-    let terminal = app.otherElements["Terminal"]
+    let connected = connectedElement()
     let pickerRuntime = app.buttons.matching(
       NSPredicate(
         format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@",
@@ -2617,23 +2652,21 @@ final class MeetermSmokeUITests: XCTestCase {
     ).firstMatch
     while Date() < deadline {
       let selectedPane = terminalTab(identifier: paneIdentifier)
-      if app.state == .runningForeground
-        && connected.exists
-        && !pickerTitle.exists
-        && !pickerRuntime.exists
-        && !recoveryRail.exists
-        && selectedPane.exists
-        && selectedPane.isSelected
-        && terminal.exists
-        && !terminal.frame.isNull
-        && !terminal.frame.isInfinite
-        && terminal.frame.width > 0
-        && terminal.frame.height > 0 {
+      if let terminal = visibleTerminalElement(),
+         app.state == .runningForeground,
+         connected.exists,
+         !pickerTitle.exists,
+         !pickerRuntime.exists,
+         !recoveryRail.exists,
+         selectedPane.exists,
+         selectedPane.isSelected,
+         terminalHasValidFrame(terminal) {
         return true
       }
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     let selectedPane = terminalTab(identifier: paneIdentifier)
+    guard let terminal = visibleTerminalElement() else { return false }
     return app.state == .runningForeground
       && connected.exists
       && !pickerTitle.exists
@@ -2641,9 +2674,7 @@ final class MeetermSmokeUITests: XCTestCase {
       && !recoveryRail.exists
       && selectedPane.exists
       && selectedPane.isSelected
-      && terminal.exists
-      && terminal.frame.width > 0
-      && terminal.frame.height > 0
+      && terminalHasValidFrame(terminal)
   }
 
   private func waitForConnectionFormDismissal(timeout: TimeInterval) -> Bool {
@@ -2844,7 +2875,7 @@ final class MeetermSmokeUITests: XCTestCase {
     character: Character,
     requestedKey: XCUIElement
   ) {
-    let terminal = app.otherElements["Terminal"]
+    let terminal = visibleTerminalElement() ?? terminalQuery().firstMatch
     let keyboard = app.keyboards.firstMatch
     let paste = button("Paste")
     let hideKeyboard = button("Hide keyboard")
@@ -2896,7 +2927,7 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     let labelTarget = button("Paste")
     let keyboard = app.keyboards.firstMatch
-    let terminal = app.otherElements["Terminal"]
+    let terminal = visibleTerminalElement() ?? terminalQuery().firstMatch
     appendFixedArtifact(
       "ios-ui-terminal-paste-diagnostics.txt",
       lines: [

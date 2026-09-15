@@ -8,6 +8,7 @@ The hosted job remains the authoritative check of the complete UI/native path.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 from pathlib import Path
@@ -42,6 +43,177 @@ class _FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+class FakeDevice(smoke.AndroidDevice):
+    """ADB command fake that keeps command order and bounded timeouts visible."""
+
+    def __init__(self, outcomes: list[bytes | tuple[str, str]]) -> None:
+        super().__init__("emulator-5554", "adb")
+        self.outcomes = list(outcomes)
+        self.commands: list[tuple[tuple[str, ...], str, float]] = []
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = 15.0,
+    ) -> bytes:
+        self.commands.append((arguments, stage, timeout))
+        if not self.outcomes:
+            raise AssertionError("FakeDevice received an unexpected adb command")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, tuple):
+            raise smoke.SmokeFailure(stage, outcome[1])
+        return outcome
+
+
+class AdbTransportResetTests(unittest.TestCase):
+    def test_reconnect_transport_uses_serial_reset_wait_and_verified_reverse_order(self) -> None:
+        device = FakeDevice(
+            [
+                b"",  # adb reconnect device
+                b"",  # adb wait-for-device
+                b"",  # adb reverse --no-rebind tcp:<port> tcp:<port>
+                b"emulator-5554 tcp:2222 tcp:2222\n",  # adb reverse --list
+            ]
+        )
+
+        device.reconnect_transport(2222)
+
+        self.assertEqual(
+            [(arguments, stage) for arguments, stage, _timeout in device.commands],
+            [
+                (("reconnect", "device"), "transport_reconnect"),
+                (("wait-for-device",), "transport_wait_for_device"),
+                (
+                    ("reverse", "--no-rebind", "tcp:2222", "tcp:2222"),
+                    "transport_reverse",
+                ),
+                (("reverse", "--list"), "transport_reverse_verify"),
+            ],
+        )
+        self.assertEqual(
+            [timeout for _arguments, _stage, timeout in device.commands],
+            [
+                smoke.ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
+                smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
+                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
+            ],
+        )
+
+    def test_reconnect_failure_is_bounded_and_sanitized(self) -> None:
+        device = FakeDevice([("failure", "adb_failed")])
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_reconnect", "adb_failed"),
+        )
+        self.assertEqual(len(device.commands), 1)
+        self.assertEqual(
+            device.commands[0][2],
+            smoke.ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
+        )
+
+    def test_wait_for_device_failure_does_not_restore_reverse_mapping(self) -> None:
+        device = FakeDevice([b"", ("failure", "adb_failed")])
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_wait_for_device", "adb_failed"),
+        )
+        self.assertEqual(
+            [arguments for arguments, _stage, _timeout in device.commands],
+            [("reconnect", "device"), ("wait-for-device",)],
+        )
+
+    def test_reverse_restore_failure_is_bounded(self) -> None:
+        device = FakeDevice([b"", b"", ("failure", "adb_failed")])
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_reverse", "adb_failed"),
+        )
+        self.assertEqual(
+            [arguments for arguments, _stage, _timeout in device.commands],
+            [
+                ("reconnect", "device"),
+                ("wait-for-device",),
+                ("reverse", "--no-rebind", "tcp:2222", "tcp:2222"),
+            ],
+        )
+
+    def test_reverse_verification_rejects_wrong_remote_mapping(self) -> None:
+        device = FakeDevice(
+            [
+                b"",
+                b"",
+                b"",
+                b"emulator-5554 tcp:2222 tcp:2223\n",
+            ]
+        )
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_reverse_verify", "reverse_mapping_missing"),
+        )
+
+    def test_reverse_mapping_distinguishes_local_ownership_from_exact_pair(self) -> None:
+        self.assertTrue(
+            smoke.reverse_local_mapping_exists(
+                "emulator-5554 tcp:2222 tcp:2222\n",
+                2222,
+            )
+        )
+        self.assertTrue(
+            smoke.reverse_local_mapping_exists("tcp:2222 tcp:2222\n", 2222)
+        )
+        self.assertTrue(
+            smoke.reverse_local_mapping_exists(
+                "emulator-5554 tcp:2222 tcp:2223\n",
+                2222,
+            )
+        )
+        self.assertFalse(
+            smoke.reverse_local_mapping_exists(
+                "emulator-5554 tcp:2223 tcp:2222\n",
+                2222,
+            )
+        )
+        self.assertTrue(
+            smoke.reverse_exact_mapping_exists(
+                "emulator-5554 tcp:2222 tcp:2222\n",
+                2222,
+            )
+        )
+        self.assertTrue(
+            smoke.reverse_exact_mapping_exists("tcp:2222 tcp:2222\n", 2222)
+        )
+        self.assertFalse(
+            smoke.reverse_exact_mapping_exists(
+                "emulator-5554 tcp:2222 tcp:2223\n",
+                2222,
+            )
+        )
+        self.assertFalse(
+            smoke.reverse_exact_mapping_exists(
+                "emulator-5554 tcp:2223 tcp:2222\n",
+                2222,
+            )
+        )
 
 
 class ArtifactBoundaryTests(unittest.TestCase):
@@ -992,7 +1164,27 @@ class TransportLossTests(unittest.TestCase):
         restore = source.index('request_fixture_transport("start"', stop)
         self.assertNotIn("terminal_line", source[stop:restore])
         self.assertNotIn("input_", source[stop:restore])
+        self.assertNotIn('("reverse", "--remove"', source[stop:restore])
+        self.assertIn("reconnect_transport", source[stop:restore])
         self.assertIn("wait_for_transport_loss_stale", source[stop:restore])
+
+    def test_foreground_and_transport_loss_calls_match_required_positional_arity(self) -> None:
+        tree = ast.parse(Path(smoke.__file__).read_text(encoding="utf-8"))
+        call_arities: dict[str, list[int]] = {
+            "exercise_foreground_return": [],
+            "exercise_transport_loss_recovery": [],
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in call_arities
+            ):
+                self.assertEqual(node.keywords, [])
+                call_arities[node.func.id].append(len(node.args))
+
+        self.assertEqual(call_arities["exercise_foreground_return"], [6])
+        self.assertEqual(call_arities["exercise_transport_loss_recovery"], [10])
 
     def test_transport_loss_completion_is_exactly_once_and_ordered(self) -> None:
         completed = list(smoke.TRANSPORT_LOSS_COMPLETION_STAGES)

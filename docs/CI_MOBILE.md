@@ -57,13 +57,16 @@ default is `standard`.
   while the selected tmux pane remains active, and a resumed native input and
   remote acknowledgment. It also runs a separate deterministic transport-loss
   case: the disposable fixture stops/restarts only its sshd through its
-  fixture-owned control files, while tmux remains alive; the app must show the
-  retained read-only rail and then return Ready to the same pane/native handle
-  without reopening the picker, followed by one post-loss remote acknowledgment
-  and disconnect. No daily CRUD/copy/restart chain; this path does not claim
-  arbitrary packet loss, network handover, physical device, or Herdr mobile
-  recovery. The healthy foreground cycle and transport-loss case are separate
-  evidence categories.
+  fixture-owned control files, while tmux remains alive. After the stop ACK,
+  the Android driver resets the selected serial's ADB transport with
+  `adb reconnect device`, waits for `wait-for-device` within a fixed bound,
+  recreates the exact `tcp:<port>` reverse pair, and verifies it with
+  `adb reverse --list`. The app must then show the retained read-only rail and
+  return Ready to the same pane/native handle without reopening the picker,
+  followed by one post-loss remote acknowledgment and disconnect. No daily
+  CRUD/copy/restart chain; this path does not claim arbitrary packet loss,
+  network handover, physical device, or Herdr mobile recovery. The healthy
+  foreground cycle and transport-loss case are separate evidence categories.
 - `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
   Full preserves its original assertions and result; a prior failed full remains failed.
 
@@ -139,11 +142,16 @@ the recording rather than capturing another app.
 The HOME transition just described is the healthy foreground evidence and does
 not simulate a transport failure. The same Android `full` run separately sends
 `stop` and `start` requests through the fixture's mode-0600
-`sshd-control-request`/`sshd-control-status` files. Only the fixture sshd
-process tree is stopped; the tmux server/session/shell and endpoint identity are
-left alive. The driver records sanitized fixed results for the pre-loss and
-post-loss markers, the cached read-only rail, the same native handle, the same
-selected pane, and the absence of input while stopped. On iOS, the final
+`sshd-control-request`/`sshd-control-status` files. After the stop ACK, the
+driver closes the selected ADB transport with `adb reconnect device`, waits for
+the same serial to become ready, and recreates/verifies only the exact
+`adb reverse tcp:<fixture-port> tcp:<fixture-port>` mapping. Only the fixture
+sshd process tree is stopped; the tmux server/session/shell and endpoint identity
+are left alive. ADB reverse removal alone is not used as the loss injection;
+the driver-owned mapping is removed only during safe final cleanup. The driver
+records sanitized fixed results for the pre-loss and post-loss markers, the
+cached read-only rail, the same native handle, the same selected pane, and the
+absence of input while stopped. On iOS, the final
 sanitized artifact carries the independent `native_handle_same` and
 `selected_pane_identifier_same` booleans in addition to the native surface
 binding boolean. This transport-loss

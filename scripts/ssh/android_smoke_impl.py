@@ -115,6 +115,9 @@ RUNTIME_PICKER_ROW_PREFIXES = (
 FIXTURE_CONTROL_REQUEST_ENV = "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
 FIXTURE_CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
 FIXTURE_CONTROL_TIMEOUT_SECONDS = 25.0
+ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS = 15.0
+ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS = 30.0
+ADB_REVERSE_TIMEOUT_SECONDS = 10.0
 ANDROID_TRANSPORT_LOSS_PRE_PATTERN = re.compile(r"android-ssh-loss-pre-[0-9a-f]{16}")
 ANDROID_TRANSPORT_LOSS_POST_PATTERN = re.compile(r"android-ssh-loss-post-[0-9a-f]{16}")
 TRANSPORT_LOSS_COMPLETION_STAGES = (
@@ -350,8 +353,56 @@ class AndroidDevice:
             raise SmokeFailure(stage, "adb_failed")
         return result.stdout
 
-    def wait_for_device(self) -> None:
-        self.run(("wait-for-device",), "device_ready", timeout=30.0)
+    def wait_for_device(
+        self,
+        stage: str = "device_ready",
+        *,
+        timeout: float = ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+    ) -> None:
+        self.run(("wait-for-device",), stage, timeout=timeout)
+
+    def create_reverse_mapping(self, port: int, stage: str) -> None:
+        """Create the one exact fixture loopback mapping owned by this driver."""
+
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise SmokeFailure(stage, "invalid_port")
+        mapping = f"tcp:{port}"
+        self.run(
+            ("reverse", "--no-rebind", mapping, mapping),
+            stage,
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        )
+
+    def verify_reverse_mapping(self, port: int, stage: str) -> None:
+        """Verify the exact local and remote fixture endpoints through adb."""
+
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise SmokeFailure(stage, "invalid_port")
+        reverse_list = self.run(
+            ("reverse", "--list"),
+            stage,
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace")
+        if not reverse_exact_mapping_exists(reverse_list, port):
+            raise SmokeFailure(stage, "reverse_mapping_missing")
+
+    def reconnect_transport(self, port: int) -> None:
+        """Close this serial's ADB transport and restore its fixture mapping."""
+
+        # ``reconnect device`` closes the device-side transport, which closes
+        # the transport-owned reverse listeners as part of the reset.  Keep
+        # this test-only reset serial-scoped through AndroidDevice.run.
+        self.run(
+            ("reconnect", "device"),
+            "transport_reconnect",
+            timeout=ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
+        )
+        self.wait_for_device(
+            "transport_wait_for_device",
+            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+        )
+        self.create_reverse_mapping(port, "transport_reverse")
+        self.verify_reverse_mapping(port, "transport_reverse_verify")
 
     def assert_process_alive(self, stage: str) -> None:
         self.process_id(stage)
@@ -1831,12 +1882,23 @@ def wait_for_labeled_terminal_surface(
 
 
 def reverse_local_mapping_exists(output: str, port: int) -> bool:
-    """Recognize adb reverse output with or without its serial prefix."""
+    """Recognize ownership of the local adb reverse endpoint."""
 
     local = f"tcp:{port}"
     for line in output.splitlines():
         fields = line.split()
         if len(fields) >= 2 and fields[-2] == local:
+            return True
+    return False
+
+
+def reverse_exact_mapping_exists(output: str, port: int) -> bool:
+    """Recognize the exact fixture pair with or without its serial prefix."""
+
+    local = f"tcp:{port}"
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[-2:] == [local, local]:
             return True
     return False
 
@@ -3632,8 +3694,9 @@ def exercise_transport_loss_recovery(
     artifact_dir: Path,
     completed: list[str],
     expected_pid: str,
+    reverse_port: int,
 ) -> None:
-    """Cut fixture sshd, retain one native pane, and recover without a picker."""
+    """Reset the ADB transport after stopping sshd and recover without a picker."""
 
     stage = "daily_transport_loss_prepare"
     active_panes = [
@@ -3686,6 +3749,10 @@ def exercise_transport_loss_recovery(
     try:
         request_fixture_transport("stop", "daily_transport_loss_inject")
         transport_stopped = True
+        # The fixture ACK only proves that sshd stopped. Reset the driver-owned
+        # ADB transport as the deterministic socket-loss boundary, then
+        # recreate and verify the exact reverse path before observing stale UI.
+        device.reconnect_transport(reverse_port)
         completed.append("daily_transport_loss_injected")
 
         stage = "daily_transport_loss_stale"
@@ -4488,8 +4555,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if reverse_local_mapping_exists(reverse_list, port):
             raise SmokeFailure(stage, "reverse_already_exists")
-        device.run(("reverse", f"tcp:{port}", f"tcp:{port}"), stage, timeout=10.0)
+        device.create_reverse_mapping(port, stage)
         reverse_created = True
+        device.verify_reverse_mapping(port, "reverse_verify")
         completed.append("loopback_reverse")
 
         stage = "launch"
@@ -4628,6 +4696,7 @@ def main(argv: list[str] | None = None) -> int:
             args.artifact_dir,
             completed,
             initial_app_pid,
+            port,
         )
         require_transport_loss_completion(completed, "daily_transport_loss_complete")
         transport_loss_evidence = "passed"
