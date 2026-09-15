@@ -761,6 +761,41 @@ test('Herdr status metadata renders on its owning surfaces without JS rollups or
   assert.deepEqual(workspaceOrder(), ['workspace-row-W1', 'workspace-row-W2'], 'status changes must not reorder workspaces');
 });
 
+test('disabled workspace rows keep the unavailable mark at full contrast', async t => {
+  const snapshot = makeSnapshot({
+    workspaces: [workspace('W1', 'Workspace One', 'blocked')],
+    groups: [group('G1', 'W1', 'Group One', true, 'working')],
+    terminals: [pane('P1', 'W1', 'G1', 'native:P1', true, true, 'Build', { name: 'Claude Code', status: 'working' })],
+  });
+  const fixture = await mountForTest(t, snapshot);
+  await settleAsync();
+
+  fixture.environment.connection.state = 'Reconnecting';
+  await poll(fixture.environment);
+
+  const row = findTestId(fixture.root, 'workspace-row-W1');
+  const status = findTestId(fixture.root, 'workspace-agent-status-W1');
+  const styleObjects = value => {
+    if (Array.isArray(value)) return value.flatMap(styleObjects);
+    return value && typeof value === 'object' ? [value] : [];
+  };
+  const hasOpacity = value => styleObjects(value).some(style => style.opacity !== undefined);
+  const rowStyle = typeof row.props.style === 'function' ? row.props.style({ pressed: false }) : row.props.style;
+
+  // The live mark is a direct child of the pressable. Its ancestor cannot
+  // composite a disabled opacity, while the icon/copy affordances still do.
+  assert.equal(status.parent, row);
+  assert.equal(hasOpacity(rowStyle), false, 'the workspace pressable must not fade the status mark');
+  assert.equal(hasOpacity(status.props.style), false, 'the status indicator itself must stay opaque');
+  const fadedChildren = row.children.filter(child => typeof child !== 'string')
+    .filter(child => child && child !== status && hasOpacity(child.props?.style));
+  assert.ok(fadedChildren.length >= 2, 'disabled workspace content should retain its subdued affordance');
+
+  assert.match(row.props.accessibilityLabel, /Agent status unavailable/);
+  assert.equal(status.parent, row);
+  assert.equal(hasOpacity(status.props.style), false, 'unavailable status mark must remain at full opacity');
+});
+
 test('settings appearance has the same visible and accessible meaning', async () => {
   const filename = path.join(REPO_ROOT, 'app/DailyUse.tsx');
   const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {

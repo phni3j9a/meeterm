@@ -13,6 +13,21 @@ ROOT = Path(__file__).resolve().parents[2]
 SWIFTC = os.environ.get("MEETERM_SWIFTC") or shutil.which("swiftc")
 
 
+class IOSSmokeSelectorSourceTests(unittest.TestCase):
+    def test_terminal_and_agent_readiness_use_stable_accessibility_owners(self):
+        source = (ROOT / "scripts/ci/MeetermSmokeUITests.swift").read_text()
+        self.assertIn('identifier == %@", "selected-agent-line"', source)
+        self.assertIn('selectedAgentLine.label.contains("Claude Code")', source)
+        self.assertIn('selectedAgentLine.label.contains("Agent status: working")', source)
+        self.assertIn('identifier BEGINSWITH %@", "terminal-tab-"', source)
+        self.assertIn('terminalTab(identifier:', source)
+        self.assertIn('waitForTerminalTabs(minimum:', source)
+        self.assertNotIn("label BEGINSWITH 'Terminal '", source)
+        self.assertNotIn("waitForPaneLabels", source)
+        self.assertNotIn('app.staticTexts["Claude Code"]', source)
+        self.assertNotIn('app.staticTexts["Working"]', source)
+
+
 @unittest.skipUnless(SWIFTC, "Swift compiler required; mandatory in macOS preflight")
 class SelectionTextTests(unittest.TestCase):
     def test_copy_handles_pane_deletion_and_selection_changes(self):

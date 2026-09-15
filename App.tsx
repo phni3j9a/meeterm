@@ -439,14 +439,15 @@ function SearchField({ value, onChange, colors, label = 'Search workspaces', aut
 function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker = false, disabled = false, optionsDisabled = false, connected = false }: { workspace: Workspace; selected: boolean; colors: Palette; onPress: () => void; onOptions?: () => void; picker?: boolean; disabled?: boolean; optionsDisabled?: boolean; connected?: boolean }) {
   const statusPhrase = agentStatusPhrase(workspace.agentStatus, connected);
   const accessibilityLabel = `Workspace ${workspace.name}${statusPhrase ? `, ${statusPhrase}` : ''}`;
-  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityHint={`${workspace.panes.length} ${workspace.panes.length === 1 ? 'terminal' : 'terminals'}`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }, disabled && { opacity: .5 }]}>
-    <Icon name="terminal" color={colors.muted} size={23} />
+  const faded = disabled ? styles.workspaceRowDisabledContent : undefined;
+  return <View style={[styles.workspaceContainer, { borderBottomColor: colors.border }]}><Pressable testID={`workspace-row-${workspace.id}`} accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityHint={`${workspace.panes.length} ${workspace.panes.length === 1 ? 'terminal' : 'terminals'}`} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.workspaceRow, pressed && { backgroundColor: colors.surface }]}>
+    <View style={faded}><Icon name="terminal" color={colors.muted} size={23} /></View>
     <AgentStatusIndicator status={workspace.agentStatus} live={connected} colors={colors} testID={`workspace-agent-status-${workspace.id}`} />
-    <View style={styles.rowCopy}>
+    <View style={[styles.rowCopy, faded]}>
       <Text numberOfLines={picker ? undefined : 2} style={[styles.rowTitle, { color: colors.text }]}>{workspace.name}</Text>
       <Text numberOfLines={1} style={[styles.rowSubtitle, { color: colors.muted }]}>{workspace.panes.length ? workspace.panes.map((pane, index) => pane.name || `Terminal ${index + 1}`).join(' · ') : 'No terminals'}</Text>
     </View>
-    <Icon name={selected ? 'check' : 'chevron'} color={selected ? colors.accent : colors.muted} size={18} />
+    <View style={faded}><Icon name={selected ? 'check' : 'chevron'} color={selected ? colors.accent : colors.muted} size={18} /></View>
   </Pressable>{onOptions ? <IconButton icon="menu" label={`Workspace options ${workspace.name}`} onPress={onOptions} disabled={disabled || optionsDisabled} colors={colors} /> : null}</View>;
 }
 
@@ -1762,7 +1763,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, runtimeReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={name} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={runtimeReady} colors={DARK} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{name}</Text></Pressable>; })}
       </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
       {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, runtimeReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
-        <Text numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
+        <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
         <AgentStatusIndicator status={selectedPane.agent.status} live={runtimeReady} colors={DARK} showLabel testID="selected-agent-status" />
       </View>; })() : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
@@ -1967,6 +1968,7 @@ const styles = StyleSheet.create({
   sectionLabel: { fontSize: 13, lineHeight: 20, fontVariant: ['tabular-nums'] },
   workspaceContainer: { flexDirection: 'row', alignItems: 'center', gap: 4, borderBottomWidth: StyleSheet.hairlineWidth },
   workspaceRow: { flex: 1, minWidth: 0, minHeight: 88, paddingVertical: 20, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  workspaceRowDisabledContent: { opacity: .5 },
   rowCopy: { flex: 1, minWidth: 0, gap: 4 },
   rowTitle: { fontSize: 18, lineHeight: 26, fontWeight: '600', letterSpacing: -.3 },
   rowSubtitle: { fontSize: 13, lineHeight: 20, fontVariant: ['tabular-nums'] },

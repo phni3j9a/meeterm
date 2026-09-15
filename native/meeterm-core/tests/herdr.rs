@@ -945,6 +945,30 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
+fn common_agent_status<'a>(value: &'a Value, collection: &str, id: u64) -> Option<&'a str> {
+    value[collection]
+        .as_array()?
+        .iter()
+        .find(|item| entity_id(&item["id"]) == id)
+        .and_then(|item| item["agentStatus"].as_str())
+}
+
+fn common_terminal_agent_status(value: &Value, id: u64) -> Option<&str> {
+    value["terminals"]
+        .as_array()?
+        .iter()
+        .find(|item| entity_id(&item["id"]) == id)
+        .and_then(|item| item["agent"].get("status"))
+        .and_then(Value::as_str)
+}
+
+fn common_terminal_has_no_agent(value: &Value, id: u64) -> bool {
+    value["terminals"]
+        .as_array()
+        .and_then(|terminals| terminals.iter().find(|item| entity_id(&item["id"]) == id))
+        .is_some_and(|terminal| terminal["agent"].is_null())
+}
+
 fn wait_revision(owner: u64, id: u64, previous: u64, label: &str) -> u64 {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
@@ -1297,6 +1321,36 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .unwrap()
         .parse()
         .unwrap();
+    let root_common_id = grouped["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["terminalId"] == format!("native:{}", root.terminal_id))
+        .expect("common root terminal identity")["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let root_group_id = grouped["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| entity_id(&terminal["id"]) == root_common_id)
+        .expect("common root group identity")["groupId"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let secondary_root_common_id = grouped["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| entity_id(&terminal["groupId"]) == group_id)
+        .expect("common secondary root terminal identity")["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     select_group(default_id, group_id).expect("select Herdr group");
     wait_json(default_id, "selected Herdr group", |value| {
         value["groups"]
@@ -1351,18 +1405,91 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .as_str()
         .unwrap()
         .to_owned();
+    driver.api(
+        "default",
+        "pane.report_agent",
+        json!({
+            "pane_id": root.pane_id,
+            "source": "meeterm-fixture",
+            "agent": "RootAgent",
+            "state": "working",
+            "seq": 1,
+        }),
+    );
+    let root_reported = wait_json(default_id, "root pane agent status event", |value| {
+        common_agent_status(value, "workspaces", workspace_id) == Some("working")
+            && common_agent_status(value, "groups", root_group_id) == Some("working")
+            && common_terminal_agent_status(value, root_common_id) == Some("working")
+    });
+    assert_eq!(
+        common_agent_status(&root_reported, "workspaces", workspace_id),
+        Some("working")
+    );
+    assert_eq!(
+        common_agent_status(&root_reported, "groups", root_group_id),
+        Some("working")
+    );
+    assert_eq!(
+        common_terminal_agent_status(&root_reported, root_common_id),
+        Some("working")
+    );
+    assert!(common_terminal_has_no_agent(
+        &root_reported,
+        secondary_root_common_id
+    ));
     for (seq, state) in [(1, "working"), (2, "blocked"), (3, "unknown")] {
-        driver.api("default", "pane.report_agent", json!({"pane_id":remote_pane,"source":"meeterm-fixture", "agent":"Claude", "state":state,"seq":seq}));
-        wait_json(default_id, "new pane agent status event", |value| {
-            value["terminals"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|terminal| {
-                    entity_id(&terminal["id"]) == extra_pane_id
-                        && terminal["agent"]["status"] == state
-                })
+        driver.api(
+            "default",
+            "pane.report_agent",
+            json!({
+                "pane_id": remote_pane,
+                "source": "meeterm-fixture",
+                "agent": "Claude",
+                "state": state,
+                "seq": seq,
+            }),
+        );
+        let expected_workspace = if state == "blocked" {
+            "blocked"
+        } else {
+            "working"
+        };
+        let transitioned = wait_json(default_id, "new pane agent status event", |value| {
+            // One common snapshot must expose the direct pane status, its
+            // tab rollup, the workspace rollup, and the untouched agentless
+            // sibling. The root pane keeps workspace status intentionally
+            // different from the secondary tab for the unknown transition.
+            common_agent_status(value, "workspaces", workspace_id) == Some(expected_workspace)
+                && common_agent_status(value, "groups", group_id) == Some(state)
+                && common_agent_status(value, "groups", root_group_id) == Some("working")
+                && common_terminal_agent_status(value, extra_pane_id) == Some(state)
+                && common_terminal_agent_status(value, root_common_id) == Some("working")
+                && common_terminal_has_no_agent(value, secondary_root_common_id)
         });
+        assert_eq!(
+            common_agent_status(&transitioned, "workspaces", workspace_id),
+            Some(expected_workspace)
+        );
+        assert_eq!(
+            common_agent_status(&transitioned, "groups", group_id),
+            Some(state)
+        );
+        assert_eq!(
+            common_agent_status(&transitioned, "groups", root_group_id),
+            Some("working")
+        );
+        assert_eq!(
+            common_terminal_agent_status(&transitioned, extra_pane_id),
+            Some(state)
+        );
+        assert_eq!(
+            common_terminal_agent_status(&transitioned, root_common_id),
+            Some("working")
+        );
+        assert!(common_terminal_has_no_agent(
+            &transitioned,
+            secondary_root_common_id
+        ));
     }
 
     rename_pane(default_id, extra_pane_id, "secondary-pane-renamed").expect("rename Herdr pane");

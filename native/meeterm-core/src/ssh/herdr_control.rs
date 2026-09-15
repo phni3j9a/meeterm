@@ -642,6 +642,248 @@ fn herdr_rollup_status(status: wire::AgentStatus) -> Option<workspace::AgentStat
     Some(status.into())
 }
 
+struct SnapshotProjection {
+    metadata: Metadata,
+    mapping: HashMap<u64, u64>,
+    selected: Option<u64>,
+    flat: Vec<PaneSnapshot>,
+    windows: Vec<WindowSnapshot>,
+    stale: Vec<u64>,
+}
+
+/// Apply one decoded Herdr snapshot to the native common model. This is kept
+/// separate from the stream/lock commit so the production actor and its
+/// focused projection tests exercise the same workspace/group/pane mapping.
+fn project_snapshot(
+    mut metadata: Metadata,
+    mut mapping: HashMap<u64, u64>,
+    old_selected: Option<u64>,
+    snapshot: wire::HerdrSessionSnapshot,
+    runtime: String,
+    viewport: (u16, u16),
+    generation: u64,
+) -> Result<SnapshotProjection, FlowFailure> {
+    let old_target = old_selected.and_then(|id| metadata.panes.get(&id)).cloned();
+    let old_selected_groups = metadata.selected_groups.clone();
+    let mut old_flag_groups = HashMap::new();
+    for group in metadata
+        .snapshot
+        .groups
+        .iter()
+        .filter(|group| group.selected)
+    {
+        let (Some(workspace), Some(group)) = (
+            group.workspace_id.parse::<u64>().ok(),
+            group.id.parse::<u64>().ok(),
+        ) else {
+            continue;
+        };
+        old_flag_groups.entry(workspace).or_insert(group);
+    }
+    let old_active_group = metadata.active_group;
+    let focused_workspace_id = snapshot.focused_workspace_id.clone();
+    let focused_tab_id = snapshot.focused_tab_id.clone();
+    let focused_pane_id = snapshot.focused_pane_id.clone();
+    metadata.snapshot = RuntimeSnapshot {
+        backend: Backend::Herdr,
+        runtime,
+        groups_supported: true,
+        ..RuntimeSnapshot::default()
+    };
+    metadata.workspaces.clear();
+    metadata.groups.clear();
+    metadata.panes.clear();
+    metadata.linked_worktree_parents.clear();
+    metadata.selected_groups.clear();
+    metadata.active_group = None;
+    let mut live_ids = HashSet::new();
+    let mut preferred = None;
+    let mut flat = Vec::new();
+    let mut windows = Vec::new();
+    let mut focused_groups = HashMap::new();
+    let mut worktree_members = HashMap::<String, usize>::new();
+    for workspace in &snapshot.workspaces {
+        if let Some(worktree) = &workspace.worktree {
+            *worktree_members
+                .entry(worktree.repo_key.clone())
+                .or_default() += 1;
+        }
+    }
+    for workspace in snapshot.workspaces {
+        let wid = metadata.id(b'w', &workspace.workspace_id);
+        if workspace.worktree.as_ref().is_some_and(|worktree| {
+            !worktree.is_linked_worktree
+                && worktree_members
+                    .get(&worktree.repo_key)
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
+        }) {
+            metadata.linked_worktree_parents.insert(wid);
+        }
+        live_ids.insert((b'w', workspace.workspace_id.clone()));
+        metadata.workspaces.insert(wid, workspace.workspace_id);
+        metadata.snapshot.workspaces.push(workspace::Workspace {
+            id: wid.to_string(),
+            name: workspace.name.clone(),
+            agent_status: herdr_rollup_status(workspace.agent_status),
+        });
+        for group in workspace.groups {
+            let gid = metadata.id(b'g', &group.tab_id);
+            if group.focused {
+                focused_groups.entry(wid).or_insert(gid);
+            }
+            live_ids.insert((b'g', group.tab_id.clone()));
+            metadata.groups.insert(gid, group.tab_id);
+            metadata.snapshot.groups.push(workspace::TerminalGroup {
+                id: gid.to_string(),
+                workspace_id: wid.to_string(),
+                name: group.name,
+                selected: false,
+                agent_status: herdr_rollup_status(group.agent_status),
+            });
+            for (index, pane) in group.panes.into_iter().enumerate() {
+                let pid = metadata.id(b'p', &pane.terminal_id);
+                live_ids.insert((b'p', pane.terminal_id.clone()));
+                let native = if let Some(native) = mapping.get(&pid) {
+                    *native
+                } else {
+                    let native = registry::create_terminal(viewport.0, viewport.1)
+                        .map_err(|_| FlowFailure::HerdrProtocol)?;
+                    registry::begin_remote(native, generation).map_err(|_| FlowFailure::Stale)?;
+                    mapping.insert(pid, native);
+                    native
+                };
+                if focused_pane_id.as_deref() == Some(&pane.pane_id) {
+                    preferred = Some(pid);
+                }
+                metadata.panes.insert(
+                    pid,
+                    RemotePane {
+                        pane_id: pane.pane_id,
+                        terminal_id: pane.terminal_id,
+                        workspace: wid,
+                        group: gid,
+                    },
+                );
+                let name = pane
+                    .name
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| format!("Terminal {}", index + 1));
+                let agent = pane.agent_name.map(|name| workspace::Agent {
+                    name,
+                    status: pane.agent_status.into(),
+                });
+                metadata.snapshot.terminals.push(workspace::Terminal {
+                    id: pid.to_string(),
+                    workspace_id: wid.to_string(),
+                    group_id: gid.to_string(),
+                    terminal_id: format!("native:{native}"),
+                    name: name.clone(),
+                    active: pane.focused,
+                    selected: false,
+                    agent,
+                });
+                flat.push(PaneSnapshot {
+                    window_id: wid,
+                    pane_id: pid,
+                    terminal_id: native,
+                    window_name: workspace.name.clone(),
+                    pane_name: name.clone(),
+                    title: name,
+                    active: pane.focused,
+                    selected: false,
+                    index: index as u32,
+                    columns: viewport.0,
+                    rows: viewport.1,
+                });
+            }
+        }
+        windows.push(WindowSnapshot {
+            window_id: wid,
+            name: workspace.name,
+            panes: Vec::new(),
+            selected: false,
+            zoomed: false,
+        });
+    }
+    let mut groups_by_workspace: HashMap<u64, Vec<u64>> = HashMap::new();
+    for group in &metadata.snapshot.groups {
+        let (Some(workspace), Some(group)) = (
+            group.workspace_id.parse::<u64>().ok(),
+            group.id.parse::<u64>().ok(),
+        ) else {
+            continue;
+        };
+        groups_by_workspace
+            .entry(workspace)
+            .or_default()
+            .push(group);
+    }
+    for workspace in &metadata.snapshot.workspaces {
+        let Some(workspace_id) = workspace.id.parse::<u64>().ok() else {
+            continue;
+        };
+        let Some(groups) = groups_by_workspace.get(&workspace_id) else {
+            continue;
+        };
+        let selected = choose_selected_group(
+            groups,
+            old_selected_groups.get(&workspace_id).copied(),
+            old_flag_groups.get(&workspace_id).copied(),
+            focused_groups.get(&workspace_id).copied(),
+        );
+        if let Some(group) = selected {
+            metadata.selected_groups.insert(workspace_id, group);
+        }
+    }
+    metadata.active_group = old_active_group
+        .filter(|group| {
+            groups_by_workspace
+                .values()
+                .any(|groups| groups.contains(group))
+        })
+        .or_else(|| {
+            focused_tab_id
+                .as_deref()
+                .and_then(|tab| metadata.ids.get(&(b'g', tab.to_owned())).copied())
+        })
+        .or_else(|| {
+            focused_workspace_id.as_deref().and_then(|workspace| {
+                let workspace = metadata.ids.get(&(b'w', workspace.to_owned()))?;
+                metadata.selected_groups.get(workspace).copied()
+            })
+        });
+    metadata.refresh_group_selection();
+    metadata.ids.retain(|key, _| live_ids.contains(key));
+    let selected_group = metadata.active_group;
+    let selected = choose_selected_pane(
+        &metadata,
+        &flat,
+        old_selected,
+        old_target.as_ref(),
+        preferred,
+        selected_group,
+    );
+    if let Some(selected) = selected {
+        metadata.select(selected);
+    }
+    let stale: Vec<u64> = mapping
+        .iter()
+        .filter(|(id, _)| !metadata.panes.contains_key(id))
+        .map(|(_, native)| *native)
+        .collect();
+    mapping.retain(|id, _| metadata.panes.contains_key(id));
+    Ok(SnapshotProjection {
+        metadata,
+        mapping,
+        selected,
+        flat,
+        windows,
+        stale,
+    })
+}
+
 async fn subscribe(
     shared: &ConnectionShared,
     session: &client::Handle<HostKeyHandler>,
@@ -723,7 +965,7 @@ impl HerdrClient<'_> {
     }
 
     fn apply_snapshot(&mut self, snapshot: wire::HerdrSessionSnapshot) -> Result<(), FlowFailure> {
-        let (mut metadata, mut mapping, old_selected) = {
+        let (metadata, mapping, old_selected) = {
             let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
             (
                 state.herdr.clone(),
@@ -731,218 +973,22 @@ impl HerdrClient<'_> {
                 state.selected_pane,
             )
         };
-        let old_target = old_selected.and_then(|id| metadata.panes.get(&id)).cloned();
-        let old_selected_groups = metadata.selected_groups.clone();
-        let mut old_flag_groups = HashMap::new();
-        for group in metadata
-            .snapshot
-            .groups
-            .iter()
-            .filter(|group| group.selected)
-        {
-            let (Some(workspace), Some(group)) = (
-                group.workspace_id.parse::<u64>().ok(),
-                group.id.parse::<u64>().ok(),
-            ) else {
-                continue;
-            };
-            old_flag_groups.entry(workspace).or_insert(group);
-        }
-        let old_active_group = metadata.active_group;
-        let focused_workspace_id = snapshot.focused_workspace_id.clone();
-        let focused_tab_id = snapshot.focused_tab_id.clone();
-        let focused_pane_id = snapshot.focused_pane_id.clone();
-        metadata.snapshot = RuntimeSnapshot {
-            backend: Backend::Herdr,
-            runtime: self.runtime.clone().unwrap_or_else(|| "default".to_owned()),
-            groups_supported: true,
-            ..RuntimeSnapshot::default()
-        };
-        metadata.workspaces.clear();
-        metadata.groups.clear();
-        metadata.panes.clear();
-        metadata.linked_worktree_parents.clear();
-        metadata.selected_groups.clear();
-        metadata.active_group = None;
-        let mut live_ids = HashSet::new();
-        let mut preferred = None;
-        let mut flat = Vec::new();
-        let mut windows = Vec::new();
-        let mut focused_groups = HashMap::new();
-        let mut worktree_members = HashMap::<String, usize>::new();
-        for workspace in &snapshot.workspaces {
-            if let Some(worktree) = &workspace.worktree {
-                *worktree_members
-                    .entry(worktree.repo_key.clone())
-                    .or_default() += 1;
-            }
-        }
-        for workspace in snapshot.workspaces {
-            let wid = metadata.id(b'w', &workspace.workspace_id);
-            if workspace.worktree.as_ref().is_some_and(|worktree| {
-                !worktree.is_linked_worktree
-                    && worktree_members
-                        .get(&worktree.repo_key)
-                        .copied()
-                        .unwrap_or(0)
-                        > 1
-            }) {
-                metadata.linked_worktree_parents.insert(wid);
-            }
-            live_ids.insert((b'w', workspace.workspace_id.clone()));
-            metadata.workspaces.insert(wid, workspace.workspace_id);
-            metadata.snapshot.workspaces.push(workspace::Workspace {
-                id: wid.to_string(),
-                name: workspace.name.clone(),
-                agent_status: herdr_rollup_status(workspace.agent_status),
-            });
-            for group in workspace.groups {
-                let gid = metadata.id(b'g', &group.tab_id);
-                if group.focused {
-                    focused_groups.entry(wid).or_insert(gid);
-                }
-                live_ids.insert((b'g', group.tab_id.clone()));
-                metadata.groups.insert(gid, group.tab_id);
-                metadata.snapshot.groups.push(workspace::TerminalGroup {
-                    id: gid.to_string(),
-                    workspace_id: wid.to_string(),
-                    name: group.name,
-                    selected: false,
-                    agent_status: herdr_rollup_status(group.agent_status),
-                });
-                for (index, pane) in group.panes.into_iter().enumerate() {
-                    let pid = metadata.id(b'p', &pane.terminal_id);
-                    live_ids.insert((b'p', pane.terminal_id.clone()));
-                    let native = if let Some(native) = mapping.get(&pid) {
-                        *native
-                    } else {
-                        let native = registry::create_terminal(self.viewport.0, self.viewport.1)
-                            .map_err(|_| FlowFailure::HerdrProtocol)?;
-                        registry::begin_remote(native, self.shared.generation)
-                            .map_err(|_| FlowFailure::Stale)?;
-                        mapping.insert(pid, native);
-                        native
-                    };
-                    if focused_pane_id.as_deref() == Some(&pane.pane_id) {
-                        preferred = Some(pid);
-                    }
-                    metadata.panes.insert(
-                        pid,
-                        RemotePane {
-                            pane_id: pane.pane_id,
-                            terminal_id: pane.terminal_id,
-                            workspace: wid,
-                            group: gid,
-                        },
-                    );
-                    let name = pane
-                        .name
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or_else(|| format!("Terminal {}", index + 1));
-                    let agent = pane.agent_name.map(|name| workspace::Agent {
-                        name,
-                        status: pane.agent_status.into(),
-                    });
-                    metadata.snapshot.terminals.push(workspace::Terminal {
-                        id: pid.to_string(),
-                        workspace_id: wid.to_string(),
-                        group_id: gid.to_string(),
-                        terminal_id: format!("native:{native}"),
-                        name: name.clone(),
-                        active: pane.focused,
-                        selected: false,
-                        agent,
-                    });
-                    flat.push(PaneSnapshot {
-                        window_id: wid,
-                        pane_id: pid,
-                        terminal_id: native,
-                        window_name: workspace.name.clone(),
-                        pane_name: name.clone(),
-                        title: name,
-                        active: pane.focused,
-                        selected: false,
-                        index: index as u32,
-                        columns: self.viewport.0,
-                        rows: self.viewport.1,
-                    });
-                }
-            }
-            windows.push(WindowSnapshot {
-                window_id: wid,
-                name: workspace.name,
-                panes: Vec::new(),
-                selected: false,
-                zoomed: false,
-            });
-        }
-        let mut groups_by_workspace: HashMap<u64, Vec<u64>> = HashMap::new();
-        for group in &metadata.snapshot.groups {
-            let (Some(workspace), Some(group)) = (
-                group.workspace_id.parse::<u64>().ok(),
-                group.id.parse::<u64>().ok(),
-            ) else {
-                continue;
-            };
-            groups_by_workspace
-                .entry(workspace)
-                .or_default()
-                .push(group);
-        }
-        for workspace in &metadata.snapshot.workspaces {
-            let Some(workspace_id) = workspace.id.parse::<u64>().ok() else {
-                continue;
-            };
-            let Some(groups) = groups_by_workspace.get(&workspace_id) else {
-                continue;
-            };
-            let selected = choose_selected_group(
-                groups,
-                old_selected_groups.get(&workspace_id).copied(),
-                old_flag_groups.get(&workspace_id).copied(),
-                focused_groups.get(&workspace_id).copied(),
-            );
-            if let Some(group) = selected {
-                metadata.selected_groups.insert(workspace_id, group);
-            }
-        }
-        metadata.active_group = old_active_group
-            .filter(|group| {
-                groups_by_workspace
-                    .values()
-                    .any(|groups| groups.contains(group))
-            })
-            .or_else(|| {
-                focused_tab_id
-                    .as_deref()
-                    .and_then(|tab| metadata.ids.get(&(b'g', tab.to_owned())).copied())
-            })
-            .or_else(|| {
-                focused_workspace_id.as_deref().and_then(|workspace| {
-                    let workspace = metadata.ids.get(&(b'w', workspace.to_owned()))?;
-                    metadata.selected_groups.get(workspace).copied()
-                })
-            });
-        metadata.refresh_group_selection();
-        metadata.ids.retain(|key, _| live_ids.contains(key));
-        let selected_group = metadata.active_group;
-        let mut selected = choose_selected_pane(
-            &metadata,
-            &flat,
+        let SnapshotProjection {
+            mut metadata,
+            mapping,
+            mut selected,
+            mut flat,
+            mut windows,
+            stale,
+        } = project_snapshot(
+            metadata,
+            mapping,
             old_selected,
-            old_target.as_ref(),
-            preferred,
-            selected_group,
-        );
-        if let Some(selected) = selected {
-            metadata.select(selected);
-        }
-        let stale: Vec<u64> = mapping
-            .iter()
-            .filter(|(id, _)| !metadata.panes.contains_key(id))
-            .map(|(_, native)| *native)
-            .collect();
-        mapping.retain(|id, _| metadata.panes.contains_key(id));
+            snapshot,
+            self.runtime.clone().unwrap_or_else(|| "default".to_owned()),
+            self.viewport,
+            self.shared.generation,
+        )?;
         {
             let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
             if self.shared.is_cancelled() || state.generation != self.shared.generation {
@@ -1813,5 +1859,177 @@ mod tests {
             herdr_rollup_status(wire::AgentStatus::Unknown),
             Some(workspace::AgentStatus::Unknown)
         );
+    }
+
+    struct RegistryCleanup {
+        generation: u64,
+        ids: Vec<u64>,
+    }
+
+    impl Drop for RegistryCleanup {
+        fn drop(&mut self) {
+            for id in self.ids.drain(..) {
+                registry::detach_transport(id, self.generation);
+                registry::destroy_terminal(id);
+            }
+        }
+    }
+
+    fn herdr_pane(
+        pane_id: &str,
+        terminal_id: &str,
+        tab_id: &str,
+        name: Option<&str>,
+        agent_name: Option<&str>,
+        status: wire::AgentStatus,
+        focused: bool,
+    ) -> wire::HerdrPane {
+        wire::HerdrPane {
+            pane_id: pane_id.to_owned(),
+            terminal_id: terminal_id.to_owned(),
+            workspace_id: "workspace-main".to_owned(),
+            tab_id: tab_id.to_owned(),
+            name: name.map(str::to_owned),
+            focused,
+            agent_name: agent_name.map(str::to_owned),
+            agent_status: status,
+        }
+    }
+
+    #[test]
+    fn apply_snapshot_projection_keeps_distinct_workspace_group_and_pane_statuses() {
+        let generation = 42_424;
+        let snapshot = wire::HerdrSessionSnapshot {
+            version: wire::HERDR_VERSION.to_owned(),
+            protocol: wire::HERDR_PROTOCOL,
+            focused_workspace_id: Some("workspace-main".to_owned()),
+            focused_tab_id: Some("tab-live".to_owned()),
+            focused_pane_id: Some("pane-agent".to_owned()),
+            workspaces: vec![
+                wire::HerdrWorkspace {
+                    workspace_id: "workspace-empty".to_owned(),
+                    number: 1,
+                    name: "Empty workspace".to_owned(),
+                    focused: false,
+                    agent_status: wire::AgentStatus::Unknown,
+                    groups: Vec::new(),
+                    worktree: None,
+                },
+                wire::HerdrWorkspace {
+                    workspace_id: "workspace-main".to_owned(),
+                    number: 2,
+                    name: "Main workspace".to_owned(),
+                    focused: true,
+                    agent_status: wire::AgentStatus::Working,
+                    groups: vec![
+                        wire::HerdrGroup {
+                            tab_id: "tab-empty".to_owned(),
+                            workspace_id: "workspace-main".to_owned(),
+                            number: 1,
+                            name: "Empty tab".to_owned(),
+                            focused: false,
+                            agent_status: wire::AgentStatus::Done,
+                            panes: Vec::new(),
+                        },
+                        wire::HerdrGroup {
+                            tab_id: "tab-live".to_owned(),
+                            workspace_id: "workspace-main".to_owned(),
+                            number: 2,
+                            name: "Live tab".to_owned(),
+                            focused: true,
+                            agent_status: wire::AgentStatus::Blocked,
+                            panes: vec![
+                                herdr_pane(
+                                    "pane-agentless",
+                                    "terminal-agentless",
+                                    "tab-live",
+                                    None,
+                                    None,
+                                    wire::AgentStatus::Unknown,
+                                    false,
+                                ),
+                                herdr_pane(
+                                    "pane-agent",
+                                    "terminal-agent",
+                                    "tab-live",
+                                    Some("Agent pane"),
+                                    Some("Agent"),
+                                    wire::AgentStatus::Idle,
+                                    true,
+                                ),
+                            ],
+                        },
+                    ],
+                    worktree: None,
+                },
+            ],
+        };
+        let projection = project_snapshot(
+            Metadata::default(),
+            HashMap::new(),
+            None,
+            snapshot,
+            "default".to_owned(),
+            (80, 24),
+            generation,
+        )
+        .unwrap_or_else(|_| panic!("production snapshot projection"));
+        let _cleanup = RegistryCleanup {
+            generation,
+            ids: projection.mapping.values().copied().collect(),
+        };
+        let projected = &projection.metadata.snapshot;
+
+        let empty_workspace = projected
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.name == "Empty workspace")
+            .expect("empty workspace projection");
+        assert_eq!(
+            empty_workspace.agent_status,
+            Some(workspace::AgentStatus::Unknown)
+        );
+        let main_workspace = projected
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.name == "Main workspace")
+            .expect("main workspace projection");
+        assert_eq!(
+            main_workspace.agent_status,
+            Some(workspace::AgentStatus::Working)
+        );
+
+        let empty_tab = projected
+            .groups
+            .iter()
+            .find(|group| group.name == "Empty tab")
+            .expect("empty tab projection");
+        assert_eq!(empty_tab.agent_status, Some(workspace::AgentStatus::Done));
+        let live_tab = projected
+            .groups
+            .iter()
+            .find(|group| group.name == "Live tab")
+            .expect("live tab projection");
+        assert_eq!(live_tab.agent_status, Some(workspace::AgentStatus::Blocked));
+
+        let agentless = projected
+            .terminals
+            .iter()
+            .find(|terminal| terminal.name == "Terminal 1")
+            .expect("agentless pane projection");
+        assert!(agentless.agent.is_none());
+        assert_eq!(agentless.group_id, live_tab.id);
+        let agent = projected
+            .terminals
+            .iter()
+            .find(|terminal| terminal.name == "Agent pane")
+            .expect("agent pane projection");
+        let agent_status = agent.agent.as_ref().expect("agent metadata");
+        assert_eq!(agent_status.name, "Agent");
+        assert_eq!(agent_status.status, workspace::AgentStatus::Idle);
+        assert_eq!(projection.selected, Some(agent.id.parse().unwrap()));
+        assert_eq!(projection.flat.len(), 2);
+        assert_eq!(projected.backend, Backend::Herdr);
+        assert_eq!(projected.runtime, "default");
     }
 }

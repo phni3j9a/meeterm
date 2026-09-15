@@ -474,13 +474,14 @@ final class MeetermSmokeUITests: XCTestCase {
       XCTAssertTrue(waitForTerminal(), "The first workspace could not be restored.")
     }
 
-    let paneLabels = waitForPaneLabels(minimum: 2)
-    XCTAssertGreaterThanOrEqual(paneLabels.count, 2, "The fixture panes were not discovered.")
-    let initialPane = paneLabels[0]
-    let switchedPane = paneLabels.first(where: { $0 != initialPane }) ?? paneLabels[1]
+    let paneTabs = waitForTerminalTabs(minimum: 2)
+    XCTAssertGreaterThanOrEqual(paneTabs.count, 2, "The fixture panes were not discovered.")
+    let initialPane = paneTabs[0]
+    let switchedPane = paneTabs.first(where: { $0.identifier != initialPane.identifier }) ?? paneTabs[1]
+    let switchedPaneIdentifier = switchedPane.identifier
     record("select_second_pane")
-    button(switchedPane).tap()
-    XCTAssertTrue(waitForSelected(button(switchedPane)), "The second pane was not selected.")
+    switchedPane.tap()
+    XCTAssertTrue(waitForSelected(terminalTab(identifier: switchedPaneIdentifier)), "The second pane was not selected.")
     record("capture_pane_switched")
     capture("pane-switched")
 
@@ -540,7 +541,7 @@ final class MeetermSmokeUITests: XCTestCase {
       XCTAssertTrue(waitForTerminal(), "The workspace did not reopen after reconnect.")
     }
     record("restore_pane_after_reconnect")
-    let resumedPane = button(switchedPane)
+    let resumedPane = terminalTab(identifier: switchedPaneIdentifier)
     XCTAssertTrue(resumedPane.waitForExistence(timeout: 30), "The selected pane identity changed after reconnect.")
     resumedPane.tap()
     XCTAssertTrue(waitForSelected(resumedPane), "The selected pane was not restored after reconnect.")
@@ -557,7 +558,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("capture_reconnected")
     capture("reconnected")
 
-    try verifyDailyUse(firstWorkspace: firstWorkspace, pane: switchedPane)
+    try verifyDailyUse(firstWorkspace: firstWorkspace, paneIdentifier: switchedPaneIdentifier)
 
     record("verify_app_foreground")
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5), "The app left the foreground during the smoke.")
@@ -873,15 +874,22 @@ final class MeetermSmokeUITests: XCTestCase {
     case "herdr-terminal":
       let groupPicker = buttonStarting(with: "Switch terminal group")
       let terminal = app.otherElements["Terminal"]
+      let selectedAgentLine = app.descendants(matching: .any).matching(
+        NSPredicate(format: "identifier == %@", "selected-agent-line")
+      ).firstMatch
       let statusLabels = ["blocked", "finished", "idle", "unknown"].map { status in
         app.descendants(matching: .any).matching(
           NSPredicate(format: "label CONTAINS %@", "Agent status: \(status)")
         ).firstMatch
       }
+      let selectedAgentLineReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        selectedAgentLine.exists
+          && selectedAgentLine.label.contains("Claude Code")
+          && selectedAgentLine.label.contains("Agent status: working")
+      }, object: nil)
       return waitForHittable(groupPicker, timeout: 30)
         && terminal.waitForExistence(timeout: 30)
-        && app.staticTexts["Claude Code"].waitForExistence(timeout: 30)
-        && app.staticTexts["Working"].waitForExistence(timeout: 30)
+        && XCTWaiter.wait(for: [selectedAgentLineReady], timeout: 30) == .completed
         && statusLabels.allSatisfy { $0.waitForExistence(timeout: 30) }
     case "herdr-workspaces":
       let total = app.staticTexts.matching(
@@ -1077,7 +1085,7 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(revealAuthenticationControl(key, stage: "return_to_key"))
   }
 
-  private func verifyDailyUse(firstWorkspace: String, pane: String) throws {
+  private func verifyDailyUse(firstWorkspace: String, paneIdentifier: String) throws {
     record("daily_cold_restart")
     app.terminate()
     record("daily_cold_launch")
@@ -1116,9 +1124,10 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(button(firstWorkspace).waitForExistence(timeout: 20))
     button(firstWorkspace).tap()
     XCTAssertTrue(waitForTerminal())
-    XCTAssertTrue(button(pane).waitForExistence(timeout: 20))
-    button(pane).tap()
-    XCTAssertTrue(waitForSelected(button(pane)))
+    let paneTab = terminalTab(identifier: paneIdentifier)
+    XCTAssertTrue(paneTab.waitForExistence(timeout: 20))
+    paneTab.tap()
+    XCTAssertTrue(waitForSelected(paneTab))
     try terminalElement().tap()
     let dailyPath = markerPath.appendingPathExtension("daily")
     try? FileManager.default.removeItem(at: dailyPath)
@@ -1251,7 +1260,7 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(waitForTerminal())
     XCTAssertTrue(button("Create terminal").waitForExistence(timeout: 15))
     button("Create terminal").tap()
-    XCTAssertGreaterThanOrEqual(waitForPaneLabels(minimum: 2).count, 2)
+    XCTAssertGreaterThanOrEqual(waitForTerminalTabs(minimum: 2).count, 2)
     button("Terminal menu").tap()
     button("Rename terminal").tap()
     fillTextField(label: "Workspace or terminal name", value: "daily-pane")
@@ -1267,8 +1276,8 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(closePane.waitForExistence(timeout: 10))
     closePane.buttons["Close"].tap()
     let paneRemoved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-      let tabs = self.app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Terminal '"))
-      return Set(tabs.allElementsBoundByIndex.map { $0.label }).count == 1
+      let tabs = self.visibleTerminalTabs()
+      return Set(tabs.map { $0.identifier }).count == 1
     }, object: nil)
     XCTAssertEqual(XCTWaiter.wait(for: [paneRemoved], timeout: 20), .completed)
     button("Back to workspaces").tap()
@@ -2058,25 +2067,50 @@ final class MeetermSmokeUITests: XCTestCase {
     }
   }
 
-  private func waitForPaneLabels(minimum: Int) -> [String] {
-    let predicate = NSPredicate(format: "label BEGINSWITH 'Terminal '")
-    // React Native's tab role need not be exposed as an XCTest button.
-    let query = app.descendants(matching: .any).matching(predicate)
+  private func terminalTabQuery() -> XCUIElementQuery {
+    // Query the test ID, never the spoken label: a tab can share its display
+    // name with another pane and "Terminal menu" is a separate control.
+    app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "terminal-tab-")
+    )
+  }
+
+  private func visibleTerminalTabs() -> [XCUIElement] {
+    var tabs: [String: XCUIElement] = [:]
+    for element in terminalTabQuery().allElementsBoundByIndex {
+      let identifier = element.identifier
+      guard identifier.hasPrefix("terminal-tab-"), element.exists else { continue }
+      if let current = tabs[identifier] {
+        // React Native can expose a test ID through more than one wrapper in
+        // the accessibility tree. Prefer the actionable/selected instance,
+        // while retaining identity as the only deduplication key.
+        if (element.isSelected && !current.isSelected) || (element.isHittable && !current.isHittable) {
+          tabs[identifier] = element
+        }
+      } else {
+        tabs[identifier] = element
+      }
+    }
+    return tabs.values.sorted { $0.identifier < $1.identifier }
+  }
+
+  private func terminalTab(identifier: String) -> XCUIElement {
+    visibleTerminalTabs().first(where: { $0.identifier == identifier })
+      ?? terminalTabQuery().matching(
+        NSPredicate(format: "identifier == %@", identifier)
+      ).firstMatch
+  }
+
+  private func waitForTerminalTabs(minimum: Int) -> [XCUIElement] {
     let deadline = Date().addingTimeInterval(60)
     while Date() < deadline {
-      let labels = (0..<query.count).compactMap { index -> String? in
-        let label = query.element(boundBy: index).label
-        return label.isEmpty ? nil : label
-      }
-      if Set(labels).count >= minimum {
-        return Array(Set(labels)).sorted()
+      let tabs = visibleTerminalTabs()
+      if tabs.count >= minimum {
+        return tabs
       }
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
-    return (0..<query.count).compactMap { index in
-      let label = query.element(boundBy: index).label
-      return label.isEmpty ? nil : label
-    }
+    return visibleTerminalTabs()
   }
 
   private func waitForSelected(_ element: XCUIElement) -> Bool {
