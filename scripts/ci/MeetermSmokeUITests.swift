@@ -786,8 +786,8 @@ final class MeetermSmokeUITests: XCTestCase {
       return app.staticTexts.matching(NSPredicate(format: "label == %@", "Connection failed")).firstMatch.waitForExistence(timeout: 30)
         && waitForHittable(button("Reconnect"), timeout: 30)
     case "long-workspaces":
-      return waitForHittable(button("Workspace Production infrastructure — migration and release preparation"), timeout: 30)
-        && waitForHittable(button("Workspace Research / terminal typography and international text"), timeout: 30)
+      return waitForHittable(buttonStarting(with: "Workspace Production infrastructure — migration and release preparation"), timeout: 30)
+        && waitForHittable(buttonStarting(with: "Workspace Research / terminal typography and international text"), timeout: 30)
     case "home":
       let title = app.staticTexts["Workspaces"]
       let profile = app.buttons.matching(
@@ -863,18 +863,26 @@ final class MeetermSmokeUITests: XCTestCase {
         && waitForHittable(button("Herdr runtime default"), timeout: 30)
     case "herdr-groups":
       let title = app.staticTexts["Switch group"]
-      let development = button("Group Development")
-      let tests = button("Group Tests & review")
+      let development = buttonStarting(with: "Group Development")
+      let tests = buttonStarting(with: "Group Tests & review")
       return title.waitForExistence(timeout: 30)
         && development.waitForExistence(timeout: 30)
         && tests.waitForExistence(timeout: 30)
+        && development.label.contains("Agent status: working")
+        && tests.label.contains("Agent status: finished")
     case "herdr-terminal":
-      let groupPicker = button("Switch terminal group")
+      let groupPicker = buttonStarting(with: "Switch terminal group")
       let terminal = app.otherElements["Terminal"]
+      let statusLabels = ["blocked", "finished", "idle", "unknown"].map { status in
+        app.descendants(matching: .any).matching(
+          NSPredicate(format: "label CONTAINS %@", "Agent status: \(status)")
+        ).firstMatch
+      }
       return waitForHittable(groupPicker, timeout: 30)
         && terminal.waitForExistence(timeout: 30)
         && app.staticTexts["Claude Code"].waitForExistence(timeout: 30)
         && app.staticTexts["Working"].waitForExistence(timeout: 30)
+        && statusLabels.allSatisfy { $0.waitForExistence(timeout: 30) }
     case "herdr-workspaces":
       let total = app.staticTexts.matching(
         NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "All", "2")
@@ -882,10 +890,13 @@ final class MeetermSmokeUITests: XCTestCase {
       // WorkspaceRow is one accessible button with an explicit label. Its
       // count/Agent Text children are grouped into that element on iOS, so
       // querying them as independent staticTexts cannot establish readiness.
-      // Require both exact production rows and their visible tap targets;
-      // pane counts and Agent summaries remain part of screenshot review.
-      let expected = Set(["Workspace Main workspace", "Workspace Tools workspace"])
-      guard Set(waitForWorkspaceLabels(minimum: 2)) == expected else { return false }
+      // Require both production rows and their visible tap targets; rollup
+      // marks and pane subtitles remain part of screenshot review.
+      let labels = waitForWorkspaceLabels(minimum: 2)
+      guard labels.contains(where: { $0.hasPrefix("Workspace Main workspace") }),
+            labels.contains(where: { $0.hasPrefix("Workspace Tools workspace") }) else { return false }
+      guard labels.contains(where: { $0.contains("Agent status: blocked") }),
+            labels.contains(where: { $0.contains("Agent status: idle") }) else { return false }
       let main = app.buttons.matching(
         NSPredicate(format: "identifier == %@", "workspace-row-@smoke-main")
       ).firstMatch
@@ -1256,7 +1267,7 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertTrue(closePane.waitForExistence(timeout: 10))
     closePane.buttons["Close"].tap()
     let paneRemoved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-      let tabs = self.app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Terminal %'"))
+      let tabs = self.app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Terminal '"))
       return Set(tabs.allElementsBoundByIndex.map { $0.label }).count == 1
     }, object: nil)
     XCTAssertEqual(XCTWaiter.wait(for: [paneRemoved], timeout: 20), .completed)
@@ -1998,6 +2009,22 @@ final class MeetermSmokeUITests: XCTestCase {
     return descendant
   }
 
+  private func buttonStarting(with prefix: String) -> XCUIElement {
+    let buttons = app.buttons.matching(
+      NSPredicate(format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@", prefix, prefix)
+    )
+    if buttons.count > 0 {
+      for index in 0..<buttons.count {
+        let candidate = buttons.element(boundBy: index)
+        if candidate.exists && candidate.isHittable { return candidate }
+      }
+      return buttons.element(boundBy: buttons.count - 1)
+    }
+    return app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@", prefix, prefix)
+    ).firstMatch
+  }
+
   private func terminalElement() throws -> XCUIElement {
     let terminal = app.otherElements["Terminal"]
     XCTAssertTrue(terminal.waitForExistence(timeout: 30), "The native terminal view is unavailable.")
@@ -2032,7 +2059,7 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func waitForPaneLabels(minimum: Int) -> [String] {
-    let predicate = NSPredicate(format: "label BEGINSWITH 'Terminal %'")
+    let predicate = NSPredicate(format: "label BEGINSWITH 'Terminal '")
     // React Native's tab role need not be exposed as an XCTest button.
     let query = app.descendants(matching: .any).matching(predicate)
     let deadline = Date().addingTimeInterval(60)

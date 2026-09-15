@@ -1847,7 +1847,7 @@ UI dumped to: /dev/tty"""
         self.assertIs(found, editor)
         self.assertEqual(device.swipe_options, [(36, True)])
 
-    def test_pane_labels_are_stable_runtime_identities(self) -> None:
+    def test_terminal_tab_test_ids_are_stable_runtime_identities_without_spoken_ids(self) -> None:
         nodes = [
             smoke.Node(
                 "Workspace 0",
@@ -1858,15 +1858,17 @@ UI dumped to: /dev/tty"""
             ),
             smoke.Node(
                 "",
-                "Terminal %17",
+                "Terminal Build, Agent status: working",
                 "android.view.View",
                 (10, 100, 300, 190),
+                resource_id="dev.meeterm.app:id/terminal-tab-%17",
             ),
             smoke.Node(
-                "Terminal %23",
                 "",
+                "Terminal Shell",
                 "android.view.View",
                 (310, 100, 600, 190),
+                resource_id="dev.meeterm.app:id/terminal-tab-%23",
                 selected=True,
             ),
         ]

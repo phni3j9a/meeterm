@@ -635,6 +635,13 @@ fn decode_snapshot_result(value: &Value) -> Result<wire::HerdrSessionSnapshot, w
     wire::decode_session_snapshot(&value["snapshot"])
 }
 
+/// Preserve the status Herdr reports for a workspace or tab as a present
+/// common rollup. `Unknown` is a real upstream value; it is not the same as
+/// the `None` used by the tmux projection.
+fn herdr_rollup_status(status: wire::AgentStatus) -> Option<workspace::AgentStatus> {
+    Some(status.into())
+}
+
 async fn subscribe(
     shared: &ConnectionShared,
     session: &client::Handle<HostKeyHandler>,
@@ -787,6 +794,7 @@ impl HerdrClient<'_> {
             metadata.snapshot.workspaces.push(workspace::Workspace {
                 id: wid.to_string(),
                 name: workspace.name.clone(),
+                agent_status: herdr_rollup_status(workspace.agent_status),
             });
             for group in workspace.groups {
                 let gid = metadata.id(b'g', &group.tab_id);
@@ -800,6 +808,7 @@ impl HerdrClient<'_> {
                     workspace_id: wid.to_string(),
                     name: group.name,
                     selected: false,
+                    agent_status: herdr_rollup_status(group.agent_status),
                 });
                 for (index, pane) in group.panes.into_iter().enumerate() {
                     let pid = metadata.id(b'p', &pane.terminal_id);
@@ -832,14 +841,7 @@ impl HerdrClient<'_> {
                         .unwrap_or_else(|| format!("Terminal {}", index + 1));
                     let agent = pane.agent_name.map(|name| workspace::Agent {
                         name,
-                        status: match pane.agent_status {
-                            wire::AgentStatus::Idle => "idle",
-                            wire::AgentStatus::Working => "working",
-                            wire::AgentStatus::Blocked => "blocked",
-                            wire::AgentStatus::Done => "done",
-                            wire::AgentStatus::Unknown => "unknown",
-                        }
-                        .to_owned(),
+                        status: pane.agent_status.into(),
                     });
                     metadata.snapshot.terminals.push(workspace::Terminal {
                         id: pid.to_string(),
@@ -1614,6 +1616,7 @@ mod tests {
             workspace_id: workspace.to_string(),
             name: format!("group-{id}"),
             selected,
+            agent_status: None,
         }
     }
 
@@ -1640,10 +1643,12 @@ mod tests {
                     workspace::Workspace {
                         id: "100".to_owned(),
                         name: "workspace-100".to_owned(),
+                        agent_status: None,
                     },
                     workspace::Workspace {
                         id: "200".to_owned(),
                         name: "workspace-200".to_owned(),
+                        agent_status: None,
                     },
                 ],
                 groups: vec![
@@ -1793,6 +1798,20 @@ mod tests {
                 Some(2),
             ),
             Some(12)
+        );
+    }
+
+    #[test]
+    fn herdr_rollups_preserve_upstream_values_independently() {
+        let workspace_status = herdr_rollup_status(wire::AgentStatus::Blocked);
+        let group_status = herdr_rollup_status(wire::AgentStatus::Working);
+
+        assert_eq!(workspace_status, Some(workspace::AgentStatus::Blocked));
+        assert_eq!(group_status, Some(workspace::AgentStatus::Working));
+        assert_ne!(workspace_status, group_status);
+        assert_eq!(
+            herdr_rollup_status(wire::AgentStatus::Unknown),
+            Some(workspace::AgentStatus::Unknown)
         );
     }
 }

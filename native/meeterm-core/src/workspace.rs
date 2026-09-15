@@ -107,9 +107,21 @@ pub struct RuntimeSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatus {
+    Blocked,
+    Done,
+    Working,
+    Idle,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
     pub name: String,
+    pub agent_status: Option<AgentStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -119,6 +131,7 @@ pub struct TerminalGroup {
     pub workspace_id: String,
     pub name: String,
     pub selected: bool,
+    pub agent_status: Option<AgentStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -137,7 +150,7 @@ pub struct Terminal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Agent {
     pub name: String,
-    pub status: String,
+    pub status: AgentStatus,
 }
 
 impl RuntimeSnapshot {
@@ -152,6 +165,7 @@ impl RuntimeSnapshot {
                 .map(|window| Workspace {
                     id: format!("@{}", window.window_id),
                     name: window.name.clone(),
+                    agent_status: None,
                 })
                 .collect(),
             // A virtual group never creates or rearranges anything in tmux.
@@ -163,6 +177,7 @@ impl RuntimeSnapshot {
                     workspace_id: format!("@{}", window.window_id),
                     name: String::new(),
                     selected: window.selected,
+                    agent_status: None,
                 })
                 .collect(),
             terminals: snapshot
@@ -187,6 +202,60 @@ impl RuntimeSnapshot {
 mod tests {
     use super::*;
     use crate::tmux::{PaneSnapshot, SessionSnapshot, WindowSnapshot};
+
+    #[test]
+    fn agent_status_uses_one_lowercase_wire_vocabulary() {
+        let values = [
+            (AgentStatus::Blocked, "blocked"),
+            (AgentStatus::Done, "done"),
+            (AgentStatus::Working, "working"),
+            (AgentStatus::Idle, "idle"),
+            (AgentStatus::Unknown, "unknown"),
+        ];
+        for (status, encoded) in values {
+            assert_eq!(serde_json::to_value(status).unwrap(), encoded);
+        }
+
+        let agent = Agent {
+            name: "Codex".to_owned(),
+            status: AgentStatus::Done,
+        };
+        assert_eq!(
+            serde_json::to_value(agent).unwrap(),
+            serde_json::json!({"name":"Codex", "status":"done"})
+        );
+    }
+
+    #[test]
+    fn common_workspace_and_group_snapshots_have_nullable_agent_status() {
+        let snapshot = RuntimeSnapshot {
+            workspaces: vec![Workspace {
+                id: "workspace".to_owned(),
+                name: "Workspace".to_owned(),
+                agent_status: Some(AgentStatus::Blocked),
+            }],
+            groups: vec![TerminalGroup {
+                id: "group".to_owned(),
+                workspace_id: "workspace".to_owned(),
+                name: "Group".to_owned(),
+                selected: true,
+                agent_status: None,
+            }],
+            ..RuntimeSnapshot::default()
+        };
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(encoded["workspaces"][0]["agentStatus"], "blocked");
+        assert_eq!(
+            encoded["groups"][0],
+            serde_json::json!({
+                "id": "group",
+                "workspaceId": "workspace",
+                "name": "Group",
+                "selected": true,
+                "agentStatus": null
+            })
+        );
+    }
 
     #[test]
     fn tmux_projection_keeps_remote_layout_and_native_identity_distinct() {
@@ -229,5 +298,7 @@ mod tests {
         assert_eq!(result.terminals[0].id, "%12");
         assert_eq!(result.terminals[0].terminal_id, "native:82");
         assert!(result.terminals[0].agent.is_none());
+        assert!(result.workspaces[0].agent_status.is_none());
+        assert!(result.groups[0].agent_status.is_none());
     }
 }

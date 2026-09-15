@@ -47,6 +47,13 @@ const LIGHT = {
   accent: '#147d72',
   danger: '#b23b3b',
   placeholder: '#9b8a79',
+  agentStatus: {
+    blocked: '#b4232f',
+    done: '#087e8b',
+    working: '#826a00',
+    idle: '#2f7d32',
+    unknown: '#73695c',
+  },
 };
 const DARK = {
   background: '#241f1b',
@@ -58,6 +65,13 @@ const DARK = {
   accent: '#69d5c3',
   danger: '#ff8d8d',
   placeholder: '#98897b',
+  agentStatus: {
+    blocked: '#f08a91',
+    done: '#77d5d1',
+    working: '#e5c94f',
+    idle: '#8dd18a',
+    unknown: '#8f887f',
+  },
 };
 
 function runtimeCandidate(id, backend, name, state = 'running', overrides = {}) {
@@ -529,7 +543,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     globalThis,
   };
   vm.runInNewContext(transpiled, context, { filename: APP_SOURCE });
-  if (presentationOnly) return vm.runInNewContext('({ smokeFixture, smokeWorkspaceState, smokeRouteForUrl, agentSummary })', context);
+  if (presentationOnly) return vm.runInNewContext('({ smokeFixture, smokeWorkspaceState, smokeRouteForUrl, resolveAgentStatus, agentStatusPhrase, AGENT_STATUS_META, AgentStatusIndicator })', context);
   return appModule.exports.default;
 }
 
@@ -663,13 +677,88 @@ test('smoke startup diagnostics classify URL and profile boundaries without fixt
   });
 });
 
-test('agent status counts stay attached to their labels when text wraps', () => {
+test('agent status metadata keeps null, live, and unavailable states distinct', () => {
   const { environment, native } = makeNativeEnvironment();
-  const { agentSummary } = loadApp(environment, native, true);
-  const panes = ['working', 'blocked', 'done', 'working'].map(status => ({ agent: { status } }));
-  assert.equal(agentSummary(panes, true), 'Needs attention\u00a01 · Working\u00a02 · Finished\u00a01');
-  assert.equal(agentSummary(panes, false), 'Status unavailable\u00a04');
-  assert.equal(agentSummary([{ agent: null }], true), '');
+  const { resolveAgentStatus, agentStatusPhrase, AGENT_STATUS_META } = loadApp(environment, native, true);
+  assert.equal(resolveAgentStatus(null, true), null);
+  assert.equal(resolveAgentStatus('blocked', true), 'blocked');
+  assert.equal(resolveAgentStatus('blocked', false), 'unavailable');
+  assert.equal(agentStatusPhrase('done', true), 'Agent status: finished, not yet viewed');
+  assert.equal(agentStatusPhrase('working', false), 'Agent status unavailable');
+  assert.equal(AGENT_STATUS_META.idle.shape, 'hollow');
+  assert.equal(AGENT_STATUS_META.unknown.shape, 'dot');
+});
+
+test('status indicators expose the requested mark grammar and visible selected-line labels', async () => {
+  const { environment, native } = makeNativeEnvironment();
+  const { AgentStatusIndicator } = loadApp(environment, native, true);
+  const root = createRoot();
+  try {
+    await act(async () => {
+      root.render(React.createElement('View', null,
+        React.createElement(AgentStatusIndicator, { status: 'blocked', live: true, colors: LIGHT, testID: 'blocked' }),
+        React.createElement(AgentStatusIndicator, { status: 'idle', live: true, colors: LIGHT, testID: 'idle' }),
+        React.createElement(AgentStatusIndicator, { status: 'unknown', live: false, colors: DARK, showLabel: true, testID: 'unavailable' }),
+        React.createElement(AgentStatusIndicator, { status: null, live: true, colors: LIGHT, testID: 'none' }),
+      ));
+    });
+    assert.ok(all(root, node => node.props?.style?.some?.(style => style?.width === 8)).length > 0, 'blocked should use the filled circle size');
+    assert.ok(all(root, node => node.props?.style?.some?.(style => style?.borderWidth === 1.5)).length > 0, 'idle should use a hollow mark');
+    assert.equal(textContent(findTestId(root, 'unavailable')), 'Status unavailable');
+    assert.equal(all(root, node => node.props?.testID === 'none').length, 0);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test('Herdr status metadata renders on its owning surfaces without JS rollups or pane IDs', async t => {
+  const snapshot = makeSnapshot({
+    workspaces: [workspace('W1', 'Workspace One', 'blocked'), workspace('W2', 'Workspace Two', 'idle')],
+    groups: [
+      group('G1', 'W1', 'Group One', true, 'working'),
+      group('G2', 'W1', 'Group Two', false, 'done'),
+      group('G3', 'W2', 'Group Three', true, 'unknown'),
+    ],
+    terminals: [
+      pane('P1', 'W1', 'G1', 'native:P1', true, true, 'Build', { name: 'Claude Code', status: 'working' }),
+      pane('P2', 'W1', 'G1', 'native:P2', false, false, 'Shell'),
+      pane('P3', 'W1', 'G2', 'native:P3', false, false, 'Review', { name: 'Codex', status: 'done' }),
+    ],
+  });
+  const fixture = await mountForTest(t, snapshot);
+  const workspaceOrder = () => all(fixture.root, node => typeof node.props?.testID === 'string' && node.props.testID.startsWith('workspace-row-')).map(node => node.props.testID);
+
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status: blocked/);
+  assert.match(findTestId(fixture.root, 'workspace-row-W2').props.accessibilityLabel, /Agent status: idle/);
+  assert.deepEqual(workspaceOrder(), ['workspace-row-W1', 'workspace-row-W2']);
+  assert.equal(all(fixture.root, node => textContent(node).includes('Needs attention 1')).length, 0, 'workspace rows must not contain a JS-generated agent summary');
+
+  await openWorkspace(fixture.root, 'W1');
+  const groupPicker = first(fixture.root, node => node.props?.accessibilityLabel?.startsWith('Switch terminal group'), 'missing the group picker');
+  assert.match(groupPicker.props.accessibilityLabel, /Agent status: working/);
+  assert.equal(findLabel(fixture.root, 'Terminal Build, Agent status: working').props.accessibilityLabel, 'Terminal Build, Agent status: working');
+  assert.equal(findLabel(fixture.root, 'Terminal Shell').props.accessibilityLabel, 'Terminal Shell');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'terminal-agent-status-P2').length, 0, 'agentless panes must not receive a status mark');
+  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Claude Code, Agent status: working');
+  assert.equal(all(fixture.root, node => textContent(node) === 'Working').length > 0, true);
+
+  await press(fixture.root, groupPicker);
+  assert.match(findLabel(fixture.root, 'Group Group One, Agent status: working').props.accessibilityLabel, /Agent status: working/);
+  assert.match(findLabel(fixture.root, 'Group Group Two, Agent status: finished, not yet viewed').props.accessibilityLabel, /Agent status: finished/);
+
+  fixture.environment.connection.state = 'Reconnecting';
+  await poll(fixture.environment);
+  assert.match(findLabel(fixture.root, 'Group Group One, Agent status unavailable').props.accessibilityLabel, /Agent status unavailable/);
+  assert.equal(fixture.environment.snapshot.workspaces[0].agentStatus, 'blocked', 'presentation must not mutate the stored upstream status');
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status unavailable/);
+
+  const updated = clone(snapshot);
+  updated.workspaces = [workspace('W1', 'Workspace One', 'done'), workspace('W2', 'Workspace Two', 'blocked')];
+  fixture.environment.connection.state = 'Ready';
+  await updateSnapshot(fixture.environment, updated);
+  assert.deepEqual(workspaceOrder(), ['workspace-row-W1', 'workspace-row-W2'], 'status changes must not reorder workspaces');
 });
 
 test('settings appearance has the same visible and accessible meaning', async () => {
@@ -798,11 +887,49 @@ test('light supporting text and action colors retain readable contrast', () => {
   }
 });
 
+test('agent status palette keeps every non-text mark at three-to-one contrast', () => {
+  const source = TypeScript.createSourceFile('ui.tsx', fs.readFileSync(path.join(REPO_ROOT, 'app/ui.tsx'), 'utf8'), TypeScript.ScriptTarget.Latest, true, TypeScript.ScriptKind.TSX);
+  const palettes = {};
+  for (const statement of source.statements) {
+    if (!TypeScript.isVariableStatement(statement)) continue;
+    const declaration = statement.declarationList.declarations[0];
+    if (!declaration || !['LIGHT', 'DARK'].includes(declaration.name.getText(source)) || !TypeScript.isObjectLiteralExpression(declaration.initializer)) continue;
+    const palette = {};
+    for (const property of declaration.initializer.properties) {
+      if (!TypeScript.isPropertyAssignment(property)) continue;
+      const key = property.name.getText(source);
+      if (TypeScript.isStringLiteral(property.initializer)) {
+        palette[key] = property.initializer.text;
+      } else if (TypeScript.isObjectLiteralExpression(property.initializer)) {
+        palette[key] = Object.fromEntries(property.initializer.properties
+          .filter(TypeScript.isPropertyAssignment)
+          .map(item => [item.name.getText(source), item.initializer.text]));
+      }
+    }
+    palettes[declaration.name.getText(source)] = palette;
+  }
+  const luminance = color => {
+    const [r, g, b] = color.slice(1).match(/../g).map(value => parseInt(value, 16) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return r * 0.2126 + g * 0.7152 + b * 0.0722;
+  };
+  for (const [name, palette] of Object.entries(palettes)) {
+    assert.ok(palette.agentStatus, `${name} agentStatus tokens are missing`);
+    const backgrounds = name === 'DARK' ? [palette.background, palette.surface, palette.terminal] : [palette.background, palette.surface];
+    for (const [status, color] of Object.entries(palette.agentStatus)) {
+      for (const background of backgrounds) {
+        const values = [luminance(color), luminance(background)].sort((a, b) => b - a);
+        assert.ok((values[0] + 0.05) / (values[1] + 0.05) >= 3, `${name}.${status} on ${background}`);
+      }
+    }
+  }
+});
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function pane(id, workspaceId, groupId, terminalId, selected = false, active = false, name = id) {
+function pane(id, workspaceId, groupId, terminalId, selected = false, active = false, name = id, agent = null) {
   return {
     id,
     workspaceId,
@@ -811,16 +938,16 @@ function pane(id, workspaceId, groupId, terminalId, selected = false, active = f
     name,
     active,
     selected,
-    agent: null,
+    agent,
   };
 }
 
-function group(id, workspaceId, name, selected) {
-  return { id, workspaceId, name, selected };
+function group(id, workspaceId, name, selected, agentStatus = null) {
+  return { id, workspaceId, name, selected, agentStatus };
 }
 
-function workspace(id, name) {
-  return { id, name };
+function workspace(id, name, agentStatus = null) {
+  return { id, name, agentStatus };
 }
 
 function makeSnapshot({
