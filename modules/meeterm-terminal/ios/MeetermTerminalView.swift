@@ -398,7 +398,7 @@ final class MeetermTerminalView: ExpoView {
   @discardableResult
   override func becomeFirstResponder() -> Bool {
     guard !isCachedReadOnly else { return false }
-    terminalInputView.becomeFirstResponder()
+    return terminalInputView.becomeFirstResponder()
   }
 
   @discardableResult

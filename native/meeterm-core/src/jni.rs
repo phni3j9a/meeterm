@@ -1008,14 +1008,17 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_commitAtEpoch<'ca
         let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
         let bytes = env.convert_byte_array(&bytes)?;
         // SAFETY: the Java byte array is copied before the FFI call returns.
-        Ok(unsafe {
+        let count = unsafe {
             crate::ffi::meeterm_commit_utf8_at_epoch(
                 handle,
                 operation_epoch,
                 bytes.as_ptr(),
                 bytes.len(),
             )
-        })
+        };
+        // The Rust ABI returns u64 while Java's jlong is signed i64. Keep the
+        // conversion checked and preserve the zero sentinel on overflow.
+        Ok(jlong::try_from(count).unwrap_or(0))
     }))
 }
 

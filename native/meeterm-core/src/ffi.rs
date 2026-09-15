@@ -1524,7 +1524,7 @@ mod session_abi_tests {
             unsafe { meeterm_confirm_recovery(id, std::ptr::null(), 0) },
             ConnectionError::InvalidArgument.code()
         );
-        let oversized_token = vec![b'x'; MAX_RECOVERY_TOKEN_BYTES + 1];
+        let oversized_token = [b'x'; MAX_RECOVERY_TOKEN_BYTES + 1];
         assert_eq!(
             unsafe {
                 meeterm_confirm_recovery(id, oversized_token.as_ptr(), oversized_token.len())
