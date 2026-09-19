@@ -1029,6 +1029,97 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         terminal_line.assert_not_called()
 
 
+class TerminalSurfaceBindingTests(unittest.TestCase):
+    @staticmethod
+    def surface(
+        bounds: tuple[int, int, int, int],
+        *,
+        class_name: str = "dev.meeterm.terminal.MeetermTerminalView",
+        resource_id: str = "",
+    ) -> smoke.Node:
+        return smoke.Node(
+            "raw surface text",
+            "raw surface label",
+            class_name,
+            bounds,
+            resource_id=resource_id,
+        )
+
+    def test_same_class_and_empty_resource_ids_allow_vertical_resize(self) -> None:
+        before = self.surface((0, 100, 1080, 900))
+        after = self.surface((0, 520, 1080, 1900))
+
+        self.assertTrue(smoke.same_terminal_surface_binding(before, after))
+
+    def test_same_resource_id_allows_changed_bounds(self) -> None:
+        before = self.surface(
+            (0, 100, 1080, 900),
+            resource_id="dev.meeterm.app:id/terminal-surface",
+        )
+        after = self.surface(
+            (0, 520, 1080, 1900),
+            resource_id="dev.meeterm.app:id/terminal-surface",
+        )
+
+        self.assertTrue(smoke.same_terminal_surface_binding(before, after))
+
+    def test_different_nonempty_resource_ids_are_different_bindings(self) -> None:
+        before = self.surface(
+            (0, 100, 1080, 900),
+            resource_id="dev.meeterm.app:id/terminal-surface-before",
+        )
+        after = self.surface(
+            (0, 520, 1080, 1900),
+            resource_id="dev.meeterm.app:id/terminal-surface-after",
+        )
+
+        self.assertFalse(smoke.same_terminal_surface_binding(before, after))
+
+    def test_one_sided_resource_id_uses_class_fallback(self) -> None:
+        matching_cases = (
+            (
+                self.surface(
+                    (0, 100, 1080, 900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+                self.surface((0, 520, 1080, 1900)),
+            ),
+            (
+                self.surface((0, 100, 1080, 900)),
+                self.surface(
+                    (0, 520, 1080, 1900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+            ),
+        )
+        for before, after in matching_cases:
+            with self.subTest(before=bool(before.resource_id), after=bool(after.resource_id)):
+                self.assertTrue(smoke.same_terminal_surface_binding(before, after))
+
+        mismatching_cases = (
+            (
+                self.surface(
+                    (0, 100, 1080, 900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+                self.surface(
+                    (0, 520, 1080, 1900),
+                    class_name="android.view.SurfaceView",
+                ),
+            ),
+            (
+                self.surface((0, 100, 1080, 900), class_name="android.view.SurfaceView"),
+                self.surface(
+                    (0, 520, 1080, 1900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+            ),
+        )
+        for before, after in mismatching_cases:
+            with self.subTest(before=bool(before.resource_id), after=bool(after.resource_id)):
+                self.assertFalse(smoke.same_terminal_surface_binding(before, after))
+
+
 class TransportLossTests(unittest.TestCase):
     def fixture_nodes(self, *, picker: bool = False) -> list[smoke.Node]:
         nodes = [
@@ -1068,6 +1159,86 @@ class TransportLossTests(unittest.TestCase):
         self.assertTrue(smoke.transport_loss_recovery_ready(nodes, "%12"))
         self.assertIsNotNone(smoke.find_recovery_pane_node(nodes, "%12"))
         self.assertFalse(smoke.transport_loss_recovery_ready(self.fixture_nodes(picker=True), "%12"))
+
+    def test_stale_diagnostic_uses_only_fixed_predicates(self) -> None:
+        nodes = self.fixture_nodes()
+        cached = smoke.find_cached_terminal_surface(nodes)
+        self.assertIsNotNone(cached)
+        assert cached is not None
+        cached.bounds = (0, 500, 100, 900)
+        initial = smoke.Node(
+            "raw-terminal-text",
+            "raw-terminal-label",
+            cached.class_name,
+            (10, 20, 110, 220),
+            resource_id="raw-terminal-resource-id",
+        )
+
+        diagnostic = smoke.stale_read_only_diagnostic(nodes, initial, "%12")
+        records = dict(line.split("=", 1) for line in diagnostic.splitlines())
+
+        self.assertEqual(set(records), set(smoke.STALE_READ_ONLY_DIAGNOSTIC_KEYS))
+        self.assertTrue(
+            set(records.values()).issubset({"yes", "no", "unknown"})
+        )
+        self.assertEqual(records["runtime_picker_hidden"], "yes")
+        self.assertEqual(records["cached_surface_visible"], "yes")
+        self.assertEqual(records["surface_class_match"], "yes")
+        self.assertEqual(records["surface_resource_id_match"], "unknown")
+        for identifier in smoke.RECOVERY_TEST_IDS:
+            self.assertEqual(records[f"{identifier.replace('-', '_')}_visible"], "yes")
+        self.assertEqual(records["expected_selected_pane_visible"], "yes")
+        for sensitive in (
+            "raw-terminal-text",
+            "raw-terminal-label",
+            "raw-terminal-resource-id",
+            "10,20,110,220",
+            "%12",
+        ):
+            self.assertNotIn(sensitive, diagnostic)
+
+    def test_stale_timeout_writes_fixed_diagnostic_artifact(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        nodes = [
+            node
+            for node in self.fixture_nodes()
+            if node.resource_id != f"{smoke.PACKAGE}:id/recovery-meta"
+        ]
+        device.dump_ui.return_value = nodes
+        initial = smoke.Node(
+            "",
+            "Terminal",
+            "android.view.SurfaceView",
+            (0, 100, 100, 300),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            artifact_dir = Path(root)
+            with _patched_clock(clock):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.wait_for_transport_loss_stale(
+                        device,
+                        "daily_transport_loss_stale",
+                        "%12",
+                        initial,
+                        timeout=1.0,
+                        artifact_dir=artifact_dir,
+                    )
+
+            self.assertEqual(
+                (error.exception.stage, error.exception.reason),
+                ("daily_transport_loss_stale", "stale_read_only_timeout"),
+            )
+            diagnostic_path = artifact_dir / smoke.STALE_READ_ONLY_DIAGNOSTIC_NAME
+            self.assertTrue(diagnostic_path.is_file())
+            records = dict(
+                line.split("=", 1)
+                for line in diagnostic_path.read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual(records["surface_class_match"], "yes")
+            self.assertEqual(records["surface_resource_id_match"], "unknown")
+            self.assertEqual(records["recovery_meta_visible"], "no")
 
     def test_transport_marker_command_is_ascii_and_avoids_android_percent_escape(self) -> None:
         command = smoke.transport_loss_marker_command(

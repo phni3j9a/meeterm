@@ -118,6 +118,24 @@ RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",
 )
+STALE_READ_ONLY_DIAGNOSTIC_NAME = "stale-read-only-diagnostic.txt"
+STALE_READ_ONLY_DIAGNOSTIC_KEYS = (
+    "runtime_picker_hidden",
+    "cached_surface_visible",
+    "recovery_rail_visible",
+    "recovery_title_visible",
+    "recovery_detail_visible",
+    "recovery_meta_visible",
+    "expected_selected_pane_visible",
+    "surface_class_match",
+    "surface_resource_id_match",
+)
+RECOVERY_TEST_IDS = (
+    "recovery-rail",
+    "recovery-title",
+    "recovery-detail",
+    "recovery-meta",
+)
 CONNECTION_STATE_LABELS = (
     ("Connecting…", "connecting"),
     ("Verify host key", "host_key_pending"),
@@ -1901,7 +1919,62 @@ def same_terminal_surface_binding(before: Node, after: Node) -> bool:
 
     if before.resource_id and after.resource_id:
         return before.resource_id == after.resource_id
-    return before.class_name == after.class_name and before.bounds == after.bounds
+    return before.class_name == after.class_name
+
+
+def _fixed_predicate(value: bool | None) -> str:
+    if value is None:
+        return "unknown"
+    return "yes" if value else "no"
+
+
+def stale_read_only_diagnostic(
+    nodes: list[Node] | None,
+    initial_terminal: Node | None,
+    expected_pane_id: str,
+) -> str:
+    """Return fixed stale-surface predicates without serializing UI data."""
+
+    if nodes is None:
+        predicates: dict[str, bool | None] = {
+            key: None for key in STALE_READ_ONLY_DIAGNOSTIC_KEYS
+        }
+    else:
+        cached = find_cached_terminal_surface(nodes)
+        class_match = (
+            None
+            if cached is None or initial_terminal is None
+            else initial_terminal.class_name == cached.class_name
+        )
+        resource_id_match = None
+        if (
+            cached is not None
+            and initial_terminal is not None
+            and initial_terminal.resource_id
+            and cached.resource_id
+        ):
+            resource_id_match = initial_terminal.resource_id == cached.resource_id
+        predicates = {
+            "runtime_picker_hidden": not runtime_picker_is_visible(nodes),
+            "cached_surface_visible": cached is not None,
+            **{
+                f"{identifier.replace('-', '_')}_visible": find_visible_test_id(
+                    nodes, identifier
+                )
+                is not None
+                for identifier in RECOVERY_TEST_IDS
+            },
+            "expected_selected_pane_visible": find_recovery_pane_node(
+                nodes, expected_pane_id, selected=True
+            )
+            is not None,
+            "surface_class_match": class_match,
+            "surface_resource_id_match": resource_id_match,
+        }
+    return "".join(
+        f"{key}={_fixed_predicate(predicates[key])}\n"
+        for key in STALE_READ_ONLY_DIAGNOSTIC_KEYS
+    )
 
 
 def transport_loss_recovery_ready(nodes: list[Node], expected_pane_id: str) -> bool:
@@ -1926,15 +1999,18 @@ def wait_for_transport_loss_stale(
     initial_terminal: Node,
     *,
     timeout: float = RECONNECT_TIMEOUT,
+    artifact_dir: Path | None = None,
 ) -> Node:
     """Wait for cached/read-only recovery while preserving foreground evidence."""
 
     deadline = time.monotonic() + timeout
     hierarchy_seen = False
+    last_nodes: list[Node] | None = None
     while time.monotonic() < deadline:
         try:
             nodes = device.dump_ui()
             hierarchy_seen = True
+            last_nodes = nodes
         except SmokeFailure:
             time.sleep(0.2)
             continue
@@ -1951,6 +2027,11 @@ def wait_for_transport_loss_stale(
         time.sleep(0.2)
     if not hierarchy_seen:
         raise SmokeFailure(stage, "ui_unavailable")
+    if artifact_dir is not None:
+        write_artifact(
+            artifact_dir / STALE_READ_ONLY_DIAGNOSTIC_NAME,
+            stale_read_only_diagnostic(last_nodes, initial_terminal, expected_pane_id),
+        )
     raise SmokeFailure(stage, "stale_read_only_timeout")
 
 
@@ -3883,6 +3964,7 @@ def exercise_transport_loss_recovery(
             expected_pane.pane_id,
             initial_terminal,
             timeout=RECONNECT_TIMEOUT,
+            artifact_dir=artifact_dir,
         )
         stale_handle = latest_native_terminal_handle(device, stage)
         if stale_handle != initial_handle:
