@@ -155,8 +155,10 @@ the same serial's bounded return, shell UID 2000, and recreates/verifies only th
 sshd process tree is stopped; the tmux server/session/shell and endpoint identity
 are left alive. ADB reverse removal alone is not treated as the loss injection;
 the adbd restart and bounded `wait-for-disconnect` are required before restoration.
-The root/unroot response, UID, selected serial, reverse row, and waiter are all
-fail-closed, and cleanup returns an unexpectedly rooted emulator to shell UID. The driver
+The driver rechecks root UID immediately before reverse mutation. The official
+root/unroot response must appear as a complete response line; empty, unexpected,
+or non-root responses, UID, selected serial, reverse row, and waiter are all
+fail-closed. Cleanup returns an unexpectedly rooted emulator to shell UID. The driver
 records sanitized fixed results for the pre-loss and post-loss markers, the
 cached read-only rail, the same native handle, the same selected pane, and the
 absence of input while stopped. On iOS, the final

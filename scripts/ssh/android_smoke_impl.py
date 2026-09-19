@@ -388,6 +388,20 @@ class AndroidDevice:
             raise SmokeFailure(stage, "adbd_uid_invalid")
         return int(match.group(1))
 
+    @staticmethod
+    def _response_has_line(response: str, expected: str) -> bool:
+        return expected in (line.strip() for line in response.splitlines())
+
+    def _record_unroot_rejection(self, response: str) -> None:
+        lines = tuple(line.strip() for line in response.splitlines() if line.strip())
+        if not lines:
+            category = "empty"
+        elif "adbd not running as root" in lines:
+            category = "not_root"
+        else:
+            category = "unexpected"
+        self.transport_reset_events.append(f"adbd_unroot_response_{category}")
+
     def prepare_adbd_restart_injection(self) -> None:
         """Require a debuggable emulator before any app/reverse setup."""
 
@@ -476,7 +490,8 @@ class AndroidDevice:
             "cleanup_adbd_unroot",
             timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
         ).decode("utf-8", errors="replace").strip()
-        if response != ADB_UNROOT_RESPONSE:
+        if not self._response_has_line(response, ADB_UNROOT_RESPONSE):
+            self._record_unroot_rejection(response)
             raise SmokeFailure("cleanup_adbd_unroot", "adbd_unroot_not_confirmed")
         self.adbd_rooted = False
         self.wait_for_device(
@@ -545,6 +560,9 @@ class AndroidDevice:
         # the evidence boundary. Never reset the shared host ADB server.
         if not self.adbd_rooted:
             raise SmokeFailure("transport_adbd_unroot", "adbd_root_precondition_missing")
+        if self.adbd_uid("transport_adbd_root_recheck") != 0:
+            raise SmokeFailure("transport_adbd_root_recheck", "adbd_not_root")
+        self.transport_reset_events.append("adbd_root_reverified")
         self.remove_reverse_mapping(port)
         self.transport_reset_events.append("reverse_mapping_removed")
         waiter = self._start_disconnect_waiter()
@@ -555,12 +573,14 @@ class AndroidDevice:
                 "transport_adbd_unroot",
                 timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
             ).decode("utf-8", errors="replace").strip()
-            if response != ADB_UNROOT_RESPONSE:
+            if not self._response_has_line(response, ADB_UNROOT_RESPONSE):
+                self._record_unroot_rejection(response)
                 raise SmokeFailure(
                     "transport_adbd_unroot",
                     "adbd_unroot_not_confirmed",
                 )
             self.adbd_rooted = False
+            self.transport_reset_events.append("adbd_unroot_response_confirmed")
             self.transport_reset_events.append("adbd_unroot_restart_requested")
             self._finish_disconnect_waiter(waiter)
             waiter_finished = True

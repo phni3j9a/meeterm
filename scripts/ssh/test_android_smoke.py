@@ -141,10 +141,11 @@ class AdbTransportResetTests(unittest.TestCase):
     def test_reconnect_transport_restarts_adbd_and_restores_exact_reverse_order(self) -> None:
         device = FakeDevice(
             [
+                b"0\n",  # adbd is still root immediately before mutation
                 b"",  # adb reverse --remove tcp:<port>
                 b"",  # adb reverse --list (mapping absent)
                 b"",  # arm adb wait-for-disconnect
-                b"restarting adbd as non root\n",
+                b"host diagnostic\nrestarting adbd as non root\n",
                 b"",  # adb wait-for-device
                 b"2000\n",  # adb shell id -u
                 b"",  # adb reverse --no-rebind tcp:<port> tcp:<port>
@@ -158,6 +159,7 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             [(arguments, stage) for arguments, stage, _timeout in device.commands],
             [
+                (("shell", "id", "-u"), "transport_adbd_root_recheck"),
                 (("reverse", "--remove", "tcp:2222"), "transport_reverse_remove"),
                 (("reverse", "--list"), "transport_reverse_remove_verify"),
                 (("wait-for-disconnect",), "transport_wait_for_disconnect"),
@@ -174,6 +176,7 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             [timeout for _arguments, _stage, timeout in device.commands],
             [
+                smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS,
                 smoke.ADB_REVERSE_TIMEOUT_SECONDS,
                 smoke.ADB_REVERSE_TIMEOUT_SECONDS,
                 smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
@@ -188,8 +191,10 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             device.transport_reset_events,
             [
+                "adbd_root_reverified",
                 "reverse_mapping_removed",
                 "disconnect_waiter_armed",
+                "adbd_unroot_response_confirmed",
                 "adbd_unroot_restart_requested",
                 "disconnect_observed",
                 "same_serial_returned",
@@ -199,7 +204,7 @@ class AdbTransportResetTests(unittest.TestCase):
         )
 
     def test_unroot_failure_is_bounded_and_sanitized(self) -> None:
-        device = FakeDevice([b"", b"", b"", ("failure", "adb_failed")])
+        device = FakeDevice([b"0\n", b"", b"", b"", ("failure", "adb_failed")])
         device.adbd_rooted = True
 
         with self.assertRaises(smoke.SmokeFailure) as error:
@@ -209,10 +214,12 @@ class AdbTransportResetTests(unittest.TestCase):
             (error.exception.stage, error.exception.reason),
             ("transport_adbd_unroot", "adb_failed"),
         )
-        self.assertEqual(device.commands[3][2], smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS)
+        self.assertEqual(device.commands[4][2], smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS)
 
     def test_unroot_without_restart_response_fails_closed(self) -> None:
-        device = FakeDevice([b"", b"", b"", b"adbd not running as root\n"])
+        device = FakeDevice(
+            [b"0\n", b"", b"", b"", b"adbd not running as root\n"]
+        )
         device.adbd_rooted = True
 
         with self.assertRaises(smoke.SmokeFailure) as error:
@@ -222,9 +229,48 @@ class AdbTransportResetTests(unittest.TestCase):
             (error.exception.stage, error.exception.reason),
             ("transport_adbd_unroot", "adbd_unroot_not_confirmed"),
         )
+        self.assertIn("adbd_unroot_response_not_root", device.transport_reset_events)
+
+    def test_unroot_empty_response_is_classified_and_rejected(self) -> None:
+        device = FakeDevice([b"0\n", b"", b"", b"", b""])
+        device.adbd_rooted = True
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(error.exception.reason, "adbd_unroot_not_confirmed")
+        self.assertIn("adbd_unroot_response_empty", device.transport_reset_events)
+
+    def test_unroot_response_substring_is_classified_and_rejected(self) -> None:
+        device = FakeDevice(
+            [b"0\n", b"", b"", b"", b"prefix restarting adbd as non root suffix\n"]
+        )
+        device.adbd_rooted = True
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(error.exception.reason, "adbd_unroot_not_confirmed")
+        self.assertIn("adbd_unroot_response_unexpected", device.transport_reset_events)
+
+    def test_root_is_rechecked_before_reverse_mutation(self) -> None:
+        device = FakeDevice([b"2000\n"])
+        device.adbd_rooted = True
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_adbd_root_recheck", "adbd_not_root"),
+        )
+        self.assertEqual(
+            [arguments for arguments, _stage, _timeout in device.commands],
+            [("shell", "id", "-u")],
+        )
 
     def test_reverse_remove_must_be_observed_before_transport_reconnect(self) -> None:
-        device = FakeDevice([b"", b"emulator-5554 tcp:2222 tcp:2222\n"])
+        device = FakeDevice([b"0\n", b"", b"emulator-5554 tcp:2222 tcp:2222\n"])
         device.adbd_rooted = True
 
         with self.assertRaises(smoke.SmokeFailure) as error:
@@ -236,11 +282,15 @@ class AdbTransportResetTests(unittest.TestCase):
         )
         self.assertEqual(
             [arguments for arguments, _stage, _timeout in device.commands],
-            [("reverse", "--remove", "tcp:2222"), ("reverse", "--list")],
+            [
+                ("shell", "id", "-u"),
+                ("reverse", "--remove", "tcp:2222"),
+                ("reverse", "--list"),
+            ],
         )
 
     def test_wait_for_disconnect_failure_does_not_trigger_unroot(self) -> None:
-        device = FakeDevice([b"", b"", ("failure", "adb_failed")])
+        device = FakeDevice([b"0\n", b"", b"", ("failure", "adb_failed")])
         device.adbd_rooted = True
 
         with self.assertRaises(smoke.SmokeFailure) as error:
@@ -253,6 +303,7 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             [arguments for arguments, _stage, _timeout in device.commands],
             [
+                ("shell", "id", "-u"),
                 ("reverse", "--remove", "tcp:2222"),
                 ("reverse", "--list"),
                 ("wait-for-disconnect",),
@@ -295,6 +346,7 @@ class AdbTransportResetTests(unittest.TestCase):
     def test_wait_for_device_failure_does_not_restore_reverse_mapping(self) -> None:
         device = FakeDevice(
             [
+                b"0\n",
                 b"",
                 b"",
                 b"",
@@ -315,6 +367,7 @@ class AdbTransportResetTests(unittest.TestCase):
     def test_reverse_restore_failure_is_bounded(self) -> None:
         device = FakeDevice(
             [
+                b"0\n",
                 b"",
                 b"",
                 b"",
@@ -337,6 +390,7 @@ class AdbTransportResetTests(unittest.TestCase):
     def test_reverse_verification_rejects_wrong_remote_mapping(self) -> None:
         device = FakeDevice(
             [
+                b"0\n",
                 b"",
                 b"",
                 b"",

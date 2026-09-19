@@ -85,7 +85,9 @@ processが残っていないことまで確認し、listener終了後に初め�
 debuggable emulatorを`adb root`とUID 0で検証します。stop ACK後はexact `tcp:<port>` reverseを
 削除・消失確認し、serial-scoped `wait-for-disconnect`を先にarmしてから`adb unroot`でadbd自体を
 再起動します。bounded disconnect、同じserialの`wait-for-device`、shell UID 2000、exact reverseの
-再作成と`reverse --list`をすべて照合します。root非対応、固定応答/UID不一致、切断未観測はfail closedです。
+再作成と`reverse --list`をすべて照合します。reverse変更直前にもUID 0を再確認し、`adb unroot`は
+AOSP定義のrestart応答が独立した行として含まれることを要求します。root非対応、空/不明/非root応答、
+UID不一致、切断未観測はfail closedです。
 tmux server/session/shell、同じhost key/endpointを維持したまま、
 pre-loss marker、cached/read-only rail、同じTerminalViewのtest-only native handle、
 同じpaneのReady、post-loss markerを順に確認します。切断中のinputは送らず、markerは
