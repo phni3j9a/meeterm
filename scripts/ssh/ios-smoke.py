@@ -87,6 +87,10 @@ NATIVE_INPUT_CASES = (
     "hardware_shift_combinations",
     "marked_commit",
     "scroll_gesture",
+    "async_paste_epoch",
+    "cached_read_only",
+    "recovery_arguments",
+    "live_epoch_refocus",
 )
 RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",

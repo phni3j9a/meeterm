@@ -173,6 +173,7 @@ class Fixture:
         self.tmux_socket = self.tmux_tmpdir / f"tmux-{os.getuid()}" / "default"
         self.encrypted_passphrase = secrets.token_urlsafe(32)
         self.process: subprocess.Popen[str] | None = None
+        self.sshd_listener_identity: str | None = None
         self.sshd_descendants: dict[int, str] = {}
         self.tmux_process: subprocess.Popen[str] | None = None
         self.env_file: Path | None = None
@@ -296,7 +297,7 @@ class Fixture:
         """Start only this fixture's sshd on its original endpoint."""
 
         with self.sshd_lock:
-            if self.sshd_descendants:
+            if self.sshd_descendants or self.sshd_listener_identity is not None:
                 raise FixtureError("previous OpenSSH fixture process tree is still owned")
             if self.process is not None and self.process.poll() is None:
                 raise FixtureError("OpenSSH fixture is already running")
@@ -323,6 +324,22 @@ class Fixture:
                     self._raise_start_failure()
                 try:
                     with socket.create_connection((HOST, self.port), timeout=0.2):
+                        listener_identity = self._process_identity(self.process.pid)
+                        if listener_identity is None:
+                            raise FixtureError(
+                                "OpenSSH fixture listener identity is unavailable"
+                            )
+                        linux_owners = self._linux_local_port_sshd_process_ids(
+                            self.port
+                        )
+                        if (
+                            linux_owners is not None
+                            and self.process.pid not in linux_owners
+                        ):
+                            raise FixtureError(
+                                "OpenSSH fixture listener socket ownership is uncertain"
+                            )
+                        self.sshd_listener_identity = listener_identity
                         return
                 except OSError:
                     time.sleep(0.05)
@@ -398,6 +415,109 @@ class Fixture:
             if process_id > 0 and process_id != process_group_id and group_id == process_group_id:
                 members.append(process_id)
         return members
+
+    @staticmethod
+    def _linux_local_port_sshd_process_ids(
+        port: int,
+        proc_root: Path = Path("/proc"),
+    ) -> set[int] | None:
+        """Return identity-checkable sshd owners of one Linux local port.
+
+        OpenSSH may move an accepted session into another process group and
+        reparent it before the listener exits.  On Linux, bind the stop
+        boundary to the fixture's still-live socket owners as well as the
+        process tree.  A missing or ambiguous owner fails closed; ownerless
+        TIME_WAIT records have inode zero and are deliberately ignored.
+        """
+
+        if not sys.platform.startswith("linux"):
+            return None
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise FixtureError("OpenSSH fixture port is invalid")
+
+        socket_uids: dict[int, int] = {}
+        for table_name in ("tcp", "tcp6"):
+            table = proc_root / "net" / table_name
+            try:
+                lines = table.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError) as error:
+                raise FixtureError(
+                    "OpenSSH fixture socket ownership is unavailable"
+                ) from error
+            for line in lines[1:]:
+                fields = line.split()
+                if len(fields) < 10:
+                    continue
+                try:
+                    local_port = int(fields[1].rsplit(":", 1)[1], 16)
+                    socket_uid = int(fields[7])
+                    socket_inode = int(fields[9])
+                except (IndexError, ValueError):
+                    continue
+                if local_port == port and socket_inode > 0:
+                    socket_uids[socket_inode] = socket_uid
+
+        if not socket_uids:
+            return set()
+        current_uid = os.getuid()
+        if any(uid != current_uid for uid in socket_uids.values()):
+            raise FixtureError("OpenSSH fixture socket owner is outside the fixture user")
+
+        expected_executable = Path(SSHD).resolve()
+        owners: dict[int, set[int]] = {inode: set() for inode in socket_uids}
+        try:
+            process_directories = [
+                entry
+                for entry in proc_root.iterdir()
+                if entry.name.isdecimal() and entry.is_dir()
+            ]
+        except OSError as error:
+            raise FixtureError(
+                "OpenSSH fixture socket ownership is unavailable"
+            ) from error
+
+        for process_directory in process_directories:
+            process_id = int(process_directory.name)
+            file_descriptors = process_directory / "fd"
+            try:
+                descriptor_paths = list(file_descriptors.iterdir())
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+            owned_inodes = set()
+            for descriptor_path in descriptor_paths:
+                try:
+                    target = os.readlink(descriptor_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    continue
+                match = re.fullmatch(r"socket:\[(\d+)\]", target)
+                if match is not None:
+                    inode = int(match.group(1))
+                    if inode in owners:
+                        owned_inodes.add(inode)
+            if not owned_inodes:
+                continue
+
+            try:
+                status_lines = (process_directory / "status").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                uid_line = next(line for line in status_lines if line.startswith("Uid:"))
+                process_uid = int(uid_line.split()[1])
+                executable = (process_directory / "exe").resolve(strict=True)
+            except (OSError, UnicodeError, StopIteration, IndexError, ValueError) as error:
+                raise FixtureError("OpenSSH fixture socket owner is uncertain") from error
+            if process_uid != current_uid or executable != expected_executable:
+                raise FixtureError("OpenSSH fixture socket owner is uncertain")
+            for inode in owned_inodes:
+                owners[inode].add(process_id)
+
+        if any(not process_ids for process_ids in owners.values()):
+            raise FixtureError("OpenSSH fixture socket owner is unavailable")
+        return {
+            process_id
+            for process_ids in owners.values()
+            for process_id in process_ids
+        }
 
     @staticmethod
     def _signal_process_group(process: subprocess.Popen[str], signum: int) -> None:
@@ -517,7 +637,7 @@ class Fixture:
         with self.sshd_lock:
             process = self.process
             if process is None:
-                if self.sshd_descendants:
+                if self.sshd_descendants or self.sshd_listener_identity is not None:
                     raise FixtureError("OpenSSH fixture process ownership is incomplete")
                 return
             if process.poll() is not None:
@@ -527,6 +647,11 @@ class Fixture:
                     pass
                 if not self.sshd_descendants:
                     raise FixtureError("OpenSSH fixture exited before its process tree was captured")
+            elif (
+                self.sshd_listener_identity is None
+                or self._process_identity(process.pid) != self.sshd_listener_identity
+            ):
+                raise FixtureError("OpenSSH fixture listener identity changed")
 
             # A session child normally inherits the new process group. Keep
             # the descendant list as a portable fallback for sshd variants
@@ -534,6 +659,10 @@ class Fixture:
             if not self.sshd_descendants:
                 owned_process_ids = set(self._process_group_member_ids(process.pid))
                 owned_process_ids.update(self._descendant_process_ids(process.pid))
+                linux_owners = self._linux_local_port_sshd_process_ids(self.port)
+                if linux_owners is not None:
+                    owned_process_ids.update(linux_owners)
+                owned_process_ids.discard(process.pid)
                 self.sshd_descendants = self._capture_process_identities(
                     sorted(owned_process_ids)
                 )
@@ -568,7 +697,15 @@ class Fixture:
 
             if not parent_exited or remaining:
                 raise FixtureError("OpenSSH fixture process tree did not stop")
+
+            linux_owners = self._linux_local_port_sshd_process_ids(self.port)
+            if linux_owners:
+                # Do not capture or signal a process discovered only after
+                # the verified listener exited: the port may already have
+                # been reused by another identity. Refuse the stop ACK.
+                raise FixtureError("OpenSSH fixture socket owners did not stop")
             self.process = None
+            self.sshd_listener_identity = None
             self.sshd_descendants = {}
 
     def _write_control_status(self, token: str, status: str) -> None:

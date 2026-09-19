@@ -810,14 +810,10 @@ class RunnerDiagnosticsTests(unittest.TestCase):
     @staticmethod
     def write_native_success(root):
         (root / "ios-native-input-validation.txt").write_text(
-            "case=multiline result=passed\n"
-            "case=rebind result=passed\n"
-            "case=unmount result=passed\n"
-            "case=control_one_shot result=passed\n"
-            "case=hardware_control result=passed\n"
-            "case=hardware_shift_combinations result=passed\n"
-            "case=marked_commit result=passed\n"
-            "case=scroll_gesture result=passed\n"
+            "".join(
+                f"case={case} result=passed\n"
+                for case in smoke.NATIVE_INPUT_CASES
+            )
         )
 
     @staticmethod
