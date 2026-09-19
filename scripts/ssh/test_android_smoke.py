@@ -576,6 +576,22 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             self.assertTrue(return_from_form_end)
             events.append(("credential", "entered"))
 
+        boundary_results = [
+            smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH,
+            smoke.PROFILE_SWITCH_CONFIRMATION_BRANCH,
+        ]
+
+        def wait_boundary(
+            _device: object,
+            stage: str,
+            _name: str,
+            *,
+            timeout: float = smoke.RECONNECT_TIMEOUT,
+        ) -> str:
+            del timeout
+            events.append(("boundary", stage, boundary_results[0]))
+            return boundary_results.pop(0)
+
         completed: list[str] = []
         with (
             mock.patch.object(smoke, "wait_for_saved_profile", side_effect=wait_profile),
@@ -596,6 +612,11 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
                 "select_fixture_tmux_runtime_and_wait_for_connected",
             ) as select_runtime,
             mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
+            mock.patch.object(
+                smoke,
+                "wait_for_profile_switch_boundary",
+                side_effect=wait_boundary,
+            ) as wait_boundary_mock,
         ):
             smoke.exercise_saved_profile_management(
                 device,
@@ -611,7 +632,9 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             [
                 "daily_profile_edited",
                 "daily_second_profile_saved",
+                "daily_profile_switch_second_boundary_target_picker",
                 "daily_profile_switched",
+                "daily_profile_switch_primary_boundary_confirmation",
                 "daily_profile_switch_restored",
                 "daily_profile_delete_cancelled",
                 "daily_second_profile_deleted",
@@ -629,9 +652,9 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         )
         first_switch_index = events.index(
             (
-                "action",
-                "daily_profile_switch_second_confirmation",
-                "Switch server",
+                "boundary",
+                "daily_profile_switch_second",
+                smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH,
             )
         )
         self.assertLess(credential_index, second_save_index)
@@ -641,15 +664,21 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             [
                 (
                     "action",
-                    "daily_profile_switch_second_confirmation",
-                    "Switch server",
-                ),
-                (
-                    "action",
                     "daily_profile_switch_primary_confirmation",
                     "Switch server",
                 ),
             ],
+        )
+        self.assertEqual(wait_boundary_mock.call_count, 2)
+        self.assertFalse(
+            any(
+                "Choose a runtime for" in marker
+                or marker in {
+                    smoke.DAILY_SECOND_PROFILE_NAME,
+                    smoke.DAILY_PROFILE_NAME,
+                }
+                for marker in completed
+            )
         )
         self.assertIn(("action", "daily_profile_delete_cancel", "Cancel"), events)
         self.assertEqual(
@@ -1027,6 +1056,184 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             ("daily_foreground_return", "app_process_changed"),
         )
         terminal_line.assert_not_called()
+
+
+class ProfileSwitchBoundaryTests(unittest.TestCase):
+    PROFILE_NAME = "Android daily second"
+
+    @staticmethod
+    def confirmation_node() -> smoke.Node:
+        return smoke.Node(
+            "Switch servers?",
+            "",
+            "android.widget.TextView",
+            (0, 0, 400, 80),
+        )
+
+    @staticmethod
+    def picker_heading(name: str) -> smoke.Node:
+        return smoke.Node(
+            f"{smoke.RUNTIME_PICKER_HEADING_PREFIX}{name}",
+            "",
+            "android.widget.TextView",
+            (0, 0, 800, 120),
+        )
+
+    @staticmethod
+    def picker_row() -> smoke.Node:
+        return smoke.Node(
+            "",
+            smoke.TMUX_RUNTIME_LABELS[0],
+            "android.widget.Button",
+            (0, 120, 800, 240),
+        )
+
+    @staticmethod
+    def profile_node() -> smoke.Node:
+        return smoke.Node(
+            "",
+            f"Connect saved server {ProfileSwitchBoundaryTests.PROFILE_NAME}",
+            "android.view.View",
+            (0, 100, 800, 220),
+        )
+
+    def test_confirmation_branch_taps_switch_exactly_once(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [self.confirmation_node()]
+        with (
+            mock.patch.object(
+                smoke,
+                "wait_for_saved_profile",
+                side_effect=[self.profile_node(), self.profile_node()],
+            ),
+            mock.patch.object(smoke, "tap_node") as tap_node,
+            mock.patch.object(smoke, "tap_action") as tap_action,
+            mock.patch.object(smoke, "select_fixture_tmux_runtime_and_wait_for_connected") as select_runtime,
+            mock.patch.object(smoke, "wait_for_workspace"),
+        ):
+            branch = smoke.switch_saved_profile(
+                device,
+                self.PROFILE_NAME,
+                "daily_profile_switch_second",
+            )
+
+        self.assertEqual(branch, smoke.PROFILE_SWITCH_CONFIRMATION_BRANCH)
+        tap_node.assert_called_once()
+        self.assertEqual(tap_node.call_args.args[0], device)
+        self.assertEqual(tap_node.call_args.args[2], "daily_profile_switch_second")
+        self.assertEqual(device.dump_ui.call_count, 1)
+        self.assertEqual(
+            [call for call in tap_action.call_args_list if call.args[2] == ("Switch server",)],
+            [
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_confirmation",
+                    ("Switch server",),
+                )
+            ],
+        )
+        select_runtime.assert_called_once_with(
+            device,
+            "daily_profile_switch_second_runtime_selection",
+        )
+
+    def test_exact_target_picker_branch_never_confirms_and_keeps_ready_guards(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [
+            self.picker_heading(self.PROFILE_NAME),
+            self.picker_row(),
+        ]
+        with (
+            mock.patch.object(
+                smoke,
+                "wait_for_saved_profile",
+                side_effect=[self.profile_node(), self.profile_node()],
+            ),
+            mock.patch.object(smoke, "tap_node"),
+            mock.patch.object(smoke, "tap_action") as tap_action,
+            mock.patch.object(smoke, "select_fixture_tmux_runtime_and_wait_for_connected") as select_runtime,
+            mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
+        ):
+            branch = smoke.switch_saved_profile(
+                device,
+                self.PROFILE_NAME,
+                "daily_profile_switch_second",
+            )
+
+        self.assertEqual(branch, smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH)
+        self.assertEqual(device.dump_ui.call_count, 1)
+        self.assertFalse(
+            any(call.args[2] == ("Switch server",) for call in tap_action.call_args_list)
+        )
+        select_runtime.assert_called_once_with(
+            device,
+            "daily_profile_switch_second_runtime_selection",
+        )
+        wait_workspace.assert_called_once_with(
+            device,
+            "daily_profile_switch_second_workspace_ready",
+            timeout=smoke.RECONNECT_TIMEOUT,
+        )
+
+    def test_wrong_generic_and_prefix_picker_fail_before_runtime_selection(self) -> None:
+        picker_nodes = (
+            [self.picker_heading("Android daily primary")],
+            [self.picker_heading("")],
+            [self.picker_row()],
+        )
+        for nodes in picker_nodes:
+            with self.subTest(node_label=nodes[0].text or nodes[0].content_description):
+                device = mock.Mock(spec=smoke.AndroidDevice)
+                device.dump_ui.return_value = nodes
+                select_runtime = mock.Mock()
+                with (
+                    mock.patch.object(smoke, "wait_for_saved_profile", return_value=self.profile_node()),
+                    mock.patch.object(smoke, "tap_node"),
+                    mock.patch.object(
+                        smoke,
+                        "select_fixture_tmux_runtime_and_wait_for_connected",
+                        select_runtime,
+                    ),
+                ):
+                    with self.assertRaises(smoke.SmokeFailure) as error:
+                        smoke.switch_saved_profile(
+                            device,
+                            self.PROFILE_NAME,
+                            "daily_profile_switch_second",
+                        )
+                self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER)
+                select_runtime.assert_not_called()
+
+    def test_simultaneous_confirmation_and_exact_picker_fails_closed(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [
+            self.confirmation_node(),
+            self.picker_heading(self.PROFILE_NAME),
+            self.picker_row(),
+        ]
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.wait_for_profile_switch_boundary(
+                device,
+                "daily_profile_switch_second",
+                self.PROFILE_NAME,
+            )
+        self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_AMBIGUOUS)
+
+    def test_boundary_timeout_uses_fixed_reason_without_dynamic_profile_data(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = []
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_profile_switch_boundary(
+                    device,
+                    "daily_profile_switch_second",
+                    self.PROFILE_NAME,
+                )
+        self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_TIMEOUT)
+        self.assertNotIn(self.PROFILE_NAME, error.exception.stage)
+        self.assertNotIn(self.PROFILE_NAME, error.exception.reason)
+        self.assertNotIn(self.PROFILE_NAME, str(error.exception))
 
 
 class TerminalSurfaceBindingTests(unittest.TestCase):

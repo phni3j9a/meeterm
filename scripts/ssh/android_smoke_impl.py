@@ -118,6 +118,11 @@ RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",
 )
+PROFILE_SWITCH_CONFIRMATION_BRANCH = "confirmation"
+PROFILE_SWITCH_TARGET_PICKER_BRANCH = "target_picker"
+PROFILE_SWITCH_BOUNDARY_AMBIGUOUS = "profile_switch_boundary_ambiguous"
+PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER = "unexpected_profile_picker"
+PROFILE_SWITCH_BOUNDARY_TIMEOUT = "confirmation_or_target_picker_timeout"
 STALE_READ_ONLY_DIAGNOSTIC_NAME = "stale-read-only-diagnostic.txt"
 STALE_READ_ONLY_DIAGNOSTIC_KEYS = (
     "runtime_picker_hidden",
@@ -1550,6 +1555,64 @@ def runtime_picker_is_visible(nodes: list[Node]) -> bool:
         ):
             return True
     return False
+
+
+def visible_exact_label(nodes: list[Node], label: str) -> bool:
+    """Find an exact visible label without requiring it to be actionable."""
+
+    for node in nodes:
+        if not node.visible_to_user:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if node.text == label or node.content_description == label:
+            return True
+    return False
+
+
+def wait_for_profile_switch_boundary(
+    device: AndroidDevice,
+    stage: str,
+    expected_profile_name: str,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> str:
+    """Wait once for the confirmation or exact target-picker boundary.
+
+    The expected heading is compared only in memory.  Failure stages and
+    reasons remain fixed so a profile name or raw accessibility value cannot
+    leak into smoke artifacts.
+    """
+
+    expected_heading = f"{RUNTIME_PICKER_HEADING_PREFIX}{expected_profile_name}"
+    boundary_stage = f"{stage}_boundary"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+
+        confirmation_visible = visible_exact_label(nodes, "Switch servers?")
+        target_picker_visible = visible_exact_label(nodes, expected_heading)
+        picker_visible = runtime_picker_is_visible(nodes)
+
+        if confirmation_visible and target_picker_visible:
+            raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_AMBIGUOUS)
+        if picker_visible:
+            if target_picker_visible:
+                return PROFILE_SWITCH_TARGET_PICKER_BRANCH
+            raise SmokeFailure(
+                boundary_stage,
+                PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER,
+            )
+        if confirmation_visible:
+            return PROFILE_SWITCH_CONFIRMATION_BRANCH
+        time.sleep(0.2)
+
+    raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_TIMEOUT)
 
 
 def sanitized_failure_ui_state(nodes: list[Node]) -> str:
@@ -3668,12 +3731,23 @@ def switch_saved_profile(
     device: AndroidDevice,
     name: str,
     stage: str,
-) -> Node:
+) -> str:
     profile = wait_for_saved_profile(device, stage, name, selected=False)
     tap_node(device, profile, stage)
     confirmation_stage = f"{stage}_confirmation"
-    wait_for_node(device, confirmation_stage, text="Switch servers?")
-    tap_action(device, confirmation_stage, ("Switch server",))
+    boundary = wait_for_profile_switch_boundary(
+        device,
+        stage,
+        name,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    if boundary == PROFILE_SWITCH_CONFIRMATION_BRANCH:
+        tap_action(device, confirmation_stage, ("Switch server",))
+    elif boundary != PROFILE_SWITCH_TARGET_PICKER_BRANCH:
+        raise SmokeFailure(
+            f"{stage}_boundary",
+            "profile_switch_boundary_invalid",
+        )
     select_fixture_tmux_runtime_and_wait_for_connected(
         device,
         f"{stage}_runtime_selection",
@@ -3694,7 +3768,32 @@ def switch_saved_profile(
         timeout=RECONNECT_TIMEOUT,
     )
     tap_action(device, stage, ("Saved servers",))
-    return wait_for_saved_profile(device, stage, name, selected=True)
+    wait_for_saved_profile(device, stage, name, selected=True)
+    return boundary
+
+
+def append_profile_switch_boundary_marker(
+    completed: list[str],
+    switch_name: str,
+    boundary: str,
+    stage: str,
+) -> None:
+    """Append only fixed, sanitized evidence for an accepted branch."""
+
+    markers = {
+        ("second", PROFILE_SWITCH_CONFIRMATION_BRANCH):
+            "daily_profile_switch_second_boundary_confirmation",
+        ("second", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
+            "daily_profile_switch_second_boundary_target_picker",
+        ("primary", PROFILE_SWITCH_CONFIRMATION_BRANCH):
+            "daily_profile_switch_primary_boundary_confirmation",
+        ("primary", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
+            "daily_profile_switch_primary_boundary_target_picker",
+    }
+    marker = markers.get((switch_name, boundary))
+    if marker is None:
+        raise SmokeFailure(stage, "profile_switch_boundary_invalid")
+    completed.append(marker)
 
 
 def exercise_saved_profile_management(
@@ -3728,9 +3827,29 @@ def exercise_saved_profile_management(
     add_second_saved_fixture_profile(device, host, port, username, key)
     completed.append("daily_second_profile_saved")
 
-    switch_saved_profile(device, DAILY_SECOND_PROFILE_NAME, "daily_profile_switch_second")
+    second_boundary = switch_saved_profile(
+        device,
+        DAILY_SECOND_PROFILE_NAME,
+        "daily_profile_switch_second",
+    )
+    append_profile_switch_boundary_marker(
+        completed,
+        "second",
+        second_boundary,
+        "daily_profile_switch_second",
+    )
     completed.append("daily_profile_switched")
-    switch_saved_profile(device, DAILY_PROFILE_NAME, "daily_profile_switch_primary")
+    primary_boundary = switch_saved_profile(
+        device,
+        DAILY_PROFILE_NAME,
+        "daily_profile_switch_primary",
+    )
+    append_profile_switch_boundary_marker(
+        completed,
+        "primary",
+        primary_boundary,
+        "daily_profile_switch_primary",
+    )
     completed.append("daily_profile_switch_restored")
 
     stage = "daily_profile_delete_cancel"

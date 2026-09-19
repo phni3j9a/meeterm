@@ -596,13 +596,29 @@ function makeUiMocks() {
 
 function makeFormMocks() {
   const hidden = () => null;
+  function ProfileList({ profiles = [], busy = false, onConnect }) {
+    return React.createElement(
+      'ProfileList',
+      null,
+      profiles.map(profile => React.createElement(
+        'Pressable',
+        {
+          key: profile.id,
+          accessibilityRole: 'button',
+          accessibilityLabel: `Connect saved server ${profile.name}`,
+          disabled: Boolean(busy),
+          onPress: () => onConnect(profile),
+        },
+      )),
+    );
+  }
   return {
     __esModule: true,
     ConnectionForm: hidden,
     DEFAULT_PREFERENCES: { ...PREFERENCES },
     itemActions() {},
     NameForm: hidden,
-    ProfileList: hidden,
+    ProfileList,
     SettingsForm: hidden,
   };
 }
@@ -1242,6 +1258,10 @@ function findLabel(root, label) {
   return first(root, node => node.props && node.props.accessibilityLabel === label, `missing accessibility label ${label}`);
 }
 
+function findText(root, value) {
+  return first(root, node => node.type === 'Text' && textContent(node) === value, `missing text ${value}`);
+}
+
 function findTestId(root, id) {
   return first(root, node => node.props && node.props.testID === id, `missing testID ${id}`);
 }
@@ -1394,6 +1414,67 @@ async function closeCurrentPane(root, environment) {
   });
 }
 
+test('active saved-profile switch waits for confirmation before starting the target host', async t => {
+  const target = {
+    id: '00000000-0000-4000-8000-000000000031', name: 'Active target',
+    host: 'target.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'meeterm',
+  };
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.profiles = [target];
+    environment.runtimeDiscovery = pickerDiscovery(3, [runtimeCandidate('active-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]);
+    environment.snapshot = makeSnapshot();
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Active target'));
+  assert.equal(fixture.environment.alert?.title, 'Switch servers?');
+  assert.equal(
+    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
+    0,
+    'the target host must not start before confirmation',
+  );
+
+  const confirm = fixture.environment.alert.buttons.find(button => button.text === 'Switch server');
+  assert.ok(confirm);
+  fixture.environment.alert = null;
+  await act(async () => {
+    confirm.onPress();
+  });
+  await settleAsync();
+
+  assert.equal(
+    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
+    1,
+  );
+  assert.ok(findText(fixture.root, 'Choose a runtime for Active target'));
+});
+
+test('failed saved-profile connection skips switch confirmation but still opens target picker', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000033', name: 'Failed picker',
+    host: 'failed.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'meeterm',
+  };
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.connection = { ...environment.connection, state: 'Failed', host: profile.host, port: profile.port };
+    environment.profiles = [profile];
+    environment.runtimeDiscovery = pickerDiscovery(4, [runtimeCandidate('failed-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]);
+    environment.snapshot = makeSnapshot();
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Failed picker'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.alert, null);
+  assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
+  assert.ok(findText(fixture.root, 'Choose a runtime for Failed picker'));
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-failed-tmux'));
+});
+
 test('saved-server connect authenticates first, then requires explicit runtime selection', async t => {
   const profile = {
     id: '00000000-0000-4000-8000-000000000021', name: 'Picker server',
@@ -1423,6 +1504,7 @@ test('saved-server connect authenticates first, then requires explicit runtime s
   await settleAsync();
   assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
   assert.equal(fixture.environment.nativeCalls.some(call => call.method === 'connectProfile'), false);
+  assert.ok(findText(fixture.root, 'Choose a runtime for Picker server'));
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-tmux-one'));
   assert.ok(findTestId(fixture.root, 'runtime-row-herdr-herdr-one'));
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-herdr-stopped').props.accessibilityState.disabled, true);
