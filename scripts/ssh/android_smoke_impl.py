@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import socket
 import stat
 import shutil
 import subprocess
@@ -121,14 +122,18 @@ RUNTIME_PICKER_ROW_PREFIXES = (
 FIXTURE_CONTROL_REQUEST_ENV = "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
 FIXTURE_CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
 FIXTURE_CONTROL_TIMEOUT_SECONDS = 25.0
-ADB_ADBD_RESTART_TIMEOUT_SECONDS = 15.0
+ADB_SERVER_RESTART_TIMEOUT_SECONDS = 15.0
 ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS = 30.0
 ADB_REVERSE_TIMEOUT_SECONDS = 10.0
-ADB_ROOT_RESPONSES = (
-    "restarting adbd as root",
-    "adbd is already running as root",
+ADB_SERVER_HOST = "127.0.0.1"
+ADB_SERVER_PORT = 5037
+ADB_SERVER_CLOSED_CONFIRMATIONS = 3
+ADB_SERVER_RESTART_OPT_IN = "MEETERM_ANDROID_ALLOW_ADB_SERVER_RESTART"
+ADB_SERVER_OVERRIDE_ENV = (
+    "ADB_SERVER_SOCKET",
+    "ANDROID_ADB_SERVER_ADDRESS",
+    "ANDROID_ADB_SERVER_PORT",
 )
-ADB_UNROOT_RESPONSE = "restarting adbd as non root"
 ANDROID_TRANSPORT_LOSS_PRE_PATTERN = re.compile(r"android-ssh-loss-pre-[0-9a-f]{16}")
 ANDROID_TRANSPORT_LOSS_POST_PATTERN = re.compile(r"android-ssh-loss-post-[0-9a-f]{16}")
 TRANSPORT_LOSS_COMPLETION_STAGES = (
@@ -342,7 +347,9 @@ class AndroidDevice:
         self.terminal_input_chars = 0
         self.terminal_input_chunks = 0
         self.foreground_evidence_lost = False
-        self.adbd_rooted = False
+        self.adb_server_restart_allowed = False
+        self.adb_server_stopped = False
+        self.shell_uid: int | None = None
         self.transport_reset_events: list[str] = []
 
     def _adb_command(self, arguments: tuple[str, ...]) -> list[str]:
@@ -381,126 +388,136 @@ class AndroidDevice:
         output = self.run(
             ("shell", "id", "-u"),
             stage,
-            timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
+            timeout=ADB_SERVER_RESTART_TIMEOUT_SECONDS,
         ).decode("utf-8", errors="replace")
         match = re.fullmatch(r"\s*(\d+)\s*", output)
         if match is None:
             raise SmokeFailure(stage, "adbd_uid_invalid")
         return int(match.group(1))
 
-    @staticmethod
-    def _response_has_line(response: str, expected: str) -> bool:
-        return expected in (line.strip() for line in response.splitlines())
-
-    def _record_unroot_rejection(self, response: str) -> None:
-        lines = tuple(line.strip() for line in response.splitlines() if line.strip())
-        if not lines:
-            category = "empty"
-        elif "adbd not running as root" in lines:
-            category = "not_root"
-        else:
-            category = "unexpected"
-        self.transport_reset_events.append(f"adbd_unroot_response_{category}")
-
-    def prepare_adbd_restart_injection(self) -> None:
-        """Require a debuggable emulator before any app/reverse setup."""
-
-        response = self.run(
-            ("root",),
-            "device_adbd_root",
-            timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
-        ).decode("utf-8", errors="replace").strip()
-        if response not in ADB_ROOT_RESPONSES:
-            raise SmokeFailure("device_adbd_root", "adbd_root_not_confirmed")
-        self.transport_reset_events.append("adbd_root_requested")
-        self.wait_for_device(
-            "device_adbd_root_wait",
-            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
-        )
-        if self.adbd_uid("device_adbd_root_verify") != 0:
-            raise SmokeFailure("device_adbd_root_verify", "adbd_not_root")
-        self.adbd_rooted = True
-        self.transport_reset_events.append("adbd_root_verified")
-
-    def _start_disconnect_waiter(self) -> subprocess.Popen[bytes]:
-        """Arm the serial-scoped disconnect observation before restarting adbd."""
+    def run_host_adb(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = ADB_SERVER_RESTART_TIMEOUT_SECONDS,
+    ) -> bytes:
+        """Run a host-scoped ADB command without silently selecting a transport."""
 
         try:
-            waiter = subprocess.Popen(
-                self._adb_command(("wait-for-disconnect",)),
+            result = subprocess.run(
+                [self.adb_path, *arguments],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
             )
-        except (FileNotFoundError, OSError) as error:
-            raise SmokeFailure(
-                "transport_wait_for_disconnect",
-                "adb_unavailable",
-            ) from error
-        if waiter.poll() is not None:
-            raise SmokeFailure(
-                "transport_wait_for_disconnect",
-                "disconnect_waiter_not_armed",
-            )
-        self.transport_reset_events.append("disconnect_waiter_armed")
-        return waiter
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
+            raise SmokeFailure(stage, "adb_unavailable") from error
+        if result.returncode != 0:
+            raise SmokeFailure(stage, "adb_failed")
+        return result.stdout
+
+    def _require_single_selected_emulator(self, stage: str) -> None:
+        output = self.run_host_adb(("devices", "-l"), stage).decode(
+            "utf-8", errors="replace"
+        )
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines or lines[0] != "List of devices attached":
+            raise SmokeFailure(stage, "adb_device_inventory_invalid")
+        rows = [line.split() for line in lines[1:]]
+        if (
+            len(rows) != 1
+            or len(rows[0]) < 2
+            or rows[0][0] != self.serial
+            or rows[0][1] != "device"
+            or re.fullmatch(r"emulator-[0-9]+", self.serial) is None
+        ):
+            raise SmokeFailure(stage, "adb_device_scope_unsafe")
 
     @staticmethod
-    def _stop_disconnect_waiter(waiter: subprocess.Popen[bytes]) -> None:
-        if waiter.poll() is not None:
-            return
-        waiter.terminate()
-        try:
-            waiter.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            waiter.kill()
-            try:
-                waiter.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                pass
+    def _require_default_server_environment(stage: str) -> None:
+        if os.environ.get(ADB_SERVER_RESTART_OPT_IN) != "1":
+            raise SmokeFailure(stage, "adb_server_restart_not_allowed")
+        if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("CI") != "true":
+            raise SmokeFailure(stage, "adb_server_restart_not_hosted_ci")
+        if any(os.environ.get(name) for name in ADB_SERVER_OVERRIDE_ENV):
+            raise SmokeFailure(stage, "adb_server_endpoint_overridden")
 
-    def _finish_disconnect_waiter(self, waiter: subprocess.Popen[bytes]) -> None:
-        try:
-            return_code = waiter.wait(timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired as error:
-            self._stop_disconnect_waiter(waiter)
-            raise SmokeFailure(
-                "transport_wait_for_disconnect",
-                "adb_unavailable",
-            ) from error
-        if return_code != 0:
-            raise SmokeFailure(
-                "transport_wait_for_disconnect",
-                "adb_failed",
-            )
-        self.transport_reset_events.append("disconnect_observed")
+    def prepare_adb_server_restart_injection(self) -> None:
+        """Allow a host-server restart only on one dedicated hosted emulator."""
 
-    def cleanup_adbd_root(self) -> bool:
-        """Best-effort caller hook that returns a rooted emulator to shell UID."""
+        stage = "device_adb_server_scope"
+        self._require_default_server_environment(stage)
+        self._require_single_selected_emulator(stage)
+        uid = self.adbd_uid(stage)
+        if uid != 2000:
+            raise SmokeFailure(stage, "adbd_not_shell")
+        reverse_list = self.run(
+            ("reverse", "--list"), stage, timeout=ADB_REVERSE_TIMEOUT_SECONDS
+        ).decode("utf-8", errors="replace")
+        if reverse_list.strip():
+            raise SmokeFailure(stage, "adb_reverse_scope_unsafe")
+        self.shell_uid = uid
+        self.adb_server_restart_allowed = True
+        self.transport_reset_events.append("adb_server_scope_verified")
 
+    @staticmethod
+    def _server_port_is_closed() -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.25)
+            return probe.connect_ex((ADB_SERVER_HOST, ADB_SERVER_PORT)) != 0
+
+    def _wait_for_server_port_closed(self) -> None:
+        deadline = time.monotonic() + ADB_SERVER_RESTART_TIMEOUT_SECONDS
+        confirmations = 0
+        observed_closed = False
+        while time.monotonic() < deadline:
+            if self._server_port_is_closed():
+                observed_closed = True
+                confirmations += 1
+                if confirmations >= ADB_SERVER_CLOSED_CONFIRMATIONS:
+                    self.transport_reset_events.append("adb_server_port_closed")
+                    return
+            else:
+                if observed_closed:
+                    raise SmokeFailure(
+                        "transport_adb_server_stop", "adb_server_restarted_early"
+                    )
+                confirmations = 0
+            time.sleep(0.1)
+        raise SmokeFailure("transport_adb_server_stop", "adb_server_port_open")
+
+    def _start_server_and_verify_device(self, stage_prefix: str) -> None:
+        self.run_host_adb(("start-server",), f"{stage_prefix}_start")
+        self.adb_server_stopped = False
+        self.transport_reset_events.append("adb_server_started")
         self.wait_for_device(
-            "cleanup_adbd_wait",
+            f"{stage_prefix}_wait_for_device",
             timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
         )
-        if self.adbd_uid("cleanup_adbd_uid") != 0:
-            self.adbd_rooted = False
+        self._require_single_selected_emulator(f"{stage_prefix}_device_scope")
+        self.transport_reset_events.append("same_serial_ready")
+        if self.shell_uid is None or self.adbd_uid(f"{stage_prefix}_shell_uid") != self.shell_uid:
+            raise SmokeFailure(f"{stage_prefix}_shell_uid", "adbd_uid_changed")
+        self.transport_reset_events.append("adbd_shell_verified")
+
+    def cleanup_adb_server(self) -> bool:
+        """Best-effort bounded recovery if kill-server failed midway."""
+
+        if not self.adb_server_stopped:
             return False
-        response = self.run(
-            ("unroot",),
-            "cleanup_adbd_unroot",
-            timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
-        ).decode("utf-8", errors="replace").strip()
-        if not self._response_has_line(response, ADB_UNROOT_RESPONSE):
-            self._record_unroot_rejection(response)
-            raise SmokeFailure("cleanup_adbd_unroot", "adbd_unroot_not_confirmed")
-        self.adbd_rooted = False
-        self.wait_for_device(
-            "cleanup_adbd_return",
-            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
-        )
-        if self.adbd_uid("cleanup_adbd_verify") != 2000:
-            raise SmokeFailure("cleanup_adbd_verify", "adbd_not_shell")
-        self.transport_reset_events.append("adbd_cleanup_unrooted")
+        self._start_server_and_verify_device("cleanup_adb_server")
+        reverse_list = self.run(
+            ("reverse", "--list"),
+            "cleanup_adb_server_reverse",
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace")
+        if reverse_list.strip():
+            raise SmokeFailure(
+                "cleanup_adb_server_reverse", "adb_reverse_scope_unsafe"
+            )
+        self.transport_reset_events.append("adb_server_cleanup_restored")
         return True
 
     def create_reverse_mapping(self, port: int, stage: str) -> None:
@@ -551,50 +568,43 @@ class AndroidDevice:
             )
 
     def reconnect_transport(self, port: int) -> None:
-        """Restart this serial's adbd and restore its fixture mapping."""
+        """Restart the dedicated hosted ADB server and restore one reverse."""
 
-        # Removing the exact listener is not proof that an accepted reverse
-        # stream closed. The public root/unroot service restarts adbd, which
-        # owns that accepted relay. Arm the serial-scoped disconnect observer
-        # before triggering the restart so a fast emulator cannot race past
-        # the evidence boundary. Never reset the shared host ADB server.
-        if not self.adbd_rooted:
-            raise SmokeFailure("transport_adbd_unroot", "adbd_root_precondition_missing")
-        if self.adbd_uid("transport_adbd_root_recheck") != 0:
-            raise SmokeFailure("transport_adbd_root_recheck", "adbd_not_root")
-        self.transport_reset_events.append("adbd_root_reverified")
+        if not self.adb_server_restart_allowed or self.shell_uid is None:
+            raise SmokeFailure(
+                "transport_adb_server_scope", "adb_server_precondition_missing"
+            )
+        self._require_default_server_environment("transport_adb_server_scope")
+        self._require_single_selected_emulator("transport_adb_server_scope")
+        if self.adbd_uid("transport_adb_server_scope") != self.shell_uid:
+            raise SmokeFailure("transport_adb_server_scope", "adbd_uid_changed")
+        reverse_list = self.run(
+            ("reverse", "--list"),
+            "transport_reverse_scope",
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace")
+        reverse_rows = [line for line in reverse_list.splitlines() if line.strip()]
+        if len(reverse_rows) != 1 or not reverse_exact_mapping_exists(reverse_list, port):
+            raise SmokeFailure("transport_reverse_scope", "adb_reverse_scope_unsafe")
         self.remove_reverse_mapping(port)
         self.transport_reset_events.append("reverse_mapping_removed")
-        waiter = self._start_disconnect_waiter()
-        waiter_finished = False
         try:
-            response = self.run(
-                ("unroot",),
-                "transport_adbd_unroot",
-                timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
-            ).decode("utf-8", errors="replace").strip()
-            if not self._response_has_line(response, ADB_UNROOT_RESPONSE):
-                self._record_unroot_rejection(response)
-                raise SmokeFailure(
-                    "transport_adbd_unroot",
-                    "adbd_unroot_not_confirmed",
-                )
-            self.adbd_rooted = False
-            self.transport_reset_events.append("adbd_unroot_response_confirmed")
-            self.transport_reset_events.append("adbd_unroot_restart_requested")
-            self._finish_disconnect_waiter(waiter)
-            waiter_finished = True
+            self.adb_server_stopped = True
+            self.transport_reset_events.append("adb_server_kill_requested")
+            self.run_host_adb(("kill-server",), "transport_adb_server_stop")
+            self._wait_for_server_port_closed()
+            self._start_server_and_verify_device("transport_adb_server")
         finally:
-            if not waiter_finished:
-                self._stop_disconnect_waiter(waiter)
-        self.wait_for_device(
-            "transport_wait_for_device",
-            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
-        )
-        self.transport_reset_events.append("same_serial_returned")
-        if self.adbd_uid("transport_adbd_unroot_verify") != 2000:
-            raise SmokeFailure("transport_adbd_unroot_verify", "adbd_not_shell")
-        self.transport_reset_events.append("adbd_shell_verified")
+            if self.adb_server_stopped:
+                self.cleanup_adb_server()
+        reverse_list = self.run(
+            ("reverse", "--list"),
+            "transport_reverse_absent",
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace")
+        if reverse_list.strip():
+            raise SmokeFailure("transport_reverse_absent", "adb_reverse_scope_unsafe")
+        self.transport_reset_events.append("reverse_mapping_absent")
         self.create_reverse_mapping(port, "transport_reverse")
         self.verify_reverse_mapping(port, "transport_reverse_verify")
         self.transport_reset_events.append("reverse_mapping_restored")
@@ -4774,8 +4784,8 @@ def main(argv: list[str] | None = None) -> int:
         device = AndroidDevice(serial, adb_path)
         device.wait_for_device()
         completed.append("device_ready")
-        device.prepare_adbd_restart_injection()
-        completed.append("adbd_root_verified")
+        device.prepare_adb_server_restart_injection()
+        completed.append("adb_server_scope_verified")
 
         stage = "reverse"
         reverse_list = device.run(("reverse", "--list"), stage, timeout=10.0).decode(
@@ -5546,10 +5556,10 @@ def main(argv: list[str] | None = None) -> int:
                 except SmokeFailure:
                     pass
             try:
-                if device.cleanup_adbd_root():
-                    completed.append("adbd_cleanup_unrooted")
+                if device.cleanup_adb_server():
+                    completed.append("adb_server_cleanup_restored")
             except SmokeFailure:
-                completed.append("adbd_cleanup_unavailable")
+                completed.append("adb_server_cleanup_unavailable")
             write_artifact(
                 args.artifact_dir / "adb-transport-loss.txt",
                 "\n".join(device.transport_reset_events or ("not_started",)) + "\n",

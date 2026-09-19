@@ -48,18 +48,18 @@ class _FakeClock:
 class FakeDevice(smoke.AndroidDevice):
     """ADB command fake that keeps command order and bounded timeouts visible."""
 
-    def __init__(self, outcomes: list[bytes | tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        outcomes: list[bytes | tuple[str, str]],
+        *,
+        port_states: list[bool] | None = None,
+    ) -> None:
         super().__init__("emulator-5554", "adb")
         self.outcomes = list(outcomes)
-        self.commands: list[tuple[tuple[str, ...], str, float]] = []
+        self.port_states = list(port_states or [])
+        self.commands: list[tuple[str, tuple[str, ...], str, float]] = []
 
-    def run(
-        self,
-        arguments: tuple[str, ...],
-        stage: str,
-        timeout: float = 15.0,
-    ) -> bytes:
-        self.commands.append((arguments, stage, timeout))
+    def _outcome(self, stage: str) -> bytes:
         if not self.outcomes:
             raise AssertionError("FakeDevice received an unexpected adb command")
         outcome = self.outcomes.pop(0)
@@ -67,351 +67,210 @@ class FakeDevice(smoke.AndroidDevice):
             raise smoke.SmokeFailure(stage, outcome[1])
         return outcome
 
-    def _start_disconnect_waiter(self) -> object:
-        stage = "transport_wait_for_disconnect"
-        timeout = smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS
-        self.commands.append((("wait-for-disconnect",), stage, timeout))
-        if not self.outcomes:
-            raise AssertionError("FakeDevice received an unexpected adb command")
-        outcome = self.outcomes.pop(0)
-        if isinstance(outcome, tuple):
-            raise smoke.SmokeFailure(stage, outcome[1])
-        self.transport_reset_events.append("disconnect_waiter_armed")
-        return object()
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = 15.0,
+    ) -> bytes:
+        self.commands.append(("device", arguments, stage, timeout))
+        return self._outcome(stage)
 
-    def _finish_disconnect_waiter(self, waiter: object) -> None:
-        del waiter
-        self.transport_reset_events.append("disconnect_observed")
+    def run_host_adb(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = smoke.ADB_SERVER_RESTART_TIMEOUT_SECONDS,
+    ) -> bytes:
+        self.commands.append(("host", arguments, stage, timeout))
+        return self._outcome(stage)
 
-    @staticmethod
-    def _stop_disconnect_waiter(waiter: object) -> None:
-        del waiter
+    def _server_port_is_closed(self) -> bool:
+        self.commands.append(("probe", (), "transport_adb_server_stop", 0.25))
+        if not self.port_states:
+            raise AssertionError("FakeDevice received an unexpected server probe")
+        return self.port_states.pop(0)
 
 
 class AdbTransportResetTests(unittest.TestCase):
-    def test_prepare_adbd_restart_requires_root_response_and_uid(self) -> None:
-        device = FakeDevice([b"restarting adbd as root\n", b"", b"0\n"])
+    HOSTED_ENV = {
+        smoke.ADB_SERVER_RESTART_OPT_IN: "1",
+        "GITHUB_ACTIONS": "true",
+        "CI": "true",
+    }
+    INVENTORY = b"List of devices attached\nemulator-5554 device product:sdk model:test\n"
 
-        device.prepare_adbd_restart_injection()
+    def test_prepare_requires_explicit_hosted_ci_opt_in(self) -> None:
+        device = FakeDevice([])
 
-        self.assertTrue(device.adbd_rooted)
-        self.assertEqual(
-            [(arguments, stage) for arguments, stage, _timeout in device.commands],
-            [
-                (("root",), "device_adbd_root"),
-                (("wait-for-device",), "device_adbd_root_wait"),
-                (("shell", "id", "-u"), "device_adbd_root_verify"),
-            ],
+        with mock.patch.dict(smoke.os.environ, {}, clear=True):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.prepare_adb_server_restart_injection()
+
+        self.assertEqual(error.exception.reason, "adb_server_restart_not_allowed")
+        self.assertEqual(device.commands, [])
+
+    def test_prepare_rejects_local_opt_in(self) -> None:
+        device = FakeDevice([])
+
+        with mock.patch.dict(
+            smoke.os.environ,
+            {smoke.ADB_SERVER_RESTART_OPT_IN: "1"},
+            clear=True,
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.prepare_adb_server_restart_injection()
+
+        self.assertEqual(error.exception.reason, "adb_server_restart_not_hosted_ci")
+
+    def test_prepare_rejects_every_server_endpoint_override(self) -> None:
+        for name in smoke.ADB_SERVER_OVERRIDE_ENV:
+            with self.subTest(name=name):
+                device = FakeDevice([])
+                environment = {**self.HOSTED_ENV, name: "custom"}
+                with mock.patch.dict(smoke.os.environ, environment, clear=True):
+                    with self.assertRaises(smoke.SmokeFailure) as error:
+                        device.prepare_adb_server_restart_injection()
+                self.assertEqual(error.exception.reason, "adb_server_endpoint_overridden")
+                self.assertEqual(device.commands, [])
+
+    def test_prepare_requires_one_selected_ready_emulator(self) -> None:
+        unsafe = (
+            b"List of devices attached\nemulator-5554 offline\n",
+            b"List of devices attached\nemulator-5554 unauthorized\n",
+            b"List of devices attached\nemulator-5554 device\nemulator-5556 device\n",
+            b"List of devices attached\nphysical device\n",
         )
-        self.assertEqual(
-            device.transport_reset_events,
-            ["adbd_root_requested", "adbd_root_verified"],
+        for inventory in unsafe:
+            with self.subTest(inventory=inventory):
+                device = FakeDevice([inventory])
+                with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+                    with self.assertRaises(smoke.SmokeFailure) as error:
+                        device.prepare_adb_server_restart_injection()
+                self.assertEqual(error.exception.reason, "adb_device_scope_unsafe")
+
+    def test_prepare_rejects_unparseable_inventory(self) -> None:
+        device = FakeDevice([b"unexpected adb output\n"])
+        with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.prepare_adb_server_restart_injection()
+        self.assertEqual(error.exception.reason, "adb_device_inventory_invalid")
+
+    def test_prepare_rejects_non_emulator_serial_even_when_ready(self) -> None:
+        device = FakeDevice([b"List of devices attached\nphysical-1 device\n"])
+        device.serial = "physical-1"
+        with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.prepare_adb_server_restart_injection()
+        self.assertEqual(error.exception.reason, "adb_device_scope_unsafe")
+
+    def test_prepare_rejects_non_shell_uid_and_existing_reverse(self) -> None:
+        cases = (
+            ([self.INVENTORY, b"0\n"], "adbd_not_shell"),
+            (
+                [self.INVENTORY, b"2000\n", b"emulator-5554 tcp:1 tcp:1\n"],
+                "adb_reverse_scope_unsafe",
+            ),
         )
+        for outcomes, reason in cases:
+            with self.subTest(reason=reason):
+                device = FakeDevice(outcomes)
+                with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+                    with self.assertRaises(smoke.SmokeFailure) as error:
+                        device.prepare_adb_server_restart_injection()
+                self.assertEqual(error.exception.reason, reason)
+                self.assertFalse(device.adb_server_restart_allowed)
 
-    def test_prepare_adbd_restart_accepts_already_root(self) -> None:
-        device = FakeDevice([b"adbd is already running as root\n", b"", b"0\n"])
+    def test_prepare_records_only_sanitized_scope_event(self) -> None:
+        device = FakeDevice([self.INVENTORY, b"2000\n", b""])
 
-        device.prepare_adbd_restart_injection()
+        with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+            device.prepare_adb_server_restart_injection()
 
-        self.assertTrue(device.adbd_rooted)
+        self.assertTrue(device.adb_server_restart_allowed)
+        self.assertEqual(device.shell_uid, 2000)
+        self.assertEqual(device.transport_reset_events, ["adb_server_scope_verified"])
 
-    def test_prepare_adbd_restart_rejects_production_image(self) -> None:
-        device = FakeDevice([b"adbd cannot run as root in production builds\n"])
+    def _prepared_reconnect_device(
+        self,
+        outcomes: list[bytes | tuple[str, str]],
+        *,
+        port_states: list[bool] | None = None,
+    ) -> FakeDevice:
+        device = FakeDevice(outcomes, port_states=port_states)
+        device.adb_server_restart_allowed = True
+        device.shell_uid = 2000
+        device.transport_reset_events.append("adb_server_scope_verified")
+        return device
 
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.prepare_adbd_restart_injection()
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("device_adbd_root", "adbd_root_not_confirmed"),
-        )
-        self.assertFalse(device.adbd_rooted)
-
-    def test_prepare_adbd_restart_rejects_non_root_uid(self) -> None:
-        device = FakeDevice([b"restarting adbd as root\n", b"", b"2000\n"])
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.prepare_adbd_restart_injection()
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("device_adbd_root_verify", "adbd_not_root"),
-        )
-
-    def test_reconnect_transport_restarts_adbd_and_restores_exact_reverse_order(self) -> None:
+    def test_reconnect_transport_restarts_host_server_and_restores_exact_reverse_order(self) -> None:
         device = FakeDevice(
             [
-                b"0\n",  # adbd is still root immediately before mutation
-                b"",  # adb reverse --remove tcp:<port>
-                b"",  # adb reverse --list (mapping absent)
-                b"",  # arm adb wait-for-disconnect
-                b"host diagnostic\nrestarting adbd as non root\n",
-                b"",  # adb wait-for-device
-                b"2000\n",  # adb shell id -u
-                b"",  # adb reverse --no-rebind tcp:<port> tcp:<port>
-                b"emulator-5554 tcp:2222 tcp:2222\n",  # adb reverse --list
-            ]
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"",
+                b"",
+                b"",
+                b"",
+                self.INVENTORY,
+                b"2000\n",
+                b"",
+                b"",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+            ],
+            port_states=[True, True, True],
         )
-        device.adbd_rooted = True
+        device.adb_server_restart_allowed = True
+        device.shell_uid = 2000
 
-        device.reconnect_transport(2222)
+        with (
+            mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True),
+            mock.patch.object(smoke.time, "sleep"),
+        ):
+            device.reconnect_transport(2222)
 
         self.assertEqual(
-            [(arguments, stage) for arguments, stage, _timeout in device.commands],
+            [(kind, arguments, stage) for kind, arguments, stage, _ in device.commands],
             [
-                (("shell", "id", "-u"), "transport_adbd_root_recheck"),
-                (("reverse", "--remove", "tcp:2222"), "transport_reverse_remove"),
-                (("reverse", "--list"), "transport_reverse_remove_verify"),
-                (("wait-for-disconnect",), "transport_wait_for_disconnect"),
-                (("unroot",), "transport_adbd_unroot"),
-                (("wait-for-device",), "transport_wait_for_device"),
-                (("shell", "id", "-u"), "transport_adbd_unroot_verify"),
-                (
+                ("host", ("devices", "-l"), "transport_adb_server_scope"),
+                ("device", ("shell", "id", "-u"), "transport_adb_server_scope"),
+                ("device", ("reverse", "--list"), "transport_reverse_scope"),
+                ("device", ("reverse", "--remove", "tcp:2222"), "transport_reverse_remove"),
+                ("device", ("reverse", "--list"), "transport_reverse_remove_verify"),
+                ("host", ("kill-server",), "transport_adb_server_stop"),
+                ("probe", (), "transport_adb_server_stop"),
+                ("probe", (), "transport_adb_server_stop"),
+                ("probe", (), "transport_adb_server_stop"),
+                ("host", ("start-server",), "transport_adb_server_start"),
+                ("device", ("wait-for-device",), "transport_adb_server_wait_for_device"),
+                ("host", ("devices", "-l"), "transport_adb_server_device_scope"),
+                ("device", ("shell", "id", "-u"), "transport_adb_server_shell_uid"),
+                ("device", ("reverse", "--list"), "transport_reverse_absent"),
+                ("device",
                     ("reverse", "--no-rebind", "tcp:2222", "tcp:2222"),
-                    "transport_reverse",
+                    "transport_reverse"
                 ),
-                (("reverse", "--list"), "transport_reverse_verify"),
+                ("device", ("reverse", "--list"), "transport_reverse_verify"),
             ],
         )
-        self.assertEqual(
-            [timeout for _arguments, _stage, timeout in device.commands],
-            [
-                smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS,
-                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
-                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
-                smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
-                smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS,
-                smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
-                smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS,
-                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
-                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
-            ],
-        )
-        self.assertFalse(device.adbd_rooted)
+        self.assertFalse(device.adb_server_stopped)
         self.assertEqual(
             device.transport_reset_events,
             [
-                "adbd_root_reverified",
                 "reverse_mapping_removed",
-                "disconnect_waiter_armed",
-                "adbd_unroot_response_confirmed",
-                "adbd_unroot_restart_requested",
-                "disconnect_observed",
-                "same_serial_returned",
+                "adb_server_kill_requested",
+                "adb_server_port_closed",
+                "adb_server_started",
+                "same_serial_ready",
                 "adbd_shell_verified",
+                "reverse_mapping_absent",
                 "reverse_mapping_restored",
             ],
         )
 
-    def test_unroot_failure_is_bounded_and_sanitized(self) -> None:
-        device = FakeDevice([b"0\n", b"", b"", b"", ("failure", "adb_failed")])
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_adbd_unroot", "adb_failed"),
-        )
-        self.assertEqual(device.commands[4][2], smoke.ADB_ADBD_RESTART_TIMEOUT_SECONDS)
-
-    def test_unroot_without_restart_response_fails_closed(self) -> None:
-        device = FakeDevice(
-            [b"0\n", b"", b"", b"", b"adbd not running as root\n"]
-        )
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_adbd_unroot", "adbd_unroot_not_confirmed"),
-        )
-        self.assertIn("adbd_unroot_response_not_root", device.transport_reset_events)
-
-    def test_unroot_empty_response_is_classified_and_rejected(self) -> None:
-        device = FakeDevice([b"0\n", b"", b"", b"", b""])
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(error.exception.reason, "adbd_unroot_not_confirmed")
-        self.assertIn("adbd_unroot_response_empty", device.transport_reset_events)
-
-    def test_unroot_response_substring_is_classified_and_rejected(self) -> None:
-        device = FakeDevice(
-            [b"0\n", b"", b"", b"", b"prefix restarting adbd as non root suffix\n"]
-        )
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(error.exception.reason, "adbd_unroot_not_confirmed")
-        self.assertIn("adbd_unroot_response_unexpected", device.transport_reset_events)
-
-    def test_root_is_rechecked_before_reverse_mutation(self) -> None:
-        device = FakeDevice([b"2000\n"])
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_adbd_root_recheck", "adbd_not_root"),
-        )
-        self.assertEqual(
-            [arguments for arguments, _stage, _timeout in device.commands],
-            [("shell", "id", "-u")],
-        )
-
-    def test_reverse_remove_must_be_observed_before_transport_reconnect(self) -> None:
-        device = FakeDevice([b"0\n", b"", b"emulator-5554 tcp:2222 tcp:2222\n"])
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_reverse_remove_verify", "reverse_mapping_present"),
-        )
-        self.assertEqual(
-            [arguments for arguments, _stage, _timeout in device.commands],
-            [
-                ("shell", "id", "-u"),
-                ("reverse", "--remove", "tcp:2222"),
-                ("reverse", "--list"),
-            ],
-        )
-
-    def test_wait_for_disconnect_failure_does_not_trigger_unroot(self) -> None:
-        device = FakeDevice([b"0\n", b"", b"", ("failure", "adb_failed")])
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_wait_for_disconnect", "adb_failed"),
-        )
-        self.assertEqual(
-            [arguments for arguments, _stage, _timeout in device.commands],
-            [
-                ("shell", "id", "-u"),
-                ("reverse", "--remove", "tcp:2222"),
-                ("reverse", "--list"),
-                ("wait-for-disconnect",),
-            ],
-        )
-
-    def test_disconnect_waiter_is_serial_scoped_and_armed_before_return(self) -> None:
-        device = smoke.AndroidDevice("emulator-5554", "adb")
-        waiter = mock.Mock()
-        waiter.poll.return_value = None
-
-        with mock.patch.object(smoke.subprocess, "Popen", return_value=waiter) as popen:
-            self.assertIs(device._start_disconnect_waiter(), waiter)
-
-        popen.assert_called_once_with(
-            ["adb", "-s", "emulator-5554", "wait-for-disconnect"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-    def test_disconnect_waiter_timeout_is_bounded_and_terminated(self) -> None:
-        device = smoke.AndroidDevice("emulator-5554", "adb")
-        waiter = mock.Mock()
-        waiter.wait.side_effect = [
-            subprocess.TimeoutExpired("adb", smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS),
-            0,
-        ]
-        waiter.poll.return_value = None
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device._finish_disconnect_waiter(waiter)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_wait_for_disconnect", "adb_unavailable"),
-        )
-        waiter.terminate.assert_called_once_with()
-
-    def test_wait_for_device_failure_does_not_restore_reverse_mapping(self) -> None:
-        device = FakeDevice(
-            [
-                b"0\n",
-                b"",
-                b"",
-                b"",
-                b"restarting adbd as non root\n",
-                ("failure", "adb_failed"),
-            ]
-        )
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_wait_for_device", "adb_failed"),
-        )
-
-    def test_reverse_restore_failure_is_bounded(self) -> None:
-        device = FakeDevice(
-            [
-                b"0\n",
-                b"",
-                b"",
-                b"",
-                b"restarting adbd as non root\n",
-                b"",
-                b"2000\n",
-                ("failure", "adb_failed"),
-            ]
-        )
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_reverse", "adb_failed"),
-        )
-
-    def test_reverse_verification_rejects_wrong_remote_mapping(self) -> None:
-        device = FakeDevice(
-            [
-                b"0\n",
-                b"",
-                b"",
-                b"",
-                b"restarting adbd as non root\n",
-                b"",
-                b"2000\n",
-                b"",
-                b"emulator-5554 tcp:2222 tcp:2223\n",
-            ]
-        )
-        device.adbd_rooted = True
-
-        with self.assertRaises(smoke.SmokeFailure) as error:
-            device.reconnect_transport(2222)
-
-        self.assertEqual(
-            (error.exception.stage, error.exception.reason),
-            ("transport_reverse_verify", "reverse_mapping_missing"),
-        )
-
-    def test_missing_root_precondition_never_starts_disconnect_waiter(self) -> None:
+    def test_missing_server_precondition_never_mutates_adb(self) -> None:
         device = FakeDevice([])
 
         with self.assertRaises(smoke.SmokeFailure) as error:
@@ -419,24 +278,207 @@ class AdbTransportResetTests(unittest.TestCase):
 
         self.assertEqual(
             (error.exception.stage, error.exception.reason),
-            ("transport_adbd_unroot", "adbd_root_precondition_missing"),
+            ("transport_adb_server_scope", "adb_server_precondition_missing"),
         )
         self.assertEqual(device.commands, [])
 
-    def test_cleanup_returns_rooted_emulator_to_shell_uid(self) -> None:
-        device = FakeDevice(
+    def test_other_reverse_mapping_fails_before_remove_or_server_kill(self) -> None:
+        device = self._prepared_reconnect_device(
             [
-                b"",
-                b"0\n",
-                b"restarting adbd as non root\n",
-                b"",
+                self.INVENTORY,
                 b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n"
+                b"emulator-5554 tcp:3333 tcp:3333\n",
             ]
         )
-        device.adbd_rooted = True
+        with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.reconnect_transport(2222)
+        self.assertEqual(error.exception.reason, "adb_reverse_scope_unsafe")
+        self.assertNotIn(("host", ("kill-server",)), [item[:2] for item in device.commands])
 
-        self.assertTrue(device.cleanup_adbd_root())
-        self.assertFalse(device.adbd_rooted)
+    def test_reverse_remove_must_be_observed_before_server_kill(self) -> None:
+        device = self._prepared_reconnect_device(
+            [
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+            ]
+        )
+        with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.reconnect_transport(2222)
+        self.assertEqual(error.exception.reason, "reverse_mapping_present")
+        self.assertNotIn(("host", ("kill-server",)), [item[:2] for item in device.commands])
+
+    def test_server_auto_restart_race_fails_closed_and_cleanup_restores_device(self) -> None:
+        device = self._prepared_reconnect_device(
+            [
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"",
+                b"",
+                b"",
+                b"",
+                self.INVENTORY,
+                b"2000\n",
+                b"",
+            ],
+            port_states=[True, True, False],
+        )
+        with (
+            mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True),
+            mock.patch.object(smoke.time, "sleep"),
+            self.assertRaises(smoke.SmokeFailure) as error,
+        ):
+            device.reconnect_transport(2222)
+        self.assertEqual(error.exception.reason, "adb_server_restarted_early")
+        self.assertFalse(device.adb_server_stopped)
+        self.assertIn("adb_server_cleanup_restored", device.transport_reset_events)
+
+    def test_kill_failure_still_runs_bounded_server_cleanup(self) -> None:
+        device = self._prepared_reconnect_device(
+            [
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"",
+                ("failure", "adb_failed"),
+                b"",
+                b"",
+                self.INVENTORY,
+                b"2000\n",
+                b"",
+            ]
+        )
+        with mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.reconnect_transport(2222)
+        self.assertEqual(error.exception.stage, "transport_adb_server_stop")
+        self.assertFalse(device.adb_server_stopped)
+        self.assertIn("adb_server_cleanup_restored", device.transport_reset_events)
+
+    def test_cleanup_requires_reverse_list_to_remain_empty(self) -> None:
+        device = self._prepared_reconnect_device(
+            [
+                b"",
+                b"",
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+            ]
+        )
+        device.adb_server_stopped = True
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.cleanup_adb_server()
+        self.assertEqual(error.exception.reason, "adb_reverse_scope_unsafe")
+        self.assertFalse(device.adb_server_stopped)
+        self.assertNotIn("adb_server_cleanup_restored", device.transport_reset_events)
+
+    def test_server_port_requires_consecutive_closed_observations(self) -> None:
+        device = FakeDevice([], port_states=[True, True, False])
+        clock = _FakeClock()
+        with _patched_clock(clock), self.assertRaises(smoke.SmokeFailure) as error:
+            device._wait_for_server_port_closed()
+        self.assertEqual(error.exception.reason, "adb_server_restarted_early")
+        self.assertNotIn("adb_server_port_closed", device.transport_reset_events)
+
+    def test_server_port_open_timeout_is_bounded(self) -> None:
+        device = FakeDevice([], port_states=[False] * 200)
+        clock = _FakeClock()
+        with _patched_clock(clock), self.assertRaises(smoke.SmokeFailure) as error:
+            device._wait_for_server_port_closed()
+        self.assertEqual(error.exception.reason, "adb_server_port_open")
+        self.assertGreaterEqual(clock.now, smoke.ADB_SERVER_RESTART_TIMEOUT_SECONDS)
+
+    def test_host_server_command_is_not_serial_scoped(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        result = mock.Mock(returncode=0, stdout=b"")
+        with mock.patch.object(smoke.subprocess, "run", return_value=result) as run:
+            device.run_host_adb(("kill-server",), "server_stop")
+        self.assertEqual(run.call_args.args[0], ["adb", "kill-server"])
+        self.assertNotIn("-s", run.call_args.args[0])
+
+    def test_restart_rejects_changed_serial_before_reverse_restore(self) -> None:
+        changed_inventory = b"List of devices attached\nemulator-5556 device\n"
+        device = self._prepared_reconnect_device(
+            [
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"",
+                b"",
+                b"",
+                b"",
+                changed_inventory,
+            ],
+            port_states=[True, True, True],
+        )
+        with (
+            mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True),
+            mock.patch.object(smoke.time, "sleep"),
+            self.assertRaises(smoke.SmokeFailure) as error,
+        ):
+            device.reconnect_transport(2222)
+        self.assertEqual(error.exception.reason, "adb_device_scope_unsafe")
+        self.assertNotIn("reverse_mapping_restored", device.transport_reset_events)
+
+    def test_restart_rejects_changed_shell_uid_before_reverse_restore(self) -> None:
+        device = self._prepared_reconnect_device(
+            [
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"",
+                b"",
+                b"",
+                b"",
+                self.INVENTORY,
+                b"0\n",
+            ],
+            port_states=[True, True, True],
+        )
+        with (
+            mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True),
+            mock.patch.object(smoke.time, "sleep"),
+            self.assertRaises(smoke.SmokeFailure) as error,
+        ):
+            device.reconnect_transport(2222)
+        self.assertEqual(error.exception.reason, "adbd_uid_changed")
+        self.assertNotIn("reverse_mapping_restored", device.transport_reset_events)
+
+    def test_restart_requires_reverse_list_to_remain_empty(self) -> None:
+        device = self._prepared_reconnect_device(
+            [
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+                b"",
+                b"",
+                b"",
+                b"",
+                b"",
+                self.INVENTORY,
+                b"2000\n",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+            ],
+            port_states=[True, True, True],
+        )
+        with (
+            mock.patch.dict(smoke.os.environ, self.HOSTED_ENV, clear=True),
+            mock.patch.object(smoke.time, "sleep"),
+            self.assertRaises(smoke.SmokeFailure) as error,
+        ):
+            device.reconnect_transport(2222)
+        self.assertEqual(error.exception.reason, "adb_reverse_scope_unsafe")
+        self.assertNotIn("reverse_mapping_restored", device.transport_reset_events)
 
     def test_reverse_mapping_distinguishes_local_ownership_from_exact_pair(self) -> None:
         self.assertTrue(

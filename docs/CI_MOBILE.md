@@ -58,12 +58,14 @@ default is `standard`.
   remote acknowledgment. It also runs a separate deterministic transport-loss
   case: the disposable fixture stops/restarts only its sshd through its
   fixture-owned control files, while tmux remains alive. After the stop ACK,
-  the Android driver first requires a debuggable emulator through serial-scoped
-  `adb root` and UID 0. It removes and verifies absence of the exact
-  `tcp:<port>` reverse listener, arms a bounded `wait-for-disconnect`, and runs
-  `adb unroot` to restart the selected device's adbd and close its accepted
-  reverse relay. It then waits for the same serial, verifies shell UID 2000,
-  recreates the exact reverse pair, and verifies it with `adb reverse --list`.
+  the Android driver requires an explicit hosted-CI opt-in, the default local
+  ADB server, one selected shell-UID-2000 emulator, and no unrelated reverse
+  mapping. It removes and verifies absence of the exact `tcp:<port>` listener,
+  stops the host ADB server, and confirms `127.0.0.1:5037` is closed with raw
+  bounded TCP probes before restarting it. It then requires only the same
+  serial to return with the same shell UID, verifies that the reverse list is
+  still empty, recreates the exact reverse pair, and verifies it with
+  `adb reverse --list`.
   The app must then show the retained read-only rail and
   return Ready to the same pane/native handle without reopening the picker,
   followed by one post-loss remote acknowledgment and disconnect. No daily
@@ -146,19 +148,23 @@ The HOME transition just described is the healthy foreground evidence and does
 not simulate a transport failure. The same Android `full` run separately sends
 `stop` and `start` requests through the fixture's mode-0600
 `sshd-control-request`/`sshd-control-status` files. After the stop ACK, the
-driver has already required that the selected debug emulator supports `adb root`
-and reports UID 0. It removes only the exact reverse listener and verifies its
-absence, arms serial-scoped `wait-for-disconnect`, then uses the public `adb unroot`
-command to restart that device's adbd. It requires the disconnect observation,
-the same serial's bounded return, shell UID 2000, and recreates/verifies only the exact
+driver has already required a GitHub-hosted CI opt-in, no custom ADB endpoint,
+one selected emulator in `device` state with shell UID 2000, and no pre-existing
+reverse mapping. Immediately before mutation it repeats the device, UID, and
+single exact-mapping checks. It removes only that listener, verifies its absence,
+then stops the host ADB server. Three consecutive raw TCP refusals on the default
+`127.0.0.1:5037` endpoint prove that the relay-owning process exited; an early
+listener return fails closed. The driver restarts the server, requires the same
+serial's bounded return and unchanged shell UID, requires an empty reverse list,
+and recreates/verifies only the exact
 `adb reverse tcp:<fixture-port> tcp:<fixture-port>` mapping. Only the fixture
 sshd process tree is stopped; the tmux server/session/shell and endpoint identity
 are left alive. ADB reverse removal alone is not treated as the loss injection;
-the adbd restart and bounded `wait-for-disconnect` are required before restoration.
-The driver rechecks root UID immediately before reverse mutation. The official
-root/unroot response must appear as a complete response line; empty, unexpected,
-or non-root responses, UID, selected serial, reverse row, and waiter are all
-fail-closed. Cleanup returns an unexpectedly rooted emulator to shell UID. The driver
+the verified host-server exit is required before restoration. This global ADB
+operation is forbidden outside the opted-in single-emulator hosted job; endpoint
+overrides, another/offline/unauthorized transport, another reverse row, UID or
+serial changes, and an auto-start race are all fail-closed. A bounded `finally`
+path restarts the server if the injection fails after the stop begins. The driver
 records sanitized fixed results for the pre-loss and post-loss markers, the
 cached read-only rail, the same native handle, the same selected pane, and the
 absence of input while stopped. On iOS, the final
