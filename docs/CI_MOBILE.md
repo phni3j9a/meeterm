@@ -58,14 +58,13 @@ default is `standard`.
   remote acknowledgment. It also runs a separate deterministic transport-loss
   case: the disposable fixture stops/restarts only its sshd through its
   fixture-owned control files, while tmux remains alive. After the stop ACK,
-  the Android driver requires an explicit hosted-CI opt-in, the default local
-  ADB server, one selected shell-UID-2000 emulator, and no unrelated reverse
-  mapping. It removes and verifies absence of the exact `tcp:<port>` listener,
-  stops the host ADB server, and confirms `127.0.0.1:5037` is closed with raw
-  bounded TCP probes before restarting it. It then requires only the same
-  serial to return with the same shell UID, verifies that the reverse list is
-  still empty, recreates the exact reverse pair, and verifies it with
-  `adb reverse --list`.
+  the Android driver reaches the fixture directly through the Android
+  Emulator's reserved `10.0.2.2` alias for the host loopback interface. It
+  requires exactly one ready `emulator-<port>` transport before credential
+  entry, requires an empty serial-scoped reverse list before and after the
+  loss case, and runs a bounded zero-I/O reachability probe to the exact alias
+  and fixture port. It does not create or remove an ADB reverse mapping. The fixture's exact accepted sshd session
+  therefore owns the connection-loss boundary without an intermediate relay.
   The app must then show the retained read-only rail and
   return Ready to the same pane/native handle without reopening the picker,
   followed by one post-loss remote acknowledgment and disconnect. No daily
@@ -148,23 +147,15 @@ The HOME transition just described is the healthy foreground evidence and does
 not simulate a transport failure. The same Android `full` run separately sends
 `stop` and `start` requests through the fixture's mode-0600
 `sshd-control-request`/`sshd-control-status` files. After the stop ACK, the
-driver has already required a GitHub-hosted CI opt-in, no custom ADB endpoint,
-one selected emulator in `device` state with shell UID 2000, and no pre-existing
-reverse mapping. Immediately before mutation it repeats the device, UID, and
-single exact-mapping checks. It removes only that listener, verifies its absence,
-then stops the host ADB server. Three consecutive raw TCP refusals on the default
-`127.0.0.1:5037` endpoint prove that the relay-owning process exited; an early
-listener return fails closed. The driver restarts the server, requires the same
-serial's bounded return and unchanged shell UID, requires an empty reverse list,
-and recreates/verifies only the exact
-`adb reverse tcp:<fixture-port> tcp:<fixture-port>` mapping. Only the fixture
+driver has already required an emulator serial and replaced only the fixture's
+published `127.0.0.1` form value with `10.0.2.2`, Android Emulator's reserved
+alias for the host loopback interface. The expected host-key fingerprint still
+comes from the same disposable fixture key. A read-only pre/post check requires
+one ready selected emulator and an empty reverse list. No ADB reverse relay, adbd restart,
+host ADB server restart, or product-side transport hook is involved. Only the fixture
 sshd process tree is stopped; the tmux server/session/shell and endpoint identity
-are left alive. ADB reverse removal alone is not treated as the loss injection;
-the verified host-server exit is required before restoration. This global ADB
-operation is forbidden outside the opted-in single-emulator hosted job; endpoint
-overrides, another/offline/unauthorized transport, another reverse row, UID or
-serial changes, and an auto-start race are all fail-closed. A bounded `finally`
-path restarts the server if the injection fails after the stop begins. The driver
+are left alive. The fixture's verified listener/session owner exit is therefore
+the accepted-stream boundary directly observed by the app's TCP socket. The driver
 records sanitized fixed results for the pre-loss and post-loss markers, the
 cached read-only rail, the same native handle, the same selected pane, and the
 absence of input while stopped. On iOS, the final

@@ -81,16 +81,16 @@ Home/background → activate の同一プロセス復帰と、復帰後の nativ
 `ssh` の実fixture経路で、fixture-owned control fileから disposable `sshd` だけを
 停止・再開します。Linux fixtureのstop ACKは、対象portを所有する同一UID・同一sshd実体の
 processが残っていないことまで確認し、listener終了後に初めて現れたownerはport再利用の
-可能性があるためsignalせず失敗扱いにします。Androidはapp/reverse作成前に対象serialの
-emulatorが1台だけ`device`状態でshell UID 2000であること、default
-`127.0.0.1:5037` ADB serverを使い、別reverseがないことを検証します。このhost server再起動は
-Android fullのGitHub-hosted専用runnerで明示opt-inした場合だけ許可し、local/shared runnerや
-endpoint overrideでは拒否します。stop ACK後はexact `tcp:<port>` reverseを削除・消失確認し、
-host ADB serverを停止します。ADB commandで自動再起動させる前にraw TCP probeで3回連続の
-port閉鎖を確認し、途中でlistenerが戻ればraceとしてfail closedにします。その後serverを開始し、
-同じserialだけの`wait-for-device`、同じshell UID、空のreverse list、exact reverseの再作成と
-`reverse --list`をすべて照合します。別/offline/unauthorized transport、別reverse、UID/serial不一致、
-server停止未観測はfail closedで、停止開始後の失敗にはbounded cleanupでserver復帰を試みます。
+可能性があるためsignalせず失敗扱いにします。Androidはcredential入力前に対象serialが
+`emulator-<port>`であり、`adb devices -l`にその1台だけが`device`状態であることを要求します。
+fixtureの公開hostは
+`127.0.0.1`だけを許可し、接続フォームにはAndroid Emulatorがhost loopback用に予約する
+`10.0.2.2`を使用します。loss前後のserial-scoped reverse listは空を要求し、mappingの作成・削除は
+行いません。credential入力前にtoybox netcatのbounded zero-I/O probeでexact alias/portへの到達も
+要求し、到達不能は`emulator_host_alias_unreachable`としてfail closedにします。
+adbd/host ADB server再起動、product-side close hookも使いません。
+これによりfixtureが検証済みaccepted sshd sessionを終了した時点を、intermediate relayなしでappの
+TCP EOF境界にします。host-key fingerprintは同じfixture host keyを明示確認します。
 tmux server/session/shell、同じhost key/endpointを維持したまま、
 pre-loss marker、cached/read-only rail、同じTerminalViewのtest-only native handle、
 同じpaneのReady、post-loss markerを順に確認します。切断中のinputは送らず、markerは

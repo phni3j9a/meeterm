@@ -261,3 +261,38 @@ fail closedで確認します。exact reverseを削除・消失確認後、host 
 停止開始後の失敗にはbounded cleanupを行い、固定event以外のstdout/device一覧/serialをartifactへ出しません。
 Axiom advisorはglobal operationをlocal/shared runnerで拒否するこの境界を条件付きで承認しました。45秒deadline、
 keepalive、assertion、Rust/app/native本番コードは変更しません。
+
+## e12e6cc 診断候補
+
+対象sourceは `e12e6cc07cab1125d259b910b0625537e7fa9f43` です。host ADB server境界の実装と
+fail-closed guard、cleanup、22件のfocused回帰をAxiom advisor/reviewerがblocking findingなしで
+承認しました。ローカルではSSH Python 215件、Herdr Python 6件、CI Python 28件成功・1件skip、
+`py_compile`、`git diff --check`を確認しました。
+
+一般CI[`35452192770`](https://github.com/phni3j9a/meeterm/actions/runs/35452192770)は4 jobすべて成功しました。
+Rust/App/Expo、実OpenSSH/tmux、公式Herdr 0.9.0 ignored integration、Android CNG/build/native unit、
+iOS preflightを通過しています。
+
+Android full[`35452201693`](https://github.com/phni3j9a/meeterm/actions/runs/35452201693)はfresh CNG/release build、
+install、launch、native readiness/first frame、29画面、実SSH、pre-loss marker、fixture stop ACKまで完了しました。
+host ADB serverについても、single-emulator/default endpoint guard、exact reverse削除、kill要求、raw
+`127.0.0.1:5037`閉鎖、server再開、同じserial/UID、空reverse、exact mapping復元の全固定eventを確認しました。
+それでも`daily_transport_loss_stale / stale_read_only_timeout`となり、45秒内にnative actorへSSH EOFは届きませんでした。
+app PID 3235は生存し、crash/ANRはありません。したがって前節の「host ADB server process exitでaccepted relayを
+確実に破棄できる」という推論は、このemulator/runtimeでは成立しませんでした。同方式のretryは行いません。
+
+### 次候補: Android Emulator host-loopback直結
+
+[Android公式のemulator network仕様](https://developer.android.com/studio/run/emulator-networking-address)は、
+`10.0.2.2`を開発hostのloopback `127.0.0.1`へのspecial aliasと定義しています。Android driverだけ
+fixtureの接続フォームhostをこのaliasへ置換し、ADB reverseの作成/削除、adbd再起動、host ADB server再起動を
+全廃します。fixture sshdは従来どおりhost `127.0.0.1:<ephemeral port>`へbindし、exact listener/session ownerの
+終了を確認してstop ACKを返します。intermediate relayがないため、そのsession socket終了をappのTCP EOF境界として
+直接検証します。
+
+driverはcredential入力前に`emulator-<port>` serial、`adb devices -l`上の単一ready transport、空の
+serial-scoped reverse listを要求し、loss後にもreverseが空であることを再確認します。mappingの作成・削除は
+行いません。bounded zero-I/O probeでexact alias/portの到達性をcredential入力前に確認し、到達不能は固定理由で
+fail closedにします。fixture環境のpublished hostは`127.0.0.1`以外を拒否します。host-key fingerprintは同じfixture keyを
+明示確認するため弱めません。tmux/session/shell、app PID、
+native handle、pane、45秒、cached/read-only、loss中inputなし、pre/post markerのassertionと本番コードは変更しません。

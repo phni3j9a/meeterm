@@ -199,10 +199,6 @@ jobs:
 
       - name: Boot emulator and verify the native terminal frame
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
-        env:
-          # This hosted job owns one ephemeral emulator and the default ADB
-          # server. The SSH driver refuses the host-server restart elsewhere.
-          MEETERM_ANDROID_ALLOW_ADB_SERVER_RESTART: "1"
         with:
           api-level: 36
           target: google_apis
