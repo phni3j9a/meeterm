@@ -486,6 +486,23 @@ class ArtifactBoundaryTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertTrue(device.foreground_evidence_lost)
 
+    def test_failure_screenshot_waits_until_both_credential_forms_are_closed(self) -> None:
+        self.assertFalse(smoke.failure_screenshot_is_secret_safe([]))
+        self.assertFalse(
+            smoke.failure_screenshot_is_secret_safe(["form_submitted"])
+        )
+        self.assertFalse(
+            smoke.failure_screenshot_is_secret_safe(["daily_profile_switched"])
+        )
+        self.assertTrue(
+            smoke.failure_screenshot_is_secret_safe(
+                ["daily_second_profile_saved"]
+            )
+        )
+        self.assertTrue(
+            smoke.failure_screenshot_is_secret_safe(["terminal_focused"])
+        )
+
     def test_recording_is_removed_without_pull_after_detected_focus_loss(self) -> None:
         device = mock.Mock(spec=smoke.AndroidDevice)
         device.foreground_evidence_lost = True
@@ -578,6 +595,7 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
                 smoke,
                 "select_fixture_tmux_runtime_and_wait_for_connected",
             ) as select_runtime,
+            mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
         ):
             smoke.exercise_saved_profile_management(
                 device,
@@ -610,15 +628,27 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             ("action", "daily_profile_add", "Save server")
         )
         first_switch_index = events.index(
-            ("action", "daily_profile_switch_second", "Switch server")
+            (
+                "action",
+                "daily_profile_switch_second_confirmation",
+                "Switch server",
+            )
         )
         self.assertLess(credential_index, second_save_index)
         self.assertLess(second_save_index, first_switch_index)
         self.assertEqual(
             [event for event in events if event[0] == "action" and event[2] == "Switch server"],
             [
-                ("action", "daily_profile_switch_second", "Switch server"),
-                ("action", "daily_profile_switch_primary", "Switch server"),
+                (
+                    "action",
+                    "daily_profile_switch_second_confirmation",
+                    "Switch server",
+                ),
+                (
+                    "action",
+                    "daily_profile_switch_primary_confirmation",
+                    "Switch server",
+                ),
             ],
         )
         self.assertIn(("action", "daily_profile_delete_cancel", "Cancel"), events)
@@ -654,6 +684,21 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
                 mock.call(
                     device,
                     "daily_profile_switch_primary_runtime_selection",
+                ),
+            ],
+        )
+        self.assertEqual(
+            wait_workspace.call_args_list,
+            [
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_workspace_ready",
+                    timeout=smoke.RECONNECT_TIMEOUT,
+                ),
+                mock.call(
+                    device,
+                    "daily_profile_switch_primary_workspace_ready",
+                    timeout=smoke.RECONNECT_TIMEOUT,
                 ),
             ],
         )
@@ -2441,6 +2486,52 @@ UI dumped to: /dev/tty"""
             {smoke.accessible_label(node) for node in rows},
             {"Workspace smoke", "Workspace handoff", "Workspace options foo"},
         )
+
+    def test_failure_ui_state_contains_only_allowlisted_categories(self) -> None:
+        nodes = [
+            smoke.Node(
+                "Choose a runtime",
+                "",
+                "android.widget.TextView",
+                (0, 0, 400, 100),
+            ),
+            smoke.Node(
+                "",
+                "tmux runtime meeterm",
+                "android.view.View",
+                (0, 100, 400, 200),
+            ),
+            smoke.Node(
+                "",
+                "Workspace private-name",
+                "android.view.View",
+                (0, 200, 400, 300),
+                resource_id="workspace-row-@9",
+            ),
+            smoke.Node(
+                "Saved servers",
+                "",
+                "android.widget.TextView",
+                (0, 300, 400, 400),
+            ),
+            smoke.Node(
+                smoke.PROFILE_CONNECT_ERROR,
+                "",
+                "android.widget.TextView",
+                (0, 400, 400, 500),
+            ),
+        ]
+
+        self.assertEqual(
+            smoke.sanitized_failure_ui_state(nodes),
+            "connection_state=awaiting_runtime_selection\n"
+            "runtime_picker=yes\n"
+            "workspace_row=yes\n"
+            "saved_servers_sheet=yes\n"
+            "switch_confirmation=no\n"
+            "profile_connect_error=yes\n",
+        )
+        self.assertNotIn("private-name", smoke.sanitized_failure_ui_state(nodes))
 
     def test_private_key_label_allows_only_known_accessibility_value_suffixes(self) -> None:
         nodes = [

@@ -296,3 +296,40 @@ serial-scoped reverse listを要求し、loss後にもreverseが空であるこ�
 fail closedにします。fixture環境のpublished hostは`127.0.0.1`以外を拒否します。host-key fingerprintは同じfixture keyを
 明示確認するため弱めません。tmux/session/shell、app PID、
 native handle、pane、45秒、cached/read-only、loss中inputなし、pre/post markerのassertionと本番コードは変更しません。
+
+## acf0a6d 診断候補
+
+対象sourceは `acf0a6d94321654749efc8e74a6d7d601aa596dd` です。Android driverだけがfixture envの
+canonical `127.0.0.1`を検証して接続フォーム・全保存profile用hostを`10.0.2.2`へ導出します。
+単一ready emulator、空のserial-scoped reverse、bounded zero-I/O alias probeをcredential入力前に要求し、
+ADB reverse、root/unroot、host ADB server restartは行いません。Axiom advisor/reviewerはhost伝播、route guard、
+host-key、identity、45秒と既存assertionの不変性をblocking findingなしで承認しました。
+
+一般CI[`35454932194`](https://github.com/phni3j9a/meeterm/actions/runs/35454932194)は4 jobすべて成功しました。
+SSH Python driver 202件、Herdr Python driver 6件、Rust library 156件成功・1件ignored、App/Expo、
+Android CNG/build/native unit、iOS preflightを通過しました。実OpenSSH/tmux統合は15.54秒で成功し、
+公式Herdr 0.9.0をrunner一時領域だけへ取得してSHA-256
+`4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f`を照合後、
+russh test endpointのignored統合も22.03秒で成功しました。
+
+初回Android full[`35454937975`](https://github.com/phni3j9a/meeterm/actions/runs/35454937975)はfresh CNG/release build、
+install、launch、native readiness/first frame、29画面、alias到達、空reverse、実SSH、host-key、runtime選択、
+Ready、second profile保存まで成功しました。その直後の`daily_profile_switch_second / ui_timeout`で終了しました。
+app PID 3203は生存し、crash/ANRはなく、transport lossはまだ実行されていません。profile switch実装は直前候補から
+変更されておらず、失敗位置もネットワーク開始前だったため、同一sourceを1回だけ再実行しました。
+
+再実行[`35457108051`](https://github.com/phni3j9a/meeterm/actions/runs/35457108051)は前回の失敗位置を通過し、
+second profileへの切替、fresh runtime picker、明示選択、Readyまで成功しました。その後primary profileへ戻す確認を
+確定したものの、`daily_profile_switch_primary_runtime_selection_runtime_picker / runtime_picker_ui_timeout`で終了しました。
+app PID 3317は生存し、crash/ANRはありません。これにより単一点の一過性tap失敗ではなく、直前pickerのReady後に
+次のprofile切替を開始するUI完了境界が不足している可能性を最初に調べるべきと判断し、追加retryは行いません。
+
+### 次候補: authoritative workspace境界
+
+`Connected`はnative Readyですが、Reactのworkspace snapshotはpicker完了effectで直後に取得されます。次候補では
+profile切替完了を`Connected`だけで判定せず、実fixture workspace rowが現れてからSaved serversを再度開きます。
+これはretryやdeadline延長ではなく、前のpickerとread-only workspace取得を次のdisconnect/connectへ重ねないための
+固定状態境界です。失敗時は両credential formが閉じたmarkerを確認した後だけsanitized screenshotを残し、raw UI tree、
+host/profile/workspace名、credential、候補IDを出さず、接続状態・picker・workspace・sheet・固定errorのallowlistだけを
+`ssh-failure-state.txt`へ記録します。次のexact runでも失敗した場合は、その固定stateを根拠にproduct lifecycle側を
+修正します。fresh picker、strict fingerprint、45秒、transport-lossの全assertionは変更しません。

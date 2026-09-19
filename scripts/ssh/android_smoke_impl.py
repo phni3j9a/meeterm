@@ -118,6 +118,24 @@ RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",
 )
+CONNECTION_STATE_LABELS = (
+    ("Connecting…", "connecting"),
+    ("Verify host key", "host_key_pending"),
+    ("Authenticating…", "authenticating"),
+    ("Opening terminal…", "opening_pty"),
+    ("Finding runtimes…", "discovering_runtimes"),
+    ("Choose a runtime", "awaiting_runtime_selection"),
+    ("Opening runtime…", "attaching_runtime"),
+    ("Creating runtime…", "creating_runtime"),
+    ("Connected", "ready"),
+    ("Connection failed", "failed"),
+    ("Disconnecting…", "closing"),
+    ("Not connected", "disconnected"),
+)
+PROFILE_CONNECT_ERROR = (
+    "Could not connect to this saved server. Choose Edit server to check its "
+    "address and credentials."
+)
 FIXTURE_CONTROL_REQUEST_ENV = "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
 FIXTURE_CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
 FIXTURE_CONTROL_TIMEOUT_SECONDS = 25.0
@@ -1514,6 +1532,32 @@ def runtime_picker_is_visible(nodes: list[Node]) -> bool:
         ):
             return True
     return False
+
+
+def sanitized_failure_ui_state(nodes: list[Node]) -> str:
+    """Describe only allowlisted public UI state; never serialize the tree."""
+
+    connection_state = next(
+        (
+            state
+            for label, state in CONNECTION_STATE_LABELS
+            if find_node(nodes, text=label) is not None
+            or find_node(nodes, content_description=label) is not None
+        ),
+        "unavailable",
+    )
+    workspace_visible = any(
+        node.visible_to_user and workspace_id_from_node(node) is not None
+        for node in nodes
+    )
+    return (
+        f"connection_state={connection_state}\n"
+        f"runtime_picker={'yes' if runtime_picker_is_visible(nodes) else 'no'}\n"
+        f"workspace_row={'yes' if workspace_visible else 'no'}\n"
+        f"saved_servers_sheet={'yes' if find_node(nodes, text='Saved servers') is not None else 'no'}\n"
+        f"switch_confirmation={'yes' if find_node(nodes, text='Switch servers?') is not None else 'no'}\n"
+        f"profile_connect_error={'yes' if find_node(nodes, text=PROFILE_CONNECT_ERROR) is not None else 'no'}\n"
+    )
 
 
 def foreground_recovery_ready(
@@ -3101,6 +3145,15 @@ def capture_optional_screenshot(
     return "ok"
 
 
+def failure_screenshot_is_secret_safe(completed: list[str]) -> bool:
+    """Allow failure pixels only after every credential editor is closed."""
+
+    return (
+        "daily_second_profile_saved" in completed
+        or "terminal_focused" in completed
+    )
+
+
 def start_optional_screenrecord(
     device: AndroidDevice,
     output_path: Path,
@@ -3537,11 +3590,27 @@ def switch_saved_profile(
 ) -> Node:
     profile = wait_for_saved_profile(device, stage, name, selected=False)
     tap_node(device, profile, stage)
-    wait_for_node(device, stage, text="Switch servers?")
-    tap_action(device, stage, ("Switch server",))
+    confirmation_stage = f"{stage}_confirmation"
+    wait_for_node(device, confirmation_stage, text="Switch servers?")
+    tap_action(device, confirmation_stage, ("Switch server",))
     select_fixture_tmux_runtime_and_wait_for_connected(
         device,
         f"{stage}_runtime_selection",
+    )
+
+    # `Connected` is the native Ready boundary, but the React workspace
+    # snapshot is loaded by the completion effect immediately afterward.  A
+    # second profile switch must not overlap that read-only snapshot request:
+    # the faster direct emulator host route exposed the race by starting the
+    # next disconnect/connect while the previous picker completion was still
+    # settling.  Require one real fixture workspace row before opening the
+    # server sheet again.  This is a state boundary, not a retry or a longer
+    # deadline, and it also proves that the picker closed onto authoritative
+    # workspace data.
+    wait_for_workspace(
+        device,
+        f"{stage}_workspace_ready",
+        timeout=RECONNECT_TIMEOUT,
     )
     tap_action(device, stage, ("Saved servers",))
     return wait_for_saved_profile(device, stage, name, selected=True)
@@ -5329,15 +5398,18 @@ def main(argv: list[str] | None = None) -> int:
                     if screenrecord_reason == "ok"
                     else "daily_video_unavailable"
                 )
-            # `terminal_focused` is reached only after both credential forms
-            # have submitted and closed. Keep that later completion marker in
-            # this guard: `secrets_submitted` alone becomes true before the
-            # second saved-profile credential is entered.
-            if (
+            # `daily_second_profile_saved` is the first point where both
+            # credential forms have submitted and closed. Later failures may
+            # therefore retain a sanitized UI screenshot even when they occur
+            # before the terminal receives focus. `secrets_submitted` alone
+            # becomes true before the second saved-profile credential is
+            # entered and must never authorize a capture.
+            failure_pixels_safe = (
                 result != "passed"
                 and secrets_submitted
-                and "terminal_focused" in completed
-            ):
+                and failure_screenshot_is_secret_safe(completed)
+            )
+            if failure_pixels_safe:
                 try:
                     device.assert_foreground("terminal_failure_screenshot")
                 except SmokeFailure as error:
@@ -5352,6 +5424,20 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if screenshot_reason == "ok":
                         screenshot_written = True
+                try:
+                    failure_state = sanitized_failure_ui_state(device.dump_ui())
+                except SmokeFailure:
+                    failure_state = "connection_state=unavailable\ncapture=ui_unavailable\n"
+                write_artifact(
+                    args.artifact_dir / "ssh-failure-state.txt",
+                    failure_state,
+                )
+            elif result != "passed":
+                write_artifact(
+                    args.artifact_dir / "ssh-failure-state.txt",
+                    "connection_state=unavailable\n"
+                    "capture=credential_ui_may_be_visible\n",
+                )
             device.force_stop()
             try:
                 log_contents = device.logcat()
