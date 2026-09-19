@@ -1596,6 +1596,12 @@ class TransportLossTests(unittest.TestCase):
         self.assertNotIn("reconnect_transport", source[stop:restore])
         self.assertIn("10.0.2.2", source)
         self.assertIn("wait_for_transport_loss_stale", source[stop:restore])
+        completion = source.index(
+            'completed.append("daily_transport_loss_complete")',
+            restore,
+        )
+        function_end = source.index("\ndef reconnect_saved_profile_after_restart", restore)
+        self.assertLess(completion, function_end)
 
     def test_foreground_and_transport_loss_calls_match_required_positional_arity(self) -> None:
         tree = ast.parse(Path(smoke.__file__).read_text(encoding="utf-8"))

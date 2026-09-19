@@ -4177,6 +4177,7 @@ def exercise_transport_loss_recovery(
         label=f"Workspace {expected_pane.window_name}",
         timeout=RECONNECT_TIMEOUT,
     )
+    completed.append("daily_transport_loss_complete")
 
 
 def reconnect_saved_profile_after_restart(
