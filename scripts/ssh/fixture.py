@@ -42,6 +42,7 @@ CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
 CONTROL_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{8,64}\Z")
 CONTROL_POLL_SECONDS = 0.05
 CONTROL_TIMEOUT_SECONDS = 20.0
+SSHD_STOP_TIMEOUT_SECONDS = 3.0
 # The disposable sshd must expose the fixture's tmux binary to non-interactive
 # remote commands. Keep this allowlist to standard macOS/Linux locations plus
 # the directory containing the binary selected by shutil.which; never copy an
@@ -172,6 +173,7 @@ class Fixture:
         self.tmux_socket = self.tmux_tmpdir / f"tmux-{os.getuid()}" / "default"
         self.encrypted_passphrase = secrets.token_urlsafe(32)
         self.process: subprocess.Popen[str] | None = None
+        self.sshd_descendants: dict[int, str] = {}
         self.tmux_process: subprocess.Popen[str] | None = None
         self.env_file: Path | None = None
         self.control_request_path = root / CONTROL_REQUEST_NAME
@@ -294,6 +296,8 @@ class Fixture:
         """Start only this fixture's sshd on its original endpoint."""
 
         with self.sshd_lock:
+            if self.sshd_descendants:
+                raise FixtureError("previous OpenSSH fixture process tree is still owned")
             if self.process is not None and self.process.poll() is None:
                 raise FixtureError("OpenSSH fixture is already running")
             self.process = None
@@ -367,6 +371,35 @@ class Fixture:
         return descendants
 
     @staticmethod
+    def _process_group_member_ids(process_group_id: int) -> list[int]:
+        """Return members of the fixture-owned sshd process group."""
+
+        try:
+            result = subprocess.run(
+                ["ps", "-axo", "pid=,pgid="],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        members = []
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            try:
+                process_id, group_id = (int(field) for field in fields)
+            except ValueError:
+                continue
+            if process_id > 0 and process_id != process_group_id and group_id == process_group_id:
+                members.append(process_id)
+        return members
+
+    @staticmethod
     def _signal_process_group(process: subprocess.Popen[str], signum: int) -> None:
         """Signal only an sshd process group, with a safe fallback."""
 
@@ -380,48 +413,163 @@ class Fixture:
         except ProcessLookupError:
             pass
 
+    @staticmethod
+    def _process_identity(process_id: int) -> str | None:
+        """Read a process start identity without trusting a recyclable PID."""
+
+        proc_stat = Path(f"/proc/{process_id}/stat")
+        try:
+            contents = proc_stat.read_text(encoding="utf-8")
+            suffix = contents.rsplit(")", 1)[1].split()
+            # /proc stat field 22 is the kernel start tick.  The suffix starts
+            # at field 3 because the command in field 2 may contain spaces.
+            if len(suffix) > 19:
+                return f"proc:{suffix[19]}"
+        except (FileNotFoundError, IndexError, OSError, UnicodeError):
+            pass
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(process_id)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        started = result.stdout.strip()
+        return f"ps:{started}" if result.returncode == 0 and started else None
+
+    @staticmethod
+    def _process_exists(process_id: int) -> bool:
+        try:
+            os.kill(process_id, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    @classmethod
+    def _capture_process_identities(cls, process_ids: Sequence[int]) -> dict[int, str]:
+        """Capture descendants, failing closed when a live PID cannot be identified."""
+
+        captured = {}
+        for process_id in process_ids:
+            identity = cls._process_identity(process_id)
+            if identity is not None:
+                captured[process_id] = identity
+            elif cls._process_exists(process_id):
+                raise FixtureError("OpenSSH fixture process identity is unavailable")
+        return captured
+
+    @classmethod
+    def _live_process_identities(cls, processes: dict[int, str]) -> dict[int, str]:
+        """Return still-live owned descendants and reject PID reuse."""
+
+        live = {}
+        for process_id, expected_identity in processes.items():
+            identity = cls._process_identity(process_id)
+            if identity == expected_identity:
+                live[process_id] = expected_identity
+            elif identity is not None or cls._process_exists(process_id):
+                raise FixtureError("OpenSSH fixture process identity changed")
+        return live
+
+    @classmethod
+    def _signal_process_identities(
+        cls,
+        processes: dict[int, str],
+        signum: int,
+    ) -> None:
+        """Signal only descendants whose captured start identity still matches."""
+
+        for process_id in cls._live_process_identities(processes):
+            try:
+                os.kill(process_id, signum)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                raise FixtureError("OpenSSH fixture process could not be signaled") from error
+
+    @classmethod
+    def _wait_for_process_ids_exit(
+        cls,
+        processes: dict[int, str],
+        timeout: float = SSHD_STOP_TIMEOUT_SECONDS,
+    ) -> dict[int, str]:
+        """Wait boundedly for captured descendants and return any survivors."""
+
+        deadline = time.monotonic() + timeout
+        remaining = cls._live_process_identities(processes)
+        while remaining and time.monotonic() < deadline:
+            time.sleep(CONTROL_POLL_SECONDS)
+            remaining = cls._live_process_identities(remaining)
+        return remaining
+
     def stop_sshd(self) -> None:
         """Stop sshd and its accepted-session children, retaining tmux."""
 
         with self.sshd_lock:
             process = self.process
-            self.process = None
             if process is None:
+                if self.sshd_descendants:
+                    raise FixtureError("OpenSSH fixture process ownership is incomplete")
                 return
             if process.poll() is not None:
                 try:
                     process.communicate(timeout=1)
                 except subprocess.TimeoutExpired:
                     pass
-                return
+                if not self.sshd_descendants:
+                    raise FixtureError("OpenSSH fixture exited before its process tree was captured")
 
             # A session child normally inherits the new process group. Keep
             # the descendant list as a portable fallback for sshd variants
             # that move an accepted session to another process group.
-            descendants = self._descendant_process_ids(process.pid)
-            self._signal_process_group(process, signal.SIGTERM)
-            for child_pid in descendants:
+            if not self.sshd_descendants:
+                owned_process_ids = set(self._process_group_member_ids(process.pid))
+                owned_process_ids.update(self._descendant_process_ids(process.pid))
+                self.sshd_descendants = self._capture_process_identities(
+                    sorted(owned_process_ids)
+                )
+            remaining = dict(self.sshd_descendants)
+            parent_exited = process.poll() is not None
+            if not parent_exited:
+                self._signal_process_group(process, signal.SIGTERM)
+            self._signal_process_identities(remaining, signal.SIGTERM)
+            if not parent_exited:
                 try:
-                    os.kill(child_pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    pass
-            try:
-                process.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._signal_process_group(process, signal.SIGKILL)
-                for child_pid in descendants:
-                    try:
-                        os.kill(child_pid, signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        pass
-                try:
-                    process.communicate(timeout=3)
+                    process.communicate(timeout=SSHD_STOP_TIMEOUT_SECONDS)
+                    parent_exited = True
                 except subprocess.TimeoutExpired:
-                    # The process object is no longer owned by the fixture;
-                    # cleanup remains bounded and the OS will reap it later.
                     pass
+
+            remaining = self._wait_for_process_ids_exit(remaining)
+            if not parent_exited or remaining:
+                # The listener can exit before an accepted-session child on
+                # Linux.  A stop acknowledgement is the transport-loss test
+                # boundary, so do not publish it while that connection can
+                # still carry bytes.
+                if not parent_exited:
+                    self._signal_process_group(process, signal.SIGKILL)
+                self._signal_process_identities(remaining, signal.SIGKILL)
+                if not parent_exited:
+                    try:
+                        process.communicate(timeout=SSHD_STOP_TIMEOUT_SECONDS)
+                        parent_exited = True
+                    except subprocess.TimeoutExpired:
+                        pass
+                remaining = self._wait_for_process_ids_exit(remaining)
+
+            if not parent_exited or remaining:
+                raise FixtureError("OpenSSH fixture process tree did not stop")
+            self.process = None
+            self.sshd_descendants = {}
 
     def _write_control_status(self, token: str, status: str) -> None:
         if not CONTROL_TOKEN_RE.fullmatch(token) or status not in {"started", "stopped", "error"}:
@@ -655,7 +803,13 @@ class Fixture:
 
     def stop(self) -> None:
         self.stop_control()
-        self.stop_sshd()
+        sshd_error: FixtureError | None = None
+        try:
+            self.stop_sshd()
+        except FixtureError as error:
+            # Continue with the independently owned tmux and file cleanup,
+            # then preserve the fail-closed sshd diagnostic for the caller.
+            sshd_error = error
         # A tmux server outlives the sshd process that created it.  Kill only
         # this fixture's absolute socket before TemporaryDirectory removes
         # the socket directory; never invoke the default client without -S,
@@ -690,6 +844,8 @@ class Fixture:
             except FileNotFoundError:
                 pass
             self.env_file = None
+        if sshd_error is not None:
+            raise sshd_error
 
 
 def _run_child(command: Sequence[str], environment: dict[str, str]) -> int:

@@ -98,7 +98,7 @@ class PresentationReadinessTests(unittest.TestCase):
 
         herdr_confirmation = common | {
             "Confirmation needed",
-            'Herdr can’t verify that “meeterm” is the same instance.',
+            'Herdr can’t verify that “dev” is the same instance.',
             "recovery-review::enabled",
             "recovery-change::enabled",
         }

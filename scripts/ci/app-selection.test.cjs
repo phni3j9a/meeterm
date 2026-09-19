@@ -726,7 +726,9 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('recovery-progress').control.recovery.phase, 'resynchronizing');
   assert.equal(smoke.smokeFixture('recovery-exhausted').control.recovery.phase, 'stopped');
   assert.equal(smoke.smokeFixture('recovery-mismatch').control.recovery.reason, 'runtime_identity_mismatch');
-  assert.equal(smoke.smokeFixture('herdr-recovery-confirm').control.recovery.phase, 'awaitingConfirmation');
+  const herdrConfirmation = smoke.smokeFixture('herdr-recovery-confirm');
+  assert.equal(herdrConfirmation.control.recovery.phase, 'awaitingConfirmation');
+  assert.equal(smoke.smokeWorkspaceState(herdrConfirmation.panes, true).runtime, 'dev');
   assert.equal(smoke.smokeFixture('recovery-progress').control.hasRetainedWork, true);
   const herdrPicker = smoke.smokeFixture('herdr-connection');
   assert.equal(herdrPicker.connection.state, 'AwaitingRuntimeSelection');

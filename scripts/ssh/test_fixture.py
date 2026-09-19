@@ -54,6 +54,100 @@ class FixtureControlTests(unittest.TestCase):
         self.assertFalse(instance.control_request_path.exists())
         self.assertTrue(instance.control_status_path.exists())
 
+    def test_stop_waits_for_accepted_session_children_before_acknowledging(self) -> None:
+        directory, instance = self.make_fixture()
+        self.addCleanup(directory.cleanup)
+        process = mock.Mock(pid=4001)
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        instance.process = process
+
+        with (
+            mock.patch.object(instance, "_descendant_process_ids", return_value=[4002]),
+            mock.patch.object(instance, "_process_group_member_ids", return_value=[4003]),
+            mock.patch.object(
+                instance,
+                "_capture_process_identities",
+                return_value={4002: "process-4002", 4003: "process-4003"},
+            ) as capture,
+            mock.patch.object(instance, "_signal_process_group") as signal_group,
+            mock.patch.object(instance, "_signal_process_identities") as signal_ids,
+            mock.patch.object(
+                instance,
+                "_wait_for_process_ids_exit",
+                side_effect=[{4002: "process-4002"}, {}],
+            ) as wait_for_exit,
+        ):
+            instance.stop_sshd()
+
+        self.assertIsNone(instance.process)
+        capture.assert_called_once_with([4002, 4003])
+        signal_group.assert_called_once_with(process, fixture.signal.SIGTERM)
+        signal_ids.assert_has_calls(
+            [
+                mock.call(
+                    {4002: "process-4002", 4003: "process-4003"},
+                    fixture.signal.SIGTERM,
+                ),
+                mock.call({4002: "process-4002"}, fixture.signal.SIGKILL),
+            ]
+        )
+        self.assertEqual(wait_for_exit.call_count, 2)
+
+    def test_stop_fails_closed_when_accepted_session_child_survives(self) -> None:
+        directory, instance = self.make_fixture()
+        self.addCleanup(directory.cleanup)
+        process = mock.Mock(pid=4101)
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        instance.process = process
+
+        with (
+            mock.patch.object(instance, "_descendant_process_ids", return_value=[4102]),
+            mock.patch.object(instance, "_process_group_member_ids", return_value=[]),
+            mock.patch.object(
+                instance,
+                "_capture_process_identities",
+                return_value={4102: "process-4102"},
+            ),
+            mock.patch.object(instance, "_signal_process_group"),
+            mock.patch.object(instance, "_signal_process_identities"),
+            mock.patch.object(
+                instance,
+                "_wait_for_process_ids_exit",
+                side_effect=[
+                    {4102: "process-4102"},
+                    {4102: "process-4102"},
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                fixture.FixtureError,
+                "OpenSSH fixture process tree did not stop",
+            ):
+                instance.stop_sshd()
+        self.assertIs(instance.process, process)
+        self.assertEqual(instance.sshd_descendants, {4102: "process-4102"})
+
+    def test_process_identity_change_is_never_signaled(self) -> None:
+        with (
+            mock.patch.object(
+                fixture.Fixture,
+                "_process_identity",
+                return_value="replacement-process",
+            ),
+            mock.patch.object(fixture.os, "kill") as kill,
+        ):
+            with self.assertRaisesRegex(
+                fixture.FixtureError,
+                "OpenSSH fixture process identity changed",
+            ):
+                fixture.Fixture._signal_process_identities(
+                    {4202: "owned-process"},
+                    fixture.signal.SIGKILL,
+                )
+        kill.assert_not_called()
+
     def test_partial_request_is_not_processed_until_newline_arrives(self) -> None:
         directory, instance = self.make_fixture()
         self.addCleanup(directory.cleanup)

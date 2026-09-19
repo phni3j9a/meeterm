@@ -1113,7 +1113,7 @@ final class MeetermSmokeUITests: XCTestCase {
     case "herdr-recovery-confirm":
       return waitForRecoveryScreen(
         title: "Confirmation needed",
-        detail: "Herdr can’t verify that “meeterm” is the same instance.",
+        detail: "Herdr can’t verify that “dev” is the same instance.",
         actions: ["recovery-review", "recovery-change"]
       )
     default:

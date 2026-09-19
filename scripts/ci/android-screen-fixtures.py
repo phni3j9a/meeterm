@@ -235,7 +235,7 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             ),
             "herdr-recovery-confirm": (
                 "Confirmation needed",
-                'Herdr can’t verify that “meeterm” is the same instance.',
+                'Herdr can’t verify that “dev” is the same instance.',
                 "Last received output · Input paused",
             ),
         }[screen]
