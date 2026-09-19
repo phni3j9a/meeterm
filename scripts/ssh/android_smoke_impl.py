@@ -1948,6 +1948,12 @@ def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
             and bottom > top
         ):
             candidates.append(node)
+    return preferred_terminal_surface(candidates)
+
+
+def preferred_terminal_surface(candidates: list[Node]) -> Node | None:
+    """Prefer the native renderer among already validated labeled surfaces."""
+
     renderer_candidates = [
         node for node in candidates if node.class_name.endswith("SurfaceView")
     ]
@@ -1972,12 +1978,7 @@ def find_cached_terminal_surface(nodes: list[Node]) -> Node | None:
             and bottom > top
         ):
             candidates.append(node)
-    return max(
-        candidates,
-        key=lambda node: (node.bounds[2] - node.bounds[0])
-        * (node.bounds[3] - node.bounds[1]),
-        default=None,
-    )
+    return preferred_terminal_surface(candidates)
 
 
 def same_terminal_surface_binding(before: Node, after: Node) -> bool:

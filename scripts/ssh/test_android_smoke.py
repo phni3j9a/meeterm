@@ -3063,9 +3063,30 @@ UI dumped to: /dev/tty"""
             ),
             smoke.Node(
                 "",
-                "Terminal",
+                "Terminal, cached output, read only",
                 "android.opengl.GLSurfaceView",
                 (0, 430, 1080, 1320),
+                enabled=False,
+            ),
+        ]
+
+        self.assertIs(smoke.find_cached_terminal_surface(nodes), nodes[1])
+
+    def test_cached_terminal_surface_falls_back_without_renderer(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+                enabled=False,
+            ),
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.view.View",
+                (0, 430, 800, 1800),
+                enabled=False,
             ),
         ]
 
