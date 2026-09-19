@@ -2988,13 +2988,88 @@ UI dumped to: /dev/tty"""
             smoke.Node(
                 "",
                 "Terminal",
-                "android.view.View",
+                "android.opengl.GLSurfaceView",
                 (0, 430, 1080, 2200),
             ),
         ]
 
         self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[1])
         self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
+
+    def test_labeled_terminal_surface_prefers_renderer_over_larger_wrapper(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2400),
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.opengl.GLSurfaceView",
+                (0, 430, 1080, 1320),
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[1])
+        self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
+
+    def test_labeled_terminal_surface_falls_back_without_renderer(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.view.View",
+                (0, 430, 800, 1800),
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[0])
+
+    def test_labeled_terminal_surface_rejects_disabled_renderer_for_fallback(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.opengl.GLSurfaceView",
+                (0, 430, 1080, 1320),
+                enabled=False,
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[0])
+
+    def test_cached_terminal_surface_keeps_its_distinct_label_contract(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+                enabled=False,
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.opengl.GLSurfaceView",
+                (0, 430, 1080, 1320),
+            ),
+        ]
+
+        self.assertIs(smoke.find_cached_terminal_surface(nodes), nodes[0])
 
     def test_labeled_terminal_surface_rejects_unlabeled_fallbacks(self) -> None:
         nodes = [
@@ -3033,7 +3108,7 @@ UI dumped to: /dev/tty"""
         terminal = smoke.Node(
             "",
             "Terminal",
-            "android.view.View",
+            "android.opengl.GLSurfaceView",
             (10, 100, 1010, 1900),
         )
 
@@ -3048,7 +3123,9 @@ UI dumped to: /dev/tty"""
         self.assertEqual(
             diagnostic,
             "surface_label=Terminal\n"
-            "surface_class=android.view.View\n"
+            "surface_class=android.opengl.GLSurfaceView\n"
+            "surface_candidate=renderer\n"
+            "surface_class_kind=gl_surface\n"
             "bounds_left=10\n"
             "bounds_top=100\n"
             "bounds_right=1010\n"

@@ -1935,7 +1935,7 @@ def find_terminal_node(nodes: list[Node]) -> Node | None:
 
 
 def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
-    """Locate the explicitly labeled native cell surface without a fallback."""
+    """Prefer the labeled renderer, with a labeled-only compatibility fallback."""
 
     candidates = []
     for node in nodes:
@@ -1948,8 +1948,11 @@ def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
             and bottom > top
         ):
             candidates.append(node)
+    renderer_candidates = [
+        node for node in candidates if node.class_name.endswith("SurfaceView")
+    ]
     return max(
-        candidates,
+        renderer_candidates or candidates,
         key=lambda node: (node.bounds[2] - node.bounds[0])
         * (node.bounds[3] - node.bounds[1]),
         default=None,
@@ -2506,9 +2509,23 @@ def selection_geometry_diagnostic(
         if re.fullmatch(r"[A-Za-z0-9_.$]+", node.class_name)
         else "unavailable"
     )
+    if node.class_name.endswith("GLSurfaceView"):
+        surface_candidate = "renderer"
+        surface_class_kind = "gl_surface"
+    elif node.class_name.endswith("SurfaceView"):
+        surface_candidate = "renderer"
+        surface_class_kind = "surface_view"
+    elif node.class_name.endswith("LinearLayout"):
+        surface_candidate = "wrapper"
+        surface_class_kind = "linear_layout"
+    else:
+        surface_candidate = "fallback"
+        surface_class_kind = "other"
     return (
         "surface_label=Terminal\n"
         f"surface_class={surface_class}\n"
+        f"surface_candidate={surface_candidate}\n"
+        f"surface_class_kind={surface_class_kind}\n"
         f"bounds_left={left}\n"
         f"bounds_top={top}\n"
         f"bounds_right={right}\n"
