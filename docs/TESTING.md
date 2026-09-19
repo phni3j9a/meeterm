@@ -81,9 +81,11 @@ Home/background → activate の同一プロセス復帰と、復帰後の nativ
 `ssh` の実fixture経路で、fixture-owned control fileから disposable `sshd` だけを
 停止・再開します。Linux fixtureのstop ACKは、対象portを所有する同一UID・同一sshd実体の
 processが残っていないことまで確認し、listener終了後に初めて現れたownerはport再利用の
-可能性があるためsignalせず失敗扱いにします。Androidはstop ACK後に対象serialの
-exact `tcp:<port>` reverseを削除・消失確認し、`adb reconnect device`、bounded
-`wait-for-disconnect`、`wait-for-device`、exact reverse再作成と `reverse --list` 検証を行います。
+可能性があるためsignalせず失敗扱いにします。Androidはapp/reverse作成前に対象serialの
+debuggable emulatorを`adb root`とUID 0で検証します。stop ACK後はexact `tcp:<port>` reverseを
+削除・消失確認し、serial-scoped `wait-for-disconnect`を先にarmしてから`adb unroot`でadbd自体を
+再起動します。bounded disconnect、同じserialの`wait-for-device`、shell UID 2000、exact reverseの
+再作成と`reverse --list`をすべて照合します。root非対応、固定応答/UID不一致、切断未観測はfail closedです。
 tmux server/session/shell、同じhost key/endpointを維持したまま、
 pre-loss marker、cached/read-only rail、同じTerminalViewのtest-only native handle、
 同じpaneのReady、post-loss markerを順に確認します。切断中のinputは送らず、markerは

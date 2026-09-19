@@ -58,11 +58,13 @@ default is `standard`.
   remote acknowledgment. It also runs a separate deterministic transport-loss
   case: the disposable fixture stops/restarts only its sshd through its
   fixture-owned control files, while tmux remains alive. After the stop ACK,
-  the Android driver resets the selected serial's ADB transport with
-  removes and verifies absence of the exact `tcp:<port>` reverse listener,
-  runs `adb reconnect device`, waits for `wait-for-disconnect` and then
-  `wait-for-device` within fixed bounds, recreates the exact reverse pair, and
-  verifies it with `adb reverse --list`. The app must then show the retained read-only rail and
+  the Android driver first requires a debuggable emulator through serial-scoped
+  `adb root` and UID 0. It removes and verifies absence of the exact
+  `tcp:<port>` reverse listener, arms a bounded `wait-for-disconnect`, and runs
+  `adb unroot` to restart the selected device's adbd and close its accepted
+  reverse relay. It then waits for the same serial, verifies shell UID 2000,
+  recreates the exact reverse pair, and verifies it with `adb reverse --list`.
+  The app must then show the retained read-only rail and
   return Ready to the same pane/native handle without reopening the picker,
   followed by one post-loss remote acknowledgment and disconnect. No daily
   CRUD/copy/restart chain; this path does not claim arbitrary packet loss,
@@ -144,13 +146,17 @@ The HOME transition just described is the healthy foreground evidence and does
 not simulate a transport failure. The same Android `full` run separately sends
 `stop` and `start` requests through the fixture's mode-0600
 `sshd-control-request`/`sshd-control-status` files. After the stop ACK, the
-driver removes only the exact reverse listener and verifies its absence, closes
-the selected ADB transport with `adb reconnect device`, waits for the transport
-to disconnect and the same serial to become ready, and recreates/verifies only
-the exact `adb reverse tcp:<fixture-port> tcp:<fixture-port>` mapping. Only the fixture
+driver has already required that the selected debug emulator supports `adb root`
+and reports UID 0. It removes only the exact reverse listener and verifies its
+absence, arms serial-scoped `wait-for-disconnect`, then uses the public `adb unroot`
+command to restart that device's adbd. It requires the disconnect observation,
+the same serial's bounded return, shell UID 2000, and recreates/verifies only the exact
+`adb reverse tcp:<fixture-port> tcp:<fixture-port>` mapping. Only the fixture
 sshd process tree is stopped; the tmux server/session/shell and endpoint identity
 are left alive. ADB reverse removal alone is not treated as the loss injection;
-the bounded `wait-for-disconnect` is required before restoration. The driver
+the adbd restart and bounded `wait-for-disconnect` are required before restoration.
+The root/unroot response, UID, selected serial, reverse row, and waiter are all
+fail-closed, and cleanup returns an unexpectedly rooted emulator to shell UID. The driver
 records sanitized fixed results for the pre-loss and post-loss markers, the
 cached read-only rail, the same native handle, the same selected pane, and the
 absence of input while stopped. On iOS, the final

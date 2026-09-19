@@ -121,9 +121,14 @@ RUNTIME_PICKER_ROW_PREFIXES = (
 FIXTURE_CONTROL_REQUEST_ENV = "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
 FIXTURE_CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
 FIXTURE_CONTROL_TIMEOUT_SECONDS = 25.0
-ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS = 15.0
+ADB_ADBD_RESTART_TIMEOUT_SECONDS = 15.0
 ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS = 30.0
 ADB_REVERSE_TIMEOUT_SECONDS = 10.0
+ADB_ROOT_RESPONSES = (
+    "restarting adbd as root",
+    "adbd is already running as root",
+)
+ADB_UNROOT_RESPONSE = "restarting adbd as non root"
 ANDROID_TRANSPORT_LOSS_PRE_PATTERN = re.compile(r"android-ssh-loss-pre-[0-9a-f]{16}")
 ANDROID_TRANSPORT_LOSS_POST_PATTERN = re.compile(r"android-ssh-loss-post-[0-9a-f]{16}")
 TRANSPORT_LOSS_COMPLETION_STAGES = (
@@ -337,13 +342,18 @@ class AndroidDevice:
         self.terminal_input_chars = 0
         self.terminal_input_chunks = 0
         self.foreground_evidence_lost = False
+        self.adbd_rooted = False
+        self.transport_reset_events: list[str] = []
+
+    def _adb_command(self, arguments: tuple[str, ...]) -> list[str]:
+        return [self.adb_path, "-s", self.serial, *arguments]
 
     def note_terminal_input(self, character_count: int) -> None:
         self.terminal_input_chars += max(0, character_count)
         self.terminal_input_chunks += 1
 
     def run(self, arguments: tuple[str, ...], stage: str, timeout: float = 15.0) -> bytes:
-        command = [self.adb_path, "-s", self.serial, *arguments]
+        command = self._adb_command(arguments)
         try:
             result = subprocess.run(
                 command,
@@ -366,6 +376,117 @@ class AndroidDevice:
         timeout: float = ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
     ) -> None:
         self.run(("wait-for-device",), stage, timeout=timeout)
+
+    def adbd_uid(self, stage: str) -> int:
+        output = self.run(
+            ("shell", "id", "-u"),
+            stage,
+            timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace")
+        match = re.fullmatch(r"\s*(\d+)\s*", output)
+        if match is None:
+            raise SmokeFailure(stage, "adbd_uid_invalid")
+        return int(match.group(1))
+
+    def prepare_adbd_restart_injection(self) -> None:
+        """Require a debuggable emulator before any app/reverse setup."""
+
+        response = self.run(
+            ("root",),
+            "device_adbd_root",
+            timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace").strip()
+        if response not in ADB_ROOT_RESPONSES:
+            raise SmokeFailure("device_adbd_root", "adbd_root_not_confirmed")
+        self.transport_reset_events.append("adbd_root_requested")
+        self.wait_for_device(
+            "device_adbd_root_wait",
+            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+        )
+        if self.adbd_uid("device_adbd_root_verify") != 0:
+            raise SmokeFailure("device_adbd_root_verify", "adbd_not_root")
+        self.adbd_rooted = True
+        self.transport_reset_events.append("adbd_root_verified")
+
+    def _start_disconnect_waiter(self) -> subprocess.Popen[bytes]:
+        """Arm the serial-scoped disconnect observation before restarting adbd."""
+
+        try:
+            waiter = subprocess.Popen(
+                self._adb_command(("wait-for-disconnect",)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as error:
+            raise SmokeFailure(
+                "transport_wait_for_disconnect",
+                "adb_unavailable",
+            ) from error
+        if waiter.poll() is not None:
+            raise SmokeFailure(
+                "transport_wait_for_disconnect",
+                "disconnect_waiter_not_armed",
+            )
+        self.transport_reset_events.append("disconnect_waiter_armed")
+        return waiter
+
+    @staticmethod
+    def _stop_disconnect_waiter(waiter: subprocess.Popen[bytes]) -> None:
+        if waiter.poll() is not None:
+            return
+        waiter.terminate()
+        try:
+            waiter.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            waiter.kill()
+            try:
+                waiter.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def _finish_disconnect_waiter(self, waiter: subprocess.Popen[bytes]) -> None:
+        try:
+            return_code = waiter.wait(timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            self._stop_disconnect_waiter(waiter)
+            raise SmokeFailure(
+                "transport_wait_for_disconnect",
+                "adb_unavailable",
+            ) from error
+        if return_code != 0:
+            raise SmokeFailure(
+                "transport_wait_for_disconnect",
+                "adb_failed",
+            )
+        self.transport_reset_events.append("disconnect_observed")
+
+    def cleanup_adbd_root(self) -> bool:
+        """Best-effort caller hook that returns a rooted emulator to shell UID."""
+
+        self.wait_for_device(
+            "cleanup_adbd_wait",
+            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+        )
+        if self.adbd_uid("cleanup_adbd_uid") != 0:
+            self.adbd_rooted = False
+            return False
+        response = self.run(
+            ("unroot",),
+            "cleanup_adbd_unroot",
+            timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace").strip()
+        if response != ADB_UNROOT_RESPONSE:
+            raise SmokeFailure("cleanup_adbd_unroot", "adbd_unroot_not_confirmed")
+        self.adbd_rooted = False
+        self.wait_for_device(
+            "cleanup_adbd_return",
+            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+        )
+        if self.adbd_uid("cleanup_adbd_verify") != 2000:
+            raise SmokeFailure("cleanup_adbd_verify", "adbd_not_shell")
+        self.transport_reset_events.append("adbd_cleanup_unrooted")
+        return True
 
     def create_reverse_mapping(self, port: int, stage: str) -> None:
         """Create the one exact fixture loopback mapping owned by this driver."""
@@ -415,30 +536,48 @@ class AndroidDevice:
             )
 
     def reconnect_transport(self, port: int) -> None:
-        """Close this serial's ADB transport and restore its fixture mapping."""
+        """Restart this serial's adbd and restore its fixture mapping."""
 
-        # Removing the exact listener is not by itself proof that an accepted
-        # reverse stream closed. Require the selected ADB transport to reach
-        # the documented disconnected state before waiting for the same serial
-        # and recreating the mapping. Keep every operation serial-scoped through
-        # AndroidDevice.run; never reset the shared host ADB server.
+        # Removing the exact listener is not proof that an accepted reverse
+        # stream closed. The public root/unroot service restarts adbd, which
+        # owns that accepted relay. Arm the serial-scoped disconnect observer
+        # before triggering the restart so a fast emulator cannot race past
+        # the evidence boundary. Never reset the shared host ADB server.
+        if not self.adbd_rooted:
+            raise SmokeFailure("transport_adbd_unroot", "adbd_root_precondition_missing")
         self.remove_reverse_mapping(port)
-        self.run(
-            ("reconnect", "device"),
-            "transport_reconnect",
-            timeout=ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
-        )
-        self.run(
-            ("wait-for-disconnect",),
-            "transport_wait_for_disconnect",
-            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
-        )
+        self.transport_reset_events.append("reverse_mapping_removed")
+        waiter = self._start_disconnect_waiter()
+        waiter_finished = False
+        try:
+            response = self.run(
+                ("unroot",),
+                "transport_adbd_unroot",
+                timeout=ADB_ADBD_RESTART_TIMEOUT_SECONDS,
+            ).decode("utf-8", errors="replace").strip()
+            if response != ADB_UNROOT_RESPONSE:
+                raise SmokeFailure(
+                    "transport_adbd_unroot",
+                    "adbd_unroot_not_confirmed",
+                )
+            self.adbd_rooted = False
+            self.transport_reset_events.append("adbd_unroot_restart_requested")
+            self._finish_disconnect_waiter(waiter)
+            waiter_finished = True
+        finally:
+            if not waiter_finished:
+                self._stop_disconnect_waiter(waiter)
         self.wait_for_device(
             "transport_wait_for_device",
             timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
         )
+        self.transport_reset_events.append("same_serial_returned")
+        if self.adbd_uid("transport_adbd_unroot_verify") != 2000:
+            raise SmokeFailure("transport_adbd_unroot_verify", "adbd_not_shell")
+        self.transport_reset_events.append("adbd_shell_verified")
         self.create_reverse_mapping(port, "transport_reverse")
         self.verify_reverse_mapping(port, "transport_reverse_verify")
+        self.transport_reset_events.append("reverse_mapping_restored")
 
     def assert_process_alive(self, stage: str) -> None:
         self.process_id(stage)
@@ -3763,7 +3902,7 @@ def exercise_transport_loss_recovery(
     expected_pid: str,
     reverse_port: int,
 ) -> None:
-    """Reset the ADB transport after stopping sshd and recover without a picker."""
+    """Restart adbd after stopping sshd and recover without a picker."""
 
     stage = "daily_transport_loss_prepare"
     active_panes = [
@@ -3816,8 +3955,8 @@ def exercise_transport_loss_recovery(
     try:
         request_fixture_transport("stop", "daily_transport_loss_inject")
         transport_stopped = True
-        # The fixture ACK only proves that sshd stopped. Reset the driver-owned
-        # ADB transport as the deterministic socket-loss boundary, then
+        # The fixture ACK only proves that sshd stopped. Restart the selected
+        # emulator's adbd as the deterministic accepted-stream boundary, then
         # recreate and verify the exact reverse path before observing stale UI.
         device.reconnect_transport(reverse_port)
         completed.append("daily_transport_loss_injected")
@@ -4615,6 +4754,8 @@ def main(argv: list[str] | None = None) -> int:
         device = AndroidDevice(serial, adb_path)
         device.wait_for_device()
         completed.append("device_ready")
+        device.prepare_adbd_restart_injection()
+        completed.append("adbd_root_verified")
 
         stage = "reverse"
         reverse_list = device.run(("reverse", "--list"), stage, timeout=10.0).decode(
@@ -5384,6 +5525,15 @@ def main(argv: list[str] | None = None) -> int:
                     device.run(("reverse", "--remove", f"tcp:{port}"), "cleanup", timeout=10.0)
                 except SmokeFailure:
                     pass
+            try:
+                if device.cleanup_adbd_root():
+                    completed.append("adbd_cleanup_unrooted")
+            except SmokeFailure:
+                completed.append("adbd_cleanup_unavailable")
+            write_artifact(
+                args.artifact_dir / "adb-transport-loss.txt",
+                "\n".join(device.transport_reset_events or ("not_started",)) + "\n",
+            )
 
         transport_loss_artifact = args.artifact_dir / "transport-loss-validation.txt"
         if not transport_loss_artifact.exists():
