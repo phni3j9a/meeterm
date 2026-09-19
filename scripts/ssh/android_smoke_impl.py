@@ -56,9 +56,15 @@ INPUT_REJECTION_REASONS = (
     "unbound",
     "native_exception",
     "native_rejection",
+    "stale_or_native_rejection",
 )
 INPUT_REJECTION_PATTERN = re.compile(
-    r"IME commit rejected; reason=(unbound|native_exception|native_rejection)\b"
+    r"IME commit rejected; reason="
+    r"(unbound|native_exception|native_rejection|stale_or_native_rejection)\b"
+)
+SPECIAL_INPUT_PATTERN = re.compile(
+    r"terminal special (?P<outcome>accepted|rejected)"
+    r"(?:; reason=(?P<reason>unbound|native_exception|stale_or_native_rejection))?\b"
 )
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MP4_FILE_TYPE_BOX = b"ftyp"
@@ -606,6 +612,10 @@ class AndroidDevice:
         accepted_bytes = 0
         last_native_count: int | None = None
         rejected_commits = dict.fromkeys(INPUT_REJECTION_REASONS, 0)
+        accepted_specials = 0
+        rejected_specials = dict.fromkeys(
+            ("unbound", "native_exception", "stale_or_native_rejection"), 0
+        )
         for line in output.splitlines():
             if not any(
                 tag in line
@@ -634,11 +644,23 @@ class AndroidDevice:
                 rejected = INPUT_REJECTION_PATTERN.search(line)
                 if rejected is not None:
                     rejected_commits[rejected.group(1)] += 1
+                special = SPECIAL_INPUT_PATTERN.search(line)
+                if special is not None:
+                    if special.group("outcome") == "accepted":
+                        accepted_specials += 1
+                    elif special.group("reason") in rejected_specials:
+                        rejected_specials[special.group("reason")] += 1
                 # One aggregate line below is enough for CI diagnosis. Keep no
                 # per-character native input records in the artifact.
                 continue
             kept.append(line)
-        if self.terminal_input_chunks or accepted_commits or any(rejected_commits.values()):
+        if (
+            self.terminal_input_chunks
+            or accepted_commits
+            or any(rejected_commits.values())
+            or accepted_specials
+            or any(rejected_specials.values())
+        ):
             # A lower observed byte count is a diagnostic only: logcat can be
             # truncated or sampled while callbacks are still in flight, so it
             # must not be reported as proof of native rejection.
@@ -654,7 +676,13 @@ class AndroidDevice:
                 f"rejectedCommits={sum(rejected_commits.values())} "
                 f"rejectedUnbound={rejected_commits['unbound']} "
                 f"rejectedNativeException={rejected_commits['native_exception']} "
-                f"rejectedNativeRejection={rejected_commits['native_rejection']}"
+                f"rejectedNativeRejection={rejected_commits['native_rejection']} "
+                f"rejectedStaleOrNative={rejected_commits['stale_or_native_rejection']} "
+                f"acceptedSpecials={accepted_specials} "
+                f"rejectedSpecials={sum(rejected_specials.values())} "
+                f"rejectedSpecialUnbound={rejected_specials['unbound']} "
+                f"rejectedSpecialNativeException={rejected_specials['native_exception']} "
+                f"rejectedSpecialStaleOrNative={rejected_specials['stale_or_native_rejection']}"
             )
         return "\n".join(kept) + ("\n" if kept else "<no filtered native log lines>\n")
 
@@ -2990,6 +3018,15 @@ def wait_for_file_contents(path: Path, expected: str, stage: str) -> None:
                 return
             raise SmokeFailure(stage, "marker_repeated")
         time.sleep(0.2)
+    try:
+        final_content = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_read_failed") from error
+    if final_content:
+        # Keep the artifact secret-free while distinguishing a missing remote
+        # execution from a command that reached the fixture with a wrong pane
+        # or shell identity.
+        raise SmokeFailure(stage, "marker_content_mismatch")
     raise SmokeFailure(stage, "marker_timeout")
 
 

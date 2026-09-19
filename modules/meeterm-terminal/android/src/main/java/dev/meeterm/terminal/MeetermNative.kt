@@ -218,12 +218,21 @@ internal class RustInputSink(
 
   override fun sendSpecialAtEpoch(operationEpoch: String, key: TerminalSpecialKey): Boolean {
     val handle = handleProvider()
-    if (handle == 0L) return false
+    if (handle == 0L) {
+      Log.i(TAG, "terminal special rejected; reason=unbound")
+      return false
+    }
     return try {
       val accepted = MeetermNative.sendSpecialAtEpoch(handle, operationEpoch, key.nativeCode) > 0
-      if (accepted) clearSelectionAfterAccepted(handle)
+      if (accepted) {
+        clearSelectionAfterAccepted(handle)
+        Log.i(TAG, "terminal special accepted")
+      } else {
+        Log.i(TAG, "terminal special rejected; reason=stale_or_native_rejection")
+      }
       accepted
     } catch (_: RuntimeException) {
+      Log.i(TAG, "terminal special rejected; reason=native_exception")
       false
     }
   }

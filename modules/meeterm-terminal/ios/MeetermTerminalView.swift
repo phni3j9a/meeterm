@@ -271,15 +271,9 @@ final class MeetermTerminalView: ExpoView {
       stopRevisionPolling()
       return
     }
-    let operationEpoch = MeetermCore.operationEpoch(terminalId: terminalHandle)
-    if operationEpoch != lastOperationEpoch {
-      lastOperationEpoch = operationEpoch
-      terminalInputView.operationEpochDidChange(operationEpoch)
+    if synchronizeOperationEpoch() {
       // A rejected in-flight resize is intentionally not queued. Re-entering
       // layout with a fresh epoch sends only the current measured dimensions.
-      lastColumns = 0
-      lastRows = 0
-      setNeedsLayout()
       renderer.requestFrame()
     }
     let revision = MeetermCore.terminalRevision(terminalId: terminalHandle)
@@ -355,9 +349,13 @@ final class MeetermTerminalView: ExpoView {
   /// authority.
   func setInteractionMode(_ mode: String) {
     let nextMode = mode == "cachedReadOnly" ? "cachedReadOnly" : "live"
-    guard nextMode != interactionMode else { return }
+    guard nextMode != interactionMode else {
+      if nextMode == "live" { synchronizeOperationEpoch() }
+      return
+    }
     interactionMode = nextMode
     terminalInputView.setInteractionMode(nextMode)
+    if nextMode == "live" { synchronizeOperationEpoch() }
     lastColumns = 0
     lastRows = 0
     if isCachedReadOnly {
@@ -432,6 +430,10 @@ final class MeetermTerminalView: ExpoView {
     guard window != nil else {
       return
     }
+    // Invalidate a retained responder synchronously. The later poll still
+    // catches the fresh Ready epoch if Rust foreground recovery completes on
+    // a following main-queue turn.
+    synchronizeOperationEpoch()
     renderer.requestFrame()
     // Scene activation is updated alongside this notification. Starting on
     // the next main-queue turn avoids treating the transition as background.
@@ -442,6 +444,19 @@ final class MeetermTerminalView: ExpoView {
 
   @objc private func applicationWillResignActive() {
     stopRevisionPolling()
+  }
+
+  @discardableResult
+  private func synchronizeOperationEpoch() -> Bool {
+    guard terminalHandle != 0 else { return false }
+    let operationEpoch = MeetermCore.operationEpoch(terminalId: terminalHandle)
+    guard operationEpoch != lastOperationEpoch else { return false }
+    lastOperationEpoch = operationEpoch
+    terminalInputView.operationEpochDidChange(operationEpoch)
+    lastColumns = 0
+    lastRows = 0
+    setNeedsLayout()
+    return true
   }
 
   private func reconcileResize(for size: CGSize) {

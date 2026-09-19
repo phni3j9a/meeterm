@@ -217,6 +217,21 @@ class AdbTransportResetTests(unittest.TestCase):
 
 
 class ArtifactBoundaryTests(unittest.TestCase):
+    def test_marker_timeout_distinguishes_absent_and_mismatched_content(self) -> None:
+        clock = _FakeClock()
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            marker = Path(root) / "foreground.txt"
+            with _patched_clock(clock):
+                with self.assertRaises(smoke.SmokeFailure) as absent:
+                    smoke.wait_for_file_contents(marker, "expected\n", "foreground")
+            self.assertEqual(absent.exception.reason, "marker_timeout")
+
+            marker.write_text("mismatch\n", encoding="utf-8")
+            with _patched_clock(clock):
+                with self.assertRaises(smoke.SmokeFailure) as mismatched:
+                    smoke.wait_for_file_contents(marker, "expected\n", "foreground")
+            self.assertEqual(mismatched.exception.reason, "marker_content_mismatch")
+
     def test_selection_fixture_missing_ack_stops_before_native_drag(self) -> None:
         clock = _FakeClock()
         device = mock.Mock(spec=smoke.AndroidDevice)
@@ -1731,7 +1746,10 @@ class UiDriverTests(unittest.TestCase):
                 b"01-01 00:00:01.001 I/MeetermInput: IME commit rejected; reason=unbound",
                 b"01-01 00:00:01.002 I/MeetermInput: IME commit rejected; reason=native_exception",
                 b"01-01 00:00:01.003 I/MeetermInput: IME commit rejected; reason=native_rejection",
-                b"01-01 00:00:01.004 I/MeetermInput: IME commit rejected; reason=unexpected",
+                b"01-01 00:00:01.004 I/MeetermInput: IME commit rejected; reason=stale_or_native_rejection",
+                b"01-01 00:00:01.005 I/MeetermInput: terminal special accepted",
+                b"01-01 00:00:01.006 I/MeetermInput: terminal special rejected; reason=stale_or_native_rejection",
+                b"01-01 00:00:01.007 I/MeetermInput: IME commit rejected; reason=unexpected",
             )
         )
 
@@ -1740,10 +1758,14 @@ class UiDriverTests(unittest.TestCase):
 
         self.assertIn("acceptedCommits=1", output)
         self.assertIn("acceptedBytes=2", output)
-        self.assertIn("rejectedCommits=3", output)
+        self.assertIn("rejectedCommits=4", output)
         self.assertIn("rejectedUnbound=1", output)
         self.assertIn("rejectedNativeException=1", output)
         self.assertIn("rejectedNativeRejection=1", output)
+        self.assertIn("rejectedStaleOrNative=1", output)
+        self.assertIn("acceptedSpecials=1", output)
+        self.assertIn("rejectedSpecials=1", output)
+        self.assertIn("rejectedSpecialStaleOrNative=1", output)
         self.assertNotIn("IME commit accepted", output)
         self.assertNotIn("IME commit rejected", output)
         self.assertNotIn("unexpected", output)

@@ -2501,7 +2501,12 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func terminalQuery() -> XCUIElementQuery {
     app.otherElements.matching(
-      NSPredicate(format: "identifier == %@ OR label == %@", "Terminal", "Terminal")
+      NSPredicate(
+        format: "identifier == %@ OR label == %@ OR label == %@",
+        "Terminal",
+        "Terminal",
+        "Terminal, cached output, read only"
+      )
     )
   }
 
@@ -2919,7 +2924,7 @@ final class MeetermSmokeUITests: XCTestCase {
     func state(_ element: XCUIElement) -> String {
       guard element.exists else { return "absent" }
       switch element.value as? String {
-      case "Ready": return "ready"
+      case let value? where value == "Ready" || value.hasPrefix("Ready "): return "ready"
       case "Pasting": return "pasting"
       case nil: return "no_value"
       default: return "unexpected_value"
@@ -3031,24 +3036,30 @@ final class MeetermSmokeUITests: XCTestCase {
       predicate: NSPredicate(format: "enabled == YES"), object: paste
     )
     XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed, "The terminal Paste action is disabled.")
-    let initiallyReady = paste.value as? String == "Ready"
+    let initialPasteState = paste.value as? String
+    let initiallyReady = initialPasteState?.hasPrefix("Ready ") == true
     if !initiallyReady { writeTerminalPasteDiagnostics(phase: "before_tap", paste: paste) }
-    XCTAssertTrue(initiallyReady, "The native paste completion state is unavailable before tapping.")
+    XCTAssertTrue(initiallyReady, "The native paste completion generation is unavailable before tapping.")
     record("\(stage)_paste_tap")
     paste.tap()
     record("\(stage)_paste_tapped")
     // UIPasteControl loads the item provider asynchronously. Wait for the
     // native action's completion before clearing its source or sending Enter.
     let finished = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "value == %@", "Ready"), object: paste
+      predicate: NSPredicate(
+        format: "value != %@ AND value BEGINSWITH %@",
+        initialPasteState ?? "",
+        "Ready "
+      ),
+      object: paste
     )
     let completion = XCTWaiter.wait(for: [finished], timeout: 10)
     writeTerminalPasteDiagnostics(phase: "after_tap", paste: paste)
     if completion != .completed && safeForPostFormScreenshot() {
       capture("terminal-paste-failure")
     }
-    // Ready only describes UIPasteControl's provider lifecycle. It is not
-    // proof that delivery reached MeetermCore or the remote shell.
+    // A changed Ready generation proves that the native delivery callback ran.
+    // The remote marker below remains the end-to-end transport proof.
     XCTAssertEqual(completion, .completed, "The native paste did not finish.")
     record("\(stage)_paste_finished")
     UIPasteboard.general.string = nil

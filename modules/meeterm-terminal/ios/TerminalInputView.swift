@@ -50,6 +50,7 @@ final class TerminalInputView: UITextView {
   private var pendingPasteGeneration: UInt64?
   private var pendingPasteEpoch: UInt64?
   private var pendingPasteProgress: Progress?
+  private var completedPasteGeneration: UInt64 = 0
   private var inputSessionEpoch: UInt64?
   private var isCachedReadOnly = false
   private var remoteInputControls: [UIView] = []
@@ -242,22 +243,22 @@ final class TerminalInputView: UITextView {
       if observesProviderCompletion {
         NSLog("MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION")
       }
-        DispatchQueue.main.async { [weak self] in
-          guard let self,
-                self.pasteGeneration == generation,
-                self.pendingPasteGeneration == generation,
-                self.pendingPasteEpoch == operationEpoch else {
-            return
-          }
-          self.pendingPasteGeneration = nil
-          self.pendingPasteEpoch = nil
-          self.pendingPasteProgress = nil
-        self.terminalPasteControl.accessibilityValue = "Ready"
+      DispatchQueue.main.async { [weak self] in
+        guard let self,
+              self.pasteGeneration == generation,
+              self.pendingPasteGeneration == generation,
+              self.pendingPasteEpoch == operationEpoch else {
+          return
+        }
+        self.pendingPasteGeneration = nil
+        self.pendingPasteEpoch = nil
+        self.pendingPasteProgress = nil
         let windowAttached = self.window != nil
         let focused = self.isFirstResponder
         guard windowAttached, focused else {
           if !windowAttached { self.recordPasteDrop(.window) }
           if !focused { self.recordPasteDrop(.focus) }
+          self.markPasteControlReady()
           return
         }
         guard self.onPasteAtEpoch == nil || self.operationEpochProvider?() == operationEpoch else {
@@ -266,6 +267,7 @@ final class TerminalInputView: UITextView {
         }
         guard let pasted, !pasted.isEmpty else {
           self.recordPasteDrop(.provider)
+          self.markPasteControlReady()
           return
         }
         self.deliverPaste(pasted, epoch: operationEpoch)
@@ -337,7 +339,7 @@ final class TerminalInputView: UITextView {
     pendingPasteEpoch = nil
     pendingPasteProgress?.cancel()
     pendingPasteProgress = nil
-    terminalPasteControl.accessibilityValue = "Ready"
+    markPasteControlReady()
   }
 
   /// Switch the remote interaction policy without replacing the native
@@ -381,6 +383,17 @@ final class TerminalInputView: UITextView {
     } else if onPasteAtEpoch == nil {
       onPaste?(pasted)
     }
+    completedPasteGeneration &+= 1
+    markPasteControlReady()
+  }
+
+  private func markPasteControlReady() {
+    // UI observation waits for a new delivery generation rather than
+    // mistaking the pre-tap Ready value for completion. Ordinary users keep
+    // the concise accessibility value; no clipboard contents are exposed.
+    terminalPasteControl.accessibilityValue = observesInputLifecycle
+      ? "Ready \(completedPasteGeneration)"
+      : "Ready"
   }
 
   private func recordPasteRequest() {
@@ -499,7 +512,7 @@ final class TerminalInputView: UITextView {
     control.target = self
     control.accessibilityLabel = "Paste"
     control.accessibilityIdentifier = "terminal-paste"
-    control.accessibilityValue = "Ready"
+    control.accessibilityValue = observesInputLifecycle ? "Ready 0" : "Ready"
     control.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
       control.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),

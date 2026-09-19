@@ -292,6 +292,10 @@ class MeetermTerminalView(
     super.onWindowVisibilityChanged(visibility)
     if (!attached) return
     if (visibility == View.VISIBLE) {
+      // Do not leave the first foreground callback dependent on the 33 ms
+      // render poll. A changed Rust operation epoch invalidates the old IME
+      // session before any newly focused input can reach it.
+      observeOperationEpoch()
       surface.onResume()
       surface.requestRender()
       startRevisionPolling()
@@ -948,6 +952,7 @@ class MeetermTerminalView(
   fun setInteractionMode(value: String) {
     val nextMode = if (value == "cachedReadOnly") "cachedReadOnly" else "live"
     if (nextMode == interactionMode) {
+      if (nextMode == "live") observeOperationEpoch()
       updateInteractionAccessibility()
       return
     }
@@ -958,7 +963,9 @@ class MeetermTerminalView(
     BaseInputConnection.removeComposingSpans(editable)
     // A live transition only prepares a fresh epoch-bound session. It does not
     // request focus or show the keyboard.
-    inputSession = createInputSession(if (nextMode == "live") readOperationEpoch() else null)
+    val operationEpoch = if (nextMode == "live") readOperationEpoch() else null
+    lastOperationEpoch = operationEpoch
+    inputSession = createInputSession(operationEpoch)
     lastColumns = 0
     lastRows = 0
     if (nextMode == "cachedReadOnly") {
