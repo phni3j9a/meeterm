@@ -392,16 +392,46 @@ class AndroidDevice:
         if not reverse_exact_mapping_exists(reverse_list, port):
             raise SmokeFailure(stage, "reverse_mapping_missing")
 
+    def remove_reverse_mapping(self, port: int) -> None:
+        """Remove and verify only this driver's fixture reverse listener."""
+
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise SmokeFailure("transport_reverse_remove", "invalid_port")
+        mapping = f"tcp:{port}"
+        self.run(
+            ("reverse", "--remove", mapping),
+            "transport_reverse_remove",
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        )
+        reverse_list = self.run(
+            ("reverse", "--list"),
+            "transport_reverse_remove_verify",
+            timeout=ADB_REVERSE_TIMEOUT_SECONDS,
+        ).decode("utf-8", errors="replace")
+        if reverse_local_mapping_exists(reverse_list, port):
+            raise SmokeFailure(
+                "transport_reverse_remove_verify",
+                "reverse_mapping_present",
+            )
+
     def reconnect_transport(self, port: int) -> None:
         """Close this serial's ADB transport and restore its fixture mapping."""
 
-        # ``reconnect device`` closes the device-side transport, which closes
-        # the transport-owned reverse listeners as part of the reset.  Keep
-        # this test-only reset serial-scoped through AndroidDevice.run.
+        # Removing the exact listener is not by itself proof that an accepted
+        # reverse stream closed. Require the selected ADB transport to reach
+        # the documented disconnected state before waiting for the same serial
+        # and recreating the mapping. Keep every operation serial-scoped through
+        # AndroidDevice.run; never reset the shared host ADB server.
+        self.remove_reverse_mapping(port)
         self.run(
             ("reconnect", "device"),
             "transport_reconnect",
             timeout=ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
+        )
+        self.run(
+            ("wait-for-disconnect",),
+            "transport_wait_for_disconnect",
+            timeout=ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
         )
         self.wait_for_device(
             "transport_wait_for_device",

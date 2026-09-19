@@ -72,7 +72,10 @@ class AdbTransportResetTests(unittest.TestCase):
     def test_reconnect_transport_uses_serial_reset_wait_and_verified_reverse_order(self) -> None:
         device = FakeDevice(
             [
+                b"",  # adb reverse --remove tcp:<port>
+                b"",  # adb reverse --list (mapping absent)
                 b"",  # adb reconnect device
+                b"",  # adb wait-for-disconnect
                 b"",  # adb wait-for-device
                 b"",  # adb reverse --no-rebind tcp:<port> tcp:<port>
                 b"emulator-5554 tcp:2222 tcp:2222\n",  # adb reverse --list
@@ -84,7 +87,10 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             [(arguments, stage) for arguments, stage, _timeout in device.commands],
             [
+                (("reverse", "--remove", "tcp:2222"), "transport_reverse_remove"),
+                (("reverse", "--list"), "transport_reverse_remove_verify"),
                 (("reconnect", "device"), "transport_reconnect"),
+                (("wait-for-disconnect",), "transport_wait_for_disconnect"),
                 (("wait-for-device",), "transport_wait_for_device"),
                 (
                     ("reverse", "--no-rebind", "tcp:2222", "tcp:2222"),
@@ -96,7 +102,10 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             [timeout for _arguments, _stage, timeout in device.commands],
             [
+                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
+                smoke.ADB_REVERSE_TIMEOUT_SECONDS,
                 smoke.ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
+                smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
                 smoke.ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
                 smoke.ADB_REVERSE_TIMEOUT_SECONDS,
                 smoke.ADB_REVERSE_TIMEOUT_SECONDS,
@@ -104,7 +113,7 @@ class AdbTransportResetTests(unittest.TestCase):
         )
 
     def test_reconnect_failure_is_bounded_and_sanitized(self) -> None:
-        device = FakeDevice([("failure", "adb_failed")])
+        device = FakeDevice([b"", b"", ("failure", "adb_failed")])
 
         with self.assertRaises(smoke.SmokeFailure) as error:
             device.reconnect_transport(2222)
@@ -113,14 +122,56 @@ class AdbTransportResetTests(unittest.TestCase):
             (error.exception.stage, error.exception.reason),
             ("transport_reconnect", "adb_failed"),
         )
-        self.assertEqual(len(device.commands), 1)
+        self.assertEqual(len(device.commands), 3)
         self.assertEqual(
-            device.commands[0][2],
+            device.commands[2][2],
             smoke.ADB_TRANSPORT_RECONNECT_TIMEOUT_SECONDS,
         )
 
+    def test_reverse_remove_must_be_observed_before_transport_reconnect(self) -> None:
+        device = FakeDevice(
+            [
+                b"",
+                b"emulator-5554 tcp:2222 tcp:2222\n",
+            ]
+        )
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_reverse_remove_verify", "reverse_mapping_present"),
+        )
+        self.assertEqual(
+            [arguments for arguments, _stage, _timeout in device.commands],
+            [("reverse", "--remove", "tcp:2222"), ("reverse", "--list")],
+        )
+
+    def test_wait_for_disconnect_failure_does_not_wait_for_device(self) -> None:
+        device = FakeDevice(
+            [b"", b"", b"", ("failure", "adb_failed")]
+        )
+
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.reconnect_transport(2222)
+
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("transport_wait_for_disconnect", "adb_failed"),
+        )
+        self.assertEqual(
+            [arguments for arguments, _stage, _timeout in device.commands],
+            [
+                ("reverse", "--remove", "tcp:2222"),
+                ("reverse", "--list"),
+                ("reconnect", "device"),
+                ("wait-for-disconnect",),
+            ],
+        )
+
     def test_wait_for_device_failure_does_not_restore_reverse_mapping(self) -> None:
-        device = FakeDevice([b"", ("failure", "adb_failed")])
+        device = FakeDevice([b"", b"", b"", b"", ("failure", "adb_failed")])
 
         with self.assertRaises(smoke.SmokeFailure) as error:
             device.reconnect_transport(2222)
@@ -131,11 +182,19 @@ class AdbTransportResetTests(unittest.TestCase):
         )
         self.assertEqual(
             [arguments for arguments, _stage, _timeout in device.commands],
-            [("reconnect", "device"), ("wait-for-device",)],
+            [
+                ("reverse", "--remove", "tcp:2222"),
+                ("reverse", "--list"),
+                ("reconnect", "device"),
+                ("wait-for-disconnect",),
+                ("wait-for-device",),
+            ],
         )
 
     def test_reverse_restore_failure_is_bounded(self) -> None:
-        device = FakeDevice([b"", b"", ("failure", "adb_failed")])
+        device = FakeDevice(
+            [b"", b"", b"", b"", b"", ("failure", "adb_failed")]
+        )
 
         with self.assertRaises(smoke.SmokeFailure) as error:
             device.reconnect_transport(2222)
@@ -147,7 +206,10 @@ class AdbTransportResetTests(unittest.TestCase):
         self.assertEqual(
             [arguments for arguments, _stage, _timeout in device.commands],
             [
+                ("reverse", "--remove", "tcp:2222"),
+                ("reverse", "--list"),
                 ("reconnect", "device"),
+                ("wait-for-disconnect",),
                 ("wait-for-device",),
                 ("reverse", "--no-rebind", "tcp:2222", "tcp:2222"),
             ],
@@ -156,6 +218,9 @@ class AdbTransportResetTests(unittest.TestCase):
     def test_reverse_verification_rejects_wrong_remote_mapping(self) -> None:
         device = FakeDevice(
             [
+                b"",
+                b"",
+                b"",
                 b"",
                 b"",
                 b"",
