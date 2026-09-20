@@ -139,8 +139,9 @@ npx expo run:android --device
 USBで `adb reverse tcp:8081 tcp:8081` を設定するなど、端末からMetroへ到達できる
 状態にします。Expo Goでは動作しません。
 
-自己完結する評価APKはMobile smokeの `android-emulator-observability` に
-`app-release.apk` として保存する構成です。arm64実機とx86_64エミュレーターを
+自己完結する評価APKはDevin CloudのAndroid検証セッションが `artifacts/android-emulator-observability/` に
+`app-release.apk` として生成します（既定ではサイズのため証跡ブランチから除外するので、
+配布用に必要な場合はセッションへ明示的にアップロードを依頼します）。arm64実機とx86_64エミュレーターを
 対象にし、JavaScriptを同梱するためMetro不要です。開発用の署名を使用し、
 ストア配布用の署名・公開は今回の範囲外です。
 

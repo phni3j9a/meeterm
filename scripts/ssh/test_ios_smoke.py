@@ -148,16 +148,15 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertNotIn("selectFixtureTmuxRuntimeAndWaitForConnected", source[seeded_start:seeded_end])
 
     def test_new_suite_is_exposed_without_changing_the_standard_default(self):
-        workflow = (REPOSITORY_ROOT / ".github/workflows/mobile-smoke.yml").read_text(encoding="utf-8")
-        self.assertIn(
-            "options: [standard, polish, polish-navigation, ssh, full, forms, native, names]",
-            workflow,
-        )
-        self.assertIn("default: standard", workflow)
-        self.assertIn("Install pinned Rust toolchain for SSH runtime preflight", workflow)
-        self.assertIn("Verify native runtime selection before Simulator SSH testing", workflow)
-        self.assertIn("real_openssh_existing_tmux_runtime_selection", workflow)
-        self.assertEqual(workflow.count('packages: ""'), 1)
+        # The hosted mobile-smoke workflow was retired; suite selection now
+        # lives in the smoke driver itself so any session applies the same gate.
+        script = IOS_SMOKE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('readonly suite="${MEETERM_IOS_SUITE:-standard}"', script)
+        self.assertIn("standard|polish|polish-navigation|ssh|full|forms|native|names", script)
+        # ssh/full/names keep the fixture capability check and the native
+        # runtime-selection gate inside the driver.
+        self.assertIn("fixture.py", script)
+        self.assertIn("real_openssh_existing_tmux_runtime_selection", script)
         ci_workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertEqual(ci_workflow.count('packages: ""'), 1)
 
@@ -474,6 +473,10 @@ exit 0
 set -u
 workspace="${IOS_SMOKE_TEST_WORKSPACE}"
 if [[ "${1:-}" == "${workspace}/scripts/ssh/fixture.py" ]]; then
+  if [[ "${2:-}" == "--check" || "${2:-}" == "--" ]]; then
+    # Capability check and native runtime-selection preflight stubs.
+    exit 0
+  fi
   printf '%s\\n' '# stub fixture environment' > "${3}"
   exit 0
 fi

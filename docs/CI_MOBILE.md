@@ -1,13 +1,55 @@
-# Mobile CI guide
+# Mobile validation guide
 
-This guide defines the intended GitHub-hosted Android emulator and iOS Simulator validation. It complements the Android device runbook in [`POC_ANDROID.md`](POC_ANDROID.md); it does not turn a simulator/emulator into a physical-device substitute.
+This guide defines Android emulator and iOS Simulator validation on **Devin Cloud
+persistent sessions**. It complements the Android device runbook in
+[`POC_ANDROID.md`](POC_ANDROID.md); it does not turn a simulator/emulator into a
+physical-device substitute.
 
-The standard day-to-day sequence and exact commands are in [TESTING.md](TESTING.md).
-The user-approved policy of 2026-09-11 uses iOS `standard` for normal acceptance,
-with a separate short `ssh` suite when connection/input changes. Android retains
-its full smoke; the long iOS `full` is an optional diagnostic.
+The standard day-to-day sequence and exact commands are in
+[TESTING.md](TESTING.md). The user-approved policy of 2026-09-11 uses iOS
+`standard` for normal acceptance, with a separate short `ssh` suite when
+connection/input changes. Android retains its full smoke; the long iOS `full`
+is an optional diagnostic.
 
-The implementation lives in [CI](../.github/workflows/ci.yml) for shared and fast checks and [Mobile smoke](../.github/workflows/mobile-smoke.yml) for native builds and runtime verification.
+History: until 2026-09-20 the same suites ran on GitHub-hosted runners via
+`.github/workflows/mobile-smoke.yml`. That workflow was retired after the Devin
+Cloud path proved the same gates end to end; old workflow runs remain in git
+and Actions history as historical evidence.
+
+Shared and fast checks still run in [CI](../.github/workflows/ci.yml). Native
+builds and runtime verification run on the sessions below.
+
+## Validation sessions
+
+| Session | Platform | Purpose |
+| --- | --- | --- |
+| [`5e8046edf5d94fb2879c6eabe77219c0`](https://app.devin.ai/sessions/5e8046edf5d94fb2879c6eabe77219c0) | Devin Cloud macOS (Apple Silicon) | iOS Simulator suites: `standard`, `ssh`, `polish`, `polish-navigation`, `native`, `forms`, `names`, optional `full` |
+| [`deebac872b114a9f89daaaa0cfd73f2d`](https://app.devin.ai/sessions/deebac872b114a9f89daaaa0cfd73f2d) | Devin Cloud Linux (KVM) | Android build, emulator smoke, screen fixtures, real SSH/tmux smoke |
+
+How a run works:
+
+1. Sessions are created once in the Devin Web UI with the **SWE-2** model.
+   The Sessions API cannot select SWE-2 (`devin_mode` accepts only
+   `normal/fast/lite/ultra/fusion`); web-created SWE-2 sessions report
+   `devin_mode: null`. Session creation is therefore a one-time manual step per
+   platform; everything after that is API-driven.
+2. The driver (Main) sends a validation prompt through the Sessions API
+   (`POST /v3/organizations/{org}/sessions/{id}/messages`), then polls session
+   status. Sessions sleep while idle and wake on the message; idle time does
+   not consume quota.
+3. The session executes the suite, pushes the observability bundle to an
+   `evidence/<platform>-<yyyymmdd>` orphan branch, and reports a structured
+   result. Main fetches the branch and actually views the images; the Director
+   judges acceptance from that evidence.
+4. On failure, the same session can investigate in place — live `adb`/`xcrun`,
+   remote tmux polling, fixture logs — which is the main advantage over hosted
+   runner logs.
+
+Persistent VMs keep the installed toolchain, so runs after the first skip
+setup. Every run still starts with `git fetch` and `git reset --hard <SHA>` on
+the exact candidate commit and regenerates CNG output; persistent state is
+cache, never source of truth. If a VM drifts, recreate the session from the
+saved blueprint or rerun the setup section of the runbook.
 
 ## Source of truth and CNG
 
@@ -18,28 +60,21 @@ Tracked source remains:
 - `native/meeterm-core/`, including shared Rust terminal semantics and bridge source;
 - lockfiles and pinned toolchain/dependency declarations.
 
-`android/` and `ios/` are Expo Continuous Native Generation (CNG) output and remain untracked. Each acceptance build starts from a fresh checkout, runs `npm ci`, generates only the requested platform with `expo prebuild`, and builds that generated project. The iOS runtime job consumes pristine test products from its build job. Explicit same-commit product reuse can validate another suite against that fresh build; it is not a new CNG/build run. Record both source and runtime runs. Do not make a generated Gradle/Xcode/Podfile edit the source of truth.
-
-## Staged jobs
-
-| Job | Runner | Machine purpose | Evidence |
-| --- | --- | --- | --- |
-| Shared checks | `ubuntu-24.04` | Typecheck, Expo config/doctor, Rust format/test/clippy | Test output and logs |
-| Android emulator | Pinned Ubuntu image | CNG, native build, emulator install/launch, native readiness, first frame, no crash | Screenshot and sanitized log, always uploaded |
-| iOS driver preflight | Pinned macOS/Xcode image | UI/input Swift typecheck without CNG, app build, or Simulator | Compiler output; does not cover the production storage module |
-| iOS build | Pinned macOS/Xcode image | Fresh CNG and unsigned app/test build | Build diagnostics always uploaded; pristine Products tar on success |
-| iOS Simulator | Same pinned macOS/Xcode image | Restore matching products, install/launch, selected scope | Screen captures and sanitized log, always uploaded; standard retains native runtime gates |
-| Physical devices | Separate later infrastructure | Android GPU/IME/font and iOS device/IME/font validation | Device-specific evidence |
-
-Bring the Android emulator and iOS Simulator jobs online early, in parallel with the thin native adapters. A temporary toolchain/CNG bootstrap check may run before the iOS adapter exists, but it must not be described as iOS terminal verification or produce a fake terminal screenshot.
-
-GitHub-hosted runners provide the required OS split: Android jobs can run on Ubuntu, while iOS Simulator jobs require macOS with Xcode and simulator runtimes. Pin the macOS runner/Xcode generation used by the project instead of relying on `macos-latest` for reproducibility. The current workflow uses `macos-26-intel` with Xcode 26.6 so the simulator Rust slice is `x86_64-apple-ios`. See [GitHub-hosted runners](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners) and the [macOS runner image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md).
+`android/` and `ios/` are Expo Continuous Native Generation (CNG) output and
+remain untracked. Each acceptance run resets to the exact candidate commit,
+runs `npm ci`, generates only the requested platform with `expo prebuild`, and
+builds that generated project. Explicit same-commit product reuse inside the
+same session can validate another suite against that build; it is not a new
+CNG/build run. Record both the fresh build and the reuse run. Do not make a
+generated Gradle/Xcode/Podfile edit the source of truth.
 
 ## Focused execution and product reuse
 
-`Mobile smoke` accepts `platform=both|android|ios` and
-`ios_suite=standard|polish|polish-navigation|ssh|full|forms|native|names`. The
-default is `standard`.
+`MEETERM_IOS_SUITE` selects `standard|polish|polish-navigation|ssh|full|forms|native|names`.
+The default is `standard`. `MEETERM_IOS_PROFILE=compact-xl` selects the explicit
+accessibility diagnostic simulator profile (SE-class layout, extra-large
+content size); report it separately from normal Pro-class results and never
+substitute a large device for a small one.
 
 - `standard`: four production storage cases, eleven native input/recovery-bridge
   cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
@@ -92,20 +127,28 @@ this document does not claim remote CI or visual review.
 
 Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
 forms/names have 15, and optional full retains its 30-minute storage/UI budget.
-The build and Simulator runtime jobs have separate budgets.
+Session-side build and Simulator setup time is outside those budgets and is
+recorded with the result.
 
-The build uploads `ios-test-products` before fixture environment injection.
-Executables and symlinks are preserved in a tar archive, with a manifest binding
-its checksum to the commit, Xcode version/build, architecture and Simulator
-configuration. The runtime checks both GitHub run provenance and the manifest.
-An explicit `ios_build_run` may reuse an identical-source build for another suite or diagnosis;
-source changes require a new build. Runtime injection modifies a disposable
-xctestrun copy, never the pristine products. See [TESTING.md](TESTING.md) for
-commands, triage, the limits of reuse and the final acceptance procedure.
+For `ssh`, `full`, and `names`, `scripts/ci/ios-smoke.sh` itself runs the
+preflight the retired workflow enforced: fixture-only tmux installation,
+`scripts/ssh/fixture.py --check` (authenticated SSH and remote tmux resolution
+with the disposable host key), and the
+`real_openssh_existing_tmux_runtime_selection` cargo test through the fixture.
+This preflight is environment validation and does not count as iOS terminal or
+SSH UI evidence. Standard and focused forms/native runs skip fixture
+installation and startup entirely.
+
+Same-source reuse: within a session, `RUNNER_TEMP` derived-data persists, so a
+second suite on the identical commit can reuse the fresh `build-for-testing`
+products instead of rebuilding. The driver must verify the commit and toolchain
+match before reusing and must never claim a new CNG/build for a reuse run. See
+[TESTING.md](TESTING.md) for commands, triage, the limits of reuse and the final
+acceptance procedure.
 
 ## Machine gates
 
-Both runtime jobs use the same acceptance boundary:
+Both platforms use the same acceptance boundary:
 
 1. The fresh CNG-generated native project builds.
 2. The app installs in the emulator or Simulator.
@@ -163,7 +206,7 @@ sanitized artifact carries the independent `native_handle_same` and
 `selected_pane_identifier_same` booleans in addition to the native surface
 binding boolean. This transport-loss
 branch is a remote acceptance check; local source/Python tests and this document
-do not claim that a GitHub run has passed.
+do not claim that a remote run has passed.
 The iOS `ssh` suite records the same two categories separately: its existing
 Home/background → activate cycle is healthy foreground evidence, while the
 fixture control request is the intentional SSH/Control Mode loss. XCTest sends
@@ -174,26 +217,20 @@ selected-pane checks as `selected_pane_identifier_same`. It then sends the uniqu
 post-loss marker only after the same pane is authoritative Ready. The host
 driver verifies the marker pair against the live tmux pane and rejects any
 duplicate or other-pane occurrence. These checks remain remote-only until the
-app is run on the hosted Simulator; no local source result is a mobile
+app is run on the session Simulator; no local source result is a mobile
 acceptance claim.
-Before ssh, full or names iOS runtime testing, the runtime job installs fixture-only tmux if needed and runs
-`python3 scripts/ssh/fixture.py --check`. This verifies authenticated SSH and
-remote `tmux` resolution using the disposable host key. The fixture supplies
-its tmux binary directory through its own sshd environment; this preflight is
-environment validation and does not count as iOS terminal or SSH UI evidence.
-Standard and focused forms/native runs skip fixture installation and startup. The build job
-does not boot a Simulator or start an SSH fixture.
 
-The iOS build job generates a temporary app-hosted storage test target and an XCUITest
+The iOS run generates a temporary app-hosted storage test target and an XCUITest
 target in the fresh CNG project. The storage target compiles only
 `ClientStoreTests.swift` and resolves the production module through `TEST_HOST`;
 it does not copy the storage implementation or link a second native runtime.
-After CocoaPods integration, the job removes the inherited Rust library flag
-from the storage target's generated Debug/Release configurations and verifies
-that the app retains it. It also checks that only the app generates an Expo
-provider. Standard, full and native suites require four fresh storage-case success markers
-before their input/UI tests run; a successful runner exit without those cases
-does not pass the gate. The forms-only diagnostic does not run storage tests.
+After CocoaPods integration, `scripts/ci/ios-strip-storage-rust-link.py` removes
+the inherited Rust library flag from the storage target's generated
+Debug/Release configurations and verifies that the app retains it. It also checks
+that only the app generates an Expo provider. Standard, full and native suites
+require four fresh storage-case success markers before their input/UI tests run;
+a successful runner exit without those cases does not pass the gate. The
+forms-only diagnostic does not run storage tests.
 
 In the optional full scope, the XCUITest target drives the actual connection form, host trust, workspace/pane selection,
 native input, disconnect, and reconnect against the same disposable fixture.
@@ -217,7 +254,7 @@ seconds before that observation ended. UTC log timestamps keep foundation
 frames separate from the real SSH frame gate. The collector preserves the
 XCTest screenshot rather than capturing an arbitrary post-test screen.
 Raw XCTest output and xcresult bundles can contain typed credentials and remain
-in runner temporary storage; only sanitized stages and safe screenshots are uploaded.
+in session temporary storage; only sanitized stages and safe screenshots are pushed.
 Standard also finishes with that fresh-foundation observation, independently of
 the optional full sequence. Current suite evidence is tracked in `DAILY_USE.md`.
 Both foundation previews require a smoke build and an explicit
@@ -239,46 +276,104 @@ extensive lifecycle, clipboard and editing flows retain their actual evidence
 or are explicitly listed as unverified. New policy does not retroactively turn
 old full failures into success.
 
-## Artifacts and visual review
+## Evidence and visual review
 
-Each job always uploads an observability bundle, including on failed runs. Once app launch is reached, the job attempts to capture a screenshot and sanitized native log; if an earlier stage or capture itself fails, the bundle contains an explicit `screenshot-unavailable.txt` or runtime-log diagnostic rather than a fake image. Logs must not contain private keys, passwords, passphrases, host credentials, or raw authentication material.
+Each run pushes an observability bundle to an `evidence/<platform>-<yyyymmdd>`
+orphan branch in this repository — including on failed runs. Once app launch is
+reached, the run attempts to capture a screenshot and sanitized native log; if
+an earlier stage or capture itself fails, the bundle contains an explicit
+`screenshot-unavailable.txt` or runtime-log diagnostic rather than a fake image.
+Logs must not contain private keys, passwords, passphrases, host credentials, or
+raw authentication material.
 
-There is no screenshot-existence or pixel-difference machine gate at this stage. Native readiness, renderer-specific first-frame evidence, and process survival are the runtime gates. For every native UI change, Codex must download and actually view both the Android emulator screenshot and the iOS Simulator screenshot before reporting visual success. If either PNG is unavailable or invalid, visual success remains unverified even when the machine gates pass. Pixel comparisons may be reconsidered only after renderer/font/device variance is understood and the visual contract is explicitly defined.
+- `artifacts/android-emulator-observability/` — build log, launch/process/logcat
+  records, screen-fixture captures, SSH validation results, failure-state
+  screenshot and recording. Large binaries (`app-release.apk`) are excluded by
+  default; request explicit upload when an evaluation APK is needed.
+- `artifacts/ios-simulator-observability/` — suite results, stage/timing
+  records, screen captures, sanitized simulator log, foundation observation.
+
+Evidence branches accumulate; prune old ones once their runs are recorded in
+the acceptance documents. Session-page attachments are a secondary, expiring
+channel — the branch is the durable record.
+
+There is no screenshot-existence or pixel-difference machine gate at this stage. Native readiness, renderer-specific first-frame evidence, and process survival are the runtime gates. For every native UI change, Main must fetch the evidence branch and actually view both the Android emulator screenshot and the iOS Simulator screenshot before reporting visual success. If either PNG is unavailable or invalid, visual success remains unverified even when the machine gates pass. Pixel comparisons may be reconsidered only after renderer/font/device variance is understood and the visual contract is explicitly defined.
+
+## Environment notes (measured 2026-09-20)
+
+- **Maven Central is blocked** by the organization network policy (HTTP 403).
+  The Android session injects Google's official mirror
+  `maven-central.storage-download.googleapis.com/maven2/` plus a plugin mirror
+  via `~/.gradle/init.gradle` (`beforeSettings` hook — `settingsEvaluated` is
+  too late for included builds). The permanent fix is adding
+  `repo.maven.apache.org`, `repo1.maven.org`, and `plugins.gradle.org` to the
+  Devin Security Profile allowlist (Settings → Customization → Security
+  profiles); keep the mirror init script until that lands.
+- **arm64 macOS session**: build with `ARCHS=arm64` — an `x86_64` simulator
+  product cannot install on the arm64 host's simulator (Rosetta does not cover
+  sim apps). The Rust slice target is `aarch64-apple-ios-sim`. This is a
+  legitimate platform deviation from the retired Intel runner's `x86_64` path.
+- **Simulator runtime mismatch**: when `xcodebuild` reports the SDK's expected
+  iOS runtime build missing, bind the installed build with
+  `xcrun simctl runtime match set <platform> <build>` (verify with
+  `xcrun simctl runtime match list`).
+- **`SIMCTL_CHILD_TZ=UTC`**: `simctl spawn log show --start` parses its
+  timestamp in the simulator's local timezone regardless of `--timezone UTC`.
+  Export it for the smoke run or the post-XCTest log query window is empty on
+  non-UTC hosts.
+- **Suite re-runs**: app profile state persists between runs on the same VM;
+  `adb shell pm clear dev.meeterm.app` restores first-run conditions for
+  Android. Stale `.xcresult`/`.xctestrun` products under `RUNNER_TEMP` similarly
+  break iOS re-runs and must be cleared.
+- **Headless by default**: the Android emulator runs `-no-window -gpu
+  swiftshader_indirect`; screenshots come from `adb exec-out screencap`, so no
+  visible window appears on the session desktop. The iOS Simulator.app shows a
+  window — that difference is expected.
 
 ## iOS signing boundary
 
-The Simulator job is an unsigned simulator build/install check. It must not require distribution certificates, provisioning profiles, an Apple Developer account, or signing secrets. Physical-device installation and TestFlight distribution are later signed workflows with protected credentials, provisioning decisions, and separate acceptance evidence.
+The Simulator run is an unsigned simulator build/install check. It must not require distribution certificates, provisioning profiles, an Apple Developer account, or signing secrets. Physical-device installation and TestFlight distribution are later signed workflows with protected credentials, provisioning decisions, and separate acceptance evidence.
 
 For production Keychain tests, the disposable Simulator app host embeds XML and
-DER entitlement sections in its Mach-O executable. The workflow verifies both
+DER entitlement sections in its Mach-O executable. The run verifies both
 sections before execution. This is a Simulator-only test configuration and does
 not provide device signing or distribution credentials. Storage tests run in
 that app host before the separate UI runner starts.
 
-The hosted runtime jobs use Release configuration to embed the JavaScript bundle and avoid depending on Metro or the Expo development launcher. This is still a local smoke binary, not an App Store/distribution build. Interactive local work and physical-device input testing use Expo Development Builds.
-
-Standard GitHub-hosted macOS runners do not guarantee Metal/GPU passthrough. The iOS job therefore records a Metal preflight and accepts one of two distinct native first-frame markers: Metal when a device is available, or an explicitly named Simulator-only CoreGraphics fallback when it is not. Both paths consume the same Rust snapshot and remain entirely native, but the software fallback is not evidence that the Metal renderer ran. iOS Metal execution remains a physical-device or GPU-capable-runner validation item.
+The runtime uses Release configuration to embed the JavaScript bundle and avoid depending on Metro or the Expo development launcher. This is still a local smoke binary, not an App Store/distribution build. Interactive local work and physical-device input testing use Expo Development Builds.
 
 ## Native dependency updates
 
-An update to Expo/React Native, `expo-build-properties` or `expo-dev-client`, Rust/`alacritty_terminal`, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, bundled fonts, or the iOS renderer backend is a cross-platform native dependency update. Pin or document the relevant versions, regenerate CNG output, and run both mobile jobs before merging it. Since generated iOS dependency output is not currently committed, the runner/Xcode/CocoaPods policy must be explicit rather than relying on a local `Podfile.lock`.
+An update to Expo/React Native, `expo-build-properties` or `expo-dev-client`, Rust/`alacritty_terminal`, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, bundled fonts, or the iOS renderer backend is a cross-platform native dependency update. Pin or document the relevant versions, regenerate CNG output, and run both mobile validations before merging it. Since generated iOS dependency output is not currently committed, the session toolchain policy must be explicit rather than relying on a local `Podfile.lock`.
 
-The current iOS adapter uses direct Metal and the explicitly identified Simulator-only CoreGraphics fallback described above. Any future backend change must be supported by native evidence for snapshot throughput, text/CJK rendering, IME/lifecycle behavior, build cost and maintenance, and recorded in the architecture. Do not hide a backend change in generated project files or route rendering through JavaScript.
+The current iOS adapter uses direct Metal and the explicitly identified Simulator-only CoreGraphics fallback described below. Any future backend change must be supported by native evidence for snapshot throughput, text/CJK rendering, IME/lifecycle behavior, build cost and maintenance, and recorded in the architecture. Do not hide a backend change in generated project files or route rendering through JavaScript.
 
-## Minimal job shape
+Metal execution: the Devin Cloud macOS session runs on Apple Silicon where the
+Metal renderer path is available, and the 2026-09-20 `standard` run recorded the
+Metal first-frame marker. The validation must still distinguish a Metal
+first-frame marker from the Simulator-only native CoreGraphics fallback marker —
+the fallback validates the Rust snapshot, CoreText, view, and input boundary,
+but it is not evidence that Metal executed. iOS Metal parity on physical devices
+remains a device-validation item.
 
-The exact action versions may evolve with the pinned runner images, but each job should follow this order:
+## Minimal run shape
+
+Each validation run on a session follows this order:
 
 ```text
+git fetch && git reset --hard <candidate SHA>
 npm ci
-native dependency/toolchain setup
+native dependency/toolchain check
 expo prebuild --platform android|ios --non-interactive --no-install
 build the generated native project
 boot the emulator/Simulator
 install and launch the self-contained smoke app
 wait for native readiness and first-frame evidence
 capture screenshot and sanitized log
-upload both artifacts, even on failure
+push the observability bundle to the evidence branch, even on failure
 ```
 
-The Android-specific toolchain values and physical-device commands remain in [`POC_ANDROID.md`](POC_ANDROID.md). iOS simulator build glue belongs in the local module/app source and the macOS job, not in an ignored generated directory.
+The Android-specific toolchain values and physical-device commands remain in
+[`POC_ANDROID.md`](POC_ANDROID.md). iOS simulator build glue belongs in the
+local module/app source and the session procedure, not in an ignored generated
+directory.
