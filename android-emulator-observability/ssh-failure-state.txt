@@ -1,0 +1,6 @@
+connection_state=disconnected
+runtime_picker=no
+workspace_row=no
+saved_servers_sheet=no
+switch_confirmation=no
+profile_connect_error=no

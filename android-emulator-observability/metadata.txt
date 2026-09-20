@@ -1,0 +1,11 @@
+runner=devin-vm
+os=Linux
+arch=X64
+commit=2c99368eaa119dfbe9a07ce1f2aab1e50057ea88
+api=36
+abi=x86_64
+device=sdk_gphone64_x86_64
+launcher_stabilizer=forced_stop_before_launch
+launcher_anr_recovery=not_observed
+app_pid_identity=captured
+smoke_exit=0

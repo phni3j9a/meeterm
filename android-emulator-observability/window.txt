@@ -1,0 +1,19 @@
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=NONE
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=NONE
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=NONE
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=NONE
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=NONE
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=SYSTEM_ALERT_WINDOW
+  Window #8 Window{ddcb98c u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
+    mOwnerUid=10216 showForAllUsers=false package=dev.meeterm.app appop=NONE
+    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{73852392 u0 dev.meeterm.app/.MainActivity t9}
+    mActivityRecord=ActivityRecord{73852392 u0 dev.meeterm.app/.MainActivity t9}
+    WindowStateAnimator{340a79b dev.meeterm.app/dev.meeterm.app.MainActivity}:
+      mSurface=Surface(name=dev.meeterm.app/dev.meeterm.app.MainActivity)/@0x27ac738
+  Window #10 Window{9f275ae u0 com.android.systemui.wallpapers.ImageWallpaper}:
+    mOwnerUid=10186 showForAllUsers=true package=com.android.systemui appop=NONE
+    WindowStateAnimator{57f7c76 com.android.systemui.wallpapers.ImageWallpaper}:
+      mSurface=Surface(name=com.android.systemui.wallpapers.ImageWallpaper)/@0x8782277
+  imeLayeringTarget in display# 0 Window{ddcb98c u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeInputTarget in display# 0 Window{ddcb98c u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeControlTarget in display# 0 Window{ddcb98c u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
