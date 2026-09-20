@@ -1,18 +1,44 @@
 import Foundation
 import UIKit
 
+/// Shared native-side validation for recovery values that arrive as strings
+/// from JavaScript. The decimal epoch is parsed only after an ASCII digit
+/// check, so it never travels through NSNumber/Double.
+enum RecoveryBridgeValidation {
+  static func parseOperationEpoch(_ value: String) -> UInt64? {
+    guard !value.isEmpty,
+          value.utf8.count <= 20,
+          value.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else {
+      return nil
+    }
+    return UInt64(value)
+  }
+
+  static func validRecoveryToken(_ value: String) -> Bool {
+    !value.isEmpty && value.utf8.count <= 128 &&
+      !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
+      !value.utf8.contains(0)
+  }
+}
+
 /// Native UITextInput implementation supplied by UITextView. Marked/preedit
 /// text remains in this view and is sent only to the native renderer. Rust is
 /// called exactly once when UIKit commits the text.
 final class TerminalInputView: UITextView {
   var onCommit: ((String) -> Void)?
+  var onCommitAtEpoch: ((String, UInt64) -> Void)?
   var onPaste: ((String) -> Void)?
+  var onPasteAtEpoch: ((String, UInt64) -> Void)?
   var onPreeditChanged: ((String) -> Void)?
   var onSpecialKey: ((TerminalSpecialKey) -> Void)?
+  var onSpecialKeyAtEpoch: ((TerminalSpecialKey, UInt64) -> Void)?
   var onModifiedCommit: ((String, UInt32) -> Void)?
+  var onModifiedCommitAtEpoch: ((String, UInt32, UInt64) -> Void)?
   var onModifiedSpecialKey: ((TerminalSpecialKey, UInt32) -> Void)?
+  var onModifiedSpecialKeyAtEpoch: ((TerminalSpecialKey, UInt32, UInt64) -> Void)?
   var onCopySelection: (() -> Void)?
   var hasTerminalSelection: (() -> Bool)?
+  var operationEpochProvider: (() -> UInt64?)?
 
   // One-shot accessory modifiers live next to UIKit composition, never in JS.
   private var modifiers: UInt32 = 0
@@ -22,7 +48,12 @@ final class TerminalInputView: UITextView {
   private var isReplacingMarkedText = false
   private var pasteGeneration: UInt64 = 0
   private var pendingPasteGeneration: UInt64?
+  private var pendingPasteEpoch: UInt64?
   private var pendingPasteProgress: Progress?
+  private var completedPasteGeneration: UInt64 = 0
+  private var inputSessionEpoch: UInt64?
+  private var isCachedReadOnly = false
+  private var remoteInputControls: [UIView] = []
   private lazy var terminalAccessoryView: UIView = makeAccessoryView()
   private lazy var terminalPasteControl: UIPasteControl = makePasteControl()
   private let observesInputLifecycle = ProcessInfo.processInfo.arguments.contains("-meeterm-ui-observation")
@@ -33,6 +64,7 @@ final class TerminalInputView: UITextView {
     case focus
     case window
     case provider
+    case epoch
   }
 
   override init(frame: CGRect, textContainer: NSTextContainer?) {
@@ -48,7 +80,13 @@ final class TerminalInputView: UITextView {
   // Opt-in public-screen diagnostics record only lifecycle booleans, never
   // text, marked ranges, key values, terminal IDs, or clipboard contents.
   override func becomeFirstResponder() -> Bool {
+    guard !isCachedReadOnly else { return false }
     let result = super.becomeFirstResponder()
+    if result {
+      // A UIKit responder session gets one immutable operation epoch. Delayed
+      // callbacks from this responder can then be rejected after recovery.
+      inputSessionEpoch = operationEpochProvider?()
+    }
     if observesInputLifecycle {
       NSLog("MEETERM_SMOKE_INPUT_FOCUS result=%d window=%d", result ? 1 : 0, window != nil ? 1 : 0)
     }
@@ -58,6 +96,9 @@ final class TerminalInputView: UITextView {
   override func resignFirstResponder() -> Bool {
     let wasFocused = isFirstResponder
     let result = super.resignFirstResponder()
+    if result || wasFocused {
+      inputSessionEpoch = nil
+    }
     if observesInputLifecycle {
       NSLog("MEETERM_SMOKE_INPUT_RESIGN focused=%d result=%d", wasFocused ? 1 : 0, result ? 1 : 0)
     }
@@ -65,6 +106,7 @@ final class TerminalInputView: UITextView {
   }
 
   override var keyCommands: [UIKeyCommand]? {
+    guard !isCachedReadOnly else { return [] }
     var commands: [UIKeyCommand] = []
     let special = [UIKeyCommand.inputEscape, "\t", UIKeyCommand.inputUpArrow,
       UIKeyCommand.inputDownArrow, UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow,
@@ -90,11 +132,18 @@ final class TerminalInputView: UITextView {
   }
 
   override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+    guard !isCachedReadOnly else { return }
     super.setMarkedText(markedText, selectedRange: selectedRange)
     onPreeditChanged?(currentMarkedText())
   }
 
   override func unmarkText() {
+    if isCachedReadOnly {
+      super.unmarkText()
+      resetBackingStore()
+      onPreeditChanged?("")
+      return
+    }
     let committed = currentMarkedText()
     super.unmarkText()
     onPreeditChanged?("")
@@ -105,6 +154,7 @@ final class TerminalInputView: UITextView {
   }
 
   override func insertText(_ text: String) {
+    guard !isCachedReadOnly else { return }
     isReplacingMarkedText = true
     super.insertText(text)
     isReplacingMarkedText = false
@@ -124,6 +174,7 @@ final class TerminalInputView: UITextView {
   }
 
   override func deleteBackward() {
+    guard !isCachedReadOnly else { return }
     if markedTextRange != nil {
       super.deleteBackward()
       onPreeditChanged?(currentMarkedText())
@@ -133,11 +184,21 @@ final class TerminalInputView: UITextView {
   }
 
   override func paste(_ sender: Any?) {
+    guard !isCachedReadOnly else { return }
     // Read the clipboard only in response to the user's explicit paste action.
     recordPasteRequest()
     invalidatePendingPaste(dropReason: .generation)
     guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
-    deliverPaste(pasted)
+    let epoch = activeOperationEpoch
+    guard onPasteAtEpoch == nil || epoch != nil else {
+      recordPasteDrop(.epoch)
+      return
+    }
+    guard onPasteAtEpoch == nil || operationEpochProvider?() == epoch else {
+      recordPasteDrop(.epoch)
+      return
+    }
+    deliverPaste(pasted, epoch: epoch)
   }
 
   override func copy(_ sender: Any?) { onCopySelection?() }
@@ -148,10 +209,11 @@ final class TerminalInputView: UITextView {
   }
 
   override func canPaste(_ itemProviders: [NSItemProvider]) -> Bool {
-    itemProviders.contains { $0.canLoadObject(ofClass: String.self) }
+    !isCachedReadOnly && itemProviders.contains { $0.canLoadObject(ofClass: String.self) }
   }
 
   override func paste(itemProviders: [NSItemProvider]) {
+    guard !isCachedReadOnly else { return }
     recordPasteRequest()
     invalidatePendingPaste(dropReason: .generation)
     guard window != nil else {
@@ -168,8 +230,14 @@ final class TerminalInputView: UITextView {
     }
 
     let generation = pasteGeneration
+    let operationEpoch = activeOperationEpoch
+    guard onPasteAtEpoch == nil || operationEpoch != nil else {
+      recordPasteDrop(.epoch)
+      return
+    }
     let observesProviderCompletion = observesInputLifecycle
     pendingPasteGeneration = generation
+    pendingPasteEpoch = operationEpoch
     terminalPasteControl.accessibilityValue = "Pasting"
     pendingPasteProgress = provider.loadObject(ofClass: String.self) { [weak self] pasted, _ in
       if observesProviderCompletion {
@@ -178,24 +246,31 @@ final class TerminalInputView: UITextView {
       DispatchQueue.main.async { [weak self] in
         guard let self,
               self.pasteGeneration == generation,
-              self.pendingPasteGeneration == generation else {
+              self.pendingPasteGeneration == generation,
+              self.pendingPasteEpoch == operationEpoch else {
           return
         }
         self.pendingPasteGeneration = nil
+        self.pendingPasteEpoch = nil
         self.pendingPasteProgress = nil
-        self.terminalPasteControl.accessibilityValue = "Ready"
         let windowAttached = self.window != nil
         let focused = self.isFirstResponder
         guard windowAttached, focused else {
           if !windowAttached { self.recordPasteDrop(.window) }
           if !focused { self.recordPasteDrop(.focus) }
+          self.markPasteControlReady()
+          return
+        }
+        guard self.onPasteAtEpoch == nil || self.operationEpochProvider?() == operationEpoch else {
+          self.invalidatePendingPaste(dropReason: .epoch)
           return
         }
         guard let pasted, !pasted.isEmpty else {
           self.recordPasteDrop(.provider)
+          self.markPasteControlReady()
           return
         }
-        self.deliverPaste(pasted)
+        self.deliverPaste(pasted, epoch: operationEpoch)
       }
     }
   }
@@ -248,6 +323,7 @@ final class TerminalInputView: UITextView {
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
+    inputSessionEpoch = nil
     // End the old UIKit input session before its callbacks can target a new
     // pane. The newly selected terminal can be focused with a native tap.
     resignFirstResponder()
@@ -260,19 +336,64 @@ final class TerminalInputView: UITextView {
     }
     pasteGeneration &+= 1
     pendingPasteGeneration = nil
+    pendingPasteEpoch = nil
     pendingPasteProgress?.cancel()
     pendingPasteProgress = nil
-    terminalPasteControl.accessibilityValue = "Ready"
+    markPasteControlReady()
   }
 
-  private func deliverPaste(_ pasted: String) {
+  /// Switch the remote interaction policy without replacing the native
+  /// terminal binding or renderer. Cached read-only mode keeps local display,
+  /// scrolling, selection, and copying available while invalidating input.
+  func setInteractionMode(_ value: String) {
+    let nextReadOnly = value != "live"
+    guard nextReadOnly != isCachedReadOnly else {
+      updateInteractionAccessibility()
+      return
+    }
+    isCachedReadOnly = nextReadOnly
+    if nextReadOnly {
+      cancelCompositionForBinding()
+    }
+    updateInteractionAccessibility()
+  }
+
+  /// A native Rust operation-epoch boundary invalidates UIKit composition and
+  /// every pending provider callback. The next responder acquisition captures
+  /// the new epoch; this method never auto-focuses the keyboard.
+  func operationEpochDidChange(_ epoch: UInt64?) {
+    guard inputSessionEpoch != nil || pendingPasteGeneration != nil else { return }
+    guard inputSessionEpoch != epoch || pendingPasteEpoch != epoch else { return }
+    cancelCompositionForBinding()
+  }
+
+  private var activeOperationEpoch: UInt64? {
+    inputSessionEpoch ?? operationEpochProvider?()
+  }
+
+  private func deliverPaste(_ pasted: String, epoch: UInt64?) {
     guard !pasted.isEmpty else { return }
     recordPasteDeliveryAttempt()
     super.unmarkText()
     resetBackingStore()
     onPreeditChanged?("")
     clearModifiers()
-    onPaste?(pasted)
+    if let epoch, let onPasteAtEpoch {
+      onPasteAtEpoch(pasted, epoch)
+    } else if onPasteAtEpoch == nil {
+      onPaste?(pasted)
+    }
+    completedPasteGeneration &+= 1
+    markPasteControlReady()
+  }
+
+  private func markPasteControlReady() {
+    // UI observation waits for a new delivery generation rather than
+    // mistaking the pre-tap Ready value for completion. Ordinary users keep
+    // the concise accessibility value; no clipboard contents are exposed.
+    terminalPasteControl.accessibilityValue = observesInputLifecycle
+      ? "Ready \(completedPasteGeneration)"
+      : "Ready"
   }
 
   private func recordPasteRequest() {
@@ -296,12 +417,25 @@ final class TerminalInputView: UITextView {
       NSLog("MEETERM_SMOKE_PASTE_DROP_WINDOW")
     case .provider:
       NSLog("MEETERM_SMOKE_PASTE_DROP_PROVIDER")
+    case .epoch:
+      NSLog("MEETERM_SMOKE_PASTE_DROP_EPOCH")
     }
   }
 
   private func resetBackingStore() {
     text = ""
     selectedRange = NSRange(location: 0, length: 0)
+  }
+
+  private func updateInteractionAccessibility() {
+    for control in remoteInputControls {
+      control.isUserInteractionEnabled = !isCachedReadOnly
+      control.isAccessibilityElement = !isCachedReadOnly
+      control.accessibilityElementsHidden = isCachedReadOnly
+      if let control = control as? UIControl {
+        control.isEnabled = !isCachedReadOnly
+      }
+    }
   }
 
   private func makeAccessoryView() -> UIView {
@@ -318,6 +452,7 @@ final class TerminalInputView: UITextView {
     scroll.contentInsetAdjustmentBehavior = .never
     let control = accessoryButton(title: "Ctrl", action: #selector(toggleControl))
     let alt = accessoryButton(title: "Alt", action: #selector(toggleAlt))
+    remoteInputControls.append(terminalPasteControl)
     controlButton = control
     altButton = alt
     let keys = UIStackView(arrangedSubviews: [
@@ -343,7 +478,7 @@ final class TerminalInputView: UITextView {
     scroll.addSubview(keys)
     accessory.addSubview(scroll)
 
-    let hide = accessoryButton(title: "⌄", action: #selector(hideKeyboard))
+    let hide = accessoryButton(title: "⌄", action: #selector(hideKeyboard), remote: false)
     accessory.addSubview(hide)
     NSLayoutConstraint.activate([
       scroll.leadingAnchor.constraint(equalTo: accessory.safeAreaLayoutGuide.leadingAnchor, constant: 8),
@@ -377,7 +512,7 @@ final class TerminalInputView: UITextView {
     control.target = self
     control.accessibilityLabel = "Paste"
     control.accessibilityIdentifier = "terminal-paste"
-    control.accessibilityValue = "Ready"
+    control.accessibilityValue = observesInputLifecycle ? "Ready 0" : "Ready"
     control.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
       control.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
@@ -386,7 +521,7 @@ final class TerminalInputView: UITextView {
     return control
   }
 
-  private func accessoryButton(title: String, action: Selector) -> UIButton {
+  private func accessoryButton(title: String, action: Selector, remote: Bool = true) -> UIButton {
     var configuration = UIButton.Configuration.plain()
     configuration.title = title
     configuration.baseForegroundColor = UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
@@ -397,6 +532,9 @@ final class TerminalInputView: UITextView {
     button.translatesAutoresizingMaskIntoConstraints = false
     button.accessibilityLabel = title == "^C" ? "Ctrl-C" : title == "⌄" ? "Hide keyboard" : title
     button.addTarget(self, action: action, for: .touchUpInside)
+    if remote {
+      remoteInputControls.append(button)
+    }
     NSLayoutConstraint.activate([
       button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
       button.heightAnchor.constraint(equalToConstant: 44)
@@ -405,14 +543,17 @@ final class TerminalInputView: UITextView {
   }
 
   @objc private func sendEscape() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.escape)
   }
 
   @objc private func sendTab() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.tab)
   }
 
   @objc private func sendInterrupt() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.interrupt)
   }
 
@@ -421,28 +562,40 @@ final class TerminalInputView: UITextView {
   }
 
   @objc private func sendUp() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.up)
   }
 
   @objc private func sendDown() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.down)
   }
 
   @objc private func sendLeft() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.left)
   }
 
   @objc private func sendRight() {
+    guard !isCachedReadOnly else { return }
     emitSpecial(.right)
   }
 
-  @objc private func sendHome() { emitSpecial(.home) }
-  @objc private func sendEnd() { emitSpecial(.end) }
-  @objc private func sendPageUp() { emitSpecial(.pageUp) }
-  @objc private func sendPageDown() { emitSpecial(.pageDown) }
-  @objc private func sendDelete() { emitSpecial(.delete) }
-  @objc private func toggleControl() { modifiers ^= 1; updateModifierButtons() }
-  @objc private func toggleAlt() { modifiers ^= 2; updateModifierButtons() }
+  @objc private func sendHome() { guard !isCachedReadOnly else { return }; emitSpecial(.home) }
+  @objc private func sendEnd() { guard !isCachedReadOnly else { return }; emitSpecial(.end) }
+  @objc private func sendPageUp() { guard !isCachedReadOnly else { return }; emitSpecial(.pageUp) }
+  @objc private func sendPageDown() { guard !isCachedReadOnly else { return }; emitSpecial(.pageDown) }
+  @objc private func sendDelete() { guard !isCachedReadOnly else { return }; emitSpecial(.delete) }
+  @objc private func toggleControl() {
+    guard !isCachedReadOnly else { return }
+    modifiers ^= 1
+    updateModifierButtons()
+  }
+  @objc private func toggleAlt() {
+    guard !isCachedReadOnly else { return }
+    modifiers ^= 2
+    updateModifierButtons()
+  }
 
   private func updateModifierButtons() {
     for (button, bit) in [(controlButton, UInt32(1)), (altButton, UInt32(2))] {
@@ -457,12 +610,28 @@ final class TerminalInputView: UITextView {
   private func clearModifiers() { modifiers = 0; updateModifierButtons() }
 
   private func emitCommit(_ text: String, flags: UInt32? = nil) {
+    guard !isCachedReadOnly else { return }
     let selected = flags ?? modifiers
     clearModifiers()
-    if selected == 0 { onCommit?(text) } else { onModifiedCommit?(text, selected) }
+    guard let epoch = activeOperationEpoch else {
+      if selected == 0 {
+        if onCommitAtEpoch == nil { onCommit?(text) }
+      } else if onModifiedCommitAtEpoch == nil {
+        onModifiedCommit?(text, selected)
+      }
+      return
+    }
+    if selected == 0 {
+      if let onCommitAtEpoch { onCommitAtEpoch(text, epoch) } else { onCommit?(text) }
+    } else if let onModifiedCommitAtEpoch {
+      onModifiedCommitAtEpoch(text, selected, epoch)
+    } else {
+      onModifiedCommit?(text, selected)
+    }
   }
 
   @objc private func hardwareKey(_ command: UIKeyCommand) {
+    guard !isCachedReadOnly else { return }
     guard let input = command.input else { return }
     var flags: UInt32 = 0
     if command.modifierFlags.contains(.shift) { flags |= 4 }
@@ -496,6 +665,7 @@ final class TerminalInputView: UITextView {
   }
 
   private func emitSpecial(_ key: TerminalSpecialKey, flags: UInt32? = nil) {
+    guard !isCachedReadOnly else { return }
     if markedTextRange != nil {
       super.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
       resetBackingStore()
@@ -503,6 +673,20 @@ final class TerminalInputView: UITextView {
     }
     let selected = flags ?? modifiers
     clearModifiers()
-    if selected == 0 { onSpecialKey?(key) } else { onModifiedSpecialKey?(key, selected) }
+    guard let epoch = activeOperationEpoch else {
+      if selected == 0 {
+        if onSpecialKeyAtEpoch == nil { onSpecialKey?(key) }
+      } else if onModifiedSpecialKeyAtEpoch == nil {
+        onModifiedSpecialKey?(key, selected)
+      }
+      return
+    }
+    if selected == 0 {
+      if let onSpecialKeyAtEpoch { onSpecialKeyAtEpoch(key, epoch) } else { onSpecialKey?(key) }
+    } else if let onModifiedSpecialKeyAtEpoch {
+      onModifiedSpecialKeyAtEpoch(key, selected, epoch)
+    } else {
+      onModifiedSpecialKey?(key, selected)
+    }
   }
 }

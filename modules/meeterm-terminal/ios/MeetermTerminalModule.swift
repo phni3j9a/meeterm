@@ -164,6 +164,32 @@ public final class MeetermTerminalModule: Module {
       }
     }
 
+    AsyncFunction("retryRecovery") { (terminalId: String, operationEpoch: String) throws in
+      let epoch = try Self.parseOperationEpoch(operationEpoch)
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.retryRecovery(terminalId: handle, expectedEpoch: epoch) == 0 else {
+        throw Self.error("The recovery retry could not be started.")
+      }
+    }
+
+    AsyncFunction("confirmRecovery") { (terminalId: String, confirmationToken: String) throws in
+      guard Self.validRecoveryToken(confirmationToken) else {
+        throw Self.error("The recovery confirmation is invalid or unavailable.")
+      }
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.confirmRecovery(terminalId: handle, token: confirmationToken) == 0 else {
+        throw Self.error("The recovery confirmation is invalid or unavailable.")
+      }
+    }
+
+    AsyncFunction("changeRuntime") { (terminalId: String, operationEpoch: String) throws in
+      let epoch = try Self.parseOperationEpoch(operationEpoch)
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard MeetermCore.changeRuntime(terminalId: handle, expectedEpoch: epoch) == 0 else {
+        throw Self.error("The runtime could not be changed.")
+      }
+    }
+
     AsyncFunction("selectPane") { (terminalId: String, paneId: String) throws in
       let pane = try Self.targetId(paneId, prefix: "%")
       let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
@@ -221,6 +247,7 @@ public final class MeetermTerminalModule: Module {
       Prop("fontSize", 15.0) { (view: MeetermTerminalView, value: Double) in view.setFontSize(value) }
       Prop("theme", "dark") { (view: MeetermTerminalView, value: String) in view.setTheme(value) }
       Prop("scrollbackLines", 10000) { (view: MeetermTerminalView, value: Int) in view.setScrollbackLines(value) }
+      Prop("interactionMode", "live") { (view: MeetermTerminalView, value: String) in view.setInteractionMode(value) }
       Prop("terminalId", "poc-main") { (view: MeetermTerminalView, terminalId: String) in
         view.bindTerminal(terminalId)
       }
@@ -420,6 +447,19 @@ public final class MeetermTerminalModule: Module {
       return Double(integer) == double ? integer : nil
     }
     return nil
+  }
+
+  /// Parse the JS decimal string without converting through NSNumber/Double.
+  /// UInt64(String) is lossless after the explicit ASCII-decimal check.
+  private static func parseOperationEpoch(_ value: String) throws -> UInt64 {
+    guard let epoch = RecoveryBridgeValidation.parseOperationEpoch(value) else {
+      throw error("The operation epoch is invalid.")
+    }
+    return epoch
+  }
+
+  private static func validRecoveryToken(_ value: String) -> Bool {
+    RecoveryBridgeValidation.validRecoveryToken(value)
   }
 
   private static func ensureHandle(_ terminalId: String) throws -> UInt64 {

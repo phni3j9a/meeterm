@@ -120,6 +120,102 @@ export type RemoteTerminal = {
   selected: boolean;
   agent: AgentInfo | null;
 };
+
+export type RecoveryPhase =
+  | 'none'
+  | 'reconnecting'
+  | 'awaitingConfirmation'
+  | 'resynchronizing'
+  | 'stopped';
+
+export type WorkspaceRecovery = {
+  phase: RecoveryPhase;
+  /** Native-owned stable snake_case reason code; never display this raw. */
+  reason: string;
+  attempt: number;
+  maxAttempts: number;
+  /** Opaque native confirmation value; never persist or display it. */
+  confirmationToken: string;
+};
+
+export type WorkspaceControl = {
+  /** Decimal u64 string scoped to the owning native connection. */
+  operationEpoch: string;
+  /** True when the cached workspace/terminal surface is still drawable. */
+  hasRetainedWork: boolean;
+  /** Native gate for workspace/group/pane remote operations. */
+  runtimeOperationsReady: boolean;
+  /** Native gate for terminal input, IME, paste, and shortcuts. */
+  terminalInputReady: boolean;
+  recovery: WorkspaceRecovery;
+};
+
+/**
+ * Safe compatibility value for snapshots produced before Issue #26. The
+ * false gates are intentional: JavaScript must never turn an old snapshot
+ * into an apparently live remote session.
+ */
+export const DEFAULT_WORKSPACE_CONTROL: WorkspaceControl = {
+  operationEpoch: '',
+  hasRetainedWork: false,
+  runtimeOperationsReady: false,
+  terminalInputReady: false,
+  recovery: {
+    phase: 'none',
+    reason: '',
+    attempt: 0,
+    maxAttempts: 0,
+    confirmationToken: '',
+  },
+};
+
+const RECOVERY_PHASES: readonly RecoveryPhase[] = [
+  'none',
+  'reconnecting',
+  'awaitingConfirmation',
+  'resynchronizing',
+  'stopped',
+];
+
+function boundedNonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(Math.floor(value), 0xffff)
+    : fallback;
+}
+
+/** Normalize optional/legacy native data without granting any readiness. */
+export function normalizeWorkspaceControl(value: unknown): WorkspaceControl {
+  if (!value || typeof value !== 'object') {
+    return {
+      ...DEFAULT_WORKSPACE_CONTROL,
+      recovery: { ...DEFAULT_WORKSPACE_CONTROL.recovery },
+    };
+  }
+  const source = value as Record<string, unknown>;
+  const rawRecovery = source.recovery && typeof source.recovery === 'object'
+    ? source.recovery as Record<string, unknown>
+    : {};
+  const phase = RECOVERY_PHASES.includes(rawRecovery.phase as RecoveryPhase)
+    ? rawRecovery.phase as RecoveryPhase
+    : 'none';
+  const stringValue = (candidate: unknown): string => (
+    typeof candidate === 'string' ? candidate.slice(0, 256) : ''
+  );
+  return {
+    operationEpoch: stringValue(source.operationEpoch),
+    hasRetainedWork: source.hasRetainedWork === true,
+    runtimeOperationsReady: source.runtimeOperationsReady === true,
+    terminalInputReady: source.terminalInputReady === true,
+    recovery: {
+      phase,
+      reason: stringValue(rawRecovery.reason),
+      attempt: boundedNonNegativeInteger(rawRecovery.attempt, 0),
+      maxAttempts: boundedNonNegativeInteger(rawRecovery.maxAttempts, 0),
+      confirmationToken: stringValue(rawRecovery.confirmationToken),
+    },
+  };
+}
+
 export type WorkspaceState = {
   backend: 'tmux' | 'herdr';
   runtime: string;
@@ -127,6 +223,7 @@ export type WorkspaceState = {
   workspaces: RemoteWorkspace[];
   groups: TerminalGroup[];
   terminals: RemoteTerminal[];
+  control: WorkspaceControl;
 };
 
 export type RuntimeBackend = 'tmux' | 'herdr';
@@ -185,6 +282,8 @@ export type MeetermTerminalViewProps = ViewProps & {
   fontSize?: number;
   theme?: 'light' | 'dark';
   scrollbackLines?: number;
+  /** Live native input or a drawable but input-inert retained snapshot. */
+  interactionMode?: 'live' | 'cachedReadOnly';
   onNativeReady?: (event: NativeSyntheticEvent<NativeReadyEvent>) => void;
   onMetrics?: (event: NativeSyntheticEvent<TerminalMetricsEvent>) => void;
 };

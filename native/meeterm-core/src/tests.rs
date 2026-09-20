@@ -371,6 +371,304 @@ fn terminal_replies_share_bounded_transport_and_overload_is_observable() {
 }
 
 #[test]
+fn terminal_replies_require_an_authoritative_transport_binding() {
+    let mut terminal = Terminal::new(24, 4).unwrap();
+    terminal.begin_remote(45).unwrap();
+    let (input_sender, mut input_receiver) = mpsc::channel(8);
+    let (resize_sender, _) = watch::channel((24, 4));
+    terminal
+        .attach_transport(45, input_sender, resize_sender)
+        .unwrap();
+
+    // A sender is present while the first authoritative frame is still
+    // pending, but a terminal-generated DSR reply must not enter its queue.
+    terminal.feed(b"\x1b[6n");
+    assert!(input_receiver.try_recv().is_err());
+
+    terminal.mark_transport_ready(45);
+    terminal.feed(b"\x1b[6n");
+    assert_eq!(input_receiver.try_recv().unwrap(), b"\x1b[1;1R");
+
+    terminal.detach_transport(45);
+    terminal.feed(b"\x1b[6n");
+    assert!(input_receiver.try_recv().is_err());
+}
+
+#[test]
+fn remote_resize_is_rejected_until_ready_without_mutating_term_or_watch() {
+    let mut terminal = Terminal::new(24, 4).unwrap();
+    terminal.begin_remote(46).unwrap();
+    let (input_sender, _input_receiver) = mpsc::channel(8);
+    let (resize_sender, mut resize_receiver) = watch::channel((24, 4));
+    // Keep the watch channel open after detach so `has_changed` distinguishes
+    // a stale resize from the expected closed-sender result.
+    let _resize_observer = resize_sender.clone();
+    terminal
+        .attach_transport(46, input_sender, resize_sender)
+        .unwrap();
+
+    assert_eq!(terminal.resize(80, 8), Err(TerminalError::InputNotReady));
+    assert_eq!(terminal.dimensions(), (24, 4));
+    assert!(!resize_receiver.has_changed().unwrap());
+
+    terminal.mark_transport_ready(46);
+    terminal.resize(80, 8).unwrap();
+    assert_eq!(terminal.dimensions(), (80, 8));
+    assert!(resize_receiver.has_changed().unwrap());
+    assert_eq!(*resize_receiver.borrow_and_update(), (80, 8));
+    assert!(!resize_receiver.has_changed().unwrap());
+
+    terminal.detach_transport(46);
+    assert_eq!(terminal.resize(100, 10), Err(TerminalError::InputNotReady));
+    assert_eq!(terminal.dimensions(), (80, 8));
+    assert!(!resize_receiver.has_changed().unwrap());
+}
+
+#[test]
+fn stale_operation_epoch_cannot_write_after_detach_and_fresh_ready() {
+    let mut terminal = Terminal::new(24, 4).unwrap();
+    terminal.begin_remote(47).unwrap();
+    let (input_sender, mut input_receiver) = mpsc::channel(8);
+    let (resize_sender, _) = watch::channel((24, 4));
+    terminal
+        .attach_transport(47, input_sender, resize_sender)
+        .unwrap();
+    terminal.mark_transport_ready(47);
+    let stale_epoch = terminal.operation_epoch();
+    assert_ne!(stale_epoch, 0);
+
+    assert_eq!(terminal.commit_utf8_at_epoch(stale_epoch, b"before"), Ok(1));
+    assert_eq!(input_receiver.try_recv().unwrap(), b"before");
+
+    terminal.detach_transport(47);
+    assert!(terminal.operation_epoch() > stale_epoch);
+    assert_eq!(
+        terminal.commit_utf8_at_epoch(stale_epoch, b"stale commit"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        terminal.paste_utf8_at_epoch(stale_epoch, b"stale paste"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(input_receiver.try_recv().is_err());
+
+    let (fresh_sender, mut fresh_receiver) = mpsc::channel(8);
+    let (fresh_resize, _) = watch::channel((24, 4));
+    terminal
+        .attach_transport(47, fresh_sender, fresh_resize)
+        .unwrap();
+    terminal.mark_transport_ready(47);
+    let fresh_epoch = terminal.operation_epoch();
+    assert!(fresh_epoch > stale_epoch);
+
+    // The old completion remains stale even though the new binding is Ready.
+    assert_eq!(
+        terminal.commit_utf8_at_epoch(stale_epoch, b"still stale"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        terminal.paste_utf8_at_epoch(stale_epoch, b"still stale"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(fresh_receiver.try_recv().is_err());
+
+    assert_eq!(terminal.commit_utf8_at_epoch(fresh_epoch, b"fresh"), Ok(2));
+    assert_eq!(fresh_receiver.try_recv().unwrap(), b"fresh");
+    assert!(fresh_receiver.try_recv().is_err());
+}
+
+#[test]
+fn transport_revocation_retains_cells_history_scroll_and_term_identity() {
+    let mut terminal = Terminal::new(20, 4).unwrap();
+    terminal.begin_remote(49).unwrap();
+    let (input_sender, _input_receiver) = mpsc::channel(8);
+    let (resize_sender, _) = watch::channel((20, 4));
+    terminal
+        .attach_transport(49, input_sender, resize_sender)
+        .unwrap();
+    terminal
+        .restore_screen(
+            49,
+            20,
+            4,
+            b"history-one\r\nhistory-two\r\nhistory-three\r\nhistory-four\r\nhistory-five",
+        )
+        .unwrap();
+    terminal.mark_transport_ready(49);
+    terminal.feed(b"\r\nlive-line");
+    terminal.scroll_lines(2);
+
+    let before_snapshot = terminal.snapshot().unwrap();
+    let before_history = terminal.term().grid().history_size();
+    let before_offset = terminal.term().grid().display_offset();
+    let before_text = grid_text(&terminal);
+    let before_term = terminal.term() as *const _ as usize;
+
+    terminal.detach_transport(49);
+
+    assert_eq!(terminal.term() as *const _ as usize, before_term);
+    assert_eq!(terminal.term().grid().history_size(), before_history);
+    assert_eq!(terminal.term().grid().display_offset(), before_offset);
+    assert_eq!(grid_text(&terminal), before_text);
+    assert_eq!(terminal.snapshot().unwrap(), before_snapshot);
+}
+
+#[test]
+fn registry_exposes_and_enforces_terminal_operation_epoch() {
+    let id = create_terminal(24, 4).unwrap();
+    let initial = crate::registry::operation_epoch(id).unwrap();
+    assert_ne!(initial, 0);
+
+    let (input_sender, mut input_receiver) = mpsc::channel(8);
+    let (resize_sender, _) = watch::channel((24, 4));
+    crate::registry::prepare_pane_transport(id, 48, (24, 4), input_sender, resize_sender).unwrap();
+    let attached = crate::registry::operation_epoch(id).unwrap();
+    assert!(attached > initial);
+    assert!(crate::registry::mark_transport_ready(id, 48));
+    let ready = crate::registry::operation_epoch(id).unwrap();
+    assert!(ready > attached);
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(id, ready, b"one"),
+        Ok(1)
+    );
+    assert_eq!(input_receiver.try_recv().unwrap(), b"one");
+
+    crate::registry::detach_transport(id, 48);
+    assert!(crate::registry::operation_epoch(id).unwrap() > ready);
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(id, ready, b"stale"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(input_receiver.try_recv().is_err());
+    assert!(destroy_terminal(id));
+}
+
+#[test]
+fn suspended_transport_retains_binding_and_requires_a_fresh_operation_epoch() {
+    let id = create_terminal(24, 4).expect("suspended terminal");
+    let shared = crate::registry::shared_terminal(id).expect("shared suspended terminal");
+    let before_term = with_terminal_for_test(id, |terminal| terminal.term() as *const _ as usize)
+        .expect("term identity before suspend");
+    let (input_sender, mut input_receiver) = mpsc::channel(8);
+    let (resize_sender, _resize_receiver) = watch::channel((24, 4));
+    crate::registry::prepare_pane_transport(id, 48, (24, 4), input_sender, resize_sender)
+        .expect("matching suspended transport");
+    let attached_epoch = crate::registry::operation_epoch(id).expect("attached epoch");
+
+    // Suspending before the first frame retains Attached rather than making
+    // the later foreground transition look like a completed frame proof.
+    assert!(crate::registry::suspend_transport(id, 48));
+    let suspended_attached_epoch = crate::registry::operation_epoch(id).expect("suspended epoch");
+    assert_eq!(
+        suspended_attached_epoch,
+        attached_epoch.saturating_add(1),
+        "Attached -> Suspended advances exactly once"
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(crate::registry::resume_transport(id, 48));
+    let resumed_attached_epoch = crate::registry::operation_epoch(id).expect("resumed epoch");
+    assert_eq!(
+        resumed_attached_epoch,
+        suspended_attached_epoch.saturating_add(1),
+        "Suspended -> Attached advances exactly once"
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(crate::registry::mark_transport_ready(id, 48));
+    let ready_epoch = crate::registry::operation_epoch(id).expect("ready epoch");
+    assert_eq!(ready_epoch, resumed_attached_epoch.saturating_add(1));
+    assert!(crate::registry::transport_ready(id, 48));
+
+    let before_snapshot = crate::registry::snapshot(id).expect("snapshot before suspend");
+    assert!(crate::registry::suspend_transport(id, 48));
+    let suspended_epoch = crate::registry::operation_epoch(id).expect("ready suspended epoch");
+    assert_eq!(suspended_epoch, ready_epoch.saturating_add(1));
+    assert!(crate::registry::suspend_transport(id, 48));
+    assert_eq!(
+        crate::registry::operation_epoch(id).expect("repeated suspended epoch"),
+        suspended_epoch,
+        "repeating a no-op suspend must not advance the epoch"
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(std::sync::Arc::ptr_eq(
+        &shared,
+        &crate::registry::shared_terminal(id).expect("retained shared terminal")
+    ));
+    assert_eq!(
+        with_terminal_for_test(id, |terminal| terminal.term() as *const _ as usize)
+            .expect("term identity after suspend"),
+        before_term,
+        "suspend retains the native Term"
+    );
+    assert_eq!(
+        crate::registry::snapshot(id).expect("snapshot after suspend"),
+        before_snapshot,
+        "suspend retains the cached display"
+    );
+
+    // Both immediate APIs and delayed callbacks captured at the old Ready
+    // boundary must be rejected without enqueueing anything.
+    assert_eq!(
+        crate::registry::send_bytes(id, b"raw"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::commit_utf8(id, b"commit"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::paste_utf8(id, b"paste"),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::send_special_key(id, SpecialKey::Up),
+        Err(TerminalError::InputNotReady)
+    );
+    assert_eq!(
+        crate::registry::resize_terminal(id, 40, 5),
+        Err(TerminalError::InputNotReady)
+    );
+    assert!(crate::registry::feed_remote(id, 48, b"\x1b[6n"));
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(id, ready_epoch, b"stale commit"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        crate::registry::paste_utf8_at_epoch(id, ready_epoch, b"stale paste"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        crate::registry::send_special_key_at_epoch(id, ready_epoch, SpecialKey::Enter),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert_eq!(
+        crate::registry::resize_terminal_at_epoch(id, ready_epoch, 40, 5),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(input_receiver.try_recv().is_err());
+
+    // The normal mark is still harmless while suspended; only the dedicated
+    // resume opens the retained binding and creates a fresh operation epoch.
+    assert!(crate::registry::mark_transport_ready(id, 48));
+    assert_eq!(
+        crate::registry::operation_epoch(id).expect("normal mark epoch"),
+        suspended_epoch
+    );
+    assert!(!crate::registry::transport_ready(id, 48));
+    assert!(crate::registry::resume_transport(id, 48));
+    let fresh_epoch = crate::registry::operation_epoch(id).expect("fresh epoch");
+    assert_eq!(fresh_epoch, suspended_epoch.saturating_add(1));
+    assert!(crate::registry::transport_ready(id, 48));
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(id, fresh_epoch, b"fresh"),
+        Ok(1)
+    );
+    assert_eq!(input_receiver.try_recv().expect("fresh input"), b"fresh");
+    assert!(input_receiver.try_recv().is_err());
+
+    assert!(destroy_terminal(id));
+}
+
+#[test]
 fn stale_transport_generation_cannot_attach_or_feed_new_terminal_state() {
     let mut terminal = Terminal::new(24, 4).expect("valid dimensions");
     terminal.begin_remote(44).expect("remote mode");

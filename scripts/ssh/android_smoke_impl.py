@@ -56,9 +56,15 @@ INPUT_REJECTION_REASONS = (
     "unbound",
     "native_exception",
     "native_rejection",
+    "stale_or_native_rejection",
 )
 INPUT_REJECTION_PATTERN = re.compile(
-    r"IME commit rejected; reason=(unbound|native_exception|native_rejection)\b"
+    r"IME commit rejected; reason="
+    r"(unbound|native_exception|native_rejection|stale_or_native_rejection)\b"
+)
+SPECIAL_INPUT_PATTERN = re.compile(
+    r"terminal special (?P<outcome>accepted|rejected)"
+    r"(?:; reason=(?P<reason>unbound|native_exception|stale_or_native_rejection))?\b"
 )
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MP4_FILE_TYPE_BOX = b"ftyp"
@@ -106,6 +112,69 @@ RECONNECT_LABELS = (
 )
 TMUX_RUNTIME_LABELS = (
     "tmux runtime meeterm",
+)
+RUNTIME_PICKER_HEADING_PREFIX = "Choose a runtime for "
+RUNTIME_PICKER_ROW_PREFIXES = (
+    "tmux runtime ",
+    "Herdr runtime ",
+)
+PROFILE_SWITCH_CONFIRMATION_BRANCH = "confirmation"
+PROFILE_SWITCH_TARGET_PICKER_BRANCH = "target_picker"
+PROFILE_SWITCH_BOUNDARY_AMBIGUOUS = "profile_switch_boundary_ambiguous"
+PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER = "unexpected_profile_picker"
+PROFILE_SWITCH_BOUNDARY_TIMEOUT = "confirmation_or_target_picker_timeout"
+STALE_READ_ONLY_DIAGNOSTIC_NAME = "stale-read-only-diagnostic.txt"
+STALE_READ_ONLY_DIAGNOSTIC_KEYS = (
+    "runtime_picker_hidden",
+    "cached_surface_visible",
+    "recovery_rail_visible",
+    "recovery_title_visible",
+    "recovery_detail_visible",
+    "recovery_meta_visible",
+    "expected_selected_pane_visible",
+    "surface_class_match",
+    "surface_resource_id_match",
+)
+RECOVERY_TEST_IDS = (
+    "recovery-rail",
+    "recovery-title",
+    "recovery-detail",
+    "recovery-meta",
+)
+CONNECTION_STATE_LABELS = (
+    ("Connecting…", "connecting"),
+    ("Verify host key", "host_key_pending"),
+    ("Authenticating…", "authenticating"),
+    ("Opening terminal…", "opening_pty"),
+    ("Finding runtimes…", "discovering_runtimes"),
+    ("Choose a runtime", "awaiting_runtime_selection"),
+    ("Opening runtime…", "attaching_runtime"),
+    ("Creating runtime…", "creating_runtime"),
+    ("Connected", "ready"),
+    ("Connection failed", "failed"),
+    ("Disconnecting…", "closing"),
+    ("Not connected", "disconnected"),
+)
+PROFILE_CONNECT_ERROR = (
+    "Could not connect to this saved server. Choose Edit server to check its "
+    "address and credentials."
+)
+FIXTURE_CONTROL_REQUEST_ENV = "MEETERM_SSH_FIXTURE_CONTROL_REQUEST"
+FIXTURE_CONTROL_STATUS_ENV = "MEETERM_SSH_FIXTURE_CONTROL_STATUS"
+FIXTURE_CONTROL_TIMEOUT_SECONDS = 25.0
+ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS = 30.0
+ANDROID_EMULATOR_HOST_ALIAS = "10.0.2.2"
+ANDROID_TRANSPORT_LOSS_PRE_PATTERN = re.compile(r"android-ssh-loss-pre-[0-9a-f]{16}")
+ANDROID_TRANSPORT_LOSS_POST_PATTERN = re.compile(r"android-ssh-loss-post-[0-9a-f]{16}")
+TRANSPORT_LOSS_COMPLETION_STAGES = (
+    "daily_transport_loss_pre_marker_once",
+    "daily_transport_loss_injected",
+    "daily_transport_loss_stale_read_only",
+    "daily_transport_loss_restored",
+    "daily_transport_loss_authoritative_ready",
+    "daily_transport_loss_post_marker_once",
+    "daily_transport_loss_remote_ack",
+    "daily_transport_loss_complete",
 )
 HANDOFF_COMMAND = "tmux attach -t meeterm"
 PRIVATE_KEY_ACCESSIBILITY_LABELS = (
@@ -309,12 +378,15 @@ class AndroidDevice:
         self.terminal_input_chunks = 0
         self.foreground_evidence_lost = False
 
+    def _adb_command(self, arguments: tuple[str, ...]) -> list[str]:
+        return [self.adb_path, "-s", self.serial, *arguments]
+
     def note_terminal_input(self, character_count: int) -> None:
         self.terminal_input_chars += max(0, character_count)
         self.terminal_input_chunks += 1
 
     def run(self, arguments: tuple[str, ...], stage: str, timeout: float = 15.0) -> bytes:
-        command = [self.adb_path, "-s", self.serial, *arguments]
+        command = self._adb_command(arguments)
         try:
             result = subprocess.run(
                 command,
@@ -330,8 +402,83 @@ class AndroidDevice:
             raise SmokeFailure(stage, "adb_failed")
         return result.stdout
 
-    def wait_for_device(self) -> None:
-        self.run(("wait-for-device",), "device_ready", timeout=30.0)
+    def wait_for_device(
+        self,
+        stage: str = "device_ready",
+        *,
+        timeout: float = ADB_TRANSPORT_WAIT_TIMEOUT_SECONDS,
+    ) -> None:
+        self.run(("wait-for-device",), stage, timeout=timeout)
+
+    def run_host_adb(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = 15.0,
+    ) -> bytes:
+        """Run one read-only host ADB query without selecting a transport."""
+
+        try:
+            result = subprocess.run(
+                [self.adb_path, *arguments],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
+            raise SmokeFailure(stage, "adb_unavailable") from error
+        if result.returncode != 0:
+            raise SmokeFailure(stage, "adb_failed")
+        return result.stdout
+
+    def verify_emulator_fixture_route(self, stage: str) -> None:
+        """Require one ready emulator and no ADB reverse intermediary."""
+
+        require_emulator_serial(self.serial)
+        inventory = self.run_host_adb(("devices", "-l"), stage).decode(
+            "utf-8", errors="replace"
+        )
+        lines = [line.strip() for line in inventory.splitlines() if line.strip()]
+        if not lines or lines[0] != "List of devices attached":
+            raise SmokeFailure(stage, "adb_device_inventory_invalid")
+        rows = [line.split() for line in lines[1:]]
+        if (
+            len(rows) != 1
+            or len(rows[0]) < 2
+            or rows[0][0] != self.serial
+            or rows[0][1] != "device"
+        ):
+            raise SmokeFailure(stage, "adb_device_scope_unsafe")
+        reverse_list = self.run(
+            ("reverse", "--list"), stage, timeout=10.0
+        ).decode("utf-8", errors="replace")
+        if reverse_list.strip():
+            raise SmokeFailure(stage, "adb_reverse_present")
+
+    def verify_emulator_host_alias(self, port: int, stage: str) -> None:
+        """Prove the emulator-only host alias reaches the fixture before input."""
+
+        if type(port) is not int or not 1025 <= port <= 65535:
+            raise SmokeFailure(stage, "invalid_port")
+        try:
+            self.run(
+                (
+                    "shell",
+                    "toybox",
+                    "nc",
+                    "-z",
+                    "-w",
+                    "5",
+                    ANDROID_EMULATOR_HOST_ALIAS,
+                    str(port),
+                ),
+                stage,
+                timeout=8.0,
+            )
+        except SmokeFailure as error:
+            raise SmokeFailure(stage, "emulator_host_alias_unreachable") from error
 
     def assert_process_alive(self, stage: str) -> None:
         self.process_id(stage)
@@ -535,6 +682,10 @@ class AndroidDevice:
         accepted_bytes = 0
         last_native_count: int | None = None
         rejected_commits = dict.fromkeys(INPUT_REJECTION_REASONS, 0)
+        accepted_specials = 0
+        rejected_specials = dict.fromkeys(
+            ("unbound", "native_exception", "stale_or_native_rejection"), 0
+        )
         for line in output.splitlines():
             if not any(
                 tag in line
@@ -563,11 +714,23 @@ class AndroidDevice:
                 rejected = INPUT_REJECTION_PATTERN.search(line)
                 if rejected is not None:
                     rejected_commits[rejected.group(1)] += 1
+                special = SPECIAL_INPUT_PATTERN.search(line)
+                if special is not None:
+                    if special.group("outcome") == "accepted":
+                        accepted_specials += 1
+                    elif special.group("reason") in rejected_specials:
+                        rejected_specials[special.group("reason")] += 1
                 # One aggregate line below is enough for CI diagnosis. Keep no
                 # per-character native input records in the artifact.
                 continue
             kept.append(line)
-        if self.terminal_input_chunks or accepted_commits or any(rejected_commits.values()):
+        if (
+            self.terminal_input_chunks
+            or accepted_commits
+            or any(rejected_commits.values())
+            or accepted_specials
+            or any(rejected_specials.values())
+        ):
             # A lower observed byte count is a diagnostic only: logcat can be
             # truncated or sampled while callbacks are still in flight, so it
             # must not be reported as proof of native rejection.
@@ -583,7 +746,13 @@ class AndroidDevice:
                 f"rejectedCommits={sum(rejected_commits.values())} "
                 f"rejectedUnbound={rejected_commits['unbound']} "
                 f"rejectedNativeException={rejected_commits['native_exception']} "
-                f"rejectedNativeRejection={rejected_commits['native_rejection']}"
+                f"rejectedNativeRejection={rejected_commits['native_rejection']} "
+                f"rejectedStaleOrNative={rejected_commits['stale_or_native_rejection']} "
+                f"acceptedSpecials={accepted_specials} "
+                f"rejectedSpecials={sum(rejected_specials.values())} "
+                f"rejectedSpecialUnbound={rejected_specials['unbound']} "
+                f"rejectedSpecialNativeException={rejected_specials['native_exception']} "
+                f"rejectedSpecialStaleOrNative={rejected_specials['stale_or_native_rejection']}"
             )
         return "\n".join(kept) + ("\n" if kept else "<no filtered native log lines>\n")
 
@@ -678,9 +847,41 @@ def required_environment(name: str) -> str:
     return value
 
 
+def request_fixture_transport(action: str, stage: str) -> None:
+    """Ask the parent fixture to stop/start only its disposable sshd."""
+
+    if action not in {"stop", "start"}:
+        raise SmokeFailure(stage, "fixture_control_action_invalid")
+    try:
+        environment = {
+            name: os.environ[name]
+            for name in (
+                FIXTURE_CONTROL_REQUEST_ENV,
+                FIXTURE_CONTROL_STATUS_ENV,
+            )
+        }
+    except KeyError as error:
+        raise SmokeFailure(stage, "fixture_control_unavailable") from error
+    fixture_script = Path(__file__).with_name("fixture.py")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(fixture_script), "--control", action],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=FIXTURE_CONTROL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SmokeFailure(stage, "fixture_control_failed") from error
+    if result.returncode != 0:
+        raise SmokeFailure(stage, "fixture_control_failed")
+
+
 def load_fixture() -> tuple[str, int, str, str, Path]:
-    host = required_environment("MEETERM_SSH_HOST")
-    if host != "127.0.0.1":
+    fixture_host = required_environment("MEETERM_SSH_HOST")
+    if fixture_host != "127.0.0.1":
         raise SmokeFailure("fixture_environment", "loopback_required")
     try:
         port = int(required_environment("MEETERM_SSH_PORT"), 10)
@@ -712,7 +913,17 @@ def load_fixture() -> tuple[str, int, str, str, Path]:
     # to the same disposable fixture tree.
     if fixture_key_path.parent != key_path.parent:
         raise SmokeFailure("fixture_environment", "key_tree_mismatch")
-    return host, port, username, key, fixture_key_path
+    # Android Emulator routes this reserved address directly to the host's
+    # loopback interface. Using it avoids an adb reverse relay whose accepted
+    # stream can outlive listener/server resets and hide the real SSH EOF.
+    return ANDROID_EMULATOR_HOST_ALIAS, port, username, key, fixture_key_path
+
+
+def require_emulator_serial(serial: str) -> None:
+    """Fail before credential entry when the emulator-only route is unavailable."""
+
+    if re.fullmatch(r"emulator-[0-9]+", serial) is None:
+        raise SmokeFailure("device_select", "emulator_required")
 
 
 def tmux_socket_from_fixture(key_path: Path) -> Path:
@@ -1325,6 +1536,154 @@ def find_node_with_labels(nodes: list[Node], labels: tuple[str, ...]) -> Node | 
     return None
 
 
+def runtime_picker_is_visible(nodes: list[Node]) -> bool:
+    """Detect the runtime picker, including disabled/stopped candidate rows."""
+
+    for node in nodes:
+        if not node.visible_to_user:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        labels = (node.text, node.content_description)
+        if any(label.startswith(RUNTIME_PICKER_HEADING_PREFIX) for label in labels):
+            return True
+        if any(
+            label.startswith(prefix)
+            for label in labels
+            for prefix in RUNTIME_PICKER_ROW_PREFIXES
+        ):
+            return True
+    return False
+
+
+def visible_exact_label(nodes: list[Node], label: str) -> bool:
+    """Find an exact visible label without requiring it to be actionable."""
+
+    for node in nodes:
+        if not node.visible_to_user:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if node.text == label or node.content_description == label:
+            return True
+    return False
+
+
+def wait_for_profile_switch_boundary(
+    device: AndroidDevice,
+    stage: str,
+    expected_profile_name: str,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> str:
+    """Wait once for the confirmation or exact target-picker boundary.
+
+    The expected heading is compared only in memory.  Failure stages and
+    reasons remain fixed so a profile name or raw accessibility value cannot
+    leak into smoke artifacts.
+    """
+
+    expected_heading = f"{RUNTIME_PICKER_HEADING_PREFIX}{expected_profile_name}"
+    boundary_stage = f"{stage}_boundary"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+
+        confirmation_visible = visible_exact_label(nodes, "Switch servers?")
+        target_picker_visible = visible_exact_label(nodes, expected_heading)
+        picker_visible = runtime_picker_is_visible(nodes)
+
+        if confirmation_visible and target_picker_visible:
+            raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_AMBIGUOUS)
+        if picker_visible:
+            if target_picker_visible:
+                return PROFILE_SWITCH_TARGET_PICKER_BRANCH
+            raise SmokeFailure(
+                boundary_stage,
+                PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER,
+            )
+        if confirmation_visible:
+            return PROFILE_SWITCH_CONFIRMATION_BRANCH
+        time.sleep(0.2)
+
+    raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_TIMEOUT)
+
+
+def sanitized_failure_ui_state(nodes: list[Node]) -> str:
+    """Describe only allowlisted public UI state; never serialize the tree."""
+
+    connection_state = next(
+        (
+            state
+            for label, state in CONNECTION_STATE_LABELS
+            if find_node(nodes, text=label) is not None
+            or find_node(nodes, content_description=label) is not None
+        ),
+        "unavailable",
+    )
+    workspace_visible = any(
+        node.visible_to_user and workspace_id_from_node(node) is not None
+        for node in nodes
+    )
+    return (
+        f"connection_state={connection_state}\n"
+        f"runtime_picker={'yes' if runtime_picker_is_visible(nodes) else 'no'}\n"
+        f"workspace_row={'yes' if workspace_visible else 'no'}\n"
+        f"saved_servers_sheet={'yes' if find_node(nodes, text='Saved servers') is not None else 'no'}\n"
+        f"switch_confirmation={'yes' if find_node(nodes, text='Switch servers?') is not None else 'no'}\n"
+        f"profile_connect_error={'yes' if find_node(nodes, text=PROFILE_CONNECT_ERROR) is not None else 'no'}\n"
+    )
+
+
+def foreground_recovery_ready(
+    nodes: list[Node], expected_pane_id: str
+) -> bool:
+    """Require the live selected pane and native surface after reactivation."""
+
+    if runtime_picker_is_visible(nodes):
+        return False
+    return (
+        find_node(nodes, text="Connected") is not None
+        and find_pane_node(nodes, expected_pane_id, selected=True) is not None
+        and find_labeled_terminal_surface(nodes) is not None
+    )
+
+
+def wait_for_foreground_recovery_ready(
+    device: AndroidDevice,
+    stage: str,
+    expected_pane_id: str,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+) -> None:
+    """Wait for strong Ready without allowing a picker to replace the target."""
+
+    deadline = time.monotonic() + timeout
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        if runtime_picker_is_visible(nodes):
+            raise SmokeFailure(stage, "runtime_picker_reappeared")
+        if foreground_recovery_ready(nodes, expected_pane_id):
+            device.assert_foreground(stage)
+            return
+        time.sleep(0.2)
+    if not hierarchy_seen:
+        raise SmokeFailure(stage, "ui_unavailable")
+    raise SmokeFailure(stage, "authoritative_ready_timeout")
+
+
 def wait_for_node_with_labels(
     device: AndroidDevice,
     stage: str,
@@ -1450,6 +1809,40 @@ def find_pane_node(
     return None
 
 
+def find_recovery_pane_node(
+    nodes: list[Node], pane_id: str, *, selected: bool = True
+) -> Node | None:
+    """Find a retained pane tab even when cached/read-only disables it."""
+
+    candidates: list[Node] = []
+    for node in nodes:
+        if not node.visible_to_user or pane_id_from_node(node) != pane_id:
+            continue
+        left, top, right, bottom = node.bounds
+        if right <= left or bottom <= top:
+            continue
+        if selected and not node.selected:
+            continue
+        candidates.append(node)
+    return candidates[0] if candidates else None
+
+
+def find_visible_test_id(nodes: list[Node], identifier: str) -> Node | None:
+    """Find one visible exact testID without requiring it to be enabled."""
+
+    for node in nodes:
+        resource_id = node.resource_id.removeprefix(f"{PACKAGE}:id/")
+        left, top, right, bottom = node.bounds
+        if (
+            node.visible_to_user
+            and resource_id == identifier
+            and right > left
+            and bottom > top
+        ):
+            return node
+    return None
+
+
 def wait_for_pane(
     device: AndroidDevice,
     stage: str,
@@ -1542,7 +1935,7 @@ def find_terminal_node(nodes: list[Node]) -> Node | None:
 
 
 def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
-    """Locate the explicitly labeled native cell surface without a fallback."""
+    """Prefer the labeled renderer, with a labeled-only compatibility fallback."""
 
     candidates = []
     for node in nodes:
@@ -1555,12 +1948,158 @@ def find_labeled_terminal_surface(nodes: list[Node]) -> Node | None:
             and bottom > top
         ):
             candidates.append(node)
+    return preferred_terminal_surface(candidates)
+
+
+def preferred_terminal_surface(candidates: list[Node]) -> Node | None:
+    """Prefer the native renderer among already validated labeled surfaces."""
+
+    renderer_candidates = [
+        node for node in candidates if node.class_name.endswith("SurfaceView")
+    ]
     return max(
-        candidates,
+        renderer_candidates or candidates,
         key=lambda node: (node.bounds[2] - node.bounds[0])
         * (node.bounds[3] - node.bounds[1]),
         default=None,
     )
+
+
+def find_cached_terminal_surface(nodes: list[Node]) -> Node | None:
+    """Locate the native retained surface without requiring live input."""
+
+    candidates = []
+    for node in nodes:
+        left, top, right, bottom = node.bounds
+        if (
+            node.content_description == "Terminal, cached output, read only"
+            and node.visible_to_user
+            and right > left
+            and bottom > top
+        ):
+            candidates.append(node)
+    return preferred_terminal_surface(candidates)
+
+
+def same_terminal_surface_binding(before: Node, after: Node) -> bool:
+    """Compare only sanitized accessibility binding metadata."""
+
+    if before.resource_id and after.resource_id:
+        return before.resource_id == after.resource_id
+    return before.class_name == after.class_name
+
+
+def _fixed_predicate(value: bool | None) -> str:
+    if value is None:
+        return "unknown"
+    return "yes" if value else "no"
+
+
+def stale_read_only_diagnostic(
+    nodes: list[Node] | None,
+    initial_terminal: Node | None,
+    expected_pane_id: str,
+) -> str:
+    """Return fixed stale-surface predicates without serializing UI data."""
+
+    if nodes is None:
+        predicates: dict[str, bool | None] = {
+            key: None for key in STALE_READ_ONLY_DIAGNOSTIC_KEYS
+        }
+    else:
+        cached = find_cached_terminal_surface(nodes)
+        class_match = (
+            None
+            if cached is None or initial_terminal is None
+            else initial_terminal.class_name == cached.class_name
+        )
+        resource_id_match = None
+        if (
+            cached is not None
+            and initial_terminal is not None
+            and initial_terminal.resource_id
+            and cached.resource_id
+        ):
+            resource_id_match = initial_terminal.resource_id == cached.resource_id
+        predicates = {
+            "runtime_picker_hidden": not runtime_picker_is_visible(nodes),
+            "cached_surface_visible": cached is not None,
+            **{
+                f"{identifier.replace('-', '_')}_visible": find_visible_test_id(
+                    nodes, identifier
+                )
+                is not None
+                for identifier in RECOVERY_TEST_IDS
+            },
+            "expected_selected_pane_visible": find_recovery_pane_node(
+                nodes, expected_pane_id, selected=True
+            )
+            is not None,
+            "surface_class_match": class_match,
+            "surface_resource_id_match": resource_id_match,
+        }
+    return "".join(
+        f"{key}={_fixed_predicate(predicates[key])}\n"
+        for key in STALE_READ_ONLY_DIAGNOSTIC_KEYS
+    )
+
+
+def transport_loss_recovery_ready(nodes: list[Node], expected_pane_id: str) -> bool:
+    """Require the stale rail and the same selected pane, not live input."""
+
+    if runtime_picker_is_visible(nodes):
+        return False
+    return (
+        find_visible_test_id(nodes, "recovery-rail") is not None
+        and find_visible_test_id(nodes, "recovery-title") is not None
+        and find_visible_test_id(nodes, "recovery-detail") is not None
+        and find_visible_test_id(nodes, "recovery-meta") is not None
+        and find_cached_terminal_surface(nodes) is not None
+        and find_recovery_pane_node(nodes, expected_pane_id, selected=True) is not None
+    )
+
+
+def wait_for_transport_loss_stale(
+    device: AndroidDevice,
+    stage: str,
+    expected_pane_id: str,
+    initial_terminal: Node,
+    *,
+    timeout: float = RECONNECT_TIMEOUT,
+    artifact_dir: Path | None = None,
+) -> Node:
+    """Wait for cached/read-only recovery while preserving foreground evidence."""
+
+    deadline = time.monotonic() + timeout
+    hierarchy_seen = False
+    last_nodes: list[Node] | None = None
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+            last_nodes = nodes
+        except SmokeFailure:
+            time.sleep(0.2)
+            continue
+        if runtime_picker_is_visible(nodes):
+            raise SmokeFailure(stage, "runtime_picker_reappeared")
+        cached = find_cached_terminal_surface(nodes)
+        if (
+            cached is not None
+            and transport_loss_recovery_ready(nodes, expected_pane_id)
+            and same_terminal_surface_binding(initial_terminal, cached)
+        ):
+            device.assert_foreground(stage)
+            return cached
+        time.sleep(0.2)
+    if not hierarchy_seen:
+        raise SmokeFailure(stage, "ui_unavailable")
+    if artifact_dir is not None:
+        write_artifact(
+            artifact_dir / STALE_READ_ONLY_DIAGNOSTIC_NAME,
+            stale_read_only_diagnostic(last_nodes, initial_terminal, expected_pane_id),
+        )
+    raise SmokeFailure(stage, "stale_read_only_timeout")
 
 
 def wait_for_terminal(device: AndroidDevice, stage: str, timeout: float = DEFAULT_UI_TIMEOUT) -> Node:
@@ -1599,17 +2138,6 @@ def wait_for_labeled_terminal_surface(
             return node
         time.sleep(0.2)
     raise SmokeFailure(stage, "terminal_surface_unavailable")
-
-
-def reverse_local_mapping_exists(output: str, port: int) -> bool:
-    """Recognize adb reverse output with or without its serial prefix."""
-
-    local = f"tcp:{port}"
-    for line in output.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[-2] == local:
-            return True
-    return False
 
 
 def screen_bounds(nodes: list[Node]) -> tuple[int, int, int, int]:
@@ -1982,9 +2510,23 @@ def selection_geometry_diagnostic(
         if re.fullmatch(r"[A-Za-z0-9_.$]+", node.class_name)
         else "unavailable"
     )
+    if node.class_name.endswith("GLSurfaceView"):
+        surface_candidate = "renderer"
+        surface_class_kind = "gl_surface"
+    elif node.class_name.endswith("SurfaceView"):
+        surface_candidate = "renderer"
+        surface_class_kind = "surface_view"
+    elif node.class_name.endswith("LinearLayout"):
+        surface_candidate = "wrapper"
+        surface_class_kind = "linear_layout"
+    else:
+        surface_candidate = "fallback"
+        surface_class_kind = "other"
     return (
         "surface_label=Terminal\n"
         f"surface_class={surface_class}\n"
+        f"surface_candidate={surface_candidate}\n"
+        f"surface_class_kind={surface_class_kind}\n"
         f"bounds_left={left}\n"
         f"bounds_top={top}\n"
         f"bounds_right={right}\n"
@@ -2381,21 +2923,26 @@ def session_marker_command(
     marker: str,
     path: Path,
     pane_pid: int | None = None,
+    *,
+    append: bool = False,
 ) -> str:
     """Build the one-shot marker command sent through the terminal.
 
     Android's ``input text`` reserves ``%s`` for spaces, so the generated
     command never includes a percent character. The marker is generated
-    locally and the path is quoted as a shell argument.
+    locally and the path is quoted as a shell argument. ``append`` is used for
+    resumed markers so a duplicate remote execution becomes observable as a
+    second line instead of silently overwriting the first one.
     """
 
     if not marker or any(character in marker for character in "\r\n%"):
         raise SmokeFailure("remote_marker", "invalid_marker")
     _validate_marker_pid(pane_pid, "remote_marker")
     pid_suffix = ":$$" if pane_pid is not None else ""
+    redirect = ">>" if append else ">"
     return (
         f"export MEETERM_ANDROID_SESSION_MARKER={shell_quote(marker)}; "
-        f"printf \"$MEETERM_ANDROID_SESSION_MARKER{pid_suffix}\\n\" > "
+        f"printf \"$MEETERM_ANDROID_SESSION_MARKER{pid_suffix}\\n\" {redirect} "
         f"{shell_quote(str(path))}"
     )
 
@@ -2421,6 +2968,150 @@ def resumed_marker_command(
         f"if [ \"$MEETERM_ANDROID_SESSION_MARKER\" = {shell_quote(marker)} ]{pid_check}; "
         f"then printf {resumed_marker_literal} >> {shell_quote(str(path))}; fi"
     )
+
+
+def transport_loss_marker_command(
+    marker: str,
+    path: Path,
+    pane_id: str,
+    *,
+    append: bool = False,
+) -> str:
+    """Build an ASCII marker carrying the selected pane and shell identity."""
+
+    pattern = (
+        ANDROID_TRANSPORT_LOSS_PRE_PATTERN
+        if marker.startswith("android-ssh-loss-pre-")
+        else ANDROID_TRANSPORT_LOSS_POST_PATTERN
+    )
+    if pattern.fullmatch(marker) is None:
+        raise SmokeFailure("transport_loss_marker", "invalid_marker")
+    if re.fullmatch(r"%[0-9]+", pane_id) is None:
+        raise SmokeFailure("transport_loss_marker", "invalid_pane_id")
+    redirect = ">>" if append else ">"
+    # Keep the command free of Android input's reserved ``%s`` escape. The
+    # shell concatenates a quoted fixed marker, the expanded shell PID, and a
+    # quoted newline into printf's format string.
+    format_prefix = shell_quote(f"{marker}:{pane_id[1:]}:")
+    return (
+        f"printf {format_prefix}\"$$\"'\\n' {redirect} "
+        f"{shell_quote(str(path))}"
+    )
+
+
+def _transport_loss_marker_lines(
+    path: Path,
+    values: tuple[str, ...],
+    pane_id: str,
+    stage: str,
+) -> list[str] | None:
+    if re.fullmatch(r"%[0-9]+", pane_id) is None:
+        raise SmokeFailure(stage, "invalid_pane_id")
+    if len(values) not in (1, 2):
+        raise SmokeFailure(stage, "invalid_marker_sequence")
+    pattern_by_value = {
+        value: re.compile(rf"{re.escape(value)}:{re.escape(pane_id[1:])}:(?P<pid>[1-9][0-9]*)\Z")
+        for value in values
+    }
+    try:
+        content = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_read_failed") from error
+    lines = content.splitlines()
+    if len(lines) > len(values):
+        raise SmokeFailure(stage, "marker_repeated")
+    if len(lines) != len(values):
+        return None
+    for line, value in zip(lines, values):
+        if pattern_by_value[value].fullmatch(line) is None:
+            raise SmokeFailure(stage, "marker_sequence_invalid")
+    # Keep a second read as an exact-once check. It carries no terminal text
+    # into an artifact and catches a duplicate command before acceptance.
+    time.sleep(0.5)
+    try:
+        stable = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_read_failed") from error
+    if stable != content:
+        raise SmokeFailure(stage, "marker_repeated")
+    return lines
+
+
+def wait_for_transport_loss_marker_lines(
+    path: Path,
+    values: tuple[str, ...],
+    pane_id: str,
+    stage: str,
+    *,
+    timeout: float = REMOTE_MARKER_TIMEOUT,
+) -> list[str]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lines = _transport_loss_marker_lines(path, values, pane_id, stage)
+        if lines is not None:
+            return lines
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "marker_timeout")
+
+
+def validate_transport_loss_marker_scope(
+    tmux_socket: Path,
+    pane_id: str,
+    marker_path: Path,
+    pre_value: str,
+    post_value: str,
+    stage: str,
+) -> None:
+    """Prove both markers belong exactly once to the same live tmux pane."""
+
+    if ANDROID_TRANSPORT_LOSS_PRE_PATTERN.fullmatch(pre_value) is None:
+        raise SmokeFailure(stage, "pre_marker_invalid")
+    if ANDROID_TRANSPORT_LOSS_POST_PATTERN.fullmatch(post_value) is None:
+        raise SmokeFailure(stage, "post_marker_invalid")
+    if pre_value == post_value:
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+    lines = _transport_loss_marker_lines(
+        marker_path,
+        (pre_value, post_value),
+        pane_id,
+        stage,
+    )
+    if lines is None:
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+    expected_pattern = re.compile(
+        rf"(?:{re.escape(pre_value)}|{re.escape(post_value)}):{re.escape(pane_id[1:])}:[1-9][0-9]*\Z"
+    )
+    if any(expected_pattern.fullmatch(line) is None for line in lines):
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+    current_panes = list_tmux_panes(tmux_socket, stage)
+    target = next((pane for pane in current_panes if pane.pane_id == pane_id), None)
+    if target is None:
+        raise SmokeFailure(stage, "pane_identity_missing")
+    marker_pid = int(lines[0].rsplit(":", 1)[1])
+    if marker_pid != target.pane_pid or lines[1].rsplit(":", 1)[1] != str(marker_pid):
+        raise SmokeFailure(stage, "pane_identity_changed")
+    for pane in current_panes:
+        if pane.pane_id == pane_id:
+            continue
+        capture = run_tmux_command(
+            tmux_socket,
+            ("capture-pane", "-p", "-J", "-S", "-30", "-t", pane.pane_id),
+            stage,
+        ).stdout.decode("utf-8", errors="replace")
+        if pre_value in capture or post_value in capture:
+            raise SmokeFailure(stage, "marker_in_other_pane")
+
+
+def require_transport_loss_completion(completed: list[str], stage: str) -> None:
+    """Require one ordered, bounded completion record for each loss edge."""
+
+    positions: list[int] = []
+    for name in TRANSPORT_LOSS_COMPLETION_STAGES:
+        if completed.count(name) != 1:
+            raise SmokeFailure(stage, "completion_sequence_invalid")
+        positions.append(completed.index(name))
+    if positions != sorted(positions):
+        raise SmokeFailure(stage, "completion_sequence_invalid")
 
 
 def printf_octal(value: str) -> str:
@@ -2550,6 +3241,15 @@ def wait_for_file_contents(path: Path, expected: str, stage: str) -> None:
                 return
             raise SmokeFailure(stage, "marker_repeated")
         time.sleep(0.2)
+    try:
+        final_content = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_read_failed") from error
+    if final_content:
+        # Keep the artifact secret-free while distinguishing a missing remote
+        # execution from a command that reached the fixture with a wrong pane
+        # or shell identity.
+        raise SmokeFailure(stage, "marker_content_mismatch")
     raise SmokeFailure(stage, "marker_timeout")
 
 
@@ -2557,6 +3257,23 @@ def wait_for_marker(path: Path, marker: str) -> None:
     """Wait for exactly one marker line (kept for existing smoke callers)."""
 
     wait_for_file_contents(path, f"{marker}\n", "remote_marker")
+
+
+def latest_native_terminal_handle(device: AndroidDevice, stage: str) -> str:
+    """Read one sanitized opaque native handle observation from logcat."""
+
+    output = device.run(
+        ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalView:I"),
+        stage,
+        timeout=20.0,
+    ).decode("utf-8", errors="replace")
+    handles = re.findall(
+        r"\bbound terminalId=[^\r\n]*\bhandle=([1-9][0-9]*)\b",
+        output,
+    )
+    if not handles:
+        raise SmokeFailure(stage, "native_terminal_handle_unavailable")
+    return handles[-1]
 
 
 def write_artifact(path: Path, contents: str) -> None:
@@ -2588,6 +3305,15 @@ def capture_optional_screenshot(
         return error.reason
     completed.append(f"{name}_screenshot")
     return "ok"
+
+
+def failure_screenshot_is_secret_safe(completed: list[str]) -> bool:
+    """Allow failure pixels only after every credential editor is closed."""
+
+    return (
+        "daily_second_profile_saved" in completed
+        or "terminal_focused" in completed
+    )
 
 
 def start_optional_screenrecord(
@@ -3023,17 +3749,69 @@ def switch_saved_profile(
     device: AndroidDevice,
     name: str,
     stage: str,
-) -> Node:
+) -> str:
     profile = wait_for_saved_profile(device, stage, name, selected=False)
     tap_node(device, profile, stage)
-    wait_for_node(device, stage, text="Switch servers?")
-    tap_action(device, stage, ("Switch server",))
+    confirmation_stage = f"{stage}_confirmation"
+    boundary = wait_for_profile_switch_boundary(
+        device,
+        stage,
+        name,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    if boundary == PROFILE_SWITCH_CONFIRMATION_BRANCH:
+        tap_action(device, confirmation_stage, ("Switch server",))
+    elif boundary != PROFILE_SWITCH_TARGET_PICKER_BRANCH:
+        raise SmokeFailure(
+            f"{stage}_boundary",
+            "profile_switch_boundary_invalid",
+        )
     select_fixture_tmux_runtime_and_wait_for_connected(
         device,
         f"{stage}_runtime_selection",
     )
+
+    # `Connected` is the native Ready boundary, but the React workspace
+    # snapshot is loaded by the completion effect immediately afterward.  A
+    # second profile switch must not overlap that read-only snapshot request:
+    # the faster direct emulator host route exposed the race by starting the
+    # next disconnect/connect while the previous picker completion was still
+    # settling.  Require one real fixture workspace row before opening the
+    # server sheet again.  This is a state boundary, not a retry or a longer
+    # deadline, and it also proves that the picker closed onto authoritative
+    # workspace data.
+    wait_for_workspace(
+        device,
+        f"{stage}_workspace_ready",
+        timeout=RECONNECT_TIMEOUT,
+    )
     tap_action(device, stage, ("Saved servers",))
-    return wait_for_saved_profile(device, stage, name, selected=True)
+    wait_for_saved_profile(device, stage, name, selected=True)
+    return boundary
+
+
+def append_profile_switch_boundary_marker(
+    completed: list[str],
+    switch_name: str,
+    boundary: str,
+    stage: str,
+) -> None:
+    """Append only fixed, sanitized evidence for an accepted branch."""
+
+    markers = {
+        ("second", PROFILE_SWITCH_CONFIRMATION_BRANCH):
+            "daily_profile_switch_second_boundary_confirmation",
+        ("second", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
+            "daily_profile_switch_second_boundary_target_picker",
+        ("primary", PROFILE_SWITCH_CONFIRMATION_BRANCH):
+            "daily_profile_switch_primary_boundary_confirmation",
+        ("primary", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
+            "daily_profile_switch_primary_boundary_target_picker",
+    }
+    marker = markers.get((switch_name, boundary))
+    if marker is None:
+        raise SmokeFailure(stage, "profile_switch_boundary_invalid")
+    completed.append(marker)
 
 
 def exercise_saved_profile_management(
@@ -3067,9 +3845,29 @@ def exercise_saved_profile_management(
     add_second_saved_fixture_profile(device, host, port, username, key)
     completed.append("daily_second_profile_saved")
 
-    switch_saved_profile(device, DAILY_SECOND_PROFILE_NAME, "daily_profile_switch_second")
+    second_boundary = switch_saved_profile(
+        device,
+        DAILY_SECOND_PROFILE_NAME,
+        "daily_profile_switch_second",
+    )
+    append_profile_switch_boundary_marker(
+        completed,
+        "second",
+        second_boundary,
+        "daily_profile_switch_second",
+    )
     completed.append("daily_profile_switched")
-    switch_saved_profile(device, DAILY_PROFILE_NAME, "daily_profile_switch_primary")
+    primary_boundary = switch_saved_profile(
+        device,
+        DAILY_PROFILE_NAME,
+        "daily_profile_switch_primary",
+    )
+    append_profile_switch_boundary_marker(
+        completed,
+        "primary",
+        primary_boundary,
+        "daily_profile_switch_primary",
+    )
     completed.append("daily_profile_switch_restored")
 
     stage = "daily_profile_delete_cancel"
@@ -3143,7 +3941,11 @@ def exercise_foreground_return(
         selected=True,
         timeout=RECONNECT_TIMEOUT,
     )
-    wait_for_labeled_terminal_surface(device, stage, timeout=RECONNECT_TIMEOUT)
+    initial_terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
     device.assert_foreground(stage)
     if device.process_id(stage) != expected_pid:
         raise SmokeFailure(stage, "app_process_changed")
@@ -3167,9 +3969,16 @@ def exercise_foreground_return(
         timeout=15.0,
     )
     # Foreground return exercises automatic transport recovery. It retains
-    # the verified runtime binding and must not require a new picker choice.
-    wait_for_node(device, stage, text="Connected", timeout=RECONNECT_TIMEOUT)
-    device.assert_foreground(stage)
+    # the verified runtime/pane binding and must not require a new picker
+    # choice. The native surface must be live again, rather than the retained
+    # cached/read-only recovery surface, before input is resumed.
+    wait_for_foreground_recovery_ready(
+        device,
+        stage,
+        expected_pane_id=expected_pane.pane_id,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_foreground_authoritative_ready")
     if device.process_id(stage) != expected_pid:
         raise SmokeFailure(stage, "app_process_changed")
     wait_for_pane(
@@ -3184,16 +3993,28 @@ def exercise_foreground_return(
         stage,
         timeout=RECONNECT_TIMEOUT,
     )
+    if terminal.content_description != initial_terminal.content_description:
+        raise SmokeFailure(stage, "native_terminal_binding_changed")
+    if initial_terminal.resource_id and terminal.resource_id:
+        if initial_terminal.resource_id != terminal.resource_id:
+            raise SmokeFailure(stage, "native_terminal_binding_changed")
+    completed.append("daily_foreground_native_binding_verified")
     focus_terminal(device, terminal, stage)
     terminal_line(
         device,
-        session_marker_command(marker_value, marker_path, expected_pane.pane_pid),
+        session_marker_command(
+            marker_value,
+            marker_path,
+            expected_pane.pane_pid,
+            append=True,
+        ),
     )
     wait_for_file_contents(
         marker_path,
         f"{marker_value}:{expected_pane.pane_pid}\n",
         stage,
     )
+    completed.append("daily_foreground_marker_exactly_once")
     completed.append("daily_foreground_terminal_resumed")
     tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
     wait_for_workspace(
@@ -3202,6 +4023,179 @@ def exercise_foreground_return(
         label=f"Workspace {expected_pane.window_name}",
         timeout=RECONNECT_TIMEOUT,
     )
+
+
+def exercise_transport_loss_recovery(
+    device: AndroidDevice,
+    tmux_socket: Path,
+    fixture_layout: list[TmuxPaneRecord],
+    marker_path: Path,
+    pre_value: str,
+    post_value: str,
+    artifact_dir: Path,
+    completed: list[str],
+    expected_pid: str,
+) -> None:
+    """Stop the directly reached fixture sshd and recover without a picker."""
+
+    stage = "daily_transport_loss_prepare"
+    active_panes = [
+        pane for pane in fixture_layout if pane.active and pane.window_active
+    ]
+    if len(active_panes) != 1:
+        raise SmokeFailure(stage, "pane_selection_unavailable")
+    expected_pane = active_panes[0]
+    workspace = wait_for_workspace(
+        device,
+        stage,
+        label=f"Workspace {expected_pane.window_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, stage)
+    wait_for_pane(
+        device,
+        stage,
+        pane_id=expected_pane.pane_id,
+        selected=True,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    initial_terminal = wait_for_labeled_terminal_surface(
+        device,
+        stage,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    device.assert_foreground(stage)
+    if device.process_id(stage) != expected_pid:
+        raise SmokeFailure(stage, "app_process_changed")
+    initial_handle = latest_native_terminal_handle(device, stage)
+    focus_terminal(device, initial_terminal, stage)
+    terminal_line(
+        device,
+        transport_loss_marker_command(
+            pre_value,
+            marker_path,
+            expected_pane.pane_id,
+        ),
+    )
+    wait_for_transport_loss_marker_lines(
+        marker_path,
+        (pre_value,),
+        expected_pane.pane_id,
+        "daily_transport_loss_pre_marker",
+    )
+    completed.append("daily_transport_loss_pre_marker_once")
+
+    transport_stopped = False
+    try:
+        request_fixture_transport("stop", "daily_transport_loss_inject")
+        transport_stopped = True
+        # 10.0.2.2 is the emulator's host-loopback alias, so no adb reverse
+        # relay sits between this socket and the fixture-owned sshd session.
+        # The fixture stop ACK therefore is the accepted-stream EOF boundary.
+        completed.append("daily_transport_loss_injected")
+
+        stage = "daily_transport_loss_stale"
+        stale_terminal = wait_for_transport_loss_stale(
+            device,
+            stage,
+            expected_pane.pane_id,
+            initial_terminal,
+            timeout=RECONNECT_TIMEOUT,
+            artifact_dir=artifact_dir,
+        )
+        stale_handle = latest_native_terminal_handle(device, stage)
+        if stale_handle != initial_handle:
+            raise SmokeFailure(stage, "native_terminal_handle_changed")
+        if not same_terminal_surface_binding(initial_terminal, stale_terminal):
+            raise SmokeFailure(stage, "native_terminal_binding_changed")
+        completed.append("daily_transport_loss_stale_read_only")
+
+        request_fixture_transport("start", "daily_transport_loss_restore")
+        transport_stopped = False
+        completed.append("daily_transport_loss_restored")
+
+        stage = "daily_transport_loss_ready"
+        wait_for_foreground_recovery_ready(
+            device,
+            stage,
+            expected_pane_id=expected_pane.pane_id,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        if device.process_id(stage) != expected_pid:
+            raise SmokeFailure(stage, "app_process_changed")
+        recovered_terminal = wait_for_labeled_terminal_surface(
+            device,
+            stage,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        recovered_handle = latest_native_terminal_handle(device, stage)
+        if recovered_handle != initial_handle:
+            raise SmokeFailure(stage, "native_terminal_handle_changed")
+        if not same_terminal_surface_binding(initial_terminal, recovered_terminal):
+            raise SmokeFailure(stage, "native_terminal_binding_changed")
+        wait_for_pane(
+            device,
+            stage,
+            pane_id=expected_pane.pane_id,
+            selected=True,
+            timeout=RECONNECT_TIMEOUT,
+        )
+        completed.append("daily_transport_loss_authoritative_ready")
+
+        stage = "daily_transport_loss_post_marker"
+        focus_terminal(device, recovered_terminal, stage)
+        terminal_line(
+            device,
+            transport_loss_marker_command(
+                post_value,
+                marker_path,
+                expected_pane.pane_id,
+                append=True,
+            ),
+        )
+        wait_for_transport_loss_marker_lines(
+            marker_path,
+            (pre_value, post_value),
+            expected_pane.pane_id,
+            stage,
+        )
+        validate_transport_loss_marker_scope(
+            tmux_socket,
+            expected_pane.pane_id,
+            marker_path,
+            pre_value,
+            post_value,
+            stage,
+        )
+        write_artifact(
+            artifact_dir / "transport-loss-validation.txt",
+            "transport_loss=passed\n"
+            "fixture_control=stopped_and_started\n"
+            "recovery_surface=cached_read_only\n"
+            "native_handle_same=yes\n"
+            "pane_identity_same=yes\n"
+            "pre_marker_exactly_once=yes\n"
+            "post_marker_exactly_once=yes\n"
+            "other_panes_clean=yes\n"
+            "input_during_loss=none\n",
+        )
+        completed.append("daily_transport_loss_post_marker_once")
+        completed.append("daily_transport_loss_remote_ack")
+    finally:
+        if transport_stopped:
+            try:
+                request_fixture_transport("start", "daily_transport_loss_cleanup")
+            except SmokeFailure:
+                pass
+
+    tap_action(device, "daily_transport_loss_complete", BACK_TO_WORKSPACES_LABELS)
+    wait_for_workspace(
+        device,
+        "daily_transport_loss_complete",
+        label=f"Workspace {expected_pane.window_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_transport_loss_complete")
 
 
 def reconnect_saved_profile_after_restart(
@@ -3835,7 +4829,6 @@ def main(argv: list[str] | None = None) -> int:
     screenshot_reason = "not_attempted"
     secrets_submitted = False
     device: AndroidDevice | None = None
-    reverse_created = False
     tmux_socket: Path | None = None
     marker_path: Path | None = None
     marker_value: str | None = None
@@ -3843,6 +4836,10 @@ def main(argv: list[str] | None = None) -> int:
     second_marker_value: str | None = None
     foreground_marker_path: Path | None = None
     foreground_marker_value: str | None = None
+    transport_loss_marker_path: Path | None = None
+    transport_loss_pre_value: str | None = None
+    transport_loss_post_value: str | None = None
+    transport_loss_evidence = "not_run"
     selection_setup_marker_path: Path | None = None
     selection_setup_marker_value: str | None = None
     copy_marker_path: Path | None = None
@@ -3859,6 +4856,12 @@ def main(argv: list[str] | None = None) -> int:
             args.artifact_dir.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise SmokeFailure("artifacts", "artifact_write_failed") from error
+        try:
+            (args.artifact_dir / "transport-loss-validation.txt").unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise SmokeFailure("artifacts", "artifact_write_failed") from error
 
         host, port, username, key, key_path = load_fixture()
         expected_fingerprint = required_environment("MEETERM_SSH_FINGERPRINT")
@@ -3869,6 +4872,9 @@ def main(argv: list[str] | None = None) -> int:
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
         foreground_marker_path, foreground_marker_value = make_marker_file(key_path)
+        transport_loss_marker_path, _transport_loss_seed = make_marker_file(key_path)
+        transport_loss_pre_value = f"android-ssh-loss-pre-{secrets.token_hex(8)}"
+        transport_loss_post_value = f"android-ssh-loss-post-{secrets.token_hex(8)}"
         selection_setup_marker_path, selection_setup_marker_value = make_marker_file(
             key_path
         )
@@ -3882,16 +4888,11 @@ def main(argv: list[str] | None = None) -> int:
         device = AndroidDevice(serial, adb_path)
         device.wait_for_device()
         completed.append("device_ready")
-
-        stage = "reverse"
-        reverse_list = device.run(("reverse", "--list"), stage, timeout=10.0).decode(
-            "utf-8", errors="replace"
-        )
-        if reverse_local_mapping_exists(reverse_list, port):
-            raise SmokeFailure(stage, "reverse_already_exists")
-        device.run(("reverse", f"tcp:{port}", f"tcp:{port}"), stage, timeout=10.0)
-        reverse_created = True
-        completed.append("loopback_reverse")
+        device.verify_emulator_fixture_route("device_emulator_route")
+        device.verify_emulator_host_alias(port, "device_emulator_host_alias")
+        completed.append("emulator_host_loopback")
+        completed.append("emulator_host_alias_reachable")
+        completed.append("adb_reverse_preflight_empty")
 
         stage = "launch"
         device.run(("shell", "am", "force-stop", PACKAGE), stage, timeout=10.0)
@@ -4013,6 +5014,27 @@ def main(argv: list[str] | None = None) -> int:
             completed,
             initial_app_pid,
         )
+        if (
+            transport_loss_marker_path is None
+            or transport_loss_pre_value is None
+            or transport_loss_post_value is None
+        ):
+            raise SmokeFailure("daily_transport_loss_prepare", "marker_unavailable")
+        exercise_transport_loss_recovery(
+            device,
+            tmux_socket,
+            fixture_layout,
+            transport_loss_marker_path,
+            transport_loss_pre_value,
+            transport_loss_post_value,
+            args.artifact_dir,
+            completed,
+            initial_app_pid,
+        )
+        device.verify_emulator_fixture_route("daily_transport_loss_adb_postflight")
+        completed.append("adb_reverse_postflight_empty")
+        require_transport_loss_completion(completed, "daily_transport_loss_complete")
+        transport_loss_evidence = "passed"
         initial_app_pid = reconnect_saved_profile_after_restart(
             device,
             args.artifact_dir,
@@ -4575,6 +5597,13 @@ def main(argv: list[str] | None = None) -> int:
                 glyph_done_marker_path.unlink()
             except FileNotFoundError:
                 pass
+        if transport_loss_marker_path is not None:
+            try:
+                transport_loss_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
             except OSError:
                 pass
         if device is not None:
@@ -4589,15 +5618,18 @@ def main(argv: list[str] | None = None) -> int:
                     if screenrecord_reason == "ok"
                     else "daily_video_unavailable"
                 )
-            # `terminal_focused` is reached only after both credential forms
-            # have submitted and closed. Keep that later completion marker in
-            # this guard: `secrets_submitted` alone becomes true before the
-            # second saved-profile credential is entered.
-            if (
+            # `daily_second_profile_saved` is the first point where both
+            # credential forms have submitted and closed. Later failures may
+            # therefore retain a sanitized UI screenshot even when they occur
+            # before the terminal receives focus. `secrets_submitted` alone
+            # becomes true before the second saved-profile credential is
+            # entered and must never authorize a capture.
+            failure_pixels_safe = (
                 result != "passed"
                 and secrets_submitted
-                and "terminal_focused" in completed
-            ):
+                and failure_screenshot_is_secret_safe(completed)
+            )
+            if failure_pixels_safe:
                 try:
                     device.assert_foreground("terminal_failure_screenshot")
                 except SmokeFailure as error:
@@ -4612,18 +5644,48 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if screenshot_reason == "ok":
                         screenshot_written = True
+                try:
+                    failure_state = sanitized_failure_ui_state(device.dump_ui())
+                except SmokeFailure:
+                    failure_state = "connection_state=unavailable\ncapture=ui_unavailable\n"
+                write_artifact(
+                    args.artifact_dir / "ssh-failure-state.txt",
+                    failure_state,
+                )
+            elif result != "passed":
+                write_artifact(
+                    args.artifact_dir / "ssh-failure-state.txt",
+                    "connection_state=unavailable\n"
+                    "capture=credential_ui_may_be_visible\n",
+                )
             device.force_stop()
             try:
                 log_contents = device.logcat()
             except SmokeFailure:
                 log_contents = "<filtered native log unavailable>\n"
             write_artifact(args.artifact_dir / "ssh-logcat.txt", log_contents)
-            if reverse_created:
-                try:
-                    device.run(("reverse", "--remove", f"tcp:{port}"), "cleanup", timeout=10.0)
-                except SmokeFailure:
-                    pass
+            write_artifact(
+                args.artifact_dir / "android-transport-path.txt",
+                "emulator_host_loopback\n"
+                f"emulator_host_alias_reachable={'yes' if 'emulator_host_alias_reachable' in completed else 'unavailable'}\n"
+                f"adb_reverse_preflight_empty={'yes' if 'adb_reverse_preflight_empty' in completed else 'unavailable'}\n"
+                f"adb_reverse_postflight_empty={'yes' if 'adb_reverse_postflight_empty' in completed else 'unavailable'}\n",
+            )
 
+        transport_loss_artifact = args.artifact_dir / "transport-loss-validation.txt"
+        if not transport_loss_artifact.exists():
+            write_artifact(
+                transport_loss_artifact,
+                "transport_loss=unavailable\n"
+                "fixture_control=unavailable\n"
+                "recovery_surface=unavailable\n"
+                "native_handle_same=unavailable\n"
+                "pane_identity_same=unavailable\n"
+                "pre_marker_exactly_once=unavailable\n"
+                "post_marker_exactly_once=unavailable\n"
+                "other_panes_clean=unavailable\n"
+                "input_during_loss=unavailable\n",
+            )
         summary_lines = [
             f"result={result}",
             f"stage={stage}",
@@ -4632,6 +5694,7 @@ def main(argv: list[str] | None = None) -> int:
             f"screenshot={'written' if screenshot_written else 'unavailable'}",
             f"screenshot_reason={screenshot_reason}",
             f"screenrecord_reason={screenrecord_reason}",
+            f"transport_loss_evidence={transport_loss_evidence}",
             "completed=" + (",".join(completed) if completed else "none"),
         ]
         write_artifact(args.artifact_dir / "ssh-validation.txt", "\n".join(summary_lines) + "\n")

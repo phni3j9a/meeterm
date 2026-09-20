@@ -87,6 +87,10 @@ NATIVE_INPUT_CASES = (
     "hardware_shift_combinations",
     "marked_commit",
     "scroll_gesture",
+    "async_paste_epoch",
+    "cached_read_only",
+    "recovery_arguments",
+    "live_epoch_refocus",
 )
 RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -104,6 +108,9 @@ RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_MARKER_PATH",
     "MEETERM_IOS_MARKER_VALUE",
     "MEETERM_IOS_HANDOFF_VALUE",
+    "MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH",
+    "MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE",
+    "MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE",
 )
 COMMON_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_ARTIFACT_DIR",
@@ -135,10 +142,16 @@ NAMES_TEST_ENVIRONMENT_NAMES = (
 SSH_TEST_ENVIRONMENT_NAMES = (
     *NAMES_TEST_ENVIRONMENT_NAMES,
     "MEETERM_IOS_MARKER_VALUE",
+    "MEETERM_SSH_FIXTURE_CONTROL_REQUEST",
+    "MEETERM_SSH_FIXTURE_CONTROL_STATUS",
+    "MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH",
+    "MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE",
+    "MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE",
 )
 
 CONNECTION_FAILURE_DIAGNOSTICS_NAME = "ios-ui-connection-diagnostics.txt"
 INPUT_DIAGNOSTICS_NAME = "ios-ssh-input-diagnostics.json"
+TRANSPORT_LOSS_VALIDATION_NAME = "ios-transport-loss-validation.txt"
 SSH_PROBE_NONCE = "meeterm-ios-ssh-probe-v1"
 FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -272,19 +285,192 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
     return len(workspaces), len(panes)
 
 
+def fixture_pane_processes(socket_path: Path, stage: str) -> list[tuple[str, int]]:
+    """Return only the opaque pane id and shell pid for the fixture session."""
+
+    output = run_tmux(
+        socket_path,
+        ("list-panes", "-s", "-t", "=meeterm", "-F", "#{pane_id}\t#{pane_pid}"),
+        stage,
+    ).stdout
+    panes: list[tuple[str, int]] = []
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2 or not re.fullmatch(r"%[0-9]+", fields[0]):
+            raise SmokeFailure(stage, "pane_identity_invalid")
+        try:
+            pid = int(fields[1])
+        except ValueError as error:
+            raise SmokeFailure(stage, "pane_pid_invalid") from error
+        if pid <= 0:
+            raise SmokeFailure(stage, "pane_pid_invalid")
+        panes.append((fields[0], pid))
+    if len(panes) != 3 or len({pane_id for pane_id, _ in panes}) != 3:
+        raise SmokeFailure(stage, "topology_invalid")
+    return panes
+
+
+def _read_exact_marker_lines(path: Path, expected: list[str], stage: str) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure(stage, "marker_unavailable") from error
+    if lines != expected:
+        raise SmokeFailure(stage, "marker_sequence_invalid")
+
+
+def _read_fixed_transport_observation(artifact_dir: Path) -> dict[str, str]:
+    path = artifact_dir / "ios-ui-transport-loss-observation.txt"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("transport_loss_observation", "observation_unavailable") from error
+    allowed = {
+        "native_terminal_identifier_same",
+        "native_handle_same",
+        "selected_pane_identifier_same",
+        "cached_read_only_surface",
+        "picker_visible_during_loss",
+        "input_during_loss",
+    }
+    if len(lines) != len(allowed):
+        raise SmokeFailure("transport_loss_observation", "observation_invalid")
+    values: dict[str, str] = {}
+    for line in lines:
+        fields = line.split("=", 1)
+        if len(fields) != 2 or fields[0] not in allowed or fields[1] not in {"yes", "no", "none"}:
+            raise SmokeFailure("transport_loss_observation", "observation_invalid")
+        values[fields[0]] = fields[1]
+    if set(values) != allowed or any(
+        values[key] != expected
+        for key, expected in {
+            "native_terminal_identifier_same": "yes",
+            "native_handle_same": "yes",
+            "selected_pane_identifier_same": "yes",
+            "cached_read_only_surface": "yes",
+            "picker_visible_during_loss": "no",
+            "input_during_loss": "none",
+        }.items()
+    ):
+        raise SmokeFailure("transport_loss_observation", "observation_mismatch")
+    return values
+
+
+def validate_transport_loss_markers(
+    artifact_dir: Path,
+    socket_path: Path,
+    marker_path: Path,
+    pre_value: str,
+    post_value: str,
+) -> None:
+    """Validate the exact-once marker pair against one live tmux pane.
+
+    Marker text is intentionally used only in memory. The uploaded artifact
+    records fixed booleans so credentials, host keys, paths, pane ids, shell
+    pids, and terminal output never enter the CI evidence bundle.
+    """
+
+    if socket_path != fixture_socket():
+        raise SmokeFailure("transport_loss_marker", "socket_path_invalid")
+    if not re.fullmatch(r"ios-ssh-loss-pre-[0-9a-f]{16}", pre_value):
+        raise SmokeFailure("transport_loss_marker", "pre_marker_invalid")
+    if not re.fullmatch(r"ios-ssh-loss-post-[0-9a-f]{16}", post_value):
+        raise SmokeFailure("transport_loss_marker", "post_marker_invalid")
+    if not marker_path.is_file():
+        raise SmokeFailure("transport_loss_marker", "marker_unavailable")
+    try:
+        lines = marker_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("transport_loss_marker", "marker_unavailable") from error
+    if len(lines) != 2:
+        raise SmokeFailure("transport_loss_marker", "marker_sequence_invalid")
+    pair_pattern = re.compile(r"(?P<value>ios-ssh-loss-(?:pre|post)-[0-9a-f]{16}):(?P<pane>[0-9]+):(?P<pid>[0-9]+)\Z")
+    matches = [pair_pattern.fullmatch(line) for line in lines]
+    if any(match is None for match in matches):
+        raise SmokeFailure("transport_loss_marker", "marker_sequence_invalid")
+    assert matches[0] is not None and matches[1] is not None
+    pre_match, post_match = matches
+    if pre_match.group("value") != pre_value or post_match.group("value") != post_value:
+        raise SmokeFailure("transport_loss_marker", "marker_sequence_invalid")
+    if pre_match.group("pane") != post_match.group("pane") or pre_match.group("pid") != post_match.group("pid"):
+        raise SmokeFailure("transport_loss_marker", "pane_identity_changed")
+    expected_pane = f"%{pre_match.group('pane')}"
+    expected_pid = int(pre_match.group("pid"))
+    panes = fixture_pane_processes(socket_path, "transport_loss_marker")
+    if (expected_pane, expected_pid) not in panes:
+        raise SmokeFailure("transport_loss_marker", "pane_identity_missing")
+    pre_line = lines[0]
+    post_line = lines[1]
+    for pane_id, _ in panes:
+        if pane_id == expected_pane:
+            continue
+        capture = run_tmux(
+            socket_path,
+            ("capture-pane", "-p", "-J", "-S", "-30", "-t", pane_id),
+            "transport_loss_marker",
+        ).stdout
+        if pre_value in capture or post_value in capture or pre_line in capture or post_line in capture:
+            raise SmokeFailure("transport_loss_marker", "marker_in_other_pane")
+    observation = _read_fixed_transport_observation(artifact_dir)
+    write_text(
+        artifact_dir / TRANSPORT_LOSS_VALIDATION_NAME,
+        "transport_loss=passed\n"
+        "pre_marker_exactly_once=yes\n"
+        "post_marker_exactly_once=yes\n"
+        "same_pane=yes\n"
+        "same_pane_pid=yes\n"
+        "other_panes_clean=yes\n"
+        "fixture_control=stopped_and_started\n"
+        f"native_terminal_identifier_same={observation['native_terminal_identifier_same']}\n"
+        f"native_handle_same={observation['native_handle_same']}\n"
+        f"selected_pane_identifier_same={observation['selected_pane_identifier_same']}\n"
+        f"cached_read_only_surface={observation['cached_read_only_surface']}\n"
+        "input_during_loss=none\n",
+    )
+
+
+def require_transport_loss_stage_sequence(artifact_dir: Path) -> None:
+    expected = (
+        "ssh_transport_loss_pre_marker",
+        "ssh_transport_loss_injected",
+        "ssh_transport_loss_stale_read_only",
+        "ssh_transport_loss_restored",
+        "ssh_transport_loss_authoritative_ready",
+        "ssh_transport_loss_remote_ack",
+    )
+    try:
+        stages = (artifact_dir / "ios-ui-stages.txt").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("transport_loss_stages", "stage_file_unavailable") from error
+    positions: list[int] = []
+    for stage in expected:
+        if stages.count(stage) != 1:
+            raise SmokeFailure("transport_loss_stages", "stage_sequence_invalid")
+        positions.append(stages.index(stage))
+    if positions != sorted(positions):
+        raise SmokeFailure("transport_loss_stages", "stage_sequence_invalid")
+
+
 def write_short_ssh_input_diagnostics(
     artifact_dir: Path, socket_path: Path, marker_path: Path
 ) -> None:
     """Observe only the disposable, post-auth SSH fixture; never publish its text.
 
-    The keyboard prefix, pasted suffix and Return have separate native paths.
-    Echo evidence helps locate a missing command without sending more input or
-    turning a failed marker assertion into a pass. Unexpected clipboard/terminal
-    contents may contain credentials, so the artifact contains only fixed keys,
-    booleans and counts, including on a successful run for comparison.
+    The app is foregrounded again after a real background/foreground cycle
+    before the keyboard prefix, pasted suffix and Return have separate native
+    paths. Echo evidence helps locate a missing command without sending more
+    input or turning a failed marker assertion into a pass. Unexpected
+    clipboard/terminal contents may contain credentials, so the artifact
+    contains only fixed keys, booleans and counts, including on a successful
+    run for comparison.
     """
     stages = (artifact_dir / "ios-ui-stages.txt").read_text().splitlines()
-    input_stages = {"ssh_native_input_paste_tapped", "ssh_native_input_await_remote_marker"}
+    input_stages = {
+        "ssh_native_input_paste_tapped",
+        "ssh_native_input_await_remote_marker",
+        "ssh_resumed_native_input_paste_tapped",
+        "ssh_resumed_native_input_await_remote_marker",
+    }
     if "ssh_connected" not in stages or not input_stages.intersection(stages):
         return
     if socket_path != fixture_socket():
@@ -326,10 +512,13 @@ def write_short_ssh_input_diagnostics(
             "shell_syntax_error": "syntax error" in capture.lower(),
         })
     marker_exists = marker_path.is_file()
-    marker_matches = marker_exists and marker_path.read_text() == marker + "\n"
+    marker_lines = marker_path.read_text(encoding="utf-8").splitlines() if marker_exists else []
+    marker_matches = marker_lines == [marker]
     write_text(artifact_dir / INPUT_DIAGNOSTICS_NAME, json.dumps({
         "marker_file_exists": marker_exists,
         "marker_file_matches": marker_matches,
+        "marker_line_count": len(marker_lines),
+        "marker_exactly_once": marker_matches,
         "panes": evidence,
     }, indent=2) + "\n")
 
@@ -1423,6 +1612,7 @@ def main() -> int:
     ui_stage = "unavailable"
     socket_path: Path | None = None
     marker_path: Path | None = None
+    transport_loss_marker_path: Path | None = None
     validation_filename = {
         "full": "ios-validation.txt",
         "standard": "ios-standard-validation.txt",
@@ -1435,6 +1625,13 @@ def main() -> int:
         (args.artifact_dir / INPUT_DIAGNOSTICS_NAME).unlink(missing_ok=True)
         try:
             (args.artifact_dir / CONNECTION_FAILURE_DIAGNOSTICS_NAME).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        try:
+            (args.artifact_dir / TRANSPORT_LOSS_VALIDATION_NAME).unlink()
+            (args.artifact_dir / "ios-ui-transport-loss-observation.txt").unlink()
         except FileNotFoundError:
             pass
         except OSError:
@@ -1460,6 +1657,19 @@ def main() -> int:
                     else f"ios-ssh-input-{secrets.token_hex(8)}"
                 )
                 os.environ["MEETERM_IOS_MARKER_VALUE"] = marker_value
+                if suite == "ssh":
+                    transport_loss_marker_path = marker_root / (
+                        f"meeterm-ios-transport-loss-{os.getpid()}-{secrets.token_hex(6)}"
+                    )
+                    os.environ["MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH"] = str(
+                        transport_loss_marker_path
+                    )
+                    os.environ["MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE"] = (
+                        f"ios-ssh-loss-pre-{secrets.token_hex(8)}"
+                    )
+                    os.environ["MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE"] = (
+                        f"ios-ssh-loss-post-{secrets.token_hex(8)}"
+                    )
                 if suite == "full":
                     handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
                     os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
@@ -1523,9 +1733,12 @@ def main() -> int:
                 return 0
 
             if suite == "ssh":
-                # The short SSH suite keeps only connection, one native input
-                # acknowledgement, and explicit disconnect. It deliberately
-                # omits full-flow handoff, copy, reconnect, and daily CRUD.
+                # The short SSH suite keeps connection, explicit runtime
+                # selection, healthy same-process foreground recovery, the
+                # deterministic fixture sshd transport-loss branch, resumed
+                # native input acknowledgement, and explicit disconnect. It
+                # deliberately omits full-flow handoff, copy, manual
+                # reconnect, and daily CRUD.
                 run_status = run_xcuitest(
                     derived_data=args.derived_data,
                     simulator_udid=args.simulator_udid,
@@ -1546,6 +1759,17 @@ def main() -> int:
                 marker_lines = marker_path.read_text(encoding="utf-8").splitlines()
                 if marker_lines != [marker_value]:
                     raise SmokeFailure(stage, "marker_sequence_invalid")
+                stage = "transport_loss"
+                if transport_loss_marker_path is None:
+                    raise SmokeFailure(stage, "marker_unavailable")
+                require_transport_loss_stage_sequence(args.artifact_dir)
+                validate_transport_loss_markers(
+                    args.artifact_dir,
+                    socket_path,
+                    transport_loss_marker_path,
+                    required("MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE"),
+                    required("MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE"),
+                )
 
                 write_text(
                     validation_path,
@@ -1705,6 +1929,13 @@ def main() -> int:
                     pass
                 except OSError:
                     pass
+        if transport_loss_marker_path is not None:
+            try:
+                transport_loss_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

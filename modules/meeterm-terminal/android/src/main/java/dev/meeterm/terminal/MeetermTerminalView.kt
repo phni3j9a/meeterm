@@ -61,6 +61,9 @@ class MeetermTerminalView(
   private var terminalId: String = DEFAULT_TERMINAL_ID
   private var inputGeneration = 0L
   @Volatile private var terminalHandle: Long = 0L
+  private var interactionMode = "live"
+  private var lastOperationEpoch: String? = null
+  private val remoteInputControls = mutableListOf<View>()
   private var lastColumns = 0
   private var lastRows = 0
   private var attached = false
@@ -110,6 +113,7 @@ class MeetermTerminalView(
         return
       }
 
+      observeOperationEpoch()
       val revision = MeetermNative.terminalRevision(terminalHandle)
       if (revision != lastTerminalRevision) {
         lastTerminalRevision = revision
@@ -121,13 +125,14 @@ class MeetermTerminalView(
     }
   }
 
-  private val inputSession = InputSession(
+  private var inputSession = createInputSession(null)
+
+  private fun createInputSession(operationEpoch: String?): InputSession = InputSession(
     sink = RustInputSink { terminalHandle },
     onPreeditChanged = { value ->
       editable.replace(0, editable.length, value)
       BaseInputConnection.removeComposingSpans(editable)
       if (value.isNotEmpty()) {
-        clearTerminalSelection()
         // The backing editor contains only the active composition. Reapply
         // composing spans after local deletion/clear callbacks so Android IMEs
         // keep their surrounding-text contract without retaining committed
@@ -140,6 +145,7 @@ class MeetermTerminalView(
     onModifiersChanged = {
       if (::specialKeyRow.isInitialized) syncModifierButtons()
     },
+    operationEpoch = operationEpoch,
   )
 
   private val onNativeReady by EventDispatcher<Map<String, Any>>()
@@ -234,6 +240,8 @@ class MeetermTerminalView(
     terminalId = nextId
     terminalHandle = TerminalRegistry.acquire(nextId, DEFAULT_COLUMNS, DEFAULT_ROWS)
     Log.i(TAG, "bound terminalId=$terminalId handle=$terminalHandle")
+    lastOperationEpoch = readOperationEpoch()
+    inputSession = createInputSession(lastOperationEpoch)
     renderer.attachTerminal(terminalHandle)
     applyNativeSettings(terminalHandle)
     (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.restartInput(this)
@@ -284,6 +292,10 @@ class MeetermTerminalView(
     super.onWindowVisibilityChanged(visibility)
     if (!attached) return
     if (visibility == View.VISIBLE) {
+      // Do not leave the first foreground callback dependent on the 33 ms
+      // render poll. A changed Rust operation epoch invalidates the old IME
+      // session before any newly focused input can reach it.
+      observeOperationEpoch()
       surface.onResume()
       surface.requestRender()
       startRevisionPolling()
@@ -324,6 +336,38 @@ class MeetermTerminalView(
 
   private fun stopRevisionPolling() {
     removeCallbacks(revisionPoll)
+  }
+
+  private fun readOperationEpoch(): String? {
+    val handle = terminalHandle
+    if (handle == 0L) return null
+    return try {
+      MeetermNative.operationEpoch(handle)
+    } catch (_: RuntimeException) {
+      null
+    }
+  }
+
+  private fun observeOperationEpoch() {
+    val epoch = readOperationEpoch()
+    if (epoch == lastOperationEpoch) return
+    lastOperationEpoch = epoch
+    inputGeneration += 1
+    inputSession.cancel()
+    editable.clear()
+    BaseInputConnection.removeComposingSpans(editable)
+    // Replace the session with one carrying the new epoch. The existing
+    // InputConnection remains invalid through inputGeneration and cannot be
+    // revived after recovery.
+    inputSession = createInputSession(epoch)
+    lastColumns = 0
+    lastRows = 0
+    if (attached && hasFocus()) {
+      (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+        ?.restartInput(this)
+    }
+    requestLayout()
+    surface.requestRender()
   }
 
   private fun scheduleSettledFrame() {
@@ -417,7 +461,7 @@ class MeetermTerminalView(
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
     if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-      if (event.y < surface.bottom) {
+      if (!isCachedReadOnly && event.y < surface.bottom) {
         requestFocusFromTouch()
       }
     }
@@ -437,10 +481,12 @@ class MeetermTerminalView(
     }
     val handled = super.dispatchTouchEvent(event)
     if (tapCandidate) {
-      clearTerminalSelection()
-      post {
-        val inputManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        inputManager?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+      if (!isCachedReadOnly) {
+        clearTerminalSelection()
+        post {
+          val inputManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+          inputManager?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        }
       }
       touchInSurface = false
     }
@@ -491,8 +537,10 @@ class MeetermTerminalView(
     touchScrollRemainderPx += y - touchLastY
     val lines = (touchScrollRemainderPx / cellHeight).toInt()
     if (lines == 0) return
+    val operationEpoch = readOperationEpoch()
     val result = try {
-      MeetermNative.scrollLines(handle, lines)
+      if (operationEpoch == null) -1
+      else MeetermNative.scrollLinesAtEpoch(handle, operationEpoch, lines)
     } catch (_: RuntimeException) {
       -1
     }
@@ -503,9 +551,10 @@ class MeetermTerminalView(
   }
 
   /** Handle the Android/IME paste actions without routing clipboard text via JS. */
-  internal fun performContextMenuAction(id: Int): Boolean {
+  internal fun performContextMenuAction(id: Int, session: InputSession? = null): Boolean {
     if (id == android.R.id.copy) return copySelection()
     if (id != android.R.id.paste && id != android.R.id.pasteAsPlainText) return false
+    if (isCachedReadOnly) return false
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
       ?: return false
     val item = clipboard.primaryClip?.getItemAt(0) ?: return false
@@ -513,12 +562,21 @@ class MeetermTerminalView(
     if (text.isEmpty()) return true
     val handle = terminalHandle
     if (handle == 0L) return false
+    val operationEpoch = (session ?: inputSession).capturedOperationEpoch ?: return false
+    if (!OperationEpochGate.matches(operationEpoch, readOperationEpoch())) {
+      observeOperationEpoch()
+      return false
+    }
     val result = try {
-      MeetermNative.paste(handle, text.toByteArray(StandardCharsets.UTF_8))
+      MeetermNative.pasteAtEpoch(
+        handle,
+        operationEpoch,
+        text.toByteArray(StandardCharsets.UTF_8),
+      )
     } catch (_: RuntimeException) {
       -1
     }
-    if (result < 0) return false
+    if (result <= 0) return false
     clearTerminalSelection()
     inputSession.clearComposition()
     editable.clear()
@@ -552,6 +610,7 @@ class MeetermTerminalView(
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (isCachedReadOnly) return super.dispatchKeyEvent(event)
     val handled = inputSession.handleKeyEvent(
       event.action,
       event.keyCode,
@@ -574,21 +633,23 @@ class MeetermTerminalView(
     outAttrs.initialSelEnd = 0
 
     val generation = inputGeneration
+    val session = createInputSession(readOperationEpoch())
+    inputSession = session
     return object : BaseInputConnection(this@MeetermTerminalView, true) {
       override fun getEditable(): Editable = this@MeetermTerminalView.editable
 
       override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-        if (generation != inputGeneration) return false
+        if (!isCurrentInputSession(generation, session)) return false
         val result = super.setComposingText(text ?: "", newCursorPosition)
-        inputSession.setComposingText(text)
+        session.setComposingText(text)
         surface.requestRender()
         return result
       }
 
       override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-        if (generation != inputGeneration) return false
+        if (!isCurrentInputSession(generation, session)) return false
         val editorResult = super.commitText(text ?: "", newCursorPosition)
-        val result = inputSession.commitText(text)
+        val result = session.commitText(text)
         if (editorResult) {
           editable.clear()
           BaseInputConnection.removeComposingSpans(editable)
@@ -598,8 +659,8 @@ class MeetermTerminalView(
       }
 
       override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        if (generation != inputGeneration) return false
-        val result = inputSession.deleteSurroundingText(beforeLength, afterLength)
+        if (!isCurrentInputSession(generation, session)) return false
+        val result = session.deleteSurroundingText(beforeLength, afterLength)
         if (result) surface.requestRender()
         return result
       }
@@ -609,8 +670,8 @@ class MeetermTerminalView(
       }
 
       override fun sendKeyEvent(event: KeyEvent): Boolean {
-        if (generation != inputGeneration) return false
-        val result = inputSession.handleKeyEvent(
+        if (!isCurrentInputSession(generation, session)) return false
+        val result = session.handleKeyEvent(
           event.action,
           event.keyCode,
           event.unicodeChar,
@@ -623,9 +684,9 @@ class MeetermTerminalView(
       override fun setComposingRegion(start: Int, end: Int): Boolean = true
 
       override fun finishComposingText(): Boolean {
-        if (generation != inputGeneration) return false
+        if (!isCurrentInputSession(generation, session)) return false
         val editorResult = super.finishComposingText()
-        val result = inputSession.finishComposingText()
+        val result = session.finishComposingText()
         if (editorResult) {
           editable.clear()
           BaseInputConnection.removeComposingSpans(editable)
@@ -635,10 +696,27 @@ class MeetermTerminalView(
       }
 
       override fun performContextMenuAction(id: Int): Boolean {
-        if (generation != inputGeneration) return false
-        return this@MeetermTerminalView.performContextMenuAction(id)
+        if (id == android.R.id.copy) {
+          return this@MeetermTerminalView.performContextMenuAction(id)
+        }
+        if (!isCurrentInputSession(generation, session)) return false
+        return this@MeetermTerminalView.performContextMenuAction(id, session)
       }
     }
+  }
+
+  private fun isCurrentInputSession(generation: Long, session: InputSession): Boolean {
+    if (isCachedReadOnly || generation != inputGeneration) return false
+    val capturedEpoch = session.capturedOperationEpoch ?: return false
+    val currentEpoch = readOperationEpoch()
+    if (!OperationEpochGate.matches(capturedEpoch, currentEpoch) && currentEpoch != lastOperationEpoch) {
+      // The render loop normally observes this edge. A callback can arrive in
+      // the small interval before the next frame, so invalidate synchronously
+      // without ever invoking the stale session.
+      observeOperationEpoch()
+      return false
+    }
+    return OperationEpochGate.matches(capturedEpoch, currentEpoch)
   }
 
   private fun reconcileResize(width: Int, height: Int) {
@@ -651,7 +729,9 @@ class MeetermTerminalView(
     val rows = max(1, height / cellHeight)
     if (columns == lastColumns && rows == lastRows) return
 
-    if (MeetermNative.resize(handle, columns, rows) == 0) {
+    if (isCachedReadOnly) return
+    val operationEpoch = readOperationEpoch() ?: return
+    if (MeetermNative.resizeAtEpoch(handle, operationEpoch, columns, rows) == 0) {
       lastColumns = columns
       lastRows = rows
       emitMetrics(columns, rows, cellWidth, cellHeight)
@@ -723,9 +803,11 @@ class MeetermTerminalView(
       isClickable = true
       isFocusable = true
       setOnClickListener {
+        if (isCachedReadOnly) return@setOnClickListener
         this@MeetermTerminalView.requestFocusFromTouch()
         inputSession.toggleModifier(modifier)
       }
+      remoteInputControls += this
     }
 
   private fun createSpecialKeyRow(context: Context): LinearLayout {
@@ -779,9 +861,11 @@ class MeetermTerminalView(
         isFocusable = true
         contentDescription = if (key == TerminalSpecialKey.Interrupt) "Ctrl-C" else label
         setOnClickListener {
+          if (isCachedReadOnly) return@setOnClickListener
           this@MeetermTerminalView.requestFocusFromTouch()
           if (inputSession.sendSpecial(key)) surface.requestRender()
         }
+        remoteInputControls += this
       }
       keys.addView(button, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
         marginStart = dp(1)
@@ -809,10 +893,12 @@ class MeetermTerminalView(
       isFocusable = true
       contentDescription = "Paste"
       setOnClickListener {
+        if (isCachedReadOnly) return@setOnClickListener
         this@MeetermTerminalView.requestFocusFromTouch()
         performContextMenuAction(android.R.id.paste)
       }
     }
+    remoteInputControls += pasteButton
     row.addView(pasteButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
@@ -832,7 +918,9 @@ class MeetermTerminalView(
       isFocusable = true
       contentDescription = "Copy selection"
       setOnClickListener {
-        this@MeetermTerminalView.requestFocusFromTouch()
+        if (!isCachedReadOnly) {
+          this@MeetermTerminalView.requestFocusFromTouch()
+        }
         copySelection()
       }
     }
@@ -858,6 +946,55 @@ class MeetermTerminalView(
     applyThemeColors()
     applyNativeSettings(terminalHandle)
     surface.requestRender()
+  }
+
+  /** Keep the native binding and cached surface while gating remote input. */
+  fun setInteractionMode(value: String) {
+    val nextMode = if (value == "cachedReadOnly") "cachedReadOnly" else "live"
+    if (nextMode == interactionMode) {
+      if (nextMode == "live") observeOperationEpoch()
+      updateInteractionAccessibility()
+      return
+    }
+    interactionMode = nextMode
+    inputGeneration += 1
+    inputSession.cancel()
+    editable.clear()
+    BaseInputConnection.removeComposingSpans(editable)
+    // A live transition only prepares a fresh epoch-bound session. It does not
+    // request focus or show the keyboard.
+    val operationEpoch = if (nextMode == "live") readOperationEpoch() else null
+    lastOperationEpoch = operationEpoch
+    inputSession = createInputSession(operationEpoch)
+    lastColumns = 0
+    lastRows = 0
+    if (nextMode == "cachedReadOnly") {
+      (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+        ?.hideSoftInputFromWindow(windowToken, 0)
+      clearFocus()
+      surface.contentDescription = "Terminal, cached output, read only"
+    } else {
+      surface.contentDescription = "Terminal"
+    }
+    updateInteractionAccessibility()
+    requestLayout()
+    surface.requestRender()
+  }
+
+  private val isCachedReadOnly: Boolean
+    get() = interactionMode == "cachedReadOnly"
+
+  private fun updateInteractionAccessibility() {
+    val enabled = !isCachedReadOnly
+    remoteInputControls.forEach { control ->
+      control.isEnabled = enabled
+      control.isFocusable = enabled
+      control.importantForAccessibility = if (enabled) {
+        View.IMPORTANT_FOR_ACCESSIBILITY_YES
+      } else {
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO
+      }
+    }
   }
 
   fun setScrollbackLines(value: Int) {
@@ -906,11 +1043,16 @@ class MeetermTerminalView(
   private fun releaseBinding() {
     inputGeneration += 1
     inputSession.cancel()
+    inputSession = createInputSession(null)
     editable.clear()
-    if (terminalHandle == 0L) return
+    if (terminalHandle == 0L) {
+      lastOperationEpoch = null
+      return
+    }
     clearTerminalSelection()
     TerminalRegistry.release(terminalId, terminalHandle)
     terminalHandle = 0L
+    lastOperationEpoch = null
     lastTerminalRevision = -1L
     lastColumns = 0
     lastRows = 0

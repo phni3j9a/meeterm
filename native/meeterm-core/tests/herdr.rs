@@ -23,8 +23,9 @@ use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
     close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
     create_pane, create_terminal, create_workspace, destroy_terminal, disconnect_terminal,
-    meeterm_commit_utf8, meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key,
-    meeterm_scroll_lines, meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
+    meeterm_commit_utf8, meeterm_confirm_recovery, meeterm_operation_epoch, meeterm_paste_utf8,
+    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_scroll_lines,
+    meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
     meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
     runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
     set_foreground, terminal_revision, workspace_snapshot_json,
@@ -1133,6 +1134,66 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
+fn wait_recovery_confirmation(id: u64, label: &str) -> (Value, String) {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let state = connection_snapshot(id).expect("connection snapshot");
+        let value: Value =
+            serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
+                .expect("workspace snapshot JSON");
+        if value["control"]["recovery"]["phase"] == "awaitingConfirmation" {
+            let token = value["control"]["recovery"]["confirmationToken"]
+                .as_str()
+                .expect("recovery confirmation token")
+                .to_owned();
+            assert!(!token.is_empty(), "{label} published an empty token");
+            assert_eq!(value["control"]["runtimeOperationsReady"], false);
+            assert_eq!(value["control"]["terminalInputReady"], false);
+            return (value, token);
+        }
+        if state.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: {} {}",
+                field(&state.error_code, state.error_code_len),
+                field(&state.error_message, state.error_message_len)
+            );
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn confirm_recovery(id: u64, token: &str, label: &str) {
+    let result = unsafe { meeterm_confirm_recovery(id, token.as_ptr(), token.len()) };
+    assert_eq!(result, 0, "{label} recovery confirmation");
+}
+
+fn wait_recovery_ready(id: u64, label: &str) -> Value {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let state = connection_snapshot(id).expect("connection snapshot");
+        let value: Value =
+            serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
+                .expect("workspace snapshot JSON");
+        if value["control"]["recovery"]["phase"] == "none"
+            && value["control"]["runtimeOperationsReady"] == true
+            && value["control"]["terminalInputReady"] == true
+            && state.state == ConnectionState::Ready as u32
+        {
+            return value;
+        }
+        if state.state == ConnectionState::Failed as u32 {
+            panic!(
+                "{label} failed: {} {}",
+                field(&state.error_code, state.error_code_len),
+                field(&state.error_message, state.error_message_len)
+            );
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn common_agent_status<'a>(value: &'a Value, collection: &str, id: u64) -> Option<&'a str> {
     value[collection]
         .as_array()?
@@ -2069,33 +2130,133 @@ fn real_herdr_native_backend_over_russh_fixture() {
     let sticky = "export MEETERM_NATIVE_STICKY=6F19; printf '%s%s\\n' 'STICKY_' 'SET'\n";
     assert!(unsafe { meeterm_commit_utf8(root.terminal_id, sticky.as_ptr(), sticky.len()) } > 0);
     wait_text(root.terminal_id, "STICKY_SET", "remote shell variable set");
-    set_foreground(default_id, false).expect("background Herdr connection");
-    wait_state(
-        default_id,
-        ConnectionState::Reconnecting,
-        "Herdr background suspension",
+
+    let before_background_json: Value =
+        serde_json::from_str(&workspace_snapshot_json(default_id).unwrap()).unwrap();
+    let before_background_epoch = before_background_json["control"]["operationEpoch"]
+        .as_str()
+        .expect("healthy Herdr operation epoch")
+        .to_owned();
+    let before_background_selected_terminal = before_background_json["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["selected"] == true)
+        .expect("selected terminal before Herdr background")["terminalId"]
+        .as_str()
+        .expect("selected terminal ID before Herdr background")
+        .to_owned();
+    let before_background_terminal_epoch = meeterm_operation_epoch(root.terminal_id);
+    assert_eq!(
+        connection_snapshot(default_id).unwrap().state,
+        ConnectionState::Ready as u32,
+        "healthy Herdr controller is ready before backgrounding"
     );
+    set_foreground(default_id, false).expect("background Herdr connection");
+    let background_state = connection_snapshot(default_id).expect("background Herdr state");
+    assert_eq!(
+        background_state.state,
+        ConnectionState::Ready as u32,
+        "backgrounding a healthy Herdr controller keeps Ready"
+    );
+    let background_terminal_epoch = meeterm_operation_epoch(root.terminal_id);
+    assert!(
+        background_terminal_epoch > before_background_terminal_epoch,
+        "backgrounding suspends the native terminal operation boundary"
+    );
+    let background_json: Value =
+        serde_json::from_str(&workspace_snapshot_json(default_id).unwrap()).unwrap();
+    assert_eq!(background_json["control"]["recovery"]["phase"], "none");
+    assert_eq!(
+        background_json["control"]["recovery"]["confirmationToken"], "",
+        "healthy background must not publish a recovery confirmation"
+    );
+    assert_eq!(background_json["control"]["runtimeOperationsReady"], true);
+    assert_eq!(background_json["control"]["terminalInputReady"], false);
+    assert_eq!(
+        background_json["control"]["operationEpoch"].as_str(),
+        Some(before_background_epoch.as_str())
+    );
+    assert_eq!(
+        background_json["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["selected"] == true)
+            .expect("selected terminal during Herdr background")["terminalId"]
+            .as_str(),
+        Some(before_background_selected_terminal.as_str())
+    );
+    // Native suspending is synchronous, so none of the four public operations
+    // below can be accepted before the foreground wake is processed.
     let rejected = "must-not-send";
     assert_eq!(
         unsafe { meeterm_commit_utf8(root.terminal_id, rejected.as_ptr(), rejected.len()) },
-        0
+        0,
+        "hidden healthy Herdr terminal rejects input"
+    );
+    let rejected_paste = "must-not-paste";
+    assert!(
+        unsafe {
+            meeterm_paste_utf8(
+                root.terminal_id,
+                rejected_paste.as_ptr(),
+                rejected_paste.len(),
+            )
+        } < 0,
+        "hidden healthy Herdr terminal rejects paste synchronously"
+    );
+    assert!(
+        meeterm_send_special_key(root.terminal_id, SpecialKey::Up as u32) < 0,
+        "hidden healthy Herdr terminal rejects special keys synchronously"
+    );
+    assert!(
+        meeterm_resize_terminal(root.terminal_id, 53, 21) < 0,
+        "hidden healthy Herdr terminal rejects resize synchronously"
     );
     let before_foreground_terminal = root.terminal_id;
     set_foreground(default_id, true).expect("foreground Herdr connection");
-    select_herdr_runtime_from_picker(
-        default_id,
-        "default",
-        "Herdr foreground reconnect requires explicit reselection",
+    let foreground_json = wait_json(default_id, "Herdr healthy foreground", |value| {
+        let state = connection_snapshot(default_id).expect("foreground Herdr state");
+        state.state == ConnectionState::Ready as u32
+            && value["control"]["recovery"]["phase"] == "none"
+            && value["control"]["runtimeOperationsReady"] == true
+            && value["control"]["terminalInputReady"] == true
+    });
+    assert_eq!(
+        foreground_json["control"]["operationEpoch"].as_str(),
+        Some(before_background_epoch.as_str())
+    );
+    assert_eq!(
+        foreground_json["control"]["recovery"]["confirmationToken"], "",
+        "healthy foreground must not require recovery confirmation"
+    );
+    assert_eq!(
+        foreground_json["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|terminal| terminal["selected"] == true)
+            .expect("selected terminal after healthy Herdr foreground")["terminalId"]
+            .as_str(),
+        Some(before_background_selected_terminal.as_str())
+    );
+    assert!(
+        meeterm_operation_epoch(root.terminal_id) > background_terminal_epoch,
+        "the Herdr actor wake rearms the native terminal operation boundary"
     );
     let foreground_session = wait_session(default_id, "Herdr foreground hierarchy");
     let root = foreground_session
         .panes
         .iter()
         .find(|pane| pane.selected)
-        .expect("selected pane after foreground reselection")
+        .expect("selected pane after foreground recovery")
         .clone();
-    assert_ne!(root.terminal_id, before_foreground_terminal);
-    wait_text(root.terminal_id, "STICKY_SET", "fresh foreground frame");
+    assert_eq!(
+        root.terminal_id, before_foreground_terminal,
+        "healthy foreground return preserves the native terminal identity"
+    );
+    wait_text(root.terminal_id, "STICKY_SET", "retained foreground frame");
     commit_marker(
         root.terminal_id,
         "HERDR_FOREGROUND_OK_7E24",
@@ -2108,24 +2269,26 @@ fn real_herdr_native_backend_over_russh_fixture() {
         ConnectionState::Reconnecting,
         "server-side SSH connection loss",
     );
-    select_herdr_runtime_from_picker(
-        default_id,
-        "default",
-        "Herdr SSH recovery requires explicit reselection",
-    );
+    let (_, transport_token) =
+        wait_recovery_confirmation(default_id, "Herdr transport recovery confirmation");
+    confirm_recovery(default_id, &transport_token, "Herdr transport recovery");
+    let _transport_json = wait_recovery_ready(default_id, "Herdr transport recovery");
     let transport_session = wait_session(default_id, "Herdr transport recovery hierarchy");
     let previous_transport_terminal = root.terminal_id;
     let root = transport_session
         .panes
         .iter()
         .find(|pane| pane.selected)
-        .expect("selected pane after transport recovery reselection")
+        .expect("selected pane after transport recovery")
         .clone();
-    assert_ne!(root.terminal_id, previous_transport_terminal);
+    assert_eq!(
+        root.terminal_id, previous_transport_terminal,
+        "confirmed Herdr recovery preserves the native terminal identity"
+    );
     commit_marker(
         root.terminal_id,
         "HERDR_TRANSPORT_RECOVERED_32C4",
-        "explicitly reselected transport recovery input",
+        "confirmed transport recovery input",
     );
 
     // A new connection owner has no old registry state, as after app process

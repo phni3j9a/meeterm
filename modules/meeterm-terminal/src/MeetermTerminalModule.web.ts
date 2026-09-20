@@ -1,4 +1,5 @@
 import { registerWebModule, NativeModule } from 'expo';
+import { DEFAULT_WORKSPACE_CONTROL } from './MeetermTerminal.types';
 
 import type {
   SavedCredential,
@@ -7,6 +8,7 @@ import type {
   SshConnectionState,
   TerminalPreferences,
   TmuxSessionState,
+  WorkspaceState,
   RuntimeBackend,
   RuntimeDiscovery,
 } from './MeetermTerminal.types';
@@ -70,6 +72,33 @@ class MeetermTerminalModule extends NativeModule<{}> {
       errorCode: '',
       errorMessage: '',
     };
+  }
+
+  async getWorkspaceState(_terminalId: string): Promise<WorkspaceState> {
+    return {
+      backend: 'tmux',
+      runtime: '',
+      groupsSupported: false,
+      workspaces: [],
+      groups: [],
+      terminals: [],
+      control: {
+        ...DEFAULT_WORKSPACE_CONTROL,
+        recovery: { ...DEFAULT_WORKSPACE_CONTROL.recovery },
+      },
+    };
+  }
+
+  async retryRecovery(_terminalId: string, _operationEpoch: string): Promise<void> {
+    throw new Error(WEB_UNAVAILABLE);
+  }
+
+  async confirmRecovery(_terminalId: string, _confirmationToken: string): Promise<void> {
+    throw new Error(WEB_UNAVAILABLE);
+  }
+
+  async changeRuntime(_terminalId: string, _operationEpoch: string): Promise<void> {
+    throw new Error(WEB_UNAVAILABLE);
   }
 
   async getRuntimeDiscovery(_connectionId: string): Promise<RuntimeDiscovery> { throw new Error(WEB_UNAVAILABLE); }

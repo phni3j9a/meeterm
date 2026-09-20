@@ -47,14 +47,18 @@ automatic fallback to tmux are outside this issue.
 For tmux, the selected session's `$N`, server PID, and server start time are
 verified again after Control Mode attach on that same stream and before
 synchronization or input readiness. A changed, malformed, or uncertain epoch
-is treated as a missing runtime and returns to the picker.
+is treated as a missing runtime and stops on the retained read-only work screen.
 
-Automatic transport reconnect may reuse the selected `(backend, runtime)` only
-after identity and compatibility verification. A missing, restarted,
-same-name-replaced, incompatible, or uncertain runtime returns to the picker.
-Because Herdr 0.9.0 has no comparable public server-instance identity, every
-Herdr transport recovery is uncertain and waits for explicit picker selection;
-tmux can resume directly only after its server epoch is verified.
+Same-process transport recovery may reuse the selected `(backend, runtime)` only
+after identity, selected-terminal, topology, authoritative-frame, and
+compatibility verification. A missing, restarted, same-name-replaced,
+incompatible, or uncertain target keeps the cached work visible and stops
+fail-closed with Retry/Change actions. Because Herdr 0.9.0 has no comparable
+public server-instance identity, every Herdr continuity loss requires explicit
+confirmation inside that retained work screen before a fresh candidate/stable
+terminal/full frame can be accepted; tmux can resume directly only after its
+server epoch and original pane are verified. Fresh/cold/manual selection still
+uses the picker.
 Switching server/runtime releases the current controller before acquiring the
 next one, keeps one selected runtime actor per host connection, and leaves the
 remote runtime/process alive. Before linked/shared tmux workspace close or a
@@ -174,13 +178,15 @@ workspace close and final-pane close. Mobile validation remains Android full
 and iOS `standard` plus the short `ssh` suite for connection changes. Picker
 loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
 selection/create transitions are covered by focused app/native tests. The fixed
-source-level visual manifests add mixed picker, partial-error, empty, and
-explicit-create routes. The iOS `standard` manifest has 18 screens: the previous 14 plus
-`runtime-picker`, `runtime-partial-error`, `runtime-empty`, and `runtime-create`.
+source-level visual manifests include the picker routes plus retained-work
+recovery progress, exhaustion, mismatch, and Herdr confirmation. The iOS
+`standard` manifest has 22 screens: the Issue #21 set of 18 plus
+`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
+`herdr-recovery-confirm`.
 The existing `herdr-connection` route is the picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` has 25 routes: the previous 21 plus those same four runtime
-routes. These counts describe source scope only; Main must still record actual
+`SCREEN_NAMES` has 29 routes: the Issue #21 set of 25 plus those same four
+recovery routes. These counts describe source scope only; Main must still record actual
 CI results and downloaded, viewed screenshots before visual success is reported.
 
 ### Accepted candidate under the revised policy

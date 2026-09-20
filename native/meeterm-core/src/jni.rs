@@ -30,6 +30,12 @@ fn string_from_java(env: &Env<'_>, value: &JString<'_>) -> Result<String, JniErr
     value.try_to_string(env)
 }
 
+fn operation_epoch_from_java(env: &Env<'_>, value: &JString<'_>) -> Result<u64, JniError> {
+    let value = string_from_java(env, value)?;
+    crate::ffi::parse_decimal_u64(&value)
+        .ok_or_else(|| JniError::ParseFailed("operation epoch is not a decimal u64".into()))
+}
+
 fn snapshot_string(bytes: &[u8], length: u16) -> String {
     let length = usize::from(length).min(bytes.len());
     String::from_utf8_lossy(&bytes[..length]).into_owned()
@@ -41,6 +47,13 @@ fn code_from_outcome(outcome: jni::EnvOutcome<'_, jint, JniError>) -> jint {
         // Control-plane methods use a sentinel instead of allowing malformed
         // Java arguments or a caught panic to escape as a RuntimeException.
         Outcome::Err(_) | Outcome::Panic(_) => -1,
+    }
+}
+
+fn count_from_outcome(outcome: jni::EnvOutcome<'_, jlong, JniError>) -> jlong {
+    match outcome.into_outcome() {
+        Outcome::Ok(count) => count,
+        Outcome::Err(_) | Outcome::Panic(_) => 0,
     }
 }
 
@@ -922,4 +935,307 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_terminalRevision(
         .ok()
         .and_then(|revision| jlong::try_from(revision).ok())
         .unwrap_or(0)
+}
+
+/// Return the current nonzero per-terminal operation epoch as a decimal
+/// string. JavaScript never receives this value and no Long/Double conversion
+/// is used at the Android boundary.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_operationEpoch<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JString::default();
+    };
+    let outcome = unowned_env
+        .with_env(|env| {
+            let epoch = crate::ffi::meeterm_operation_epoch(handle);
+            if epoch == 0 {
+                Ok(JString::default())
+            } else {
+                env.new_string(epoch.to_string())
+            }
+        })
+        .into_outcome();
+    match outcome {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
+}
+
+/// Resize only for the decimal operation epoch captured by the native view.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_resizeAtEpoch(
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    operation_epoch: JString<'_>,
+    columns: jint,
+    rows: jint,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    let Some((columns, rows)) = dimensions_from_jint(columns, rows) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        Ok(crate::ffi::meeterm_resize_terminal_at_epoch(
+            handle,
+            operation_epoch,
+            columns,
+            rows,
+        ))
+    }))
+}
+
+/// Commit UTF-8 only for the operation epoch captured by this input session.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_commitAtEpoch<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    operation_epoch: JString<'caller>,
+    bytes: JByteArray<'caller>,
+) -> jlong {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return 0;
+    };
+    count_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        let bytes = env.convert_byte_array(&bytes)?;
+        // SAFETY: the Java byte array is copied before the FFI call returns.
+        let count = unsafe {
+            crate::ffi::meeterm_commit_utf8_at_epoch(
+                handle,
+                operation_epoch,
+                bytes.as_ptr(),
+                bytes.len(),
+            )
+        };
+        // The Rust ABI returns u64 while Java's jlong is signed i64. Keep the
+        // conversion checked and preserve the zero sentinel on overflow.
+        Ok(jlong::try_from(count).unwrap_or(0))
+    }))
+}
+
+/// Paste UTF-8 only for the operation epoch captured before an async/native
+/// paste operation completed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_pasteAtEpoch<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    operation_epoch: JString<'caller>,
+    bytes: JByteArray<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        let bytes = env.convert_byte_array(&bytes)?;
+        // SAFETY: the Java byte array is copied before the FFI call returns.
+        Ok(unsafe {
+            crate::ffi::meeterm_paste_utf8_at_epoch(
+                handle,
+                operation_epoch,
+                bytes.as_ptr(),
+                bytes.len(),
+            )
+        })
+    }))
+}
+
+/// Scroll using the operation epoch captured by the native view/input loop.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_scrollLinesAtEpoch(
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    operation_epoch: JString<'_>,
+    lines: jint,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        Ok(crate::ffi::meeterm_scroll_lines_at_epoch(
+            handle,
+            operation_epoch,
+            lines,
+        ))
+    }))
+}
+
+/// Send a special key only for the operation epoch captured by the native
+/// input session.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sendSpecialAtEpoch(
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    operation_epoch: JString<'_>,
+    key: jint,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    let Ok(key) = u32::try_from(key) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        Ok(crate::ffi::meeterm_send_special_key_at_epoch(
+            handle,
+            operation_epoch,
+            key,
+        ))
+    }))
+}
+
+/// Send a modified key only for the operation epoch captured by the native
+/// input session.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sendKeyAtEpoch(
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    operation_epoch: JString<'_>,
+    key: jint,
+    modifiers: jint,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    let (Ok(key), Ok(modifiers)) = (u32::try_from(key), u32::try_from(modifiers)) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        Ok(crate::ffi::meeterm_send_key_at_epoch(
+            handle,
+            operation_epoch,
+            key,
+            modifiers,
+        ))
+    }))
+}
+
+/// Commit modified UTF-8 only for the operation epoch captured by the native
+/// input session.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_commitModifiedAtEpoch<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    operation_epoch: JString<'caller>,
+    bytes: JByteArray<'caller>,
+    modifiers: jint,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    let Ok(modifiers) = u32::try_from(modifiers) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        let bytes = env.convert_byte_array(&bytes)?;
+        // SAFETY: the Java byte array is copied before the FFI call returns.
+        Ok(unsafe {
+            crate::ffi::meeterm_commit_modified_utf8_at_epoch(
+                handle,
+                operation_epoch,
+                bytes.as_ptr(),
+                bytes.len(),
+                modifiers,
+            )
+        })
+    }))
+}
+
+/// Send raw native bytes only for the operation epoch captured by the native
+/// terminal session.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sendBytesAtEpoch<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    operation_epoch: JString<'caller>,
+    bytes: JByteArray<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        let bytes = env.convert_byte_array(&bytes)?;
+        // SAFETY: the Java byte array is copied before the FFI call returns.
+        Ok(unsafe {
+            crate::ffi::meeterm_send_bytes_at_epoch(
+                handle,
+                operation_epoch,
+                bytes.as_ptr(),
+                bytes.len(),
+            )
+        })
+    }))
+}
+
+/// Retry retained recovery using the lossless decimal epoch supplied by the
+/// Expo module.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_retryRecovery(
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    operation_epoch: JString<'_>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        Ok(crate::ffi::meeterm_retry_recovery(handle, operation_epoch))
+    }))
+}
+
+/// Confirm retained recovery with a bounded, control-free token.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_confirmRecovery<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    token: JString<'caller>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let token = string_from_java(env, &token)?;
+        Ok(unsafe { crate::ffi::meeterm_confirm_recovery(handle, token.as_ptr(), token.len()) })
+    }))
+}
+
+/// Change the selected runtime using the lossless decimal epoch supplied by
+/// the Expo module.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_changeRuntime(
+    mut unowned_env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    operation_epoch: JString<'_>,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return -1;
+    };
+    code_from_outcome(unowned_env.with_env(|env| {
+        let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
+        Ok(crate::ffi::meeterm_change_runtime(handle, operation_epoch))
+    }))
 }

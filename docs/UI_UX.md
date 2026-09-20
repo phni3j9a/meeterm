@@ -59,6 +59,14 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 - Connection progress, empty results, empty workspaces, lost connections,
   authentication problems, and host-key changes use English copy. Host-key
   verification and destructive remote actions remain explicit.
+- After Ready, a temporary loss keeps the same native terminal surface visible
+  as cached read-only output. A compact recovery rail sits between pane chrome
+  and the terminal without dimming or covering cells. Progress is non-modal;
+  retry exhaustion and fail-closed identity errors expose Retry and Change
+  actions in place. Herdr continuity confirmation opens only after an explicit
+  Review action and never implies takeover, compatibility override, or tmux
+  fallback. Fresh/cold connection discovery continues to use the runtime
+  picker.
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
 
@@ -221,12 +229,12 @@ new fixed input diagnostics; local revalidation identified Metal without
 overwriting their artifacts. The complete sequence is retained in
 [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The current iOS `standard` source-level manifest has 18 screens: the previous
-14 plus `runtime-picker`, `runtime-partial-error`, `runtime-empty`, and
-`runtime-create`. The existing `herdr-connection` route is now the picker state
-whose Herdr `default` candidate carries the non-authoritative `Last used` hint.
-Android's observational `SCREEN_NAMES` has 25 routes: the previous 21 plus
-those same four runtime routes. These counts describe source scope only; the
+The current iOS `standard` source-level manifest has 22 screens: the previous
+18 plus `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
+`herdr-recovery-confirm`. The existing `herdr-connection` route remains the
+picker state whose Herdr `default` candidate carries the non-authoritative
+`Last used` hint. Android's observational `SCREEN_NAMES` has 29 routes: the
+previous 25 plus those same four recovery routes. These counts describe source scope only; the
 historical run table above remains historical and does not establish new remote
 CI or visual-review results. The seven extra states and navigation belong to
 the separate `polish` diagnostic with independent completion markers and the

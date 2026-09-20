@@ -151,6 +151,122 @@ final class TerminalInputViewTests: XCTestCase {
     if !recordedIssue { appendValidation("case=unmount result=passed") }
   }
 
+  @MainActor func testAsyncPasteCarriesStartEpochAndDropsAfterEpochChange() async {
+    var epoch: UInt64 = 41
+    var delivered: [(String, UInt64)] = []
+    inputView.operationEpochProvider = { epoch }
+    inputView.onPasteAtEpoch = { value, capturedEpoch in
+      delivered.append((value, capturedEpoch))
+    }
+
+    // Reacquire the native responder after installing the provider so this
+    // operation captures a deterministic start epoch.
+    inputView.cancelCompositionForBinding()
+    XCTAssertTrue(inputView.becomeFirstResponder())
+    let acceptedProvider = DelayedTextProvider(testCase: self)
+    inputView.paste(itemProviders: [acceptedProvider])
+    await fulfillment(of: [acceptedProvider.loadStarted], timeout: 2)
+    acceptedProvider.finish(with: "accepted")
+    await drainMainRunLoop()
+
+    XCTAssertEqual(delivered.map { $0.1 }, [41])
+    XCTAssertEqual(delivered.map { $0.0 }, ["accepted"])
+
+    // The next provider started at 41 is invalidated by the native epoch
+    // change. Its completion must not be delivered after reacquire.
+    inputView.cancelCompositionForBinding()
+    XCTAssertTrue(inputView.becomeFirstResponder())
+    let staleProvider = DelayedTextProvider(testCase: self)
+    inputView.paste(itemProviders: [staleProvider])
+    await fulfillment(of: [staleProvider.loadStarted], timeout: 2)
+    epoch = 42
+    inputView.operationEpochDidChange(epoch)
+    staleProvider.finish(with: "stale")
+    await drainMainRunLoop()
+
+    XCTAssertEqual(delivered.map { $0.0 }, ["accepted"])
+    if !recordedIssue { appendValidation("case=async_paste_epoch result=passed") }
+  }
+
+  @MainActor func testCachedReadOnlyCancelsInputButPreservesBindingAndCopy() {
+    var commitCount = 0
+    var copyCount = 0
+    var preeditValues: [String] = []
+    inputView.onCommit = { _ in commitCount += 1 }
+    inputView.onPreeditChanged = { preeditValues.append($0) }
+    inputView.hasTerminalSelection = { true }
+    inputView.onCopySelection = { copyCount += 1 }
+    guard let accessory = inputView.inputAccessoryView else {
+      XCTFail("The native input accessory is missing.")
+      return
+    }
+
+    inputView.setMarkedText("入力中", selectedRange: NSRange(location: 3, length: 0))
+    XCTAssertEqual(preeditValues.last, "入力中")
+    inputView.setInteractionMode("cachedReadOnly")
+
+    XCTAssertFalse(inputView.isFirstResponder)
+    XCTAssertEqual(preeditValues.last, "")
+    XCTAssertTrue(inputView.keyCommands?.isEmpty == true)
+    inputView.insertText("must not commit")
+    inputView.paste(itemProviders: [plainTextProvider("must not paste")])
+    inputView.copy(nil)
+    XCTAssertEqual(commitCount, 0)
+    XCTAssertEqual(copyCount, 1)
+    XCTAssertTrue(inputView.superview === hostViewController.view)
+    XCTAssertTrue(inputView.inputAccessoryView === accessory)
+    if !recordedIssue { appendValidation("case=cached_read_only result=passed") }
+  }
+
+  @MainActor func testReturningLiveDoesNotAutoFocusAndUsesFreshEpoch() {
+    var epoch: UInt64 = 51
+    var received: [(String, UInt64)] = []
+    inputView.operationEpochProvider = { epoch }
+    inputView.onCommitAtEpoch = { value, capturedEpoch in
+      received.append((value, capturedEpoch))
+    }
+
+    inputView.cancelCompositionForBinding()
+    inputView.setInteractionMode("cachedReadOnly")
+    XCTAssertFalse(inputView.isFirstResponder)
+    inputView.setInteractionMode("live")
+    // Returning to live prepares the next session but does not show the IME.
+    XCTAssertFalse(inputView.isFirstResponder)
+
+    XCTAssertTrue(inputView.becomeFirstResponder())
+    inputView.insertText("first")
+    XCTAssertEqual(received.map { $0.1 }, [51])
+
+    inputView.setInteractionMode("cachedReadOnly")
+    epoch = 52
+    inputView.setInteractionMode("live")
+    XCTAssertFalse(inputView.isFirstResponder)
+    XCTAssertTrue(inputView.becomeFirstResponder())
+    inputView.insertText("second")
+    XCTAssertEqual(received.map { $0.1 }, [51, 52])
+    if !recordedIssue { appendValidation("case=live_epoch_refocus result=passed") }
+  }
+
+  @MainActor func testRecoveryBridgeArgumentsAreDecimalAndBounded() {
+    XCTAssertEqual(
+      RecoveryBridgeValidation.parseOperationEpoch("18446744073709551615"),
+      UInt64.max
+    )
+    XCTAssertEqual(RecoveryBridgeValidation.parseOperationEpoch("0007"), 7)
+    XCTAssertNil(RecoveryBridgeValidation.parseOperationEpoch("18446744073709551616"))
+    XCTAssertNil(RecoveryBridgeValidation.parseOperationEpoch("1.0"))
+    XCTAssertNil(RecoveryBridgeValidation.parseOperationEpoch("＋1"))
+    XCTAssertNil(RecoveryBridgeValidation.parseOperationEpoch(" 1"))
+
+    XCTAssertTrue(RecoveryBridgeValidation.validRecoveryToken("confirm-日本語"))
+    XCTAssertTrue(RecoveryBridgeValidation.validRecoveryToken(String(repeating: "あ", count: 42)))
+    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken(String(repeating: "あ", count: 43)))
+    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken("line\nfeed"))
+    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken("nul\u{0}token"))
+    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken(""))
+    if !recordedIssue { appendValidation("case=recovery_arguments result=passed") }
+  }
+
   @MainActor func testControlModifierAppliesToOneCommitAndIsCancelledOnRebind() {
     var modified: [(String, UInt32)] = []
     var committed: [String] = []

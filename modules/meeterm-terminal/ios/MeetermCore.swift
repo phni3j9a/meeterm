@@ -184,6 +184,22 @@ enum MeetermCore {
     meeterm_reconnect(terminalId)
   }
 
+  /// Retry retained recovery for an already validated native operation epoch.
+  /// The Expo layer parses the decimal string before reaching this UInt64 API.
+  static func retryRecovery(terminalId: UInt64, expectedEpoch: UInt64) -> Int32 {
+    meeterm_retry_recovery(terminalId, expectedEpoch)
+  }
+
+  static func confirmRecovery(terminalId: UInt64, token: String) -> Int32 {
+    withUTF8(token) { pointer, length in
+      meeterm_confirm_recovery(terminalId, pointer, length)
+    }
+  }
+
+  static func changeRuntime(terminalId: UInt64, expectedEpoch: UInt64) -> Int32 {
+    meeterm_change_runtime(terminalId, expectedEpoch)
+  }
+
   static func tmuxCommand(terminalId: UInt64, operation: UInt32, target: UInt64 = 0, name: String = "") -> Int32 {
     withUTF8(name) { pointer, length in meeterm_tmux_command(terminalId, operation, target, pointer, length) }
   }
@@ -383,6 +399,13 @@ enum MeetermCore {
     meeterm_terminal_revision(terminalId)
   }
 
+  /// Return the current per-terminal operation epoch. Zero is reserved for an
+  /// invalid/unknown native handle and is never used as an input-session epoch.
+  static func operationEpoch(terminalId: UInt64) -> UInt64? {
+    let epoch = meeterm_operation_epoch(terminalId)
+    return epoch == 0 ? nil : epoch
+  }
+
   static func snapshot(terminalId: UInt64) -> Data? {
     guard terminalId != 0 else {
       return nil
@@ -428,6 +451,20 @@ enum MeetermCore {
     return meeterm_resize_terminal(terminalId, columns, rows) == 0
   }
 
+  static func resizeAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    columns: Int,
+    rows: Int
+  ) -> Bool {
+    guard terminalId != 0,
+          let columns = UInt16(exactly: columns),
+          let rows = UInt16(exactly: rows) else {
+      return false
+    }
+    return meeterm_resize_terminal_at_epoch(terminalId, expectedEpoch, columns, rows) == 0
+  }
+
   @discardableResult
   static func commit(terminalId: UInt64, text: String) -> UInt64 {
     guard terminalId != 0, !text.isEmpty, let data = text.data(using: .utf8) else {
@@ -442,6 +479,24 @@ enum MeetermCore {
   }
 
   @discardableResult
+  static func commitAtEpoch(terminalId: UInt64, expectedEpoch: UInt64, text: String) -> UInt64 {
+    guard terminalId != 0, !text.isEmpty, let data = text.data(using: .utf8) else {
+      return 0
+    }
+    return data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+      guard let baseAddress = buffer.bindMemory(to: UInt8.self).baseAddress else {
+        return 0
+      }
+      return meeterm_commit_utf8_at_epoch(
+        terminalId,
+        expectedEpoch,
+        baseAddress,
+        buffer.count
+      )
+    }
+  }
+
+  @discardableResult
   static func send(terminalId: UInt64, key: TerminalSpecialKey) -> Bool {
     guard terminalId != 0 else {
       return false
@@ -449,8 +504,36 @@ enum MeetermCore {
     return meeterm_send_key(terminalId, key.rawValue, 0) >= 0
   }
 
+  static func sendSpecialAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    key: TerminalSpecialKey
+  ) -> Bool {
+    guard terminalId != 0 else { return false }
+    return meeterm_send_special_key_at_epoch(terminalId, expectedEpoch, key.rawValue) > 0
+  }
+
+  /// Compatibility spelling for native callers that use the shorter send API.
+  static func sendAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    key: TerminalSpecialKey
+  ) -> Bool {
+    sendSpecialAtEpoch(terminalId: terminalId, expectedEpoch: expectedEpoch, key: key)
+  }
+
   static func sendKey(terminalId: UInt64, key: TerminalSpecialKey, modifiers: UInt32) -> Bool {
     meeterm_send_key(terminalId, key.rawValue, modifiers) >= 0
+  }
+
+  static func sendKeyAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    key: TerminalSpecialKey,
+    modifiers: UInt32
+  ) -> Bool {
+    guard terminalId != 0 else { return false }
+    return meeterm_send_key_at_epoch(terminalId, expectedEpoch, key.rawValue, modifiers) > 0
   }
 
   static func commitModified(terminalId: UInt64, text: String, modifiers: UInt32) -> Bool {
@@ -458,6 +541,24 @@ enum MeetermCore {
       meeterm_commit_modified_utf8(terminalId, pointer, length, modifiers)
     }
     return result >= 0
+  }
+
+  static func commitModifiedAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    text: String,
+    modifiers: UInt32
+  ) -> Bool {
+    let result = withUTF8(text) { pointer, length in
+      meeterm_commit_modified_utf8_at_epoch(
+        terminalId,
+        expectedEpoch,
+        pointer,
+        length,
+        modifiers
+      )
+    }
+    return result > 0
   }
 
   static func selectStart(terminalId: UInt64, row: Int, column: Int) -> Bool {
@@ -505,8 +606,43 @@ enum MeetermCore {
     }
   }
 
+  static func pasteAtEpoch(terminalId: UInt64, expectedEpoch: UInt64, text: String) -> Bool {
+    let bytes = Array(text.utf8)
+    return bytes.withUnsafeBufferPointer { buffer in
+      meeterm_paste_utf8_at_epoch(
+        terminalId,
+        expectedEpoch,
+        buffer.baseAddress,
+        buffer.count
+      ) > 0
+    }
+  }
+
   static func scroll(terminalId: UInt64, lines: Int32) -> Bool {
     meeterm_scroll_lines(terminalId, lines) == 0
+  }
+
+  static func scrollAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    lines: Int32
+  ) -> Bool {
+    meeterm_scroll_lines_at_epoch(terminalId, expectedEpoch, lines) == 0
+  }
+
+  static func sendBytesAtEpoch(
+    terminalId: UInt64,
+    expectedEpoch: UInt64,
+    bytes: [UInt8]
+  ) -> Bool {
+    bytes.withUnsafeBufferPointer { buffer in
+      meeterm_send_bytes_at_epoch(
+        terminalId,
+        expectedEpoch,
+        buffer.baseAddress,
+        buffer.count
+      ) >= 0
+    }
   }
 
   @discardableResult

@@ -74,6 +74,57 @@ const DARK = {
   },
 };
 
+function workspaceControl(overrides = {}) {
+  return {
+    operationEpoch: '1',
+    hasRetainedWork: true,
+    runtimeOperationsReady: true,
+    terminalInputReady: true,
+    ...overrides,
+    recovery: {
+      phase: 'none',
+      reason: '',
+      attempt: 0,
+      maxAttempts: 6,
+      confirmationToken: '',
+      ...(overrides.recovery || {}),
+    },
+  };
+}
+
+const DEFAULT_WORKSPACE_CONTROL = {
+  operationEpoch: '',
+  hasRetainedWork: false,
+  runtimeOperationsReady: false,
+  terminalInputReady: false,
+  recovery: {
+    phase: 'none',
+    reason: '',
+    attempt: 0,
+    maxAttempts: 0,
+    confirmationToken: '',
+  },
+};
+
+function normalizeWorkspaceControl(value) {
+  if (!value || typeof value !== 'object') return clone(DEFAULT_WORKSPACE_CONTROL);
+  const recovery = value.recovery && typeof value.recovery === 'object' ? value.recovery : {};
+  const phases = new Set(['none', 'reconnecting', 'awaitingConfirmation', 'resynchronizing', 'stopped']);
+  return {
+    operationEpoch: typeof value.operationEpoch === 'string' ? value.operationEpoch : '',
+    hasRetainedWork: value.hasRetainedWork === true,
+    runtimeOperationsReady: value.runtimeOperationsReady === true,
+    terminalInputReady: value.terminalInputReady === true,
+    recovery: {
+      phase: phases.has(recovery.phase) ? recovery.phase : 'none',
+      reason: typeof recovery.reason === 'string' ? recovery.reason : '',
+      attempt: typeof recovery.attempt === 'number' && recovery.attempt >= 0 ? Math.floor(recovery.attempt) : 0,
+      maxAttempts: typeof recovery.maxAttempts === 'number' && recovery.maxAttempts >= 0 ? Math.floor(recovery.maxAttempts) : 0,
+      confirmationToken: typeof recovery.confirmationToken === 'string' ? recovery.confirmationToken : '',
+    },
+  };
+}
+
 function runtimeCandidate(id, backend, name, state = 'running', overrides = {}) {
   return {
     id,
@@ -147,6 +198,7 @@ function makeNativeEnvironment() {
       workspaces: [],
       groups: [],
       terminals: [],
+      control: workspaceControl({ hasRetainedWork: false, runtimeOperationsReady: false, terminalInputReady: false }),
     },
     runtimeDiscovery: {
       connectionGeneration: '1',
@@ -192,7 +244,19 @@ function makeNativeEnvironment() {
     visibility: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
+    fakeTimers: false,
+    timeoutCallbacks: [],
+    nextTimeoutId: 1,
     alert: null,
+    accessibilityAnnouncements: [],
+    recoveryRetryMode: 'ready',
+    recoveryRetryShouldFail: false,
+    pendingRecoveryRetry: null,
+    recoveryConfirmShouldFail: false,
+    pendingRecoveryConfirm: null,
+    changeRuntimeShouldFail: false,
+    changeRuntimeMode: 'ready',
+    pendingChangeRuntime: null,
   };
 
   const native = {
@@ -283,6 +347,50 @@ function makeNativeEnvironment() {
     async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
     async getConnectionState() { return { ...environment.connection }; },
     async getWorkspaceState() { return clone(environment.snapshot); },
+    async retryRecovery(_connectionId, operationEpoch) {
+      environment.calls.push({ method: 'retryRecovery', operationEpoch });
+      if (environment.recoveryRetryShouldFail) throw new Error('recovery retry rejected');
+      if (environment.recoveryRetryMode === 'pending') {
+        await new Promise(resolve => { environment.pendingRecoveryRetry = { operationEpoch, resolve }; });
+        return;
+      }
+      environment.snapshot.control = workspaceControl({
+        ...environment.snapshot.control,
+        operationEpoch: String(Number(operationEpoch) + 1),
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+        recovery: { phase: 'reconnecting', reason: 'manual_retry', attempt: 0, maxAttempts: 6, confirmationToken: '' },
+      });
+      environment.connection.state = 'Reconnecting';
+    },
+    async confirmRecovery(_connectionId, confirmationToken) {
+      environment.calls.push({ method: 'confirmRecovery', confirmationToken });
+      if (environment.recoveryConfirmShouldFail) throw new Error('recovery confirmation rejected');
+      environment.snapshot.control = workspaceControl({
+        ...environment.snapshot.control,
+        operationEpoch: String(Number(environment.snapshot.control.operationEpoch) + 1),
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+        recovery: { phase: 'resynchronizing', reason: 'manual_confirmation', attempt: 1, maxAttempts: 6, confirmationToken: '' },
+      });
+      environment.connection.state = 'Reconnecting';
+    },
+    async changeRuntime(_connectionId, operationEpoch) {
+      environment.calls.push({ method: 'changeRuntime', operationEpoch });
+      if (environment.changeRuntimeShouldFail) throw new Error('runtime change rejected');
+      if (environment.changeRuntimeMode === 'pending') {
+        await new Promise((resolve, reject) => {
+          environment.pendingChangeRuntime = { operationEpoch, resolve, reject };
+        });
+      }
+      environment.connection.state = 'AwaitingRuntimeSelection';
+      environment.snapshot.control = workspaceControl({
+        hasRetainedWork: false,
+        operationEpoch: String(Number(operationEpoch) + 1),
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+      });
+    },
     async setTerminalVisible(_connectionId, visible) {
       environment.visibility.push(visible);
     },
@@ -331,6 +439,27 @@ function makeNativeEnvironment() {
     assert.ok(environment.pendingRefresh, 'a runtime refresh should be pending');
     environment.runtimeDiscovery = environment.pendingRefresh.finalDiscovery;
     environment.pendingRefresh = null;
+  };
+  environment.resolvePendingRecoveryRetry = () => {
+    assert.ok(environment.pendingRecoveryRetry, 'a recovery retry should be pending');
+    const pending = environment.pendingRecoveryRetry;
+    environment.pendingRecoveryRetry = null;
+    pending.resolve();
+  };
+  environment.resolvePendingChangeRuntime = outcome => {
+    assert.ok(environment.pendingChangeRuntime, 'a runtime change should be pending');
+    const pending = environment.pendingChangeRuntime;
+    environment.pendingChangeRuntime = null;
+    if (outcome === 'reject') {
+      pending.reject(new Error('runtime change rejected as stale'));
+    } else {
+      pending.resolve();
+    }
+  };
+  environment.runFakeTimers = (maxDelay = Infinity) => {
+    const due = environment.timeoutCallbacks.filter(timer => !timer.canceled && timer.delay <= maxDelay);
+    environment.timeoutCallbacks = environment.timeoutCallbacks.filter(timer => !due.includes(timer));
+    due.forEach(timer => timer.callback());
   };
   return { environment, native };
 }
@@ -385,6 +514,12 @@ function makeReactNativeMocks(environment) {
       environment.alert = { title, message, buttons: buttons || [] };
     },
   };
+  const AccessibilityInfo = {
+    announceForAccessibilityWithOptions(message) {
+      environment.accessibilityAnnouncements.push(message);
+      return Promise.resolve();
+    },
+  };
   const Platform = { OS: 'ios' };
   function StatusBar(props) { return React.createElement('StatusBar', props); }
   StatusBar.setBarStyle = () => {};
@@ -396,6 +531,7 @@ function makeReactNativeMocks(environment) {
   return {
     ActivityIndicator: 'ActivityIndicator',
     Alert,
+    AccessibilityInfo,
     AppState,
     BackHandler,
     FlatList,
@@ -460,13 +596,29 @@ function makeUiMocks() {
 
 function makeFormMocks() {
   const hidden = () => null;
+  function ProfileList({ profiles = [], busy = false, onConnect }) {
+    return React.createElement(
+      'ProfileList',
+      null,
+      profiles.map(profile => React.createElement(
+        'Pressable',
+        {
+          key: profile.id,
+          accessibilityRole: 'button',
+          accessibilityLabel: `Connect saved server ${profile.name}`,
+          disabled: Boolean(busy),
+          onPress: () => onConnect(profile),
+        },
+      )),
+    );
+  }
   return {
     __esModule: true,
     ConnectionForm: hidden,
     DEFAULT_PREFERENCES: { ...PREFERENCES },
     itemActions() {},
     NameForm: hidden,
-    ProfileList: hidden,
+    ProfileList,
     SettingsForm: hidden,
   };
 }
@@ -480,6 +632,8 @@ function makeTerminalModule(native, environment) {
     __esModule: true,
     default: native,
     TerminalView,
+    DEFAULT_WORKSPACE_CONTROL,
+    normalizeWorkspaceControl,
   };
   return module;
 }
@@ -502,6 +656,19 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const ui = makeUiMocks();
   const forms = makeFormMocks();
   const terminal = makeTerminalModule(native, environment);
+  const scheduleTimeout = environment.fakeTimers
+    ? (callback, delay) => {
+      const id = environment.nextTimeoutId++;
+      environment.timeoutCallbacks.push({ id, callback, delay, canceled: false });
+      return id;
+    }
+    : setTimeout;
+  const cancelTimeout = environment.fakeTimers
+    ? id => {
+      const timer = environment.timeoutCallbacks.find(item => item.id === id);
+      if (timer) timer.canceled = true;
+    }
+    : clearTimeout;
   const moduleMap = new Map([
     ['react', React],
     ['react/jsx-runtime', require('react/jsx-runtime')],
@@ -531,8 +698,8 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     __dirname: path.dirname(APP_SOURCE),
     process: processForApp,
     console,
-    setTimeout,
-    clearTimeout,
+    setTimeout: scheduleTimeout,
+    clearTimeout: cancelTimeout,
     setImmediate,
     clearImmediate,
     setInterval(callback) {
@@ -554,7 +721,8 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=welcome'), undefined);
   const smoke = loadApp(environment, native, true, true);
   for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
-    'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create']) {
+    'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
+    'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
@@ -571,6 +739,13 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('runtime-partial-error').runtimeDiscovery.backends[1].state, 'error');
   assert.equal(smoke.smokeFixture('runtime-empty').runtimeDiscovery.backends[0].candidates.length, 0);
   assert.equal(smoke.smokeFixture('runtime-create').runtimeCreateVisible, true);
+  assert.equal(smoke.smokeFixture('recovery-progress').control.recovery.phase, 'resynchronizing');
+  assert.equal(smoke.smokeFixture('recovery-exhausted').control.recovery.phase, 'stopped');
+  assert.equal(smoke.smokeFixture('recovery-mismatch').control.recovery.reason, 'runtime_identity_mismatch');
+  const herdrConfirmation = smoke.smokeFixture('herdr-recovery-confirm');
+  assert.equal(herdrConfirmation.control.recovery.phase, 'awaitingConfirmation');
+  assert.equal(smoke.smokeWorkspaceState(herdrConfirmation.panes, true).runtime, 'dev');
+  assert.equal(smoke.smokeFixture('recovery-progress').control.hasRetainedWork, true);
   const herdrPicker = smoke.smokeFixture('herdr-connection');
   assert.equal(herdrPicker.connection.state, 'AwaitingRuntimeSelection');
   assert.equal(herdrPicker.formVisible, false);
@@ -1024,6 +1199,7 @@ function makeSnapshot({
     pane('P2', 'W1', 'G1', 'native:P2', false, false, 'P2'),
     pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
   ],
+  control = workspaceControl(),
 } = {}) {
   return {
     backend: 'herdr',
@@ -1032,6 +1208,7 @@ function makeSnapshot({
     workspaces,
     groups,
     terminals: terminals.map(item => ({ ...item, selected: item.id === selectedPane })),
+    control,
   };
 }
 
@@ -1081,6 +1258,10 @@ function findLabel(root, label) {
   return first(root, node => node.props && node.props.accessibilityLabel === label, `missing accessibility label ${label}`);
 }
 
+function findText(root, value) {
+  return first(root, node => node.type === 'Text' && textContent(node) === value, `missing text ${value}`);
+}
+
 function findTestId(root, id) {
   return first(root, node => node.props && node.props.testID === id, `missing testID ${id}`);
 }
@@ -1099,9 +1280,10 @@ function groupTitle(root) {
   return switcher ? textContent(switcher) : '';
 }
 
-async function mountApp(snapshot) {
+async function mountApp(snapshot, configure) {
   const { environment, native } = makeNativeEnvironment();
   environment.snapshot = clone(snapshot);
+  configure?.(environment, native);
   const App = loadApp(environment, native);
   const root = createRoot();
   await act(async () => {
@@ -1110,8 +1292,8 @@ async function mountApp(snapshot) {
   return { root, environment, native };
 }
 
-async function mountForTest(t, snapshot) {
-  const fixture = await mountApp(snapshot);
+async function mountForTest(t, snapshot, configure) {
+  const fixture = await mountApp(snapshot, configure);
   t.after(async () => {
     await act(async () => {
       fixture.root.unmount();
@@ -1210,6 +1392,16 @@ async function updateSnapshot(env, snapshot) {
   await poll(env);
 }
 
+async function mountRecovering(t, control, connectionState = 'Reconnecting', configure) {
+  const fixture = await mountForTest(t, makeSnapshot(), configure);
+  await openWorkspace(fixture.root, 'W1');
+  fixture.environment.connection.state = connectionState;
+  fixture.environment.snapshot = makeSnapshot({ control });
+  await poll(fixture.environment);
+  await settleAsync();
+  return fixture;
+}
+
 async function closeCurrentPane(root, environment) {
   await press(root, findLabel(root, 'Terminal menu'));
   const close = findLabel(root, 'Close terminal');
@@ -1221,6 +1413,67 @@ async function closeCurrentPane(root, environment) {
     action.onPress();
   });
 }
+
+test('active saved-profile switch waits for confirmation before starting the target host', async t => {
+  const target = {
+    id: '00000000-0000-4000-8000-000000000031', name: 'Active target',
+    host: 'target.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'meeterm',
+  };
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.profiles = [target];
+    environment.runtimeDiscovery = pickerDiscovery(3, [runtimeCandidate('active-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]);
+    environment.snapshot = makeSnapshot();
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Active target'));
+  assert.equal(fixture.environment.alert?.title, 'Switch servers?');
+  assert.equal(
+    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
+    0,
+    'the target host must not start before confirmation',
+  );
+
+  const confirm = fixture.environment.alert.buttons.find(button => button.text === 'Switch server');
+  assert.ok(confirm);
+  fixture.environment.alert = null;
+  await act(async () => {
+    confirm.onPress();
+  });
+  await settleAsync();
+
+  assert.equal(
+    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
+    1,
+  );
+  assert.ok(findText(fixture.root, 'Choose a runtime for Active target'));
+});
+
+test('failed saved-profile connection skips switch confirmation but still opens target picker', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000033', name: 'Failed picker',
+    host: 'failed.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'meeterm',
+  };
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.connection = { ...environment.connection, state: 'Failed', host: profile.host, port: profile.port };
+    environment.profiles = [profile];
+    environment.runtimeDiscovery = pickerDiscovery(4, [runtimeCandidate('failed-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]);
+    environment.snapshot = makeSnapshot();
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Failed picker'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.alert, null);
+  assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
+  assert.ok(findText(fixture.root, 'Choose a runtime for Failed picker'));
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-failed-tmux'));
+});
 
 test('saved-server connect authenticates first, then requires explicit runtime selection', async t => {
   const profile = {
@@ -1251,6 +1504,7 @@ test('saved-server connect authenticates first, then requires explicit runtime s
   await settleAsync();
   assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
   assert.equal(fixture.environment.nativeCalls.some(call => call.method === 'connectProfile'), false);
+  assert.ok(findText(fixture.root, 'Choose a runtime for Picker server'));
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-tmux-one'));
   assert.ok(findTestId(fixture.root, 'runtime-row-herdr-herdr-one'));
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-herdr-stopped').props.accessibilityState.disabled, true);
@@ -1653,7 +1907,7 @@ test('refresh enqueue failure releases busy and keeps the existing actionable er
   assert.ok(all(fixture.root, node => textContent(node).includes('Could not refresh runtimes. Check the connection and try again.')).length > 0);
 });
 
-test('verified runtime reconnect skips the picker but a lost identity reopens it with an explanation', async t => {
+test('verified reconnect skips the picker while an explicit fresh-selection state opens it', async t => {
   const fixture = await mountConfiguredForTest(t, (environment) => {
     environment.snapshot = makeSnapshot();
     environment.runtimeDiscovery = {
@@ -1682,6 +1936,492 @@ test('verified runtime reconnect skips the picker but a lost identity reopens it
   await settleAsync();
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-reconnect-tmux'));
   assert.ok(all(fixture.root, node => textContent(node).includes('previous runtime needs to be selected again')).length > 0);
+});
+
+test('retained recovery keeps the cached native terminal and disables remote navigation', async t => {
+  const control = workspaceControl({
+    operationEpoch: '41',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'resynchronizing', reason: 'runtime_validation', attempt: 2, maxAttempts: 6 },
+  });
+  const fixture = await mountRecovering(t, control);
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    groups: [
+      group('G1', 'W1', 'Group One', true),
+      group('G2', 'W1', 'Group Two', false),
+      group('G3', 'W2', 'Group Three', true),
+    ],
+    terminals: [
+      pane('P1', 'W1', 'G1', 'native:P1', true, true, 'P1'),
+      pane('P2', 'W1', 'G1', 'native:P2', false, false, 'P2'),
+      pane('P3', 'W2', 'G3', 'native:P3', false, true, 'P3'),
+    ],
+    control,
+  }));
+
+  assert.equal(findTestId(fixture.root, 'recovery-title').children[0], 'Verifying this workspace…');
+  assert.equal(findTestId(fixture.root, 'recovery-meta').children[0], 'Last received output · Input paused');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+  assert.equal(all(fixture.root, node => typeof node.props?.testID === 'string' && node.props.testID.startsWith('runtime-row-')).length, 0);
+  assert.equal(findLabel(fixture.root, 'Switch workspace').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Switch terminal group').props.disabled, true);
+  assert.equal(findTestId(fixture.root, 'terminal-tab-P2').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Create terminal').props.disabled, true);
+  assert.equal(fixture.environment.visibility.at(-1), true, 'cached surface visibility is independent; native recovery gates keep it input-inert');
+
+  fixture.environment.connection.state = 'AwaitingRuntimeSelection';
+  await poll(fixture.environment);
+  assert.equal(all(fixture.root, node => typeof node.props?.testID === 'string' && node.props.testID.startsWith('runtime-row-')).length, 0);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  const callsBeforeTabPress = fixture.environment.calls.length;
+  await press(fixture.root, findTestId(fixture.root, 'terminal-tab-P2'));
+  assert.deepEqual(fixture.environment.calls.slice(callsBeforeTabPress), []);
+
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  assert.equal(findLabel(fixture.root, 'Refresh terminal').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Rename terminal').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Close terminal').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Workspace options Workspace One').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Create group').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Rename group').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Close group').props.disabled, true);
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+});
+
+test('recovery Retry uses the current epoch once and waits for a native snapshot transition', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '51',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed');
+  fixture.environment.recoveryRetryMode = 'pending';
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-retry'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'recovery-retry'));
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
+    { method: 'retryRecovery', operationEpoch: '51' },
+  ]);
+  assert.equal(findTestId(fixture.root, 'recovery-retry').props.disabled, true);
+
+  fixture.environment.resolvePendingRecoveryRetry();
+  fixture.environment.connection.state = 'Reconnecting';
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    control: workspaceControl({
+      operationEpoch: '52',
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      recovery: { phase: 'reconnecting', reason: 'manual_retry', attempt: 0, maxAttempts: 6 },
+    }),
+  }));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-retry').length, 0);
+  assert.equal(findTestId(fixture.root, 'recovery-title').children[0], 'Reconnecting…');
+});
+
+test('Herdr recovery confirmation only calls confirmRecovery after Review and Reconnect', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '61',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'awaitingConfirmation', reason: 'herdr_continuity_uncertain', attempt: 1, maxAttempts: 1, confirmationToken: 'token-61' },
+  }));
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-review'));
+  assert.equal(fixture.environment.alert.title, 'Reconnect to “default”?');
+  assert.equal(fixture.environment.alert.message, 'Herdr can’t prove this is the same server instance. Continue only if you expect this running session to be your previous one. meeterm won’t take over another controller.');
+  assert.equal(fixture.environment.calls.some(call => call.method === 'confirmRecovery'), false);
+  assert.equal(fixture.environment.alert.buttons[0].text, 'Cancel');
+  assert.equal(fixture.environment.alert.buttons[0].onPress, undefined);
+  fixture.environment.alert = null;
+  assert.ok(findTestId(fixture.root, 'recovery-review'));
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-review'));
+  const reconnect = fixture.environment.alert.buttons.find(button => button.text === 'Reconnect');
+  assert.equal(typeof reconnect.onPress, 'function');
+  await act(async () => { reconnect.onPress(); reconnect.onPress(); });
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'confirmRecovery'), [
+    { method: 'confirmRecovery', confirmationToken: 'token-61' },
+  ]);
+  assert.equal(fixture.environment.calls.some(call => call.method === 'selectRuntime'), false);
+  assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
+
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-review').length, 0);
+  assert.equal(findTestId(fixture.root, 'recovery-title').children[0], 'Refreshing terminal…');
+});
+
+test('runtime identity mismatch keeps the last native terminal instead of binding a replacement', async t => {
+  const control = workspaceControl({
+    operationEpoch: '71',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'runtime_identity_mismatch', attempt: 1, maxAttempts: 6 },
+  });
+  const fixture = await mountRecovering(t, control, 'Failed');
+  const callsBefore = fixture.environment.calls.length;
+
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    selectedPane: 'P2',
+    control,
+  }));
+  assert.equal(findTestId(fixture.root, 'recovery-title').children[0], 'This runtime can’t be restored');
+  assert.match(findTestId(fixture.root, 'recovery-detail').children[0], /not the same instance as before/);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(fixture.root).some(view => view.props.terminalId === 'native:P2'), false);
+  await press(fixture.root, findTestId(fixture.root, 'terminal-tab-P2'));
+  assert.deepEqual(fixture.environment.calls.slice(callsBefore).filter(call => call.method === 'selectPane'), []);
+});
+
+test('Change sheet preserves recovery on dismiss and invalidates it only on destination selection', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '81',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed');
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  assert.equal(findTestId(fixture.root, 'recovery-change-intro').children[0], 'Choosing another destination stops recovery for this workspace. Remote work will not be closed.');
+  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'changeRuntime'), [
+    { method: 'changeRuntime', operationEpoch: '81' },
+  ]);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-change').length, 0);
+});
+
+test('recovery Change keeps the cached terminal pending native acceptance', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '101',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed');
+  fixture.environment.changeRuntimeMode = 'pending';
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  const destination = findTestId(fixture.root, 'recovery-change-runtime');
+  await act(async () => { destination.props.onPress(); });
+  await settleAsync();
+
+  assert.ok(fixture.environment.pendingChangeRuntime, 'native acceptance should still be pending');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.ok(findLabel(fixture.root, 'Back to workspaces'));
+  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, true);
+  assert.equal(destination.props.accessibilityState.disabled, true);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'runtime-refresh').length, 0);
+
+  fixture.environment.resolvePendingChangeRuntime('accept');
+  await settleAsync();
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'), 'the runtime picker should bind only after native acceptance');
+});
+
+test('stale recovery Change rejection retains the latest cached snapshot and clears busy', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '111',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }));
+  fixture.environment.changeRuntimeMode = 'pending';
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  const destination = findTestId(fixture.root, 'recovery-change-runtime');
+  await act(async () => { destination.props.onPress(); });
+  await settleAsync();
+
+  const latestControl = workspaceControl({
+    operationEpoch: '112',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  });
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    control: latestControl,
+    terminals: [
+      pane('P1', 'W1', 'G1', 'native:P1', true, true, 'P1 latest', { name: 'Latest agent', status: 'working' }),
+      pane('P2', 'W1', 'G1', 'native:P2', false, false, 'P2'),
+      pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
+    ],
+  }));
+  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Latest agent, Agent status unavailable');
+
+  fixture.environment.resolvePendingChangeRuntime('reject');
+  await settleAsync();
+
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(workspaceTitle(fixture.root), 'Workspace One');
+  assert.ok(findLabel(fixture.root, 'Back to workspaces'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'recovery-change-runtime').props.accessibilityState.disabled, false);
+  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Latest agent, Agent status unavailable');
+  assert.equal(fixture.environment.snapshot.control.operationEpoch, '112');
+  assert.ok(all(fixture.root, node => textContent(node).includes('Could not change the destination. Choose Connection details to continue.')).length > 0);
+});
+
+test('rapid repeated recovery Change taps enqueue only one native request', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '121',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed');
+  fixture.environment.changeRuntimeMode = 'pending';
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  const destination = findTestId(fixture.root, 'recovery-change-runtime');
+  await act(async () => {
+    destination.props.onPress();
+    destination.props.onPress();
+  });
+  await settleAsync();
+
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'changeRuntime'), [
+    { method: 'changeRuntime', operationEpoch: '121' },
+  ]);
+  assert.ok(fixture.environment.pendingChangeRuntime);
+  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, true);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  fixture.environment.resolvePendingChangeRuntime('reject');
+  await settleAsync();
+  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, false);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+});
+
+test('accepted recovery Change ignores a late old Ready snapshot', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '131',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }));
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+
+  const oldSnapshot = clone(fixture.environment.snapshot);
+  let releaseSnapshot;
+  const snapshotGate = new Promise(resolve => { releaseSnapshot = resolve; });
+  const originalGetWorkspaceState = fixture.native.getWorkspaceState;
+  let holdingOldSnapshot = true;
+  fixture.native.getWorkspaceState = async (...args) => {
+    if (holdingOldSnapshot) {
+      holdingOldSnapshot = false;
+      await snapshotGate;
+      return oldSnapshot;
+    }
+    return originalGetWorkspaceState(...args);
+  };
+  fixture.environment.connection.state = 'Ready';
+  // Start the interval callback directly so the intentionally held native
+  // snapshot does not keep the test helper's act() scope open.
+  fixture.environment.intervalCallbacks[0]();
+  await settleAsync();
+  assert.equal(holdingOldSnapshot, false, 'the old Ready poll should be paused at workspace snapshot read');
+
+  fixture.environment.changeRuntimeMode = 'pending';
+  const destination = findTestId(fixture.root, 'recovery-change-runtime');
+  await act(async () => { destination.props.onPress(); });
+  await settleAsync();
+  fixture.environment.resolvePendingChangeRuntime('accept');
+  await settleAsync();
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
+
+  releaseSnapshot();
+  await settleAsync();
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
+});
+
+test('strong Ready restores native input and live agent status with a short recovered rail', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '91',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'resynchronizing', reason: 'screen_resync', attempt: 2, maxAttempts: 6 },
+  }));
+  const recoveringTerminals = [
+    pane('P1', 'W1', 'G1', 'native:P1', true, true, 'P1', { name: 'Claude Code', status: 'working' }),
+    pane('P2', 'W1', 'G1', 'native:P2', false, false, 'P2'),
+    pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
+  ];
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    terminals: recoveringTerminals,
+    control: workspaceControl({
+      operationEpoch: '91',
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      recovery: { phase: 'resynchronizing', reason: 'screen_resync', attempt: 2, maxAttempts: 6 },
+    }),
+  }));
+
+  fixture.environment.connection.state = 'Ready';
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    terminals: recoveringTerminals,
+    control: workspaceControl({ operationEpoch: '92' }),
+  }));
+  await settleAsync();
+  assert.equal(findTestId(fixture.root, 'recovery-title').children[0], 'Back online');
+  assert.equal(findTestId(fixture.root, 'recovery-detail').children[0], 'Terminal is live · Input available');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'live');
+  assert.equal(terminalViews(fixture.root)[0].props.autoFocus, undefined);
+  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Claude Code, Agent status: working');
+});
+
+test('retained recovery rail stays reachable from Workspaces and reopens only the cached terminal', async t => {
+  const fixture = await mountForTest(t, makeSnapshot());
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+
+  const control = workspaceControl({
+    operationEpoch: '141',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  });
+  fixture.environment.connection.state = 'Failed';
+  await updateSnapshot(fixture.environment, makeSnapshot({ control }));
+
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.equal(findTestId(fixture.root, 'recovery-retry').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'workspace-row-W1').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'workspace-row-W2').props.disabled, true);
+
+  const callsBeforeOtherWorkspace = fixture.environment.calls.length;
+  await press(fixture.root, findTestId(fixture.root, 'workspace-row-W2'));
+  assert.deepEqual(fixture.environment.calls.slice(callsBeforeOtherWorkspace), []);
+  assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Back to workspaces').length, 0);
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  assert.ok(findTestId(fixture.root, 'recovery-change-intro'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+
+  const callsBeforeRetainedWorkspace = fixture.environment.calls.length;
+  await press(fixture.root, findTestId(fixture.root, 'workspace-row-W1'));
+  await settleAsync();
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+  assert.deepEqual(fixture.environment.calls.slice(callsBeforeRetainedWorkspace).filter(call => call.method === 'selectPane'), []);
+});
+
+test('healthy visibility and foreground cycles never announce Back online', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), environment => { environment.fakeTimers = true; });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await act(async () => { fixture.environment.emitAppState('background'); fixture.environment.emitAppState('active'); });
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await act(async () => { fixture.environment.emitAppState('inactive'); fixture.environment.emitAppState('active'); });
+
+  const gatesClosed = workspaceControl({
+    operationEpoch: '151',
+    runtimeOperationsReady: true,
+    terminalInputReady: false,
+    recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6 },
+  });
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: gatesClosed }));
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '151' }) }));
+  await settleAsync();
+
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 0);
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 0);
+});
+
+test('a real recovery announces Back online once, expires after two seconds, and ignores an old epoch', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '161',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'resynchronizing', reason: 'screen_resync', attempt: 2, maxAttempts: 6 },
+  }), 'Reconnecting', environment => { environment.fakeTimers = true; });
+
+  fixture.environment.connection.state = 'Ready';
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '162' }) }));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 1);
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
+  assert.deepEqual(fixture.environment.timeoutCallbacks.filter(timer => !timer.canceled).map(timer => timer.delay).sort((a, b) => a - b), [2000]);
+
+  const healthyHidden = workspaceControl({
+    operationEpoch: '162',
+    runtimeOperationsReady: true,
+    terminalInputReady: false,
+    recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6 },
+  });
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: healthyHidden }));
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '162' }) }));
+  await settleAsync();
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
+  assert.deepEqual(fixture.environment.timeoutCallbacks.filter(timer => !timer.canceled).map(timer => timer.delay), [2000]);
+
+  await act(async () => { fixture.environment.runFakeTimers(2000); });
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 0);
+
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({
+    operationEpoch: '161',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'resynchronizing', reason: 'late_old_epoch', attempt: 2, maxAttempts: 6 },
+  }) }));
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '161' }) }));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-title' && textContent(node) === 'Back online').length, 0);
+  assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
+});
+
+test('terminal_missing recovery offers Change instead of a fake terminal picker', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '171',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'terminal_missing', attempt: 1, maxAttempts: 6 },
+  }), 'Failed');
+
+  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-choose-terminal').length, 0);
+  assert.ok(findTestId(fixture.root, 'recovery-change'));
+  assert.match(findTestId(fixture.root, 'recovery-detail').children[0], /Change/);
+  assert.match(findTestId(fixture.root, 'recovery-meta').children[0], /Change/);
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  assert.ok(findTestId(fixture.root, 'recovery-change-intro'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  fixture.environment.changeRuntimeMode = 'pending';
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
+  await settleAsync();
+  assert.ok(fixture.environment.pendingChangeRuntime);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  fixture.environment.resolvePendingChangeRuntime('accept');
+  await settleAsync();
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
 });
 
 test('external cross-workspace move follows selected stable native terminal', async t => {

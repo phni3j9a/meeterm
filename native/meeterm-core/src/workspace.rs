@@ -4,6 +4,11 @@
 //! connection/runtime. Native terminal handles have a separate lifetime.
 use serde::Serialize;
 
+/// The bounded recovery budget shared by the native actor and its JSON
+/// control contract.  Keeping the value here avoids making the low-frequency
+/// workspace model depend on the SSH module's private constants.
+pub const DEFAULT_RECOVERY_MAX_ATTEMPTS: u32 = 6;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
@@ -43,6 +48,72 @@ pub enum RuntimeState {
     Running,
     Stopped,
     Unknown,
+}
+
+/// A recovery phase is deliberately separate from [`crate::ssh::ConnectionState`].
+/// The latter is a fixed C ABI snapshot; this enum is part of the append-only
+/// workspace JSON contract and can describe a retained screen while the SSH
+/// actor is being rebuilt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryPhase {
+    #[default]
+    None,
+    Reconnecting,
+    AwaitingConfirmation,
+    Resynchronizing,
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverySnapshot {
+    pub phase: RecoveryPhase,
+    /// A stable, sanitized snake_case reason.  Human-facing copy belongs to
+    /// the application layer; native never forwards remote diagnostics here.
+    pub reason: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    /// Opaque, bounded, native-scoped confirmation material.  It is empty
+    /// outside `awaitingConfirmation` and is never a remote path or ID.
+    pub confirmation_token: String,
+}
+
+impl Default for RecoverySnapshot {
+    fn default() -> Self {
+        Self {
+            phase: RecoveryPhase::None,
+            reason: String::new(),
+            attempt: 0,
+            max_attempts: DEFAULT_RECOVERY_MAX_ATTEMPTS,
+            confirmation_token: String::new(),
+        }
+    }
+}
+
+/// Low-frequency lifecycle controls serialized beside the authoritative
+/// workspace topology.  `operation_epoch` is a decimal string because the
+/// value must remain exact when consumed by JavaScript on 64-bit platforms.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeControlSnapshot {
+    pub operation_epoch: String,
+    pub has_retained_work: bool,
+    pub runtime_operations_ready: bool,
+    pub terminal_input_ready: bool,
+    pub recovery: RecoverySnapshot,
+}
+
+impl Default for RuntimeControlSnapshot {
+    fn default() -> Self {
+        Self {
+            operation_epoch: "0".to_owned(),
+            has_retained_work: false,
+            runtime_operations_ready: false,
+            terminal_input_ready: false,
+            recovery: RecoverySnapshot::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -98,6 +169,7 @@ impl RuntimeDiscoverySnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSnapshot {
+    pub control: RuntimeControlSnapshot,
     pub backend: Backend,
     pub runtime: String,
     pub groups_supported: bool,
@@ -156,6 +228,7 @@ pub struct Agent {
 impl RuntimeSnapshot {
     pub(crate) fn tmux_for_runtime(snapshot: &crate::tmux::SessionSnapshot, runtime: &str) -> Self {
         Self {
+            control: RuntimeControlSnapshot::default(),
             backend: Backend::Tmux,
             runtime: runtime.to_owned(),
             groups_supported: false,
@@ -253,6 +326,43 @@ mod tests {
                 "name": "Group",
                 "selected": true,
                 "agentStatus": null
+            })
+        );
+    }
+
+    #[test]
+    fn recovery_control_uses_the_stable_camel_case_wire_contract() {
+        let snapshot = RuntimeSnapshot {
+            control: RuntimeControlSnapshot {
+                operation_epoch: "18446744073709551615".to_owned(),
+                has_retained_work: true,
+                runtime_operations_ready: false,
+                terminal_input_ready: false,
+                recovery: RecoverySnapshot {
+                    phase: RecoveryPhase::AwaitingConfirmation,
+                    reason: "runtime_identity_uncertain".to_owned(),
+                    attempt: 2,
+                    max_attempts: DEFAULT_RECOVERY_MAX_ATTEMPTS,
+                    confirmation_token: "opaque-token".to_owned(),
+                },
+            },
+            ..RuntimeSnapshot::default()
+        };
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            encoded["control"],
+            serde_json::json!({
+                "operationEpoch": "18446744073709551615",
+                "hasRetainedWork": true,
+                "runtimeOperationsReady": false,
+                "terminalInputReady": false,
+                "recovery": {
+                    "phase": "awaitingConfirmation",
+                    "reason": "runtime_identity_uncertain",
+                    "attempt": 2,
+                    "maxAttempts": DEFAULT_RECOVERY_MAX_ATTEMPTS,
+                    "confirmationToken": "opaque-token"
+                }
             })
         );
     }

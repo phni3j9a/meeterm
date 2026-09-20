@@ -8,6 +8,7 @@ The hosted job remains the authoritative check of the complete UI/native path.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 from pathlib import Path
@@ -44,7 +45,183 @@ class _FakeClock:
         self.now += seconds
 
 
+class _RouteDevice(smoke.AndroidDevice):
+    def __init__(self, host_output: bytes, reverse_output: bytes) -> None:
+        super().__init__("emulator-5554", "adb")
+        self.host_output = host_output
+        self.reverse_output = reverse_output
+        self.commands: list[tuple[str, tuple[str, ...]]] = []
+
+    def run_host_adb(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = 15.0,
+    ) -> bytes:
+        del stage, timeout
+        self.commands.append(("host", arguments))
+        return self.host_output
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        stage: str,
+        timeout: float = 15.0,
+    ) -> bytes:
+        del stage, timeout
+        self.commands.append(("device", arguments))
+        return self.reverse_output
+
+
+class AndroidFixtureTransportTests(unittest.TestCase):
+    READY_INVENTORY = (
+        b"List of devices attached\n"
+        b"emulator-5554 device product:sdk model:test transport_id:1\n"
+    )
+
+    def test_emulator_serial_is_required_for_host_alias(self) -> None:
+        smoke.require_emulator_serial("emulator-5554")
+        for serial in ("physical-1", "127.0.0.1:5555", "", "emulator-bad"):
+            with self.subTest(serial=serial):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.require_emulator_serial(serial)
+                self.assertEqual(
+                    (error.exception.stage, error.exception.reason),
+                    ("device_select", "emulator_required"),
+                )
+
+    def test_fixture_loopback_is_mapped_to_official_emulator_alias(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-test-") as root:
+            key_path = Path(root) / "client_key"
+            key_path.write_text(
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                "fixture\n"
+                "-----END OPENSSH PRIVATE KEY-----\n",
+                encoding="utf-8",
+            )
+            environment = {
+                "MEETERM_SSH_HOST": "127.0.0.1",
+                "MEETERM_SSH_PORT": "2222",
+                "MEETERM_SSH_USERNAME": "fixture",
+                "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE": str(key_path),
+                "MEETERM_SSH_PRIVATE_KEY_FILE": str(key_path),
+            }
+            with mock.patch.dict(smoke.os.environ, environment, clear=True):
+                host, port, username, _key, fixture_key = smoke.load_fixture()
+
+        self.assertEqual(host, "10.0.2.2")
+        self.assertEqual(host, smoke.ANDROID_EMULATOR_HOST_ALIAS)
+        self.assertEqual((port, username), (2222, "fixture"))
+        self.assertEqual(fixture_key, key_path)
+
+    def test_fixture_rejects_non_loopback_published_host(self) -> None:
+        with mock.patch.dict(
+            smoke.os.environ,
+            {"MEETERM_SSH_HOST": "10.0.2.2"},
+            clear=True,
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.load_fixture()
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("fixture_environment", "loopback_required"),
+        )
+
+    def test_route_preflight_requires_one_ready_emulator_and_empty_reverse(self) -> None:
+        device = _RouteDevice(self.READY_INVENTORY, b"")
+        device.verify_emulator_fixture_route("route")
+        self.assertEqual(
+            device.commands,
+            [
+                ("host", ("devices", "-l")),
+                ("device", ("reverse", "--list")),
+            ],
+        )
+
+    def test_route_preflight_rejects_other_transport_states_without_mutation(self) -> None:
+        unsafe = (
+            b"unexpected\n",
+            b"List of devices attached\nemulator-5554 offline\n",
+            b"List of devices attached\nemulator-5554 unauthorized\n",
+            b"List of devices attached\nemulator-5554 device\nemulator-5556 device\n",
+        )
+        for inventory in unsafe:
+            with self.subTest(inventory=inventory):
+                device = _RouteDevice(inventory, b"")
+                with self.assertRaises(smoke.SmokeFailure):
+                    device.verify_emulator_fixture_route("route")
+                self.assertNotIn(("device", ("reverse", "--remove-all")), device.commands)
+
+    def test_route_preflight_rejects_existing_reverse_without_removing_it(self) -> None:
+        device = _RouteDevice(
+            self.READY_INVENTORY,
+            b"emulator-5554 tcp:2222 tcp:2222\n",
+        )
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            device.verify_emulator_fixture_route("route")
+        self.assertEqual(error.exception.reason, "adb_reverse_present")
+        self.assertEqual(device.commands[-1], ("device", ("reverse", "--list")))
+
+    def test_host_alias_reachability_uses_bounded_zero_io_probe(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        with mock.patch.object(device, "run", return_value=b"") as run:
+            device.verify_emulator_host_alias(2222, "alias")
+        run.assert_called_once_with(
+            (
+                "shell",
+                "toybox",
+                "nc",
+                "-z",
+                "-w",
+                "5",
+                "10.0.2.2",
+                "2222",
+            ),
+            "alias",
+            timeout=8.0,
+        )
+
+    def test_host_alias_unreachable_has_explicit_sanitized_reason(self) -> None:
+        device = smoke.AndroidDevice("emulator-5554", "adb")
+        with mock.patch.object(
+            device,
+            "run",
+            side_effect=smoke.SmokeFailure("alias", "adb_failed"),
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                device.verify_emulator_host_alias(2222, "alias")
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("alias", "emulator_host_alias_unreachable"),
+        )
+
+    def test_transport_loss_path_has_no_adb_reverse_or_server_restart(self) -> None:
+        source = Path(smoke.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('("reverse", "--no-rebind"', source)
+        self.assertNotIn('("reverse", "--remove"', source)
+        self.assertNotIn('("reverse", "--remove-all"', source)
+        self.assertNotIn('"kill-server"', source)
+        self.assertNotIn('("root",)', source)
+        self.assertNotIn('("unroot",)', source)
+        self.assertIn("ANDROID_EMULATOR_HOST_ALIAS = \"10.0.2.2\"", source)
+
+
 class ArtifactBoundaryTests(unittest.TestCase):
+    def test_marker_timeout_distinguishes_absent_and_mismatched_content(self) -> None:
+        clock = _FakeClock()
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            marker = Path(root) / "foreground.txt"
+            with _patched_clock(clock):
+                with self.assertRaises(smoke.SmokeFailure) as absent:
+                    smoke.wait_for_file_contents(marker, "expected\n", "foreground")
+            self.assertEqual(absent.exception.reason, "marker_timeout")
+
+            marker.write_text("mismatch\n", encoding="utf-8")
+            with _patched_clock(clock):
+                with self.assertRaises(smoke.SmokeFailure) as mismatched:
+                    smoke.wait_for_file_contents(marker, "expected\n", "foreground")
+            self.assertEqual(mismatched.exception.reason, "marker_content_mismatch")
+
     def test_selection_fixture_missing_ack_stops_before_native_drag(self) -> None:
         clock = _FakeClock()
         device = mock.Mock(spec=smoke.AndroidDevice)
@@ -309,6 +486,23 @@ class ArtifactBoundaryTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertTrue(device.foreground_evidence_lost)
 
+    def test_failure_screenshot_waits_until_both_credential_forms_are_closed(self) -> None:
+        self.assertFalse(smoke.failure_screenshot_is_secret_safe([]))
+        self.assertFalse(
+            smoke.failure_screenshot_is_secret_safe(["form_submitted"])
+        )
+        self.assertFalse(
+            smoke.failure_screenshot_is_secret_safe(["daily_profile_switched"])
+        )
+        self.assertTrue(
+            smoke.failure_screenshot_is_secret_safe(
+                ["daily_second_profile_saved"]
+            )
+        )
+        self.assertTrue(
+            smoke.failure_screenshot_is_secret_safe(["terminal_focused"])
+        )
+
     def test_recording_is_removed_without_pull_after_detected_focus_loss(self) -> None:
         device = mock.Mock(spec=smoke.AndroidDevice)
         device.foreground_evidence_lost = True
@@ -382,6 +576,22 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             self.assertTrue(return_from_form_end)
             events.append(("credential", "entered"))
 
+        boundary_results = [
+            smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH,
+            smoke.PROFILE_SWITCH_CONFIRMATION_BRANCH,
+        ]
+
+        def wait_boundary(
+            _device: object,
+            stage: str,
+            _name: str,
+            *,
+            timeout: float = smoke.RECONNECT_TIMEOUT,
+        ) -> str:
+            del timeout
+            events.append(("boundary", stage, boundary_results[0]))
+            return boundary_results.pop(0)
+
         completed: list[str] = []
         with (
             mock.patch.object(smoke, "wait_for_saved_profile", side_effect=wait_profile),
@@ -401,6 +611,12 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
                 smoke,
                 "select_fixture_tmux_runtime_and_wait_for_connected",
             ) as select_runtime,
+            mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
+            mock.patch.object(
+                smoke,
+                "wait_for_profile_switch_boundary",
+                side_effect=wait_boundary,
+            ) as wait_boundary_mock,
         ):
             smoke.exercise_saved_profile_management(
                 device,
@@ -416,7 +632,9 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             [
                 "daily_profile_edited",
                 "daily_second_profile_saved",
+                "daily_profile_switch_second_boundary_target_picker",
                 "daily_profile_switched",
+                "daily_profile_switch_primary_boundary_confirmation",
                 "daily_profile_switch_restored",
                 "daily_profile_delete_cancelled",
                 "daily_second_profile_deleted",
@@ -433,16 +651,34 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             ("action", "daily_profile_add", "Save server")
         )
         first_switch_index = events.index(
-            ("action", "daily_profile_switch_second", "Switch server")
+            (
+                "boundary",
+                "daily_profile_switch_second",
+                smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH,
+            )
         )
         self.assertLess(credential_index, second_save_index)
         self.assertLess(second_save_index, first_switch_index)
         self.assertEqual(
             [event for event in events if event[0] == "action" and event[2] == "Switch server"],
             [
-                ("action", "daily_profile_switch_second", "Switch server"),
-                ("action", "daily_profile_switch_primary", "Switch server"),
+                (
+                    "action",
+                    "daily_profile_switch_primary_confirmation",
+                    "Switch server",
+                ),
             ],
+        )
+        self.assertEqual(wait_boundary_mock.call_count, 2)
+        self.assertFalse(
+            any(
+                "Choose a runtime for" in marker
+                or marker in {
+                    smoke.DAILY_SECOND_PROFILE_NAME,
+                    smoke.DAILY_PROFILE_NAME,
+                }
+                for marker in completed
+            )
         )
         self.assertIn(("action", "daily_profile_delete_cancel", "Cancel"), events)
         self.assertEqual(
@@ -477,6 +713,21 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
                 mock.call(
                     device,
                     "daily_profile_switch_primary_runtime_selection",
+                ),
+            ],
+        )
+        self.assertEqual(
+            wait_workspace.call_args_list,
+            [
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_workspace_ready",
+                    timeout=smoke.RECONNECT_TIMEOUT,
+                ),
+                mock.call(
+                    device,
+                    "daily_profile_switch_primary_workspace_ready",
+                    timeout=smoke.RECONNECT_TIMEOUT,
                 ),
             ],
         )
@@ -635,6 +886,16 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         device.run.return_value = b""
         workspace = smoke.Node("", "Workspace smoke", "android.view.View", (0, 0, 100, 100))
         terminal = smoke.Node("", "Terminal", "android.view.SurfaceView", (0, 100, 100, 300))
+        connected = smoke.Node("Connected", "", "android.widget.TextView", (0, 0, 100, 40))
+        pane = smoke.Node(
+            "",
+            "",
+            "android.widget.Button",
+            (0, 40, 100, 100),
+            resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+            selected=True,
+        )
+        device.dump_ui.return_value = [connected, pane, terminal]
         completed: list[str] = []
         marker = Path("/tmp/meeterm-ssh-fixture-test/foreground.txt")
 
@@ -689,7 +950,7 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         )
         terminal_line.assert_called_once_with(
             device,
-            smoke.session_marker_command("fresh-ack", marker, 1201),
+            smoke.session_marker_command("fresh-ack", marker, 1201, append=True),
         )
         wait_marker.assert_called_once_with(
             marker,
@@ -699,9 +960,57 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         focus.assert_called_once_with(device, terminal, "daily_foreground_return")
         self.assertEqual(
             completed,
-            ["daily_app_backgrounded", "daily_foreground_terminal_resumed"],
+            [
+                "daily_app_backgrounded",
+                "daily_foreground_authoritative_ready",
+                "daily_foreground_native_binding_verified",
+                "daily_foreground_marker_exactly_once",
+                "daily_foreground_terminal_resumed",
+            ],
         )
         self.assertFalse(device.foreground_evidence_lost)
+
+    def test_foreground_recovery_ready_rejects_picker_and_cached_terminal(self) -> None:
+        picker = smoke.Node(
+            "Choose a runtime for Smoke server",
+            "",
+            "android.widget.TextView",
+            (0, 0, 100, 40),
+        )
+        self.assertTrue(smoke.runtime_picker_is_visible([picker]))
+        self.assertFalse(smoke.foreground_recovery_ready([picker], "%12"))
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [picker]
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.wait_for_foreground_recovery_ready(
+                device,
+                "daily_foreground_return",
+                "%12",
+                timeout=1.0,
+            )
+        self.assertEqual(
+            (error.exception.stage, error.exception.reason),
+            ("daily_foreground_return", "runtime_picker_reappeared"),
+        )
+
+        connected = smoke.Node("Connected", "", "android.widget.TextView", (0, 0, 100, 40))
+        pane = smoke.Node(
+            "",
+            "",
+            "android.widget.Button",
+            (0, 40, 100, 100),
+            resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+            selected=True,
+        )
+        cached_terminal = smoke.Node(
+            "",
+            "Terminal, cached output, read only",
+            "android.view.SurfaceView",
+            (0, 100, 100, 300),
+        )
+        self.assertFalse(
+            smoke.foreground_recovery_ready([connected, pane, cached_terminal], "%12")
+        )
 
     def test_foreground_return_rejects_a_restarted_process_before_ack(self) -> None:
         fixture = smoke.parse_tmux_panes(
@@ -712,6 +1021,17 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         device.process_id.side_effect = ["4312", "4312", "9000"]
         device.run.return_value = b""
         node = smoke.Node("", "fixture", "android.view.View", (0, 0, 100, 100))
+        connected = smoke.Node("Connected", "", "android.widget.TextView", (0, 0, 100, 40))
+        pane = smoke.Node(
+            "",
+            "",
+            "android.widget.Button",
+            (0, 40, 100, 100),
+            resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+            selected=True,
+        )
+        terminal = smoke.Node("", "Terminal", "android.view.SurfaceView", (0, 100, 100, 300))
+        device.dump_ui.return_value = [connected, pane, terminal]
         with (
             mock.patch.object(smoke, "wait_for_workspace", return_value=node),
             mock.patch.object(smoke, "tap_node"),
@@ -736,6 +1056,578 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             ("daily_foreground_return", "app_process_changed"),
         )
         terminal_line.assert_not_called()
+
+
+class ProfileSwitchBoundaryTests(unittest.TestCase):
+    PROFILE_NAME = "Android daily second"
+
+    @staticmethod
+    def confirmation_node() -> smoke.Node:
+        return smoke.Node(
+            "Switch servers?",
+            "",
+            "android.widget.TextView",
+            (0, 0, 400, 80),
+        )
+
+    @staticmethod
+    def picker_heading(name: str) -> smoke.Node:
+        return smoke.Node(
+            f"{smoke.RUNTIME_PICKER_HEADING_PREFIX}{name}",
+            "",
+            "android.widget.TextView",
+            (0, 0, 800, 120),
+        )
+
+    @staticmethod
+    def picker_row() -> smoke.Node:
+        return smoke.Node(
+            "",
+            smoke.TMUX_RUNTIME_LABELS[0],
+            "android.widget.Button",
+            (0, 120, 800, 240),
+        )
+
+    @staticmethod
+    def profile_node() -> smoke.Node:
+        return smoke.Node(
+            "",
+            f"Connect saved server {ProfileSwitchBoundaryTests.PROFILE_NAME}",
+            "android.view.View",
+            (0, 100, 800, 220),
+        )
+
+    def test_confirmation_branch_taps_switch_exactly_once(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [self.confirmation_node()]
+        with (
+            mock.patch.object(
+                smoke,
+                "wait_for_saved_profile",
+                side_effect=[self.profile_node(), self.profile_node()],
+            ),
+            mock.patch.object(smoke, "tap_node") as tap_node,
+            mock.patch.object(smoke, "tap_action") as tap_action,
+            mock.patch.object(smoke, "select_fixture_tmux_runtime_and_wait_for_connected") as select_runtime,
+            mock.patch.object(smoke, "wait_for_workspace"),
+        ):
+            branch = smoke.switch_saved_profile(
+                device,
+                self.PROFILE_NAME,
+                "daily_profile_switch_second",
+            )
+
+        self.assertEqual(branch, smoke.PROFILE_SWITCH_CONFIRMATION_BRANCH)
+        tap_node.assert_called_once()
+        self.assertEqual(tap_node.call_args.args[0], device)
+        self.assertEqual(tap_node.call_args.args[2], "daily_profile_switch_second")
+        self.assertEqual(device.dump_ui.call_count, 1)
+        self.assertEqual(
+            [call for call in tap_action.call_args_list if call.args[2] == ("Switch server",)],
+            [
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_confirmation",
+                    ("Switch server",),
+                )
+            ],
+        )
+        select_runtime.assert_called_once_with(
+            device,
+            "daily_profile_switch_second_runtime_selection",
+        )
+
+    def test_exact_target_picker_branch_never_confirms_and_keeps_ready_guards(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [
+            self.picker_heading(self.PROFILE_NAME),
+            self.picker_row(),
+        ]
+        with (
+            mock.patch.object(
+                smoke,
+                "wait_for_saved_profile",
+                side_effect=[self.profile_node(), self.profile_node()],
+            ),
+            mock.patch.object(smoke, "tap_node"),
+            mock.patch.object(smoke, "tap_action") as tap_action,
+            mock.patch.object(smoke, "select_fixture_tmux_runtime_and_wait_for_connected") as select_runtime,
+            mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
+        ):
+            branch = smoke.switch_saved_profile(
+                device,
+                self.PROFILE_NAME,
+                "daily_profile_switch_second",
+            )
+
+        self.assertEqual(branch, smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH)
+        self.assertEqual(device.dump_ui.call_count, 1)
+        self.assertFalse(
+            any(call.args[2] == ("Switch server",) for call in tap_action.call_args_list)
+        )
+        select_runtime.assert_called_once_with(
+            device,
+            "daily_profile_switch_second_runtime_selection",
+        )
+        wait_workspace.assert_called_once_with(
+            device,
+            "daily_profile_switch_second_workspace_ready",
+            timeout=smoke.RECONNECT_TIMEOUT,
+        )
+
+    def test_wrong_generic_and_prefix_picker_fail_before_runtime_selection(self) -> None:
+        picker_nodes = (
+            [self.picker_heading("Android daily primary")],
+            [self.picker_heading("")],
+            [self.picker_row()],
+        )
+        for nodes in picker_nodes:
+            with self.subTest(node_label=nodes[0].text or nodes[0].content_description):
+                device = mock.Mock(spec=smoke.AndroidDevice)
+                device.dump_ui.return_value = nodes
+                select_runtime = mock.Mock()
+                with (
+                    mock.patch.object(smoke, "wait_for_saved_profile", return_value=self.profile_node()),
+                    mock.patch.object(smoke, "tap_node"),
+                    mock.patch.object(
+                        smoke,
+                        "select_fixture_tmux_runtime_and_wait_for_connected",
+                        select_runtime,
+                    ),
+                ):
+                    with self.assertRaises(smoke.SmokeFailure) as error:
+                        smoke.switch_saved_profile(
+                            device,
+                            self.PROFILE_NAME,
+                            "daily_profile_switch_second",
+                        )
+                self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER)
+                select_runtime.assert_not_called()
+
+    def test_simultaneous_confirmation_and_exact_picker_fails_closed(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [
+            self.confirmation_node(),
+            self.picker_heading(self.PROFILE_NAME),
+            self.picker_row(),
+        ]
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.wait_for_profile_switch_boundary(
+                device,
+                "daily_profile_switch_second",
+                self.PROFILE_NAME,
+            )
+        self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_AMBIGUOUS)
+
+    def test_boundary_timeout_uses_fixed_reason_without_dynamic_profile_data(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = []
+        with _patched_clock(clock):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_profile_switch_boundary(
+                    device,
+                    "daily_profile_switch_second",
+                    self.PROFILE_NAME,
+                )
+        self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_TIMEOUT)
+        self.assertNotIn(self.PROFILE_NAME, error.exception.stage)
+        self.assertNotIn(self.PROFILE_NAME, error.exception.reason)
+        self.assertNotIn(self.PROFILE_NAME, str(error.exception))
+
+
+class TerminalSurfaceBindingTests(unittest.TestCase):
+    @staticmethod
+    def surface(
+        bounds: tuple[int, int, int, int],
+        *,
+        class_name: str = "dev.meeterm.terminal.MeetermTerminalView",
+        resource_id: str = "",
+    ) -> smoke.Node:
+        return smoke.Node(
+            "raw surface text",
+            "raw surface label",
+            class_name,
+            bounds,
+            resource_id=resource_id,
+        )
+
+    def test_same_class_and_empty_resource_ids_allow_vertical_resize(self) -> None:
+        before = self.surface((0, 100, 1080, 900))
+        after = self.surface((0, 520, 1080, 1900))
+
+        self.assertTrue(smoke.same_terminal_surface_binding(before, after))
+
+    def test_same_resource_id_allows_changed_bounds(self) -> None:
+        before = self.surface(
+            (0, 100, 1080, 900),
+            resource_id="dev.meeterm.app:id/terminal-surface",
+        )
+        after = self.surface(
+            (0, 520, 1080, 1900),
+            resource_id="dev.meeterm.app:id/terminal-surface",
+        )
+
+        self.assertTrue(smoke.same_terminal_surface_binding(before, after))
+
+    def test_different_nonempty_resource_ids_are_different_bindings(self) -> None:
+        before = self.surface(
+            (0, 100, 1080, 900),
+            resource_id="dev.meeterm.app:id/terminal-surface-before",
+        )
+        after = self.surface(
+            (0, 520, 1080, 1900),
+            resource_id="dev.meeterm.app:id/terminal-surface-after",
+        )
+
+        self.assertFalse(smoke.same_terminal_surface_binding(before, after))
+
+    def test_one_sided_resource_id_uses_class_fallback(self) -> None:
+        matching_cases = (
+            (
+                self.surface(
+                    (0, 100, 1080, 900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+                self.surface((0, 520, 1080, 1900)),
+            ),
+            (
+                self.surface((0, 100, 1080, 900)),
+                self.surface(
+                    (0, 520, 1080, 1900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+            ),
+        )
+        for before, after in matching_cases:
+            with self.subTest(before=bool(before.resource_id), after=bool(after.resource_id)):
+                self.assertTrue(smoke.same_terminal_surface_binding(before, after))
+
+        mismatching_cases = (
+            (
+                self.surface(
+                    (0, 100, 1080, 900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+                self.surface(
+                    (0, 520, 1080, 1900),
+                    class_name="android.view.SurfaceView",
+                ),
+            ),
+            (
+                self.surface((0, 100, 1080, 900), class_name="android.view.SurfaceView"),
+                self.surface(
+                    (0, 520, 1080, 1900),
+                    resource_id="dev.meeterm.app:id/terminal-surface",
+                ),
+            ),
+        )
+        for before, after in mismatching_cases:
+            with self.subTest(before=bool(before.resource_id), after=bool(after.resource_id)):
+                self.assertFalse(smoke.same_terminal_surface_binding(before, after))
+
+
+class TransportLossTests(unittest.TestCase):
+    def fixture_nodes(self, *, picker: bool = False) -> list[smoke.Node]:
+        nodes = [
+            smoke.Node(
+                "",
+                "",
+                "android.widget.Button",
+                (0, 40, 100, 100),
+                resource_id=f"{smoke.PACKAGE}:id/terminal-tab-%12",
+                enabled=False,
+                selected=True,
+            ),
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.view.SurfaceView",
+                (0, 100, 100, 300),
+                enabled=False,
+            ),
+        ]
+        for identifier in ("recovery-rail", "recovery-title", "recovery-detail", "recovery-meta"):
+            nodes.append(
+                smoke.Node(
+                    "",
+                    "",
+                    "android.view.View",
+                    (0, 0, 100, 40),
+                    resource_id=f"{smoke.PACKAGE}:id/{identifier}",
+                )
+            )
+        if picker:
+            nodes.append(smoke.Node("Choose a runtime for fixture", "", "android.widget.TextView", (0, 0, 100, 20)))
+        return nodes
+
+    def test_stale_recovery_requires_cached_surface_rail_and_disabled_same_pane(self) -> None:
+        nodes = self.fixture_nodes()
+        self.assertTrue(smoke.transport_loss_recovery_ready(nodes, "%12"))
+        self.assertIsNotNone(smoke.find_recovery_pane_node(nodes, "%12"))
+        self.assertFalse(smoke.transport_loss_recovery_ready(self.fixture_nodes(picker=True), "%12"))
+
+    def test_stale_diagnostic_uses_only_fixed_predicates(self) -> None:
+        nodes = self.fixture_nodes()
+        cached = smoke.find_cached_terminal_surface(nodes)
+        self.assertIsNotNone(cached)
+        assert cached is not None
+        cached.bounds = (0, 500, 100, 900)
+        initial = smoke.Node(
+            "raw-terminal-text",
+            "raw-terminal-label",
+            cached.class_name,
+            (10, 20, 110, 220),
+            resource_id="raw-terminal-resource-id",
+        )
+
+        diagnostic = smoke.stale_read_only_diagnostic(nodes, initial, "%12")
+        records = dict(line.split("=", 1) for line in diagnostic.splitlines())
+
+        self.assertEqual(set(records), set(smoke.STALE_READ_ONLY_DIAGNOSTIC_KEYS))
+        self.assertTrue(
+            set(records.values()).issubset({"yes", "no", "unknown"})
+        )
+        self.assertEqual(records["runtime_picker_hidden"], "yes")
+        self.assertEqual(records["cached_surface_visible"], "yes")
+        self.assertEqual(records["surface_class_match"], "yes")
+        self.assertEqual(records["surface_resource_id_match"], "unknown")
+        for identifier in smoke.RECOVERY_TEST_IDS:
+            self.assertEqual(records[f"{identifier.replace('-', '_')}_visible"], "yes")
+        self.assertEqual(records["expected_selected_pane_visible"], "yes")
+        for sensitive in (
+            "raw-terminal-text",
+            "raw-terminal-label",
+            "raw-terminal-resource-id",
+            "10,20,110,220",
+            "%12",
+        ):
+            self.assertNotIn(sensitive, diagnostic)
+
+    def test_stale_timeout_writes_fixed_diagnostic_artifact(self) -> None:
+        clock = _FakeClock()
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        nodes = [
+            node
+            for node in self.fixture_nodes()
+            if node.resource_id != f"{smoke.PACKAGE}:id/recovery-meta"
+        ]
+        device.dump_ui.return_value = nodes
+        initial = smoke.Node(
+            "",
+            "Terminal",
+            "android.view.SurfaceView",
+            (0, 100, 100, 300),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            artifact_dir = Path(root)
+            with _patched_clock(clock):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.wait_for_transport_loss_stale(
+                        device,
+                        "daily_transport_loss_stale",
+                        "%12",
+                        initial,
+                        timeout=1.0,
+                        artifact_dir=artifact_dir,
+                    )
+
+            self.assertEqual(
+                (error.exception.stage, error.exception.reason),
+                ("daily_transport_loss_stale", "stale_read_only_timeout"),
+            )
+            diagnostic_path = artifact_dir / smoke.STALE_READ_ONLY_DIAGNOSTIC_NAME
+            self.assertTrue(diagnostic_path.is_file())
+            records = dict(
+                line.split("=", 1)
+                for line in diagnostic_path.read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual(records["surface_class_match"], "yes")
+            self.assertEqual(records["surface_resource_id_match"], "unknown")
+            self.assertEqual(records["recovery_meta_visible"], "no")
+
+    def test_transport_marker_command_is_ascii_and_avoids_android_percent_escape(self) -> None:
+        command = smoke.transport_loss_marker_command(
+            "android-ssh-loss-pre-0123456789abcdef",
+            Path("/tmp/meeterm-ssh-fixture-test/loss-marker"),
+            "%12",
+        )
+        self.assertNotIn("%", command)
+        self.assertNotIn("\n", command)
+        self.assertIn("android-ssh-loss-pre-0123456789abcdef:12:", command)
+        self.assertIn('"$$"', command)
+        self.assertIn(" > ", command)
+        appended = smoke.transport_loss_marker_command(
+            "android-ssh-loss-post-0123456789abcdef",
+            Path("/tmp/meeterm-ssh-fixture-test/loss-marker"),
+            "%12",
+            append=True,
+        )
+        self.assertIn(" >> ", appended)
+
+    def test_transport_marker_command_rejects_wrong_pane_or_marker(self) -> None:
+        with self.assertRaises(smoke.SmokeFailure) as marker_error:
+            smoke.transport_loss_marker_command("not-a-loss-marker", Path("/tmp/x"), "%12")
+        self.assertEqual(marker_error.exception.reason, "invalid_marker")
+        with self.assertRaises(smoke.SmokeFailure) as pane_error:
+            smoke.transport_loss_marker_command(
+                "android-ssh-loss-pre-0123456789abcdef", Path("/tmp/x"), "%bad"
+            )
+        self.assertEqual(pane_error.exception.reason, "invalid_pane_id")
+
+    def test_transport_marker_scope_rejects_duplicate_and_other_pane_output(self) -> None:
+        records = smoke.parse_tmux_panes(
+            b"@4\tsmoke\t%12\t1201\t0\t1\t40\t24\t0\t0\t39\t23\t1\t0\n"
+            b"@4\tsmoke\t%13\t1202\t1\t0\t40\t24\t40\t0\t79\t23\t1\t0\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t80\t24\t0\t0\t79\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t80\t24\t0\t0\t79\t23\t0\t0\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            marker = Path(root) / "marker"
+            marker.write_text(
+                "android-ssh-loss-pre-0123456789abcdef:12:1201\n"
+                "android-ssh-loss-post-0123456789abcdef:12:1201\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(smoke, "list_tmux_panes", return_value=records),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    return_value=subprocess.CompletedProcess([], 0, b"clean\n"),
+                ),
+                mock.patch.object(smoke.time, "sleep"),
+            ):
+                smoke.validate_transport_loss_marker_scope(
+                    Path(root) / "tmux.sock",
+                    "%12",
+                    marker,
+                    "android-ssh-loss-pre-0123456789abcdef",
+                    "android-ssh-loss-post-0123456789abcdef",
+                    "transport_loss_scope",
+                )
+
+            marker.write_text(marker.read_text(encoding="utf-8") + "duplicate\n", encoding="utf-8")
+            with self.assertRaises(smoke.SmokeFailure) as duplicate_error:
+                smoke.validate_transport_loss_marker_scope(
+                    Path(root) / "tmux.sock",
+                    "%12",
+                    marker,
+                    "android-ssh-loss-pre-0123456789abcdef",
+                    "android-ssh-loss-post-0123456789abcdef",
+                    "transport_loss_scope",
+                )
+            self.assertEqual(duplicate_error.exception.reason, "marker_repeated")
+
+    def test_transport_marker_scope_rejects_marker_in_another_pane(self) -> None:
+        records = smoke.parse_tmux_panes(
+            b"@4\tsmoke\t%12\t1201\t0\t1\t40\t24\t0\t0\t39\t23\t1\t0\n"
+            b"@4\tsmoke\t%13\t1202\t1\t0\t40\t24\t40\t0\t79\t23\t1\t0\n"
+            b"@5\thandoff\t%14\t1203\t0\t1\t80\t24\t0\t0\t79\t23\t0\t0\n"
+            b"@5\thandoff\t%15\t1204\t1\t0\t80\t24\t0\t0\t79\t23\t0\t0\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root:
+            marker = Path(root) / "marker"
+            marker.write_text(
+                "android-ssh-loss-pre-0123456789abcdef:12:1201\n"
+                "android-ssh-loss-post-0123456789abcdef:12:1201\n",
+                encoding="utf-8",
+            )
+            captures = iter((b"android-ssh-loss-pre-0123456789abcdef\n", b"clean\n", b"clean\n"))
+            with (
+                mock.patch.object(smoke, "list_tmux_panes", return_value=records),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux_command",
+                    side_effect=lambda *args, **kwargs: subprocess.CompletedProcess(
+                        [], 0, next(captures)
+                    ),
+                ),
+                mock.patch.object(smoke.time, "sleep"),
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.validate_transport_loss_marker_scope(
+                        Path(root) / "tmux.sock",
+                        "%12",
+                        marker,
+                        "android-ssh-loss-pre-0123456789abcdef",
+                        "android-ssh-loss-post-0123456789abcdef",
+                        "transport_loss_scope",
+                    )
+            self.assertEqual(error.exception.reason, "marker_in_other_pane")
+
+    def test_fixture_transport_driver_passes_only_control_paths(self) -> None:
+        with mock.patch.dict(
+            smoke.os.environ,
+            {
+                smoke.FIXTURE_CONTROL_REQUEST_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-request",
+                smoke.FIXTURE_CONTROL_STATUS_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-status",
+                "MEETERM_SSH_PASSPHRASE": "must-not-be-forwarded",
+            },
+            clear=False,
+        ), mock.patch.object(
+            smoke.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ) as run:
+            smoke.request_fixture_transport("stop", "transport_loss_inject")
+        self.assertEqual(
+            run.call_args.args[0][-2:],
+            ["--control", "stop"],
+        )
+        self.assertEqual(
+            run.call_args.kwargs["env"],
+            {
+                smoke.FIXTURE_CONTROL_REQUEST_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-request",
+                smoke.FIXTURE_CONTROL_STATUS_ENV: "/tmp/meeterm-ssh-fixture-test/sshd-control-status",
+            },
+        )
+        self.assertNotIn("MEETERM_SSH_PASSPHRASE", run.call_args.kwargs["env"])
+
+    def test_transport_loss_driver_source_has_no_input_between_stop_and_start(self) -> None:
+        source = Path(smoke.__file__).read_text(encoding="utf-8")
+        start = source.index("def exercise_transport_loss_recovery")
+        stop = source.index('request_fixture_transport("stop"', start)
+        restore = source.index('request_fixture_transport("start"', stop)
+        self.assertNotIn("terminal_line", source[stop:restore])
+        self.assertNotIn("input_", source[stop:restore])
+        self.assertNotIn('("reverse", "--remove"', source[stop:restore])
+        self.assertNotIn("reconnect_transport", source[stop:restore])
+        self.assertIn("10.0.2.2", source)
+        self.assertIn("wait_for_transport_loss_stale", source[stop:restore])
+        completion = source.index(
+            'completed.append("daily_transport_loss_complete")',
+            restore,
+        )
+        function_end = source.index("\ndef reconnect_saved_profile_after_restart", restore)
+        self.assertLess(completion, function_end)
+
+    def test_foreground_and_transport_loss_calls_match_required_positional_arity(self) -> None:
+        tree = ast.parse(Path(smoke.__file__).read_text(encoding="utf-8"))
+        call_arities: dict[str, list[int]] = {
+            "exercise_foreground_return": [],
+            "exercise_transport_loss_recovery": [],
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in call_arities
+            ):
+                self.assertEqual(node.keywords, [])
+                call_arities[node.func.id].append(len(node.args))
+
+        self.assertEqual(call_arities["exercise_foreground_return"], [6])
+        self.assertEqual(call_arities["exercise_transport_loss_recovery"], [9])
+
+    def test_transport_loss_completion_is_exactly_once_and_ordered(self) -> None:
+        completed = list(smoke.TRANSPORT_LOSS_COMPLETION_STAGES)
+        smoke.require_transport_loss_completion(completed, "transport_loss_complete")
+        completed.insert(3, smoke.TRANSPORT_LOSS_COMPLETION_STAGES[0])
+        with self.assertRaises(smoke.SmokeFailure) as error:
+            smoke.require_transport_loss_completion(completed, "transport_loss_complete")
+        self.assertEqual(error.exception.reason, "completion_sequence_invalid")
 
 
 class RuntimeSelectionTests(unittest.TestCase):
@@ -1274,7 +2166,10 @@ class UiDriverTests(unittest.TestCase):
                 b"01-01 00:00:01.001 I/MeetermInput: IME commit rejected; reason=unbound",
                 b"01-01 00:00:01.002 I/MeetermInput: IME commit rejected; reason=native_exception",
                 b"01-01 00:00:01.003 I/MeetermInput: IME commit rejected; reason=native_rejection",
-                b"01-01 00:00:01.004 I/MeetermInput: IME commit rejected; reason=unexpected",
+                b"01-01 00:00:01.004 I/MeetermInput: IME commit rejected; reason=stale_or_native_rejection",
+                b"01-01 00:00:01.005 I/MeetermInput: terminal special accepted",
+                b"01-01 00:00:01.006 I/MeetermInput: terminal special rejected; reason=stale_or_native_rejection",
+                b"01-01 00:00:01.007 I/MeetermInput: IME commit rejected; reason=unexpected",
             )
         )
 
@@ -1283,10 +2178,14 @@ class UiDriverTests(unittest.TestCase):
 
         self.assertIn("acceptedCommits=1", output)
         self.assertIn("acceptedBytes=2", output)
-        self.assertIn("rejectedCommits=3", output)
+        self.assertIn("rejectedCommits=4", output)
         self.assertIn("rejectedUnbound=1", output)
         self.assertIn("rejectedNativeException=1", output)
         self.assertIn("rejectedNativeRejection=1", output)
+        self.assertIn("rejectedStaleOrNative=1", output)
+        self.assertIn("acceptedSpecials=1", output)
+        self.assertIn("rejectedSpecials=1", output)
+        self.assertIn("rejectedSpecialStaleOrNative=1", output)
         self.assertNotIn("IME commit accepted", output)
         self.assertNotIn("IME commit rejected", output)
         self.assertNotIn("unexpected", output)
@@ -1972,6 +2871,52 @@ UI dumped to: /dev/tty"""
             {"Workspace smoke", "Workspace handoff", "Workspace options foo"},
         )
 
+    def test_failure_ui_state_contains_only_allowlisted_categories(self) -> None:
+        nodes = [
+            smoke.Node(
+                "Choose a runtime",
+                "",
+                "android.widget.TextView",
+                (0, 0, 400, 100),
+            ),
+            smoke.Node(
+                "",
+                "tmux runtime meeterm",
+                "android.view.View",
+                (0, 100, 400, 200),
+            ),
+            smoke.Node(
+                "",
+                "Workspace private-name",
+                "android.view.View",
+                (0, 200, 400, 300),
+                resource_id="workspace-row-@9",
+            ),
+            smoke.Node(
+                "Saved servers",
+                "",
+                "android.widget.TextView",
+                (0, 300, 400, 400),
+            ),
+            smoke.Node(
+                smoke.PROFILE_CONNECT_ERROR,
+                "",
+                "android.widget.TextView",
+                (0, 400, 400, 500),
+            ),
+        ]
+
+        self.assertEqual(
+            smoke.sanitized_failure_ui_state(nodes),
+            "connection_state=awaiting_runtime_selection\n"
+            "runtime_picker=yes\n"
+            "workspace_row=yes\n"
+            "saved_servers_sheet=yes\n"
+            "switch_confirmation=no\n"
+            "profile_connect_error=yes\n",
+        )
+        self.assertNotIn("private-name", smoke.sanitized_failure_ui_state(nodes))
+
     def test_private_key_label_allows_only_known_accessibility_value_suffixes(self) -> None:
         nodes = [
             smoke.Node(
@@ -2043,13 +2988,109 @@ UI dumped to: /dev/tty"""
             smoke.Node(
                 "",
                 "Terminal",
-                "android.view.View",
+                "android.opengl.GLSurfaceView",
                 (0, 430, 1080, 2200),
             ),
         ]
 
         self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[1])
         self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
+
+    def test_labeled_terminal_surface_prefers_renderer_over_larger_wrapper(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2400),
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.opengl.GLSurfaceView",
+                (0, 430, 1080, 1320),
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[1])
+        self.assertIs(smoke.find_terminal_node(nodes), nodes[1])
+
+    def test_labeled_terminal_surface_falls_back_without_renderer(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.view.View",
+                (0, 430, 800, 1800),
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[0])
+
+    def test_labeled_terminal_surface_rejects_disabled_renderer_for_fallback(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+            ),
+            smoke.Node(
+                "",
+                "Terminal",
+                "android.opengl.GLSurfaceView",
+                (0, 430, 1080, 1320),
+                enabled=False,
+            ),
+        ]
+
+        self.assertIs(smoke.find_labeled_terminal_surface(nodes), nodes[0])
+
+    def test_cached_terminal_surface_keeps_its_distinct_label_contract(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+                enabled=False,
+            ),
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.opengl.GLSurfaceView",
+                (0, 430, 1080, 1320),
+                enabled=False,
+            ),
+        ]
+
+        self.assertIs(smoke.find_cached_terminal_surface(nodes), nodes[1])
+
+    def test_cached_terminal_surface_falls_back_without_renderer(self) -> None:
+        nodes = [
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.widget.LinearLayout",
+                (0, 430, 1080, 2200),
+                enabled=False,
+            ),
+            smoke.Node(
+                "",
+                "Terminal, cached output, read only",
+                "android.view.View",
+                (0, 430, 800, 1800),
+                enabled=False,
+            ),
+        ]
+
+        self.assertIs(smoke.find_cached_terminal_surface(nodes), nodes[0])
 
     def test_labeled_terminal_surface_rejects_unlabeled_fallbacks(self) -> None:
         nodes = [
@@ -2088,7 +3129,7 @@ UI dumped to: /dev/tty"""
         terminal = smoke.Node(
             "",
             "Terminal",
-            "android.view.View",
+            "android.opengl.GLSurfaceView",
             (10, 100, 1010, 1900),
         )
 
@@ -2103,7 +3144,9 @@ UI dumped to: /dev/tty"""
         self.assertEqual(
             diagnostic,
             "surface_label=Terminal\n"
-            "surface_class=android.view.View\n"
+            "surface_class=android.opengl.GLSurfaceView\n"
+            "surface_candidate=renderer\n"
+            "surface_class_kind=gl_surface\n"
             "bounds_left=10\n"
             "bounds_top=100\n"
             "bounds_right=1010\n"
@@ -2326,8 +3369,10 @@ class CommandTests(unittest.TestCase):
 
         with_pid = smoke.session_marker_command(marker, path, 1202)
         resumed_with_pid = smoke.resumed_marker_command(marker, path, 1202)
+        appended = smoke.session_marker_command(marker, path, append=True)
         self.assertIn(":$$", with_pid)
         self.assertIn('[ "$$" = 1202 ]', resumed_with_pid)
+        self.assertIn(" >> ", appended)
 
     def test_marker_commands_reject_input_text_unsafe_marker(self) -> None:
         with self.assertRaises(smoke.SmokeFailure) as first_error:

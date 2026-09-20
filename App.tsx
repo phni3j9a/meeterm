@@ -5,6 +5,7 @@ import {
   Alert,
   AppState,
   BackHandler,
+  AccessibilityInfo,
   FlatList,
   Keyboard,
   Linking,
@@ -22,7 +23,8 @@ import {
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
-import type { AgentStatus, RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceState } from './modules/meeterm-terminal';
+import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
+import type { AgentStatus, RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -68,16 +70,27 @@ const INITIAL_CONNECTION: SshConnectionState = {
   knownFingerprint: '', errorCode: '', errorMessage: '',
 };
 type Workspace = RemoteWorkspace & { panes: RemoteTerminal[] };
-type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | null;
+type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
+type RecoveryActionIdentity = {
+  epoch: string;
+  phase: WorkspaceControl['recovery']['phase'];
+  attempt: number;
+  token: string;
+};
+type RecoveryPendingActions = {
+  retry: RecoveryActionIdentity | null;
+  confirm: RecoveryActionIdentity | null;
+  change: RecoveryActionIdentity | null;
+};
 type PendingRuntimeRefresh = {
   attempt: number;
   connectionGeneration: string;
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 const SMOKE_PROFILE: ServerProfile = {
@@ -136,7 +149,26 @@ type SmokeFixtureState = {
   runtimePickerVisible?: boolean;
   runtimeCreateVisible?: boolean;
   runtimeMessage?: string;
+  control?: WorkspaceControl;
 };
+
+type WorkspaceControlOverrides = Partial<Omit<WorkspaceControl, 'recovery'>> & {
+  recovery?: Partial<WorkspaceControl['recovery']>;
+};
+
+function smokeControl(overrides: WorkspaceControlOverrides = {}): WorkspaceControl {
+  return {
+    ...DEFAULT_WORKSPACE_CONTROL,
+    operationEpoch: '7',
+    runtimeOperationsReady: true,
+    terminalInputReady: true,
+    ...overrides,
+    recovery: {
+      ...DEFAULT_WORKSPACE_CONTROL.recovery,
+      ...overrides.recovery,
+    },
+  };
+}
 
 const SMOKE_RUNTIME_DISCOVERY: RuntimeDiscovery = {
   connectionGeneration: '7',
@@ -222,6 +254,28 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.runtimeDiscovery = discovery;
     return base;
   }
+  if (screen === 'recovery-progress' || screen === 'recovery-exhausted' || screen === 'recovery-mismatch' || screen === 'herdr-recovery-confirm') {
+    const base = smokeFixture(screen === 'herdr-recovery-confirm' ? 'herdr-terminal' : 'terminal');
+    base.connection = {
+      ...base.connection,
+      state: screen === 'recovery-progress' || screen === 'herdr-recovery-confirm' ? 'Reconnecting' : 'Failed',
+      errorCode: '',
+      errorMessage: '',
+    };
+    base.control = smokeControl({
+      hasRetainedWork: true,
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      recovery: screen === 'recovery-progress'
+        ? { phase: 'resynchronizing', reason: 'runtime_validation', attempt: 2, maxAttempts: 6 }
+        : screen === 'recovery-exhausted'
+          ? { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 }
+          : screen === 'recovery-mismatch'
+            ? { phase: 'stopped', reason: 'runtime_identity_mismatch', attempt: 1, maxAttempts: 6 }
+            : { phase: 'awaitingConfirmation', reason: 'herdr_continuity_uncertain', attempt: 1, maxAttempts: 1, confirmationToken: 'smoke-confirmation' },
+    });
+    return base;
+  }
   if (screen === 'long-workspaces') {
     const base = smokeFixture('herdr-workspaces');
     base.panes = base.panes.map(pane => ({
@@ -286,6 +340,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
+  'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
@@ -306,9 +361,38 @@ function sameConnection(a: SshConnectionState, b: SshConnectionState) {
     && a.knownFingerprint === b.knownFingerprint && a.errorCode === b.errorCode
     && a.errorMessage === b.errorMessage;
 }
-const EMPTY_WORKSPACES: WorkspaceState = { backend: 'tmux', runtime: 'meeterm', groupsSupported: false, workspaces: [], groups: [], terminals: [] };
-function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false, longNames = false): WorkspaceState {
+
+// Operation epochs are native u64 values serialized as decimal strings. Keep
+// their ordering exact without converting them through Number, which would
+// lose precision for a long-lived connection.
+function compareOperationEpochs(leftValue: string, rightValue: string): number | null {
+  const left = leftValue.replace(/^0+(?=\d)/, '');
+  const right = rightValue.replace(/^0+(?=\d)/, '');
+  if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) return leftValue === rightValue ? 0 : null;
+  if (left.length !== right.length) return left.length > right.length ? 1 : -1;
+  if (left === right) return 0;
+  return left > right ? 1 : -1;
+}
+
+function operationEpochAtLeast(candidate: string, reference: string): boolean {
+  const comparison = compareOperationEpochs(candidate, reference);
+  return comparison !== null && comparison >= 0;
+}
+
+function operationEpochNewer(candidate: string, reference: string): boolean {
+  const comparison = compareOperationEpochs(candidate, reference);
+  return comparison !== null && comparison > 0;
+}
+
+const EMPTY_WORKSPACES: WorkspaceState = {
+  backend: 'tmux', runtime: 'meeterm', groupsSupported: false, workspaces: [], groups: [], terminals: [],
+  control: { ...DEFAULT_WORKSPACE_CONTROL, recovery: { ...DEFAULT_WORKSPACE_CONTROL.recovery } },
+};
+function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false, longNames = false, control?: WorkspaceControl): WorkspaceState {
   const ids = [...new Set(panes.map(pane => pane.workspaceId))];
+  const defaultControl = panes.length > 0
+    ? smokeControl()
+    : smokeControl({ runtimeOperationsReady: false, terminalInputReady: false });
   return { ...EMPTY_WORKSPACES, terminals: panes,
     workspaces: ids.map(id => ({ id, name: longNames ? id === '@smoke-main' ? 'Production infrastructure — migration and release preparation' : 'Research / terminal typography and international text' : id === '@smoke-main' ? 'Main workspace' : 'Tools workspace', agentStatus: herdr ? id === '@smoke-main' ? 'blocked' : 'idle' : null })),
     backend: herdr ? 'herdr' : 'tmux', runtime: herdr ? 'dev' : 'meeterm', groupsSupported: herdr,
@@ -317,6 +401,7 @@ function smokeWorkspaceState(panes: RemoteTerminal[], herdr = false, longNames =
       { id: 'smoke-tests', workspaceId: '@smoke-main', name: 'Tests & review', selected: false, agentStatus: 'done' },
       { id: 'smoke-logs', workspaceId: '@smoke-tools', name: 'Logs', selected: true, agentStatus: 'unknown' },
     ] : ids.map(id => ({ id, workspaceId: id, name: '', selected: true, agentStatus: null })),
+    control: control ?? defaultControl,
   };
 }
 function sameSession(a: WorkspaceState, b: WorkspaceState) { return JSON.stringify(a) === JSON.stringify(b); }
@@ -451,7 +536,7 @@ function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker 
   </Pressable>{onOptions ? <IconButton icon="menu" label={`Workspace options ${workspace.name}`} onPress={onOptions} disabled={disabled || optionsDisabled} colors={colors} /> : null}</View>;
 }
 
-function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, children }: { title: string; visible: boolean; onClose: () => void; onDismiss: () => void; busy: boolean; colors: Palette; children: ReactNode }) {
+function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, closeLabel = 'Close sheet', children }: { title: string; visible: boolean; onClose: () => void; onDismiss: () => void; busy: boolean; closeLabel?: string; colors: Palette; children: ReactNode }) {
   const reducedMotion = useReducedMotion();
   return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy} onRequestClose={() => { if (!busy) onClose(); }} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider>
@@ -460,7 +545,7 @@ function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, childre
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>
           {busy ? <ActivityIndicator color={colors.accent} /> : null}
-          <IconButton icon="close" label="Close sheet" colors={colors} onPress={onClose} disabled={busy} />
+          <IconButton icon="close" label={closeLabel} colors={colors} onPress={onClose} disabled={busy} />
         </View>
         {children}
       </SafeAreaView>
@@ -621,6 +706,234 @@ function applyRuntimeHint(discovery: RuntimeDiscovery, hint: RuntimeHint | null)
   };
 }
 
+type RecoveryReasonKind =
+  | 'foreground'
+  | 'validation'
+  | 'resync'
+  | 'retryExhausted'
+  | 'runtimeMismatch'
+  | 'runtimeMissing'
+  | 'terminalMissing'
+  | 'hostKeyChanged'
+  | 'authentication'
+  | 'controllerBusy'
+  | 'incompatible'
+  | 'unknown';
+
+type RecoveryRailCopy = {
+  title: string;
+  detail: string;
+  meta: string;
+  progress: boolean;
+  danger: boolean;
+  assertive: boolean;
+  retry: boolean;
+  review: boolean;
+  reviewLabel?: string;
+  reviewAccessibilityLabel?: string;
+  connectionDetails: boolean;
+  chooseTerminal: boolean;
+  change: boolean;
+};
+
+function safeRecoveryLabel(value: string, fallback: string): string {
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned ? cleaned.slice(0, 128) : fallback;
+}
+
+const RECOVERY_REASON_ALIASES: Record<string, RecoveryReasonKind> = {
+  foreground: 'foreground',
+  foreground_check: 'foreground',
+  checking_connection: 'foreground',
+  foreground_lost: 'foreground',
+  validation: 'validation',
+  validating: 'validation',
+  workspace_validation: 'validation',
+  runtime_validation: 'validation',
+  topology_validation: 'validation',
+  identity_validation: 'validation',
+  capability_validation: 'validation',
+  resync: 'resync',
+  resynchronizing: 'resync',
+  screen_resync: 'resync',
+  screen_refresh: 'resync',
+  terminal_refresh: 'resync',
+  retry_exhausted: 'retryExhausted',
+  exhausted: 'retryExhausted',
+  offline: 'retryExhausted',
+  automatic_reconnect_disabled: 'retryExhausted',
+  runtime_mismatch: 'runtimeMismatch',
+  runtime_identity_mismatch: 'runtimeMismatch',
+  runtime_identity_uncertain: 'runtimeMismatch',
+  runtime_replaced: 'runtimeMismatch',
+  runtime_restarted: 'runtimeMismatch',
+  candidate_changed: 'runtimeMismatch',
+  identity_mismatch: 'runtimeMismatch',
+  tmux_runtime_missing: 'runtimeMismatch',
+  tmux_runtime_collision: 'runtimeMismatch',
+  tmux_runtime_unknown: 'runtimeMismatch',
+  tmux_topology_unsafe: 'runtimeMismatch',
+  runtime_missing: 'runtimeMissing',
+  runtime_not_found: 'runtimeMissing',
+  session_missing: 'runtimeMissing',
+  herdr_session_missing: 'runtimeMissing',
+  terminal_missing: 'terminalMissing',
+  pane_missing: 'terminalMissing',
+  selected_terminal_missing: 'terminalMissing',
+  herdr_terminal_missing: 'terminalMissing',
+  host_key_changed: 'hostKeyChanged',
+  changed_host_key: 'hostKeyChanged',
+  authentication_failed: 'authentication',
+  auth_failed: 'authentication',
+  host_authentication_failed: 'authentication',
+  controller_busy: 'controllerBusy',
+  herdr_controller_busy: 'controllerBusy',
+  controller_conflict: 'controllerBusy',
+  incompatible: 'incompatible',
+  incompatible_runtime: 'incompatible',
+  runtime_incompatible: 'incompatible',
+  herdr_incompatible: 'incompatible',
+  continuity_uncertain: 'unknown',
+  herdr_continuity_uncertain: 'unknown',
+};
+
+function recoveryReasonKind(value: string): RecoveryReasonKind {
+  const normalized = value
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+  return RECOVERY_REASON_ALIASES[normalized] ?? 'unknown';
+}
+
+function recoveryRailCopy(control: WorkspaceControl, backend: RuntimeBackend, runtime: string, server: string, recovered = false): RecoveryRailCopy | null {
+  const runtimeLabel = safeRecoveryLabel(runtime, 'this runtime');
+  const serverLabel = safeRecoveryLabel(server, 'this server');
+  const reason = recoveryReasonKind(control.recovery.reason);
+  const meta = 'Last received output · Input paused';
+  const validationProgress = reason === 'validation'
+    || reason === 'runtimeMismatch'
+    || reason === 'runtimeMissing'
+    || reason === 'terminalMissing'
+    || reason === 'incompatible';
+  if (recovered) {
+    return {
+      title: 'Back online',
+      detail: 'Terminal is live · Input available',
+      meta: 'Terminal is live · Input available',
+      progress: false,
+      danger: false,
+      assertive: false,
+      retry: false,
+      review: false,
+      connectionDetails: false,
+      chooseTerminal: false,
+      change: false,
+    };
+  }
+
+  if (control.recovery.phase === 'reconnecting') {
+    if (reason === 'foreground') {
+      return { title: 'Checking connection…', detail: 'Checking whether this workspace is still available.', meta, progress: true, danger: false, assertive: false, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: false };
+    }
+    if (validationProgress) {
+      return { title: 'Verifying this workspace…', detail: 'Checking the server, runtime, and terminal.', meta, progress: true, danger: false, assertive: false, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: false };
+    }
+    return { title: 'Reconnecting…', detail: 'Waiting for the server.', meta, progress: true, danger: false, assertive: false, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: false };
+  }
+
+  if (control.recovery.phase === 'resynchronizing') {
+    if (validationProgress) {
+      return { title: 'Verifying this workspace…', detail: 'Checking the server, runtime, and terminal.', meta, progress: true, danger: false, assertive: false, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: false };
+    }
+    return { title: 'Refreshing terminal…', detail: 'Receiving the current remote screen.', meta, progress: true, danger: false, assertive: false, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: false };
+  }
+
+  if (control.recovery.phase === 'awaitingConfirmation') {
+    return {
+      title: 'Confirmation needed',
+      detail: `Herdr can’t verify that “${runtimeLabel}” is the same instance.`,
+      meta,
+      progress: false,
+      danger: false,
+      assertive: true,
+      retry: false,
+      review: true,
+      connectionDetails: false,
+      chooseTerminal: false,
+      change: true,
+    };
+  }
+
+  if (control.recovery.phase !== 'stopped') return null;
+
+  switch (reason) {
+    case 'runtimeMismatch':
+      return { title: 'This runtime can’t be restored', detail: `The runtime named “${runtimeLabel}” is not the same instance as before.`, meta, progress: false, danger: true, assertive: true, retry: true, review: false, connectionDetails: false, chooseTerminal: false, change: true };
+    case 'runtimeMissing':
+      return { title: 'This runtime can’t be restored', detail: `The runtime named “${runtimeLabel}” is no longer available.`, meta, progress: false, danger: true, assertive: true, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: true };
+    case 'terminalMissing':
+      return { title: 'This terminal no longer exists', detail: 'Use Change… for a fresh runtime or server selection before sending anything.', meta: 'Last received output · Input paused · Change for fresh selection', progress: false, danger: true, assertive: true, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: true };
+    case 'hostKeyChanged':
+      return { title: 'Server identity changed', detail: 'Review the host key before connecting again.', meta, progress: false, danger: false, assertive: true, retry: false, review: true, reviewLabel: 'Review key', reviewAccessibilityLabel: 'Review key change', connectionDetails: false, chooseTerminal: false, change: false };
+    case 'authentication':
+      return { title: 'Sign-in is required', detail: 'Enter your connection details to continue.', meta, progress: false, danger: false, assertive: true, retry: false, review: false, connectionDetails: true, chooseTerminal: false, change: false };
+    case 'controllerBusy':
+      return { title: 'Another client is controlling this terminal.', detail: 'Release it there, then try again.', meta, progress: false, danger: false, assertive: true, retry: true, review: false, connectionDetails: false, chooseTerminal: false, change: true };
+    case 'incompatible':
+      return { title: 'This runtime is no longer compatible with meeterm.', detail: 'Choose another runtime to continue.', meta, progress: false, danger: true, assertive: true, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: true };
+    case 'retryExhausted':
+    case 'unknown':
+    default:
+      return { title: 'Still offline', detail: `Couldn’t reach ${serverLabel}.`, meta, progress: false, danger: false, assertive: true, retry: true, review: false, connectionDetails: false, chooseTerminal: false, change: true };
+  }
+}
+
+function RecoveryRail({ copy, colors, busy, onRetry, onReview, onConnectionDetails, onChooseTerminal, onChange }: {
+  copy: RecoveryRailCopy;
+  colors: Palette;
+  busy: { retry: boolean; review: boolean; change: boolean };
+  onRetry: () => void;
+  onReview: () => void;
+  onConnectionDetails: () => void;
+  onChooseTerminal: () => void;
+  onChange: () => void;
+}) {
+  const accessibilityLabel = `${copy.title}. ${copy.detail}. ${copy.meta.replace(' · ', '. ')}.`;
+  const reducedMotion = useReducedMotion();
+  return <View testID="recovery-rail" style={[styles.recoveryRail, { backgroundColor: DARK.surface, borderTopColor: DARK.border, borderBottomColor: DARK.border }]}>
+    <View accessible={false} importantForAccessibility="no-hide-descendants" style={styles.recoveryRailIcon}>
+      {copy.progress && !reducedMotion ? <ActivityIndicator accessibilityElementsHidden color={DARK.agentStatus.working} /> : <Icon name={copy.danger ? 'key' : 'terminal'} color={copy.danger ? DARK.danger : DARK.agentStatus.working} size={20} />}
+    </View>
+    <View style={styles.recoveryRailBody}>
+      <View accessible accessibilityRole="text" accessibilityLabel={accessibilityLabel} accessibilityLiveRegion={copy.assertive ? 'assertive' : 'polite'} style={styles.recoveryRailText}>
+        <Text testID="recovery-title" style={[styles.recoveryRailTitle, { color: colors.text }]}>{copy.title}</Text>
+        <Text testID="recovery-detail" style={[styles.recoveryRailDetail, { color: colors.muted }]}>{copy.detail}</Text>
+        <Text testID="recovery-meta" style={[styles.recoveryRailMeta, { color: colors.muted }]}>{copy.meta}</Text>
+      </View>
+      {copy.retry || copy.review || copy.connectionDetails || copy.chooseTerminal || copy.change ? <View style={styles.recoveryRailActions}>
+        {copy.retry ? <Button testID="recovery-retry" label="Retry recovery" colors={colors} disabled={busy.retry} onPress={onRetry}>Retry</Button> : null}
+        {copy.review ? <Pressable testID="recovery-review" accessibilityRole="button" accessibilityLabel={copy.reviewAccessibilityLabel ?? 'Review recovery'} accessibilityState={{ disabled: busy.review }} disabled={busy.review} onPress={onReview} style={[styles.textAction, { opacity: busy.review ? .45 : 1 }]}><Text style={[styles.actionText, { color: colors.accent }]}>{copy.reviewLabel ?? 'Review'}</Text></Pressable> : null}
+        {copy.connectionDetails ? <Pressable testID="recovery-connection-details" accessibilityRole="button" accessibilityLabel="Connection details" onPress={onConnectionDetails} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Connection details</Text></Pressable> : null}
+        {copy.chooseTerminal ? <Pressable testID="recovery-choose-terminal" accessibilityRole="button" accessibilityLabel="Choose another terminal" onPress={onChooseTerminal} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Choose terminal…</Text></Pressable> : null}
+        {copy.change ? <Pressable testID="recovery-change" accessibilityRole="button" accessibilityLabel="Change connection or runtime" accessibilityState={{ disabled: busy.change }} disabled={busy.change} onPress={onChange} style={[styles.textAction, { opacity: busy.change ? .45 : 1 }]}><Text style={[styles.actionText, { color: colors.accent }]}>Change…</Text></Pressable> : null}
+      </View> : null}
+    </View>
+  </View>;
+}
+
+function announceRecovery(copy: RecoveryRailCopy): void {
+  if (Platform.OS !== 'ios') return;
+  const announce = AccessibilityInfo?.announceForAccessibilityWithOptions;
+  if (typeof announce !== 'function') return;
+  try {
+    void announce(`${copy.title}. ${copy.detail}. ${copy.meta.replace(' · ', '. ')}.`, { queue: true });
+  } catch {
+    // Accessibility announcements are observational and must not affect the
+    // native recovery state or interrupt the current screen.
+  }
+}
+
 function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const smokeScreen = smokeRoute?.kind === 'screen' ? smokeRoute.screen : null;
   const smokeFixtureActive = smokeScreen !== null;
@@ -630,7 +943,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [connection, setConnection] = useState<SshConnectionState>(() => fixture?.connection ?? INITIAL_CONNECTION);
-  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-') || smokeScreen === 'long-workspaces', smokeScreen === 'long-workspaces') : EMPTY_WORKSPACES);
+  const [session, setSession] = useState<WorkspaceState>(() => fixture ? smokeWorkspaceState(fixture.panes, smokeScreen?.startsWith('herdr-') || smokeScreen === 'long-workspaces', smokeScreen === 'long-workspaces', fixture.control) : EMPTY_WORKSPACES);
+  // Native control metadata is authoritative. A missing/invalid control
+  // object deliberately yields false gates through normalizeWorkspaceControl.
+  const control = normalizeWorkspaceControl((session as WorkspaceState & { control?: unknown }).control);
   const panes = session.terminals;
   const [screen, setScreen] = useState<'workspaces' | 'terminal'>(() => fixture?.screen ?? 'workspaces');
   const [rememberedWorkspaceId, setWorkspaceId] = useState(() => fixture?.workspaceId ?? '');
@@ -661,7 +977,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [runtimeMessage, setRuntimeMessage] = useState(() => fixture?.runtimeMessage ?? '');
   const [runtimeCreationError, setRuntimeCreationError] = useState('');
   const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
-  const [runtimeBound, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
+  const [, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
   const [controlMessage, setControlMessage] = useState('');
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
@@ -669,6 +985,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [commandBusy, setCommandBusy] = useState(false);
   const [appState, setAppState] = useState(AppState.currentState);
   const [foundation, setFoundation] = useState(() => smokeRoute?.kind === 'foundation');
+  const [recoveryInvalidated, setRecoveryInvalidated] = useState(false);
+  const [recoveryPending, setRecoveryPending] = useState({ retry: false, confirm: false, change: false });
+  const [recoveredEpoch, setRecoveredEpoch] = useState('');
   const commandPending = useRef(false);
   const commandVersion = useRef(0);
   const shownHostKey = useRef('');
@@ -694,6 +1013,21 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const runtimeDiscoveryRequestedPhase = useRef('');
   const runtimeConnectionGeneration = useRef<string | null>(fixture?.runtimeDiscovery?.connectionGeneration ?? null);
   const runtimeHintRef = useRef<RuntimeHint | null>(null);
+  const controlRef = useRef(control);
+  const recoveryInvalidatedRef = useRef(recoveryInvalidated);
+  const workspaceObservationRef = useRef(Boolean(fixture?.hasConnected && fixture.panes.length > 0));
+  const retainedPaneRef = useRef<RemoteTerminal | null>(null);
+  const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, confirm: null, change: null });
+  const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
+  const completedRecoveryEpochRef = useRef('');
+  const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const announcedRecoveryRef = useRef('');
+
+  controlRef.current = control;
+  recoveryInvalidatedRef.current = recoveryInvalidated;
+  workspaceObservationRef.current = !recoveryInvalidated
+    && ((control.hasRetainedWork && control.recovery.phase !== 'none')
+      || (runtimeBoundRef.current && panes.length > 0));
 
   const updateRuntimeBound = useCallback((value: boolean) => {
     runtimeBoundRef.current = value;
@@ -793,11 +1127,18 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart || pendingRefreshAtStart);
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        // Host authentication and runtime discovery do not have workspace
-        // metadata yet. Never turn the existing metadata poll into a runtime
-        // discovery loop or ask native for a workspace before binding one.
-        const nextSession = next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current
+        // Host authentication and fresh runtime discovery do not have
+        // workspace metadata yet. A retained-work recovery is the exception:
+        // keep polling its coherent cached snapshot so the existing native
+        // surface can remain mounted while the actor validates its identity.
+        const observeRetainedWork = workspaceObservationRef.current;
+        const observeRecoveryState = ['Reconnecting', 'Synchronizing', 'Failed'].includes(next.state);
+        const nextSession = (next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current)
+          || observeRetainedWork || observeRecoveryState
           ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+          : null;
+        const nextSessionControl = nextSession
+          ? normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control)
           : null;
         // Initial discovery and queued select/create calls can remain in an
         // intermediate phase while the Rust actor works. Observe only the
@@ -850,10 +1191,32 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             setRuntimeMessage('Could not refresh runtimes. Check the connection and try again.');
           }
           setConnection(current => sameConnection(current, next) ? current : next);
-          if (nextSession) {
-            updateRuntimeBound(true);
-            setSession(current => sameSession(current, nextSession) ? current : nextSession);
-            setHasConnected(true);
+          const readySession = Boolean(nextSession
+            && next.state === 'Ready'
+            && !runtimeSelectionRequired.current
+            && !ignoreReadyUntilNewConnection.current
+            && !recoveryInvalidatedRef.current
+            && nextSessionControl?.runtimeOperationsReady);
+          const retainedSession = Boolean(nextSession && nextSessionControl?.hasRetainedWork
+            && nextSessionControl.recovery.phase !== 'none'
+            && !recoveryInvalidatedRef.current);
+          if (readySession || retainedSession) {
+            if (readySession) {
+              // A Ready snapshot with both native gates open is a valid
+              // binding; this is the only path that updates the live session
+              // during ordinary polling.
+              updateRuntimeBound(true);
+              setHasConnected(true);
+            }
+            if (retainedSession) {
+              // A stale picker/modal must not remain above a retained
+              // recovery surface merely because the transport reports an
+              // intermediate picker-compatible state.
+              setRuntimePickerVisible(false);
+              setRuntimeCreateVisible(false);
+              setHasConnected(true);
+            }
+            setSession(current => sameSession(current, nextSession!) ? current : nextSession!);
           } else if (next.state === 'AwaitingRuntimeSelection' || next.state === 'DiscoveringRuntimes') {
             if (!runtimeSelectionRequired.current) {
               const wasEstablishedBinding = runtimeBoundRef.current;
@@ -905,7 +1268,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     ], { cancelable: false });
   }, [connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
 
-  const nativeSelectedPane = panes.find(pane => pane.selected);
+  const recoveryPhaseActive = !recoveryInvalidated && control.recovery.phase !== 'none';
+  const retainedWorkAvailable = !recoveryInvalidated && control.hasRetainedWork;
+  const nativeSelectedPaneCandidate = panes.find(pane => pane.selected);
+  const retainedPane = recoveryPhaseActive ? retainedPaneRef.current : null;
+  const nativeSelectedPane = retainedPane
+    && (!nativeSelectedPaneCandidate || nativeSelectedPaneCandidate.terminalId !== retainedPane.terminalId)
+    ? retainedPane
+    : nativeSelectedPaneCandidate;
   const selectedWorkspaceId = nativeSelectedPane?.workspaceId;
   // Follow the native selection in the same render as its snapshot. A pane
   // moved by another client keeps its native handle and input controller.
@@ -924,7 +1294,22 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const groupPanes = workspace?.panes.filter(pane => pane.groupId === group?.id) ?? [];
   // Remembered/active panes are candidates for explicit selectPane commands,
   // never alternate surfaces for a controller still bound to another pane.
-  const selectedPane = groupPanes.find(pane => pane.selected);
+  // During retained recovery, the last bound native terminal wins over a
+  // replacement selected by a newer/uncertain remote snapshot.
+  const selectedPaneCandidate = groupPanes.find(pane => pane.selected);
+  const selectedPane = recoveryPhaseActive && retainedPane
+    && (!selectedPaneCandidate || selectedPaneCandidate.terminalId !== retainedPane.terminalId)
+    ? retainedPane
+    : selectedPaneCandidate;
+  useEffect(() => {
+    if (recoveryPhaseActive && selectedPaneCandidate && !retainedPaneRef.current) {
+      retainedPaneRef.current = selectedPaneCandidate;
+    }
+    if (!recoveryPhaseActive && selectedPaneCandidate && control.recovery.phase === 'none') {
+      retainedPaneRef.current = selectedPaneCandidate;
+    }
+    if (!retainedWorkAvailable && !recoveryPhaseActive) retainedPaneRef.current = null;
+  }, [control.recovery.phase, recoveryPhaseActive, retainedWorkAvailable, selectedPaneCandidate]);
   const activeWorkspaceId = selectedWorkspaceId
     ?? session.groups.find(group => group.workspaceId === workspaceId && group.selected)?.workspaceId;
   // App appearance and terminal contrast are independent. Remote ANSI palettes
@@ -998,31 +1383,99 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [effectiveRuntimeHint, runtimeDiscovery, smokeFixtureActive]);
 
   useEffect(() => {
-    if (smokeFixtureActive || !['DiscoveringRuntimes', 'AwaitingRuntimeSelection'].includes(connection.state)) return;
+    if (smokeFixtureActive || recoveryPhaseActive
+      || !['DiscoveringRuntimes', 'AwaitingRuntimeSelection'].includes(connection.state)) return;
     setRuntimePickerVisible(true);
     if (runtimeDiscoveryLoadedAttempt.current === runtimeDiscoveryAttempt.current) return;
     const requestToken = `${runtimeDiscoveryAttempt.current}:${connection.state}`;
     if (runtimeDiscoveryRequestedPhase.current === requestToken) return;
     runtimeDiscoveryRequestedPhase.current = requestToken;
     void loadRuntimeDiscovery();
-  }, [connection.state, loadRuntimeDiscovery, smokeFixtureActive]);
+  }, [connection.state, loadRuntimeDiscovery, recoveryPhaseActive, smokeFixtureActive]);
 
   const presentation = connectionPresentation(connection);
   const ready = connection.state === 'Ready';
-  const runtimeReady = Boolean(ready && runtimeBound);
-  const terminalVisible = Boolean(runtimeReady && workspace && selectedPane)
+  // These are native-published gates, not guesses derived from the transport
+  // phase or the presence of cached JS metadata. Keep the two gates separate
+  // so a drawable recovery surface can never imply writable input.
+  const runtimeReady = Boolean(ready && control.runtimeOperationsReady && !recoveryPhaseActive && !recoveryInvalidated);
+  const terminalInputReady = Boolean(ready && control.terminalInputReady && !recoveryPhaseActive && !recoveryInvalidated);
+  const strongReady = runtimeReady && terminalInputReady;
+  const surfaceAvailable = Boolean(workspace && selectedPane && (strongReady || retainedWorkAvailable));
+  const surfaceVisible = Boolean(surfaceAvailable)
     && screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible
     && !nameRequest && appState === 'active';
+  const recoveryServerLabel = currentProfile?.name ?? endpoint(connection);
+  const recoveryCopy = recoveryRailCopy(control, session.backend, session.runtime, recoveryServerLabel);
+  const recoveredCopy = recoveredEpoch === control.operationEpoch && strongReady && surfaceAvailable
+    ? recoveryRailCopy(control, session.backend, session.runtime, recoveryServerLabel, true)
+    : null;
+
+  useEffect(() => {
+    const previous = recoveryMilestoneRef.current;
+    const completedRecovery = Boolean(previous
+      && strongReady
+      && !previous.strongReady
+      && !recoveryInvalidatedRef.current
+      && control.operationEpoch
+      // A normal live surface can briefly lose the input gate while a view or
+      // sheet is hidden. Only a real recovery phase with its native epoch and
+      // attempt may authorize a recovered announcement.
+      && previous.phase !== 'none'
+      && previous.epoch
+      && previous.attempt >= 0
+      && operationEpochAtLeast(control.operationEpoch, previous.epoch)
+      // Do not replay the same recovery after a healthy visibility cycle or
+      // accept an old epoch that arrives after a newer recovery completed.
+      && (!completedRecoveryEpochRef.current
+        || operationEpochNewer(control.operationEpoch, completedRecoveryEpochRef.current)));
+    if (completedRecovery) {
+      const epoch = control.operationEpoch;
+      completedRecoveryEpochRef.current = epoch;
+      setRecoveredEpoch(epoch);
+      if (recoveredTimerRef.current) clearTimeout(recoveredTimerRef.current);
+      recoveredTimerRef.current = setTimeout(() => {
+        setRecoveredEpoch(current => current === epoch ? '' : current);
+      }, 2000);
+      const readyCopy = recoveryRailCopy(control, session.backend, session.runtime, recoveryServerLabel, true);
+      if (readyCopy && announcedRecoveryRef.current !== `${epoch}:ready`) {
+        announcedRecoveryRef.current = `${epoch}:ready`;
+        announceRecovery(readyCopy);
+      }
+    } else if (retainedWorkAvailable && recoveryCopy) {
+      const milestone = `${control.operationEpoch}:${control.recovery.phase}:${control.recovery.reason}`;
+      if (announcedRecoveryRef.current !== milestone) {
+        announcedRecoveryRef.current = milestone;
+        announceRecovery(recoveryCopy);
+      }
+    }
+    recoveryMilestoneRef.current = {
+      epoch: control.operationEpoch,
+      phase: control.recovery.phase,
+      attempt: control.recovery.attempt,
+      retained: retainedWorkAvailable,
+      strongReady,
+    };
+  }, [control.operationEpoch, control.recovery.phase, control.recovery.reason, recoveryCopy, recoveryServerLabel, retainedWorkAvailable, session.backend, session.runtime, strongReady]);
+
+  useEffect(() => () => {
+    if (recoveredTimerRef.current) clearTimeout(recoveredTimerRef.current);
+  }, []);
+
   useEffect(() => {
     if (smokeFixtureActive) return;
     foregroundCommands.current = foregroundCommands.current
-      .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, terminalVisible))
+      // A cached recovery view is visible to the user but is never reported
+      // as writable/live. Native treats visibility as a surface lifecycle
+      // signal and keeps controller acquisition/input behind its recovery
+      // gates, so a cached surface may still report visible here.
+      .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, surfaceVisible))
       .catch(() => setControlMessage('Could not update terminal visibility. Reconnect to continue.'));
-  }, [terminalVisible, smokeFixtureActive]);
+  }, [smokeFixtureActive, strongReady, surfaceVisible]);
   const closing = connection.state === 'Closing';
   const active = !['Disconnected', 'Failed', 'Closing'].includes(connection.state);
   const attempted = Boolean(connection.host);
-  const canReconnect = hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
+  const canReconnect = !recoveryPhaseActive && hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
   const filteredWorkspaces = useMemo(() => searching ? workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(query))) : workspaces, [query, searching, workspaces]);
   const pickerWorkspaces = useMemo(() => workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(pickerQuery))), [pickerQuery, workspaces]);
 
@@ -1040,8 +1493,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         const nextSession = next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current
           ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
           : null;
+        const nextSessionControl = nextSession
+          ? normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control)
+          : null;
         setConnection(next);
         if (nextSession) {
+          if (recoveryInvalidatedRef.current && nextSessionControl?.recovery.phase === 'none'
+            && nextSessionControl.runtimeOperationsReady) {
+            recoveryInvalidatedRef.current = false;
+            setRecoveryInvalidated(false);
+          }
           updateRuntimeBound(true);
           setSession(nextSession);
           setHasConnected(true);
@@ -1066,9 +1527,165 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     finally { commandPending.current = false; setCommandBusy(false); }
   }, [invalidateRuntimeDiscovery, smokeFixtureActive, updateRuntimeBound]);
 
+  const startRecoveryAction = useCallback((kind: keyof RecoveryPendingActions, identity: RecoveryActionIdentity) => {
+    if (!identity.epoch || recoveryPendingRef.current[kind]) return false;
+    recoveryPendingRef.current = { ...recoveryPendingRef.current, [kind]: identity };
+    setRecoveryPending(current => ({ ...current, [kind]: true }));
+    return true;
+  }, []);
+
+  const clearRecoveryAction = useCallback((kind: keyof RecoveryPendingActions, expected?: RecoveryActionIdentity) => {
+    const current = recoveryPendingRef.current[kind];
+    if (!current || (expected && (current.epoch !== expected.epoch
+      || current.phase !== expected.phase || current.attempt !== expected.attempt || current.token !== expected.token))) return;
+    recoveryPendingRef.current = { ...recoveryPendingRef.current, [kind]: null };
+    setRecoveryPending(value => ({ ...value, [kind]: false }));
+  }, []);
+
+  const retryRecovery = useCallback(() => {
+    const current = controlRef.current;
+    const copy = recoveryRailCopy(current, session.backend, session.runtime, recoveryServerLabel);
+    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
+      || current.recovery.phase !== 'stopped' || !copy?.retry) return;
+    const identity: RecoveryActionIdentity = {
+      epoch: current.operationEpoch,
+      phase: current.recovery.phase,
+      attempt: current.recovery.attempt,
+      token: current.recovery.confirmationToken,
+    };
+    if (!startRecoveryAction('retry', identity)) return;
+    void MeetermTerminal.retryRecovery(CONNECTION_ID, identity.epoch)
+      .catch(() => {
+        clearRecoveryAction('retry', identity);
+        setControlMessage('Recovery could not be started. Try again or change the destination.');
+      });
+  }, [clearRecoveryAction, recoveryServerLabel, session.backend, session.runtime, startRecoveryAction]);
+
+  const confirmRecovery = useCallback((token: string) => {
+    const current = controlRef.current;
+    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
+      || current.recovery.phase !== 'awaitingConfirmation'
+      || !token || token !== current.recovery.confirmationToken) return;
+    const identity: RecoveryActionIdentity = {
+      epoch: current.operationEpoch,
+      phase: current.recovery.phase,
+      attempt: current.recovery.attempt,
+      token,
+    };
+    if (!startRecoveryAction('confirm', identity)) return;
+    void MeetermTerminal.confirmRecovery(CONNECTION_ID, token)
+      .catch(() => {
+        clearRecoveryAction('confirm', identity);
+        setControlMessage('This recovery confirmation is no longer valid. Review the workspace again.');
+      });
+  }, [clearRecoveryAction, startRecoveryAction]);
+
+  const reviewRecovery = useCallback(() => {
+    const current = controlRef.current;
+    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
+      || current.recovery.phase !== 'awaitingConfirmation' || !current.recovery.confirmationToken
+      || recoveryPendingRef.current.confirm) return;
+    const runtimeLabel = safeRecoveryLabel(session.runtime, 'this runtime');
+    const token = current.recovery.confirmationToken;
+    Alert.alert(
+      `Reconnect to “${runtimeLabel}”?`,
+      'Herdr can’t prove this is the same server instance. Continue only if you expect this running session to be your previous one. meeterm won’t take over another controller.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reconnect', onPress: () => confirmRecovery(token) },
+      ],
+    );
+  }, [confirmRecovery, session.runtime]);
+
+  const openRecoveryChange = useCallback(() => {
+    const current = controlRef.current;
+    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
+      || current.recovery.phase === 'none' || recoveryPendingRef.current.change) return;
+    Keyboard.dismiss();
+    setSheet('recovery');
+  }, []);
+
+  const changeRecoveryDestination = useCallback(async (destination: 'runtime' | 'server') => {
+    const current = controlRef.current;
+    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
+      || current.recovery.phase === 'none') return;
+    const identity: RecoveryActionIdentity = {
+      epoch: current.operationEpoch,
+      phase: current.recovery.phase,
+      attempt: current.recovery.attempt,
+      token: current.recovery.confirmationToken,
+    };
+    if (!startRecoveryAction('change', identity)) return;
+
+    try {
+      if (!smokeFixtureActive) await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
+
+      // Native acceptance is the one-way boundary. Keep the exact retained
+      // surface mounted while the request is pending or rejected; only after
+      // acceptance may a picker/server destination bind and release the old
+      // recovery cache. Bump the observation version first so an old Ready
+      // poll already in flight cannot restore the retired session afterward.
+      commandVersion.current += 1;
+      recoveryInvalidatedRef.current = true;
+      workspaceObservationRef.current = false;
+      ignoreReadyUntilNewConnection.current = true;
+      runtimeSelectionRequired.current = true;
+      setRecoveryInvalidated(true);
+      setRecoveredEpoch('');
+      recoveryMilestoneRef.current = null;
+      completedRecoveryEpochRef.current = '';
+      retainedPaneRef.current = null;
+      setSession(EMPTY_WORKSPACES);
+      setSelectedPaneIds({});
+      setWorkspaceId('');
+      setScreen('workspaces');
+      setSheet(null);
+      setRuntimeCreateVisible(false);
+      setRuntimeMessage('');
+      updateRuntimeBound(false);
+
+      if (destination === 'runtime') {
+        invalidateRuntimeDiscovery(true);
+      } else {
+        invalidateRuntimeDiscovery(false);
+        setSheet('servers');
+      }
+    } catch {
+      // A stale/error rejection means native recovery is still authoritative.
+      // Do not clear the retained pane/session or move the user away from the
+      // exact cached route; the pending action is released in finally below.
+      setControlMessage('Could not change the destination. Choose Connection details to continue.');
+    } finally {
+      clearRecoveryAction('change', identity);
+    }
+  }, [clearRecoveryAction, invalidateRuntimeDiscovery, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
+
+  useEffect(() => {
+    if (recoveryInvalidatedRef.current) {
+      clearRecoveryAction('retry');
+      clearRecoveryAction('confirm');
+      return;
+    }
+    const current = controlRef.current;
+    (['retry', 'confirm'] as const).forEach(kind => {
+      const pending = recoveryPendingRef.current[kind];
+      if (!pending) return;
+      const token = kind === 'confirm' ? current.recovery.confirmationToken : pending.token;
+      if (pending.epoch !== current.operationEpoch
+        || pending.phase !== current.recovery.phase
+        || pending.attempt !== current.recovery.attempt
+        || (kind === 'confirm' && token !== pending.token)) {
+        clearRecoveryAction(kind, pending);
+      }
+    });
+  }, [clearRecoveryAction, control.operationEpoch, control.recovery.attempt, control.recovery.confirmationToken, control.recovery.phase, recoveryInvalidated]);
+
   const finishRuntimeSelection = useCallback((candidate: RuntimeCandidate) => {
     // This callback is reached only after a Ready snapshot. Keeping the hint
     // write here prevents failed/stale taps from changing profile metadata.
+    recoveryInvalidatedRef.current = false;
+    setRecoveryInvalidated(false);
+    setRecoveredEpoch('');
     pendingRuntimeSelection.current = null;
     pendingRuntimeCreation.current = '';
     pendingRuntimeSelectionBaseline.current = { connectionGeneration: '', revision: -1, errorCode: '' };
@@ -1087,6 +1704,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSheet(null);
     setPickerQuery('');
 
+    // A picker cancellation deliberately ignores the old Ready snapshot.
+    // Once this explicit candidate has reached Ready, subsequent polls may
+    // observe the new binding again.
+    ignoreReadyUntilNewConnection.current = false;
     const profileIdForHint = profileId;
     if (!smokeFixtureActive && profileIdForHint) {
       void MeetermTerminal.setLastUsedRuntime(profileIdForHint, candidate.backend, candidate.name)
@@ -1297,6 +1918,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>) => {
     if (Platform.OS === 'ios' && (formVisible || sheet !== null)) setHostPromptDeferred(true);
+    recoveryInvalidatedRef.current = false;
+    setRecoveryInvalidated(false);
+    setRecoveredEpoch('');
+    recoveryMilestoneRef.current = null;
+    completedRecoveryEpochRef.current = '';
+    retainedPaneRef.current = null;
+    recoveryPendingRef.current = { retry: null, confirm: null, change: null };
+    setRecoveryPending({ retry: false, confirm: false, change: false });
     returnToServersAfterForm.current = false;
     setFormVisible(false);
     setSheet(null);
@@ -1361,6 +1990,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const disconnect = useCallback(() => {
     if (commandPending.current) return;
     Keyboard.dismiss();
+    recoveryInvalidatedRef.current = true;
+    setRecoveryInvalidated(true);
+    setRecoveredEpoch('');
+    recoveryMilestoneRef.current = null;
+    completedRecoveryEpochRef.current = '';
+    retainedPaneRef.current = null;
     setSheet(null);
     const previous = connection;
     setConnection(current => ({ ...current, state: 'Closing' }));
@@ -1371,16 +2006,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const reconnect = useCallback(() => {
     if (commandPending.current) return;
+    // This legacy action is the fresh-picker-compatible reconnect path. It is
+    // intentionally distinct from the retained-work Retry rail action.
+    if (recoveryPhaseActive) {
+      recoveryInvalidatedRef.current = true;
+      setRecoveryInvalidated(true);
+      setRecoveredEpoch('');
+      recoveryMilestoneRef.current = null;
+      completedRecoveryEpochRef.current = '';
+      retainedPaneRef.current = null;
+    }
     setSheet(null);
     const previous = connection;
     setConnection(current => ({ ...current, state: 'Reconnecting', errorCode: '', errorMessage: '' }));
     void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), 'Could not reconnect. Choose Connection details to enter your credentials again.').then(success => {
       if (!success) setConnection(previous);
     });
-  }, [connection, runCommand]);
+  }, [connection, recoveryPhaseActive, runCommand]);
 
+  const retainedWorkspaceId = retainedWorkAvailable && retainedPane ? retainedPane.workspaceId : '';
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
-    if (commandPending.current || (!runtimeReady && !['Disconnected', 'Failed'].includes(connection.state))) return false;
+    const retainedSelection = Boolean(recoveryPhaseActive && retainedWorkAvailable
+      && retainedPane && pane.terminalId === retainedPane.terminalId);
+    if (commandPending.current || (!runtimeReady && !retainedSelection)) return false;
     Keyboard.dismiss();
     const previous = selectedPaneIds[pane.groupId];
     setSelectedPaneIds(current => ({ ...current, [pane.groupId]: pane.id }));
@@ -1388,22 +2036,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // restored selection follows an offline workspace choice.
     // Presentation fixtures may navigate only to their existing native demo
     // terminal. They never issue a remote selection or create a fake JS buffer.
-    const success = smokeFixtureActive ? pane.terminalId === CONNECTION_ID : await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
+    const success = smokeFixtureActive
+      ? pane.terminalId === CONNECTION_ID
+      : retainedSelection
+        ? true
+        : await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
     if (!success) setSelectedPaneIds(current => {
         const next = { ...current };
         if (previous) next[pane.groupId] = previous; else delete next[pane.groupId];
         return next;
       });
     return success;
-  }, [connection.state, runCommand, runtimeReady, selectedPaneIds, smokeFixtureActive]);
+  }, [recoveryPhaseActive, retainedPane, retainedWorkAvailable, runCommand, runtimeReady, selectedPaneIds, smokeFixtureActive]);
 
   const openWorkspace = useCallback((item: Workspace) => {
-    if (commandPending.current) return;
+    const retainedWorkspace = Boolean(recoveryPhaseActive && retainedWorkAvailable
+      && retainedPane && item.id === retainedWorkspaceId);
+    if (commandPending.current || (!runtimeReady && !retainedWorkspace)) return;
     Keyboard.dismiss();
     const chosenGroup = session.groups.find(candidate => candidate.workspaceId === item.id && candidate.selected)
       ?? session.groups.find(candidate => candidate.workspaceId === item.id);
     const candidates = item.panes.filter(candidate => candidate.groupId === chosenGroup?.id);
-    const pane = candidates.find(candidate => candidate.id === selectedPaneIds[chosenGroup?.id ?? ''])
+    const pane = (retainedWorkspace ? retainedPane : null)
+      ?? candidates.find(candidate => candidate.id === selectedPaneIds[chosenGroup?.id ?? ''])
       ?? candidates.find(candidate => candidate.active)
       ?? candidates.find(candidate => candidate.selected)
       ?? candidates[0];
@@ -1420,7 +2075,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         if (success) { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
       });
     } else { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
-  }, [choosePane, selectedPaneIds, session.groups, session.groupsSupported, runCommand]);
+  }, [choosePane, recoveryPhaseActive, retainedPane, retainedWorkAvailable, retainedWorkspaceId, runtimeReady, selectedPaneIds, session.groups, session.groupsSupported, runCommand]);
 
   const backToWorkspaces = useCallback(() => {
     Keyboard.dismiss();
@@ -1428,10 +2083,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSheet(null);
   }, []);
   const openSheet = useCallback((kind: SheetKind) => {
+    if ((kind === 'workspaces' || kind === 'groups') && !runtimeReady) return;
     Keyboard.dismiss();
     setPickerQuery('');
     setSheet(kind);
-  }, []);
+  }, [runtimeReady]);
   const showModal = useCallback((show: () => void) => {
     // iOS must finish dismissing its page sheet before another native modal
     // is presented. Android owns a separate dialog window for each modal.
@@ -1541,6 +2197,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [nameRequest, runCommand, runtimeReady]);
 
   const closeWorkspace = useCallback((item: Workspace) => {
+    if (!runtimeReady || commandPending.current) return;
     Alert.alert('Close workspace?', `${item.name}\n\n${item.panes.length} terminals and their running processes will close. Unsaved work will be lost.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
@@ -1549,11 +2206,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ]);
-  }, [backToWorkspaces, runCommand, workspaceId]);
+  }, [backToWorkspaces, runCommand, runtimeReady, workspaceId]);
 
   const workspaceOptions = useCallback((item: Workspace) => {
+    if (!runtimeReady || commandPending.current) return;
     itemActions(item.name, () => openName({ kind: 'renameWorkspace', workspace: item }), () => closeWorkspace(item), 'workspace');
-  }, [closeWorkspace, openName]);
+  }, [closeWorkspace, openName, runtimeReady]);
 
   const createPane = useCallback(() => {
     if (!workspace || !runtimeReady) return;
@@ -1570,7 +2228,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [runCommand, runtimeReady, workspace, group, session.groupsSupported, groupPanes.length]);
 
   const closePane = useCallback(() => {
-    if (!selectedPane || !workspace) return;
+    if (!selectedPane || !workspace || !runtimeReady || commandPending.current) return;
     const pane = selectedPane;
     const consequence = workspace.panes.length === 1 ? 'This is the last terminal, so its workspace will also close.'
       : session.groupsSupported && groupPanes.length === 1 ? 'This is the last terminal in its group, so the group will also close.' : '';
@@ -1586,7 +2244,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ]);
-  }, [backToWorkspaces, runCommand, selectedPane, workspace, session.groupsSupported, groupPanes.length]);
+  }, [backToWorkspaces, runCommand, runtimeReady, selectedPane, workspace, session.groupsSupported, groupPanes.length]);
 
   const chooseGroup = useCallback((item: TerminalGroup) => {
     if (!runtimeReady || commandPending.current) return;
@@ -1596,6 +2254,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [runtimeReady, runCommand, panes, selectedPaneIds, choosePane]);
 
   const closeGroup = useCallback((item: TerminalGroup) => {
+    if (!runtimeReady || commandPending.current) return;
     const terminals = panes.filter(pane => pane.groupId === item.id);
     const last = session.groups.filter(group => group.workspaceId === item.workspaceId).length === 1;
     Alert.alert('Close group?', `${item.name}\n\n${terminals.length} terminals and their running processes will close. Unsaved work will be lost.${last ? 'This is the last group, so its workspace will also close.' : ''}`, [
@@ -1606,11 +2265,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ]);
-  }, [panes, session.groups, runCommand, backToWorkspaces]);
+  }, [panes, runtimeReady, session.groups, runCommand, backToWorkspaces]);
 
   const refreshTerminal = useCallback(() => {
+    if (!runtimeReady || commandPending.current) return;
     void runCommand(() => MeetermTerminal.refreshTerminal(CONNECTION_ID), 'Could not refresh this terminal. Check your connection.').then(success => { if (success) setSheet(null); });
-  }, [runCommand]);
+  }, [runCommand, runtimeReady]);
   const closeSearch = useCallback(() => {
     Keyboard.dismiss();
     setSearching(false);
@@ -1643,7 +2303,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     ], { cancelable: false });
   }, [connection, removedHostKeyId, runCommand]);
 
-  const statusNotice = attempted && !ready ? <View style={[styles.notice, { backgroundColor: colors.surface }]}>
+  const showRecoveryRail = Boolean(recoveryPhaseActive && retainedWorkAvailable && surfaceAvailable && recoveryCopy);
+  const statusNotice = attempted && !ready && !showRecoveryRail ? <View style={[styles.notice, { backgroundColor: colors.surface }]}>
     <Text style={[styles.noticeTitle, { color: colors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'Verify this server' : connection.state === 'Disconnected' ? 'Disconnected' : presentation.label}</Text>
     <Text style={[styles.noticeBody, { color: colors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'Your work is still running on the server. Reconnect to pick up where you left off.' : 'Enter your connection details to get started.' : closing ? hasConnected ? 'Disconnecting. Your work will keep running on the server.' : 'Canceling the connection.' : 'Checking your remote workspaces.'}</Text>
     <View style={styles.noticeActions}>
@@ -1659,6 +2320,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
     {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={feedbackColors} onPress={() => setControlMessage('')} /> : null}
   </View> : null;
+
+  const recoveryRail = showRecoveryRail
+    ? <RecoveryRail copy={recoveryCopy!} colors={DARK} busy={{ retry: recoveryPending.retry, review: recoveryPending.confirm, change: recoveryPending.change }} onRetry={retryRecovery} onReview={recoveryReasonKind(control.recovery.reason) === 'hostKeyChanged' ? reviewChangedHostKey : reviewRecovery} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} />
+    : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, review: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
+    : null;
 
   const listHeader = <View>
     {searching ? <View style={styles.searchHeader}>
@@ -1687,6 +2353,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       </View> : null}
     </>}
     {statusNotice ? <View style={styles.horizontal}>{statusNotice}</View> : null}
+    {recoveryRail ? <View style={styles.horizontal}>{recoveryRail}</View> : null}
     {feedback ? <View style={styles.horizontal}>{feedback}</View> : null}
     {searching ? <View style={styles.horizontal}>
       <SearchField value={query} colors={homeColors} onChange={value => { setQuery(value); listOffsets.current.search = 0; workspaceList.current?.scrollToOffset({ offset: 0, animated: false }); }} autoFocus />
@@ -1731,7 +2398,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ref={workspaceList}
       data={filteredWorkspaces}
       keyExtractor={item => item.id}
-      renderItem={({ item }) => <View style={styles.horizontal}><WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>}
+      renderItem={({ item }) => {
+        const retainedWorkspace = Boolean(recoveryPhaseActive && retainedWorkAvailable
+          && retainedPane && item.id === retainedWorkspaceId);
+        const disabled = commandBusy || (!runtimeReady && !retainedWorkspace)
+          || (presentation.pending && !retainedWorkspace);
+        return <View style={styles.horizontal}><WorkspaceRow connected={strongReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={disabled} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>;
+      }}
       ListHeaderComponent={listHeader}
       ListEmptyComponent={emptyList}
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 24 }}
@@ -1747,30 +2420,31 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       <View style={styles.terminalHeader}>
         <IconButton icon="back" label="Back to workspaces" colors={DARK} onPress={backToWorkspaces} />
         <View style={styles.terminalHeading}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: DARK.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={DARK.muted} size={12} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} accessibilityState={{ disabled: !runtimeReady }} disabled={!runtimeReady} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: DARK.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={DARK.muted} size={12} /></Pressable>
           <View style={styles.terminalStatusRow}><Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{endpoint(connection)}</Text><ConnectionStatus connection={connection} colors={DARK} /></View>
         </View>
         <IconButton icon="menu" label="Terminal menu" colors={DARK} onPress={() => openSheet('server')} />
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
         <Text style={[styles.groupLabel, { color: DARK.muted }]}>Group</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, runtimeReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, pressed && { opacity: .65 }]}>
-          <AgentStatusIndicator status={group?.agentStatus} live={runtimeReady} colors={DARK} testID={group ? `group-agent-status-${group.id}` : undefined} />
+        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, strongReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}>
+          <AgentStatusIndicator status={group?.agentStatus} live={strongReady} colors={DARK} testID={group ? `group-agent-status-${group.id}` : undefined} />
           <Text numberOfLines={1} style={[styles.groupName, { color: DARK.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={DARK.muted} size={12} />
         </Pressable>
       </View> : null}
       {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: DARK.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, runtimeReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={name} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={runtimeReady} colors={DARK} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{name}</Text></Pressable>; })}
+        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, strongReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={strongReady ? name : `${name}. Cached output, read only. Input is paused until recovery finishes.`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={strongReady} colors={DARK} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{name}</Text></Pressable>; })}
       </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
-      {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, runtimeReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
+      {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, strongReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
         <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
-        <AgentStatusIndicator status={selectedPane.agent.status} live={runtimeReady} colors={DARK} showLabel testID="selected-agent-status" />
+        <AgentStatusIndicator status={selectedPane.agent.status} live={strongReady} colors={DARK} showLabel testID="selected-agent-status" />
       </View>; })() : null}
+      {recoveryRail}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
-      {runtimeReady && workspace && selectedPane ? (
+      {surfaceAvailable ? (
         // Unmounting a surface cancels composition; the shared native registry
         // still owns the SSH connection and each terminal's retained state.
-        sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active' ? <TerminalView key={selectedPane.terminalId} terminalId={selectedPane.terminalId} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View style={[styles.flex, { backgroundColor: DARK.terminal }]} />
+        (recoveryPhaseActive && retainedWorkAvailable) || (sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active') ? <TerminalView key={selectedPane!.terminalId} terminalId={selectedPane!.terminalId} interactionMode={strongReady ? 'live' : 'cachedReadOnly'} accessibilityLabel={strongReady ? 'Terminal' : 'Terminal, cached output, read only'} accessibilityHint={strongReady ? undefined : 'Input is paused until recovery finishes.'} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View style={[styles.flex, { backgroundColor: DARK.terminal }]} />
       ) : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.terminalUnavailable, { paddingBottom: Math.max(insets.bottom, 24) }]}>
         {statusNotice}
         {runtimeReady ? <View style={styles.gone}>
@@ -1784,7 +2458,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     />
 
     <RuntimePicker
-      visible={runtimePickerVisible}
+      // The Change → server path temporarily keeps the existing saved-server
+      // sheet in front of the fresh runtime picker. Closing that sheet then
+      // exposes the picker if the new connection is already awaiting a
+      // runtime; the old retained recovery is never restored.
+      visible={runtimePickerVisible && sheet !== 'servers'}
       serverName={currentProfile?.name ?? endpoint(connection)}
       discovery={runtimeDiscovery}
       createVisible={runtimeCreateVisible}
@@ -1808,16 +2486,24 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} busy={commandBusy} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
-      {sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
+      {sheet === 'recovery' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+        <Text testID="recovery-change-intro" style={[styles.emptyBody, { color: homeColors.muted }]}>Choosing another destination stops recovery for this workspace. Remote work will not be closed.</Text>
+        <Pressable testID="recovery-change-runtime" accessibilityRole="button" accessibilityLabel="Choose another runtime" accessibilityState={{ disabled: recoveryPending.change }} disabled={recoveryPending.change} onPress={() => { void changeRecoveryDestination('runtime'); }} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}>
+          <View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: homeColors.text }]}>Choose another runtime</Text><Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>Stay on {recoveryServerLabel}</Text></View><Icon name="chevron" color={homeColors.muted} size={18} />
+        </Pressable>
+        <Pressable testID="recovery-change-server" accessibilityRole="button" accessibilityLabel="Choose another server" accessibilityState={{ disabled: recoveryPending.change }} disabled={recoveryPending.change} onPress={() => { void changeRecoveryDestination('server'); }} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}>
+          <Text style={[styles.rowTitle, { color: homeColors.text }]}>Choose another server</Text><Icon name="chevron" color={homeColors.muted} size={18} />
+        </Pressable>
+      </ScrollView> : sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
         <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
-        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
+        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={strongReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Keep related terminals together. Select a group to switch.</Text>
-        {groups.map(item => { const phrase = agentStatusPhrase(item.agentStatus, runtimeReady); return <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
+        {groups.map(item => { const phrase = agentStatusPhrase(item.agentStatus, strongReady); return <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name || 'Untitled group'}${phrase ? `, ${phrase}` : ''}`} accessibilityState={{ selected: item.id === group?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
-            <View style={styles.groupNameRow}><AgentStatusIndicator status={item.agentStatus} live={runtimeReady} colors={homeColors} testID={`group-agent-status-${item.id}`} /><Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text></View>
+            <View style={styles.groupNameRow}><AgentStatusIndicator status={item.agentStatus} live={strongReady} colors={homeColors} testID={`group-agent-status-${item.id}`} /><Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text></View>
             <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} {panes.filter(pane => pane.groupId === item.id).length === 1 ? 'terminal' : 'terminals'}{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
           <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
@@ -2006,6 +2692,14 @@ const styles = StyleSheet.create({
   paneTabs: { paddingHorizontal: 12, gap: 4 },
   paneTab: { minHeight: 48, paddingHorizontal: 12, borderBottomWidth: 2, flexDirection: 'row', alignItems: 'center', gap: 6 },
   paneTabText: { fontSize: 14, lineHeight: 23, maxWidth: 200, flexShrink: 1 },
+  recoveryRail: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth },
+  recoveryRailIcon: { width: 20, height: 20, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  recoveryRailBody: { flex: 1, minWidth: 0, gap: 8 },
+  recoveryRailText: { gap: 1 },
+  recoveryRailTitle: { fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  recoveryRailDetail: { fontSize: 13, lineHeight: 20 },
+  recoveryRailMeta: { fontSize: 12, lineHeight: 18 },
+  recoveryRailActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   terminalFeedback: { paddingHorizontal: 12, paddingTop: 8 },
   terminalActions: { gap: 12, paddingTop: 20, borderTopWidth: StyleSheet.hairlineWidth },
   terminalUnavailable: { flexGrow: 1, padding: 24 },

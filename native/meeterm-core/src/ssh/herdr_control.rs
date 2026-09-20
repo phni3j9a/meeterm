@@ -7,9 +7,11 @@ use crate::input::{KeyCode, Modifiers, encode_key, encode_text};
 use crate::terminal::SemanticInput;
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 static NEXT_REMOTE_HANDLE: AtomicU64 = AtomicU64::new(1_000_000);
+static NEXT_RECOVERY_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Default)]
 pub(super) struct Metadata {
@@ -17,7 +19,7 @@ pub(super) struct Metadata {
     ids: HashMap<(u8, String), u64>,
     workspaces: HashMap<u64, String>,
     groups: HashMap<u64, String>,
-    panes: HashMap<u64, RemotePane>,
+    pub(super) panes: HashMap<u64, RemotePane>,
     /// Herdr 0.9.0 pane/tab close may cascade from these parents when its
     /// confirm_close setting is disabled. No per-close no-cascade flag exists.
     linked_worktree_parents: HashSet<u64>,
@@ -28,11 +30,11 @@ pub(super) struct Metadata {
 }
 
 #[derive(Clone)]
-struct RemotePane {
-    pane_id: String,
-    terminal_id: String,
-    workspace: u64,
-    group: u64,
+pub(super) struct RemotePane {
+    pub(super) pane_id: String,
+    pub(super) terminal_id: String,
+    pub(super) workspace: u64,
+    pub(super) group: u64,
 }
 
 impl Metadata {
@@ -85,6 +87,10 @@ impl Metadata {
                 .is_some_and(|group| *group == item.id.parse::<u64>().unwrap_or(0));
             item.selected = selected;
         }
+    }
+
+    pub(super) fn active_group(&self) -> Option<u64> {
+        self.active_group
     }
 }
 
@@ -236,6 +242,7 @@ impl JsonChannel {
 struct Controller {
     pane: u64,
     native: u64,
+    epoch: u64,
     stream: JsonChannel,
     input: mpsc::Receiver<SemanticInput>,
     sizes: watch::Receiver<(u16, u16)>,
@@ -254,14 +261,25 @@ struct HerdrClient<'a> {
     controller: Option<Controller>,
     viewport: (u16, u16),
     request_id: u64,
+    /// During retained recovery the stable Herdr terminal is the only
+    /// acceptable target.  Pane aliases are deliberately resolved again from
+    /// the authoritative snapshot and are never used as identity.
+    strict_terminal: Option<String>,
+    /// Session operation epoch captured at the start of this actor attempt.
+    /// Every awaited discovery/controller operation must remain within it.
+    operation_epoch: u64,
+    command_epoch: Option<u64>,
+    staged_projection: Option<SnapshotProjection>,
 }
 
 impl Drop for HerdrClient<'_> {
     fn drop(&mut self) {
+        self.discard_staged_projection();
         detach_all(self.shared);
     }
 }
 
+#[derive(Clone)]
 pub(super) struct DiscoveredSession {
     pub(super) name: String,
     pub(super) default: bool,
@@ -274,6 +292,134 @@ pub(super) struct Discovery {
     pub(super) executable: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RecoveryTarget {
+    Terminal(String),
+    EmptyGroup(u64),
+    Missing,
+}
+
+/// Classify the retained Herdr selection before recovery starts. An empty
+/// selected group is a valid metadata-only target; a group that disappeared,
+/// or a non-empty group whose previously selected terminal disappeared, must
+/// stop rather than silently selecting an unrelated pane.
+fn recovery_target(state: &SessionState) -> RecoveryTarget {
+    if let Some(terminal) = state.recovery_terminal_id.clone() {
+        return RecoveryTarget::Terminal(terminal);
+    }
+    let Some(group) = state.recovery_group_id else {
+        return RecoveryTarget::Missing;
+    };
+    let group_exists = state
+        .herdr
+        .snapshot
+        .groups
+        .iter()
+        .any(|candidate| candidate.id == group.to_string());
+    let group_has_panes = state.herdr.panes.values().any(|pane| pane.group == group);
+    if group_exists && !group_has_panes {
+        RecoveryTarget::EmptyGroup(group)
+    } else {
+        RecoveryTarget::Missing
+    }
+}
+
+fn is_recovery_local_failure(failure: FlowFailure) -> bool {
+    matches!(
+        failure,
+        FlowFailure::HerdrMissing
+            | FlowFailure::HerdrSessionMissing
+            | FlowFailure::HerdrIncompatible
+            | FlowFailure::HerdrUnsupported
+            | FlowFailure::HerdrForwarding
+            | FlowFailure::HerdrProtocol
+            | FlowFailure::HerdrController
+            | FlowFailure::HerdrOperation
+            | FlowFailure::HerdrDiscoveryMissing
+            | FlowFailure::HerdrDiscoveryIncompatible
+            | FlowFailure::HerdrDiscoveryMalformed
+            | FlowFailure::HerdrDiscoveryPermission
+            | FlowFailure::HerdrDiscoveryTimeout
+    )
+}
+
+fn recovery_reason_for_failure(failure: FlowFailure) -> &'static str {
+    match failure {
+        FlowFailure::HerdrSessionMissing => "herdr_session_missing",
+        FlowFailure::HerdrController => "controller_conflict",
+        FlowFailure::HerdrIncompatible
+        | FlowFailure::HerdrDiscoveryIncompatible
+        | FlowFailure::HerdrUnsupported => "herdr_incompatible",
+        FlowFailure::HerdrProtocol
+        | FlowFailure::HerdrDiscoveryMalformed
+        | FlowFailure::HerdrDiscoveryPermission
+        | FlowFailure::HerdrDiscoveryTimeout => "runtime_identity_uncertain",
+        FlowFailure::HerdrMissing | FlowFailure::HerdrForwarding => "herdr_session_missing",
+        _ => "runtime_identity_uncertain",
+    }
+}
+
+fn publish_recovery_candidate(
+    shared: &ConnectionShared,
+    profile: &ConnectionProfile,
+    candidate: &DiscoveredSession,
+    expected_epoch: u64,
+) -> Result<u64, FlowFailure> {
+    let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+    if state.generation != shared.generation
+        || state.operation_epoch != expected_epoch
+        || shared.is_cancelled()
+    {
+        return Err(FlowFailure::Stale);
+    }
+    let revision = state
+        .runtime_discovery
+        .discovery_revision
+        .wrapping_add(1)
+        .max(1);
+    let id = format!("recovery-{}-herdr-{}", shared.generation, revision);
+    let binding = RuntimeBinding::Herdr {
+        name: candidate.name.clone(),
+        default: candidate.default,
+        executable: candidate.executable.clone(),
+    };
+    state.runtime_candidates.clear();
+    state.runtime_candidates.insert(id.clone(), binding);
+    state.runtime_discovery = RuntimeDiscoverySnapshot {
+        connection_generation: shared.generation,
+        discovery_revision: revision,
+        tmux: RuntimeSection {
+            state: RuntimeSectionState::Empty,
+            ..RuntimeSection::default()
+        },
+        herdr: RuntimeSection {
+            state: RuntimeSectionState::Success,
+            candidates: vec![RuntimeCandidate {
+                id,
+                backend: Backend::Herdr,
+                name: candidate.name.clone(),
+                state: RuntimeState::Running,
+                selectable: true,
+                suggested: candidate.default,
+                error_code: None,
+                error_message: None,
+            }],
+            ..RuntimeSection::default()
+        },
+    };
+    // The profile is the connection-scoped capability.  It is updated only
+    // after the candidate has been verified and never exposes the executable
+    // through the serialized picker rows.
+    state.profile = Some(profile.clone());
+    Ok(revision)
+}
+
+fn terminal_scope_digest(terminal_id: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    terminal_id.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Resolve and list all Herdr sessions without opening, starting, stopping,
 /// or updating any runtime. The upstream response contains socket paths and
 /// session directories; the caller receives only names and running state.
@@ -282,18 +428,34 @@ pub(super) async fn discover(
     session: &client::Handle<HostKeyHandler>,
     expected: Option<&str>,
 ) -> Result<Discovery, FlowFailure> {
-    let executable = resolve_executable(shared, session, expected, true).await?;
+    discover_at_epoch(shared, session, expected, None).await
+}
+
+async fn discover_at_epoch(
+    shared: &Arc<ConnectionShared>,
+    session: &client::Handle<HostKeyHandler>,
+    expected: Option<&str>,
+    expected_epoch: Option<u64>,
+) -> Result<Discovery, FlowFailure> {
+    if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
+        return Err(FlowFailure::Stale);
+    }
+    let executable = resolve_executable(shared, session, expected, true, expected_epoch).await?;
     let command = wire::command_with_executable(&executable, None, &["session", "list", "--json"])
         .map_err(|_| FlowFailure::HerdrDiscoveryMalformed)?;
-    let output = super::run_remote_command_with_timeout(
+    let output = super::run_remote_command_with_timeout_at_epoch(
         shared,
         session,
         command,
         MAX_JSON_BYTES,
         FlowFailure::HerdrDiscoveryMalformed,
         FlowFailure::HerdrDiscoveryTimeout,
+        expected_epoch,
     )
     .await?;
+    if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
+        return Err(FlowFailure::Stale);
+    }
     match output.exit_status {
         Some(0) => {
             let value: Value = serde_json::from_slice(&output.stdout)
@@ -328,8 +490,9 @@ async fn resolve_executable(
     session: &client::Handle<HostKeyHandler>,
     expected: Option<&str>,
     discovery: bool,
+    expected_epoch: Option<u64>,
 ) -> Result<String, FlowFailure> {
-    let output = super::run_remote_command_with_timeout(
+    let output = super::run_remote_command_with_timeout_at_epoch(
         shared,
         session,
         wire::resolver_command().to_owned(),
@@ -344,6 +507,7 @@ async fn resolve_executable(
         } else {
             FlowFailure::HerdrProtocol
         },
+        expected_epoch,
     )
     .await?;
     let (missing, incompatible, malformed) = if discovery {
@@ -372,7 +536,7 @@ async fn resolve_executable(
     }
     let schema_command =
         wire::api_schema_command_with_executable(&executable).map_err(|_| malformed)?;
-    let schema_output = super::run_remote_command_with_timeout(
+    let schema_output = super::run_remote_command_with_timeout_at_epoch(
         shared,
         session,
         schema_command,
@@ -383,6 +547,7 @@ async fn resolve_executable(
         } else {
             FlowFailure::HerdrProtocol
         },
+        expected_epoch,
     )
     .await?;
     if schema_output.exit_status != Some(0) {
@@ -404,10 +569,240 @@ pub(super) async fn run(
     shared: &Arc<ConnectionShared>,
     profile: &mut ConnectionProfile,
     session: &client::Handle<HostKeyHandler>,
-    commands: &mut mpsc::Receiver<ControlCommand>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
 ) -> Result<(), FlowFailure> {
-    let executable =
-        resolve_executable(shared, session, profile.herdr_executable.as_deref(), false).await?;
+    run_impl(shared, profile, session, commands, None, None).await
+}
+
+/// Reauthenticate and rediscover a Herdr runtime without acquiring a
+/// controller until the user confirms the currently discovered candidate.
+/// The existing SSH actor owns this loop, so duplicate retry/confirm calls
+/// cannot create parallel controllers.
+pub(super) async fn recover(
+    shared: &Arc<ConnectionShared>,
+    profile: &mut ConnectionProfile,
+    session: &client::Handle<HostKeyHandler>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
+) -> Result<(), FlowFailure> {
+    // Copy the recovery identity out of the mutex before taking any failure
+    // transition. Calling `stop_recovery` while a temporary SessionState guard
+    // is alive self-deadlocks on the same mutex. An empty selected group is a
+    // valid metadata-only target; a group with panes but no selected stable
+    // terminal means the previously selected terminal disappeared.
+    let target = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        recovery_target(&state)
+    };
+    let (expected_terminal, empty_group) = match target {
+        RecoveryTarget::Terminal(terminal) => (Some(terminal), None),
+        RecoveryTarget::EmptyGroup(group) => (None, Some(group)),
+        RecoveryTarget::Missing => (None, None),
+    };
+    if expected_terminal.is_none() && empty_group.is_none() {
+        shared.stop_recovery("herdr_terminal_missing");
+        return Err(FlowFailure::HerdrSessionMissing);
+    }
+
+    loop {
+        let discovery_epoch = shared.operation_epoch();
+        if !shared.current_request_epoch(discovery_epoch) {
+            return Err(FlowFailure::Stale);
+        }
+        let discovery = match discover_at_epoch(
+            shared,
+            session,
+            profile.herdr_executable.as_deref(),
+            Some(discovery_epoch),
+        )
+        .await
+        {
+            Ok(discovery) => discovery,
+            Err(failure) if is_recovery_local_failure(failure) => {
+                shared.stop_recovery(recovery_reason_for_failure(failure));
+                return Err(failure);
+            }
+            Err(failure) => return Err(failure),
+        };
+        let candidate = discovery
+            .sessions
+            .iter()
+            .find(|candidate| {
+                candidate.running
+                    && ((profile.runtime.is_none() && candidate.default)
+                        || (profile.runtime.as_deref() == Some(candidate.name.as_str())))
+            })
+            .cloned();
+        let Some(candidate) = candidate else {
+            shared.stop_recovery("herdr_session_missing");
+            return Err(FlowFailure::HerdrSessionMissing);
+        };
+        if candidate.executable != discovery.executable {
+            shared.stop_recovery("herdr_incompatible");
+            return Err(FlowFailure::HerdrIncompatible);
+        }
+        profile.herdr_executable = Some(discovery.executable.clone());
+        shared.set_profile(profile.clone());
+        let revision = publish_recovery_candidate(shared, profile, &candidate, discovery_epoch)?;
+        let token = format!(
+            "herdr-recovery-{}-{}-{}-{:016x}-{}",
+            shared.generation,
+            discovery_epoch,
+            revision,
+            expected_terminal
+                .as_deref()
+                .map(terminal_scope_digest)
+                .unwrap_or_else(|| terminal_scope_digest(&format!("group:{:?}", empty_group))),
+            NEXT_RECOVERY_TOKEN.fetch_add(1, Ordering::Relaxed)
+        );
+        if shared
+            .publish_recovery_confirmation(token)?
+            .ne(&discovery_epoch)
+        {
+            return Err(FlowFailure::Stale);
+        }
+
+        loop {
+            if shared.recovery_phase() != RecoveryPhase::AwaitingConfirmation {
+                // Foreground/visibility invalidation may have happened before
+                // this loop registered its waiter. The outer loop owns the
+                // next discovery and confirmation token.
+                break;
+            }
+            let request = tokio::select! {
+                _ = shared.cancelled() => return Err(FlowFailure::Stale),
+                _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
+                _ = shared.retry_notify.notified() => {
+                    if shared.recovery_phase() != RecoveryPhase::AwaitingConfirmation {
+                        break;
+                    }
+                    continue;
+                },
+                request = commands.recv() => request,
+            };
+            let Some(request) = request else {
+                return Err(FlowFailure::Stale);
+            };
+            if !shared.current_request_epoch(request.epoch) {
+                continue;
+            }
+            match request.command {
+                ControlCommand::RetryRecovery => {
+                    let attempt = shared
+                        .session
+                        .lock()
+                        .map(|state| state.recovery.attempt.saturating_add(1))
+                        .unwrap_or(1);
+                    if shared.begin_recovery("manual_retry", attempt).is_none() {
+                        return Err(FlowFailure::Stale);
+                    }
+                    break;
+                }
+                ControlCommand::ConfirmRecovery { token: submitted } => {
+                    // `confirm_recovery` consumes the public token and places
+                    // the same bounded value in this private slot before the
+                    // request is queued.  No controller operation occurs for
+                    // a stale or duplicated token.
+                    if !shared.take_pending_confirmation(&submitted) {
+                        shared.stop_recovery("recovery_stale");
+                        return Err(FlowFailure::HerdrProtocol);
+                    }
+                    if shared.recovery_phase() != RecoveryPhase::Resynchronizing {
+                        shared.stop_recovery("recovery_stale");
+                        return Err(FlowFailure::HerdrProtocol);
+                    }
+                    let confirmed_epoch = request.epoch;
+                    let confirmed = match discover_at_epoch(
+                        shared,
+                        session,
+                        profile.herdr_executable.as_deref(),
+                        Some(confirmed_epoch),
+                    )
+                    .await
+                    {
+                        Ok(discovery) => discovery,
+                        Err(failure) if is_recovery_local_failure(failure) => {
+                            shared.stop_recovery(recovery_reason_for_failure(failure));
+                            return Err(failure);
+                        }
+                        Err(failure) => return Err(failure),
+                    };
+                    if !shared.current_request_epoch(confirmed_epoch) {
+                        return Err(FlowFailure::Stale);
+                    }
+                    let Some(candidate) = confirmed.sessions.iter().find(|candidate| {
+                        candidate.running
+                            && ((profile.runtime.is_none() && candidate.default)
+                                || (profile.runtime.as_deref() == Some(candidate.name.as_str())))
+                    }) else {
+                        shared.stop_recovery("herdr_session_missing");
+                        return Err(FlowFailure::HerdrSessionMissing);
+                    };
+                    if candidate.executable != confirmed.executable {
+                        shared.stop_recovery("herdr_incompatible");
+                        return Err(FlowFailure::HerdrIncompatible);
+                    }
+                    profile.herdr_executable = Some(confirmed.executable.clone());
+                    shared.set_profile(profile.clone());
+                    let result = run_impl(
+                        shared,
+                        profile,
+                        session,
+                        commands,
+                        expected_terminal.clone(),
+                        Some(confirmed_epoch),
+                    )
+                    .await;
+                    if let Err(failure) = result {
+                        if is_recovery_local_failure(failure) {
+                            shared.stop_recovery(recovery_reason_for_failure(failure));
+                        }
+                        return Err(failure);
+                    }
+                    return Ok(());
+                }
+                ControlCommand::SetTerminalVisible { visible: false } => {
+                    // There is no controller in this phase.  The public
+                    // setter already revoked the native transport.
+                }
+                _ => {
+                    // Picker/topology/input commands cannot be replayed into
+                    // a later recovery epoch.
+                }
+            }
+        }
+    }
+}
+
+async fn run_impl(
+    shared: &Arc<ConnectionShared>,
+    profile: &mut ConnectionProfile,
+    session: &client::Handle<HostKeyHandler>,
+    commands: &mut mpsc::Receiver<ControlRequest>,
+    strict_terminal: Option<String>,
+    expected_epoch: Option<u64>,
+) -> Result<(), FlowFailure> {
+    let operation_epoch = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        let epoch = expected_epoch.unwrap_or(state.operation_epoch);
+        (state.generation == shared.generation && state.operation_epoch == epoch)
+            .then_some(epoch)
+            .ok_or(FlowFailure::Stale)?
+    };
+    let initial_recovery_epoch = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        (state.recovery.phase != RecoveryPhase::None).then_some(operation_epoch)
+    };
+    let executable = resolve_executable(
+        shared,
+        session,
+        profile.herdr_executable.as_deref(),
+        false,
+        Some(operation_epoch),
+    )
+    .await?;
+    if !shared.current_request_epoch(operation_epoch) {
+        return Err(FlowFailure::Stale);
+    }
     profile.herdr_executable = Some(executable.clone());
     shared.set_profile(profile.clone());
     shared.set_state(ConnectionState::Synchronizing);
@@ -420,6 +815,7 @@ pub(super) async fn run(
             &["status", "--json"],
         )
         .map_err(|_| FlowFailure::HerdrProtocol)?,
+        operation_epoch,
     )
     .await
     .map_err(|failure| match failure {
@@ -429,6 +825,9 @@ pub(super) async fn run(
         FlowFailure::HerdrOperation => FlowFailure::HerdrSessionMissing,
         failure => failure,
     })?;
+    if !shared.current_request_epoch(operation_epoch) {
+        return Err(FlowFailure::Stale);
+    }
     let status: Value = serde_json::from_slice(&status).map_err(|_| FlowFailure::HerdrProtocol)?;
     let server = &status["server"];
     if server["running"] != true {
@@ -463,7 +862,8 @@ pub(super) async fn run(
         .unwrap_or(
             registry::terminal_dimensions(shared.terminal_id).map_err(|_| FlowFailure::Stale)?,
         );
-    let subscription = subscribe(shared, session, &socket, &HashSet::new()).await?;
+    let subscription =
+        subscribe(shared, session, &socket, &HashSet::new(), operation_epoch).await?;
     let mut client = HerdrClient {
         shared,
         session,
@@ -475,18 +875,28 @@ pub(super) async fn run(
         controller: None,
         viewport,
         request_id: 1,
+        strict_terminal,
+        operation_epoch,
+        command_epoch: None,
+        staged_projection: None,
     };
     client.synchronize().await?;
     client.activate_selected().await?;
-    if client.controller.is_none() {
-        shared.set_state(ConnectionState::Ready);
+    if client.controller.is_none() && client.strict_terminal.is_none() {
+        // Metadata/runtime readiness is independent from terminal visibility.
+        // The picker surface is hidden until this state is published; once it
+        // is visible, activate_selected performs the controller/full-frame
+        // boundary and opens input.
+        if !shared.mark_ready_at_epoch(operation_epoch) {
+            return Err(FlowFailure::Stale);
+        }
     }
     loop {
-        if shared.is_cancelled() {
+        if shared.is_cancelled() || shared.explicit_cleanup_requested() {
             let _ = client.release().await;
             return Err(FlowFailure::Stale);
         }
-        if !shared.is_foreground() {
+        if shared.recovery_requires_controller_exit(initial_recovery_epoch) {
             let _ = client.release().await;
             return Err(FlowFailure::Transport);
         }
@@ -500,7 +910,12 @@ pub(super) async fn run(
         };
         tokio::select! {
             _ = shared.cancelled() => { let _ = client.release().await; return Err(FlowFailure::Stale); },
-            _ = shared.retry_notify.notified() => {},
+            _ = shared.explicit_cleanup() => { let _ = client.release().await; return Err(FlowFailure::Stale); },
+            _ = shared.retry_notify.notified() => {
+                if shared.is_foreground() {
+                    client.activate_selected().await?;
+                }
+            },
             frame = async {
                 match stream {
                     Some(stream) => stream.next().await,
@@ -522,8 +937,28 @@ pub(super) async fn run(
                 client.activate_selected().await?;
             },
             command = commands.recv() => {
-                let Some(command) = command else { let _ = client.release().await; return Err(FlowFailure::Stale); };
-                client.command(command).await?;
+                let Some(request) = command else { let _ = client.release().await; return Err(FlowFailure::Stale); };
+                if !shared.current_request_epoch(request.epoch) {
+                    continue;
+                }
+                let command = request.command;
+                let revoke = matches!(&command, ControlCommand::SetTerminalVisible { visible: false });
+                let allow_recovery_visibility = matches!(
+                    &command,
+                    ControlCommand::SetTerminalVisible { visible: true }
+                ) && (client.strict_terminal.is_some()
+                    || !shared.current_request_is_ready(request.epoch));
+                if !revoke
+                    && !allow_recovery_visibility
+                    && !shared.current_request_is_ready(request.epoch)
+                {
+                    continue;
+                }
+                client.command_epoch = (!revoke && !allow_recovery_visibility)
+                    .then_some(request.epoch);
+                let result = client.command(command).await;
+                client.command_epoch = None;
+                result?;
             },
             size = async {
                 match sizes {
@@ -545,8 +980,21 @@ pub(super) async fn run(
                     }
                     continue;
                 };
+                let Some(controller_epoch) = client
+                    .controller
+                    .as_ref()
+                    .map(|controller| controller.epoch)
+                else {
+                    continue;
+                };
+                if !shared.current_terminal_input_is_ready(controller_epoch) {
+                    continue;
+                }
                 client.viewport = (cols, rows);
                 client.shared.session.lock().map_err(|_| FlowFailure::Stale)?.viewport = Some((cols, rows));
+                if !shared.current_request_epoch(controller_epoch) {
+                    continue;
+                }
                 if let Some(controller) = &client.controller {
                     controller.stream.send(json!({"type":"terminal.resize", "cols":cols, "rows":rows})).await?;
                 }
@@ -558,6 +1006,15 @@ pub(super) async fn run(
                 }
             } => {
                 let Some(input) = input else { continue; };
+                let controller_epoch = client
+                    .controller
+                    .as_ref()
+                    .map(|controller| controller.epoch);
+                if controller_epoch
+                    .is_none_or(|epoch| !shared.current_terminal_input_is_ready(epoch))
+                {
+                    continue;
+                }
                 client.input(input).await?;
             },
         }
@@ -568,7 +1025,11 @@ async fn command_output(
     shared: &ConnectionShared,
     session: &client::Handle<HostKeyHandler>,
     command: String,
+    expected_epoch: u64,
 ) -> Result<Vec<u8>, FlowFailure> {
+    if !shared.current_request_epoch(expected_epoch) {
+        return Err(FlowFailure::Stale);
+    }
     let mut channel = await_stage(
         shared,
         session.channel_open_session(),
@@ -576,6 +1037,10 @@ async fn command_output(
         FlowFailure::Channel,
     )
     .await?;
+    if !shared.current_request_epoch(expected_epoch) {
+        let _ = channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
     await_stage(
         shared,
         channel.exec(true, command),
@@ -583,6 +1048,10 @@ async fn command_output(
         FlowFailure::Channel,
     )
     .await?;
+    if !shared.current_request_epoch(expected_epoch) {
+        let _ = channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
     let read = async {
         let mut bytes = Vec::new();
         let mut exit_status = None;
@@ -608,7 +1077,15 @@ async fn command_output(
             _ => Err(FlowFailure::HerdrOperation),
         }
     };
-    tokio::select! { _ = shared.cancelled() => Err(FlowFailure::Stale), result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| FlowFailure::Transport)? }
+    let result = tokio::select! {
+        _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
+        result = tokio::time::timeout(SSH_STAGE_TIMEOUT, read) => result.map_err(|_| FlowFailure::Transport)?,
+    }?;
+    if !shared.current_request_epoch(expected_epoch) {
+        return Err(FlowFailure::Stale);
+    }
+    Ok(result)
 }
 
 async fn open_api(
@@ -633,6 +1110,18 @@ fn decode_snapshot_result(value: &Value) -> Result<wire::HerdrSessionSnapshot, w
         ));
     }
     wire::decode_session_snapshot(&value["snapshot"])
+}
+
+fn snapshot_contains_stable_terminal(
+    snapshot: &wire::HerdrSessionSnapshot,
+    terminal_id: &str,
+) -> bool {
+    snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.groups.iter())
+        .flat_map(|group| group.panes.iter())
+        .any(|pane| pane.terminal_id == terminal_id)
 }
 
 /// Preserve the status Herdr reports for a workspace or tab as a present
@@ -889,8 +1378,16 @@ async fn subscribe(
     session: &client::Handle<HostKeyHandler>,
     socket: &str,
     panes: &HashSet<String>,
+    expected_epoch: u64,
 ) -> Result<JsonChannel, FlowFailure> {
+    if !shared.current_request_epoch(expected_epoch) {
+        return Err(FlowFailure::Stale);
+    }
     let mut channel = open_api(shared, session, socket).await?;
+    if !shared.current_request_epoch(expected_epoch) {
+        channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
     let mut subscriptions: Vec<Value> = [
         "workspace.created",
         "workspace.updated",
@@ -917,6 +1414,10 @@ async fn subscribe(
             .iter()
             .map(|pane| json!({"type":"pane.agent_status_changed", "pane_id":pane})),
     );
+    if !shared.current_request_epoch(expected_epoch) {
+        channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
     channel
         .request(
             "subscribe",
@@ -924,7 +1425,19 @@ async fn subscribe(
             &json!({"subscriptions":subscriptions}),
         )
         .await?;
-    let response = tokio::select! { _ = shared.cancelled() => return Err(FlowFailure::Stale), response = tokio::time::timeout(SSH_STAGE_TIMEOUT, channel.next()) => response.map_err(|_| FlowFailure::Transport)?? };
+    if !shared.current_request_epoch(expected_epoch) {
+        channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
+    let response = tokio::select! {
+        _ = shared.cancelled() => return Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
+        response = tokio::time::timeout(SSH_STAGE_TIMEOUT, channel.next()) => response.map_err(|_| FlowFailure::Transport)??,
+    };
+    if !shared.current_request_epoch(expected_epoch) {
+        channel.close().await;
+        return Err(FlowFailure::Stale);
+    }
     match wire::response("subscribe", &response).map_err(|_| FlowFailure::HerdrProtocol)? {
         wire::ApiResponse::Ok { .. } => {}
         wire::ApiResponse::Error { .. } => return Err(FlowFailure::HerdrUnsupported),
@@ -933,6 +1446,10 @@ async fn subscribe(
 }
 
 impl HerdrClient<'_> {
+    fn request_epoch(&self) -> u64 {
+        self.command_epoch.unwrap_or(self.operation_epoch)
+    }
+
     async fn synchronize(&mut self) -> Result<(), FlowFailure> {
         // Every snapshot applied below has an acknowledged subscription for
         // exactly its pane set. Bound topology churn; reconnect can obtain a
@@ -955,8 +1472,14 @@ impl HerdrClient<'_> {
             if pane_ids == self.subscribed_panes {
                 return self.apply_snapshot(snapshot);
             }
-            let subscription =
-                subscribe(self.shared, self.session, &self.socket, &pane_ids).await?;
+            let subscription = subscribe(
+                self.shared,
+                self.session,
+                &self.socket,
+                &pane_ids,
+                self.request_epoch(),
+            )
+            .await?;
             self.subscription.close().await;
             self.subscription = subscription;
             self.subscribed_panes = pane_ids;
@@ -965,6 +1488,11 @@ impl HerdrClient<'_> {
     }
 
     fn apply_snapshot(&mut self, snapshot: wire::HerdrSessionSnapshot) -> Result<(), FlowFailure> {
+        if let Some(expected) = self.strict_terminal.as_deref()
+            && !snapshot_contains_stable_terminal(&snapshot, expected)
+        {
+            return Err(FlowFailure::HerdrSessionMissing);
+        }
         let (metadata, mapping, old_selected) = {
             let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
             (
@@ -990,14 +1518,14 @@ impl HerdrClient<'_> {
             self.shared.generation,
         )?;
         {
-            let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
             if self.shared.is_cancelled() || state.generation != self.shared.generation {
                 return Err(FlowFailure::Stale);
             }
-            // Public select_pane updates the desired state synchronously while
-            // this actor is waiting for a snapshot. Preserve that newer intent
-            // at the commit boundary instead of overwriting it with the
-            // snapshot's older clone.
+            // A serialized selection command may have committed a newer
+            // intent while this snapshot was being prepared. Preserve that
+            // actor-owned selection at the commit boundary instead of
+            // overwriting it with the snapshot's older clone.
             if state.selected_pane != old_selected {
                 selected = state
                     .selected_pane
@@ -1023,6 +1551,17 @@ impl HerdrClient<'_> {
                     metadata.refresh_group_selection();
                 }
             }
+            if let Some(expected) = self.strict_terminal.as_deref() {
+                selected = Some(
+                    metadata
+                        .panes
+                        .iter()
+                        .find(|(_, pane)| pane.terminal_id == expected)
+                        .map(|(id, _)| *id)
+                        .ok_or(FlowFailure::HerdrSessionMissing)?,
+                );
+                metadata.select(selected.expect("strict Herdr selection is present"));
+            }
             for pane in &mut flat {
                 pane.selected = Some(pane.pane_id) == selected;
             }
@@ -1034,20 +1573,132 @@ impl HerdrClient<'_> {
                     .collect();
                 window.selected = window.panes.iter().any(|pane| pane.selected);
             }
-            state.herdr = metadata;
-            state.pane_terminals = mapping;
-            state.selected_pane = selected;
-            state.snapshot = SessionSnapshot {
-                windows,
-                panes: flat,
-                selected_pane: selected,
-            };
         }
-        for native in stale {
-            registry::detach_transport(native, self.shared.generation);
-            registry::destroy_terminal(native);
+        let projection = SnapshotProjection {
+            metadata,
+            mapping,
+            selected,
+            flat,
+            windows,
+            stale,
+        };
+        if self.strict_terminal.is_some() {
+            // Recovery uses a two-phase commit: the new aliases/topology and
+            // any newly allocated native terminals remain private to this
+            // actor until a fresh complete frame has been restored.
+            self.discard_staged_projection();
+            self.staged_projection = Some(projection);
+            return Ok(());
         }
+        let expected_epoch = self.request_epoch();
+        self.commit_projection(&projection, expected_epoch)?;
+        self.cleanup_projection_stale(&projection);
         Ok(())
+    }
+
+    fn discard_staged_projection(&mut self) {
+        let Some(projection) = self.staged_projection.take() else {
+            return;
+        };
+        let committed = self
+            .shared
+            .session
+            .lock()
+            .map(|state| {
+                state
+                    .pane_terminals
+                    .values()
+                    .copied()
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        for native in projection.mapping.values().copied() {
+            if native != self.shared.terminal_id && !committed.contains(&native) {
+                registry::detach_transport(native, self.shared.generation);
+                registry::destroy_terminal(native);
+            }
+        }
+    }
+
+    fn commit_projection(
+        &self,
+        projection: &SnapshotProjection,
+        expected_epoch: u64,
+    ) -> Result<(), FlowFailure> {
+        let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if self.shared.is_cancelled()
+            || state.generation != self.shared.generation
+            || state.operation_epoch != expected_epoch
+        {
+            return Err(FlowFailure::Stale);
+        }
+        apply_projection_state(&mut state, projection);
+        drop(state);
+        Ok(())
+    }
+}
+
+fn apply_projection_state(state: &mut SessionState, projection: &SnapshotProjection) {
+    state.herdr = projection.metadata.clone();
+    state.pane_terminals = projection.mapping.clone();
+    state.selected_pane = projection.selected;
+    state.snapshot = SessionSnapshot {
+        windows: projection.windows.clone(),
+        panes: projection.flat.clone(),
+        selected_pane: projection.selected,
+    };
+}
+
+impl HerdrClient<'_> {
+    fn cleanup_projection_stale(&self, projection: &SnapshotProjection) {
+        for native in &projection.stale {
+            registry::detach_transport(*native, self.shared.generation);
+            if *native != self.shared.terminal_id {
+                registry::destroy_terminal(*native);
+            }
+        }
+    }
+
+    /// Commit a pane selection only after the serialized actor has accepted
+    /// the request. The payload is the source of truth for both the local
+    /// projection and the controller target; this deliberately does not look
+    /// up a replacement selection from a shared field that a later request
+    /// could have changed.
+    async fn select_pane_payload(
+        &mut self,
+        window_id: u64,
+        pane_id: u64,
+    ) -> Result<(), FlowFailure> {
+        let expected_epoch = self.request_epoch();
+        if !self.shared.current_request_epoch(expected_epoch) {
+            return Err(FlowFailure::Stale);
+        }
+        {
+            let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            if state.operation_epoch != expected_epoch {
+                return Err(FlowFailure::Stale);
+            }
+            if state
+                .herdr
+                .panes
+                .get(&pane_id)
+                .is_none_or(|pane| pane.workspace != window_id)
+                || !state
+                    .snapshot
+                    .panes
+                    .iter()
+                    .any(|pane| pane.pane_id == pane_id && pane.window_id == window_id)
+                || !state.pane_terminals.contains_key(&pane_id)
+            {
+                return Err(FlowFailure::HerdrOperation);
+            }
+            state.selected_pane = Some(pane_id);
+            state.herdr.select(pane_id);
+            mark_selected(&mut state.snapshot, pane_id);
+            state.terminal_input_ready = false;
+        }
+        self.release().await?;
+        self.activate_pane(pane_id).await
     }
 
     async fn command(&mut self, command: ControlCommand) -> Result<(), FlowFailure> {
@@ -1059,9 +1710,8 @@ impl HerdrClient<'_> {
                 }
                 return self.activate_selected().await;
             }
-            ControlCommand::SelectPane { .. } => {
-                self.release().await?;
-                return self.activate_selected().await;
+            ControlCommand::SelectPane { window_id, pane_id } => {
+                return self.select_pane_payload(window_id, pane_id).await;
             }
             ControlCommand::SelectGroup { group_id } => {
                 {
@@ -1119,6 +1769,11 @@ impl HerdrClient<'_> {
                 // state and must not tear down the selected runtime.
                 return Ok(());
             }
+            ControlCommand::RetryRecovery | ControlCommand::ConfirmRecovery { .. } => {
+                // Recovery commands are consumed by the native recovery
+                // coordinator before a selected backend actor is started.
+                return Ok(());
+            }
             _ => {}
         }
         if matches!(
@@ -1164,6 +1819,9 @@ impl HerdrClient<'_> {
                 | ControlCommand::SelectGroup { .. }
                 | ControlCommand::RefreshTerminal
                 | ControlCommand::SetTerminalVisible { .. } => unreachable!(),
+                ControlCommand::RetryRecovery | ControlCommand::ConfirmRecovery { .. } => {
+                    unreachable!()
+                }
                 ControlCommand::CreateWorkspace { name } => {
                     ("workspace.create", json!({"label":name, "focus":false}))
                 }
@@ -1276,17 +1934,37 @@ impl HerdrClient<'_> {
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, FlowFailure> {
+        let expected_epoch = self.request_epoch();
+        if !self.shared.current_request_epoch(expected_epoch) {
+            return Err(FlowFailure::Stale);
+        }
         self.request_id = self
             .request_id
             .checked_add(1)
             .ok_or(FlowFailure::HerdrProtocol)?;
         let id = format!("meeterm-{}", self.request_id);
         let mut channel = open_api(self.shared, self.session, &self.socket).await?;
+        // Opening a direct stream is an awaited boundary. A foreground loss,
+        // confirmation invalidation, or newer command epoch during that wait
+        // must prevent the request bytes from being sent on this channel.
+        if !self.shared.current_request_epoch(expected_epoch) {
+            channel.close().await;
+            return Err(FlowFailure::Stale);
+        }
         channel.request(&id, method, &params).await?;
         let response = tokio::select! {
             _ = self.shared.cancelled() => return Err(FlowFailure::Stale),
+            _ = self.shared.explicit_cleanup() => return Err(FlowFailure::Stale),
             response = tokio::time::timeout(SSH_STAGE_TIMEOUT, channel.next()) => response.map_err(|_| FlowFailure::Transport)??,
         };
+        // The response wait is another awaited boundary. The API response may
+        // already be buffered while a foreground/recovery notification bumps
+        // the session epoch; do not let that old response commit a mutation
+        // or be reported as the result of a newer operation.
+        if !self.shared.current_request_epoch(expected_epoch) {
+            channel.close().await;
+            return Err(FlowFailure::Stale);
+        }
         channel.close().await;
         match wire::response(&id, &response).map_err(|_| FlowFailure::HerdrProtocol)? {
             wire::ApiResponse::Ok { result, .. } => Ok(result),
@@ -1298,11 +1976,26 @@ impl HerdrClient<'_> {
         let Some(mut controller) = self.controller.take() else {
             return Ok(());
         };
+        let controller_epoch = controller.epoch;
         registry::detach_transport(controller.native, self.shared.generation);
         // Drop queued input immediately. Do not reacquire until the existing
         // CLI confirms that Herdr has removed this direct controller's lease.
         controller.input.close();
+        // A release is a remote mutation too. A normal epoch invalidation
+        // closes the stream locally, but an explicit shutdown is the ordered
+        // handoff boundary: no newer generation is installed until this old
+        // actor finishes, so release its controller before SSH teardown.
+        let explicit_shutdown = self.shared.explicit_cleanup_requested();
+        if !self.shared.current_request_epoch(controller_epoch) && !explicit_shutdown {
+            controller.stream.close().await;
+            return Ok(());
+        }
         let released = tokio::time::timeout(Duration::from_secs(3), async {
+            if !self.shared.current_request_epoch(controller_epoch)
+                && !self.shared.explicit_cleanup_requested()
+            {
+                return Ok(());
+            }
             controller
                 .stream
                 .send(json!({"type":"terminal.release"}))
@@ -1324,25 +2017,106 @@ impl HerdrClient<'_> {
     }
 
     async fn activate_selected(&mut self) -> Result<(), FlowFailure> {
-        let (selected, remote, native) = {
-            let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-            let selected = state.selected_pane.filter(|_| state.terminal_visible);
-            let remote = selected.and_then(|id| state.herdr.panes.get(&id)).cloned();
-            let native = selected
-                .and_then(|id| state.pane_terminals.get(&id))
-                .copied();
-            (selected, remote, native)
+        self.activate(None).await
+    }
+
+    async fn activate_pane(&mut self, pane_id: u64) -> Result<(), FlowFailure> {
+        self.activate(Some(pane_id)).await
+    }
+
+    /// Finish a foreground wake for the live controller without opening a new
+    /// Herdr lease. The transition guard closes the race with a concurrent
+    /// background call; the native terminal lock has already been released
+    /// before the session readiness refresh below.
+    fn resume_controller_on_foreground(&self) {
+        let _transition = self.shared.foreground_transition_lock();
+        if !self.shared.is_foreground() {
+            return;
+        }
+        if let Some(controller) = self.controller.as_ref()
+            && controller.ready
+        {
+            registry::resume_transport(controller.native, self.shared.generation);
+        }
+        self.shared.refresh_terminal_input_ready();
+    }
+
+    async fn activate(&mut self, requested_pane: Option<u64>) -> Result<(), FlowFailure> {
+        let operation_epoch = self.request_epoch();
+        if !self.shared.current_request_epoch(operation_epoch) {
+            return Err(FlowFailure::Stale);
+        }
+        let (selected, remote, native, visible) = {
+            if let Some(requested_pane) = requested_pane {
+                let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+                if state.selected_pane != Some(requested_pane) {
+                    return Err(FlowFailure::Stale);
+                }
+                let remote = state
+                    .herdr
+                    .panes
+                    .get(&requested_pane)
+                    .cloned()
+                    .ok_or(FlowFailure::HerdrOperation)?;
+                let native = state
+                    .pane_terminals
+                    .get(&requested_pane)
+                    .copied()
+                    .ok_or(FlowFailure::HerdrOperation)?;
+                (
+                    Some(requested_pane),
+                    Some(remote),
+                    Some(native),
+                    state.terminal_visible,
+                )
+            } else if let Some(projection) = self.staged_projection.as_ref() {
+                let visible = self
+                    .shared
+                    .session
+                    .lock()
+                    .map_err(|_| FlowFailure::Stale)?
+                    .terminal_visible;
+                let selected = projection.selected;
+                let remote = selected
+                    .and_then(|id| projection.metadata.panes.get(&id))
+                    .cloned();
+                let native = selected.and_then(|id| projection.mapping.get(&id)).copied();
+                (selected, remote, native, visible)
+            } else {
+                let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+                let visible = state.terminal_visible;
+                let selected = state.selected_pane.filter(|_| visible);
+                let remote = selected.and_then(|id| state.herdr.panes.get(&id)).cloned();
+                let native = selected
+                    .and_then(|id| state.pane_terminals.get(&id))
+                    .copied();
+                (selected, remote, native, visible)
+            }
         };
+        if !visible {
+            self.release().await?;
+            return Ok(());
+        }
         if self
             .controller
             .as_ref()
             .is_some_and(|controller| Some(controller.pane) == selected)
         {
+            // A healthy Herdr controller stays attached while hidden; only
+            // the live actor's foreground wake re-arms its native gate. If
+            // the first frame arrived while hidden, `ready` is already true
+            // but the Suspended gate remains closed until this point.
+            self.resume_controller_on_foreground();
             return Ok(());
         }
         self.release().await?;
+        if !self.shared.current_request_epoch(operation_epoch) {
+            return Err(FlowFailure::Stale);
+        }
         let (Some(selected), Some(remote), Some(native)) = (selected, remote, native) else {
-            self.shared.set_state(ConnectionState::Ready);
+            if !self.shared.mark_ready_at_epoch(operation_epoch) {
+                return Err(FlowFailure::Stale);
+            }
             return Ok(());
         };
         if !self.shared.is_foreground() {
@@ -1371,10 +2145,16 @@ impl HerdrClient<'_> {
             FlowFailure::Channel,
         )
         .await?;
+        if !self.shared.current_request_epoch(operation_epoch) {
+            return Err(FlowFailure::Stale);
+        }
         channel
             .exec(true, command)
             .await
             .map_err(|_| FlowFailure::Channel)?;
+        if !self.shared.current_request_epoch(operation_epoch) {
+            return Err(FlowFailure::Stale);
+        }
         let stream = JsonChannel::new(channel);
         let (input, receiver) = mpsc::channel(INPUT_QUEUE_CAPACITY);
         let (resize, sizes) = watch::channel(self.viewport);
@@ -1391,9 +2171,11 @@ impl HerdrClient<'_> {
                 .attach_semantic_transport(self.shared.generation, input, resize)
                 .map_err(|_| FlowFailure::Stale)?;
         }
+        self.shared.suspend_terminal_if_background(native);
         self.controller = Some(Controller {
             pane: selected,
             native,
+            epoch: operation_epoch,
             stream,
             input: receiver,
             sizes,
@@ -1404,6 +2186,7 @@ impl HerdrClient<'_> {
         // A competing direct controller fails here, with no --takeover.
         let frame = tokio::select! {
             _ = self.shared.cancelled() => return Err(FlowFailure::Stale),
+            _ = self.shared.explicit_cleanup() => return Err(FlowFailure::Stale),
             frame = tokio::time::timeout(SSH_STAGE_TIMEOUT, self.controller.as_mut().unwrap().stream.next()) => {
                 frame.map_err(|_| FlowFailure::Transport)??
             },
@@ -1412,18 +2195,32 @@ impl HerdrClient<'_> {
     }
 
     fn frame(&mut self, value: Value) -> Result<(), FlowFailure> {
-        // Selection/visibility changes synchronously revoke native input.
-        // Keep the same lock until this frame is applied so it cannot rearm
-        // a controller the UI has just hidden or replaced.
-        let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        if !state.terminal_visible
-            || self
-                .controller
-                .as_ref()
-                .is_none_or(|controller| state.selected_pane != Some(controller.pane))
-        {
-            return Ok(());
-        }
+        // Validate the controller epoch and current target before decoding the
+        // record. The strict first-frame path below rechecks the same target
+        // while holding the session lock in the Ready transaction; no native
+        // Term mutation occurs in this preliminary stage.
+        let (controller_epoch, controller_pane, controller_native, controller_ready, old_seq) = {
+            let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+            let controller = self.controller.as_ref().ok_or(FlowFailure::Stale)?;
+            if self.shared.is_cancelled()
+                || state.generation != self.shared.generation
+                || state.operation_epoch != controller.epoch
+            {
+                return Err(FlowFailure::Stale);
+            }
+            if (!state.terminal_visible && self.strict_terminal.is_none())
+                || state.selected_pane != Some(controller.pane)
+            {
+                return Ok(());
+            }
+            (
+                controller.epoch,
+                controller.pane,
+                controller.native,
+                controller.ready,
+                controller.seq,
+            )
+        };
         let frame =
             match wire::decode_terminal_record(&value).map_err(|_| FlowFailure::HerdrProtocol)? {
                 wire::TerminalRecord::Frame(frame) => frame,
@@ -1446,7 +2243,6 @@ impl HerdrClient<'_> {
                 }
                 _ => return Err(FlowFailure::HerdrProtocol),
             };
-        let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
         let wire::TerminalFrame {
             seq,
             width: cols,
@@ -1454,11 +2250,70 @@ impl HerdrClient<'_> {
             full,
             bytes,
         } = frame;
-        if controller.seq.is_some_and(|old| seq <= old) || (!full && controller.seq.is_none()) {
+        if old_seq.is_some_and(|old| seq <= old) || (!full && old_seq.is_none()) {
             return Err(FlowFailure::HerdrProtocol);
         }
+
+        if self.strict_terminal.is_some() && !controller_ready {
+            if !full {
+                return Err(FlowFailure::HerdrProtocol);
+            }
+            let projection = self
+                .staged_projection
+                .as_ref()
+                .ok_or(FlowFailure::HerdrProtocol)?;
+            let stale = projection.stale.clone();
+            let commit = self
+                .shared
+                .commit_ready_at_epoch_result(controller_epoch, |state| {
+                    // `commit_ready_at_epoch_result` owns the `info -> session`
+                    // boundary. Recheck visibility/selection inside it so a
+                    // queued hide or selection cannot let this prepared frame
+                    // become a controller target without a fresh command.
+                    if state.selected_pane != Some(controller_pane) || !state.terminal_visible {
+                        return Err(FlowFailure::Stale);
+                    }
+                    // The registry helper keeps its map and selected Terminal
+                    // lock through preflight, Term replacement, and transport
+                    // Ready. It has no fallible step after the native apply;
+                    // projection and session Ready are committed immediately
+                    // in this same callback.
+                    registry::restore_remote_display_and_ready(
+                        controller_native,
+                        self.shared.generation,
+                        cols,
+                        rows,
+                        &bytes,
+                    )
+                    .map_err(|_| FlowFailure::HerdrProtocol)?;
+                    apply_projection_state(state, projection);
+                    Ok(())
+                });
+            if let Err(failure) = commit {
+                registry::detach_transport(controller_native, self.shared.generation);
+                return Err(failure);
+            }
+
+            let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
+            controller.seq = Some(seq);
+            controller.ready = true;
+            for native in stale {
+                registry::detach_transport(native, self.shared.generation);
+                if native != self.shared.terminal_id {
+                    registry::destroy_terminal(native);
+                }
+            }
+            self.staged_projection = None;
+            self.strict_terminal = None;
+            // The first full frame can race a foreground transition. Let the
+            // live actor finish the native rearm even if the notify edge was
+            // consumed while this strict commit was in progress.
+            self.resume_controller_on_foreground();
+            return Ok(());
+        }
+
         let terminal =
-            registry::shared_terminal(controller.native).map_err(|_| FlowFailure::Stale)?;
+            registry::shared_terminal(controller_native).map_err(|_| FlowFailure::Stale)?;
         let mut terminal = terminal.lock().map_err(|_| FlowFailure::Stale)?;
         if full {
             terminal
@@ -1472,19 +2327,46 @@ impl HerdrClient<'_> {
                 return Err(FlowFailure::Transport);
             }
         }
+        let controller = self.controller.as_mut().ok_or(FlowFailure::Stale)?;
         controller.seq = Some(seq);
-        if !controller.ready {
+        let became_ready = if !controller.ready {
             controller.ready = terminal.mark_transport_ready(self.shared.generation);
             if !controller.ready {
                 // A queued hide/show edge can revoke the binding while the
                 // desired pane stays the same. Its command will reacquire.
                 return Ok(());
             }
-            drop(terminal);
-            drop(state);
-            self.shared.set_state(ConnectionState::Ready);
+            true
+        } else {
+            false
+        };
+        let controller_native = controller.native;
+        drop(terminal);
+        if became_ready && !self.shared.mark_ready_at_epoch(controller_epoch) {
+            registry::detach_transport(controller_native, self.shared.generation);
+            return Err(FlowFailure::Stale);
         }
+        // If foreground returned while this frame was being decoded, the
+        // actor may have missed the edge-triggered notify while it was not in
+        // the select loop. Recheck the live controller here so a valid first
+        // frame still completes the Suspended -> Ready wake safely.
+        self.resume_controller_on_foreground();
         Ok(())
+    }
+
+    async fn input_request(
+        &mut self,
+        epoch: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, FlowFailure> {
+        if !self.shared.current_terminal_input_is_ready(epoch) {
+            return Err(FlowFailure::Stale);
+        }
+        self.command_epoch = Some(epoch);
+        let result = self.request(method, params).await;
+        self.command_epoch = None;
+        result
     }
 
     async fn input(&mut self, input: SemanticInput) -> Result<(), FlowFailure> {
@@ -1495,6 +2377,12 @@ impl HerdrClient<'_> {
         else {
             return Ok(());
         };
+        if !self
+            .shared
+            .current_terminal_input_is_ready(controller.epoch)
+        {
+            return Ok(());
+        }
         let pane = {
             let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
             if state.selected_pane != Some(controller.pane)
@@ -1511,8 +2399,12 @@ impl HerdrClient<'_> {
                 .pane_id
                 .clone()
         };
+        let epoch = controller.epoch;
         if let SemanticInput::Scroll(lines) = input {
             if lines != 0 {
+                if !self.shared.current_terminal_input_is_ready(epoch) {
+                    return Ok(());
+                }
                 controller.stream.send(json!({"type":"terminal.scroll", "direction":if lines>0 {"up"} else {"down"},
                     "lines":lines.unsigned_abs().min(u16::MAX as u32)})).await?;
             }
@@ -1520,7 +2412,8 @@ impl HerdrClient<'_> {
         }
         // The public send APIs encode against the remote PTY's modes, but
         // unlike direct terminal.input they do not reset remote scrollback.
-        self.request(
+        self.input_request(
+            epoch,
             "pane.scroll",
             json!({"pane_id":pane,"offset_from_bottom":0}),
         )
@@ -1538,16 +2431,23 @@ impl HerdrClient<'_> {
                 return Ok(());
             }
         }
+        if !self.shared.current_terminal_input_is_ready(epoch) {
+            return Ok(());
+        }
         match input {
             SemanticInput::Scroll(_) => unreachable!(),
             SemanticInput::Paste(text) => {
-                self.request("pane.send_input", json!({"pane_id":pane,"text":text}))
-                    .await?;
+                self.input_request(
+                    epoch,
+                    "pane.send_input",
+                    json!({"pane_id":pane,"text":text}),
+                )
+                .await?;
             }
             SemanticInput::Text(text, modifiers)
                 if !modifiers.contains(Modifiers::CTRL) && !modifiers.contains(Modifiers::ALT) =>
             {
-                self.request("pane.send_text", json!({"pane_id":pane,"text":text}))
+                self.input_request(epoch, "pane.send_text", json!({"pane_id":pane,"text":text}))
                     .await?;
             }
             SemanticInput::Text(text, modifiers) => {
@@ -1556,27 +2456,43 @@ impl HerdrClient<'_> {
                     .map(|character| character_key(character, modifiers))
                     .collect::<Option<Vec<_>>>();
                 if let Some(keys) = keys {
-                    self.request("pane.send_keys", json!({"pane_id":pane,"keys":keys}))
-                        .await?;
+                    self.input_request(
+                        epoch,
+                        "pane.send_keys",
+                        json!({"pane_id":pane,"keys":keys}),
+                    )
+                    .await?;
                 } else {
                     let text = String::from_utf8(encode_text(&text, modifiers))
                         .map_err(|_| FlowFailure::HerdrProtocol)?;
-                    self.request("pane.send_text", json!({"pane_id":pane,"text":text}))
-                        .await?;
+                    self.input_request(
+                        epoch,
+                        "pane.send_text",
+                        json!({"pane_id":pane,"text":text}),
+                    )
+                    .await?;
                 }
             }
             SemanticInput::Key(key, modifiers) => {
                 if let Some(key) = semantic_key(key, modifiers) {
-                    self.request("pane.send_keys", json!({"pane_id":pane,"keys":[key]}))
-                        .await?;
+                    self.input_request(
+                        epoch,
+                        "pane.send_keys",
+                        json!({"pane_id":pane,"keys":[key]}),
+                    )
+                    .await?;
                 } else {
                     // Herdr 0.9.0's public key-name parser has no navigation
                     // names for Home/End/Insert/Delete/PageUp/PageDown. Keep
                     // their existing xterm byte form explicit and ordered.
                     let text = String::from_utf8(encode_key(key, modifiers, false))
                         .map_err(|_| FlowFailure::HerdrProtocol)?;
-                    self.request("pane.send_text", json!({"pane_id":pane,"text":text}))
-                        .await?;
+                    self.input_request(
+                        epoch,
+                        "pane.send_text",
+                        json!({"pane_id":pane,"text":text}),
+                    )
+                    .await?;
                 }
             }
         }
@@ -1682,6 +2598,7 @@ mod tests {
     fn metadata_with_groups() -> Metadata {
         let mut metadata = Metadata {
             snapshot: RuntimeSnapshot {
+                control: RuntimeControlSnapshot::default(),
                 backend: Backend::Herdr,
                 runtime: "default".to_owned(),
                 groups_supported: true,
@@ -1848,6 +2765,89 @@ mod tests {
     }
 
     #[test]
+    fn recovery_target_distinguishes_empty_group_from_disappeared_terminal() {
+        let mut state = SessionState {
+            recovery_group_id: Some(2),
+            ..SessionState::default()
+        };
+        state.herdr.snapshot.groups = vec![group(2, 100, true)];
+        assert_eq!(recovery_target(&state), RecoveryTarget::EmptyGroup(2));
+
+        // The same remembered group is no longer an empty selected group once
+        // its group record disappeared from the authoritative snapshot.
+        state.herdr.snapshot.groups.clear();
+        assert_eq!(recovery_target(&state), RecoveryTarget::Missing);
+
+        // A non-empty group with no remembered stable terminal is the
+        // disappeared-terminal case; recovery must not choose another pane.
+        state.herdr.snapshot.groups = vec![group(1, 100, true)];
+        state.recovery_group_id = Some(1);
+        state.herdr.panes.insert(
+            10,
+            RemotePane {
+                pane_id: "pane-10".to_owned(),
+                terminal_id: "terminal-10".to_owned(),
+                workspace: 100,
+                group: 1,
+            },
+        );
+        assert_eq!(recovery_target(&state), RecoveryTarget::Missing);
+
+        state.recovery_terminal_id = Some("terminal-10".to_owned());
+        assert_eq!(
+            recovery_target(&state),
+            RecoveryTarget::Terminal("terminal-10".to_owned())
+        );
+    }
+
+    #[test]
+    fn confirmed_epoch_is_rechecked_at_discovery_controller_and_mutation_boundaries() {
+        for boundary in ["confirm-discovery", "controller-open", "mutation-open"] {
+            let owner = registry::create_terminal(80, 24).expect("epoch test terminal");
+            let generation = 78_000 + u64::from(owner as u32);
+            let shared = Arc::new(ConnectionShared::new(
+                owner,
+                generation,
+                "epoch-herdr.example".to_owned(),
+                22,
+                std::path::PathBuf::from("/tmp/epoch-herdr-known-hosts"),
+            ));
+            shared
+                .session
+                .lock()
+                .expect("epoch session state")
+                .generation = generation;
+            let accepted_epoch = shared.operation_epoch();
+            let opened = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let stale_send = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_shared = Arc::clone(&shared);
+            let worker_opened = Arc::clone(&opened);
+            let worker_release = Arc::clone(&release);
+            let worker_sent = Arc::clone(&stale_send);
+            let handle = std::thread::spawn(move || {
+                // The channel/API open has completed, but the request/exec is
+                // still unsent. This is the exact await boundary guarded by
+                // the fixed confirmation epoch in production.
+                worker_opened.wait();
+                worker_release.wait();
+                if worker_shared.current_request_epoch(accepted_epoch) {
+                    worker_sent.store(true, std::sync::atomic::Ordering::Release);
+                }
+            });
+            opened.wait();
+            assert!(shared.begin_recovery("transport", 1).is_some());
+            release.wait();
+            handle.join().expect("epoch boundary worker");
+            assert!(
+                !stale_send.load(std::sync::atomic::Ordering::Acquire),
+                "{boundary} must reject the accepted epoch after invalidation"
+            );
+            registry::destroy_terminal(owner);
+        }
+    }
+
+    #[test]
     fn herdr_rollups_preserve_upstream_values_independently() {
         let workspace_status = herdr_rollup_status(wire::AgentStatus::Blocked);
         let group_status = herdr_rollup_status(wire::AgentStatus::Working);
@@ -1859,6 +2859,65 @@ mod tests {
             herdr_rollup_status(wire::AgentStatus::Unknown),
             Some(workspace::AgentStatus::Unknown)
         );
+    }
+
+    #[test]
+    fn strict_recovery_resolves_a_moved_stable_terminal_without_alias_fallback() {
+        let mut metadata = metadata_with_groups();
+        metadata.ids.insert((b'p', "terminal-10".to_owned()), 10);
+        let moved_pane = wire::HerdrPane {
+            pane_id: "pane-moved".to_owned(),
+            terminal_id: "terminal-10".to_owned(),
+            workspace_id: "workspace-moved".to_owned(),
+            tab_id: "tab-moved".to_owned(),
+            name: Some("moved".to_owned()),
+            focused: true,
+            agent_name: None,
+            agent_status: wire::AgentStatus::Idle,
+        };
+        let moved = wire::HerdrSessionSnapshot {
+            version: wire::HERDR_VERSION.to_owned(),
+            protocol: wire::HERDR_PROTOCOL,
+            focused_workspace_id: Some("workspace-moved".to_owned()),
+            focused_tab_id: Some("tab-moved".to_owned()),
+            focused_pane_id: Some("pane-moved".to_owned()),
+            workspaces: vec![wire::HerdrWorkspace {
+                workspace_id: "workspace-moved".to_owned(),
+                number: 1,
+                name: "Moved workspace".to_owned(),
+                focused: true,
+                agent_status: wire::AgentStatus::Working,
+                groups: vec![wire::HerdrGroup {
+                    tab_id: "tab-moved".to_owned(),
+                    workspace_id: "workspace-moved".to_owned(),
+                    number: 1,
+                    name: "Moved tab".to_owned(),
+                    focused: true,
+                    agent_status: wire::AgentStatus::Idle,
+                    panes: vec![moved_pane],
+                }],
+                worktree: None,
+            }],
+        };
+        assert!(snapshot_contains_stable_terminal(&moved, "terminal-10"));
+        assert!(!snapshot_contains_stable_terminal(&moved, "terminal-gone"));
+        let projection = project_snapshot(
+            metadata,
+            HashMap::from([(10, 12_345)]),
+            Some(10),
+            moved,
+            "default".to_owned(),
+            (80, 24),
+            42_424,
+        )
+        .ok()
+        .expect("moved stable terminal projection");
+        assert_eq!(projection.selected, Some(10));
+        assert_eq!(projection.mapping.get(&10), Some(&12_345));
+        let moved_remote = projection.metadata.panes.get(&10).expect("moved pane");
+        assert_ne!(moved_remote.workspace, 100);
+        assert_ne!(moved_remote.group, 1);
+        assert_eq!(moved_remote.terminal_id, "terminal-10");
     }
 
     struct RegistryCleanup {
@@ -1873,6 +2932,379 @@ mod tests {
                 registry::destroy_terminal(id);
             }
         }
+    }
+
+    struct StrictFrameFixture {
+        owner: u64,
+        generation: u64,
+        shared: Arc<ConnectionShared>,
+        input_receiver: mpsc::Receiver<SemanticInput>,
+    }
+
+    impl StrictFrameFixture {
+        fn reattach_semantic(&mut self) {
+            registry::begin_remote(self.owner, self.generation)
+                .expect("strict-frame remote binding");
+            let (input, receiver) = mpsc::channel(8);
+            let (resize, _sizes) = watch::channel((80, 4));
+            registry::with_terminal_for_test(self.owner, |terminal| {
+                terminal
+                    .attach_semantic_transport(self.generation, input, resize)
+                    .expect("strict-frame semantic binding");
+            })
+            .expect("strict-frame terminal");
+            self.input_receiver = receiver;
+        }
+    }
+
+    impl Drop for StrictFrameFixture {
+        fn drop(&mut self) {
+            registry::detach_transport(self.owner, self.generation);
+            registry::destroy_terminal(self.owner);
+        }
+    }
+
+    fn strict_frame_projection(owner: u64, label: &str) -> SnapshotProjection {
+        let workspace_name = format!("workspace-{label}");
+        let group_name = format!("group-{label}");
+        let terminal_name = format!("terminal-{label}");
+        let mut metadata = Metadata {
+            snapshot: RuntimeSnapshot {
+                control: RuntimeControlSnapshot::default(),
+                backend: Backend::Herdr,
+                runtime: "default".to_owned(),
+                groups_supported: true,
+                workspaces: vec![workspace::Workspace {
+                    id: "100".to_owned(),
+                    name: workspace_name.clone(),
+                    agent_status: None,
+                }],
+                groups: vec![workspace::TerminalGroup {
+                    id: "200".to_owned(),
+                    workspace_id: "100".to_owned(),
+                    name: group_name.clone(),
+                    selected: true,
+                    agent_status: None,
+                }],
+                terminals: vec![workspace::Terminal {
+                    id: owner.to_string(),
+                    workspace_id: "100".to_owned(),
+                    group_id: "200".to_owned(),
+                    terminal_id: "stable-terminal".to_owned(),
+                    name: terminal_name.clone(),
+                    active: true,
+                    selected: true,
+                    agent: None,
+                }],
+            },
+            ..Metadata::default()
+        };
+        metadata.workspaces.insert(100, workspace_name.clone());
+        metadata.groups.insert(200, group_name.clone());
+        metadata.panes.insert(
+            owner,
+            RemotePane {
+                pane_id: "pane-alias".to_owned(),
+                terminal_id: "stable-terminal".to_owned(),
+                workspace: 100,
+                group: 200,
+            },
+        );
+        metadata.selected_groups.insert(100, 200);
+        metadata.active_group = Some(200);
+
+        let pane = PaneSnapshot {
+            window_id: 100,
+            pane_id: owner,
+            terminal_id: owner,
+            window_name: workspace_name,
+            active: true,
+            selected: true,
+            index: 0,
+            columns: 80,
+            rows: 4,
+            pane_name: terminal_name.clone(),
+            title: terminal_name,
+        };
+        SnapshotProjection {
+            metadata,
+            mapping: HashMap::from([(owner, owner)]),
+            selected: Some(owner),
+            flat: vec![pane.clone()],
+            windows: vec![WindowSnapshot {
+                window_id: 100,
+                name: pane.window_name.clone(),
+                panes: vec![pane],
+                selected: true,
+                zoomed: false,
+            }],
+            stale: Vec::new(),
+        }
+    }
+
+    fn strict_frame_fixture() -> StrictFrameFixture {
+        let owner = registry::create_terminal(80, 4).expect("strict-frame terminal");
+        let generation = 93_000 + owner;
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "strict-frame-herdr.example".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/strict-frame-herdr-known-hosts"),
+        ));
+        let old = strict_frame_projection(owner, "old");
+        {
+            let mut state = shared.session.lock().expect("strict-frame session state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "strict-frame-herdr.example".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: std::path::PathBuf::from("/tmp/strict-frame-herdr-known-hosts"),
+                backend: Backend::Herdr,
+                runtime: Some("default".to_owned()),
+            });
+            state.viewport = Some((80, 4));
+            state.herdr = old.metadata.clone();
+            state.pane_terminals = old.mapping.clone();
+            state.selected_pane = old.selected;
+            state.snapshot = SessionSnapshot {
+                windows: old.windows.clone(),
+                panes: old.flat.clone(),
+                selected_pane: old.selected,
+            };
+            state.runtime_operations_ready = true;
+            state.terminal_input_ready = false;
+        }
+
+        registry::begin_remote(owner, generation).expect("strict-frame initial remote mode");
+        let (input, input_receiver) = mpsc::channel(8);
+        let (resize, _sizes) = watch::channel((80, 4));
+        registry::with_terminal_for_test(owner, |terminal| {
+            terminal
+                .attach_semantic_transport(generation, input, resize)
+                .expect("strict-frame initial semantic binding");
+        })
+        .expect("strict-frame initial terminal");
+        registry::restore_remote_display_and_ready(owner, generation, 80, 4, b"old-frame\r\n")
+            .expect("strict-frame retained frame");
+        shared
+            .session
+            .lock()
+            .expect("strict-frame ready state")
+            .terminal_input_ready = true;
+
+        StrictFrameFixture {
+            owner,
+            generation,
+            shared,
+            input_receiver,
+        }
+    }
+
+    fn strict_full_frame_value(bytes: &[u8]) -> Value {
+        use base64::Engine as _;
+
+        json!({
+            "type": "terminal.frame",
+            "encoding": "ansi",
+            "seq": 1,
+            "width": 80,
+            "height": 4,
+            "full": true,
+            "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+
+    #[test]
+    fn strict_first_full_frame_barrier_rejects_stale_epoch_before_native_apply() {
+        let mut fixture = strict_frame_fixture();
+        let (old_snapshot, old_herdr, old_mapping, old_selected) = {
+            let state = fixture
+                .shared
+                .session
+                .lock()
+                .expect("strict-frame retained state");
+            (
+                state.snapshot.clone(),
+                state.herdr.snapshot.clone(),
+                state.pane_terminals.clone(),
+                state.selected_pane,
+            )
+        };
+        let old_native = registry::snapshot(fixture.owner).expect("strict-frame native snapshot");
+        let old_revision =
+            registry::terminal_revision(fixture.owner).expect("strict-frame native revision");
+        let expected_epoch = fixture
+            .shared
+            .begin_recovery("strict_frame", 1)
+            .expect("strict-frame recovery epoch");
+        registry::detach_transport(fixture.owner, fixture.generation);
+        fixture.reattach_semantic();
+
+        // Decode and stage the complete frame before the barrier. The commit
+        // callback below is the only place allowed to mutate Term/projection.
+        let wire::TerminalRecord::Frame(frame) =
+            wire::decode_terminal_record(&strict_full_frame_value(b"new-frame\r\n\x1b[6n"))
+                .expect("strict-frame decode")
+        else {
+            panic!("strict-frame decoder returned a non-frame record");
+        };
+        let projection = strict_frame_projection(fixture.owner, "new");
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let worker_shared = Arc::clone(&fixture.shared);
+        let worker_entered = Arc::clone(&entered);
+        let worker_release = Arc::clone(&release);
+        let owner = fixture.owner;
+        let generation = fixture.generation;
+        let worker = std::thread::spawn(move || {
+            worker_entered.wait();
+            worker_release.wait();
+            worker_shared.commit_ready_at_epoch_result(expected_epoch, move |state| {
+                registry::restore_remote_display_and_ready(
+                    owner,
+                    generation,
+                    frame.width,
+                    frame.height,
+                    &frame.bytes,
+                )
+                .map_err(|_| FlowFailure::HerdrProtocol)?;
+                apply_projection_state(state, &projection);
+                Ok(())
+            })
+        });
+
+        entered.wait();
+        // This models Change/Disconnect after decode/prepare but before the
+        // native apply callback. The stale callback must never run.
+        fixture.shared.invalidate_explicitly("runtime_changed");
+        registry::detach_transport(fixture.owner, fixture.generation);
+        release.wait();
+        assert!(matches!(
+            worker.join().expect("strict-frame stale worker"),
+            Err(FlowFailure::Stale)
+        ));
+
+        let state = fixture
+            .shared
+            .session
+            .lock()
+            .expect("strict-frame stale state");
+        assert_eq!(state.snapshot, old_snapshot);
+        assert_eq!(state.herdr.snapshot, old_herdr);
+        assert_eq!(state.pane_terminals, old_mapping);
+        assert_eq!(state.selected_pane, old_selected);
+        assert!(!state.runtime_operations_ready);
+        assert!(!state.terminal_input_ready);
+        assert_eq!(state.recovery.phase, RecoveryPhase::Stopped);
+        drop(state);
+        assert!(!registry::transport_ready(
+            fixture.owner,
+            fixture.generation
+        ));
+        assert_eq!(
+            registry::snapshot(fixture.owner).expect("strict-frame old native snapshot"),
+            old_native
+        );
+        assert_eq!(
+            registry::terminal_revision(fixture.owner).expect("strict-frame old native revision"),
+            old_revision
+        );
+    }
+
+    #[test]
+    fn strict_first_full_frame_commit_publishes_projection_ready_and_fresh_input() {
+        let mut fixture = strict_frame_fixture();
+        let old_native = registry::snapshot(fixture.owner).expect("strict-frame old snapshot");
+        let old_revision =
+            registry::terminal_revision(fixture.owner).expect("strict-frame old revision");
+        let expected_epoch = fixture
+            .shared
+            .begin_recovery("strict_frame", 1)
+            .expect("strict-frame success epoch");
+        registry::detach_transport(fixture.owner, fixture.generation);
+        fixture.reattach_semantic();
+
+        let wire::TerminalRecord::Frame(frame) =
+            wire::decode_terminal_record(&strict_full_frame_value(b"new-frame\r\n\x1b[6n"))
+                .expect("strict-frame success decode")
+        else {
+            panic!("strict-frame decoder returned a non-frame record");
+        };
+        let projection = strict_frame_projection(fixture.owner, "new");
+        let expected_metadata = projection.metadata.snapshot.clone();
+        let expected_flat = projection.flat.clone();
+        let expected_windows = projection.windows.clone();
+        let expected_mapping = projection.mapping.clone();
+        let result = fixture
+            .shared
+            .commit_ready_at_epoch_result(expected_epoch, move |state| {
+                registry::restore_remote_display_and_ready(
+                    fixture.owner,
+                    fixture.generation,
+                    frame.width,
+                    frame.height,
+                    &frame.bytes,
+                )
+                .map_err(|_| FlowFailure::HerdrProtocol)?;
+                apply_projection_state(state, &projection);
+                Ok(())
+            });
+        assert!(
+            result.is_ok(),
+            "strict-frame success commit returned an error"
+        );
+
+        let state = fixture
+            .shared
+            .session
+            .lock()
+            .expect("strict-frame success state");
+        assert_eq!(state.snapshot.panes, expected_flat);
+        assert_eq!(state.snapshot.windows, expected_windows);
+        assert_eq!(state.pane_terminals, expected_mapping);
+        assert_eq!(state.selected_pane, Some(fixture.owner));
+        assert_eq!(state.herdr.snapshot, expected_metadata);
+        assert_eq!(state.recovery.phase, RecoveryPhase::None);
+        assert!(state.runtime_operations_ready);
+        assert!(state.terminal_input_ready);
+        drop(state);
+        assert_eq!(
+            fixture
+                .shared
+                .snapshot()
+                .expect("strict-frame connection state")
+                .state,
+            ConnectionState::Ready as u32
+        );
+        assert!(registry::transport_ready(fixture.owner, fixture.generation));
+        assert_ne!(
+            registry::snapshot(fixture.owner).expect("strict-frame new snapshot"),
+            old_native
+        );
+        assert!(
+            registry::terminal_revision(fixture.owner).expect("strict-frame new revision")
+                > old_revision
+        );
+
+        // The frame contained a device-status query. It was applied while
+        // the semantic gate was Attached, so no local VT reply was sent.
+        assert!(fixture.input_receiver.try_recv().is_err());
+        let fresh_epoch =
+            registry::operation_epoch(fixture.owner).expect("strict-frame input epoch");
+        assert!(
+            fixture
+                .shared
+                .current_terminal_input_is_ready(fixture.shared.operation_epoch())
+        );
+        registry::commit_utf8_at_epoch(fixture.owner, fresh_epoch, b"fresh")
+            .expect("strict-frame fresh input");
+        assert!(matches!(
+            fixture.input_receiver.try_recv().expect("strict-frame input record"),
+            SemanticInput::Text(text, modifiers)
+                if text == "fresh" && modifiers == Modifiers::NONE
+        ));
     }
 
     fn herdr_pane(
