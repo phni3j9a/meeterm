@@ -1,0 +1,219 @@
+=== pane_split_changed disconnect evidence — run 4 (fixture ob5s3osd) ===
+
+Baseline (fixture_layout, from prepare_tmux_fixture):
+4639:=== 15:16:28.798997345 SOCKET /home/ubuntu/meeterm-ssh-fixture-ob5s3osd/tmux/tmux-1000/default ===
+=== 15:16:28.798997345 SOCKET /home/ubuntu/meeterm-ssh-fixture-ob5s3osd/tmux/tmux-1000/default ===
+--- 15:16:28.802200488
+@0 smoke %0 57471 0 act=0 40x24 L=0 T=0 R=39 B=23 wact=1 zoom=0
+@0 smoke %1 57475 1 act=1 39x24 L=41 T=0 R=79 B=23 wact=1 zoom=0
+@1 handoff %2 57483 0 act=0 40x24 L=0 T=0 R=39 B=23 wact=0 zoom=0
+@1 handoff %3 57491 1 act=1 39x24 L=41 T=0 R=79 B=23 wact=0 zoom=0
+@0 smoke 80x24 zoom=0 layout=8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1}
+@1 handoff 80x24 zoom=0 layout=820e,80x24,0,0{40x24,0,0,2,39x24,41,0,3}
+--- 15:16:30.315421064
+@0 smoke %0 57471 0 act=1 40x24 L=0 T=0 R=39 B=23 wact=1 zoom=0
+@0 smoke %1 57475 1 act=0 39x24 L=41 T=0 R=79 B=23 wact=1 zoom=0
+@1 handoff %2 57483 0 act=0 40x24 L=0 T=0 R=39 B=23 wact=0 zoom=0
+
+=== Zoom + hook lifecycle around handoff/return (15:35-15:38) ===
+11803:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11804:client-detached[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11805:client-session-changed[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11806:--- 15:36:55.974642281
+11807:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11808:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11811:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11813:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11814:client-detached[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11815:client-session-changed[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11816:--- 15:36:57.489009121
+11817:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11818:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11821:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11823:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11824:client-detached[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11825:client-session-changed[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11826:--- 15:36:59.002461541
+11827:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11828:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11831:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11833:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11834:client-detached[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11835:client-session-changed[1000] if-shell -F -t "=$0:.%5" "#{window_zoomed_flag}" "resize-pane -Z -t =$0:.%5" ; set-hook -u -t "=$0:" client-detached[1000] ; set-hook -u -t "=$0:" client-session-changed[1000]
+11836:--- 15:37:00.515716620
+11837:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11838:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11841:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11843:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11846:--- 15:37:02.028829545
+11847:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11848:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11851:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11853:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11856:--- 15:37:03.543031542
+11857:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11858:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11861:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11863:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11866:--- 15:37:05.057541585
+11867:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11868:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11871:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11873:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11876:--- 15:37:06.582120546
+11877:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11878:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11881:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11883:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11886:--- 15:37:08.101665428
+11887:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11888:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11891:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11893:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11896:--- 15:37:09.614668733
+11897:@0 smoke %0 57471 0 act=1 45x27 L=0 T=0 R=44 B=26 wact=1 zoom=1
+11898:@0 smoke %1 57475 1 act=0 22x27 L=23 T=0 R=44 B=26 wact=1 zoom=1
+11901:@0 smoke 45x27 zoom=1 layout=3e23,45x27,0,0{22x27,0,0,0,22x27,23,0,1}
+11903:client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+11906:--- 15:37:11.127771122
+
+=== Full ticks bracketing the client detach + suite teardown (15:38:31 - end) ===
+--- 15:38:31.492986028
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:33.005994625
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:34.525185729
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:36.056268676
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:37.586376654
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:39.104770685
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:40.617916629
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:42.133504152
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-71122 unknown 45x flags=attached,focused,control-mode,UTF-8
+client-detached
+client-session-changed
+--- 15:38:43.648334782
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-detached
+client-session-changed
+--- 15:38:45.165427518
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-detached
+client-session-changed
+--- 15:38:46.678801268
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-detached
+client-session-changed
+--- 15:38:48.199994377
+@0 smoke %0 57471 0 act=0 22x14 L=0 T=0 R=21 B=13 wact=1 zoom=1
+@0 smoke %1 57475 1 act=1 45x14 L=0 T=0 R=44 B=13 wact=1 zoom=1
+@1 handoff %2 57483 0 act=1 22x14 L=0 T=0 R=21 B=13 wact=0 zoom=0
+@1 handoff %3 57491 1 act=0 22x14 L=23 T=0 R=44 B=13 wact=0 zoom=0
+@0 smoke 45x14 zoom=1 layout=0295,45x14,0,0{22x14,0,0,0,22x14,23,0,1}
+@1 handoff 45x14 zoom=0 layout=029e,45x14,0,0{22x14,0,0,2,22x14,23,0,3}
+client-detached
+client-session-changed
+
+=== Shape semantics ===
+Baseline smoke window: %0 40x24 L=0 R=39 -> (0,F,F,T,F); %1 39x24 L=41 R=79 -> (1,T,F,F,F)
+At teardown smoke window: %0 22x14 L=0 R=21 -> (0,F,F,T,F); %1 zoomed 45x14 R=44=max -> (1,F,F,F,F)
+-> pane 1 edge flags flipped T,F ->F,F = pane_split_changed (shape check precedes still_zoomed check)
+=== ssh-validation.txt (run 4) ===
+result=failed
+stage=disconnect
+reason=pane_split_changed
+secrets_submitted=yes
+screenshot=written
+screenshot_reason=ok
+screenrecord_reason=ok
+transport_loss_evidence=passed
+completed=device_ready,emulator_host_loopback,emulator_host_alias_reachable,adb_reverse_preflight_empty,connect_form_open,host_filled,port_filled,username_filled,password_form_keyboard_screenshot,password_form_screenshot,authentication_selector_verified,daily_profile_persistence_selected,form_filled,form_submitted,host_key_verified,initial_runtime_selection_runtime_picker_ready,initial_runtime_selection_runtime_picker_selected,initial_runtime_selection_runtime_connected,connected,daily_profile_edited,daily_second_profile_saved,daily_profile_switch_second_boundary_target_picker,daily_profile_switched,daily_profile_switch_primary_boundary_confirmation,daily_profile_switch_restored,daily_profile_delete_cancelled,daily_second_profile_deleted,daily_app_backgrounded,daily_foreground_authoritative_ready,daily_foreground_native_binding_verified,daily_foreground_marker_exactly_once,daily_foreground_terminal_resumed,daily_transport_loss_pre_marker_once,daily_transport_loss_injected,daily_transport_loss_stale_read_only,daily_transport_loss_restored,daily_transport_loss_authoritative_ready,daily_transport_loss_post_marker_once,daily_transport_loss_remote_ack,daily_transport_loss_complete,adb_reverse_postflight_empty,daily_process_restarted,daily_servers_screenshot,daily_profile_and_credential_restored,daily_saved_profile_connect_runtime_selection_runtime_picker_ready,daily_saved_profile_connect_runtime_selection_runtime_picker_selected,daily_saved_profile_connect_runtime_selection_runtime_connected,daily_saved_profile_connected,daily_video_started,daily_settings_saved,daily_settings_screenshot,daily_settings_redisplayed,daily_quick_key_targets,daily_terminal_dark_screenshot,daily_glyph_atlas_screenshot,daily_glyph_atlas_reset,daily_workspace_created,daily_workspace_renamed,daily_pane_created,daily_pane_renamed,daily_created_pane_screenshot,daily_selection_fixture_ready,daily_selection_screenshot,daily_selection_cleared_screenshot,daily_native_selection_copied,daily_pane_closed,daily_workspace_closed,daily_fixture_restored,daily_video,tmux_workspace_discovered,workspaces_screenshot,workspace_opened,tmux_pane_selected,terminal_focused,remote_marker_once,remote_ansi_cjk_ls_size,terminal_keyboard_screenshot,back_to_workspaces,workspace_reopened,tmux_workspace_switched,tmux_second_pane_selected,remote_marker_second_window,tmux_workspace_returned,handoff_screenshot,pc_handoff_layout,terminal_failure_screenshot
+
+=== ssh-failure-state.txt (run 4) ===
+connection_state=disconnected
+runtime_picker=no
+workspace_row=no
+saved_servers_sheet=no
+switch_confirmation=no
+profile_connect_error=no
