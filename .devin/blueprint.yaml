@@ -1,0 +1,179 @@
+# Devin Cloud blueprint for meeterm.
+#
+# New sessions created for this repository boot with the mobile validation
+# toolchain already installed, so validation sessions can be recreated freely
+# (fresh context, warm VM). See docs/CI_MOBILE.md for the validation runbook.
+#
+# Multi-document blueprint: one document per platform. `runs-on` selects the
+# platform each document builds a snapshot for.
+
+runs-on: linux
+
+initialize:
+  - name: "Pinned Node.js 22"
+    run: |
+      export NVM_DIR="$HOME/.nvm"
+      if [ -s "$NVM_DIR/nvm.sh" ]; then
+        . "$NVM_DIR/nvm.sh"
+        nvm install 22.22.2
+        nvm alias default 22.22.2
+        echo "export NVM_DIR=\"$HOME/.nvm\"" >> "$ENVRC"
+        echo "PATH=\"$NVM_DIR/versions/node/v22.22.2/bin:\$PATH\"" >> "$ENVRC"
+      else
+        echo "nvm not present; keeping the image Node" >&2
+      fi
+
+  - name: "Pinned Rust toolchain and Android targets"
+    run: |
+      if ! command -v rustup >/dev/null 2>&1; then
+        curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+        . "$HOME/.cargo/env"
+      fi
+      echo "PATH=\"$HOME/.cargo/bin:\$PATH\"" >> "$ENVRC"
+      rustup toolchain install 1.96.0 --profile minimal
+      rustup default 1.96.0
+      rustup target add aarch64-linux-android x86_64-linux-android armv7-linux-androideabi
+      cargo install cargo-ndk --version 4.1.2 --locked
+
+  - name: "Android SDK packages"
+    run: |
+      export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+      yes | sdkmanager --licenses >/dev/null 2>&1 || true
+      sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1" "system-images;android-36;google_apis;x86_64"
+      {
+        echo "export ANDROID_HOME=\"$HOME/android-sdk\""
+        echo "export ANDROID_NDK_HOME=\"\$ANDROID_HOME/ndk/27.1.12297006\""
+        echo "export ANDROID_NDK_ROOT=\"\$ANDROID_NDK_HOME\""
+        echo 'export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"'
+      } >> "$ENVRC"
+
+  - name: "Maven Central mirror workaround"
+    run: |
+      mkdir -p "$HOME/.gradle"
+      cat > "$HOME/.gradle/init.gradle" <<'GRADLE'
+      // Maven Central is blocked by the org network policy.
+      // Route all repositories through Google's official Maven Central mirror.
+      // plugins.gradle.org redirects artifact downloads to blocked Maven Central,
+      // so plugin resolution also needs a mirror of the plugin portal.
+      // beforeSettings fires for every build in the composite, including
+      // includeBuild() builds such as @react-native/gradle-plugin.
+      def mcMirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+      def pluginMirror = 'https://maven.aliyun.com/repository/gradle-plugin/'
+      beforeSettings { settings ->
+          settings.pluginManagement {
+              repositories {
+                  maven { url mcMirror }
+                  maven { url pluginMirror }
+                  google()
+                  gradlePluginPortal()
+                  mavenCentral()
+              }
+          }
+          try {
+              settings.dependencyResolutionManagement {
+                  repositories {
+                      maven { url mcMirror }
+                      google()
+                  }
+              }
+          } catch (ignored) {
+              // older Gradle without dependencyResolutionManagement
+          }
+      }
+      allprojects {
+          buildscript {
+              repositories {
+                  maven { url mcMirror }
+                  google()
+              }
+          }
+          repositories {
+              maven { url mcMirror }
+              google()
+          }
+      }
+      GRADLE
+
+maintenance:
+  - name: "Install JavaScript dependencies"
+    run: npm install
+
+knowledge:
+  - name: validation
+    contents: |
+      Mobile validation runs on this session per docs/CI_MOBILE.md.
+      Common flow: git fetch origin && git reset --hard <SHA> && npm install.
+      Android (linux): expo prebuild --platform android --non-interactive --no-install,
+      boot the Pixel AVD headless (-no-window -gpu swiftshader_indirect),
+      ./gradlew :app:assembleRelease, then scripts/ci/android-smoke.sh,
+      scripts/ci/android-screen-fixtures.py, and
+      scripts/ssh/fixture.py -- python3 scripts/ssh/android-smoke.py.
+      Push artifacts/ to an evidence/<platform>-<yyyymmdd> orphan branch after
+      each run and report the branch, commit, and suite results.
+  - name: test
+    contents: |
+      Fast checks (also in ci.yml): npm run typecheck, npm run lint,
+      python3 -m unittest discover -s scripts/ssh -p 'test_*.py',
+      python3 -m unittest discover -s scripts/herdr -p 'test_*.py',
+      cargo test --manifest-path native/meeterm-core/Cargo.toml.
+      Rust toolchain is pinned to 1.96.0 by native/meeterm-core/rust-toolchain.toml.
+
+---
+runs-on: macos
+
+initialize:
+  - name: "Rust proxies and iOS targets"
+    run: |
+      # The macOS image ships rustup via Homebrew (rustup home ~/.rustup, with
+      # the iOS targets already installed), but brew's rustup does not create
+      # the ~/.cargo/bin proxies, so `rustc`/`cargo` do not resolve on PATH.
+      # rustup acts as a proxy when invoked under a tool name, so link the
+      # proxies ourselves and put them on PATH via ENVRC.
+      # NOTE: /opt/homebrew/bin/rustup is a brew shell wrapper that drops
+      # argv[0]; proxies must link to the real binary under libexec.
+      mkdir -p "$HOME/.cargo/bin"
+      RUSTUP_BIN="$(brew --prefix rustup)/libexec/bin/rustup"
+      for tool in cargo rustc rustdoc rustfmt cargo-clippy clippy-driver cargo-fmt; do
+        ln -sf "$RUSTUP_BIN" "$HOME/.cargo/bin/$tool"
+      done
+      export PATH="$HOME/.cargo/bin:$PATH"
+      rustup toolchain install 1.96.0 --profile minimal
+      rustup default 1.96.0
+      rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      echo "PATH=\"$HOME/.cargo/bin:\$PATH\"" >> "$ENVRC"
+
+  - name: "Pinned Node.js 22"
+    run: |
+      HOMEBREW_NO_AUTO_UPDATE=1 brew install node@22
+      brew link --overwrite node@22 || true
+      echo "PATH=\"/opt/homebrew/opt/node@22/bin:\$PATH\"" >> "$ENVRC"
+
+  - name: "iOS test dependencies"
+    run: |
+      HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux cocoapods
+
+maintenance:
+  - name: "Install JavaScript dependencies"
+    run: npm install
+
+knowledge:
+  - name: validation
+    contents: |
+      Mobile validation runs on this session per docs/CI_MOBILE.md.
+      Common flow: git fetch origin && git reset --hard <SHA> && npm install.
+      iOS (macos): expo prebuild --platform ios --non-interactive --no-install,
+      scripts/ci/ios-inject-ui-test.sh, pod install,
+      scripts/ci/ios-strip-storage-rust-link.py, then build-for-testing with
+      ARCHS=arm64 (Apple Silicon), then MEETERM_IOS_SUITE=<suite>
+      scripts/ci/ios-smoke.sh (ssh/full/names run the fixture preflight inside
+      the script). Remember SIMCTL_CHILD_TZ=UTC for log-marker checks and
+      `xcrun simctl runtime match` if the default runtime mismatches.
+      Push artifacts/ to an evidence/<platform>-<yyyymmdd> orphan branch after
+      each run and report the branch, commit, and suite results.
+  - name: test
+    contents: |
+      Fast checks (also in ci.yml): npm run typecheck, npm run lint,
+      python3 -m unittest discover -s scripts/ssh -p 'test_*.py',
+      python3 -m unittest discover -s scripts/herdr -p 'test_*.py',
+      cargo test --manifest-path native/meeterm-core/Cargo.toml.
+      Rust toolchain is pinned to 1.96.0 by native/meeterm-core/rust-toolchain.toml.

@@ -259,7 +259,7 @@ Prefer the smallest implementation that proves the current milestone. Avoid spec
 
 ## Current engineering sequence and acceptance
 
-The first implementation milestone is a dual-platform native terminal foundation. Prove shared Rust terminal semantics first, keep Android and iOS as thin native adapters, and establish both GitHub-hosted mobile jobs early. An environment-only iOS check must not be reported as iOS terminal verification.
+The first implementation milestone is a dual-platform native terminal foundation. Prove shared Rust terminal semantics first, keep Android and iOS as thin native adapters, and establish both hosted mobile validation paths early. An environment-only iOS check must not be reported as iOS terminal verification.
 
 The dual-platform native foundation and the selected-backend control boundary
 are implemented together. Keep verifying:
@@ -270,7 +270,7 @@ are implemented together. Keep verifying:
 4. Thin Android and iOS native `TerminalView` adapters that keep terminal bytes, cells, render frames, and IME composition out of JavaScript.
 5. A real native GPU surface on each platform consuming the shared terminal snapshot. The iOS backend choice remains an evidence-driven implementation decision; see `docs/ARCHITECTURE.md`.
 6. Japanese/CJK/font behavior, native Japanese IME composition and committed input, and deterministic resize behavior on the applicable platform paths.
-7. GitHub-hosted Android emulator and iOS Simulator jobs that build, install, launch, signal native readiness and a first frame, and detect crashes while always uploading an observability bundle.
+7. Devin Cloud Android emulator and iOS Simulator validation sessions that build, install, launch, signal native readiness and a first frame, and detect crashes while always pushing an observability bundle to an evidence branch.
 
 The Herdr live case is an opt-in ignored Rust integration test because it needs a
 real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
@@ -307,12 +307,13 @@ when those suites run. Use these test tiers:
 
 - On every relevant push, run the fast Rust, JavaScript, Swift/Kotlin, native
   bridge, and build-contract checks selected for the changed paths.
-- The workflow should provide a short Android emulator and iOS Simulator core
-  smoke for changes that affect the mobile runtime, generated projects, native
-  bridge, renderer, lifecycle, or user flow. Once available, run it as a
-  blocking PR check. Keep this suite focused on CNG or product restoration,
-  install, launch, native readiness, first frame, and no-crash evidence, plus
-  only the smallest representative UI state needed to prove the path.
+- The validation path should provide a short Android emulator and iOS Simulator
+  core smoke for changes that affect the mobile runtime, generated projects,
+  native bridge, renderer, lifecycle, or user flow. Once available, run it as a
+  blocking check before merge. Keep this suite focused on CNG or product
+  restoration, install, launch, native readiness, first frame, and no-crash
+  evidence, plus only the smallest representative UI state needed to prove the
+  path.
 - Once the relevant source is stable and before merge, run Android full and iOS
   `standard` on the exact candidate commit. These acceptance runs cover the full
   interaction and presentation matrices and are required for applicable mobile
@@ -322,7 +323,7 @@ when those suites run. Use these test tiers:
   selection, or native input changes and before distribution. Do not run it for
   unrelated UI or documentation changes.
 
-Until the short core smoke exists in the workflow, keep using the current
+Until the short core smoke exists in the validation path, keep using the current
 Android full and iOS `standard` suites for final acceptance; a source-only check
 must not be presented as the missing runtime gate. The long iOS `full` flow and
 `forms`/`native`/`names` suites remain explicit diagnostics and are not required
@@ -349,7 +350,8 @@ downloaded and actually viewed before the corresponding evidence is reported.
 The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
 suite by its actual scope; never rename an old full failure into a passing result.
 For another suite or diagnosis on identical source, reuse pristine iOS test
-products only through the workflow's commit/toolchain/hash checks. Record the
+products only through the same-session commit/toolchain match described in
+docs/CI_MOBILE.md. Record the
 original fresh build and the reuse run. Changes to app, native, test, or build
 inputs require a new build.
 Investigate the first failed stage before rerunning; retain bounded state waits,
@@ -358,13 +360,13 @@ silently skipping assertions, adding blind retries, or extending deadlines.
 
 ## CI and visual evidence boundary
 
-For both mobile jobs, the machine-gated acceptance boundary is: generated project/build succeeds, the app installs, the app launches, the expected native module is ready, a first native terminal frame is reported, and the process does not crash. These gates do not claim physical-device GPU, font fallback, rotation, or IME parity.
+For both mobile validations, the machine-gated acceptance boundary is: generated project/build succeeds, the app installs, the app launches, the expected native module is ready, a first native terminal frame is reported, and the process does not crash. These gates do not claim physical-device GPU, font fallback, rotation, or IME parity.
 
-Standard GitHub-hosted macOS runners do not guarantee Metal. The iOS job must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
+The iOS validation must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
 
-The observability bundle is uploaded on every job, including failed jobs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Codex must download and actually view both the Android emulator and iOS Simulator screenshots from the final exact-source acceptance runs before reporting visual success; an uploaded bundle or a passing process check is not visual review. Intermediate short-smoke screenshots are diagnostic and do not require a full presentation review unless they are the evidence being used for a visual claim. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; record the exact run and result in the acceptance evidence.
+The observability bundle is pushed to an evidence branch on every run, including failed runs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Main must fetch the evidence branch and actually view both the Android emulator and iOS Simulator screenshots from the final exact-source acceptance runs before reporting visual success; a pushed bundle or a passing process check is not visual review. Intermediate short-smoke screenshots are diagnostic and do not require a full presentation review unless they are the evidence being used for a visual claim. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; record the exact run and result in the acceptance evidence.
 
-The iOS Simulator job is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
+The iOS Simulator validation is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
 
 Treat updates to Expo/React Native, the Rust terminal stack, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, fonts, or the chosen iOS renderer backend as cross-platform native dependency changes. Regenerate CNG output on a fresh checkout, run the short core smoke while iterating, and complete fresh Android full and iOS `standard` acceptance on the final candidate commit; do not patch ignored generated directories to accommodate a dependency update.
 

@@ -32,6 +32,23 @@ case "${suite}" in
   standard|polish|polish-navigation|ssh|full|forms|native|names) ;;
   *) echo "Unsupported iOS smoke suite: ${suite}" >&2; exit 2 ;;
 esac
+
+# SSH-touching suites keep the preflight the retired hosted workflow enforced
+# before Simulator testing: fixture-only tmux, real OpenSSH fixture capability,
+# and the native runtime-selection gate. This stays a machine gate even when a
+# human or agent drives the script outside CI.
+case "${suite}" in
+  ssh|full|names)
+    if ! command -v tmux >/dev/null 2>&1; then
+      HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux
+    fi
+    tmux -V
+    python3 "${GITHUB_WORKSPACE}/scripts/ssh/fixture.py" --check
+    python3 "${GITHUB_WORKSPACE}/scripts/ssh/fixture.py" -- \
+      cargo test --locked --manifest-path "${GITHUB_WORKSPACE}/native/meeterm-core/Cargo.toml" \
+      --test openssh real_openssh_existing_tmux_runtime_selection -- --ignored --nocapture
+    ;;
+esac
 mkdir -p "${artifact_dir}"
 test -d "${app_path}"
 rm -f \

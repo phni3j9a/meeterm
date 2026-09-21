@@ -226,7 +226,7 @@ foundation判定では、これらの固定診断をreadiness/frameから分離�
 入力診断だけでは合格にならず、不正な値や未知のmarkerは引き続き失敗になります。
 fixtureも実際のAppState通知に追従しますが、Rustへの接続・再接続呼び出しは行いません。
 
-小画面・大きい文字の明示的診断には workflow_dispatch の `ios_profile=compact-xl` を使います。
+小画面・大きい文字の明示的診断には、iOSセッション側で `MEETERM_IOS_PROFILE=compact-xl` を指定します。
 同一commitのpristine test productsを指定して再利用できます。SE（第3世代）の新規Simulatorを
 作成し、OSのcontent sizeをextra-largeに設定して読み戻しを記録します。通常のPro系端末の
 結果と区別し、別runの画像として確認します。対応runtimeがなければ失敗を明示し、
@@ -254,15 +254,13 @@ fixtureも実際のAppState通知に追従しますが、Rustへの接続・再�
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |
 
-```sh
-test_ref="$(git branch --show-current)"
-# 通常の両OS検証（Androidは従来full）
-gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=both -f ios_suite=standard
-# iOSだけを調べる場合
-gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=ios -f ios_suite=standard
-# 実SSHの確認
-gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=ios -f ios_suite=ssh
-```
+モバイル検証は [CI_MOBILE.md](CI_MOBILE.md) のDevin Cloud常駐セッションで実行します。
+依頼はMainへ「対象commitとsuite」を伝えるだけです。MainがSessions APIで各セッションへ
+検証プロンプトを送り、完了を監視して証跡ブランチとともに結果を報告します。
+
+- 通常の両OS検証: Androidセッションへfull相当、iOSセッションへ `MEETERM_IOS_SUITE=standard`
+- iOSだけを調べる場合: iOSセッションへ `MEETERM_IOS_SUITE=standard`
+- 実SSHの確認: iOSセッションへ `MEETERM_IOS_SUITE=ssh`（fixture preflightは `ios-smoke.sh` が内蔵）
 
 `standard`と`native`、`forms`はSSH fixtureを起動しません。
 `ssh`では実ホスト鍵を確認し、実入力がfixture内へ到達することを要求します。画像上の接続表示だけでは合格にしません。
@@ -271,41 +269,39 @@ gh workflow run mobile-smoke.yml --ref "$test_ref" -f platform=ios -f ios_suite=
 
 ## ビルドと再利用
 
-iOSのSwift事前チェック、fresh CNG build、Simulator runtimeは別ジョブです。
+iOSのSwift事前チェック、fresh CNG build、Simulator runtimeは別段階です。
 ビルド時間が操作テストの制限時間を消費しない構成を維持します。
 `standard`と`ssh`はそれぞれXCTest全体15分、`native`は10分、`forms`/`names`は15分、任意`full`は30分が上限です。
 Simulator起動等の時間はこのXCTest実行枠とは別です。実行時間は結果とともに記録し、短縮幅を推測で報告しません。
 
-同一commitの別suiteや原因調査では、ビルド済み成果物を再利用できます。
+同一セッション内では `RUNNER_TEMP` のderived-dataが残るため、同一commitの別suiteや原因調査では
+ビルド済み成果物を再利用できます。再利用を依頼する場合は「同一commitの既存build-for-testing成果物を
+再利用して `MEETERM_IOS_SUITE=<suite>` を実行」と明示します。例: `ssh` の確認や
+`MEETERM_IOS_PROFILE=compact-xl` での小画面診断。
 
-```sh
-# BUILD_RUN_IDを同一ソースのビルド成功runに置き換える
-gh workflow run mobile-smoke.yml --ref "$test_ref" \
-  -f platform=ios -f ios_suite=ssh -f ios_build_run=BUILD_RUN_ID
-# 同じ製品で小画面の端末keyboard/navigationだけを確認する場合
-gh workflow run mobile-smoke.yml --ref "$test_ref" \
-  -f platform=ios -f ios_suite=polish-navigation -f ios_profile=compact-xl \
-  -f ios_build_run=BUILD_RUN_ID
-```
-
-GitHub runのcommitとmanifestのcommit・Xcode version/build・CPU・構成・SHA-256を照合します。
+再利用前に対象commitとtoolchain（Xcode version/build・CPU・構成）の一致を確認します。
 Swift/アプリ/テストソースを変えたら新しいビルドが必要です。同一バイナリでsuiteを分けて確認する際の再ビルドを省きます。
-受入記録には元のfresh buildと再利用先の両runを記載します。再利用先で新たなCNG/buildを実行したとは記録しません。
+受入記録には元のfresh buildと再利用先の両実行を記載します。再利用先で新たなCNG/buildを実行したとは記録しません。
 
-`ios-test-products`はfixture環境変数注入前のpristine tar/manifestで、保持7日です。
+pristine test productsはfixture環境変数注入前の状態を指します。
 環境注入は実行ごとの一時コピーだけに行い、raw XCTest/xcresultや秘密情報を成果物へ含めません。
 
 ## 失敗時の調べ方
 
 | 成果物 | 内容 |
 | --- | --- |
-| `ios-build-observability` | CNG/buildログ、toolchain、起動前診断 |
-| `ios-simulator-observability` | suite別合否、段階・時刻、公開画面、sanitized nativeログ |
-| `ios-test-products` | 同一ソース再利用用のpristine成果物 |
+| `artifacts/android-emulator-observability` | buildログ、起動・process・logcat、画面fixture、SSH検証結果、失敗時画像・録画 |
+| `artifacts/ios-simulator-observability` | suite別合否、段階・時刻、公開画面、sanitized nativeログ |
+
+セッションは成果物を `evidence/<platform>-<yyyymmdd>` orphanブランチへpushします。
 
 ```sh
-gh run download RUN_ID --name ios-simulator-observability --dir /tmp/meeterm-evidence-RUN_ID
+git fetch origin evidence/ios-YYYYMMDD
+git archive origin/evidence/ios-YYYYMMDD | tar -x -C /tmp/meeterm-evidence-YYYYMMDD
 ```
+
+失敗したセッションは同じ環境に残っているため、その場で追加調査（`adb`/`xcrun`・リモートtmux・
+fixtureログ）を依頼することもできます。
 
 1. 最初の失敗をbuild、Simulator、保存/入力、撮影、実SSH、native描画に分けます。
 2. 固定診断、stage、時刻、画像を確認します。画像や動画は実際に開きます。
@@ -333,7 +329,7 @@ command echo、手入力とpasteの到達、markerの一致をbooleanと件数�
 
 ## 受入記録と限界
 
-suite、commit、run URL、fresh build/再利用元、実行時間、実見した画像と未検証項目を記録します。
+suite、commit、セッションURL、evidenceブランチ、fresh build/再利用元、実行時間、実見した画像と未検証項目を記録します。
 MetalとSimulator専用CoreGraphics描画を区別します。実機GPU・日本語IME・フォントの同等性は、実機で確認するまで未検証です。
 スクリーンショット中心の通常検証は、iOSの全操作・OS clipboard・全ライフサイクル経路の保証にはしません。
 
