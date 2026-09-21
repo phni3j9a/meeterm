@@ -294,6 +294,45 @@ fn strict_zoom_candidate_matches(
         })
 }
 
+/// Validate the strict recovery candidate before any staged frame/topology
+/// becomes public.  A candidate is either still the exact pane/window zoom,
+/// or it is authoritatively unnecessary because that original window now has
+/// exactly one unzoomed pane.  Every other relation is an identity failure;
+/// in particular, the same pane ID in another window is never substituted.
+fn strict_zoom_commit_decision(
+    candidate: Option<PendingZoomCleanup>,
+    panes: &[tmux::PaneInfo],
+    selected: u64,
+) -> Result<Option<PendingZoomCleanup>, FlowFailure> {
+    let Some(candidate) = candidate else {
+        // No meeterm candidate means this is the normal desktop-owned zoom
+        // path (or an ordinary unzoomed selection), not a claim of ownership.
+        return Ok(None);
+    };
+    let selected_pane = panes
+        .iter()
+        .find(|pane| pane.pane_id == selected)
+        .ok_or(FlowFailure::TmuxRuntimeMissing)?;
+    if selected != candidate.pane || selected_pane.window_id != candidate.window {
+        return Err(FlowFailure::TmuxRuntimeMissing);
+    }
+    if selected_pane.zoomed {
+        return Ok(Some(candidate));
+    }
+    let pane_count = panes
+        .iter()
+        .filter(|pane| pane.window_id == candidate.window)
+        .count();
+    if pane_count == 1 {
+        // The correct origin pane/window is proven, but zoom is unnecessary
+        // for a one-pane window. The caller must still reconcile the saved
+        // hooks before committing Ready.
+        Ok(None)
+    } else {
+        Err(FlowFailure::TmuxRuntimeMissing)
+    }
+}
+
 fn publish_strict_zoom_ownership(
     state: &mut SessionState,
     candidate: Option<PendingZoomCleanup>,
@@ -324,6 +363,7 @@ fn publish_selection_state(state: &mut SessionState, window: u64, pane: u64, zoo
 struct ControlClient {
     shared: Arc<ConnectionShared>,
     session: String,
+    runtime_identity: tmux::SessionEpoch,
     reader: russh::ChannelReadHalf,
     writer: russh::ChannelWriteHalf<client::Msg>,
     decoder: tmux::Decoder,
@@ -459,6 +499,7 @@ pub(super) async fn run(
     let mut client = ControlClient {
         shared: Arc::clone(shared),
         session: runtime_session,
+        runtime_identity: selected_identity.epoch(),
         reader,
         writer,
         decoder: tmux::Decoder::new(),
@@ -518,6 +559,7 @@ pub(super) async fn run(
         }
     }
     client.verify_attached_session(&selected_identity).await?;
+    client.inherit_zoom_cleanup_record().await?;
     client.synchronize(true).await?;
     loop {
             // Drain every decoded event before blocking on the SSH channel again.
@@ -1134,6 +1176,19 @@ impl ControlClient {
             return Err(FlowFailure::Stale);
         }
         if let Some(intent) = pending_zoom_cleanup {
+            if let Some(hooks) = intent.hooks
+                && !self.shared.record_zoom_cleanup_intent(
+                    self.runtime_identity.clone(),
+                    intent.window,
+                    intent.pane,
+                    hooks,
+                )
+            {
+                // A different allocation or runtime is already retained by
+                // the shared lifecycle. Never overwrite it from an actor
+                // that may be finishing late after a transport loss.
+                return Err(FlowFailure::TmuxRuntimeMissing);
+            }
             // This is deliberately opt-in. The selection path passes an intent
             // only after proving that the target window was not pre-zoomed;
             // the pre-existing desktop-zoom path calls `query` with `None`.
@@ -1424,30 +1479,42 @@ impl ControlClient {
             // pre-existing desktop zoom cannot inherit old ownership.
             self.pending_zoom_ownership = None;
         }
+        let durable_record = self
+            .shared
+            .zoom_cleanup_record_for(&self.runtime_identity)?;
         let previous = {
             let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-            state
-                .meeterm_zoomed
-                .then(|| {
-                    state.meeterm_zoomed_window.or_else(|| {
-                        state.meeterm_zoomed_pane.and_then(|owned| {
-                            state
-                                .snapshot
-                                .panes
-                                .iter()
-                                .find(|candidate| candidate.pane_id == owned)
-                                .map(|candidate| candidate.window_id)
-                        })
-                    })
+            durable_record
+                .as_ref()
+                .map(|record| PendingZoomCleanup {
+                    window: record.window,
+                    pane: record.pane,
+                    hooks: Some(record.hooks),
                 })
-                .flatten()
-                .and_then(|owned_window| {
+                .or_else(|| {
                     state
-                        .meeterm_zoomed_pane
-                        .map(|owned_pane| PendingZoomCleanup {
-                            window: owned_window,
-                            pane: owned_pane,
-                            hooks: self.zoom_hooks,
+                        .meeterm_zoomed
+                        .then(|| {
+                            state.meeterm_zoomed_window.or_else(|| {
+                                state.meeterm_zoomed_pane.and_then(|owned| {
+                                    state
+                                        .snapshot
+                                        .panes
+                                        .iter()
+                                        .find(|candidate| candidate.pane_id == owned)
+                                        .map(|candidate| candidate.window_id)
+                                })
+                            })
+                        })
+                        .flatten()
+                        .and_then(|owned_window| {
+                            state
+                                .meeterm_zoomed_pane
+                                .map(|owned_pane| PendingZoomCleanup {
+                                    window: owned_window,
+                                    pane: owned_pane,
+                                    hooks: self.zoom_hooks,
+                                })
                         })
                 })
         };
@@ -1455,48 +1522,31 @@ impl ControlClient {
         // inspecting the new target.  This ordering matters when the target
         // is the same pane: the zoom we just remove must not be mistaken for
         // a desktop zoom that meeterm should preserve.
-        if let Some(previous) = previous {
+        if let Some(record) = durable_record.as_ref() {
+            // A durable record is authoritative over the actor's stale pane
+            // hint. Reconcile the owned window and exact hook slots before
+            // acquiring any new indexed allocation.
+            self.reconcile_zoom_cleanup_record(record).await?;
+        } else if let Some(previous) = previous {
             let restore_target = {
                 let state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-                if state
-                    .snapshot
-                    .panes
-                    .iter()
-                    .any(|candidate| candidate.pane_id == previous.pane)
-                {
-                    Some(
-                        tmux::restore_layout_command_for_session(&self.session, previous.pane)
-                            .map_err(|_| FlowFailure::TmuxProtocol)?,
-                    )
-                } else if state
+                state
                     .snapshot
                     .windows
                     .iter()
                     .any(|candidate| candidate.window_id == previous.window)
-                {
-                    Some(
+                    .then(|| {
                         tmux::restore_layout_command_for_session_window(
                             &self.session,
                             previous.window,
                         )
-                        .map_err(|_| FlowFailure::TmuxProtocol)?,
-                    )
-                } else {
-                    None
-                }
+                        .map_err(|_| FlowFailure::TmuxProtocol)
+                    })
+                    .transpose()?
             };
             if let Some(command) = restore_target {
                 self.query_with_zoom_cleanup(&command, Some(previous))
                     .await?;
-            } else if let Ok(mut state) = self.shared.session.lock()
-                && state.generation == self.shared.generation
-            {
-                // The latest authoritative snapshot no longer contains the
-                // owned window. There is no remote target left to restore.
-                state.meeterm_zoomed = false;
-                state.meeterm_zoomed_window = None;
-                state.meeterm_zoomed_pane = None;
-                self.shared.clear_zoom_cleanup_pending();
             }
         }
 
@@ -1568,7 +1618,7 @@ impl ControlClient {
                 tmux::install_zoom_recovery_hooks_command_for_session(
                     &self.session,
                     allocation,
-                    pane,
+                    window,
                 )
                 .map_err(|_| FlowFailure::TmuxProtocol)?,
                 tmux::select_pane_command_for_session(&self.session, None, window, pane)
@@ -1617,10 +1667,167 @@ impl ControlClient {
         tmux::zoom_recovery_hooks_absent(&bytes, allocation).map_err(|_| FlowFailure::TmuxProtocol)
     }
 
+    async fn zoom_recovery_hooks_state(
+        &mut self,
+        allocation: tmux::ZoomRecoveryHookAllocation,
+        window: u64,
+    ) -> Result<tmux::ZoomRecoveryHookState, FlowFailure> {
+        let target =
+            tmux::session_target_for_hooks(&self.session).map_err(|_| FlowFailure::TmuxProtocol)?;
+        let blocks = self
+            .cleanup_query(&format!("show-hooks -t {target}:"))
+            .await?;
+        let bytes = blocks
+            .into_iter()
+            .flat_map(|block| block.lines)
+            .collect::<Vec<_>>()
+            .join(&b'\n');
+        tmux::zoom_recovery_hooks_state(&bytes, allocation, &self.session, window)
+            .map_err(|_| FlowFailure::TmuxProtocol)
+    }
+
+    async fn cleanup_topology(&mut self) -> Result<Vec<tmux::PaneInfo>, FlowFailure> {
+        let command = tmux::list_panes_command_for_session(&self.session)
+            .map_err(|_| FlowFailure::TmuxProtocol)?;
+        let blocks = self.cleanup_query(&command).await?;
+        parse_cleanup_panes(&blocks)
+    }
+
+    async fn release_record_hooks(
+        &mut self,
+        record: &ZoomCleanupRecord,
+    ) -> Result<(), FlowFailure> {
+        match self
+            .zoom_recovery_hooks_state(record.hooks, record.window)
+            .await?
+        {
+            tmux::ZoomRecoveryHookState::Absent => Ok(()),
+            tmux::ZoomRecoveryHookState::Owned => {
+                let remove = tmux::remove_zoom_recovery_hooks_command_for_session(
+                    &self.session,
+                    record.hooks,
+                )
+                .map_err(|_| FlowFailure::TmuxProtocol)?;
+                self.cleanup_query(&remove).await?;
+                if self.zoom_recovery_hooks_absent(record.hooks).await? {
+                    Ok(())
+                } else {
+                    Err(FlowFailure::TmuxRuntimeMissing)
+                }
+            }
+            // Never remove a slot whose body no longer proves it is ours.
+            tmux::ZoomRecoveryHookState::Replaced => Err(FlowFailure::TmuxRuntimeMissing),
+        }
+    }
+
+    /// Reconcile the durable record on the verified Control Mode stream. This
+    /// is used both when a replacement actor inherits a record and when a
+    /// same actor releases an older owned window before selecting a new one.
+    /// It never follows a moved pane into another window.
+    async fn reconcile_zoom_cleanup_record(
+        &mut self,
+        record: &ZoomCleanupRecord,
+    ) -> Result<ZoomCleanupOutcome, FlowFailure> {
+        let before = self.cleanup_topology().await?;
+        let window_present = before.iter().any(|pane| pane.window_id == record.window);
+        let window_zoomed = before
+            .iter()
+            .any(|pane| pane.window_id == record.window && pane.zoomed);
+        if window_zoomed {
+            let restore =
+                tmux::restore_layout_command_for_session_window(&self.session, record.window)
+                    .map_err(|_| FlowFailure::TmuxProtocol)?;
+            self.cleanup_query(&restore).await?;
+        }
+        let after = self.cleanup_topology().await?;
+        if after
+            .iter()
+            .any(|pane| pane.window_id == record.window && pane.zoomed)
+        {
+            return Err(FlowFailure::TmuxRuntimeMissing);
+        }
+        self.release_record_hooks(record).await?;
+        if !self
+            .shared
+            .clear_zoom_cleanup_record(&record.runtime, record.window, record.hooks)
+        {
+            return Err(FlowFailure::Stale);
+        }
+        self.zoom_hooks = None;
+        self.pending_zoom_cleanup = None;
+        self.pending_zoom_ownership = None;
+        self.shared.clear_owned_zoom();
+        Ok(if window_present && window_zoomed {
+            ZoomCleanupOutcome::RestoredConfirmed
+        } else {
+            ZoomCleanupOutcome::NotNeeded
+        })
+    }
+
+    async fn inherit_zoom_cleanup_record(&mut self) -> Result<(), FlowFailure> {
+        let Some(record) = self
+            .shared
+            .zoom_cleanup_record_for(&self.runtime_identity)?
+        else {
+            return Ok(());
+        };
+        match self
+            .zoom_recovery_hooks_state(record.hooks, record.window)
+            .await?
+        {
+            tmux::ZoomRecoveryHookState::Replaced => {
+                // The runtime is verified, but the saved slot is now owned by
+                // someone else. Keep the record and fail closed before Ready.
+                Err(FlowFailure::TmuxRuntimeMissing)
+            }
+            tmux::ZoomRecoveryHookState::Absent => self
+                .reconcile_zoom_cleanup_record(&record)
+                .await
+                .map(|_| ()),
+            tmux::ZoomRecoveryHookState::Owned => {
+                let topology = self.cleanup_topology().await?;
+                if topology.iter().any(|pane| pane.window_id == record.window) {
+                    self.zoom_hooks = Some(record.hooks);
+                    self.pending_zoom_cleanup = Some(PendingZoomCleanup {
+                        window: record.window,
+                        pane: record.pane,
+                        hooks: Some(record.hooks),
+                    });
+                    if let Ok(mut state) = self.shared.session.lock()
+                        && state.generation == self.shared.generation
+                    {
+                        state.meeterm_zoomed = true;
+                        state.meeterm_zoomed_window = Some(record.window);
+                        state.meeterm_zoomed_pane = Some(record.pane);
+                    }
+                    Ok(())
+                } else {
+                    // The owned window vanished; only the exact saved hooks
+                    // may be removed, then the durable record can be cleared.
+                    self.reconcile_zoom_cleanup_record(&record)
+                        .await
+                        .map(|_| ())
+                }
+            }
+        }
+    }
+
     async fn remove_zoom_recovery_hooks_only(
         &mut self,
         allocation: tmux::ZoomRecoveryHookAllocation,
+        window: u64,
     ) -> ZoomCleanupOutcome {
+        match self.zoom_recovery_hooks_state(allocation, window).await {
+            Ok(tmux::ZoomRecoveryHookState::Absent) => {
+                self.zoom_hooks = None;
+                return ZoomCleanupOutcome::NotNeeded;
+            }
+            // Never remove a slot whose body no longer proves it is ours.
+            Ok(tmux::ZoomRecoveryHookState::Replaced) | Err(_) => {
+                return ZoomCleanupOutcome::UnconfirmedOrFailed;
+            }
+            Ok(tmux::ZoomRecoveryHookState::Owned) => {}
+        }
         let remove =
             match tmux::remove_zoom_recovery_hooks_command_for_session(&self.session, allocation) {
                 Ok(command) => command,
@@ -1639,6 +1846,27 @@ impl ControlClient {
     }
 
     async fn restore_zoom(&mut self) -> ZoomCleanupOutcome {
+        let durable_record = match self.shared.zoom_cleanup_record_for(&self.runtime_identity) {
+            Ok(record) => record,
+            Err(_) => {
+                // A mismatched endpoint/runtime must not receive cleanup
+                // commands. Keep the record for an explicit same-runtime
+                // retry and fail closed.
+                self.shared
+                    .record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+                return ZoomCleanupOutcome::UnconfirmedOrFailed;
+            }
+        };
+        if let Some(record) = durable_record.as_ref() {
+            return match self.reconcile_zoom_cleanup_record(record).await {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    self.shared
+                        .record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+                    ZoomCleanupOutcome::UnconfirmedOrFailed
+                }
+            };
+        }
         let shared_owned = self.shared.session.lock().ok().and_then(|state| {
             (state.generation == self.shared.generation)
                 .then(|| shared_zoom_cleanup_target(&state, self.zoom_hooks))
@@ -1659,12 +1887,48 @@ impl ControlClient {
                 // window or a rejected strict candidate. The hook allocation
                 // remains actor-private cleanup authority, but no layout
                 // target is valid anymore.
-                self.remove_zoom_recovery_hooks_only(allocation).await
+                let window = self
+                    .shared
+                    .session
+                    .lock()
+                    .ok()
+                    .and_then(|state| state.meeterm_zoomed_window);
+                if let Some(window) = window {
+                    self.remove_zoom_recovery_hooks_only(allocation, window)
+                        .await
+                } else {
+                    // An indexed slot cannot be classified as ours without
+                    // the saved window target. Preserve it for a later
+                    // same-runtime reconciliation instead of deleting a
+                    // possible third-party replacement.
+                    ZoomCleanupOutcome::UnconfirmedOrFailed
+                }
             } else {
                 ZoomCleanupOutcome::NotNeeded
             };
-            self.shared.clear_zoom_cleanup_pending();
+            if !matches!(outcome, ZoomCleanupOutcome::UnconfirmedOrFailed) {
+                self.shared.clear_zoom_cleanup_pending();
+            }
             return outcome;
+        };
+
+        // Classify the exact saved slots before any layout mutation. A slot
+        // with a different body is third-party state and is never removed.
+        let hook_state = if let Some(allocation) = hooks {
+            match self
+                .zoom_recovery_hooks_state(allocation, cleanup.window)
+                .await
+            {
+                Ok(state @ tmux::ZoomRecoveryHookState::Absent)
+                | Ok(state @ tmux::ZoomRecoveryHookState::Owned) => Some(state),
+                Ok(tmux::ZoomRecoveryHookState::Replaced) | Err(_) => {
+                    self.shared
+                        .record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+                    return ZoomCleanupOutcome::UnconfirmedOrFailed;
+                }
+            }
+        } else {
+            None
         };
 
         // A target that disappeared is only considered NotNeeded after a
@@ -1673,116 +1937,41 @@ impl ControlClient {
         let topology_command = match tmux::list_panes_command_for_session(&self.session) {
             Ok(command) => command,
             Err(_) => {
-                self.shared.clear_owned_zoom();
                 return ZoomCleanupOutcome::UnconfirmedOrFailed;
             }
         };
         let before = match self.cleanup_query(&topology_command).await {
             Ok(blocks) => match parse_cleanup_panes(&blocks) {
                 Ok(panes) => panes,
-                Err(_) => {
-                    self.shared.clear_owned_zoom();
-                    return ZoomCleanupOutcome::UnconfirmedOrFailed;
-                }
+                Err(_) => return ZoomCleanupOutcome::UnconfirmedOrFailed,
             },
-            Err(_) => {
-                self.shared.clear_owned_zoom();
-                return ZoomCleanupOutcome::UnconfirmedOrFailed;
-            }
+            Err(_) => return ZoomCleanupOutcome::UnconfirmedOrFailed,
         };
-        let target_present = before
-            .iter()
-            .any(|pane| pane.window_id == cleanup.window && pane.pane_id == cleanup.pane);
         let window_present = before.iter().any(|pane| pane.window_id == cleanup.window);
 
-        if !target_present {
-            let outcome = if window_present {
-                // The pane target is gone, but the owned window is still
-                // authoritative. Restore the window itself rather than
-                // guessing another pane's identity.
-                let restore = match tmux::restore_layout_command_for_session_window(
-                    &self.session,
-                    cleanup.window,
-                ) {
-                    Ok(command) => command,
-                    Err(_) => {
-                        self.shared.clear_owned_zoom();
-                        return ZoomCleanupOutcome::UnconfirmedOrFailed;
-                    }
-                };
-                let command = if let Some(allocation) = hooks {
-                    let remove = match tmux::remove_zoom_recovery_hooks_command_for_session(
-                        &self.session,
-                        allocation,
-                    ) {
-                        Ok(command) => command,
-                        Err(_) => {
-                            self.shared.clear_owned_zoom();
-                            return ZoomCleanupOutcome::UnconfirmedOrFailed;
-                        }
-                    };
-                    format!("{} ; {}", restore, remove)
-                } else {
-                    restore
-                };
-                let mutation_confirmed = self.cleanup_query(&command).await.is_ok();
-                let after = if mutation_confirmed {
-                    self.cleanup_query(&topology_command)
-                        .await
-                        .ok()
-                        .and_then(|blocks| parse_cleanup_panes(&blocks).ok())
-                } else {
-                    None
-                };
-                let hooks_restored = if let Some(allocation) = hooks {
-                    self.zoom_recovery_hooks_absent(allocation)
-                        .await
-                        .unwrap_or(false)
-                } else {
-                    true
-                };
-                classify_zoom_cleanup_readback(
-                    mutation_confirmed,
-                    after.as_deref(),
-                    cleanup.window,
-                    hooks_restored,
-                )
-            } else if let Some(allocation) = hooks {
-                // The entire owned window is gone. Remove only meeterm's
-                // indexed hooks; no layout mutation has a valid target left.
-                self.remove_zoom_recovery_hooks_only(allocation).await
+        if !window_present {
+            // The entire owned window is gone. Remove only our exact indexed
+            // hooks; no layout mutation has a valid target left.
+            let outcome = if let Some(allocation) = hooks {
+                self.remove_zoom_recovery_hooks_only(allocation, cleanup.window)
+                    .await
             } else {
                 ZoomCleanupOutcome::NotNeeded
             };
-            self.shared.clear_owned_zoom();
             if !matches!(outcome, ZoomCleanupOutcome::UnconfirmedOrFailed) {
-                self.zoom_hooks = None;
+                self.shared.clear_owned_zoom();
             }
             return outcome;
         }
 
-        let command = if let Some(allocation) = hooks {
-            match tmux::cleanup_zoom_recovery_hooks_command_for_session(
-                &self.session,
-                allocation,
-                cleanup.pane,
-            ) {
+        // The pane auxiliary may have vanished or moved windows. The owned
+        // window remains the only safe restore target.
+        let restore =
+            match tmux::restore_layout_command_for_session_window(&self.session, cleanup.window) {
                 Ok(command) => command,
-                Err(_) => {
-                    self.shared.clear_owned_zoom();
-                    return ZoomCleanupOutcome::UnconfirmedOrFailed;
-                }
-            }
-        } else {
-            match tmux::restore_layout_command_for_session(&self.session, cleanup.pane) {
-                Ok(command) => command,
-                Err(_) => {
-                    self.shared.clear_owned_zoom();
-                    return ZoomCleanupOutcome::UnconfirmedOrFailed;
-                }
-            }
-        };
-        let mutation_confirmed = self.cleanup_query(&command).await.is_ok();
+                Err(_) => return ZoomCleanupOutcome::UnconfirmedOrFailed,
+            };
+        let mutation_confirmed = self.cleanup_query(&restore).await.is_ok();
         let after = if mutation_confirmed {
             self.cleanup_query(&topology_command)
                 .await
@@ -1791,12 +1980,14 @@ impl ControlClient {
         } else {
             None
         };
-        let hooks_restored = if let Some(allocation) = hooks {
-            self.zoom_recovery_hooks_absent(allocation)
-                .await
-                .unwrap_or(false)
-        } else {
-            true
+        let hooks_restored = match (hooks, hook_state) {
+            (Some(allocation), Some(tmux::ZoomRecoveryHookState::Owned)) if mutation_confirmed => {
+                self.remove_zoom_recovery_hooks_only(allocation, cleanup.window)
+                    .await
+                    != ZoomCleanupOutcome::UnconfirmedOrFailed
+            }
+            (Some(_), Some(tmux::ZoomRecoveryHookState::Absent)) | (None, None) => true,
+            _ => false,
         };
         let outcome = classify_zoom_cleanup_readback(
             mutation_confirmed,
@@ -2064,6 +2255,28 @@ impl ControlClient {
             }
             let ids = mapping.values().copied().collect::<Vec<_>>();
             let staged_captures = std::mem::take(&mut self.staged_captures);
+            let strict_candidate = self.pending_zoom_ownership;
+            if matches!(
+                strict_zoom_commit_decision(strict_candidate, &panes, selected),
+                Ok(None) if strict_candidate.is_some()
+            ) {
+                // The final readback proves the original window/pane is
+                // correct but has only one pane, so the zoom mutation is no
+                // longer needed. Reconcile its exact hooks before the same
+                // epoch commit; otherwise Ready could publish while an old
+                // allocation remains remotely active.
+                let outcome = match self
+                    .shared
+                    .zoom_cleanup_record_for(&self.runtime_identity)?
+                {
+                    Some(record) => self.reconcile_zoom_cleanup_record(&record).await?,
+                    None => self.restore_zoom().await,
+                };
+                if matches!(outcome, ZoomCleanupOutcome::UnconfirmedOrFailed) {
+                    return Err(FlowFailure::TmuxRuntimeMissing);
+                }
+                self.pending_zoom_ownership = None;
+            }
             let strict_zoom_ownership = self.pending_zoom_ownership;
             let shared = Arc::clone(&self.shared);
             let commit = self
@@ -2077,6 +2290,8 @@ impl ControlClient {
                     // VT replies emitted by capture replay therefore hit the
                     // closed gate and are deliberately discarded; no stale
                     // query is buffered.
+                    let strict_zoom_ownership =
+                        strict_zoom_commit_decision(strict_zoom_ownership, &panes, selected)?;
                     apply_staged_captures_locked(&shared, &staged_captures)?;
                     apply_topology_state(state, &mapping, &windows, &panes, &flat, selected);
                     // This is part of the same lock/epoch transaction as the
@@ -2090,7 +2305,31 @@ impl ControlClient {
                 for id in ids {
                     registry::detach_transport(id, self.shared.generation);
                 }
+                if matches!(failure, FlowFailure::TmuxRuntimeMissing)
+                    && self.strict_recovery
+                    && !self.remote_session_closed
+                    && self.has_zoom_cleanup_intent()
+                {
+                    // The stream is still verified and live at this point.
+                    // Give the actor one bounded same-stream cleanup attempt,
+                    // while retaining the durable record if its result is
+                    // unknown. The public Ready/topology commit above has
+                    // not run.
+                    let outcome = self.restore_zoom().await;
+                    self.shared.record_zoom_cleanup(outcome);
+                }
                 return Err(failure);
+            }
+            if let Some(candidate) = strict_zoom_ownership
+                && strict_zoom_candidate_matches(candidate, &panes, selected)
+                && let Some(hooks) = candidate.hooks
+            {
+                self.shared.confirm_zoom_cleanup_intent(
+                    &self.runtime_identity,
+                    candidate.window,
+                    candidate.pane,
+                    hooks,
+                );
             }
             // Shared ownership is now authoritative. Only after the commit
             // succeeds may the actor drop its duplicate cleanup source.
@@ -2129,6 +2368,24 @@ impl ControlClient {
             )?;
         } else {
             self.commit_topology(&mapping, &windows, &panes, &flat, selected, expected_epoch)?;
+        }
+        if let Ok(Some(record)) = self.shared.zoom_cleanup_record_for(&self.runtime_identity)
+            && record.pane == selected
+            && panes.iter().any(|pane| {
+                pane.pane_id == selected && pane.window_id == record.window && pane.zoomed
+            })
+        {
+            // Only an authoritative post-mutation topology read confirms
+            // that the saved zoom/slot pair is now active. The initial
+            // pre-mutation snapshot cannot do so.
+            if !initial {
+                self.shared.confirm_zoom_cleanup_intent(
+                    &self.runtime_identity,
+                    record.window,
+                    record.pane,
+                    record.hooks,
+                );
+            }
         }
         for pane in &stale {
             if let Some(task) = self.routes.remove(pane) {
@@ -3104,6 +3361,124 @@ mod tests {
             zoom_cleanup_hook_allocation(None, candidate.hooks),
             Some(hooks)
         );
+    }
+
+    #[test]
+    fn strict_zoom_commit_decision_rejects_window_mismatch_and_accepts_one_pane_unneeded() {
+        let candidate = PendingZoomCleanup {
+            window: 1,
+            pane: 17,
+            hooks: Some(tmux::ZoomRecoveryHookAllocation { index: 1_015 }),
+        };
+        let mut moved = zoomed_pane(17, true, true);
+        moved.window_id = 2;
+        assert!(matches!(
+            strict_zoom_commit_decision(Some(candidate), std::slice::from_ref(&moved), 17),
+            Err(FlowFailure::TmuxRuntimeMissing)
+        ));
+
+        let unzoomed_multi = [pane(17, true, true), pane(23, false, false)];
+        assert!(matches!(
+            strict_zoom_commit_decision(Some(candidate), &unzoomed_multi, 17),
+            Err(FlowFailure::TmuxRuntimeMissing)
+        ));
+
+        let unzoomed_one = [pane(17, true, true)];
+        assert!(matches!(
+            strict_zoom_commit_decision(Some(candidate), &unzoomed_one, 17),
+            Ok(None)
+        ));
+        assert!(matches!(
+            strict_zoom_commit_decision(Some(candidate), &[zoomed_pane(17, true, true)], 17),
+            Ok(Some(value)) if value == candidate
+        ));
+        assert!(matches!(
+            strict_zoom_commit_decision(None, &[zoomed_pane(17, true, true)], 17),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn strict_zoom_mismatch_is_rejected_before_ready_commit_and_retains_record() {
+        let owner = registry::create_terminal(80, 24).expect("strict mismatch terminal");
+        let generation = 77_015;
+        let shared = ConnectionShared::new(
+            owner,
+            generation,
+            "strict-mismatch.example.test".to_owned(),
+            22,
+            std::path::PathBuf::from("/tmp/strict-mismatch-known-hosts"),
+        );
+        let runtime = tmux::SessionEpoch {
+            session_id: "$15".to_owned(),
+            server_pid: 15,
+            server_start_time: 1_500_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_016 };
+        {
+            let mut state = shared.session.lock().expect("strict mismatch state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "strict-mismatch.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: std::path::PathBuf::from("/tmp/strict-mismatch-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$15".to_owned()),
+            });
+        }
+        assert!(shared.record_zoom_cleanup_intent(runtime.clone(), 1, 17, hooks));
+        let expected_epoch = shared
+            .begin_recovery("strict_mismatch", 1)
+            .expect("strict mismatch recovery epoch");
+        let before_snapshot = shared
+            .session
+            .lock()
+            .expect("strict mismatch snapshot state")
+            .snapshot
+            .clone();
+        let callback_published = std::sync::atomic::AtomicBool::new(false);
+        let mut moved = zoomed_pane(17, true, true);
+        moved.window_id = 2;
+        let result = shared.commit_ready_at_epoch_result(expected_epoch, |_state| {
+            // This is the same decision that the real strict finalizer runs
+            // before applying captures/topology. A mismatch must short-circuit
+            // before the simulated public mutation is marked.
+            let decision = strict_zoom_commit_decision(
+                Some(PendingZoomCleanup {
+                    window: 1,
+                    pane: 17,
+                    hooks: Some(hooks),
+                }),
+                std::slice::from_ref(&moved),
+                17,
+            )?;
+            callback_published.store(true, std::sync::atomic::Ordering::Release);
+            publish_strict_zoom_ownership(_state, decision, std::slice::from_ref(&moved), 17);
+            Ok(())
+        });
+        assert!(matches!(result, Err(FlowFailure::TmuxRuntimeMissing)));
+        assert!(!callback_published.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            shared
+                .session
+                .lock()
+                .expect("strict mismatch retained state")
+                .snapshot,
+            before_snapshot
+        );
+        assert_ne!(
+            shared.info.lock().expect("strict mismatch info").state,
+            ConnectionState::Ready
+        );
+        assert!(
+            shared
+                .zoom_cleanup_record_for(&runtime)
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        registry::destroy_terminal(owner);
     }
 
     #[test]

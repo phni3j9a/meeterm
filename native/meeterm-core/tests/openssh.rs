@@ -1876,9 +1876,13 @@ fn wait_for_selected_pane(id: u64, pane_id: u64, label: &str) {
             return;
         }
         if Instant::now() >= deadline {
+            let connection = connection_snapshot(id).expect("connection snapshot");
             panic!(
-                "timed out waiting for {label}: selected={:?}, wanted=%{pane_id}",
-                snapshot.selected_pane
+                "timed out waiting for {label}: selected={:?}, wanted=%{pane_id}, state={}, errorCode={}, errorMessage={}",
+                snapshot.selected_pane,
+                state_name(connection.state),
+                connection_string(&connection.error_code, connection.error_code_len),
+                connection_string(&connection.error_message, connection.error_message_len),
             );
         }
         sleep(POLL_INTERVAL);

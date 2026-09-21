@@ -169,6 +169,7 @@ case "${suite}" in
       standard-herdr-workspaces
       standard-recovery-progress standard-recovery-exhausted
       standard-recovery-mismatch standard-herdr-recovery-confirm
+      standard-layout-restore-unconfirmed standard-runtime-layout-restore-unconfirmed
     )
     ;;
   polish)

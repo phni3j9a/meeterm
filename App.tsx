@@ -90,8 +90,14 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
+
+// This is the native message published after an explicit disconnect cannot
+// prove that its old tmux layout was restored. The smoke fixtures display the
+// real error contract; they do not inject terminal bytes or alter production
+// failure handling.
+const SMOKE_LAYOUT_RESTORE_WARNING = 'The connection closed, but the desktop layout could not be confirmed as restored.';
 
 const SMOKE_PROFILE: ServerProfile = {
   id: 'smoke-profile', name: 'Smoke server', host: 'fixture.invalid', port: 22,
@@ -149,6 +155,7 @@ type SmokeFixtureState = {
   runtimePickerVisible?: boolean;
   runtimeCreateVisible?: boolean;
   runtimeMessage?: string;
+  controlMessage?: string;
   control?: WorkspaceControl;
 };
 
@@ -254,6 +261,25 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.runtimeDiscovery = discovery;
     return base;
   }
+  if (screen === 'layout-restore-unconfirmed' || screen === 'runtime-layout-restore-unconfirmed') {
+    const picker = screen === 'runtime-layout-restore-unconfirmed';
+    const base = smokeFixture(picker ? 'runtime-picker' : 'workspaces');
+    base.connection = {
+      ...base.connection,
+      state: picker ? 'AwaitingRuntimeSelection' : 'Disconnected',
+      errorCode: 'layout_restore_unconfirmed',
+      errorMessage: SMOKE_LAYOUT_RESTORE_WARNING,
+    };
+    base.controlMessage = base.connection.errorMessage;
+    base.hasConnected = true;
+    if (!picker) {
+      base.control = smokeControl({
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+      });
+    }
+    return base;
+  }
   if (screen === 'recovery-progress' || screen === 'recovery-exhausted' || screen === 'recovery-mismatch' || screen === 'herdr-recovery-confirm') {
     const base = smokeFixture(screen === 'herdr-recovery-confirm' ? 'herdr-terminal' : 'terminal');
     base.connection = {
@@ -341,6 +367,7 @@ const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
   'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
+  'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
@@ -594,7 +621,7 @@ function createdTmuxCandidate(name: string): RuntimeCandidate {
   };
 }
 
-function RuntimePicker({ visible, serverName, discovery, createVisible, busy, discoveryBusy, cancelDisabled, selectingId, selectionErrors, message, creationError, onCancel, onDismiss, onRefresh, onRetryBackend, onSelect, onOpenCreate, onBackToList, onCreate, colors }: {
+function RuntimePicker({ visible, serverName, discovery, createVisible, busy, discoveryBusy, cancelDisabled, selectingId, selectionErrors, message, creationError, notification, onCancel, onDismiss, onRefresh, onRetryBackend, onSelect, onOpenCreate, onBackToList, onCreate, colors }: {
   visible: boolean;
   serverName: string;
   discovery: RuntimeDiscovery | null;
@@ -606,6 +633,7 @@ function RuntimePicker({ visible, serverName, discovery, createVisible, busy, di
   selectionErrors: Record<string, string>;
   message: string;
   creationError: string;
+  notification: ReactNode | null;
   onCancel: () => void;
   onDismiss: () => void;
   onRefresh: () => void;
@@ -668,6 +696,7 @@ function RuntimePicker({ visible, serverName, discovery, createVisible, busy, di
         <Text numberOfLines={2} accessibilityRole="header" style={[styles.runtimeHeaderTitle, { color: colors.text }]}>{createVisible ? 'Create tmux session' : `Choose a runtime for ${serverName}`}</Text>
         {createVisible ? <IconButton icon="close" label="Cancel runtime selection" colors={colors} disabled={cancelDisabled} onPress={onCancel} /> : <View style={styles.runtimeHeaderPlaceholder} />}
       </View>
+      {notification ? <View style={styles.runtimeNotification}>{notification}</View> : null}
       {createVisible ? <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.runtimeFormContent}>
         <Text style={[styles.runtimeIntroTitle, { color: colors.text }]}>Create a tmux session</Text>
         <Text style={[styles.runtimeHint, { color: colors.muted }]}>This creates a detached session on {serverName} and opens it after the native runtime confirms its identity.</Text>
@@ -978,7 +1007,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [runtimeCreationError, setRuntimeCreationError] = useState('');
   const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
   const [, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
-  const [controlMessage, setControlMessage] = useState('');
+  const [controlMessage, setControlMessage] = useState(() => fixture?.controlMessage ?? '');
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
   const [hasConnected, setHasConnected] = useState(() => fixture?.hasConnected ?? false);
@@ -2489,6 +2518,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       selectionErrors={runtimeSelectionErrors}
       message={runtimeMessage}
       creationError={runtimeCreationError}
+      notification={runtimePickerVisible ? feedback : null}
       onCancel={cancelRuntimeSelection}
       onDismiss={() => {}}
       onRefresh={refreshRuntimes}
@@ -2738,6 +2768,7 @@ const styles = StyleSheet.create({
   runtimeHeaderPlaceholder: { width: 72, minHeight: 48 },
   runtimeHeaderTitle: { flex: 1, textAlign: 'center', fontSize: 18, lineHeight: 28, fontWeight: '600' },
   runtimePickerContent: { padding: 24, paddingBottom: 40, gap: 28 },
+  runtimeNotification: { paddingHorizontal: 24, paddingTop: 12 },
   runtimeFormContent: { padding: 24, paddingBottom: 40, gap: 20 },
   runtimeField: { gap: 8 },
   runtimeLabel: { fontSize: 14, lineHeight: 22, fontWeight: '500' },

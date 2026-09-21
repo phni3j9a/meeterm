@@ -33,6 +33,8 @@ SCREEN_NAMES = (
     "recovery-exhausted",
     "recovery-mismatch",
     "herdr-recovery-confirm",
+    "layout-restore-unconfirmed",
+    "runtime-layout-restore-unconfirmed",
     "welcome", "empty", "search-empty", "disconnected", "reconnecting",
     "connection-error", "long-workspaces",
 )
@@ -289,6 +291,26 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 "create_submit",
                 any("runtime-tmux-create-submit" in value for value in normalized_values),
             ),
+        ]
+    elif screen == "layout-restore-unconfirmed":
+        checks = [
+            ("disconnected_state", "Disconnected" in normalized_values),
+            (
+                "layout_restore_warning",
+                "The connection closed, but the desktop layout could not be confirmed as restored."
+                in normalized_values,
+            ),
+            ("warning_dismiss", "Dismiss message" in normalized_values),
+        ]
+    elif screen == "runtime-layout-restore-unconfirmed":
+        checks = [
+            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
+            (
+                "layout_restore_warning",
+                "The connection closed, but the desktop layout could not be confirmed as restored."
+                in normalized_values,
+            ),
+            ("warning_dismiss", "Dismiss message" in normalized_values),
         ]
     elif screen == "herdr-groups":
         checks = [

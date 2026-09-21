@@ -732,7 +732,8 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   const smoke = loadApp(environment, native, true, true);
   for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
-    'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm']) {
+    'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
+    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
@@ -749,6 +750,14 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('runtime-partial-error').runtimeDiscovery.backends[1].state, 'error');
   assert.equal(smoke.smokeFixture('runtime-empty').runtimeDiscovery.backends[0].candidates.length, 0);
   assert.equal(smoke.smokeFixture('runtime-create').runtimeCreateVisible, true);
+  const layoutWarning = smoke.smokeFixture('layout-restore-unconfirmed');
+  assert.equal(layoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
+  assert.equal(layoutWarning.controlMessage, layoutWarning.connection.errorMessage);
+  assert.equal(layoutWarning.connection.state, 'Disconnected');
+  const runtimeLayoutWarning = smoke.smokeFixture('runtime-layout-restore-unconfirmed');
+  assert.equal(runtimeLayoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
+  assert.equal(runtimeLayoutWarning.runtimePickerVisible, true);
+  assert.equal(runtimeLayoutWarning.controlMessage, runtimeLayoutWarning.connection.errorMessage);
   assert.equal(smoke.smokeFixture('recovery-progress').control.recovery.phase, 'resynchronizing');
   assert.equal(smoke.smokeFixture('recovery-exhausted').control.recovery.phase, 'stopped');
   assert.equal(smoke.smokeFixture('recovery-mismatch').control.recovery.reason, 'runtime_identity_mismatch');

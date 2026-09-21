@@ -341,7 +341,7 @@ enum RuntimeBinding {
 /// are invalidated so a subsequent connection to another host cannot inherit
 /// the previous endpoint's pane topology.  It contains no authentication
 /// material.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SessionEndpoint {
     host: String,
     port: u16,
@@ -349,6 +349,21 @@ struct SessionEndpoint {
     known_hosts_path: PathBuf,
     backend: Backend,
     runtime: Option<String>,
+}
+
+/// Durable, connection-scoped authority for the tmux zoom hooks.  This is
+/// deliberately kept beside the retained SessionState rather than in a
+/// ControlClient: a transport-loss recovery creates a fresh client while the
+/// authenticated host/runtime binding remains the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ZoomCleanupRecord {
+    endpoint: SessionEndpoint,
+    runtime: tmux::SessionEpoch,
+    window: u64,
+    pane: u64,
+    hooks: tmux::ZoomRecoveryHookAllocation,
+    unconfirmed: bool,
+    generation: u64,
 }
 
 impl SessionEndpoint {
@@ -445,6 +460,10 @@ struct SessionState {
     /// distinction separate from a previously selected terminal that has
     /// disappeared, so recovery never falls back to an unrelated pane.
     recovery_group_id: Option<u64>,
+    /// Durable tmux zoom/hook cleanup authority. This survives ControlClient
+    /// replacement during same-runtime recovery, but is cleared at an
+    /// explicit fresh host/backend/runtime binding boundary.
+    zoom_cleanup_record: Option<ZoomCleanupRecord>,
     runtime_operations_ready: bool,
     terminal_input_ready: bool,
 }
@@ -474,6 +493,7 @@ impl Default for SessionState {
             pending_confirmation_token: None,
             recovery_terminal_id: None,
             recovery_group_id: None,
+            zoom_cleanup_record: None,
             runtime_operations_ready: false,
             terminal_input_ready: false,
         }
@@ -778,6 +798,9 @@ impl ConnectionShared {
             state.meeterm_zoomed_window = None;
             state.meeterm_zoomed_pane = None;
         }
+        // Do not clear the durable hook record here. A transport-loss actor
+        // may have already lost active ownership while its indexed hooks (or
+        // an unknown zoom mutation) still need same-runtime reconciliation.
         self.zoom_cleanup_pending.store(false, Ordering::Release);
     }
 
@@ -789,12 +812,119 @@ impl ConnectionShared {
         self.zoom_cleanup_pending.store(false, Ordering::Release);
     }
 
+    fn record_zoom_cleanup_intent(
+        &self,
+        runtime: tmux::SessionEpoch,
+        window: u64,
+        pane: u64,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        if state.generation != self.generation {
+            return false;
+        }
+        let Some(endpoint) = state.endpoint.clone() else {
+            return false;
+        };
+        if let Some(existing) = state.zoom_cleanup_record.as_ref()
+            && (existing.endpoint != endpoint
+                || existing.runtime != runtime
+                || existing.window != window
+                || existing.pane != pane
+                || existing.hooks != hooks)
+        {
+            // An unconfirmed allocation is never overwritten by a new slot or
+            // a new target. The caller must reconcile/release it first.
+            return false;
+        }
+        state.zoom_cleanup_record = Some(ZoomCleanupRecord {
+            endpoint,
+            runtime,
+            window,
+            pane,
+            hooks,
+            unconfirmed: true,
+            generation: self.generation,
+        });
+        self.zoom_cleanup_pending.store(true, Ordering::Release);
+        true
+    }
+
+    fn confirm_zoom_cleanup_intent(
+        &self,
+        runtime: &tmux::SessionEpoch,
+        window: u64,
+        pane: u64,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) {
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+            && let Some(record) = state.zoom_cleanup_record.as_mut()
+            && record.generation == self.generation
+            && record.runtime == *runtime
+            && record.window == window
+            && record.pane == pane
+            && record.hooks == hooks
+        {
+            record.unconfirmed = false;
+        }
+    }
+
+    fn zoom_cleanup_record_for(
+        &self,
+        runtime: &tmux::SessionEpoch,
+    ) -> Result<Option<ZoomCleanupRecord>, FlowFailure> {
+        let state = self.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if state.generation != self.generation {
+            return Err(FlowFailure::Stale);
+        }
+        let Some(record) = state.zoom_cleanup_record.clone() else {
+            return Ok(None);
+        };
+        let endpoint = state.endpoint.clone().ok_or(FlowFailure::Stale)?;
+        if record.generation != self.generation
+            || record.endpoint != endpoint
+            || record.runtime != *runtime
+        {
+            return Err(FlowFailure::TmuxRuntimeMissing);
+        }
+        Ok(Some(record))
+    }
+
+    fn clear_zoom_cleanup_record(
+        &self,
+        runtime: &tmux::SessionEpoch,
+        window: u64,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        let matches = state.generation == self.generation
+            && state.zoom_cleanup_record.as_ref().is_some_and(|record| {
+                record.generation == self.generation
+                    && record.runtime == *runtime
+                    && record.window == window
+                    && record.hooks == hooks
+            });
+        if matches {
+            state.zoom_cleanup_record = None;
+            self.zoom_cleanup_pending.store(false, Ordering::Release);
+        }
+        matches
+    }
+
     fn has_zoom_cleanup_intent(&self) -> bool {
         self.zoom_cleanup_pending.load(Ordering::Acquire)
             || self
                 .session
                 .lock()
-                .map(|state| state.generation == self.generation && state.meeterm_zoomed)
+                .map(|state| {
+                    state.generation == self.generation
+                        && (state.meeterm_zoomed || state.zoom_cleanup_record.is_some())
+                })
                 .unwrap_or(true)
     }
 
@@ -2889,10 +3019,27 @@ fn start_connection(
         // Abort completion is asynchronous. Install the new generation and
         // discard the old actor's local cleanup authority in one operation.
         state.generation = generation;
+        if reconnecting
+            && let ConnectionStart::AutomaticReconnect(profile) = &start
+            && let Some(identity) = profile.tmux_identity.as_ref()
+            && let Some(record) = state.zoom_cleanup_record.as_mut()
+            && record.endpoint == SessionEndpoint::from_profile(profile)
+            && record.runtime == identity.epoch()
+        {
+            // The connection-scoped record is intentionally retained across
+            // this same-runtime actor replacement, but its generation gate
+            // moves atomically with the replacement. An old actor still
+            // fails its state-generation checks and cannot clear it later.
+            record.generation = generation;
+        }
         if !reconnecting {
             state.meeterm_zoomed = false;
             state.meeterm_zoomed_window = None;
             state.meeterm_zoomed_pane = None;
+            // A manual/fresh binding is never allowed to inherit a cleanup
+            // target from another host, backend, or runtime. The old shared
+            // actor already had its bounded cleanup opportunity above.
+            state.zoom_cleanup_record = None;
         }
         // Candidate IDs are scoped to the connection generation. A reconnect
         // must not expose or accept the previous generation's picker IDs
@@ -6387,6 +6534,164 @@ mod tests {
         assert_eq!(
             shared.zoom_cleanup_outcome(),
             ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn zoom_cleanup_record_survives_active_ownership_clear_and_rejects_overwrite() {
+        let owner = registry::create_terminal(80, 24).expect("durable cleanup terminal");
+        let generation = next_generation();
+        let shared = ConnectionShared::new(
+            owner,
+            generation,
+            "durable-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/durable-cleanup-known-hosts"),
+        );
+        {
+            let mut state = shared.session.lock().expect("durable cleanup state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "durable-cleanup.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/durable-cleanup-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$7".to_owned()),
+            });
+            state.meeterm_zoomed = true;
+            state.meeterm_zoomed_window = Some(23);
+            state.meeterm_zoomed_pane = Some(41);
+        }
+        let runtime = tmux::SessionEpoch {
+            session_id: "$7".to_owned(),
+            server_pid: 700,
+            server_start_time: 1_700_000_000,
+        };
+        let first = tmux::ZoomRecoveryHookAllocation { index: 1_007 };
+        assert!(shared.record_zoom_cleanup_intent(runtime.clone(), 23, 41, first));
+        shared.clear_owned_zoom();
+        let retained = shared
+            .zoom_cleanup_record_for(&runtime)
+            .ok()
+            .flatten()
+            .expect("retained cleanup record");
+        assert!(retained.unconfirmed);
+        assert_eq!(retained.window, 23);
+        assert_eq!(retained.pane, 41);
+        assert_eq!(retained.hooks, first);
+
+        let replacement = tmux::ZoomRecoveryHookAllocation { index: 1_008 };
+        assert!(!shared.record_zoom_cleanup_intent(runtime.clone(), 99, 41, replacement));
+        let still_first = shared
+            .zoom_cleanup_record_for(&runtime)
+            .ok()
+            .flatten()
+            .expect("original record remains");
+        assert_eq!(still_first.window, 23);
+        assert_eq!(still_first.hooks, first);
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn zoom_cleanup_record_is_scoped_to_runtime_and_generation_for_late_completion() {
+        let owner = registry::create_terminal(80, 24).expect("generation cleanup terminal");
+        let old_generation = next_generation();
+        let new_generation = old_generation + 1;
+        let old_shared = ConnectionShared::new(
+            owner,
+            old_generation,
+            "generation-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/generation-cleanup-known-hosts"),
+        );
+        let endpoint = SessionEndpoint {
+            host: "generation-cleanup.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/generation-cleanup-known-hosts"),
+            backend: Backend::Tmux,
+            runtime: Some("$8".to_owned()),
+        };
+        let runtime = tmux::SessionEpoch {
+            session_id: "$8".to_owned(),
+            server_pid: 800,
+            server_start_time: 1_800_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_009 };
+        {
+            let mut state = old_shared.session.lock().expect("old generation state");
+            state.generation = old_generation;
+            state.endpoint = Some(endpoint.clone());
+        }
+        assert!(old_shared.record_zoom_cleanup_intent(runtime.clone(), 31, 51, hooks));
+
+        // Model the atomic generation rebase performed only for an exact
+        // same-runtime automatic reconnect. The old actor still fails its
+        // generation gate and cannot clear the new actor's record.
+        {
+            let mut state = old_shared.session.lock().expect("rebased generation state");
+            state.generation = new_generation;
+            state
+                .zoom_cleanup_record
+                .as_mut()
+                .expect("record before rebase")
+                .generation = new_generation;
+        }
+        let new_shared = ConnectionShared::new(
+            owner,
+            new_generation,
+            "generation-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/generation-cleanup-known-hosts"),
+        );
+        assert!(
+            new_shared
+                .zoom_cleanup_record_for(&runtime)
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        assert!(!old_shared.clear_zoom_cleanup_record(&runtime, 31, hooks));
+        assert!(new_shared.clear_zoom_cleanup_record(&runtime, 31, hooks));
+        assert!(
+            new_shared
+                .zoom_cleanup_record_for(&runtime)
+                .ok()
+                .flatten()
+                .is_none()
+        );
+
+        // A different server epoch cannot inherit the saved authority.
+        let mismatched_runtime = tmux::SessionEpoch {
+            session_id: "$8".to_owned(),
+            server_pid: 801,
+            server_start_time: 1_800_000_000,
+        };
+        {
+            let mut state = new_shared.session.lock().expect("mismatch record state");
+            state.zoom_cleanup_record = Some(ZoomCleanupRecord {
+                endpoint,
+                runtime: runtime.clone(),
+                window: 31,
+                pane: 51,
+                hooks,
+                unconfirmed: true,
+                generation: new_generation,
+            });
+        }
+        assert!(matches!(
+            new_shared.zoom_cleanup_record_for(&mismatched_runtime),
+            Err(FlowFailure::TmuxRuntimeMissing)
+        ));
+        assert!(
+            new_shared
+                .session
+                .lock()
+                .expect("mismatch record retained")
+                .zoom_cleanup_record
+                .is_some()
         );
         registry::destroy_terminal(owner);
     }

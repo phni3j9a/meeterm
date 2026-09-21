@@ -16,16 +16,16 @@ APP_SOURCE = Path(__file__).parents[2] / "App.tsx"
 
 
 class PresentationReadinessTests(unittest.TestCase):
-    def test_all_twenty_nine_routes_require_visible_content(self):
-        self.assertEqual(len(fixtures.SCREEN_NAMES), 29)
-        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 29)
+    def test_all_thirty_one_routes_require_visible_content(self):
+        self.assertEqual(len(fixtures.SCREEN_NAMES), 31)
+        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 31)
         for screen in fixtures.SCREEN_NAMES:
             with self.subTest(screen=screen):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
 
     def test_recovery_routes_are_stably_ordered_after_runtime_routes(self):
         self.assertEqual(
-            fixtures.SCREEN_NAMES[14:22],
+            fixtures.SCREEN_NAMES[14:24],
             (
                 "herdr-connection",
                 "herdr-groups",
@@ -35,17 +35,21 @@ class PresentationReadinessTests(unittest.TestCase):
                 "recovery-exhausted",
                 "recovery-mismatch",
                 "herdr-recovery-confirm",
+                "layout-restore-unconfirmed",
+                "runtime-layout-restore-unconfirmed",
             ),
         )
 
     def test_recovery_routes_and_ids_match_the_app_smoke_contract(self):
         source = APP_SOURCE.read_text(encoding="utf-8")
         for route in (
-            "recovery-progress",
-            "recovery-exhausted",
-            "recovery-mismatch",
-            "herdr-recovery-confirm",
-        ):
+                "recovery-progress",
+                "recovery-exhausted",
+                "recovery-mismatch",
+                "herdr-recovery-confirm",
+                "layout-restore-unconfirmed",
+                "runtime-layout-restore-unconfirmed",
+            ):
             with self.subTest(route=route):
                 self.assertIn(f"'{route}'", source)
         for test_id in (
@@ -104,6 +108,27 @@ class PresentationReadinessTests(unittest.TestCase):
         }
         self.assertEqual(
             fixtures.screen_checks("herdr-recovery-confirm", herdr_confirmation),
+            [],
+        )
+
+    def test_layout_restore_warning_routes_require_real_message_and_dismiss_action(self):
+        warning = "The connection closed, but the desktop layout could not be confirmed as restored."
+        self.assertEqual(
+            fixtures.screen_checks(
+                "layout-restore-unconfirmed",
+                {"Disconnected", warning, "Dismiss message"},
+            ),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks(
+                "runtime-layout-restore-unconfirmed",
+                {
+                    "Choose a runtime for Smoke server",
+                    warning,
+                    "Dismiss message",
+                },
+            ),
             [],
         )
 
