@@ -1,8 +1,8 @@
 run_record:
-  source_sha=8c5f511d118d73ef3e95d60b259b109a49e60448
+  source_sha=f45cbd4719735c8da161021a13e8bd8709b21119
   source_branch=fix/issue-30-zoom-cleanup
   suite=android-full (foundation gates + screen fixtures + real disposable OpenSSH/tmux smoke)
-  build_mode=fresh (git reset --hard <sha>, npm ci, expo prebuild, assembleRelease — not a same-commit reuse)
+  build_mode=fresh (git reset --hard <sha>, npm ci, expo prebuild, assembleRelease — no reuse of the 8c5f511 run)
   result=passed
 
 toolchain:
@@ -23,12 +23,12 @@ toolchain:
 stage_timings_utc (approximate; artifact mtimes and tool-reported):
   npm_ci=~90s
   expo_prebuild=<30s
-  gradle_assembleRelease=4m18s (BUILD SUCCESSFUL, 668 tasks)
-  emulator_boot_to_sys_boot_completed=~28s
-  android_smoke_sh=~34s (launch.txt 14:47:22 -> terminal.png 14:47:56) result: passed
-  android_screen_fixtures=~2m (14:47:56 -> 14:50:00) result: 28/29 captured, empty=unavailable:missing_screen_element_0,screen_element_1 (observational)
-  fixture_py_android_smoke_py=~22m (-> ssh-validation.txt 15:12:08) result: passed, final stage=disconnect_after_resume, reason=ok
-  total_wall_clock=~33m
+  gradle_assembleRelease=2m55s (BUILD SUCCESSFUL, 668 tasks)
+  emulator_boot_to_sys_boot_completed=~30s (cold reboot after session restart)
+  android_smoke_sh=~33s (launch.txt 16:21:28 -> terminal.png 16:22:01) result: passed
+  android_screen_fixtures=~2m (16:22:01 -> 16:24:06) result: 28/29 captured, empty=unavailable:missing_screen_element_0,screen_element_1 (observational)
+  fixture_py_android_smoke_py=first attempt failed at daily_profile_edit/profile_unavailable (stale saved-profile state from the prior run on this persistent VM); after `adb shell pm clear dev.meeterm.app` per docs/CI_MOBILE.md re-run guidance the full suite passed (-> ssh-validation.txt 16:54:33, ~25m incl. failed attempt), result=passed, final stage=disconnect_after_resume, reason=ok
+  total_wall_clock=~40m (includes pm-clear re-run)
 
 cleanup_outcome:
   fixture_tmpdirs=removed
@@ -38,5 +38,6 @@ cleanup_outcome:
   emulator=left running on emulator-5554 for this persistent session
 
 notes:
-  - Previous run on evidence/android-20260920 (commit 2c99368) failed at stage=disconnect reason=pane_split_changed; this candidate run completes both explicit disconnects with the split shape and no-mobile-zoom assertions passing.
+  - Re-run on the reworked candidate after the earlier 8c5f511 validation; the prior evidence commit is preserved in this branch's history.
+  - The single failed attempt (daily_profile_edit/profile_unavailable) was caused by persisted app profile state from the prior run on the same VM, resolved by the documented `pm clear` re-run procedure; it is not a product regression. The failing artifacts were overwritten by the successful run.
   - app-release.apk excluded from this bundle by default policy (request explicit upload if an evaluation APK is needed).
