@@ -257,6 +257,8 @@ function makeNativeEnvironment() {
     changeRuntimeShouldFail: false,
     changeRuntimeMode: 'ready',
     pendingChangeRuntime: null,
+    disconnectRelease: null,
+    changeRuntimeRelease: null,
   };
 
   const native = {
@@ -342,7 +344,11 @@ function makeNativeEnvironment() {
     },
     async disconnect() {
       environment.nativeCalls.push('disconnect');
-      environment.connection.state = 'Disconnected';
+      environment.connection = {
+        ...environment.connection,
+        state: 'Disconnected',
+        ...(environment.disconnectRelease || {}),
+      };
     },
     async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
     async getConnectionState() { return { ...environment.connection }; },
@@ -383,7 +389,11 @@ function makeNativeEnvironment() {
           environment.pendingChangeRuntime = { operationEpoch, resolve, reject };
         });
       }
-      environment.connection.state = 'AwaitingRuntimeSelection';
+      environment.connection = {
+        ...environment.connection,
+        state: 'AwaitingRuntimeSelection',
+        ...(environment.changeRuntimeRelease || {}),
+      };
       environment.snapshot.control = workspaceControl({
         hasRetainedWork: false,
         operationEpoch: String(Number(operationEpoch) + 1),
@@ -1989,6 +1999,73 @@ test('retained recovery keeps the cached native terminal and disables remote nav
   assert.equal(findLabel(fixture.root, 'Rename group').props.disabled, true);
   assert.equal(findLabel(fixture.root, 'Close group').props.disabled, true);
   await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+});
+
+test('explicit disconnect keeps the layout-restore warning and does not restore Ready', async t => {
+  const warning = 'The desktop layout could not be confirmed after disconnect.';
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.disconnectRelease = {
+      errorCode: 'layout_restore_unconfirmed',
+      errorMessage: warning,
+    };
+  });
+  await openWorkspace(fixture.root, 'W1');
+
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await press(fixture.root, findLabel(fixture.root, 'PC handoff help'));
+  await press(fixture.root, findLabel(fixture.root, 'Disconnect'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(terminalViews(fixture.root).length, 0, 'disconnect must not leave a stale Ready terminal mounted');
+  assert.ok(findLabel(fixture.root, 'Dismiss message'));
+  assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
+});
+
+test('polling a disconnected connection keeps the layout-restore warning visible', async t => {
+  const warning = 'The desktop layout could not be confirmed during polling.';
+  const fixture = await mountForTest(t, makeSnapshot());
+  await openWorkspace(fixture.root, 'W1');
+
+  fixture.environment.connection = {
+    ...fixture.environment.connection,
+    state: 'Disconnected',
+    errorCode: 'layout_restore_unconfirmed',
+    errorMessage: warning,
+  };
+  await poll(fixture.environment);
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(terminalViews(fixture.root).length, 1, 'polling may retain the cached surface while disconnected');
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+  assert.ok(findLabel(fixture.root, 'Dismiss message'));
+  assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
+});
+
+test('recovery Change keeps the layout-restore warning after the release read', async t => {
+  const warning = 'The previous desktop layout could not be confirmed before switching runtime.';
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '115',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed', environment => {
+    environment.changeRuntimeRelease = {
+      errorCode: 'layout_restore_unconfirmed',
+      errorMessage: warning,
+    };
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'AwaitingRuntimeSelection');
+  assert.equal(terminalViews(fixture.root).length, 0, 'runtime switch must not restore the retired Ready terminal');
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'), 'the switch result must remain visible in the runtime picker');
+  assert.ok(findLabel(fixture.root, 'Dismiss message'));
+  assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
 });
 
 test('recovery Retry uses the current epoch once and waits for a native snapshot transition', async t => {
