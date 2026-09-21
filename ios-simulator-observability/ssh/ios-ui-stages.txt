@@ -7,6 +7,15 @@ fill_host_hittable
 fill_host_tapped
 fill_host_type
 fill_host_readback
+fill_host_retry
+fill_host_focus
+fill_host_hittable
+fill_host_tapped
+fill_host_clear
+fill_host_clear_wait
+fill_host_clear_verified
+fill_host_type
+fill_host_readback
 fill_host_verified
 fill_port_focus
 fill_port_hittable

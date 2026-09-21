@@ -1,7 +1,7 @@
 runner=devin-cloud-macos
 os=macOS
 arch=arm64
-commit=8c5f511d118d73ef3e95d60b259b109a49e60448
+commit=f45cbd4719735c8da161021a13e8bd8709b21119
 test_scope=standard
 build_mode=fresh-cng
 bootstatus_timeout_seconds=900
