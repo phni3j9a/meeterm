@@ -91,13 +91,44 @@ struct DecodedCell {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RemotePaneLayout {
+struct RemoteWindowLayout {
+    window_id: u64,
+    saved_layout: String,
+    shape: LayoutShape,
+    width: u16,
+    height: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemotePaneState {
     window_id: u64,
     pane_id: u64,
     index: u32,
-    columns: u16,
-    rows: u16,
+    pid: u32,
+    active: bool,
+    window_active: bool,
     zoomed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteTmuxLayout {
+    windows: Vec<RemoteWindowLayout>,
+    panes: Vec<RemotePaneState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LayoutShape {
+    Leaf(u64),
+    Split {
+        direction: LayoutSplitDirection,
+        children: Vec<LayoutShape>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LayoutSplitDirection {
+    Horizontal,
+    Vertical,
 }
 
 #[test]
@@ -579,38 +610,49 @@ fn real_openssh_tmux_session_loop() {
     });
 
     // A graceful disconnect must clean up zoom state as well. Exercise the
-    // issue #30 sequence with numeric identities and a normalized split shape:
-    // same-window pane switch -> another window -> back, then compare the
-    // authoritative remote layout after shutdown.
+    // issue #30 sequence with the authoritative saved layout and separately
+    // fetched pane state: same-window pane switch -> another window -> back,
+    // then compare the remote state before and after shutdown. The viewport is
+    // fixed at 60x18 by the resize checks above, so this case also requires an
+    // exact saved-layout and window-dimension match.
     let reconnected_main = wait_for_pane_handle(id, main.pane_id, "refresh main after recovery");
     let reconnected_side_active = wait_for_pane_handle(
         id,
         side_active.pane_id,
         "refresh side active after recovery",
     );
-    let baseline_layout = remote_pane_layout(&fixture, "zoom sequence baseline");
-    let baseline_identity = layout_identity(&baseline_layout);
-    let baseline_shape = normalized_split_shape(&baseline_layout);
-    let before_disconnect = exercise_zoom_switch_sequence(
+    let baseline_layout = remote_tmux_layout(&fixture, "baseline");
+    exercise_zoom_switch_sequence(
         id,
         &fixture,
         &reconnected_main,
         &reconnected_side,
         &reconnected_side_active,
+        &baseline_layout,
         "first zoom switch sequence",
     );
-    assert_eq!(layout_identity(&before_disconnect), baseline_identity);
-    assert_eq!(normalized_split_shape(&before_disconnect), baseline_shape);
+    let before_disconnect = remote_tmux_layout(&fixture, "before_disconnect");
+    assert_remote_layout_preserved(
+        &baseline_layout,
+        &before_disconnect,
+        "before_disconnect",
+        true,
+    );
+    assert_zoom_state(
+        &before_disconnect,
+        reconnected_side_active.pane_id,
+        "before_disconnect",
+    );
     disconnect_terminal(id).expect("graceful native disconnect");
     wait_for_state(id, ConnectionState::Disconnected, "graceful disconnect");
-    let after_disconnect = remote_pane_layout(&fixture, "zoom cleanup after graceful disconnect");
-    assert_eq!(layout_identity(&after_disconnect), baseline_identity);
-    assert_eq!(normalized_split_shape(&after_disconnect), baseline_shape);
-    assert!(
-        zoom_flags(&after_disconnect)
-            .iter()
-            .all(|(_, zoomed)| !zoomed)
+    let after_disconnect = remote_tmux_layout(&fixture, "after_disconnect");
+    assert_remote_layout_preserved(
+        &baseline_layout,
+        &after_disconnect,
+        "after_disconnect",
+        true,
     );
+    assert_no_zoom(&after_disconnect, "after_disconnect");
     assert!(send_bytes(reconnected_side.terminal_id, b"input after disconnect").is_err());
 
     let hooks = run_remote_tmux(
@@ -642,18 +684,28 @@ fn real_openssh_tmux_session_loop() {
         side_active.pane_id,
         "refresh side active before recovery path",
     );
-    let recovery_baseline = remote_pane_layout(&fixture, "recovery zoom baseline");
-    let recovery_identity = layout_identity(&recovery_baseline);
-    let recovery_shape = normalized_split_shape(&recovery_baseline);
-    let selected_before_loss = exercise_zoom_switch_sequence(
+    let recovery_baseline = remote_tmux_layout(&fixture, "recovery_baseline");
+    exercise_zoom_switch_sequence(
         id,
         &fixture,
         &recovery_main,
         &recovery_side,
         &recovery_side_active,
+        &recovery_baseline,
         "recovery zoom switch before transport loss",
     );
-    assert_eq!(layout_identity(&selected_before_loss), recovery_identity);
+    let selected_before_loss = remote_tmux_layout(&fixture, "before_recovery_disconnect");
+    assert_remote_layout_preserved(
+        &recovery_baseline,
+        &selected_before_loss,
+        "before_recovery_disconnect",
+        true,
+    );
+    assert_zoom_state(
+        &selected_before_loss,
+        recovery_side_active.pane_id,
+        "before_recovery_disconnect",
+    );
     detach_control_mode_client(&fixture);
     wait_for_reconnecting(id, "zoom cleanup recovery transport loss");
     wait_for_ready_without_prompt(id, "zoom cleanup recovery ready");
@@ -664,18 +716,26 @@ fn real_openssh_tmux_session_loop() {
         side_active.pane_id,
         "refresh side active after zoom recovery",
     );
-    let selected_after_recovery = exercise_zoom_switch_sequence(
+    exercise_zoom_switch_sequence(
         id,
         &fixture,
         &recovered_main,
         &recovered_side,
         &recovered_side_active,
+        &recovery_baseline,
         "recovery zoom switch after transport loss",
     );
-    assert_eq!(layout_identity(&selected_after_recovery), recovery_identity);
-    assert_eq!(
-        normalized_split_shape(&selected_after_recovery),
-        recovery_shape
+    let selected_after_recovery = remote_tmux_layout(&fixture, "after_recovery_selection");
+    assert_remote_layout_preserved(
+        &recovery_baseline,
+        &selected_after_recovery,
+        "after_recovery_selection",
+        true,
+    );
+    assert_zoom_state(
+        &selected_after_recovery,
+        recovered_side_active.pane_id,
+        "after_recovery_selection",
     );
     disconnect_terminal(id).expect("disconnect after recovered zoom sequence");
     wait_for_state(
@@ -683,21 +743,14 @@ fn real_openssh_tmux_session_loop() {
         ConnectionState::Disconnected,
         "disconnect after recovered zoom sequence",
     );
-    let after_recovery_disconnect =
-        remote_pane_layout(&fixture, "zoom cleanup after recovered disconnect");
-    assert_eq!(
-        layout_identity(&after_recovery_disconnect),
-        recovery_identity
+    let after_recovery_disconnect = remote_tmux_layout(&fixture, "after_recovery_disconnect");
+    assert_remote_layout_preserved(
+        &recovery_baseline,
+        &after_recovery_disconnect,
+        "after_recovery_disconnect",
+        true,
     );
-    assert_eq!(
-        normalized_split_shape(&after_recovery_disconnect),
-        recovery_shape
-    );
-    assert!(
-        zoom_flags(&after_recovery_disconnect)
-            .iter()
-            .all(|(_, zoomed)| !zoomed)
-    );
+    assert_no_zoom(&after_recovery_disconnect, "after_recovery_disconnect");
 
     // Establish the desired reconnect selection while a live controller owns
     // the command stream.  Sending a selection immediately after disconnect
@@ -1840,86 +1893,440 @@ fn pane_identity_set(snapshot: &SessionSnapshot) -> std::collections::HashSet<(u
         .collect()
 }
 
-fn remote_pane_layout(fixture: &FixtureConfig, label: &str) -> Vec<RemotePaneLayout> {
-    let output = run_remote_tmux(
+fn remote_tmux_layout(fixture: &FixtureConfig, label: &str) -> RemoteTmuxLayout {
+    // Keep these observations read-only. `window_layout` is the saved layout
+    // even while a pane is zoomed; never replace it with a visible-pane size or
+    // unzoom/rezoom as part of measurement.
+    let windows_output = run_remote_tmux(
         fixture,
-        "tmux list-panes -s -F '#{window_id},#{pane_id},#{pane_index},#{pane_width},#{pane_height},#{window_zoomed_flag}'",
-        label,
+        "tmux list-windows -t '=meeterm:' -F '#{window_id}|#{window_layout}|#{window_width}|#{window_height}'",
+        &format!("{label}: windows"),
     );
-    let mut layout = output
-        .stdout
-        .split(|byte| *byte == b'\n')
+    let panes_output = run_remote_tmux(
+        fixture,
+        "tmux list-panes -t '=meeterm:' -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_pid}|#{pane_active}|#{window_active}|#{window_zoomed_flag}'",
+        &format!("{label}: panes"),
+    );
+    let layout = RemoteTmuxLayout {
+        windows: parse_remote_windows(&windows_output.stdout, label),
+        panes: parse_remote_panes(&panes_output.stdout, label),
+    };
+    validate_remote_tmux_layout(&layout, label);
+    layout
+}
+
+fn parse_remote_windows(bytes: &[u8], label: &str) -> Vec<RemoteWindowLayout> {
+    let output = std::str::from_utf8(bytes)
+        .unwrap_or_else(|error| panic!("{label}: window query was not UTF-8: {error}"));
+    let mut windows = output
+        .lines()
         .filter(|line| !line.is_empty())
         .map(|line| {
-            let fields = String::from_utf8_lossy(line)
-                .split(',')
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            assert_eq!(fields.len(), 6, "{label}: numeric pane layout field count");
-            let number = |value: &str, prefix: &str| {
-                value
-                    .strip_prefix(prefix)
-                    .and_then(|digits| digits.parse::<u64>().ok())
-                    .unwrap_or_else(|| panic!("{label}: invalid numeric topology field"))
-            };
-            RemotePaneLayout {
-                window_id: number(&fields[0], "@"),
-                pane_id: number(&fields[1], "%"),
-                index: fields[2]
-                    .parse::<u32>()
-                    .unwrap_or_else(|_| panic!("{label}: invalid numeric pane index")),
-                columns: fields[3]
-                    .parse::<u16>()
-                    .unwrap_or_else(|_| panic!("{label}: invalid numeric pane width")),
-                rows: fields[4]
-                    .parse::<u16>()
-                    .unwrap_or_else(|_| panic!("{label}: invalid numeric pane height")),
-                zoomed: match fields[5].as_str() {
-                    "0" => false,
-                    "1" => true,
-                    _ => panic!("{label}: invalid numeric zoom flag"),
-                },
+            let fields = line.split('|').collect::<Vec<_>>();
+            assert_eq!(
+                fields.len(),
+                4,
+                "{label}: window record must have four pipe-delimited fields: {line:?}"
+            );
+            let saved_layout = fields[1].to_owned();
+            RemoteWindowLayout {
+                window_id: parse_prefixed_number(fields[0], '@', label, "window ID"),
+                shape: parse_saved_layout(&saved_layout, label),
+                saved_layout,
+                width: parse_number(fields[2], label, "window width")
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("{label}: window width does not fit u16")),
+                height: parse_number(fields[3], label, "window height")
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("{label}: window height does not fit u16")),
             }
         })
         .collect::<Vec<_>>();
-    layout.sort_by_key(|pane| (pane.window_id, pane.index, pane.pane_id));
-    layout
+    assert!(!windows.is_empty(), "{label}: tmux returned no windows");
+    windows.sort_by_key(|window| window.window_id);
+    windows
 }
 
-fn layout_identity(layout: &[RemotePaneLayout]) -> std::collections::HashSet<(u64, u64)> {
-    layout
-        .iter()
-        .map(|pane| (pane.window_id, pane.pane_id))
-        .collect()
-}
-
-fn normalized_split_shape(layout: &[RemotePaneLayout]) -> Vec<(usize, u32, u16, u16)> {
-    let mut windows = layout.iter().map(|pane| pane.window_id).collect::<Vec<_>>();
-    windows.sort_unstable();
-    windows.dedup();
-    layout
-        .iter()
-        .map(|pane| {
-            (
-                windows
-                    .binary_search(&pane.window_id)
-                    .expect("layout window ordinal"),
-                pane.index,
-                pane.columns,
-                pane.rows,
-            )
+fn parse_remote_panes(bytes: &[u8], label: &str) -> Vec<RemotePaneState> {
+    let output = std::str::from_utf8(bytes)
+        .unwrap_or_else(|error| panic!("{label}: pane query was not UTF-8: {error}"));
+    let mut panes = output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let fields = line.split('|').collect::<Vec<_>>();
+            assert_eq!(
+                fields.len(),
+                7,
+                "{label}: pane record must have seven pipe-delimited fields: {line:?}"
+            );
+            RemotePaneState {
+                window_id: parse_prefixed_number(fields[0], '@', label, "pane window ID"),
+                pane_id: parse_prefixed_number(fields[1], '%', label, "pane ID"),
+                index: parse_number(fields[2], label, "pane index")
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("{label}: pane index does not fit u32")),
+                pid: parse_number(fields[3], label, "pane PID")
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("{label}: pane PID does not fit u32")),
+                active: parse_binary_flag(fields[4], label, "pane active"),
+                window_active: parse_binary_flag(fields[5], label, "window active"),
+                zoomed: parse_binary_flag(fields[6], label, "window zoom flag"),
+            }
         })
+        .collect::<Vec<_>>();
+    assert!(!panes.is_empty(), "{label}: tmux returned no panes");
+    panes.sort_by_key(|pane| (pane.window_id, pane.index, pane.pane_id));
+    panes
+}
+
+fn parse_prefixed_number(value: &str, prefix: char, label: &str, field: &str) -> u64 {
+    let digits = value
+        .strip_prefix(prefix)
+        .unwrap_or_else(|| panic!("{label}: {field} must start with {prefix:?}: {value:?}"));
+    parse_number(digits, label, field)
+}
+
+fn parse_number(value: &str, label: &str, field: &str) -> u64 {
+    assert!(
+        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()),
+        "{label}: invalid {field}: {value:?}"
+    );
+    value
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("{label}: {field} is out of range: {value:?}"))
+}
+
+fn parse_binary_flag(value: &str, label: &str, field: &str) -> bool {
+    match value {
+        "0" => false,
+        "1" => true,
+        _ => panic!("{label}: invalid {field}: {value:?}"),
+    }
+}
+
+fn validate_remote_tmux_layout(layout: &RemoteTmuxLayout, label: &str) {
+    let window_ids = layout
+        .windows
+        .iter()
+        .map(|window| window.window_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        window_ids.len(),
+        layout.windows.len(),
+        "{label}: duplicate window IDs"
+    );
+
+    let pane_ids = layout
+        .panes
+        .iter()
+        .map(|pane| pane.pane_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        pane_ids.len(),
+        layout.panes.len(),
+        "{label}: duplicate pane IDs"
+    );
+
+    for pane in &layout.panes {
+        assert!(
+            window_ids.contains(&pane.window_id),
+            "{label}: pane %{0} refers to missing window @{1}",
+            pane.pane_id,
+            pane.window_id
+        );
+    }
+
+    for window in &layout.windows {
+        let mut saved_panes = Vec::new();
+        collect_layout_pane_ids(&window.shape, &mut saved_panes);
+        let mut observed_panes = layout
+            .panes
+            .iter()
+            .filter(|pane| pane.window_id == window.window_id)
+            .map(|pane| pane.pane_id)
+            .collect::<Vec<_>>();
+        saved_panes.sort_unstable();
+        observed_panes.sort_unstable();
+        assert_eq!(
+            saved_panes, observed_panes,
+            "{label}: saved layout pane IDs do not match separately fetched panes in window @{}",
+            window.window_id
+        );
+    }
+}
+
+fn collect_layout_pane_ids(shape: &LayoutShape, pane_ids: &mut Vec<u64>) {
+    match shape {
+        LayoutShape::Leaf(pane_id) => pane_ids.push(*pane_id),
+        LayoutShape::Split { children, .. } => {
+            for child in children {
+                collect_layout_pane_ids(child, pane_ids);
+            }
+        }
+    }
+}
+
+fn layout_shape_signature(layout: &RemoteTmuxLayout) -> Vec<(u64, LayoutShape)> {
+    layout
+        .windows
+        .iter()
+        .map(|window| (window.window_id, window.shape.clone()))
         .collect()
 }
 
-fn zoom_flags(layout: &[RemotePaneLayout]) -> Vec<(u64, bool)> {
-    let mut flags = layout
+fn pane_identity_signature(layout: &RemoteTmuxLayout) -> Vec<(u64, u64, u32, u32)> {
+    let mut identity = layout
+        .panes
         .iter()
-        .map(|pane| (pane.window_id, pane.zoomed))
+        .map(|pane| (pane.window_id, pane.pane_id, pane.index, pane.pid))
         .collect::<Vec<_>>();
-    flags.sort_unstable_by_key(|(window, _)| *window);
-    flags.dedup_by_key(|(window, _)| *window);
-    flags
+    identity.sort_unstable();
+    identity
+}
+
+fn window_dimensions_signature(layout: &RemoteTmuxLayout) -> Vec<(u64, u16, u16)> {
+    layout
+        .windows
+        .iter()
+        .map(|window| (window.window_id, window.width, window.height))
+        .collect()
+}
+
+fn saved_layout_signature(layout: &RemoteTmuxLayout) -> Vec<(u64, &str)> {
+    layout
+        .windows
+        .iter()
+        .map(|window| (window.window_id, window.saved_layout.as_str()))
+        .collect()
+}
+
+fn assert_remote_layout_preserved(
+    before: &RemoteTmuxLayout,
+    after: &RemoteTmuxLayout,
+    stage: &str,
+    fixed_viewport: bool,
+) {
+    assert_eq!(
+        pane_identity_signature(before),
+        pane_identity_signature(after),
+        "{stage}: window/pane/index/process identity changed"
+    );
+    assert_eq!(
+        layout_shape_signature(before),
+        layout_shape_signature(after),
+        "{stage}: saved split direction/nesting/order/pane placement changed"
+    );
+    if fixed_viewport {
+        assert_eq!(
+            window_dimensions_signature(before),
+            window_dimensions_signature(after),
+            "{stage}: fixed-viewport window dimensions changed"
+        );
+        assert_eq!(
+            saved_layout_signature(before),
+            saved_layout_signature(after),
+            "{stage}: exact saved layout changed at a fixed viewport"
+        );
+    }
+}
+
+fn assert_zoom_state(layout: &RemoteTmuxLayout, selected_pane: u64, stage: &str) {
+    let selected = layout
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == selected_pane)
+        .unwrap_or_else(|| panic!("{stage}: selected pane %{selected_pane} is missing"));
+    assert!(
+        selected.active,
+        "{stage}: selected pane %{selected_pane} is not active in its window"
+    );
+    assert!(
+        selected.window_active,
+        "{stage}: selected pane %{selected_pane} is not in the active window"
+    );
+    let mut zoomed_windows = layout
+        .panes
+        .iter()
+        .filter(|pane| pane.zoomed)
+        .map(|pane| pane.window_id)
+        .collect::<Vec<_>>();
+    zoomed_windows.sort_unstable();
+    zoomed_windows.dedup();
+    assert_eq!(
+        zoomed_windows,
+        vec![selected.window_id],
+        "{stage}: zoom flags do not identify only the selected window"
+    );
+}
+
+fn assert_no_zoom(layout: &RemoteTmuxLayout, stage: &str) {
+    assert!(
+        layout.panes.iter().all(|pane| !pane.zoomed),
+        "{stage}: one or more independently fetched window zoom flags remain set"
+    );
+}
+
+fn assert_zoom_selection_stage(
+    fixture: &FixtureConfig,
+    baseline: &RemoteTmuxLayout,
+    selected_pane: u64,
+    fixed_viewport: bool,
+    stage: &str,
+) {
+    let observed = remote_tmux_layout(fixture, stage);
+    assert_remote_layout_preserved(baseline, &observed, stage, fixed_viewport);
+    assert_zoom_state(&observed, selected_pane, stage);
+}
+
+struct LayoutParser<'a> {
+    input: &'a [u8],
+    position: usize,
+    stage: &'a str,
+}
+
+fn parse_saved_layout(layout: &str, stage: &str) -> LayoutShape {
+    let (checksum, body) = layout.split_once(',').unwrap_or_else(|| {
+        panic!("{stage}: saved layout is missing checksum separator: {layout:?}")
+    });
+    assert_eq!(
+        checksum.len(),
+        4,
+        "{stage}: saved layout checksum must have four hex digits: {layout:?}"
+    );
+    assert!(
+        checksum.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{stage}: saved layout checksum is not hexadecimal: {layout:?}"
+    );
+    assert!(!body.is_empty(), "{stage}: saved layout body is empty");
+    let mut parser = LayoutParser {
+        input: body.as_bytes(),
+        position: 0,
+        stage,
+    };
+    let shape = parser.parse_node();
+    assert_eq!(
+        parser.position,
+        parser.input.len(),
+        "{stage}: saved layout has trailing data at byte {}: {layout:?}",
+        parser.position
+    );
+    shape
+}
+
+impl LayoutParser<'_> {
+    fn parse_node(&mut self) -> LayoutShape {
+        let width = self.parse_number_until(b'x', "layout width");
+        let height = self.parse_number_until(b',', "layout height");
+        let _x = self.parse_number_until(b',', "layout x offset");
+        let _y = self.parse_number();
+        assert!(
+            width > 0 && height > 0,
+            "{}: saved layout node has zero dimensions",
+            self.stage
+        );
+        match self.peek() {
+            Some(b'[') => self.parse_split(b'[', b']', LayoutSplitDirection::Vertical),
+            Some(b'{') => self.parse_split(b'{', b'}', LayoutSplitDirection::Horizontal),
+            Some(b',') => {
+                self.position += 1;
+                let pane_id = self.parse_number();
+                assert!(
+                    matches!(self.peek(), None | Some(b',') | Some(b']') | Some(b'}')),
+                    "{}: invalid saved layout leaf delimiter",
+                    self.stage
+                );
+                LayoutShape::Leaf(pane_id)
+            }
+            other => panic!(
+                "{}: saved layout node must end in a split or pane ID, got {other:?}",
+                self.stage
+            ),
+        }
+    }
+
+    fn parse_split(&mut self, open: u8, close: u8, direction: LayoutSplitDirection) -> LayoutShape {
+        assert_eq!(
+            self.peek(),
+            Some(open),
+            "{}: missing split opener",
+            self.stage
+        );
+        self.position += 1;
+        let mut children = Vec::new();
+        loop {
+            assert_ne!(
+                self.peek(),
+                Some(close),
+                "{}: saved layout split has no child",
+                self.stage
+            );
+            children.push(self.parse_node());
+            match self.peek() {
+                Some(b',') => {
+                    self.position += 1;
+                    assert_ne!(
+                        self.peek(),
+                        Some(close),
+                        "{}: saved layout split has a trailing separator",
+                        self.stage
+                    );
+                }
+                Some(value) if value == close => {
+                    self.position += 1;
+                    break;
+                }
+                other => panic!(
+                    "{}: saved layout split has invalid child delimiter {other:?}",
+                    self.stage
+                ),
+            }
+        }
+        assert!(
+            children.len() >= 2,
+            "{}: saved layout split must have at least two children",
+            self.stage
+        );
+        LayoutShape::Split {
+            direction,
+            children,
+        }
+    }
+
+    fn parse_number_until(&mut self, terminator: u8, field: &str) -> u32 {
+        let value = self.parse_number();
+        assert_eq!(
+            self.peek(),
+            Some(terminator),
+            "{}: saved layout {field} is missing delimiter {:?}",
+            self.stage,
+            terminator as char
+        );
+        self.position += 1;
+        value
+            .try_into()
+            .unwrap_or_else(|_| panic!("{}: saved layout {field} does not fit u32", self.stage))
+    }
+
+    fn parse_number(&mut self) -> u64 {
+        let start = self.position;
+        while matches!(self.input.get(self.position), Some(byte) if byte.is_ascii_digit()) {
+            self.position += 1;
+        }
+        assert_ne!(
+            start, self.position,
+            "{}: saved layout expected decimal digits at byte {}",
+            self.stage, start
+        );
+        std::str::from_utf8(&self.input[start..self.position])
+            .expect("ASCII layout digits")
+            .parse::<u64>()
+            .unwrap_or_else(|_| panic!("{}: saved layout number is out of range", self.stage))
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.position).copied()
+    }
 }
 
 fn exercise_zoom_switch_sequence(
@@ -1928,8 +2335,9 @@ fn exercise_zoom_switch_sequence(
     main: &PaneSnapshot,
     side: &PaneSnapshot,
     side_active: &PaneSnapshot,
+    baseline: &RemoteTmuxLayout,
     label: &str,
-) -> Vec<RemotePaneLayout> {
+) {
     select_pane(id, side.pane_id).expect("select zoom sequence side pane");
     wait_for_selected_pane(id, side.pane_id, "select zoom sequence side pane");
     wait_for_remote_tmux(
@@ -1940,6 +2348,13 @@ fn exercise_zoom_switch_sequence(
         ),
         &format!("{label}: initial mobile zoom"),
         |output| output.trim() == "1",
+    );
+    assert_zoom_selection_stage(
+        fixture,
+        baseline,
+        side.pane_id,
+        true,
+        &format!("{label}: selection_side_complete"),
     );
 
     // A pane switch inside the owned window must retain ownership and zoom.
@@ -1957,6 +2372,13 @@ fn exercise_zoom_switch_sequence(
         ),
         &format!("{label}: same-window zoom ownership"),
         |output| output.trim() == "1",
+    );
+    assert_zoom_selection_stage(
+        fixture,
+        baseline,
+        side_active.pane_id,
+        true,
+        &format!("{label}: selection_same_window_complete"),
     );
 
     // Switching windows transfers mobile ownership without changing the
@@ -1981,6 +2403,13 @@ fn exercise_zoom_switch_sequence(
         &format!("{label}: old window restored"),
         |output| output.trim() == "0",
     );
+    assert_zoom_selection_stage(
+        fixture,
+        baseline,
+        main.pane_id,
+        true,
+        &format!("{label}: selection_other_window_complete"),
+    );
 
     select_pane(id, side_active.pane_id).expect("select return zoom sequence pane");
     wait_for_selected_pane(id, side_active.pane_id, "select return zoom sequence pane");
@@ -2002,7 +2431,54 @@ fn exercise_zoom_switch_sequence(
         &format!("{label}: returned old window restored"),
         |output| output.trim() == "0",
     );
-    remote_pane_layout(fixture, label)
+    assert_zoom_selection_stage(
+        fixture,
+        baseline,
+        side_active.pane_id,
+        true,
+        &format!("{label}: selection_return_complete"),
+    );
+}
+
+#[test]
+fn tmux_saved_layout_shape_comparison_ignores_resize_but_detects_structure_and_ratio_changes() {
+    let baseline = "abcd,80x24,0,0{39x24,0,0,0,40x24,40,0,1}";
+    let resized = "beef,60x18,0,0{29x18,0,0,0,30x18,30,0,1}";
+    let swapped = "cafe,80x24,0,0{39x24,0,0,1,40x24,40,0,0}";
+    let vertical = "d00d,80x24,0,0[39x12,0,0,0,40x11,0,13,1]";
+    let same_size_ratio_change = "face,80x24,0,0{30x24,0,0,0,49x24,31,0,1}";
+    let nested = "1234,120x24,0,0{59x24,0,0{29x24,0,0,0,29x24,30,0,1},60x24,60,0,2}";
+    let flattened = "5678,120x24,0,0{29x24,0,0,0,29x24,30,0,1,60x24,60,0,2}";
+
+    assert_eq!(
+        parse_saved_layout(baseline, "layout comparison baseline"),
+        parse_saved_layout(resized, "layout comparison resized"),
+        "a viewport resize must not change the saved split relation"
+    );
+    assert_ne!(
+        parse_saved_layout(baseline, "layout comparison baseline"),
+        parse_saved_layout(swapped, "layout comparison pane placement"),
+        "a pane placement change must be detected"
+    );
+    assert_ne!(
+        parse_saved_layout(baseline, "layout comparison baseline"),
+        parse_saved_layout(vertical, "layout comparison direction"),
+        "a split direction change must be detected"
+    );
+    assert_ne!(
+        parse_saved_layout(nested, "layout comparison nested"),
+        parse_saved_layout(flattened, "layout comparison flattened"),
+        "a split nesting change must be detected"
+    );
+    assert_eq!(
+        parse_saved_layout(baseline, "layout comparison baseline"),
+        parse_saved_layout(same_size_ratio_change, "layout comparison ratio"),
+        "the relation-only comparison must ignore dimensions"
+    );
+    assert_ne!(
+        baseline, same_size_ratio_change,
+        "the fixed-viewport exact saved-layout comparison must detect a ratio change"
+    );
 }
 
 fn wait_for_pane_snapshot<F>(pane: &PaneSnapshot, label: &str, mut predicate: F) -> DecodedSnapshot
