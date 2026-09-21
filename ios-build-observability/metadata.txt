@@ -1,4 +1,0 @@
-runner=devin-cloud-macos
-os=macOS
-arch=arm64
-commit=f45cbd4719735c8da161021a13e8bd8709b21119

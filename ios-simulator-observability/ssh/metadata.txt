@@ -1,7 +1,7 @@
 runner=devin-cloud-macos
 os=macOS
 arch=arm64
-commit=f45cbd4719735c8da161021a13e8bd8709b21119
+commit=d766fb86caa6da21c03014e4efe58972a82baf57
 test_scope=ssh
 build_mode=reuse-same-commit
 reuse_of=standard-fresh-cng

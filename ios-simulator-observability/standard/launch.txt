@@ -1,4 +1,4 @@
 mode=xcuitest-standard
 bundle_id=dev.meeterm.app
 test_result_bundle=RUNNER_TEMP
-smoke_started_at_utc=2026-09-21 16:31:04Z
+smoke_started_at_utc=2026-09-21 18:03:14Z
