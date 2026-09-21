@@ -33,6 +33,12 @@ How a run works:
    `normal/fast/lite/ultra/fusion`); web-created SWE-2 sessions report
    `devin_mode: null`. Session creation is therefore a one-time manual step per
    platform; everything after that is API-driven.
+   The repository's `.devin/blueprint.yaml` (snapshot builds
+   `sbj-*`) preinstalls the toolchain on both `linux` and `macos` — Node 22.22.2,
+   Rust 1.96.0 + platform targets, Android SDK/NDK, cargo-ndk, the Maven mirror
+   init script, and brew tmux/cocoapods — so a fresh session starts nearly warm
+   and can be recreated whenever context or VM drift accumulates. After creating
+   a replacement session, update the ID in the table above.
 2. The driver (Main) sends a validation prompt through the Sessions API
    (`POST /v3/organizations/{org}/sessions/{id}/messages`), then polls session
    status. Sessions sleep while idle and wake on the message; idle time does
