@@ -1843,7 +1843,7 @@ fn pane_identity_set(snapshot: &SessionSnapshot) -> std::collections::HashSet<(u
 fn remote_pane_layout(fixture: &FixtureConfig, label: &str) -> Vec<RemotePaneLayout> {
     let output = run_remote_tmux(
         fixture,
-        "tmux list-panes -s -F '#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_width}\t#{pane_height}\t#{window_zoomed_flag}'",
+        "tmux list-panes -s -F '#{window_id},#{pane_id},#{pane_index},#{pane_width},#{pane_height},#{window_zoomed_flag}'",
         label,
     );
     let mut layout = output
@@ -1852,7 +1852,7 @@ fn remote_pane_layout(fixture: &FixtureConfig, label: &str) -> Vec<RemotePaneLay
         .filter(|line| !line.is_empty())
         .map(|line| {
             let fields = String::from_utf8_lossy(line)
-                .split('\t')
+                .split(',')
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
             assert_eq!(fields.len(), 6, "{label}: numeric pane layout field count");
