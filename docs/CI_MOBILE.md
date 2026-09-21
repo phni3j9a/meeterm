@@ -23,8 +23,8 @@ builds and runtime verification run on the sessions below.
 
 | Session | Platform | Purpose |
 | --- | --- | --- |
-| [`5e8046edf5d94fb2879c6eabe77219c0`](https://app.devin.ai/sessions/5e8046edf5d94fb2879c6eabe77219c0) | Devin Cloud macOS (Apple Silicon) | iOS Simulator suites: `standard`, `ssh`, `polish`, `polish-navigation`, `native`, `forms`, `names`, optional `full` |
-| [`deebac872b114a9f89daaaa0cfd73f2d`](https://app.devin.ai/sessions/deebac872b114a9f89daaaa0cfd73f2d) | Devin Cloud Linux (KVM) | Android build, emulator smoke, screen fixtures, real SSH/tmux smoke |
+| [`7a32a4e6ed984961b5194e22feeba407`](https://app.devin.ai/sessions/7a32a4e6ed984961b5194e22feeba407) | Devin Cloud macOS (Apple Silicon) | iOS Simulator suites: `standard`, `ssh`, `polish`, `polish-navigation`, `native`, `forms`, `names`, optional `full` |
+| [`9429c00e8cc14fb2b140b3e23bb28ec1`](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) | Devin Cloud Linux (KVM) | Android build, emulator smoke, screen fixtures, real SSH/tmux smoke |
 
 How a run works:
 
