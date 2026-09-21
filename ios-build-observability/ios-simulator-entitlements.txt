@@ -1,0 +1,3 @@
+target=app section=__entitlements present=1
+target=app section=__ents_der present=1
+result=passed

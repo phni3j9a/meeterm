@@ -1,0 +1,15 @@
+runner=devin-cloud-macos
+os=macOS
+arch=arm64
+commit=8c5f511d118d73ef3e95d60b259b109a49e60448
+test_scope=standard
+build_mode=fresh-cng
+bootstatus_timeout_seconds=900
+simulator_udid=1308A109-3EE0-4711-9287-85246639DBC7
+simulator_name=iPhone 18 Pro
+layout_profile=default
+renderer_backend=metal
+xcode_developer_dir=/Applications/Xcode.app/Contents/Developer
+simulator_udid=1308A109-3EE0-4711-9287-85246639DBC7
+simulator_name=iPhone 18 Pro
+raw_crash_reports=omitted

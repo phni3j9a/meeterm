@@ -1,0 +1,1 @@
+suite=ssh; safe post-auth checkpoint screenshots are optional for the short SSH smoke

@@ -1,0 +1,3 @@
+app_provider=single
+storage_sources=isolated
+storage_direct_native_link=absent
