@@ -387,3 +387,68 @@ Android full、iOS standard、iOS ssh、両 platform screenshot の download/vie
 exact candidate commit で未実施であり、Issue #26 の mobile acceptance をこの記録だけで
 完了とは扱わない。#30 の local code/test criteria は実装済みだが、remote fixture と mobile
 machine-gated evidence が残っている。
+
+## Main 検証 — candidate `8c5f511d118d73ef3e95d60b259b109a49e60448` (2026-09-21)
+
+W1 の sandbox 制約で未実行だった fixture・モバイル検証を Main 環境で完了した。
+
+### ローカル / fixture
+
+- `cargo fmt --check` / `cargo clippy --locked --all-targets -- -D warnings`: clean
+- `cargo test --locked`: 166 passed / 0 failed
+- `npm run typecheck` / `npm run test:app`: pass / 59 件 pass
+- `scripts/ssh/fixture.py` 経由の ignored OpenSSH:
+  `real_openssh_tmux_session_loop`（zoom 切替列・disconnect・recovery・2度目の
+  disconnect、saved-layout shape と zoom flag の全 checkpoint 一致）と
+  `real_openssh_existing_tmux_runtime_selection` が pass。
+- password 認証の ignored test `real_openssh_password_auth_reconnect_and_host_key_gate`:
+  disposable Docker fixture に fixture ユーザーの tmux server が居なかったため
+  `tmux_discovery_malformed`（Empty 期待）で初回失敗。fixture 側で `tmux -D`
+  を起動して verified empty にすると pass。製品・parser の変更なし。
+- Herdr: 公式 v0.9.0 binary（sha256 `4fa1a011…b71f` 検証済み）で
+  `real_herdr_native_backend_over_russh_fixture` pass（21.83s）。
+
+### モバイル（Devin Cloud 常駐セッション、両方 `git reset --hard 8c5f511`）
+
+- **Android full** — session `9429c00e8cc14fb2b140b3e23bb28ec1`。
+  fresh CNG + `assembleRelease`（4m18s）→ foundation gates → 29 route fixture
+  （`empty` のみ従来どおり unavailable、観測用途）→ 実 OpenSSH/tmux smoke
+  ~22 分 pass。credential 入力・host fingerprint 確認・picker・接続・profile CRUD・
+  healthy foreground 復帰・transport loss（cached read-only、`native_handle_same`、
+  `pane_identity_same`、pre/post marker 各 1 回、loss 中の入力なし）・
+  process restart credential restore・workspace/pane 操作・CJK atlas・
+  native selection/copy・workspace switch・handoff→**disconnect #1**
+  （split shape 保持 + zoom 残存なし）→ manual reconnect（同 pane・同 PID）→
+  **disconnect #2 `disconnect_after_resume`（同 assertion）— PASS**。
+  旧 run `2c99368` で失敗した `pane_split_changed` 経路が今回は両 disconnect で緑。
+  toolchain 差分: node v24.19.0 / npm 10.8.3（blueprint pin 22.22.2/10.9.7、
+  session の `/opt/.devin/envrc` PATH 由来。gate は全て pass）。
+- **iOS `standard`** — session `7a32a4e6ed984961b5194e22feeba407`。
+  fresh CNG `build-for-testing`（ARCHS=arm64）→ storage 4 case + input/
+  recovery-bridge 12 case + 22 route manifest + fresh foundation
+  `NATIVE_READY`/`FIRST_FRAME_METAL` no-crash → pass（UI 807.7s + storage 30.3s）。
+- **iOS `ssh`** — 同一 commit 成果物を manifest/Xcode 一致確認のうえ再利用
+  （fresh build 主張なし）。fixture preflight → 実 host-key 信頼 → discovery+
+  明示選択 → healthy background/foreground → fixture 所有の sshd stop/start で
+  transport loss → 保持 read-only 画面・`native_handle_same`・
+  `selected_pane_identifier_same`・post-loss marker 単一到達 → 明示 disconnect →
+  pass（776.1s）。**`layout_restore_unconfirmed` は発火せず、disconnect の
+  cleanup は verified 完了。**
+- evidence branch: `evidence/android-20260921` @ `de9002e8`（57 ファイル）、
+  `evidence/ios-20260921` @ `6f9bc96`。
+- Main が両 platform の最終画像を実見: Android `ssh-terminal.png`
+  （Connected・pane tab・ANSI marker・日本語表示）、`ssh-handoff.png`
+  （`tmux attach -t meeterm` カード）、`terminal.png`（foundation ANSI/CJK/
+  combining/emoji）。iOS `ssh-terminal-input.png`（実 marker コマンド表示）、
+  `ssh-disconnected.png`（保持 read-only 画面 + Reconnect/Connection details）、
+  `standard-terminal.png`（Metal foundation、CJK/emoji 正常）。
+
+### 残る限界
+
+- 実機未検証: 機内モード、Wi-Fi/モバイル切替、アプリ復帰、日本語 IME、実機 GPU。
+  Simulator/エミュレータ結果を実機 acceptance としては扱わない。
+- Android session は blueprint pin ではない Node で実行（全 gate pass、記録済み）。
+- iOS session は session 側環境修正（rustup proxy、LANG、runtime match、python3
+  shim、npm 10.9.8）を記録済み。製品ソースへの影響なし。
+- process kill / OS 強制終了後の完全復元、任意パケットロス、長時間運用は
+  範囲外（従来どおり）。
