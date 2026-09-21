@@ -33,12 +33,21 @@ How a run works:
    `normal/fast/lite/ultra/fusion`); web-created SWE-2 sessions report
    `devin_mode: null`. Session creation is therefore a one-time manual step per
    platform; everything after that is API-driven.
-   The repository's `.devin/blueprint.yaml` (snapshot builds
-   `sbj-*`) preinstalls the toolchain on both `linux` and `macos` — Node 22.22.2,
-   Rust 1.96.0 + platform targets, Android SDK/NDK, cargo-ndk, the Maven mirror
-   init script, and brew tmux/cocoapods — so a fresh session starts nearly warm
-   and can be recreated whenever context or VM drift accumulates. After creating
-   a replacement session, update the ID in the table above.
+   The repository's `.devin/blueprint.yaml` is a multi-document blueprint
+   (`runs-on: linux` / `runs-on: macos`). On this org, snapshot builds
+   (`sbj-*`) currently produce a **Linux snapshot only** — the `macos` label
+   requires a machine configuration that is not registered on the account, so
+   that document is silently skipped during builds.
+   - **Linux sessions boot warm**: Node 22.22.2 (nvm), Rust 1.96.0 + Android
+     targets, Android SDK/NDK 27.1.12297006, cargo-ndk 4.1.2, and the Maven
+     mirror init script are preinstalled.
+   - **macOS sessions start from the base image** (Xcode, iOS Simulators,
+     Homebrew, brew-managed rustup with 1.96.0 + iOS targets, Node). They need
+     a one-time bootstrap message that creates the `~/.cargo/bin` rustup
+     proxies and runs `brew install tmux cocoapods node@22`; the macOS
+     blueprint document holds the canonical commands if `runs-on: macos`
+     builds ever become available.
+   After creating a replacement session, update the ID in the table above.
 2. The driver (Main) sends a validation prompt through the Sessions API
    (`POST /v3/organizations/{org}/sessions/{id}/messages`), then polls session
    status. Sessions sleep while idle and wake on the message; idle time does
@@ -54,8 +63,10 @@ How a run works:
 Persistent VMs keep the installed toolchain, so runs after the first skip
 setup. Every run still starts with `git fetch` and `git reset --hard <SHA>` on
 the exact candidate commit and regenerates CNG output; persistent state is
-cache, never source of truth. If a VM drifts, recreate the session from the
-saved blueprint or rerun the setup section of the runbook.
+cache, never source of truth. If a VM drifts, recreate the session — Linux
+sessions re-warm automatically from `.devin/blueprint.yaml`; macOS sessions
+need the one-time bootstrap message again (or a saved-snapshot blueprint
+created from a warmed macOS session in the web UI).
 
 ## Source of truth and CNG
 
@@ -335,6 +346,24 @@ There is no screenshot-existence or pixel-difference machine gate at this stage.
   swiftshader_indirect`; screenshots come from `adb exec-out screencap`, so no
   visible window appears on the session desktop. The iOS Simulator.app shows a
   window — that difference is expected.
+- **macOS session bootstrap** (run once per new macOS session until
+  `runs-on: macos` snapshot builds are available): the image ships brew-managed
+  rustup but no `~/.cargo/bin` proxies, so `rustc`/`cargo` do not resolve.
+  Link proxies to the real binary — `/opt/homebrew/bin/rustup` is a brew
+  wrapper that drops argv[0], so symlinks to it do not dispatch.
+  ```bash
+  mkdir -p ~/.cargo/bin
+  RUSTUP_BIN="$(brew --prefix rustup)/libexec/bin/rustup"
+  for t in cargo rustc rustdoc rustfmt cargo-clippy clippy-driver cargo-fmt; do
+    ln -sf "$RUSTUP_BIN" "$HOME/.cargo/bin/$t"
+  done
+  export PATH="$HOME/.cargo/bin:$PATH"
+  rustup default 1.96.0
+  rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+  HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux cocoapods node@22
+  brew link --overwrite node@22 || true
+  echo 'export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:$PATH"' >> ~/.zprofile
+  ```
 
 ## iOS signing boundary
 
