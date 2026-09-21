@@ -1,0 +1,42 @@
+run_record:
+  source_sha=8c5f511d118d73ef3e95d60b259b109a49e60448
+  source_branch=fix/issue-30-zoom-cleanup
+  suite=android-full (foundation gates + screen fixtures + real disposable OpenSSH/tmux smoke)
+  build_mode=fresh (git reset --hard <sha>, npm ci, expo prebuild, assembleRelease — not a same-commit reuse)
+  result=passed
+
+toolchain:
+  node=v24.19.0 (deviation: blueprint/retired-CI pin is 22.22.2 — installed via nvm but the live PATH resolved v24.19.0)
+  npm=10.8.3 (deviation: retired-CI pinned 10.9.7)
+  rustc=1.96.0 (rust-toolchain.toml pin; RUSTUP_TOOLCHAIN=1.96.0 for the build)
+  cargo_ndk=4.1.2
+  ndk=27.1.12297006
+  android_platform=android-36
+  build_tools=36.0.0 (35.0.0 also installed)
+  cmake=3.22.1
+  gradle=9.3.1 (wrapper)
+  jdk=openjdk 17.0.19
+  emulator=37.1.11.0
+  adb=1.0.41
+  avd=meeterm_api36 (pixel_7 profile, system-images;android-36;google_apis;x86_64, cores=4, memory=4096, -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none)
+
+stage_timings_utc (approximate; artifact mtimes and tool-reported):
+  npm_ci=~90s
+  expo_prebuild=<30s
+  gradle_assembleRelease=4m18s (BUILD SUCCESSFUL, 668 tasks)
+  emulator_boot_to_sys_boot_completed=~28s
+  android_smoke_sh=~34s (launch.txt 14:47:22 -> terminal.png 14:47:56) result: passed
+  android_screen_fixtures=~2m (14:47:56 -> 14:50:00) result: 28/29 captured, empty=unavailable:missing_screen_element_0,screen_element_1 (observational)
+  fixture_py_android_smoke_py=~22m (-> ssh-validation.txt 15:12:08) result: passed, final stage=disconnect_after_resume, reason=ok
+  total_wall_clock=~33m
+
+cleanup_outcome:
+  fixture_tmpdirs=removed
+  fixture_sshd=none_remaining
+  fixture_tmux_server=none_remaining
+  app_process=stopped (force-stop by smoke)
+  emulator=left running on emulator-5554 for this persistent session
+
+notes:
+  - Previous run on evidence/android-20260920 (commit 2c99368) failed at stage=disconnect reason=pane_split_changed; this candidate run completes both explicit disconnects with the split shape and no-mobile-zoom assertions passing.
+  - app-release.apk excluded from this bundle by default policy (request explicit upload if an evaluation APK is needed).
