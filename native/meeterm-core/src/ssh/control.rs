@@ -2071,7 +2071,23 @@ impl ControlClient {
             self.staged_native.clear();
             return Ok(());
         }
-        self.commit_topology(&mapping, &windows, &panes, &flat, selected, expected_epoch)?;
+        // The first non-strict synchronization carries the topology read
+        // from before `select_with_observation` applied the initial zoom.
+        // Preserve the ownership just published by that selection; the dirty
+        // follow-up synchronization is the first authoritative post-mutation
+        // readback and will validate the zoomed window normally.
+        if initial {
+            self.commit_initial_topology(
+                &mapping,
+                &windows,
+                &panes,
+                &flat,
+                selected,
+                expected_epoch,
+            )?;
+        } else {
+            self.commit_topology(&mapping, &windows, &panes, &flat, selected, expected_epoch)?;
+        }
         for pane in &stale {
             if let Some(task) = self.routes.remove(pane) {
                 task.abort();
@@ -2133,6 +2149,29 @@ impl ControlClient {
         apply_topology_state(&mut state, mapping, windows, panes, flat, selected);
         Ok(())
     }
+
+    fn commit_initial_topology(
+        &self,
+        mapping: &HashMap<u64, u64>,
+        windows: &[tmux::WindowInfo],
+        panes: &[tmux::PaneInfo],
+        flat: &[PaneSnapshot],
+        selected: u64,
+        expected_epoch: u64,
+    ) -> Result<(), FlowFailure> {
+        let mut state = self.shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if self.shared.is_cancelled()
+            || state.generation != self.shared.generation
+            || state.operation_epoch != expected_epoch
+        {
+            return Err(FlowFailure::Stale);
+        }
+        // The initial snapshot was read before the selection/zoom mutation.
+        // Do not validate ownership against that pre-mutation state; the
+        // subsequent dirty synchronization performs the authoritative check.
+        apply_committed_topology(&mut state, mapping, windows, panes, flat, selected, true);
+        Ok(())
+    }
 }
 
 fn parse_cleanup_panes(blocks: &[tmux::CommandBlock]) -> Result<Vec<tmux::PaneInfo>, FlowFailure> {
@@ -2141,6 +2180,22 @@ fn parse_cleanup_panes(blocks: &[tmux::CommandBlock]) -> Result<Vec<tmux::PaneIn
         .flat_map(|block| block.lines.iter())
         .map(|line| tmux::parse_pane_line(line).map_err(|_| FlowFailure::TmuxProtocol))
         .collect()
+}
+
+fn apply_committed_topology(
+    state: &mut SessionState,
+    mapping: &HashMap<u64, u64>,
+    windows: &[tmux::WindowInfo],
+    panes: &[tmux::PaneInfo],
+    flat: &[PaneSnapshot],
+    selected: u64,
+    preserve_zoom_ownership: bool,
+) {
+    if preserve_zoom_ownership {
+        apply_topology_snapshot(state, mapping, windows, panes, flat, selected);
+    } else {
+        apply_topology_state(state, mapping, windows, panes, flat, selected);
+    }
 }
 
 fn apply_topology_state(
@@ -2426,6 +2481,70 @@ mod tests {
         let mut state = SessionState::default();
         publish_selection_state(&mut state, 1, 17, true);
         assert!(!state.meeterm_zoomed);
+        assert_eq!(state.meeterm_zoomed_pane, None);
+    }
+
+    #[test]
+    fn initial_selection_commit_defers_zoom_ownership_validation() {
+        let initial_readback = pane(17, true, true);
+        let flat = PaneSnapshot {
+            window_id: initial_readback.window_id,
+            pane_id: initial_readback.pane_id,
+            terminal_id: 99,
+            window_name: "window".to_owned(),
+            active: initial_readback.active,
+            selected: true,
+            index: initial_readback.index,
+            columns: initial_readback.columns,
+            rows: initial_readback.rows,
+            pane_name: initial_readback.pane_name.clone(),
+            title: initial_readback.title.clone(),
+        };
+        let mut mapping = HashMap::new();
+        mapping.insert(initial_readback.pane_id, flat.terminal_id);
+        let windows = [tmux::WindowInfo {
+            window_id: initial_readback.window_id,
+            name: "window".to_owned(),
+        }];
+        let mut state = SessionState {
+            meeterm_zoomed: true,
+            meeterm_zoomed_window: Some(initial_readback.window_id),
+            meeterm_zoomed_pane: Some(initial_readback.pane_id),
+            ..SessionState::default()
+        };
+
+        // This is the topology read taken before the initial selection's
+        // remote zoom mutation. It must not erase the ownership published by
+        // that mutation before the dirty post-selection readback arrives.
+        apply_committed_topology(
+            &mut state,
+            &mapping,
+            &windows,
+            std::slice::from_ref(&initial_readback),
+            std::slice::from_ref(&flat),
+            initial_readback.pane_id,
+            true,
+        );
+        assert!(state.meeterm_zoomed);
+        assert_eq!(
+            state.meeterm_zoomed_window,
+            Some(initial_readback.window_id)
+        );
+        assert_eq!(state.meeterm_zoomed_pane, Some(initial_readback.pane_id));
+
+        // A later authoritative readback still performs the normal ownership
+        // validation and drops the owner if the remote zoom did not stick.
+        apply_committed_topology(
+            &mut state,
+            &mapping,
+            &windows,
+            std::slice::from_ref(&initial_readback),
+            std::slice::from_ref(&flat),
+            initial_readback.pane_id,
+            false,
+        );
+        assert!(!state.meeterm_zoomed);
+        assert_eq!(state.meeterm_zoomed_window, None);
         assert_eq!(state.meeterm_zoomed_pane, None);
     }
 
