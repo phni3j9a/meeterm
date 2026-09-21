@@ -391,6 +391,13 @@ enum StoredCredentials {
     Password { password: Arc<Zeroizing<String>> },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZoomCleanupOutcome {
+    NotNeeded,
+    RestoredConfirmed,
+    UnconfirmedOrFailed,
+}
+
 /// Durable in-process metadata associated with one owner terminal.  The
 /// actual durable workspace remains tmux; this map only retains native IDs so
 /// reconnecting the same owner can bind the same pane IDs back to the same
@@ -407,6 +414,10 @@ struct SessionState {
     /// True only when meeterm has zoomed the current window.  A desktop user's
     /// pre-existing zoom is observed but never claimed for cleanup.
     meeterm_zoomed: bool,
+    /// Ownership belongs to a tmux window, not to one transient pane target.
+    /// The pane ID is retained as the preferred cleanup target while the
+    /// window identity keeps ownership through pane switches/removal.
+    meeterm_zoomed_window: Option<u64>,
     meeterm_zoomed_pane: Option<u64>,
     foreground: bool,
     automatic_reconnect: bool,
@@ -450,6 +461,7 @@ impl Default for SessionState {
             profile: None,
             selected_pane: None,
             meeterm_zoomed: false,
+            meeterm_zoomed_window: None,
             meeterm_zoomed_pane: None,
             foreground: true,
             automatic_reconnect: true,
@@ -630,6 +642,12 @@ struct ConnectionShared {
     /// command receiver; this guard closes the small race between two callers
     /// pressing Retry after that actor has finished.
     recovery_starting: AtomicBool,
+    /// Explicit zoom/hook cleanup is reported through the existing connection
+    /// error boundary, so the fixed C snapshot ABI remains unchanged.
+    zoom_cleanup_outcome: Mutex<ZoomCleanupOutcome>,
+    /// Actor-private intent is published before the Control Mode writer await
+    /// and lets a forced shutdown report an unconfirmed mutation in flight.
+    zoom_cleanup_pending: AtomicBool,
 }
 
 impl ConnectionShared {
@@ -666,6 +684,8 @@ impl ConnectionShared {
             ready_once: AtomicBool::new(false),
             ready_epoch: AtomicU64::new(0),
             recovery_starting: AtomicBool::new(false),
+            zoom_cleanup_outcome: Mutex::new(ZoomCleanupOutcome::NotNeeded),
+            zoom_cleanup_pending: AtomicBool::new(false),
         }
     }
 
@@ -755,7 +775,56 @@ impl ConnectionShared {
             && state.generation == self.generation
         {
             state.meeterm_zoomed = false;
+            state.meeterm_zoomed_window = None;
             state.meeterm_zoomed_pane = None;
+        }
+        self.zoom_cleanup_pending.store(false, Ordering::Release);
+    }
+
+    fn mark_zoom_cleanup_pending(&self) {
+        self.zoom_cleanup_pending.store(true, Ordering::Release);
+    }
+
+    fn clear_zoom_cleanup_pending(&self) {
+        self.zoom_cleanup_pending.store(false, Ordering::Release);
+    }
+
+    fn has_zoom_cleanup_intent(&self) -> bool {
+        self.zoom_cleanup_pending.load(Ordering::Acquire)
+            || self
+                .session
+                .lock()
+                .map(|state| state.generation == self.generation && state.meeterm_zoomed)
+                .unwrap_or(true)
+    }
+
+    fn record_zoom_cleanup(&self, outcome: ZoomCleanupOutcome) {
+        if let Ok(mut current) = self.zoom_cleanup_outcome.lock() {
+            *current = match (*current, outcome) {
+                (ZoomCleanupOutcome::UnconfirmedOrFailed, _)
+                | (_, ZoomCleanupOutcome::UnconfirmedOrFailed) => {
+                    ZoomCleanupOutcome::UnconfirmedOrFailed
+                }
+                (ZoomCleanupOutcome::RestoredConfirmed, _)
+                | (_, ZoomCleanupOutcome::RestoredConfirmed) => {
+                    ZoomCleanupOutcome::RestoredConfirmed
+                }
+                _ => ZoomCleanupOutcome::NotNeeded,
+            };
+        }
+    }
+
+    fn zoom_cleanup_outcome(&self) -> ZoomCleanupOutcome {
+        self.zoom_cleanup_outcome
+            .lock()
+            .map(|outcome| *outcome)
+            .unwrap_or(ZoomCleanupOutcome::UnconfirmedOrFailed)
+    }
+
+    fn publish_layout_restore_warning(&self) {
+        if let Ok(mut info) = self.info.lock() {
+            info.error_code = "layout_restore_unconfirmed".to_owned();
+            info.error_message = recovery_reason_message("layout_restore_unconfirmed");
         }
     }
 
@@ -1488,21 +1557,29 @@ impl ConnectionShared {
 
     fn finish(&self, result: Result<(), FlowFailure>) {
         if let Ok(mut info) = self.info.lock() {
+            if info.finished {
+                return;
+            }
             // Completion and cancellation commit under the same lock. A late
             // disconnect must not leave a finished actor permanently Closing.
             info.finished = true;
-            match result {
-                _ if self.is_cancelled() || self.explicit_cleanup_requested() => {
+            match (self.zoom_cleanup_outcome(), result) {
+                (ZoomCleanupOutcome::UnconfirmedOrFailed, _) => {
+                    info.state = ConnectionState::Disconnected;
+                    info.error_code = "layout_restore_unconfirmed".to_owned();
+                    info.error_message = recovery_reason_message("layout_restore_unconfirmed");
+                }
+                (_, _) if self.is_cancelled() || self.explicit_cleanup_requested() => {
                     info.state = ConnectionState::Disconnected
                 }
-                Ok(()) => info.state = ConnectionState::Disconnected,
-                Err(failure) if info.state != ConnectionState::Failed => {
+                (_, Ok(())) => info.state = ConnectionState::Disconnected,
+                (_, Err(failure)) if info.state != ConnectionState::Failed => {
                     let (code, message) = failure.details();
                     info.state = ConnectionState::Failed;
                     info.error_code = code.to_owned();
                     info.error_message = message.to_owned();
                 }
-                Err(_) => {}
+                (_, Err(_)) => {}
             }
             if !self.is_cancelled()
                 && !self.explicit_cleanup_requested()
@@ -2470,6 +2547,7 @@ fn prepare_session_endpoint(
     state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
+    state.meeterm_zoomed_window = None;
     state.meeterm_zoomed_pane = None;
     Ok(stale_terminals)
 }
@@ -2492,6 +2570,7 @@ fn prepare_host_endpoint(
     state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
+    state.meeterm_zoomed_window = None;
     state.meeterm_zoomed_pane = None;
     state.runtime_candidates.clear();
     state.runtime_discovery = RuntimeDiscoverySnapshot::default();
@@ -2537,6 +2616,7 @@ fn prepare_manual_reconnect(
     state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
+    state.meeterm_zoomed_window = None;
     state.meeterm_zoomed_pane = None;
     state.operation_epoch = next_operation_epoch(state.operation_epoch);
     state.recovery = RecoverySnapshot::default();
@@ -2638,17 +2718,32 @@ fn wait_for_generation_finish_with_timeout(
 /// Finish the ordered explicit shutdown when possible, otherwise revoke the
 /// remaining transport and abort the actor. Keeping this fallback in one
 /// helper makes Disconnect and runtime replacement share the same bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExplicitShutdownResult {
+    finished: bool,
+    cleanup: ZoomCleanupOutcome,
+}
+
 fn finish_or_force_explicit_shutdown(
     runtime: &'static Runtime,
     shared: Arc<ConnectionShared>,
     abort: tokio::task::AbortHandle,
-) -> bool {
+) -> ExplicitShutdownResult {
     let finished = wait_for_generation_finish(runtime, Arc::clone(&shared));
     if !finished {
+        if shared.has_zoom_cleanup_intent() {
+            shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        }
         shared.cancel();
         abort.abort();
+        // The actor may have been aborted before it could publish finish;
+        // make the local lifecycle terminal and preserve the cleanup result.
+        shared.finish(Err(FlowFailure::Stale));
     }
-    finished
+    ExplicitShutdownResult {
+        finished,
+        cleanup: shared.zoom_cleanup_outcome(),
+    }
 }
 
 #[cfg(test)]
@@ -2657,13 +2752,20 @@ fn finish_or_force_explicit_shutdown_with_timeout(
     shared: Arc<ConnectionShared>,
     abort: tokio::task::AbortHandle,
     timeout: Duration,
-) -> bool {
+) -> ExplicitShutdownResult {
     let finished = wait_for_generation_finish_with_timeout(runtime, Arc::clone(&shared), timeout);
     if !finished {
+        if shared.has_zoom_cleanup_intent() {
+            shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        }
         shared.cancel();
         abort.abort();
+        shared.finish(Err(FlowFailure::Stale));
     }
-    finished
+    ExplicitShutdownResult {
+        finished,
+        cleanup: shared.zoom_cleanup_outcome(),
+    }
 }
 
 fn destroy_stale_terminals(generation: u64, terminals: impl IntoIterator<Item = TerminalId>) {
@@ -2710,13 +2812,19 @@ fn start_connection(
             .map_err(|_| ConnectionError::Internal)?
             .remove(&terminal_id)
     };
+    let mut inherited_cleanup_warning = false;
     if let Some(old) = old {
+        let old_shared = Arc::clone(&old.shared);
         old.shared.invalidate_explicitly("runtime_replaced");
         // A controller/transport that never acknowledges the explicit
         // cleanup cannot safely retain the old generation. The shared helper
         // forces both cancellation and task abort before the new generation
         // is allowed to touch SessionState.
-        let _ = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
+        let shutdown = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
+        if shutdown.cleanup == ZoomCleanupOutcome::UnconfirmedOrFailed {
+            inherited_cleanup_warning = true;
+            old_shared.publish_layout_restore_warning();
+        }
     }
 
     if !owner.install_allowed(ticket) {
@@ -2760,6 +2868,11 @@ fn start_connection(
         port,
         known_hosts_path.to_owned(),
     ));
+    if inherited_cleanup_warning {
+        // Runtime replacement must not erase the old operation's cleanup
+        // warning before the app has had a chance to display it.
+        shared.publish_layout_restore_warning();
+    }
     if reconnecting {
         // `ready_once` belongs to the actor, while the retained topology and
         // recovery phase belong to SessionState.  A replacement actor must
@@ -2778,6 +2891,7 @@ fn start_connection(
         state.generation = generation;
         if !reconnecting {
             state.meeterm_zoomed = false;
+            state.meeterm_zoomed_window = None;
             state.meeterm_zoomed_pane = None;
         }
         // Candidate IDs are scoped to the connection generation. A reconnect
@@ -2866,13 +2980,20 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
     // pending forever.
     match runtime() {
         Ok(runtime) => {
-            let _ = finish_or_force_explicit_shutdown(runtime, shared, abort);
+            let shutdown = finish_or_force_explicit_shutdown(runtime, Arc::clone(&shared), abort);
+            if shutdown.cleanup == ZoomCleanupOutcome::UnconfirmedOrFailed {
+                shared.publish_layout_restore_warning();
+            }
         }
         Err(_) => {
             // An active connection implies the native runtime exists, but a
             // poisoned/unavailable runtime must still fail closed.
+            if shared.has_zoom_cleanup_intent() {
+                shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+            }
             shared.cancel();
             abort.abort();
+            shared.finish(Err(FlowFailure::Stale));
         }
     }
     Ok(())
@@ -3409,6 +3530,10 @@ fn recovery_reason_message(reason: &str) -> String {
         "controller_conflict" => "Another controller owns the selected Herdr terminal.".to_owned(),
         "explicit_disconnect" => "The connection was disconnected.".to_owned(),
         "runtime_changed" => "The runtime selection is being changed.".to_owned(),
+        "layout_restore_unconfirmed" => {
+            "The connection closed, but the desktop layout could not be confirmed as restored."
+                .to_owned()
+        }
         "retry_exhausted" => {
             "Automatic recovery stopped; retry or choose another runtime.".to_owned()
         }
@@ -4534,6 +4659,7 @@ fn clear_runtime_binding(shared: &ConnectionShared) -> Result<(), FlowFailure> {
         state.herdr = herdr_control::Metadata::default();
         state.selected_pane = None;
         state.meeterm_zoomed = false;
+        state.meeterm_zoomed_window = None;
         state.meeterm_zoomed_pane = None;
         state.operation_epoch = next_operation_epoch(state.operation_epoch);
         state.recovery = RecoverySnapshot::default();
@@ -6185,13 +6311,83 @@ mod tests {
         // Zero is a deterministic test bound for the same helper used by the
         // production three-second fallback. A non-finishing actor is hard
         // cancelled and aborted rather than leaving Disconnect blocked.
-        assert!(!finish_or_force_explicit_shutdown_with_timeout(
+        assert!(
+            !finish_or_force_explicit_shutdown_with_timeout(
+                runtime,
+                Arc::clone(&shared),
+                abort,
+                Duration::ZERO,
+            )
+            .finished
+        );
+        assert!(shared.is_cancelled());
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn unconfirmed_zoom_cleanup_is_visible_after_forced_disconnect() {
+        let owner = registry::create_terminal(80, 24).expect("unconfirmed cleanup terminal");
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            next_generation(),
+            "unconfirmed-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/unconfirmed-cleanup-known-hosts"),
+        ));
+        {
+            let mut state = shared.session.lock().expect("unconfirmed cleanup session");
+            state.generation = shared.generation;
+            state.meeterm_zoomed = true;
+            state.meeterm_zoomed_window = Some(1);
+            state.meeterm_zoomed_pane = Some(17);
+        }
+        shared.invalidate_explicitly("explicit_disconnect");
+        let runtime = runtime().expect("native runtime");
+        let abort = runtime.spawn(std::future::pending::<()>()).abort_handle();
+
+        let result = finish_or_force_explicit_shutdown_with_timeout(
             runtime,
             Arc::clone(&shared),
             abort,
             Duration::ZERO,
-        ));
-        assert!(shared.is_cancelled());
+        );
+        assert!(!result.finished);
+        assert_eq!(result.cleanup, ZoomCleanupOutcome::UnconfirmedOrFailed);
+        let snapshot = shared.snapshot().expect("unconfirmed cleanup snapshot");
+        assert_eq!(snapshot.state, ConnectionState::Disconnected as u32);
+        assert_eq!(
+            std::str::from_utf8(&snapshot.error_code[..usize::from(snapshot.error_code_len)])
+                .expect("cleanup error code UTF-8"),
+            "layout_restore_unconfirmed"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn cleanup_outcome_is_sticky_across_late_success_reports() {
+        let owner = registry::create_terminal(80, 24).expect("cleanup outcome terminal");
+        let shared = ConnectionShared::new(
+            owner,
+            next_generation(),
+            "cleanup-outcome.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/cleanup-outcome-known-hosts"),
+        );
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::RestoredConfirmed);
+        assert_eq!(
+            shared.zoom_cleanup_outcome(),
+            ZoomCleanupOutcome::RestoredConfirmed
+        );
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        assert_eq!(
+            shared.zoom_cleanup_outcome(),
+            ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::RestoredConfirmed);
+        assert_eq!(
+            shared.zoom_cleanup_outcome(),
+            ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
         registry::destroy_terminal(owner);
     }
 

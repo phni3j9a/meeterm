@@ -90,6 +90,16 @@ struct DecodedCell {
     combining: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemotePaneLayout {
+    window_id: u64,
+    pane_id: u64,
+    index: u32,
+    columns: u16,
+    rows: u16,
+    zoomed: bool,
+}
+
 #[test]
 #[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
 fn real_openssh_existing_tmux_runtime_selection() {
@@ -568,28 +578,38 @@ fn real_openssh_tmux_session_loop() {
                 .any(|cell| cell.row == 9 && cell.column == columns - 1 && cell.base == "D")
     });
 
-    // A graceful disconnect must clean up zoom state as well.  The remote
-    // session and pane identities remain available for a later desktop handoff.
-    select_pane(id, reconnected_side.pane_id).expect("reselect side pane");
-    wait_for_remote_tmux(
-        &fixture,
-        &format!(
-            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
-            reconnected_side.window_id
-        ),
-        "zoom before graceful disconnect",
-        |output| output.trim() == "1",
+    // A graceful disconnect must clean up zoom state as well. Exercise the
+    // issue #30 sequence with numeric identities and a normalized split shape:
+    // same-window pane switch -> another window -> back, then compare the
+    // authoritative remote layout after shutdown.
+    let reconnected_main = wait_for_pane_handle(id, main.pane_id, "refresh main after recovery");
+    let reconnected_side_active = wait_for_pane_handle(
+        id,
+        side_active.pane_id,
+        "refresh side active after recovery",
     );
+    let baseline_layout = remote_pane_layout(&fixture, "zoom sequence baseline");
+    let baseline_identity = layout_identity(&baseline_layout);
+    let baseline_shape = normalized_split_shape(&baseline_layout);
+    let before_disconnect = exercise_zoom_switch_sequence(
+        id,
+        &fixture,
+        &reconnected_main,
+        &reconnected_side,
+        &reconnected_side_active,
+        "first zoom switch sequence",
+    );
+    assert_eq!(layout_identity(&before_disconnect), baseline_identity);
+    assert_eq!(normalized_split_shape(&before_disconnect), baseline_shape);
     disconnect_terminal(id).expect("graceful native disconnect");
     wait_for_state(id, ConnectionState::Disconnected, "graceful disconnect");
-    wait_for_remote_tmux(
-        &fixture,
-        &format!(
-            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
-            reconnected_side.window_id
-        ),
-        "zoom cleanup after graceful disconnect",
-        |output| output.trim() == "0",
+    let after_disconnect = remote_pane_layout(&fixture, "zoom cleanup after graceful disconnect");
+    assert_eq!(layout_identity(&after_disconnect), baseline_identity);
+    assert_eq!(normalized_split_shape(&after_disconnect), baseline_shape);
+    assert!(
+        zoom_flags(&after_disconnect)
+            .iter()
+            .all(|(_, zoomed)| !zoomed)
     );
     assert!(send_bytes(reconnected_side.terminal_id, b"input after disconnect").is_err());
 
@@ -604,6 +624,79 @@ fn real_openssh_tmux_session_loop() {
     assert!(
         !hooks.contains("[1000]"),
         "only meeterm's hook slots should be removed"
+    );
+
+    // Repeat the same ownership path after same-process transport recovery.
+    // The recovery hook may restore the ordinary layout during the loss, but
+    // the recovered actor must re-establish ownership only for the selected
+    // window before the final explicit Disconnect.
+    reconnect_and_select_meeterm(
+        id,
+        &fixture.fingerprint,
+        "recover for zoom cleanup sequence",
+    );
+    let recovery_main = wait_for_pane_handle(id, main.pane_id, "refresh main before recovery path");
+    let recovery_side = wait_for_pane_handle(id, side.pane_id, "refresh side before recovery path");
+    let recovery_side_active = wait_for_pane_handle(
+        id,
+        side_active.pane_id,
+        "refresh side active before recovery path",
+    );
+    let recovery_baseline = remote_pane_layout(&fixture, "recovery zoom baseline");
+    let recovery_identity = layout_identity(&recovery_baseline);
+    let recovery_shape = normalized_split_shape(&recovery_baseline);
+    let selected_before_loss = exercise_zoom_switch_sequence(
+        id,
+        &fixture,
+        &recovery_main,
+        &recovery_side,
+        &recovery_side_active,
+        "recovery zoom switch before transport loss",
+    );
+    assert_eq!(layout_identity(&selected_before_loss), recovery_identity);
+    detach_control_mode_client(&fixture);
+    wait_for_reconnecting(id, "zoom cleanup recovery transport loss");
+    wait_for_ready_without_prompt(id, "zoom cleanup recovery ready");
+    let recovered_main = wait_for_pane_handle(id, main.pane_id, "refresh main after zoom recovery");
+    let recovered_side = wait_for_pane_handle(id, side.pane_id, "refresh side after zoom recovery");
+    let recovered_side_active = wait_for_pane_handle(
+        id,
+        side_active.pane_id,
+        "refresh side active after zoom recovery",
+    );
+    let selected_after_recovery = exercise_zoom_switch_sequence(
+        id,
+        &fixture,
+        &recovered_main,
+        &recovered_side,
+        &recovered_side_active,
+        "recovery zoom switch after transport loss",
+    );
+    assert_eq!(layout_identity(&selected_after_recovery), recovery_identity);
+    assert_eq!(
+        normalized_split_shape(&selected_after_recovery),
+        recovery_shape
+    );
+    disconnect_terminal(id).expect("disconnect after recovered zoom sequence");
+    wait_for_state(
+        id,
+        ConnectionState::Disconnected,
+        "disconnect after recovered zoom sequence",
+    );
+    let after_recovery_disconnect =
+        remote_pane_layout(&fixture, "zoom cleanup after recovered disconnect");
+    assert_eq!(
+        layout_identity(&after_recovery_disconnect),
+        recovery_identity
+    );
+    assert_eq!(
+        normalized_split_shape(&after_recovery_disconnect),
+        recovery_shape
+    );
+    assert!(
+        zoom_flags(&after_recovery_disconnect)
+            .iter()
+            .all(|(_, zoomed)| !zoomed)
     );
 
     // Establish the desired reconnect selection while a live controller owns
@@ -1745,6 +1838,171 @@ fn pane_identity_set(snapshot: &SessionSnapshot) -> std::collections::HashSet<(u
         .iter()
         .map(|pane| (pane.window_id, pane.pane_id))
         .collect()
+}
+
+fn remote_pane_layout(fixture: &FixtureConfig, label: &str) -> Vec<RemotePaneLayout> {
+    let output = run_remote_tmux(
+        fixture,
+        "tmux list-panes -s -F '#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_width}\t#{pane_height}\t#{window_zoomed_flag}'",
+        label,
+    );
+    let mut layout = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let fields = String::from_utf8_lossy(line)
+                .split('\t')
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert_eq!(fields.len(), 6, "{label}: numeric pane layout field count");
+            let number = |value: &str, prefix: &str| {
+                value
+                    .strip_prefix(prefix)
+                    .and_then(|digits| digits.parse::<u64>().ok())
+                    .unwrap_or_else(|| panic!("{label}: invalid numeric topology field"))
+            };
+            RemotePaneLayout {
+                window_id: number(&fields[0], "@"),
+                pane_id: number(&fields[1], "%"),
+                index: fields[2]
+                    .parse::<u32>()
+                    .unwrap_or_else(|_| panic!("{label}: invalid numeric pane index")),
+                columns: fields[3]
+                    .parse::<u16>()
+                    .unwrap_or_else(|_| panic!("{label}: invalid numeric pane width")),
+                rows: fields[4]
+                    .parse::<u16>()
+                    .unwrap_or_else(|_| panic!("{label}: invalid numeric pane height")),
+                zoomed: match fields[5].as_str() {
+                    "0" => false,
+                    "1" => true,
+                    _ => panic!("{label}: invalid numeric zoom flag"),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    layout.sort_by_key(|pane| (pane.window_id, pane.index, pane.pane_id));
+    layout
+}
+
+fn layout_identity(layout: &[RemotePaneLayout]) -> std::collections::HashSet<(u64, u64)> {
+    layout
+        .iter()
+        .map(|pane| (pane.window_id, pane.pane_id))
+        .collect()
+}
+
+fn normalized_split_shape(layout: &[RemotePaneLayout]) -> Vec<(usize, u32, u16, u16)> {
+    let mut windows = layout.iter().map(|pane| pane.window_id).collect::<Vec<_>>();
+    windows.sort_unstable();
+    windows.dedup();
+    layout
+        .iter()
+        .map(|pane| {
+            (
+                windows
+                    .binary_search(&pane.window_id)
+                    .expect("layout window ordinal"),
+                pane.index,
+                pane.columns,
+                pane.rows,
+            )
+        })
+        .collect()
+}
+
+fn zoom_flags(layout: &[RemotePaneLayout]) -> Vec<(u64, bool)> {
+    let mut flags = layout
+        .iter()
+        .map(|pane| (pane.window_id, pane.zoomed))
+        .collect::<Vec<_>>();
+    flags.sort_unstable_by_key(|(window, _)| *window);
+    flags.dedup_by_key(|(window, _)| *window);
+    flags
+}
+
+fn exercise_zoom_switch_sequence(
+    id: u64,
+    fixture: &FixtureConfig,
+    main: &PaneSnapshot,
+    side: &PaneSnapshot,
+    side_active: &PaneSnapshot,
+    label: &str,
+) -> Vec<RemotePaneLayout> {
+    select_pane(id, side.pane_id).expect("select zoom sequence side pane");
+    wait_for_selected_pane(id, side.pane_id, "select zoom sequence side pane");
+    wait_for_remote_tmux(
+        fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        &format!("{label}: initial mobile zoom"),
+        |output| output.trim() == "1",
+    );
+
+    // A pane switch inside the owned window must retain ownership and zoom.
+    select_pane(id, side_active.pane_id).expect("select same-window zoom sequence pane");
+    wait_for_selected_pane(
+        id,
+        side_active.pane_id,
+        "select same-window zoom sequence pane",
+    );
+    wait_for_remote_tmux(
+        fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        &format!("{label}: same-window zoom ownership"),
+        |output| output.trim() == "1",
+    );
+
+    // Switching windows transfers mobile ownership without changing the
+    // underlying split shape; the old window must return to desktop layout.
+    select_pane(id, main.pane_id).expect("select other-window zoom sequence pane");
+    wait_for_selected_pane(id, main.pane_id, "select other-window zoom sequence pane");
+    wait_for_remote_tmux(
+        fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            main.window_id
+        ),
+        &format!("{label}: other-window zoom ownership"),
+        |output| output.trim() == "1",
+    );
+    wait_for_remote_tmux(
+        fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        &format!("{label}: old window restored"),
+        |output| output.trim() == "0",
+    );
+
+    select_pane(id, side_active.pane_id).expect("select return zoom sequence pane");
+    wait_for_selected_pane(id, side_active.pane_id, "select return zoom sequence pane");
+    wait_for_remote_tmux(
+        fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        &format!("{label}: returned window zoom ownership"),
+        |output| output.trim() == "1",
+    );
+    wait_for_remote_tmux(
+        fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            main.window_id
+        ),
+        &format!("{label}: returned old window restored"),
+        |output| output.trim() == "0",
+    );
+    remote_pane_layout(fixture, label)
 }
 
 fn wait_for_pane_snapshot<F>(pane: &PaneSnapshot, label: &str, mut predicate: F) -> DecodedSnapshot

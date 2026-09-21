@@ -55,6 +55,15 @@ connections still show the picker. Saved backend/runtime fields remain
 non-authoritative last-used hints and are updated only after the selected
 runtime reaches `Ready`.
 
+tmux mobile zoom ownership is tracked by window identity within the selected
+runtime/generation, so pane switches do not lose the cleanup target and
+pre-existing desktop zoom is preserved. Disconnect performs bounded,
+same-Control-Mode cleanup and reports `layout_restore_unconfirmed` through the
+existing connection error fields if the desktop layout cannot be confirmed;
+the local connection still ends in `Disconnected` without replaying input or
+starting automatic recovery. See [SSH validation and limitations](docs/SSH.md)
+for the exact cleanup boundary and current evidence.
+
 ## Architecture direction
 
 ```text

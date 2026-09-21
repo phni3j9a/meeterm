@@ -333,3 +333,57 @@ profile切替完了を`Connected`だけで判定せず、実fixture workspace ro
 host/profile/workspace名、credential、候補IDを出さず、接続状態・picker・workspace・sheet・固定errorのallowlistだけを
 `ssh-failure-state.txt`へ記録します。次のexact runでも失敗した場合は、その固定stateを根拠にproduct lifecycle側を
 修正します。fresh picker、strict fingerprint、45秒、transport-lossの全assertionは変更しません。
+
+## Issue #30 zoom ownership / cleanup W1 (2026-09-21)
+
+### 最初の再現記録
+
+Issue #30 の既存 evidence branch にある run 4 の最初の保存結果を、fixture
+index と数値だけに正規化して記録する。`fixture_index=0`、`window_index=0`
+（pane index 0/1、80x24、zoom=false）と `window_index=1`（pane index 0/1、
+80x24、zoom=false）で、mobile zoom → pane switch → window switch →
+disconnect を実行した。disconnect 後は `window_index=0` が zoom=true のまま、
+`window_index=1` は zoom=false だった。session-scoped の indexed hook pair は
+別 window の tracking pane 消失時に除去され、ユーザー所有の index 77 は残った。
+保存された normalized shape は `(1,T,F,F,F) -> (1,F,F,F,F)` で、desktop layout
+復元と meeterm hook cleanup が同じ ownership boundary を共有していなかったことを
+示す。端末出力、remote 名、credential、raw UI tree は保存していない。
+
+この worktree で同じ real fixture を再実行する試みは、fixture が `Path.home()`
+直下に一時 directory を作る段階で sandbox の read-only 制約に当たり停止した。
+`TMPDIR` を `/tmp` に変えても fixture の hard-coded home path は変わらず、さらに
+temporary tmux socket 作成は `Operation not permitted` になった。したがってこの
+ローカル実行は「再現成功」ではなく、実 fixture の source-level integration を
+実行できない環境差として記録する。
+
+### W1 の実装と対応する証拠
+
+- `native/meeterm-core/src/ssh/control.rs` は zoom ownership を window ID と
+  current pane ID の組で保持し、同一 window の pane 切替・pane 消失では所有を
+  維持し、owned window 消失だけで state を無効化する。selection/topology の
+  unit tests と既存の desktop pre-existing zoom preservation test を維持した。
+- `native/meeterm-core/src/tmux.rs` は window-target restore と meeterm が割り当てた
+  indexed hook pair の不在確認を追加した。`restore_zoom` は NotNeeded /
+  RestoredConfirmed /
+  UnconfirmedOrFailed を区別し、topology readback、same-stream response marker、
+  final zoom/hook readback が揃わない成功を返さない。
+- `native/meeterm-core/src/ssh.rs` は generation-scoped cleanup outcome を既存の
+  fixed connection error fields に載せ、`layout_restore_unconfirmed` を公開する。
+  強制終了時も `Closing` を残さず `Disconnected` に収束し、old generation が新しい
+  ownership を消さない。
+- `App.tsx` はその error code を通知へ反映し、Disconnect/runtime switch 後の旧
+  operation の結果を読み取る。unconfirmed 時に stale Ready screen を再マウントしない。
+- `native/meeterm-core/tests/openssh.rs` は既存の pre-existing desktop zoom 保持を
+  残したまま、numeric pane/window identity、normalized split shape、zoom flags、
+  indexed hook classification を first disconnect と same-process recovery 後の
+  disconnect で比較する ignored real OpenSSH/tmux path を追加した。
+
+### 検証範囲と未確認事項
+
+この worktree では `cargo fmt`、Rust unit tests、OpenSSH test target の compile-only
+を実行した。real fixture integration は上記 sandbox 制約で実行不能だったため、
+Main が fixture environment で focused ignored test と全 `openssh` test を実行する必要がある。
+Android full、iOS standard、iOS ssh、両 platform screenshot の download/view は Main の
+exact candidate commit で未実施であり、Issue #26 の mobile acceptance をこの記録だけで
+完了とは扱わない。#30 の local code/test criteria は実装済みだが、remote fixture と mobile
+machine-gated evidence が残っている。

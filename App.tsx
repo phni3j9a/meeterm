@@ -1191,6 +1191,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             setRuntimeMessage('Could not refresh runtimes. Check the connection and try again.');
           }
           setConnection(current => sameConnection(current, next) ? current : next);
+          if (next.errorCode === 'layout_restore_unconfirmed') {
+            setControlMessage(next.errorMessage || 'The connection closed, but the desktop layout could not be confirmed as restored.');
+          }
           const readySession = Boolean(nextSession
             && next.state === 'Ready'
             && !runtimeSelectionRequired.current
@@ -1497,6 +1500,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           ? normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control)
           : null;
         setConnection(next);
+        if (next.errorCode === 'layout_restore_unconfirmed') {
+          setControlMessage(next.errorMessage || 'The connection closed, but the desktop layout could not be confirmed as restored.');
+        }
         if (nextSession) {
           if (recoveryInvalidatedRef.current && nextSessionControl?.recovery.phase === 'none'
             && nextSessionControl.runtimeOperationsReady) {
@@ -1618,7 +1624,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!startRecoveryAction('change', identity)) return;
 
     try {
-      if (!smokeFixtureActive) await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
+      if (!smokeFixtureActive) {
+        await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
+        const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        if (released.errorCode === 'layout_restore_unconfirmed') {
+          setControlMessage(released.errorMessage || 'The previous connection closed, but the desktop layout could not be confirmed as restored.');
+        }
+      }
 
       // Native acceptance is the one-way boundary. Keep the exact retained
       // surface mounted while the request is pending or rejected; only after
@@ -1962,6 +1974,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     await MeetermTerminal.setForeground(CONNECTION_ID, foreground.current);
     // Switching endpoints explicitly releases the previous connection owner.
     await MeetermTerminal.disconnect(CONNECTION_ID);
+    const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+    if (released.errorCode === 'layout_restore_unconfirmed') {
+      setControlMessage(released.errorMessage || 'The previous connection closed, but the desktop layout could not be confirmed as restored.');
+    }
   }, [preferences, preferencesLoaded, smokeFixtureActive]);
 
   const submitConnection = useCallback(async (submission: ConnectionSubmission) => {

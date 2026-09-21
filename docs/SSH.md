@@ -119,6 +119,19 @@ lost mobile transport or desktop handoff can undo the mobile zoom. Existing
 user hook entries are preserved. The pair removes itself on recovery; no
 global hook or configuration file is installed.
 
+Zoom cleanup ownership is keyed to the selected tmux window and the current
+connection generation, with the pane ID retained only as the current target.
+Switching panes inside the same window therefore cannot reclassify a meeterm
+zoom as a desktop-owned zoom; switching windows restores the old owned window
+before acquiring ownership of the new one. A pre-existing desktop zoom is
+never claimed or undone. Explicit Disconnect performs a bounded topology
+readback, cleanup command, same-Control-Mode response marker, final zoom
+readback, and meeterm-hook check. If the target has vanished, it is treated as
+not-needed only after that authoritative readback; malformed/failed/timeout
+cleanup is exposed as `layout_restore_unconfirmed` in the existing connection
+error fields, while local shutdown still converges to `Disconnected` and does
+not start automatic reconnect or replay input.
+
 Screen reconstruction captures the current pane with ANSI attributes and
 restores its dimensions, cursor, active alternate screen, and exposed input
 modes. This is not a serialization of a running application's entire terminal

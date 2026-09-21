@@ -1170,6 +1170,19 @@ pub(crate) fn restore_layout_command_for_session(
     ))
 }
 
+/// Restore a zoomed window when the pane that originally owned the zoom has
+/// disappeared. The window target is still scoped to the selected session;
+/// callers must first prove that the window exists in authoritative topology.
+pub(crate) fn restore_layout_command_for_session_window(
+    session: &str,
+    window_id: u64,
+) -> Result<String, CommandArgumentError> {
+    let target = window_target(session, window_id)?;
+    Ok(format!(
+        "if-shell -F -t {target} '#{{window_zoomed_flag}}' 'resize-pane -Z -t {target}' ''"
+    ))
+}
+
 /// Choose an unused indexed hook slot for the two session-scoped recovery
 /// hooks. The input is the byte output of `show-hooks -t =meeterm:`.
 ///
@@ -1367,6 +1380,27 @@ fn parse_hook_entry(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
             .ok_or(())
     })?;
     Ok(Some((name, Some(index))))
+}
+
+/// Confirm that both indexed hooks allocated by meeterm are absent. Other
+/// user hooks are intentionally ignored so cleanup never treats their
+/// presence as a failure or removes them.
+pub(crate) fn zoom_recovery_hooks_absent(
+    hooks: &[u8],
+    allocation: ZoomRecoveryHookAllocation,
+) -> Result<bool, ()> {
+    for line in hooks.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some((name, index)) = parse_hook_entry(line)? else {
+            continue;
+        };
+        let is_owned_name = name == ZOOM_RECOVERY_DETACHED_HOOK.as_bytes()
+            || name == ZOOM_RECOVERY_SESSION_CHANGED_HOOK.as_bytes();
+        if is_owned_name && index == Some(allocation.index) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[allow(dead_code)]

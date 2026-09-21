@@ -20,6 +20,10 @@ The canonical product and native data-plane invariants remain unchanged.
   keyboard input, with shared Rust encoding and local IME composition.
 - Configurable bounded scrollback and documented reconnect retention semantics.
 - Persisted font size, app appearance and history settings; deterministic resize.
+- tmux mobile zoom is owned per window/generation, preserves pre-existing desktop
+  zoom, and performs bounded same-stream cleanup on Disconnect. An
+  `layout_restore_unconfirmed` result is surfaced without restoring a stale
+  Ready screen or starting reconnect.
 
 ## Issue #21 runtime picker
 
