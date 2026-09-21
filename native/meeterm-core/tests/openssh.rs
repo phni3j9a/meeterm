@@ -1904,7 +1904,7 @@ fn remote_tmux_layout(fixture: &FixtureConfig, label: &str) -> RemoteTmuxLayout 
     );
     let panes_output = run_remote_tmux(
         fixture,
-        "tmux list-panes -t '=meeterm:' -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_pid}|#{pane_active}|#{window_active}|#{window_zoomed_flag}'",
+        "tmux list-panes -s -t '=meeterm:' -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_pid}|#{pane_active}|#{window_active}|#{window_zoomed_flag}'",
         &format!("{label}: panes"),
     );
     let layout = RemoteTmuxLayout {
