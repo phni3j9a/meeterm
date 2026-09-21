@@ -1,2 +1,0 @@
-connection_state=unavailable
-capture=credential_ui_may_be_visible

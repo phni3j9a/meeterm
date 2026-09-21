@@ -1,8 +1,8 @@
 run_record:
-  source_sha=f45cbd4719735c8da161021a13e8bd8709b21119
+  source_sha=d766fb86caa6da21c03014e4efe58972a82baf57
   source_branch=fix/issue-30-zoom-cleanup
   suite=android-full (foundation gates + screen fixtures + real disposable OpenSSH/tmux smoke)
-  build_mode=fresh (git reset --hard <sha>, npm ci, expo prebuild, assembleRelease — no reuse of the 8c5f511 run)
+  build_mode=fresh (git reset --hard <sha>, npm ci, expo prebuild, assembleRelease — no reuse of prior-run build/evidence)
   result=passed
 
 toolchain:
@@ -21,14 +21,13 @@ toolchain:
   avd=meeterm_api36 (pixel_7 profile, system-images;android-36;google_apis;x86_64, cores=4, memory=4096, -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none)
 
 stage_timings_utc (approximate; artifact mtimes and tool-reported):
-  npm_ci=~90s
-  expo_prebuild=<30s
-  gradle_assembleRelease=2m55s (BUILD SUCCESSFUL, 668 tasks)
-  emulator_boot_to_sys_boot_completed=~30s (cold reboot after session restart)
-  android_smoke_sh=~33s (launch.txt 16:21:28 -> terminal.png 16:22:01) result: passed
-  android_screen_fixtures=~2m (16:22:01 -> 16:24:06) result: 28/29 captured, empty=unavailable:missing_screen_element_0,screen_element_1 (observational)
-  fixture_py_android_smoke_py=first attempt failed at daily_profile_edit/profile_unavailable (stale saved-profile state from the prior run on this persistent VM); after `adb shell pm clear dev.meeterm.app` per docs/CI_MOBILE.md re-run guidance the full suite passed (-> ssh-validation.txt 16:54:33, ~25m incl. failed attempt), result=passed, final stage=disconnect_after_resume, reason=ok
-  total_wall_clock=~40m (includes pm-clear re-run)
+  npm_ci+expo_prebuild=~2m
+  gradle_assembleRelease=4m11s (BUILD SUCCESSFUL, 668 tasks)
+  emulator_boot_to_sys_boot_completed=~40s (cold reboot after session restart)
+  android_smoke_sh=~35s (launch.txt 17:54:11, smoke_exit=0) result: passed
+  android_screen_fixtures=first pass aborted by a platform "System UI isn't responding" ANR dialog covering the screen (all checked elements missing; uiautomator dumps showed only the dialog); SystemUI process restarted and the full re-run passed 30/31 captures (~4m) -> android-screen-fixtures.txt 18:11:28
+  fixture_py_android_smoke_py=attempt 1 failed at daily_foreground_return/marker_timeout (~18:29) after daily_foreground_authoritative_ready + native_binding_verified — post-foreground remote marker did not land in time on the flaky emulator; logcat input summary shows all commits accepted, 0 rejected. attempt 2 after pm clear passed fully (~23m) -> ssh-validation.txt 18:53:05, result=passed, stage=disconnect_after_resume, reason=ok
+  total_wall_clock=~1h20m (includes ANR abort + two SSH re-runs)
 
 cleanup_outcome:
   fixture_tmpdirs=removed
@@ -38,6 +37,7 @@ cleanup_outcome:
   emulator=left running on emulator-5554 for this persistent session
 
 notes:
-  - Re-run on the reworked candidate after the earlier 8c5f511 validation; the prior evidence commit is preserved in this branch's history.
-  - The single failed attempt (daily_profile_edit/profile_unavailable) was caused by persisted app profile state from the prior run on the same VM, resolved by the documented `pm clear` re-run procedure; it is not a product regression. The failing artifacts were overwritten by the successful run.
-  - app-release.apk excluded from this bundle by default policy (request explicit upload if an evaluation APK is needed).
+  - Round-2 reworked candidate; prior runs (8c5f511, f45cbd4) are preserved in this branch's history.
+  - Two environment flakes this session, both recovered and re-run cleanly: (1) SystemUI ANR overlay during screen-fixtures (uiautomator saw only the dialog; SystemUI restarted, stage re-run passed), (2) one daily_foreground_return marker_timeout during the first SSH attempt, then passed on re-run. Neither failure reproduced and neither correlates with the reworked code paths; recorded here for transparency.
+  - New required captures present: layout-restore-unconfirmed.png, runtime-layout-restore-unconfirmed.png (both =captured).
+  - app-release.apk excluded from this bundle by default policy.

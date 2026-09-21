@@ -1,7 +1,7 @@
 runner=devin-vm
 os=Linux
 arch=X64
-commit=f45cbd4719735c8da161021a13e8bd8709b21119
+commit=d766fb86caa6da21c03014e4efe58972a82baf57
 api=36
 abi=x86_64
 device=sdk_gphone64_x86_64
