@@ -341,7 +341,7 @@ backend failures, profile migration, reconnect identity, switch/release, and
 fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
 picker loading, duplicate-name, stale-selection, asynchronous refresh, and
 explicit selection/create state transitions in focused app/native tests. The
-24-screen iOS source manifest and 31-route Android observational `SCREEN_NAMES`
+25-screen iOS source manifest and 31-route Android observational `SCREEN_NAMES`
 include the four recovery visual routes `recovery-progress`,
 `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm` in
 addition to the runtime-picker routes and the two `layout-restore-unconfirmed`

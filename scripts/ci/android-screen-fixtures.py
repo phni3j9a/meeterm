@@ -301,6 +301,10 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 in normalized_values,
             ),
             ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+            (
+                "warning_dismiss_enabled",
+                has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled"),
+            ),
         ]
     elif screen == "runtime-layout-restore-unconfirmed":
         checks = [
@@ -311,6 +315,10 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 in normalized_values,
             ),
             ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+            (
+                "warning_dismiss_enabled",
+                has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled"),
+            ),
         ]
     elif screen == "herdr-groups":
         checks = [
@@ -391,6 +399,10 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                     in normalized_values,
                 ),
                 ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+                (
+                    "warning_dismiss_enabled",
+                    has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled"),
+                ),
             ]
         else:
             checks = [(f"screen_element_{index}", value in normalized_values)

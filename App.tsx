@@ -2419,7 +2419,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const feedbackColors = sheet ? homeColors : colors;
   const cleanupWarningNotice = cleanupWarning ? <View testID="cleanup-warning" accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
     <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{cleanupWarning.message}</Text>
-    <IconButton icon="close" label="Dismiss desktop layout warning" colors={feedbackColors} onPress={dismissCleanupWarning} />
+    <IconButton icon="close" label="Dismiss desktop layout warning" testID="cleanup-warning-dismiss" colors={feedbackColors} onPress={dismissCleanupWarning} />
   </View> : null;
   const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
     <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
