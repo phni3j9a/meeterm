@@ -80,6 +80,7 @@ function workspaceControl(overrides = {}) {
     hasRetainedWork: true,
     runtimeOperationsReady: true,
     terminalInputReady: true,
+    cleanupWarning: null,
     ...overrides,
     recovery: {
       phase: 'none',
@@ -97,6 +98,7 @@ const DEFAULT_WORKSPACE_CONTROL = {
   hasRetainedWork: false,
   runtimeOperationsReady: false,
   terminalInputReady: false,
+  cleanupWarning: null,
   recovery: {
     phase: 'none',
     reason: '',
@@ -115,6 +117,17 @@ function normalizeWorkspaceControl(value) {
     hasRetainedWork: value.hasRetainedWork === true,
     runtimeOperationsReady: value.runtimeOperationsReady === true,
     terminalInputReady: value.terminalInputReady === true,
+    cleanupWarning: value.cleanupWarning
+      && typeof value.cleanupWarning === 'object'
+      && /^[0-9]+$/.test(value.cleanupWarning.id || '')
+      && value.cleanupWarning.code === 'layout_restore_unconfirmed'
+      && typeof value.cleanupWarning.message === 'string'
+      ? {
+        id: value.cleanupWarning.id,
+        code: 'layout_restore_unconfirmed',
+        message: value.cleanupWarning.message.slice(0, 256),
+      }
+      : null,
     recovery: {
       phase: phases.has(recovery.phase) ? recovery.phase : 'none',
       reason: typeof recovery.reason === 'string' ? recovery.reason : '',
@@ -257,6 +270,8 @@ function makeNativeEnvironment() {
     changeRuntimeShouldFail: false,
     changeRuntimeMode: 'ready',
     pendingChangeRuntime: null,
+    disconnectRelease: null,
+    changeRuntimeRelease: null,
   };
 
   const native = {
@@ -342,7 +357,15 @@ function makeNativeEnvironment() {
     },
     async disconnect() {
       environment.nativeCalls.push('disconnect');
-      environment.connection.state = 'Disconnected';
+      environment.connection = {
+        ...environment.connection,
+        state: 'Disconnected',
+        ...(environment.disconnectRelease || {}),
+      };
+    },
+    async refreshTerminal() {
+      environment.nativeCalls.push('refreshTerminal');
+      throw new Error('terminal refresh rejected');
     },
     async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
     async getConnectionState() { return { ...environment.connection }; },
@@ -383,7 +406,11 @@ function makeNativeEnvironment() {
           environment.pendingChangeRuntime = { operationEpoch, resolve, reject };
         });
       }
-      environment.connection.state = 'AwaitingRuntimeSelection';
+      environment.connection = {
+        ...environment.connection,
+        state: 'AwaitingRuntimeSelection',
+        ...(environment.changeRuntimeRelease || {}),
+      };
       environment.snapshot.control = workspaceControl({
         hasRetainedWork: false,
         operationEpoch: String(Number(operationEpoch) + 1),
@@ -722,7 +749,8 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   const smoke = loadApp(environment, native, true, true);
   for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
-    'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm']) {
+    'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
+    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
@@ -739,6 +767,18 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('runtime-partial-error').runtimeDiscovery.backends[1].state, 'error');
   assert.equal(smoke.smokeFixture('runtime-empty').runtimeDiscovery.backends[0].candidates.length, 0);
   assert.equal(smoke.smokeFixture('runtime-create').runtimeCreateVisible, true);
+  const layoutWarning = smoke.smokeFixture('layout-restore-unconfirmed');
+  assert.equal(layoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
+  assert.equal(layoutWarning.control.cleanupWarning.code, 'layout_restore_unconfirmed');
+  assert.equal(layoutWarning.control.cleanupWarning.id, '101');
+  assert.equal(layoutWarning.connection.state, 'Disconnected');
+  const runtimeLayoutWarning = smoke.smokeFixture('runtime-layout-restore-unconfirmed');
+  assert.equal(runtimeLayoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
+  assert.equal(runtimeLayoutWarning.control.cleanupWarning.id, '102');
+  assert.equal(runtimeLayoutWarning.runtimePickerVisible, true);
+  const authAndCleanupWarning = smoke.smokeFixture('connection-error');
+  assert.equal(authAndCleanupWarning.connection.errorCode, 'authentication_failed');
+  assert.equal(authAndCleanupWarning.control.cleanupWarning.id, '103');
   assert.equal(smoke.smokeFixture('recovery-progress').control.recovery.phase, 'resynchronizing');
   assert.equal(smoke.smokeFixture('recovery-exhausted').control.recovery.phase, 'stopped');
   assert.equal(smoke.smokeFixture('recovery-mismatch').control.recovery.reason, 'runtime_identity_mismatch');
@@ -1989,6 +2029,130 @@ test('retained recovery keeps the cached native terminal and disables remote nav
   assert.equal(findLabel(fixture.root, 'Rename group').props.disabled, true);
   assert.equal(findLabel(fixture.root, 'Close group').props.disabled, true);
   await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+});
+
+test('explicit disconnect keeps the layout-restore warning and does not restore Ready', async t => {
+  const warning = 'The desktop layout could not be confirmed after disconnect.';
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.disconnectRelease = {
+      errorCode: 'layout_restore_unconfirmed',
+      errorMessage: warning,
+    };
+  });
+  await openWorkspace(fixture.root, 'W1');
+
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await press(fixture.root, findLabel(fixture.root, 'PC handoff help'));
+  await press(fixture.root, findLabel(fixture.root, 'Disconnect'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(terminalViews(fixture.root).length, 0, 'disconnect must not leave a stale Ready terminal mounted');
+  assert.ok(findLabel(fixture.root, 'Dismiss desktop layout warning'));
+  assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
+});
+
+test('polling a disconnected connection keeps the layout-restore warning visible', async t => {
+  const warning = 'The desktop layout could not be confirmed during polling.';
+  const fixture = await mountForTest(t, makeSnapshot());
+  await openWorkspace(fixture.root, 'W1');
+
+  fixture.environment.connection = {
+    ...fixture.environment.connection,
+    state: 'Disconnected',
+    errorCode: 'layout_restore_unconfirmed',
+    errorMessage: warning,
+  };
+  await poll(fixture.environment);
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(terminalViews(fixture.root).length, 1, 'polling may retain the cached surface while disconnected');
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+  assert.ok(findLabel(fixture.root, 'Dismiss desktop layout warning'));
+  assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
+  await press(fixture.root, findLabel(fixture.root, 'Dismiss desktop layout warning'));
+  await poll(fixture.environment);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'cleanup-warning').length, 0);
+});
+
+test('recovery Change keeps the layout-restore warning after the release read', async t => {
+  const warning = 'The previous desktop layout could not be confirmed before switching runtime.';
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '115',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed', environment => {
+    environment.changeRuntimeRelease = {
+      errorCode: 'layout_restore_unconfirmed',
+      errorMessage: warning,
+    };
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'AwaitingRuntimeSelection');
+  assert.equal(terminalViews(fixture.root).length, 0, 'runtime switch must not restore the retired Ready terminal');
+  assert.ok(findTestId(fixture.root, 'runtime-refresh'), 'the switch result must remain visible in the runtime picker');
+  assert.ok(findLabel(fixture.root, 'Dismiss desktop layout warning'));
+  assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
+});
+
+test('cleanup warning is independent from auth errors, dismissal, command feedback, and new results', async t => {
+  const firstWarning = {
+    id: '501',
+    code: 'layout_restore_unconfirmed',
+    message: 'The old connection desktop layout was not confirmed.',
+  };
+  const fixture = await mountForTest(t, makeSnapshot({
+    control: workspaceControl({ cleanupWarning: firstWarning }),
+  }), environment => {
+    environment.connection = {
+      ...environment.connection,
+      state: 'Failed',
+      errorCode: 'auth_failed',
+      errorMessage: 'SSH authentication failed.',
+    };
+  });
+  await poll(fixture.environment);
+
+  assert.ok(findText(fixture.root, 'Authentication failed. Check your username and the password or private key for your chosen sign-in method.'));
+  assert.ok(findTestId(fixture.root, 'cleanup-warning'));
+  await press(fixture.root, findLabel(fixture.root, 'Dismiss desktop layout warning'));
+  assert.equal(all(fixture.root, node => node.props?.testID === 'cleanup-warning').length, 0);
+  assert.ok(findText(fixture.root, 'Authentication failed. Check your username and the password or private key for your chosen sign-in method.'));
+
+  // A slow/repeated read of the same native result must not re-latch the
+  // locally dismissed warning through either the canonical or legacy path.
+  await poll(fixture.environment);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'cleanup-warning').length, 0);
+
+  fixture.environment.snapshot = makeSnapshot({
+    control: workspaceControl({
+      cleanupWarning: { ...firstWarning, id: '502', message: 'A newer old-connection layout result needs review.' },
+    }),
+  });
+  await poll(fixture.environment);
+  assert.ok(findTestId(fixture.root, 'cleanup-warning'));
+  assert.ok(findText(fixture.root, 'A newer old-connection layout result needs review.'));
+
+  // The warning is not stored in the generic command-feedback slot. A
+  // failing terminal command may publish feedback while the warning remains
+  // dismissible independently.
+  const live = await mountForTest(t, makeSnapshot({
+    control: workspaceControl({
+      cleanupWarning: { id: '503', code: 'layout_restore_unconfirmed', message: 'Desktop layout restore needs review.' },
+    }),
+  }));
+  await poll(live.environment);
+  await openWorkspace(live.root, 'W1');
+  await press(live.root, findLabel(live.root, 'Terminal menu'));
+  await press(live.root, findLabel(live.root, 'Refresh terminal'));
+  assert.ok(findLabel(live.root, 'Dismiss message'));
+  assert.ok(findLabel(live.root, 'Dismiss desktop layout warning'));
 });
 
 test('recovery Retry uses the current epoch once and waits for a native snapshot transition', async t => {

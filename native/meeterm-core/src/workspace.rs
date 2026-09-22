@@ -8,6 +8,9 @@ use serde::Serialize;
 /// control contract.  Keeping the value here avoids making the low-frequency
 /// workspace model depend on the SSH module's private constants.
 pub const DEFAULT_RECOVERY_MAX_ATTEMPTS: u32 = 6;
+pub const CLEANUP_WARNING_CODE: &str = "layout_restore_unconfirmed";
+pub const CLEANUP_WARNING_MESSAGE: &str =
+    "The old connection's desktop layout restore could not be confirmed.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,6 +94,16 @@ impl Default for RecoverySnapshot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupWarning {
+    /// A native-issued decimal ID that remains stable for this result while
+    /// the owning terminal lives.
+    pub id: String,
+    pub code: String,
+    pub message: String,
+}
+
 /// Low-frequency lifecycle controls serialized beside the authoritative
 /// workspace topology.  `operation_epoch` is a decimal string because the
 /// value must remain exact when consumed by JavaScript on 64-bit platforms.
@@ -102,6 +115,7 @@ pub struct RuntimeControlSnapshot {
     pub runtime_operations_ready: bool,
     pub terminal_input_ready: bool,
     pub recovery: RecoverySnapshot,
+    pub cleanup_warning: Option<CleanupWarning>,
 }
 
 impl Default for RuntimeControlSnapshot {
@@ -112,6 +126,7 @@ impl Default for RuntimeControlSnapshot {
             runtime_operations_ready: false,
             terminal_input_ready: false,
             recovery: RecoverySnapshot::default(),
+            cleanup_warning: None,
         }
     }
 }
@@ -345,6 +360,7 @@ mod tests {
                     max_attempts: DEFAULT_RECOVERY_MAX_ATTEMPTS,
                     confirmation_token: "opaque-token".to_owned(),
                 },
+                cleanup_warning: None,
             },
             ..RuntimeSnapshot::default()
         };
@@ -356,6 +372,7 @@ mod tests {
                 "hasRetainedWork": true,
                 "runtimeOperationsReady": false,
                 "terminalInputReady": false,
+                "cleanupWarning": null,
                 "recovery": {
                     "phase": "awaitingConfirmation",
                     "reason": "runtime_identity_uncertain",
@@ -363,6 +380,30 @@ mod tests {
                     "maxAttempts": DEFAULT_RECOVERY_MAX_ATTEMPTS,
                     "confirmationToken": "opaque-token"
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn cleanup_warning_uses_an_opaque_decimal_id_and_fixed_code() {
+        let snapshot = RuntimeSnapshot {
+            control: RuntimeControlSnapshot {
+                cleanup_warning: Some(CleanupWarning {
+                    id: "18446744073709551615".to_owned(),
+                    code: CLEANUP_WARNING_CODE.to_owned(),
+                    message: CLEANUP_WARNING_MESSAGE.to_owned(),
+                }),
+                ..RuntimeControlSnapshot::default()
+            },
+            ..RuntimeSnapshot::default()
+        };
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            encoded["control"]["cleanupWarning"],
+            serde_json::json!({
+                "id": "18446744073709551615",
+                "code": CLEANUP_WARNING_CODE,
+                "message": CLEANUP_WARNING_MESSAGE
             })
         );
     }

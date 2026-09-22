@@ -31,8 +31,9 @@ use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
 use crate::tmux::{self, PaneSnapshot, SessionSnapshot, WindowSnapshot};
 use crate::workspace::{
-    self, Backend, RecoveryPhase, RecoverySnapshot, RuntimeCandidate, RuntimeControlSnapshot,
-    RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState, RuntimeSnapshot, RuntimeState,
+    self, Backend, CleanupWarning, RecoveryPhase, RecoverySnapshot, RuntimeCandidate,
+    RuntimeControlSnapshot, RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState,
+    RuntimeSnapshot, RuntimeState,
 };
 
 /// Maximum number of bytes used by each fixed-size string in the C snapshot.
@@ -341,7 +342,7 @@ enum RuntimeBinding {
 /// are invalidated so a subsequent connection to another host cannot inherit
 /// the previous endpoint's pane topology.  It contains no authentication
 /// material.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SessionEndpoint {
     host: String,
     port: u16,
@@ -349,6 +350,30 @@ struct SessionEndpoint {
     known_hosts_path: PathBuf,
     backend: Backend,
     runtime: Option<String>,
+}
+
+/// Durable, connection-scoped authority for the tmux zoom hooks.  This is
+/// deliberately kept beside the retained SessionState rather than in a
+/// ControlClient: a transport-loss recovery creates a fresh client while the
+/// authenticated host/runtime binding remains the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ZoomCleanupRecord {
+    endpoint: SessionEndpoint,
+    runtime: tmux::SessionEpoch,
+    window: u64,
+    pane: u64,
+    hooks: tmux::ZoomRecoveryHookAllocation,
+    /// Internal identity of one cleanup operation. It is never serialized or
+    /// exposed to JavaScript; it only keeps a warning ID stable across actor
+    /// replacement while allowing a later cleanup result to get a new ID.
+    result_id: u64,
+    unconfirmed: bool,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CleanupWarningResult {
+    result_id: u64,
 }
 
 impl SessionEndpoint {
@@ -391,6 +416,13 @@ enum StoredCredentials {
     Password { password: Arc<Zeroizing<String>> },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZoomCleanupOutcome {
+    NotNeeded,
+    RestoredConfirmed,
+    UnconfirmedOrFailed,
+}
+
 /// Durable in-process metadata associated with one owner terminal.  The
 /// actual durable workspace remains tmux; this map only retains native IDs so
 /// reconnecting the same owner can bind the same pane IDs back to the same
@@ -407,6 +439,10 @@ struct SessionState {
     /// True only when meeterm has zoomed the current window.  A desktop user's
     /// pre-existing zoom is observed but never claimed for cleanup.
     meeterm_zoomed: bool,
+    /// Ownership belongs to a tmux window, not to one transient pane target.
+    /// The pane ID is retained as the preferred cleanup target while the
+    /// window identity keeps ownership through pane switches/removal.
+    meeterm_zoomed_window: Option<u64>,
     meeterm_zoomed_pane: Option<u64>,
     foreground: bool,
     automatic_reconnect: bool,
@@ -434,6 +470,21 @@ struct SessionState {
     /// distinction separate from a previously selected terminal that has
     /// disappeared, so recovery never falls back to an unrelated pane.
     recovery_group_id: Option<u64>,
+    /// Durable tmux zoom/hook cleanup authority. This survives ControlClient
+    /// replacement during same-runtime recovery, but is cleared at an
+    /// explicit fresh host/backend/runtime binding boundary.
+    zoom_cleanup_record: Option<ZoomCleanupRecord>,
+    /// Latest single low-frequency cleanup result. It is intentionally
+    /// independent from ConnectionInfo so a replacement's auth/host-key
+    /// failure cannot overwrite the old-layout warning.
+    cleanup_warning: Option<CleanupWarning>,
+    cleanup_warning_result: Option<CleanupWarningResult>,
+    /// Native-issued warning IDs are owner-scoped and never derived from a
+    /// connection generation or operation epoch.
+    next_cleanup_warning_id: u64,
+    /// Internal identity for the latest cleanup operation. This is not
+    /// serialized and is only used to keep a result's warning ID stable.
+    next_cleanup_result_id: u64,
     runtime_operations_ready: bool,
     terminal_input_ready: bool,
 }
@@ -450,6 +501,7 @@ impl Default for SessionState {
             profile: None,
             selected_pane: None,
             meeterm_zoomed: false,
+            meeterm_zoomed_window: None,
             meeterm_zoomed_pane: None,
             foreground: true,
             automatic_reconnect: true,
@@ -462,6 +514,11 @@ impl Default for SessionState {
             pending_confirmation_token: None,
             recovery_terminal_id: None,
             recovery_group_id: None,
+            zoom_cleanup_record: None,
+            cleanup_warning: None,
+            cleanup_warning_result: None,
+            next_cleanup_warning_id: 0,
+            next_cleanup_result_id: 0,
             runtime_operations_ready: false,
             terminal_input_ready: false,
         }
@@ -485,6 +542,7 @@ impl SessionState {
             runtime_operations_ready: self.runtime_operations_ready,
             terminal_input_ready: self.terminal_input_ready,
             recovery: self.recovery.clone(),
+            cleanup_warning: self.cleanup_warning.clone(),
         }
     }
 }
@@ -630,6 +688,16 @@ struct ConnectionShared {
     /// command receiver; this guard closes the small race between two callers
     /// pressing Retry after that actor has finished.
     recovery_starting: AtomicBool,
+    /// Explicit zoom/hook cleanup is reported through the existing connection
+    /// error boundary, so the fixed C snapshot ABI remains unchanged.
+    zoom_cleanup_outcome: Mutex<ZoomCleanupOutcome>,
+    /// The cleanup result identity owned by this connection actor. A record
+    /// backed result remains identifiable after its record is discarded, and
+    /// a no-record retirement result is minted only once for this actor.
+    cleanup_warning_result: Mutex<Option<CleanupWarningResult>>,
+    /// Actor-private intent is published before the Control Mode writer await
+    /// and lets a forced shutdown report an unconfirmed mutation in flight.
+    zoom_cleanup_pending: AtomicBool,
 }
 
 impl ConnectionShared {
@@ -666,6 +734,9 @@ impl ConnectionShared {
             ready_once: AtomicBool::new(false),
             ready_epoch: AtomicU64::new(0),
             recovery_starting: AtomicBool::new(false),
+            zoom_cleanup_outcome: Mutex::new(ZoomCleanupOutcome::NotNeeded),
+            cleanup_warning_result: Mutex::new(None),
+            zoom_cleanup_pending: AtomicBool::new(false),
         }
     }
 
@@ -755,7 +826,254 @@ impl ConnectionShared {
             && state.generation == self.generation
         {
             state.meeterm_zoomed = false;
+            state.meeterm_zoomed_window = None;
             state.meeterm_zoomed_pane = None;
+        }
+        // Do not clear the durable hook record here. A transport-loss actor
+        // may have already lost active ownership while its indexed hooks (or
+        // an unknown zoom mutation) still need same-runtime reconciliation.
+        self.zoom_cleanup_pending.store(false, Ordering::Release);
+    }
+
+    fn mark_zoom_cleanup_pending(&self) {
+        self.zoom_cleanup_pending.store(true, Ordering::Release);
+    }
+
+    fn clear_zoom_cleanup_pending(&self) {
+        self.zoom_cleanup_pending.store(false, Ordering::Release);
+    }
+
+    /// Mark a surviving cleanup record as unconfirmed before its detailed
+    /// target is discarded. The owner-transition caller publishes the warning
+    /// while the record is still present, then calls the discard half below.
+    fn mark_zoom_cleanup_record_unconfirmed(&self) -> Option<CleanupWarningResult> {
+        let Ok(mut state) = self.session.lock() else {
+            return None;
+        };
+        if state.generation != self.generation {
+            return None;
+        }
+        let record = state.zoom_cleanup_record.as_mut()?;
+        record.unconfirmed = true;
+        Some(CleanupWarningResult {
+            result_id: record.result_id,
+        })
+    }
+
+    /// Discard an already-published old-binding cleanup record. This is only
+    /// called at explicit retirement, never for automatic same-runtime
+    /// recovery, and therefore cannot transfer a target to a new binding.
+    fn discard_zoom_cleanup_record(&self) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        if state.generation != self.generation || state.zoom_cleanup_record.is_none() {
+            return false;
+        }
+        state.zoom_cleanup_record = None;
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_window = None;
+        state.meeterm_zoomed_pane = None;
+        self.zoom_cleanup_pending.store(false, Ordering::Release);
+        true
+    }
+
+    fn record_zoom_cleanup_intent(
+        &self,
+        runtime: tmux::SessionEpoch,
+        window: u64,
+        pane: u64,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        if state.generation != self.generation {
+            return false;
+        }
+        let Some(endpoint) = state.endpoint.clone() else {
+            return false;
+        };
+        if let Some(existing) = state.zoom_cleanup_record.as_ref()
+            && (existing.endpoint != endpoint
+                || existing.runtime != runtime
+                || existing.window != window
+                || existing.pane != pane
+                || existing.hooks != hooks)
+        {
+            // An unconfirmed allocation is never overwritten by a new slot or
+            // a new target. The caller must reconcile/release it first.
+            return false;
+        }
+        let result_id = state
+            .zoom_cleanup_record
+            .as_ref()
+            .map(|record| record.result_id)
+            .filter(|result_id| *result_id != 0)
+            .unwrap_or_else(|| {
+                state.next_cleanup_result_id = next_nonzero_counter(state.next_cleanup_result_id);
+                state.next_cleanup_result_id
+            });
+        state.zoom_cleanup_record = Some(ZoomCleanupRecord {
+            endpoint,
+            runtime,
+            window,
+            pane,
+            hooks,
+            result_id,
+            unconfirmed: true,
+            generation: self.generation,
+        });
+        self.zoom_cleanup_pending.store(true, Ordering::Release);
+        true
+    }
+
+    fn confirm_zoom_cleanup_intent(
+        &self,
+        runtime: &tmux::SessionEpoch,
+        window: u64,
+        pane: u64,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) {
+        if let Ok(mut state) = self.session.lock()
+            && state.generation == self.generation
+            && let Some(record) = state.zoom_cleanup_record.as_mut()
+            && record.generation == self.generation
+            && record.runtime == *runtime
+            && record.window == window
+            && record.pane == pane
+            && record.hooks == hooks
+        {
+            record.unconfirmed = false;
+        }
+    }
+
+    fn zoom_cleanup_record_for(
+        &self,
+        runtime: &tmux::SessionEpoch,
+    ) -> Result<Option<ZoomCleanupRecord>, FlowFailure> {
+        let state = self.session.lock().map_err(|_| FlowFailure::Stale)?;
+        if state.generation != self.generation {
+            return Err(FlowFailure::Stale);
+        }
+        let Some(record) = state.zoom_cleanup_record.clone() else {
+            return Ok(None);
+        };
+        let endpoint = state.endpoint.clone().ok_or(FlowFailure::Stale)?;
+        if record.generation != self.generation
+            || record.endpoint != endpoint
+            || record.runtime != *runtime
+        {
+            return Err(FlowFailure::TmuxRuntimeMissing);
+        }
+        Ok(Some(record))
+    }
+
+    fn clear_zoom_cleanup_record(
+        &self,
+        runtime: &tmux::SessionEpoch,
+        window: u64,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        let matches = state.generation == self.generation
+            && state.zoom_cleanup_record.as_ref().is_some_and(|record| {
+                record.generation == self.generation
+                    && record.runtime == *runtime
+                    && record.window == window
+                    && record.hooks == hooks
+            });
+        if matches {
+            state.zoom_cleanup_record = None;
+            self.zoom_cleanup_pending.store(false, Ordering::Release);
+        }
+        matches
+    }
+
+    fn has_zoom_cleanup_intent(&self) -> bool {
+        self.zoom_cleanup_pending.load(Ordering::Acquire)
+            || self
+                .session
+                .lock()
+                .map(|state| {
+                    state.generation == self.generation
+                        && (state.meeterm_zoomed || state.zoom_cleanup_record.is_some())
+                })
+                .unwrap_or(true)
+    }
+
+    fn record_zoom_cleanup(&self, outcome: ZoomCleanupOutcome) {
+        if let Ok(mut current) = self.zoom_cleanup_outcome.lock() {
+            *current = match (*current, outcome) {
+                (ZoomCleanupOutcome::UnconfirmedOrFailed, _)
+                | (_, ZoomCleanupOutcome::UnconfirmedOrFailed) => {
+                    ZoomCleanupOutcome::UnconfirmedOrFailed
+                }
+                (ZoomCleanupOutcome::RestoredConfirmed, _)
+                | (_, ZoomCleanupOutcome::RestoredConfirmed) => {
+                    ZoomCleanupOutcome::RestoredConfirmed
+                }
+                _ => ZoomCleanupOutcome::NotNeeded,
+            };
+        }
+    }
+
+    fn zoom_cleanup_outcome(&self) -> ZoomCleanupOutcome {
+        self.zoom_cleanup_outcome
+            .lock()
+            .map(|outcome| *outcome)
+            .unwrap_or(ZoomCleanupOutcome::UnconfirmedOrFailed)
+    }
+
+    fn publish_layout_restore_warning(&self) {
+        self.publish_layout_restore_warning_for(None);
+    }
+
+    fn publish_layout_restore_warning_for(&self, result: Option<CleanupWarningResult>) {
+        let Ok(mut owned_result) = self.cleanup_warning_result.lock() else {
+            return;
+        };
+        let Ok(mut state) = self.session.lock() else {
+            return;
+        };
+        if state.generation != self.generation {
+            return;
+        }
+        let result = match (result, *owned_result) {
+            (Some(candidate), Some(current)) if candidate == current => current,
+            (Some(candidate), _) => candidate,
+            (None, Some(current)) => current,
+            (None, None) => {
+                state.next_cleanup_result_id = next_nonzero_counter(state.next_cleanup_result_id);
+                CleanupWarningResult {
+                    result_id: state.next_cleanup_result_id,
+                }
+            }
+        };
+        *owned_result = Some(result);
+        let replace =
+            state.cleanup_warning.is_none() || state.cleanup_warning_result != Some(result);
+        if replace {
+            state.next_cleanup_warning_id = next_nonzero_counter(state.next_cleanup_warning_id);
+            state.cleanup_warning = Some(CleanupWarning {
+                id: state.next_cleanup_warning_id.to_string(),
+                code: workspace::CLEANUP_WARNING_CODE.to_owned(),
+                message: workspace::CLEANUP_WARNING_MESSAGE.to_owned(),
+            });
+            state.cleanup_warning_result = Some(result);
+        }
+        drop(state);
+        drop(owned_result);
+
+        // Keep the legacy fixed C snapshot useful as a compatibility fallback,
+        // but never overwrite a newer binding's own auth/host-key diagnostic.
+        if let Ok(mut info) = self.info.lock()
+            && (info.error_code.is_empty() || info.error_code == workspace::CLEANUP_WARNING_CODE)
+        {
+            info.error_code = workspace::CLEANUP_WARNING_CODE.to_owned();
+            info.error_message = recovery_reason_message("layout_restore_unconfirmed");
         }
     }
 
@@ -1488,21 +1806,29 @@ impl ConnectionShared {
 
     fn finish(&self, result: Result<(), FlowFailure>) {
         if let Ok(mut info) = self.info.lock() {
+            if info.finished {
+                return;
+            }
             // Completion and cancellation commit under the same lock. A late
             // disconnect must not leave a finished actor permanently Closing.
             info.finished = true;
-            match result {
-                _ if self.is_cancelled() || self.explicit_cleanup_requested() => {
+            match (self.zoom_cleanup_outcome(), result) {
+                (ZoomCleanupOutcome::UnconfirmedOrFailed, _) => {
+                    info.state = ConnectionState::Disconnected;
+                    info.error_code = "layout_restore_unconfirmed".to_owned();
+                    info.error_message = recovery_reason_message("layout_restore_unconfirmed");
+                }
+                (_, _) if self.is_cancelled() || self.explicit_cleanup_requested() => {
                     info.state = ConnectionState::Disconnected
                 }
-                Ok(()) => info.state = ConnectionState::Disconnected,
-                Err(failure) if info.state != ConnectionState::Failed => {
+                (_, Ok(())) => info.state = ConnectionState::Disconnected,
+                (_, Err(failure)) if info.state != ConnectionState::Failed => {
                     let (code, message) = failure.details();
                     info.state = ConnectionState::Failed;
                     info.error_code = code.to_owned();
                     info.error_message = message.to_owned();
                 }
-                Err(_) => {}
+                (_, Err(_)) => {}
             }
             if !self.is_cancelled()
                 && !self.explicit_cleanup_requested()
@@ -1532,10 +1858,24 @@ impl ConnectionShared {
     }
 
     fn snapshot(&self) -> Result<ConnectionSnapshot, ConnectionError> {
-        self.info
+        let mut snapshot = self
+            .info
             .lock()
             .map(|info| info.snapshot())
-            .map_err(|_| ConnectionError::Internal)
+            .map_err(|_| ConnectionError::Internal)?;
+        let warning = self
+            .session
+            .lock()
+            .map(|state| state.cleanup_warning.is_some())
+            .unwrap_or(false);
+        // Preserve a new binding's own host/auth diagnostic if it has already
+        // become authoritative. The old layout result is kept separately in
+        // SessionState and was already surfaced through the warning boundary
+        // while the replacement was being prepared.
+        if warning && snapshot.error_code_len == 0 {
+            apply_layout_restore_warning(&mut snapshot);
+        }
+        Ok(snapshot)
     }
 }
 
@@ -2470,6 +2810,7 @@ fn prepare_session_endpoint(
     state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
+    state.meeterm_zoomed_window = None;
     state.meeterm_zoomed_pane = None;
     Ok(stale_terminals)
 }
@@ -2492,6 +2833,7 @@ fn prepare_host_endpoint(
     state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
+    state.meeterm_zoomed_window = None;
     state.meeterm_zoomed_pane = None;
     state.runtime_candidates.clear();
     state.runtime_discovery = RuntimeDiscoverySnapshot::default();
@@ -2537,6 +2879,7 @@ fn prepare_manual_reconnect(
     state.herdr = herdr_control::Metadata::default();
     state.selected_pane = None;
     state.meeterm_zoomed = false;
+    state.meeterm_zoomed_window = None;
     state.meeterm_zoomed_pane = None;
     state.operation_epoch = next_operation_epoch(state.operation_epoch);
     state.recovery = RecoverySnapshot::default();
@@ -2638,17 +2981,60 @@ fn wait_for_generation_finish_with_timeout(
 /// Finish the ordered explicit shutdown when possible, otherwise revoke the
 /// remaining transport and abort the actor. Keeping this fallback in one
 /// helper makes Disconnect and runtime replacement share the same bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExplicitShutdownResult {
+    finished: bool,
+    cleanup: ZoomCleanupOutcome,
+}
+
+/// Convert a surviving cleanup authority into the old-binding warning at an
+/// explicit retirement boundary. A previous actor outcome is not proof that a
+/// still-present record was released: the detailed target is retired only
+/// after this conversion has been published into SessionState/UI state.
+fn retire_explicit_cleanup_result(
+    shared: &ConnectionShared,
+    shutdown: ExplicitShutdownResult,
+    automatic_reconnect: bool,
+) -> bool {
+    if automatic_reconnect {
+        // Same-runtime recovery keeps the record for the replacement actor;
+        // transport loss alone is not an explicit retirement result.
+        return false;
+    }
+    let surviving_record = shared.mark_zoom_cleanup_record_unconfirmed();
+    if let Some(result) = surviving_record {
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        shared.publish_layout_restore_warning_for(Some(result));
+        shared.discard_zoom_cleanup_record();
+        return true;
+    }
+    if shutdown.cleanup == ZoomCleanupOutcome::UnconfirmedOrFailed {
+        shared.publish_layout_restore_warning();
+        return true;
+    }
+    false
+}
+
 fn finish_or_force_explicit_shutdown(
     runtime: &'static Runtime,
     shared: Arc<ConnectionShared>,
     abort: tokio::task::AbortHandle,
-) -> bool {
+) -> ExplicitShutdownResult {
     let finished = wait_for_generation_finish(runtime, Arc::clone(&shared));
     if !finished {
+        if shared.has_zoom_cleanup_intent() {
+            shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        }
         shared.cancel();
         abort.abort();
+        // The actor may have been aborted before it could publish finish;
+        // make the local lifecycle terminal and preserve the cleanup result.
+        shared.finish(Err(FlowFailure::Stale));
     }
-    finished
+    ExplicitShutdownResult {
+        finished,
+        cleanup: shared.zoom_cleanup_outcome(),
+    }
 }
 
 #[cfg(test)]
@@ -2657,13 +3043,20 @@ fn finish_or_force_explicit_shutdown_with_timeout(
     shared: Arc<ConnectionShared>,
     abort: tokio::task::AbortHandle,
     timeout: Duration,
-) -> bool {
+) -> ExplicitShutdownResult {
     let finished = wait_for_generation_finish_with_timeout(runtime, Arc::clone(&shared), timeout);
     if !finished {
+        if shared.has_zoom_cleanup_intent() {
+            shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        }
         shared.cancel();
         abort.abort();
+        shared.finish(Err(FlowFailure::Stale));
     }
-    finished
+    ExplicitShutdownResult {
+        finished,
+        cleanup: shared.zoom_cleanup_outcome(),
+    }
 }
 
 fn destroy_stale_terminals(generation: u64, terminals: impl IntoIterator<Item = TerminalId>) {
@@ -2711,12 +3104,20 @@ fn start_connection(
             .remove(&terminal_id)
     };
     if let Some(old) = old {
+        let old_shared = Arc::clone(&old.shared);
         old.shared.invalidate_explicitly("runtime_replaced");
         // A controller/transport that never acknowledges the explicit
         // cleanup cannot safely retain the old generation. The shared helper
         // forces both cancellation and task abort before the new generation
         // is allowed to touch SessionState.
-        let _ = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
+        let shutdown = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
+        if !reconnecting {
+            // An explicit binding retirement is the last point at which the
+            // old generation may decide what to do with its detailed cleanup
+            // target. Automatic same-runtime recovery deliberately keeps a
+            // surviving record for post-identity-verification reconciliation.
+            let _ = retire_explicit_cleanup_result(&old_shared, shutdown, reconnecting);
+        }
     }
 
     if !owner.install_allowed(ticket) {
@@ -2760,6 +3161,9 @@ fn start_connection(
         port,
         known_hosts_path.to_owned(),
     ));
+    // Explicit retirement already published its result into the owner-scoped
+    // SessionState. Do not ask this new binding to synthesize another
+    // no-record result while inheriting that warning.
     if reconnecting {
         // `ready_once` belongs to the actor, while the retained topology and
         // recovery phase belong to SessionState.  A replacement actor must
@@ -2776,9 +3180,27 @@ fn start_connection(
         // Abort completion is asynchronous. Install the new generation and
         // discard the old actor's local cleanup authority in one operation.
         state.generation = generation;
+        if reconnecting
+            && let ConnectionStart::AutomaticReconnect(profile) = &start
+            && let Some(identity) = profile.tmux_identity.as_ref()
+            && let Some(record) = state.zoom_cleanup_record.as_mut()
+            && record.endpoint == SessionEndpoint::from_profile(profile)
+            && record.runtime == identity.epoch()
+        {
+            // The connection-scoped record is intentionally retained across
+            // this same-runtime actor replacement, but its generation gate
+            // moves atomically with the replacement. An old actor still
+            // fails its state-generation checks and cannot clear it later.
+            record.generation = generation;
+        }
         if !reconnecting {
             state.meeterm_zoomed = false;
+            state.meeterm_zoomed_window = None;
             state.meeterm_zoomed_pane = None;
+            // A manual/fresh binding is never allowed to inherit a cleanup
+            // target from another host, backend, or runtime. The old shared
+            // actor already had its bounded cleanup opportunity above.
+            state.zoom_cleanup_record = None;
         }
         // Candidate IDs are scoped to the connection generation. A reconnect
         // must not expose or accept the previous generation's picker IDs
@@ -2866,13 +3288,25 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
     // pending forever.
     match runtime() {
         Ok(runtime) => {
-            let _ = finish_or_force_explicit_shutdown(runtime, shared, abort);
+            let shutdown = finish_or_force_explicit_shutdown(runtime, Arc::clone(&shared), abort);
+            let _ = retire_explicit_cleanup_result(&shared, shutdown, false);
         }
         Err(_) => {
             // An active connection implies the native runtime exists, but a
             // poisoned/unavailable runtime must still fail closed.
+            let retired_record = shared.mark_zoom_cleanup_record_unconfirmed();
+            if retired_record.is_some() || shared.has_zoom_cleanup_intent() {
+                shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+                if let Some(result) = retired_record {
+                    shared.publish_layout_restore_warning_for(Some(result));
+                    shared.discard_zoom_cleanup_record();
+                } else {
+                    shared.publish_layout_restore_warning();
+                }
+            }
             shared.cancel();
             abort.abort();
+            shared.finish(Err(FlowFailure::Stale));
         }
     }
     Ok(())
@@ -2938,7 +3372,17 @@ pub fn connection_snapshot(terminal_id: TerminalId) -> Result<ConnectionSnapshot
     entries
         .get(&terminal_id)
         .map(|entry| entry.shared.snapshot())
-        .unwrap_or_else(|| Ok(ConnectionSnapshot::disconnected()))
+        .unwrap_or_else(|| {
+            let mut snapshot = ConnectionSnapshot::disconnected();
+            if session_state(terminal_id)
+                .lock()
+                .map(|state| state.cleanup_warning.is_some())
+                .unwrap_or(false)
+            {
+                apply_layout_restore_warning(&mut snapshot);
+            }
+            Ok(snapshot)
+        })
 }
 
 /// Answer the one-shot prompt for a previously unknown host key.
@@ -3374,6 +3818,11 @@ fn next_operation_epoch(current: u64) -> u64 {
     if next == 0 { 1 } else { next }
 }
 
+fn next_nonzero_counter(current: u64) -> u64 {
+    let next = current.wrapping_add(1);
+    if next == 0 { 1 } else { next }
+}
+
 fn sanitize_recovery_reason(reason: &str) -> String {
     let mut sanitized = String::with_capacity(reason.len().min(ERROR_CODE_CAPACITY));
     for byte in reason.bytes().take(ERROR_CODE_CAPACITY) {
@@ -3409,6 +3858,10 @@ fn recovery_reason_message(reason: &str) -> String {
         "controller_conflict" => "Another controller owns the selected Herdr terminal.".to_owned(),
         "explicit_disconnect" => "The connection was disconnected.".to_owned(),
         "runtime_changed" => "The runtime selection is being changed.".to_owned(),
+        "layout_restore_unconfirmed" => {
+            "The connection closed, but the desktop layout could not be confirmed as restored."
+                .to_owned()
+        }
         "retry_exhausted" => {
             "Automatic recovery stopped; retry or choose another runtime.".to_owned()
         }
@@ -4534,6 +4987,7 @@ fn clear_runtime_binding(shared: &ConnectionShared) -> Result<(), FlowFailure> {
         state.herdr = herdr_control::Metadata::default();
         state.selected_pane = None;
         state.meeterm_zoomed = false;
+        state.meeterm_zoomed_window = None;
         state.meeterm_zoomed_pane = None;
         state.operation_epoch = next_operation_epoch(state.operation_epoch);
         state.recovery = RecoverySnapshot::default();
@@ -4923,6 +5377,19 @@ fn copy_string(destination: &mut [u8], length: &mut u16, value: &str) {
     *length = u16::try_from(end).unwrap_or(u16::MAX);
 }
 
+fn apply_layout_restore_warning(snapshot: &mut ConnectionSnapshot) {
+    copy_string(
+        &mut snapshot.error_code,
+        &mut snapshot.error_code_len,
+        "layout_restore_unconfirmed",
+    );
+    copy_string(
+        &mut snapshot.error_message,
+        &mut snapshot.error_message_len,
+        &recovery_reason_message("layout_restore_unconfirmed"),
+    );
+}
+
 mod trust {
     use super::*;
 
@@ -5184,12 +5651,76 @@ mod tests {
     use super::*;
     use crate::input::Modifiers;
     use crate::terminal::SemanticInput;
+    use russh::server::{self, Server as RusshServer};
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     const KEY_ONE: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     const KEY_TWO: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
+    const REJECTING_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCNNbbvSY1uv05KifUyTIJTMcQmVLwLgoh4mdErq34PywAAAJj4uZ/y+Lmf
+8gAAAAtzc2gtZWQyNTUxOQAAACCNNbbvSY1uv05KifUyTIJTMcQmVLwLgoh4mdErq34Pyw
+AAAEAKNpCN3J9WmHgxbJaAqFwXWdMgDpg1y2YYi7bhOvXHaY01tu9JjW6/TkqJ9TJMglMx
+xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
+-----END OPENSSH PRIVATE KEY-----";
+
+    struct RejectingServer;
+
+    impl RusshServer for RejectingServer {
+        type Handler = Self;
+
+        fn new_client(&mut self, _peer_addr: Option<std::net::SocketAddr>) -> Self::Handler {
+            Self
+        }
+    }
+
+    impl server::Handler for RejectingServer {
+        type Error = russh::Error;
+    }
+
+    fn start_rejecting_ssh_server() -> (
+        u16,
+        server::RunningServerHandle,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
+        let join = std::thread::spawn(move || {
+            let runtime = Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .expect("rejecting SSH test runtime");
+            runtime.block_on(async move {
+                let listener = TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .expect("bind rejecting SSH test server");
+                let host_key = keys::decode_secret_key(REJECTING_SERVER_KEY, None)
+                    .expect("decode rejecting SSH host key");
+                let config = Arc::new(server::Config {
+                    keys: vec![host_key],
+                    auth_rejection_time: Duration::from_millis(0),
+                    auth_rejection_time_initial: Some(Duration::from_millis(0)),
+                    ..Default::default()
+                });
+                let mut server = RejectingServer;
+                let running = server.run_on_socket(config, &listener);
+                let handle = running.handle();
+                ready_sender
+                    .send((
+                        listener.local_addr().expect("rejecting SSH address").port(),
+                        handle,
+                    ))
+                    .expect("publish rejecting SSH server");
+                let _ = running.await;
+            });
+        });
+        let (port, handle) = ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("rejecting SSH server startup");
+        (port, handle, join)
+    }
 
     enum FixtureInputReceiver {
         Bytes(mpsc::Receiver<Vec<u8>>),
@@ -6185,13 +6716,1006 @@ mod tests {
         // Zero is a deterministic test bound for the same helper used by the
         // production three-second fallback. A non-finishing actor is hard
         // cancelled and aborted rather than leaving Disconnect blocked.
-        assert!(!finish_or_force_explicit_shutdown_with_timeout(
+        assert!(
+            !finish_or_force_explicit_shutdown_with_timeout(
+                runtime,
+                Arc::clone(&shared),
+                abort,
+                Duration::ZERO,
+            )
+            .finished
+        );
+        assert!(shared.is_cancelled());
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn unconfirmed_zoom_cleanup_is_visible_after_forced_disconnect() {
+        let owner = registry::create_terminal(80, 24).expect("unconfirmed cleanup terminal");
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            next_generation(),
+            "unconfirmed-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/unconfirmed-cleanup-known-hosts"),
+        ));
+        {
+            let mut state = shared.session.lock().expect("unconfirmed cleanup session");
+            state.generation = shared.generation;
+            state.meeterm_zoomed = true;
+            state.meeterm_zoomed_window = Some(1);
+            state.meeterm_zoomed_pane = Some(17);
+        }
+        shared.invalidate_explicitly("explicit_disconnect");
+        let runtime = runtime().expect("native runtime");
+        let abort = runtime.spawn(std::future::pending::<()>()).abort_handle();
+
+        let result = finish_or_force_explicit_shutdown_with_timeout(
             runtime,
             Arc::clone(&shared),
             abort,
             Duration::ZERO,
+        );
+        assert!(!result.finished);
+        assert_eq!(result.cleanup, ZoomCleanupOutcome::UnconfirmedOrFailed);
+        let snapshot = shared.snapshot().expect("unconfirmed cleanup snapshot");
+        assert_eq!(snapshot.state, ConnectionState::Disconnected as u32);
+        assert_eq!(
+            std::str::from_utf8(&snapshot.error_code[..usize::from(snapshot.error_code_len)])
+                .expect("cleanup error code UTF-8"),
+            "layout_restore_unconfirmed"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn explicit_retirement_promotes_surviving_record_after_finished_actor() {
+        let cases = [
+            (1_021, true, ZoomCleanupOutcome::NotNeeded),
+            (1_022, false, ZoomCleanupOutcome::NotNeeded),
+            (1_023, false, ZoomCleanupOutcome::RestoredConfirmed),
+        ];
+        for (index, unconfirmed, prior_outcome) in cases {
+            let owner = registry::create_terminal(80, 24).expect("retirement owner terminal");
+            let generation = next_generation();
+            let shared = Arc::new(ConnectionShared::new(
+                owner,
+                generation,
+                "retirement.example.test".to_owned(),
+                22,
+                PathBuf::from("/tmp/retirement-known-hosts"),
+            ));
+            let runtime_identity = tmux::SessionEpoch {
+                session_id: "$21".to_owned(),
+                server_pid: 21,
+                server_start_time: 2_100_000_000,
+            };
+            let hooks = tmux::ZoomRecoveryHookAllocation { index };
+            {
+                let mut state = shared.session.lock().expect("retirement state");
+                state.generation = generation;
+                state.endpoint = Some(SessionEndpoint {
+                    host: "retirement.example.test".to_owned(),
+                    port: 22,
+                    username: "fixture".to_owned(),
+                    known_hosts_path: PathBuf::from("/tmp/retirement-known-hosts"),
+                    backend: Backend::Tmux,
+                    runtime: Some("$21".to_owned()),
+                });
+            }
+            assert!(shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+            if !unconfirmed {
+                shared
+                    .session
+                    .lock()
+                    .expect("confirmed retirement state")
+                    .zoom_cleanup_record
+                    .as_mut()
+                    .expect("retirement record")
+                    .unconfirmed = false;
+            }
+            shared.record_zoom_cleanup(prior_outcome);
+            // The old actor has already finished, so the normal shutdown
+            // helper reports its prior outcome and cannot perform cleanup.
+            shared.finish(Ok(()));
+            let abort = runtime()
+                .expect("retirement runtime")
+                .spawn(std::future::pending::<()>())
+                .abort_handle();
+            let shutdown = finish_or_force_explicit_shutdown(
+                runtime().expect("retirement runtime"),
+                Arc::clone(&shared),
+                abort,
+            );
+            assert!(shutdown.finished);
+            assert_eq!(shutdown.cleanup, prior_outcome);
+
+            assert!(retire_explicit_cleanup_result(&shared, shutdown, false));
+            assert!(
+                shared
+                    .zoom_cleanup_record_for(&runtime_identity)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            );
+            let snapshot = shared.snapshot().expect("retirement warning snapshot");
+            assert_eq!(
+                &snapshot.error_code[..usize::from(snapshot.error_code_len)],
+                b"layout_restore_unconfirmed"
+            );
+            let no_binding_snapshot =
+                connection_snapshot(owner).expect("warning survives missing replacement");
+            assert_eq!(
+                &no_binding_snapshot.error_code[..usize::from(no_binding_snapshot.error_code_len)],
+                b"layout_restore_unconfirmed"
+            );
+            assert!(
+                shared
+                    .session
+                    .lock()
+                    .expect("retirement warning state")
+                    .cleanup_warning
+                    .is_some()
+            );
+            registry::destroy_terminal(owner);
+        }
+    }
+
+    #[test]
+    fn replacement_auth_failure_keeps_old_cleanup_warning_in_workspace_json() {
+        let (port, server_handle, server_join) = start_rejecting_ssh_server();
+        let owner = registry::create_terminal(80, 24).expect("owner transition terminal");
+        let old_generation = next_generation();
+        let old_shared = Arc::new(ConnectionShared::new(
+            owner,
+            old_generation,
+            "127.0.0.1".to_owned(),
+            port,
+            PathBuf::from(format!("/tmp/replacement-auth-{owner}-known-hosts")),
         ));
-        assert!(shared.is_cancelled());
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$30".to_owned(),
+            server_pid: 30,
+            server_start_time: 3_000_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_034 };
+        let known_hosts_path = PathBuf::from(format!("/tmp/replacement-auth-{owner}-known-hosts"));
+        let host_key = keys::decode_secret_key(REJECTING_SERVER_KEY, None)
+            .expect("decode rejecting host key for known-hosts");
+        let public_key = host_key
+            .public_key()
+            .to_openssh()
+            .expect("encode rejecting host key");
+        fs::write(
+            &known_hosts_path,
+            format!("[127.0.0.1]:{port} {public_key}\n"),
+        )
+        .expect("write rejecting host known-hosts");
+        {
+            let mut state = old_shared.session.lock().expect("owner transition state");
+            state.generation = old_generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "127.0.0.1".to_owned(),
+                port,
+                username: "fixture".to_owned(),
+                known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: Some(runtime_identity.session_id.clone()),
+            });
+        }
+        assert!(old_shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks,));
+        // The finished actor is the explicit owner-retirement precondition;
+        // start_connection must now retire this record before installing the
+        // replacement generation.
+        old_shared.finish(Ok(()));
+        let old_abort = runtime()
+            .expect("owner transition runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections()
+            .lock()
+            .expect("owner transition registry")
+            .insert(
+                owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&old_shared),
+                    abort: old_abort,
+                },
+            );
+
+        connect_terminal(
+            owner,
+            ConnectOptions {
+                host: "127.0.0.1".to_owned(),
+                port,
+                username: "fixture".to_owned(),
+                credentials: AuthOptions::password("wrong-password".to_owned()),
+                known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: None,
+            },
+        )
+        .expect("start rejecting replacement");
+        let replacement = connections()
+            .lock()
+            .expect("replacement registry")
+            .get(&owner)
+            .map(|entry| Arc::clone(&entry.shared))
+            .expect("replacement shared owner");
+
+        // Read the native actor directly until auth has failed. The public
+        // snapshot APIs are intentionally not read before this point, so the
+        // first published read observes both independent result channels.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let finished = replacement.info.lock().expect("replacement info").finished;
+            if finished {
+                break;
+            }
+            assert!(Instant::now() < deadline, "replacement auth did not fail");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let connection = connection_snapshot(owner).expect("replacement connection snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"auth_failed"
+        );
+        let first: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("replacement workspace snapshot"),
+        )
+        .expect("replacement workspace JSON");
+        let warning = first["control"]["cleanupWarning"].clone();
+        assert_eq!(warning["code"], "layout_restore_unconfirmed");
+        assert!(warning["id"].as_str().is_some_and(|id| !id.is_empty()));
+        let second: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("replacement repeated workspace snapshot"),
+        )
+        .expect("replacement repeated workspace JSON");
+        assert_eq!(second["control"]["cleanupWarning"]["id"], warning["id"]);
+        assert_eq!(
+            replacement
+                .info
+                .lock()
+                .expect("replacement auth info")
+                .error_code,
+            "auth_failed"
+        );
+
+        server_handle.shutdown("replacement auth test complete".to_owned());
+        server_join.join().expect("rejoining rejecting SSH server");
+        terminal_destroyed(owner);
+        registry::destroy_terminal(owner);
+        let _ = fs::remove_file(known_hosts_path);
+    }
+
+    #[test]
+    fn credential_preparation_failure_keeps_old_cleanup_warning_in_workspace_json() {
+        let owner = registry::create_terminal(80, 24).expect("credential-prep owner terminal");
+        let known_hosts_path = PathBuf::from(format!("/tmp/credential-prep-{owner}-known-hosts"));
+        let old_shared = ConnectionShared::new(
+            owner,
+            0,
+            "credential-prep-old.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        );
+        // Seed the old operation without installing an active binding. The
+        // real connect_host path below must retain this warning while its
+        // non-empty but invalid key fails during credential preparation.
+        old_shared.publish_layout_restore_warning();
+        let initial: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("credential-prep initial warning"),
+        )
+        .expect("credential-prep initial warning JSON");
+
+        connect_host(
+            owner,
+            ConnectOptions {
+                host: "credential-prep.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                credentials: AuthOptions::public_key(
+                    "not-a-private-key-but-non-empty".to_owned(),
+                    None,
+                ),
+                known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: None,
+            },
+        )
+        .expect("start credential-prep failure");
+        let replacement = connections()
+            .lock()
+            .expect("credential-prep registry")
+            .get(&owner)
+            .map(|entry| Arc::clone(&entry.shared))
+            .expect("credential-prep replacement shared");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let finished = replacement
+                .info
+                .lock()
+                .expect("credential-prep info")
+                .finished;
+            if finished {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "credential preparation did not fail"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let connection = connection_snapshot(owner).expect("credential-prep connection snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"key_file"
+        );
+        let first: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("credential-prep workspace snapshot"),
+        )
+        .expect("credential-prep workspace JSON");
+        assert_eq!(
+            first["control"]["cleanupWarning"]["id"],
+            initial["control"]["cleanupWarning"]["id"]
+        );
+        let second: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("credential-prep repeated workspace snapshot"),
+        )
+        .expect("credential-prep repeated workspace JSON");
+        assert_eq!(
+            second["control"]["cleanupWarning"]["id"],
+            first["control"]["cleanupWarning"]["id"]
+        );
+        assert_eq!(
+            replacement
+                .info
+                .lock()
+                .expect("credential-prep final info")
+                .error_code,
+            "key_file"
+        );
+        assert!(
+            session_state(owner).lock().is_ok(),
+            "session state was poisoned"
+        );
+
+        terminal_destroyed(owner);
+        registry::destroy_terminal(owner);
+        let _ = fs::remove_file(known_hosts_path);
+    }
+
+    #[test]
+    fn cleanup_warning_survives_preparation_cancel_ready_and_stale_generation() {
+        let owner = registry::create_terminal(80, 24).expect("warning lifecycle terminal");
+        let generation = next_generation();
+        let known_hosts_path = PathBuf::from(format!("/tmp/warning-lifecycle-{owner}"));
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "warning-lifecycle.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("warning lifecycle session")
+            .generation = generation;
+        shared.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 7 }));
+        let initial: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("initial warning workspace JSON"),
+        )
+        .expect("initial warning JSON");
+        assert_eq!(initial["control"]["cleanupWarning"]["id"], "1");
+
+        let options = ConnectOptions {
+            host: "warning-lifecycle.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            credentials: AuthOptions::password("fixture-only".to_owned()),
+            known_hosts_path: known_hosts_path.clone(),
+            backend: Backend::Tmux,
+            runtime: None,
+        };
+        let _ = prepare_host_endpoint(owner, &options).expect("prepare host endpoint");
+        let after_prepare: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("prepared warning workspace JSON"),
+        )
+        .expect("prepared warning JSON");
+        assert_eq!(
+            after_prepare["control"]["cleanupWarning"]["id"],
+            initial["control"]["cleanupWarning"]["id"]
+        );
+
+        // A canceled/prepared generation without a map binding must not clear
+        // the owner-scoped result. This is the same fail-closed path used
+        // when a replacement loses its owner ticket before map installation.
+        let replacement_generation = next_generation();
+        let replacement = Arc::new(ConnectionShared::new(
+            owner,
+            replacement_generation,
+            "warning-lifecycle.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        ));
+        replacement
+            .session
+            .lock()
+            .expect("replacement warning session")
+            .generation = replacement_generation;
+        // Publishing the same result and reaching Ready keep one warning ID;
+        // a distinct cleanup result is the only event that advances it.
+        replacement.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 7 }));
+        replacement.set_state(ConnectionState::Ready);
+        let ready: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("ready warning workspace JSON"),
+        )
+        .expect("ready warning JSON");
+        assert_eq!(ready["control"]["cleanupWarning"]["id"], "1");
+
+        registry::begin_remote(owner, replacement_generation).expect("canceled remote binding");
+        abandon_uninstalled_connection(&replacement, std::iter::empty());
+        assert!(replacement.is_cancelled());
+        assert!(registry::send_bytes(owner, b"cancelled-input").is_err());
+        assert!(refresh_terminal(owner).is_err());
+        replacement.set_state(ConnectionState::Ready);
+        assert_ne!(
+            replacement
+                .snapshot()
+                .expect("canceled replacement snapshot")
+                .state,
+            ConnectionState::Ready as u32
+        );
+        assert!(
+            !session_state(owner)
+                .lock()
+                .expect("canceled replacement readiness")
+                .runtime_operations_ready
+        );
+        let after_cancel: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("canceled warning workspace JSON"),
+        )
+        .expect("canceled warning JSON");
+        assert_eq!(
+            after_cancel["control"]["cleanupWarning"]["id"],
+            initial["control"]["cleanupWarning"]["id"]
+        );
+
+        replacement.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 8 }));
+        let newer: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("newer warning workspace JSON"),
+        )
+        .expect("newer warning JSON");
+        assert_eq!(newer["control"]["cleanupWarning"]["id"], "2");
+
+        // A completion from the old owner generation cannot overwrite the
+        // newer result after the shared SessionState generation rebases. It
+        // must also be rejected before a no-record result can mint an ID.
+        let result_counter_before_stale = session_state(owner)
+            .lock()
+            .expect("stale warning counter before")
+            .next_cleanup_result_id;
+        shared.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 9 }));
+        let stale_no_record = ConnectionShared::new(
+            owner,
+            generation,
+            "warning-lifecycle.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        );
+        stale_no_record.publish_layout_restore_warning();
+        assert_eq!(
+            session_state(owner)
+                .lock()
+                .expect("stale warning counter after")
+                .next_cleanup_result_id,
+            result_counter_before_stale
+        );
+        let after_stale: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("stale warning workspace JSON"),
+        )
+        .expect("stale warning JSON");
+        assert_eq!(after_stale["control"]["cleanupWarning"]["id"], "2");
+        registry::destroy_terminal(owner);
+        let _ = fs::remove_file(known_hosts_path);
+    }
+
+    #[test]
+    fn cleanup_warning_ids_distinguish_record_and_no_record_results() {
+        let owner = registry::create_terminal(80, 24).expect("cleanup result identity terminal");
+        let generation = next_generation();
+        let known_hosts_path = PathBuf::from(format!("/tmp/cleanup-result-identity-{owner}"));
+        let shared = ConnectionShared::new(
+            owner,
+            generation,
+            "cleanup-result-identity.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        );
+        {
+            let mut state = shared
+                .session
+                .lock()
+                .expect("cleanup result identity state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "cleanup-result-identity.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: Some("meeterm".to_owned()),
+            });
+        }
+
+        // No-record result A owns one identity and every re-publication from
+        // this actor keeps it.
+        shared.publish_layout_restore_warning();
+        let first: serde_json::Value =
+            serde_json::from_str(&workspace_snapshot_json(owner).expect("first no-record warning"))
+                .expect("first no-record warning JSON");
+        shared.publish_layout_restore_warning();
+        let first_republished: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("republished no-record warning"),
+        )
+        .expect("republished no-record warning JSON");
+        assert_eq!(
+            first["control"]["cleanupWarning"]["id"],
+            first_republished["control"]["cleanupWarning"]["id"]
+        );
+
+        // A binding handoff inherits the owner-scoped warning without
+        // republishing it as a new no-record failure.
+        let handoff_generation = next_generation();
+        {
+            let session = session_state(owner);
+            let mut state = session.lock().expect("cleanup handoff state");
+            state.generation = handoff_generation;
+        }
+        let handoff = ConnectionShared::new(
+            owner,
+            handoff_generation,
+            "cleanup-result-identity.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        );
+        let after_handoff: serde_json::Value =
+            serde_json::from_str(&workspace_snapshot_json(owner).expect("handed-off warning"))
+                .expect("handed-off warning JSON");
+        assert_eq!(
+            after_handoff["control"]["cleanupWarning"]["id"],
+            first["control"]["cleanupWarning"]["id"]
+        );
+
+        // Record-backed result B receives a different owner-scoped internal
+        // identity, even though the visible warning is still single-valued.
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$identity".to_owned(),
+            server_pid: 44,
+            server_start_time: 4_400_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_044 };
+        assert!(handoff.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+        let record_result = handoff
+            .session
+            .lock()
+            .expect("record-backed warning state")
+            .zoom_cleanup_record
+            .as_ref()
+            .map(|record| CleanupWarningResult {
+                result_id: record.result_id,
+            })
+            .expect("record-backed cleanup result");
+        handoff.publish_layout_restore_warning_for(Some(record_result));
+        let second: serde_json::Value =
+            serde_json::from_str(&workspace_snapshot_json(owner).expect("record-backed warning"))
+                .expect("record-backed warning JSON");
+        assert_ne!(
+            first["control"]["cleanupWarning"]["id"],
+            second["control"]["cleanupWarning"]["id"]
+        );
+
+        // Discarding the durable record does not turn B into a new no-record
+        // result on the same explicit-retirement actor.
+        assert!(handoff.discard_zoom_cleanup_record());
+        handoff.publish_layout_restore_warning();
+        let second_republished: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("discarded record warning"),
+        )
+        .expect("discarded record warning JSON");
+        assert_eq!(
+            second["control"]["cleanupWarning"]["id"],
+            second_republished["control"]["cleanupWarning"]["id"]
+        );
+
+        // A new binding with a new no-record result gets a new identity. A
+        // second no-record actor gets another one, so None never aliases all
+        // no-record outcomes.
+        let next_binding_generation = next_generation();
+        {
+            let session = session_state(owner);
+            let mut state = session.lock().expect("next cleanup binding state");
+            state.generation = next_binding_generation;
+        }
+        let next = ConnectionShared::new(
+            owner,
+            next_binding_generation,
+            "cleanup-result-identity.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        );
+        next.publish_layout_restore_warning();
+        let third: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("second no-record warning"),
+        )
+        .expect("second no-record warning JSON");
+        assert_ne!(
+            second_republished["control"]["cleanupWarning"]["id"],
+            third["control"]["cleanupWarning"]["id"]
+        );
+        let another_binding_generation = next_generation();
+        {
+            let session = session_state(owner);
+            let mut state = session.lock().expect("another cleanup binding state");
+            state.generation = another_binding_generation;
+        }
+        let another = ConnectionShared::new(
+            owner,
+            another_binding_generation,
+            "cleanup-result-identity.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        );
+        another.publish_layout_restore_warning();
+        let fourth: serde_json::Value =
+            serde_json::from_str(&workspace_snapshot_json(owner).expect("third no-record warning"))
+                .expect("third no-record warning JSON");
+        assert_ne!(
+            third["control"]["cleanupWarning"]["id"],
+            fourth["control"]["cleanupWarning"]["id"]
+        );
+
+        registry::destroy_terminal(owner);
+        let _ = fs::remove_file(known_hosts_path);
+    }
+
+    #[test]
+    fn ready_commit_boundary_keeps_unobserved_cleanup_warning() {
+        let (owner, shared) = recovery_fixture();
+        shared.publish_layout_restore_warning();
+        let before: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("ready-commit warning before"),
+        )
+        .expect("ready-commit warning before JSON");
+        let expected_epoch = shared.operation_epoch();
+
+        assert!(
+            shared
+                .commit_ready_at_epoch_result(expected_epoch, |_| Ok(()))
+                .is_ok(),
+            "production Ready commit boundary"
+        );
+
+        assert_eq!(
+            shared
+                .info
+                .lock()
+                .expect("ready-commit connection info")
+                .state,
+            ConnectionState::Ready
+        );
+        let state = session_state(owner);
+        let state = state.lock().expect("ready-commit session state");
+        assert!(state.runtime_operations_ready);
+        drop(state);
+        let after: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("ready-commit warning after"),
+        )
+        .expect("ready-commit warning after JSON");
+        assert_eq!(
+            after["control"]["cleanupWarning"]["id"],
+            before["control"]["cleanupWarning"]["id"]
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn automatic_recovery_retirement_keeps_record_without_warning() {
+        let owner = registry::create_terminal(80, 24).expect("automatic retirement terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "automatic-retirement.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/automatic-retirement-known-hosts"),
+        ));
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$22".to_owned(),
+            server_pid: 22,
+            server_start_time: 2_200_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_024 };
+        {
+            let mut state = shared.session.lock().expect("automatic retirement state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "automatic-retirement.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/automatic-retirement-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$22".to_owned()),
+            });
+        }
+        assert!(shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+        shared.finish(Err(FlowFailure::Transport));
+        let abort = runtime()
+            .expect("automatic retirement runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let shutdown = finish_or_force_explicit_shutdown(
+            runtime().expect("automatic retirement runtime"),
+            Arc::clone(&shared),
+            abort,
+        );
+        assert!(!retire_explicit_cleanup_result(&shared, shutdown, true));
+        assert!(
+            shared
+                .zoom_cleanup_record_for(&runtime_identity)
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        let snapshot = shared.snapshot().expect("automatic recovery snapshot");
+        assert_ne!(
+            &snapshot.error_code[..usize::from(snapshot.error_code_len)],
+            b"layout_restore_unconfirmed"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn authoritative_record_clearance_does_not_publish_retirement_warning() {
+        let owner = registry::create_terminal(80, 24).expect("cleared retirement terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "cleared-retirement.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/cleared-retirement-known-hosts"),
+        ));
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$23".to_owned(),
+            server_pid: 23,
+            server_start_time: 2_300_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_025 };
+        {
+            let mut state = shared.session.lock().expect("cleared retirement state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "cleared-retirement.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/cleared-retirement-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$23".to_owned()),
+            });
+        }
+        assert!(shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+        assert!(shared.clear_zoom_cleanup_record(&runtime_identity, 23, hooks));
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::RestoredConfirmed);
+        shared.finish(Ok(()));
+        let abort = runtime()
+            .expect("cleared retirement runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let shutdown = finish_or_force_explicit_shutdown(
+            runtime().expect("cleared retirement runtime"),
+            Arc::clone(&shared),
+            abort,
+        );
+        assert!(!retire_explicit_cleanup_result(&shared, shutdown, false));
+        assert_eq!(
+            shared
+                .snapshot()
+                .expect("cleared retirement snapshot")
+                .error_code_len,
+            0
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn cleanup_outcome_is_sticky_across_late_success_reports() {
+        let owner = registry::create_terminal(80, 24).expect("cleanup outcome terminal");
+        let shared = ConnectionShared::new(
+            owner,
+            next_generation(),
+            "cleanup-outcome.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/cleanup-outcome-known-hosts"),
+        );
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::RestoredConfirmed);
+        assert_eq!(
+            shared.zoom_cleanup_outcome(),
+            ZoomCleanupOutcome::RestoredConfirmed
+        );
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        assert_eq!(
+            shared.zoom_cleanup_outcome(),
+            ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::RestoredConfirmed);
+        assert_eq!(
+            shared.zoom_cleanup_outcome(),
+            ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn zoom_cleanup_record_survives_active_ownership_clear_and_rejects_overwrite() {
+        let owner = registry::create_terminal(80, 24).expect("durable cleanup terminal");
+        let generation = next_generation();
+        let shared = ConnectionShared::new(
+            owner,
+            generation,
+            "durable-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/durable-cleanup-known-hosts"),
+        );
+        {
+            let mut state = shared.session.lock().expect("durable cleanup state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "durable-cleanup.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/durable-cleanup-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$7".to_owned()),
+            });
+            state.meeterm_zoomed = true;
+            state.meeterm_zoomed_window = Some(23);
+            state.meeterm_zoomed_pane = Some(41);
+        }
+        let runtime = tmux::SessionEpoch {
+            session_id: "$7".to_owned(),
+            server_pid: 700,
+            server_start_time: 1_700_000_000,
+        };
+        let first = tmux::ZoomRecoveryHookAllocation { index: 1_007 };
+        assert!(shared.record_zoom_cleanup_intent(runtime.clone(), 23, 41, first));
+        shared.clear_owned_zoom();
+        let retained = shared
+            .zoom_cleanup_record_for(&runtime)
+            .ok()
+            .flatten()
+            .expect("retained cleanup record");
+        assert!(retained.unconfirmed);
+        assert_eq!(retained.window, 23);
+        assert_eq!(retained.pane, 41);
+        assert_eq!(retained.hooks, first);
+
+        let replacement = tmux::ZoomRecoveryHookAllocation { index: 1_008 };
+        assert!(!shared.record_zoom_cleanup_intent(runtime.clone(), 99, 41, replacement));
+        let still_first = shared
+            .zoom_cleanup_record_for(&runtime)
+            .ok()
+            .flatten()
+            .expect("original record remains");
+        assert_eq!(still_first.window, 23);
+        assert_eq!(still_first.hooks, first);
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn zoom_cleanup_record_is_scoped_to_runtime_and_generation_for_late_completion() {
+        let owner = registry::create_terminal(80, 24).expect("generation cleanup terminal");
+        let old_generation = next_generation();
+        let new_generation = old_generation + 1;
+        let old_shared = ConnectionShared::new(
+            owner,
+            old_generation,
+            "generation-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/generation-cleanup-known-hosts"),
+        );
+        let endpoint = SessionEndpoint {
+            host: "generation-cleanup.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/generation-cleanup-known-hosts"),
+            backend: Backend::Tmux,
+            runtime: Some("$8".to_owned()),
+        };
+        let runtime = tmux::SessionEpoch {
+            session_id: "$8".to_owned(),
+            server_pid: 800,
+            server_start_time: 1_800_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_009 };
+        {
+            let mut state = old_shared.session.lock().expect("old generation state");
+            state.generation = old_generation;
+            state.endpoint = Some(endpoint.clone());
+        }
+        assert!(old_shared.record_zoom_cleanup_intent(runtime.clone(), 31, 51, hooks));
+
+        // Model the atomic generation rebase performed only for an exact
+        // same-runtime automatic reconnect. The old actor still fails its
+        // generation gate and cannot clear the new actor's record.
+        {
+            let mut state = old_shared.session.lock().expect("rebased generation state");
+            state.generation = new_generation;
+            state
+                .zoom_cleanup_record
+                .as_mut()
+                .expect("record before rebase")
+                .generation = new_generation;
+        }
+        let new_shared = ConnectionShared::new(
+            owner,
+            new_generation,
+            "generation-cleanup.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/generation-cleanup-known-hosts"),
+        );
+        assert!(
+            new_shared
+                .zoom_cleanup_record_for(&runtime)
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        assert!(!old_shared.clear_zoom_cleanup_record(&runtime, 31, hooks));
+        assert!(new_shared.clear_zoom_cleanup_record(&runtime, 31, hooks));
+        assert!(
+            new_shared
+                .zoom_cleanup_record_for(&runtime)
+                .ok()
+                .flatten()
+                .is_none()
+        );
+
+        // A different server epoch cannot inherit the saved authority.
+        let mismatched_runtime = tmux::SessionEpoch {
+            session_id: "$8".to_owned(),
+            server_pid: 801,
+            server_start_time: 1_800_000_000,
+        };
+        {
+            let mut state = new_shared.session.lock().expect("mismatch record state");
+            state.zoom_cleanup_record = Some(ZoomCleanupRecord {
+                endpoint,
+                runtime: runtime.clone(),
+                window: 31,
+                pane: 51,
+                hooks,
+                result_id: 1,
+                unconfirmed: true,
+                generation: new_generation,
+            });
+        }
+        assert!(matches!(
+            new_shared.zoom_cleanup_record_for(&mismatched_runtime),
+            Err(FlowFailure::TmuxRuntimeMissing)
+        ));
+        assert!(
+            new_shared
+                .session
+                .lock()
+                .expect("mismatch record retained")
+                .zoom_cleanup_record
+                .is_some()
+        );
         registry::destroy_terminal(owner);
     }
 
@@ -6787,11 +8311,16 @@ mod tests {
     }
 
     #[test]
-    fn changed_host_key_stops_retained_recovery_without_retry() {
+    fn changed_host_key_stops_retained_recovery_without_retry_and_keeps_cleanup_warning() {
         let (owner, shared) = recovery_fixture();
         let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
         let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
         let before_epoch = shared.operation_epoch();
+        shared.publish_layout_restore_warning();
+        let warning_before: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("changed-key warning before"),
+        )
+        .expect("changed-key warning before JSON");
 
         // This is the callback state committed before russh reports the
         // refusal. The presented and known fingerprints must remain visible
@@ -6871,6 +8400,14 @@ mod tests {
             &retained_terminal,
             &registry::shared_terminal(owner).expect("retained terminal after key failure")
         ));
+        let warning_after: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("changed-key warning after"),
+        )
+        .expect("changed-key warning after JSON");
+        assert_eq!(
+            warning_after["control"]["cleanupWarning"]["id"],
+            warning_before["control"]["cleanupWarning"]["id"]
+        );
         registry::destroy_terminal(owner);
     }
 

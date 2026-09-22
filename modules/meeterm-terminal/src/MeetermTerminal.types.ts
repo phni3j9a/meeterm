@@ -138,6 +138,13 @@ export type WorkspaceRecovery = {
   confirmationToken: string;
 };
 
+export type WorkspaceCleanupWarning = {
+  /** Native-issued decimal ID; never convert this value to Number. */
+  id: string;
+  code: 'layout_restore_unconfirmed';
+  message: string;
+};
+
 export type WorkspaceControl = {
   /** Decimal u64 string scoped to the owning native connection. */
   operationEpoch: string;
@@ -148,6 +155,8 @@ export type WorkspaceControl = {
   /** Native gate for terminal input, IME, paste, and shortcuts. */
   terminalInputReady: boolean;
   recovery: WorkspaceRecovery;
+  /** Latest independent old-connection layout result, if any. */
+  cleanupWarning: WorkspaceCleanupWarning | null;
 };
 
 /**
@@ -167,6 +176,7 @@ export const DEFAULT_WORKSPACE_CONTROL: WorkspaceControl = {
     maxAttempts: 0,
     confirmationToken: '',
   },
+  cleanupWarning: null,
 };
 
 const RECOVERY_PHASES: readonly RecoveryPhase[] = [
@@ -201,6 +211,22 @@ export function normalizeWorkspaceControl(value: unknown): WorkspaceControl {
   const stringValue = (candidate: unknown): string => (
     typeof candidate === 'string' ? candidate.slice(0, 256) : ''
   );
+  const rawCleanupWarning = source.cleanupWarning && typeof source.cleanupWarning === 'object'
+    ? source.cleanupWarning as Record<string, unknown>
+    : null;
+  const cleanupWarning = rawCleanupWarning
+    && typeof rawCleanupWarning.id === 'string'
+    && /^[0-9]+$/.test(rawCleanupWarning.id)
+    && rawCleanupWarning.id.length <= 20
+    && rawCleanupWarning.code === 'layout_restore_unconfirmed'
+    && typeof rawCleanupWarning.message === 'string'
+    && rawCleanupWarning.message.length > 0
+    ? {
+      id: rawCleanupWarning.id,
+      code: 'layout_restore_unconfirmed' as const,
+      message: stringValue(rawCleanupWarning.message),
+    }
+    : null;
   return {
     operationEpoch: stringValue(source.operationEpoch),
     hasRetainedWork: source.hasRetainedWork === true,
@@ -213,6 +239,7 @@ export function normalizeWorkspaceControl(value: unknown): WorkspaceControl {
       maxAttempts: boundedNonNegativeInteger(rawRecovery.maxAttempts, 0),
       confirmationToken: stringValue(rawRecovery.confirmationToken),
     },
+    cleanupWarning,
   };
 }
 

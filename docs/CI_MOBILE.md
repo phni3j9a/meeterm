@@ -96,8 +96,10 @@ substitute a large device for a small one.
 - `standard`: four production storage cases, eleven native input/recovery-bridge
   cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
-  has 22 routes: the previous 18 plus `recovery-progress`,
-  `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm`. The existing
+  has 25 routes: the previous 18 plus `recovery-progress`,
+  `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
+  `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
+  `connection-error`. The existing
   `herdr-connection` route is the picker with the Herdr `default` candidate's
   non-authoritative `Last used` hint. The four recovery presentation routes
   are `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
@@ -134,11 +136,13 @@ switch/release, backend-local partial failures, and fail-closed linked/shared
 tmux mutations. Retained-work checks additionally cover strict original tmux
 pane recovery, Herdr in-work confirmation, operation-epoch input gating, no
 automatic picker/fallback, and authoritative resynchronization before Ready.
-The iOS `standard` source-level manifest has 22 routes and Android's
-observational `SCREEN_NAMES` has 29 routes: each includes the four
+The iOS `standard` source-level manifest has 25 routes and Android's
+observational `SCREEN_NAMES` has 31 routes: each includes the four
 runtime-picker routes `runtime-picker`, `runtime-partial-error`, `runtime-empty`,
 and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
-`recovery-mismatch`, and `herdr-recovery-confirm`, while `herdr-connection` is
+`recovery-mismatch`, and `herdr-recovery-confirm`, plus the two
+`layout-restore-unconfirmed` warning fixtures and the `connection-error`
+auth-warning coexistence fixture, while `herdr-connection` is
 the repurposed picker state described above. These are source-level scopes only;
 this document does not claim remote CI or visual review.
 

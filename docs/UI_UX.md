@@ -229,12 +229,14 @@ new fixed input diagnostics; local revalidation identified Metal without
 overwriting their artifacts. The complete sequence is retained in
 [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The current iOS `standard` source-level manifest has 22 screens: the previous
+The current iOS `standard` source-level manifest has 25 screens: the previous
 18 plus `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`. The existing `herdr-connection` route remains the
+`herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
+`runtime-layout-restore-unconfirmed`, plus `connection-error`. The existing `herdr-connection` route remains the
 picker state whose Herdr `default` candidate carries the non-authoritative
-`Last used` hint. Android's observational `SCREEN_NAMES` has 29 routes: the
-previous 25 plus those same four recovery routes. These counts describe source scope only; the
+`Last used` hint. Android's observational `SCREEN_NAMES` has 31 routes: the
+previous 25 plus those four recovery routes and the two layout-restore warning
+fixtures. These counts describe source scope only; the
 historical run table above remains historical and does not establish new remote
 CI or visual-review results. The seven extra states and navigation belong to
 the separate `polish` diagnostic with independent completion markers and the

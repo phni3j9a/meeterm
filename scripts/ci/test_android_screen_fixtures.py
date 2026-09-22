@@ -16,16 +16,16 @@ APP_SOURCE = Path(__file__).parents[2] / "App.tsx"
 
 
 class PresentationReadinessTests(unittest.TestCase):
-    def test_all_twenty_nine_routes_require_visible_content(self):
-        self.assertEqual(len(fixtures.SCREEN_NAMES), 29)
-        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 29)
+    def test_all_thirty_one_routes_require_visible_content(self):
+        self.assertEqual(len(fixtures.SCREEN_NAMES), 31)
+        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 31)
         for screen in fixtures.SCREEN_NAMES:
             with self.subTest(screen=screen):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
 
     def test_recovery_routes_are_stably_ordered_after_runtime_routes(self):
         self.assertEqual(
-            fixtures.SCREEN_NAMES[14:22],
+            fixtures.SCREEN_NAMES[14:24],
             (
                 "herdr-connection",
                 "herdr-groups",
@@ -35,17 +35,21 @@ class PresentationReadinessTests(unittest.TestCase):
                 "recovery-exhausted",
                 "recovery-mismatch",
                 "herdr-recovery-confirm",
+                "layout-restore-unconfirmed",
+                "runtime-layout-restore-unconfirmed",
             ),
         )
 
     def test_recovery_routes_and_ids_match_the_app_smoke_contract(self):
         source = APP_SOURCE.read_text(encoding="utf-8")
         for route in (
-            "recovery-progress",
-            "recovery-exhausted",
-            "recovery-mismatch",
-            "herdr-recovery-confirm",
-        ):
+                "recovery-progress",
+                "recovery-exhausted",
+                "recovery-mismatch",
+                "herdr-recovery-confirm",
+                "layout-restore-unconfirmed",
+                "runtime-layout-restore-unconfirmed",
+            ):
             with self.subTest(route=route):
                 self.assertIn(f"'{route}'", source)
         for test_id in (
@@ -105,6 +109,118 @@ class PresentationReadinessTests(unittest.TestCase):
         self.assertEqual(
             fixtures.screen_checks("herdr-recovery-confirm", herdr_confirmation),
             [],
+        )
+
+    def test_layout_restore_warning_routes_require_real_message_and_dismiss_action(self):
+        warning = "The old connection's desktop layout restore could not be confirmed."
+        dismiss_enabled = "cleanup-warning-dismiss::enabled"
+        self.assertEqual(
+            fixtures.screen_checks(
+                "layout-restore-unconfirmed",
+                {"Disconnected", warning, "Dismiss desktop layout warning", dismiss_enabled},
+            ),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks(
+                "runtime-layout-restore-unconfirmed",
+                {
+                    "Choose a runtime for Smoke server",
+                    warning,
+                    "Dismiss desktop layout warning",
+                    dismiss_enabled,
+                },
+            ),
+            [],
+        )
+
+    def test_layout_restore_warning_rejects_old_only_or_incomplete_display(self):
+        warning = "The old connection's desktop layout restore could not be confirmed."
+        dismiss_enabled = "cleanup-warning-dismiss::enabled"
+        old_only = {
+            "Disconnected",
+            "The connection closed, but the desktop layout could not be confirmed as restored.",
+            "Dismiss message",
+        }
+        missing_warning = {"Disconnected", "Dismiss desktop layout warning", dismiss_enabled}
+        missing_dismiss = {"Disconnected", warning}
+        self.assertIn(
+            "layout_restore_warning",
+            fixtures.screen_checks("layout-restore-unconfirmed", old_only),
+        )
+        self.assertIn(
+            "warning_dismiss",
+            fixtures.screen_checks("layout-restore-unconfirmed", old_only),
+        )
+        self.assertIn(
+            "warning_dismiss_enabled",
+            fixtures.screen_checks("layout-restore-unconfirmed", old_only),
+        )
+        self.assertIn(
+            "layout_restore_warning",
+            fixtures.screen_checks("layout-restore-unconfirmed", missing_warning),
+        )
+        self.assertIn(
+            "warning_dismiss",
+            fixtures.screen_checks("layout-restore-unconfirmed", missing_dismiss),
+        )
+        self.assertIn(
+            "warning_dismiss_enabled",
+            fixtures.screen_checks("layout-restore-unconfirmed", missing_dismiss),
+        )
+
+    def test_layout_restore_warning_rejects_disabled_or_hidden_dismiss(self):
+        warning = "The old connection's desktop layout restore could not be confirmed."
+        label = "Dismiss desktop layout warning"
+        base = {"Disconnected", warning, label}
+        disabled = base | {"cleanup-warning-dismiss::disabled"}
+        hidden_label_only = base
+        for values in (disabled, hidden_label_only):
+            self.assertIn(
+                "warning_dismiss_enabled",
+                fixtures.screen_checks("layout-restore-unconfirmed", values),
+            )
+        # A disabled node from a real UIAutomator dump keeps the label but
+        # records ::disabled, so the enabled check must reject it.
+        root = fixtures.ET.fromstring(
+            '<hierarchy><node text="Disconnected" bounds="[0,0][1080,100]" />'
+            f'<node text="{warning}" bounds="[0,100][1080,200]" />'
+            f'<node content-desc="{label}" resource-id="dev.meeterm.app:id/cleanup-warning-dismiss" '
+            'visible-to-user="true" enabled="false" bounds="[0,200][100,260]" />'
+            "</hierarchy>"
+        )
+        self.assertIn(
+            "warning_dismiss_enabled",
+            fixtures.screen_checks("layout-restore-unconfirmed", fixtures.ui_values(root)),
+        )
+
+    def test_connection_error_requires_auth_guidance_and_independent_warning(self):
+        auth_guidance = (
+            "Authentication failed. Check your username and the password or private key "
+            "for your chosen sign-in method."
+        )
+        warning = "The old connection's desktop layout restore could not be confirmed."
+        dismiss = "Dismiss desktop layout warning"
+        dismiss_enabled = "cleanup-warning-dismiss::enabled"
+        canonical = {"Connection failed", "Reconnect", auth_guidance, warning, dismiss, dismiss_enabled}
+        self.assertEqual(fixtures.screen_checks("connection-error", canonical), [])
+        self.assertIn(
+            "authentication_guidance",
+            fixtures.screen_checks("connection-error", canonical - {auth_guidance}),
+        )
+        self.assertIn(
+            "layout_restore_warning",
+            fixtures.screen_checks("connection-error", canonical - {warning}),
+        )
+        self.assertIn(
+            "warning_dismiss",
+            fixtures.screen_checks("connection-error", canonical - {dismiss}),
+        )
+        self.assertIn(
+            "warning_dismiss_enabled",
+            fixtures.screen_checks(
+                "connection-error", (canonical - {dismiss_enabled}) | {"cleanup-warning-dismiss::disabled"}
+            ),
         )
 
     def test_ui_values_records_visibility_state_for_test_ids(self):

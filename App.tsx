@@ -90,8 +90,25 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
+
+// This is the native message published after an explicit disconnect cannot
+// prove that its old tmux layout was restored. The smoke fixtures display the
+// real error contract; they do not inject terminal bytes or alter production
+// failure handling.
+const SMOKE_LAYOUT_RESTORE_WARNING = 'The connection closed, but the desktop layout could not be confirmed as restored.';
+const SMOKE_CLEANUP_WARNING_MESSAGE = "The old connection's desktop layout restore could not be confirmed.";
+const LEGACY_CLEANUP_WARNING_ID = 'legacy-layout-restore-unconfirmed';
+
+function legacyCleanupWarning(connection: SshConnectionState): WorkspaceControl['cleanupWarning'] {
+  if (connection.errorCode !== 'layout_restore_unconfirmed') return null;
+  return {
+    id: LEGACY_CLEANUP_WARNING_ID,
+    code: 'layout_restore_unconfirmed',
+    message: connection.errorMessage || SMOKE_CLEANUP_WARNING_MESSAGE,
+  };
+}
 
 const SMOKE_PROFILE: ServerProfile = {
   id: 'smoke-profile', name: 'Smoke server', host: 'fixture.invalid', port: 22,
@@ -149,6 +166,7 @@ type SmokeFixtureState = {
   runtimePickerVisible?: boolean;
   runtimeCreateVisible?: boolean;
   runtimeMessage?: string;
+  controlMessage?: string;
   control?: WorkspaceControl;
 };
 
@@ -254,6 +272,27 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.runtimeDiscovery = discovery;
     return base;
   }
+  if (screen === 'layout-restore-unconfirmed' || screen === 'runtime-layout-restore-unconfirmed') {
+    const picker = screen === 'runtime-layout-restore-unconfirmed';
+    const base = smokeFixture(picker ? 'runtime-picker' : 'workspaces');
+    base.connection = {
+      ...base.connection,
+      state: picker ? 'AwaitingRuntimeSelection' : 'Disconnected',
+      errorCode: 'layout_restore_unconfirmed',
+      errorMessage: SMOKE_LAYOUT_RESTORE_WARNING,
+    };
+    base.hasConnected = true;
+    base.control = smokeControl({
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      cleanupWarning: {
+        id: picker ? '102' : '101',
+        code: 'layout_restore_unconfirmed',
+        message: SMOKE_CLEANUP_WARNING_MESSAGE,
+      },
+    });
+    return base;
+  }
   if (screen === 'recovery-progress' || screen === 'recovery-exhausted' || screen === 'recovery-mismatch' || screen === 'herdr-recovery-confirm') {
     const base = smokeFixture(screen === 'herdr-recovery-confirm' ? 'herdr-terminal' : 'terminal');
     base.connection = {
@@ -296,6 +335,15 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     if (screen === 'connection-error') {
       base.connection.state = 'Failed';
       base.connection.errorCode = 'authentication_failed';
+      base.control = smokeControl({
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+        cleanupWarning: {
+          id: '103',
+          code: 'layout_restore_unconfirmed',
+          message: SMOKE_CLEANUP_WARNING_MESSAGE,
+        },
+      });
     }
     return base;
   }
@@ -341,6 +389,7 @@ const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
   'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
+  'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
@@ -594,7 +643,7 @@ function createdTmuxCandidate(name: string): RuntimeCandidate {
   };
 }
 
-function RuntimePicker({ visible, serverName, discovery, createVisible, busy, discoveryBusy, cancelDisabled, selectingId, selectionErrors, message, creationError, onCancel, onDismiss, onRefresh, onRetryBackend, onSelect, onOpenCreate, onBackToList, onCreate, colors }: {
+function RuntimePicker({ visible, serverName, discovery, createVisible, busy, discoveryBusy, cancelDisabled, selectingId, selectionErrors, message, creationError, notification, onCancel, onDismiss, onRefresh, onRetryBackend, onSelect, onOpenCreate, onBackToList, onCreate, colors }: {
   visible: boolean;
   serverName: string;
   discovery: RuntimeDiscovery | null;
@@ -606,6 +655,7 @@ function RuntimePicker({ visible, serverName, discovery, createVisible, busy, di
   selectionErrors: Record<string, string>;
   message: string;
   creationError: string;
+  notification: ReactNode | null;
   onCancel: () => void;
   onDismiss: () => void;
   onRefresh: () => void;
@@ -668,6 +718,7 @@ function RuntimePicker({ visible, serverName, discovery, createVisible, busy, di
         <Text numberOfLines={2} accessibilityRole="header" style={[styles.runtimeHeaderTitle, { color: colors.text }]}>{createVisible ? 'Create tmux session' : `Choose a runtime for ${serverName}`}</Text>
         {createVisible ? <IconButton icon="close" label="Cancel runtime selection" colors={colors} disabled={cancelDisabled} onPress={onCancel} /> : <View style={styles.runtimeHeaderPlaceholder} />}
       </View>
+      {notification ? <View style={styles.runtimeNotification}>{notification}</View> : null}
       {createVisible ? <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.runtimeFormContent}>
         <Text style={[styles.runtimeIntroTitle, { color: colors.text }]}>Create a tmux session</Text>
         <Text style={[styles.runtimeHint, { color: colors.muted }]}>This creates a detached session on {serverName} and opens it after the native runtime confirms its identity.</Text>
@@ -978,7 +1029,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [runtimeCreationError, setRuntimeCreationError] = useState('');
   const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
   const [, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
-  const [controlMessage, setControlMessage] = useState('');
+  const [controlMessage, setControlMessage] = useState(() => fixture?.controlMessage ?? '');
+  const [cleanupWarning, setCleanupWarning] = useState<WorkspaceControl['cleanupWarning']>(() => (
+    fixture?.control?.cleanupWarning ?? (fixture ? legacyCleanupWarning(fixture.connection) : null)
+  ));
+  const [, setDismissedCleanupWarningId] = useState('');
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
   const [hasConnected, setHasConnected] = useState(() => fixture?.hasConnected ?? false);
@@ -1014,6 +1069,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const runtimeConnectionGeneration = useRef<string | null>(fixture?.runtimeDiscovery?.connectionGeneration ?? null);
   const runtimeHintRef = useRef<RuntimeHint | null>(null);
   const controlRef = useRef(control);
+  const dismissedCleanupWarningIdRef = useRef('');
   const recoveryInvalidatedRef = useRef(recoveryInvalidated);
   const workspaceObservationRef = useRef(Boolean(fixture?.hasConnected && fixture.panes.length > 0));
   const retainedPaneRef = useRef<RemoteTerminal | null>(null);
@@ -1033,6 +1089,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     runtimeBoundRef.current = value;
     setRuntimeBound(value);
   }, []);
+
+  const observeCleanupWarning = useCallback((candidate: WorkspaceControl['cleanupWarning']) => {
+    if (!candidate) return;
+    if (candidate.id === dismissedCleanupWarningIdRef.current) return;
+    setCleanupWarning(current => current?.id === candidate.id ? current : candidate);
+  }, []);
+
+  const dismissCleanupWarning = useCallback(() => {
+    const id = cleanupWarning?.id;
+    if (!id) return;
+    dismissedCleanupWarningIdRef.current = id;
+    setDismissedCleanupWarningId(id);
+    setCleanupWarning(null);
+  }, [cleanupWarning]);
 
   const invalidateRuntimeDiscovery = useCallback((showPicker: boolean) => {
     // A late result from the previous host/runtime identity must not repopulate
@@ -1132,7 +1202,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         // keep polling its coherent cached snapshot so the existing native
         // surface can remain mounted while the actor validates its identity.
         const observeRetainedWork = workspaceObservationRef.current;
-        const observeRecoveryState = ['Reconnecting', 'Synchronizing', 'Failed'].includes(next.state);
+        const observeRecoveryState = ['Reconnecting', 'Synchronizing', 'Failed', 'Disconnected', 'Closing', 'HostKeyPending', 'AwaitingRuntimeSelection', 'DiscoveringRuntimes'].includes(next.state);
         const nextSession = (next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current)
           || observeRetainedWork || observeRecoveryState
           ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
@@ -1191,6 +1261,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             setRuntimeMessage('Could not refresh runtimes. Check the connection and try again.');
           }
           setConnection(current => sameConnection(current, next) ? current : next);
+          if (nextSessionControl?.cleanupWarning) observeCleanupWarning(nextSessionControl.cleanupWarning);
+          else observeCleanupWarning(legacyCleanupWarning(next));
           const readySession = Boolean(nextSession
             && next.state === 'Ready'
             && !runtimeSelectionRequired.current
@@ -1244,7 +1316,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // frames, and all remote discovery/actor work.
     const interval = setInterval(() => { void refresh(); }, 1000);
     return () => { mounted = false; clearInterval(interval); };
-  }, [invalidateRuntimeDiscovery, smokeFixtureActive, updateRuntimeBound]);
+  }, [invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, updateRuntimeBound]);
 
   useEffect(() => {
     if (smokeFixtureActive) return;
@@ -1490,21 +1562,32 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       await action();
       try {
         const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        const nextSession = next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current
+        const nextSession = (next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current)
+          || ['Failed', 'Disconnected', 'Closing', 'HostKeyPending', 'AwaitingRuntimeSelection', 'DiscoveringRuntimes'].includes(next.state)
           ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
           : null;
         const nextSessionControl = nextSession
           ? normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control)
           : null;
         setConnection(next);
-        if (nextSession) {
+        if (nextSessionControl?.cleanupWarning) observeCleanupWarning(nextSessionControl.cleanupWarning);
+        else observeCleanupWarning(legacyCleanupWarning(next));
+        const readySession = Boolean(nextSession
+          && next.state === 'Ready'
+          && !runtimeSelectionRequired.current
+          && !ignoreReadyUntilNewConnection.current
+          && nextSessionControl?.runtimeOperationsReady);
+        const retainedSession = Boolean(nextSession && nextSessionControl?.hasRetainedWork
+          && nextSessionControl.recovery.phase !== 'none'
+          && !recoveryInvalidatedRef.current);
+        if (readySession || retainedSession) {
           if (recoveryInvalidatedRef.current && nextSessionControl?.recovery.phase === 'none'
             && nextSessionControl.runtimeOperationsReady) {
             recoveryInvalidatedRef.current = false;
             setRecoveryInvalidated(false);
           }
           updateRuntimeBound(true);
-          setSession(nextSession);
+          setSession(nextSession!);
           setHasConnected(true);
         } else if (next.state === 'AwaitingRuntimeSelection' || next.state === 'DiscoveringRuntimes') {
           if (!runtimeSelectionRequired.current) {
@@ -1525,7 +1608,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
     catch { setControlMessage(errorMessage); return false; }
     finally { commandPending.current = false; setCommandBusy(false); }
-  }, [invalidateRuntimeDiscovery, smokeFixtureActive, updateRuntimeBound]);
+  }, [invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, updateRuntimeBound]);
 
   const startRecoveryAction = useCallback((kind: keyof RecoveryPendingActions, identity: RecoveryActionIdentity) => {
     if (!identity.epoch || recoveryPendingRef.current[kind]) return false;
@@ -1618,7 +1701,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!startRecoveryAction('change', identity)) return;
 
     try {
-      if (!smokeFixtureActive) await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
+      if (!smokeFixtureActive) {
+        await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
+        const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        try {
+          const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+          const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
+          observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
+        } catch {
+          observeCleanupWarning(legacyCleanupWarning(released));
+        }
+      }
 
       // Native acceptance is the one-way boundary. Keep the exact retained
       // surface mounted while the request is pending or rejected; only after
@@ -1658,7 +1751,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     } finally {
       clearRecoveryAction('change', identity);
     }
-  }, [clearRecoveryAction, invalidateRuntimeDiscovery, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
+  }, [clearRecoveryAction, invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
 
   useEffect(() => {
     if (recoveryInvalidatedRef.current) {
@@ -1962,7 +2055,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     await MeetermTerminal.setForeground(CONNECTION_ID, foreground.current);
     // Switching endpoints explicitly releases the previous connection owner.
     await MeetermTerminal.disconnect(CONNECTION_ID);
-  }, [preferences, preferencesLoaded, smokeFixtureActive]);
+    const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+    try {
+      const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+      const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
+      observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
+    } catch {
+      observeCleanupWarning(legacyCleanupWarning(released));
+    }
+  }, [observeCleanupWarning, preferences, preferencesLoaded, smokeFixtureActive]);
 
   const submitConnection = useCallback(async (submission: ConnectionSubmission) => {
     let savedProfile: ServerProfile | undefined;
@@ -2316,6 +2417,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   </View> : null;
 
   const feedbackColors = sheet ? homeColors : colors;
+  const cleanupWarningNotice = cleanupWarning ? <View testID="cleanup-warning" accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
+    <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{cleanupWarning.message}</Text>
+    <IconButton icon="close" label="Dismiss desktop layout warning" testID="cleanup-warning-dismiss" colors={feedbackColors} onPress={dismissCleanupWarning} />
+  </View> : null;
   const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
     <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
     {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={feedbackColors} onPress={() => setControlMessage('')} /> : null}
@@ -2354,6 +2459,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     </>}
     {statusNotice ? <View style={styles.horizontal}>{statusNotice}</View> : null}
     {recoveryRail ? <View style={styles.horizontal}>{recoveryRail}</View> : null}
+    {cleanupWarningNotice ? <View style={styles.horizontal}>{cleanupWarningNotice}</View> : null}
     {feedback ? <View style={styles.horizontal}>{feedback}</View> : null}
     {searching ? <View style={styles.horizontal}>
       <SearchField value={query} colors={homeColors} onChange={value => { setQuery(value); listOffsets.current.search = 0; workspaceList.current?.scrollToOffset({ offset: 0, animated: false }); }} autoFocus />
@@ -2440,6 +2546,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <AgentStatusIndicator status={selectedPane.agent.status} live={strongReady} colors={DARK} showLabel testID="selected-agent-status" />
       </View>; })() : null}
       {recoveryRail}
+      {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {surfaceAvailable ? (
         // Unmounting a surface cancels composition; the shared native registry
@@ -2473,6 +2580,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       selectionErrors={runtimeSelectionErrors}
       message={runtimeMessage}
       creationError={runtimeCreationError}
+      notification={runtimePickerVisible ? <>{cleanupWarningNotice}{feedback}</> : null}
       onCancel={cancelRuntimeSelection}
       onDismiss={() => {}}
       onRefresh={refreshRuntimes}
@@ -2487,6 +2595,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
     <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
+      {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'recovery' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text testID="recovery-change-intro" style={[styles.emptyBody, { color: homeColors.muted }]}>Choosing another destination stops recovery for this workspace. Remote work will not be closed.</Text>
@@ -2722,6 +2831,7 @@ const styles = StyleSheet.create({
   runtimeHeaderPlaceholder: { width: 72, minHeight: 48 },
   runtimeHeaderTitle: { flex: 1, textAlign: 'center', fontSize: 18, lineHeight: 28, fontWeight: '600' },
   runtimePickerContent: { padding: 24, paddingBottom: 40, gap: 28 },
+  runtimeNotification: { paddingHorizontal: 24, paddingTop: 12 },
   runtimeFormContent: { padding: 24, paddingBottom: 40, gap: 20 },
   runtimeField: { gap: 8 },
   runtimeLabel: { fontSize: 14, lineHeight: 22, fontWeight: '500' },

@@ -283,13 +283,15 @@ and launch it, observe native readiness and a first terminal frame, and check
 that the process does not crash. It is not a substitute for final full and
 `standard` acceptance.
 
-The iOS `standard` source-level manifest is 22 screens: the previous 18 plus
+The iOS `standard` source-level manifest is 25 screens: the previous 18 plus
 `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`.
+`herdr-recovery-confirm`, plus the `layout-restore-unconfirmed` and
+`runtime-layout-restore-unconfirmed` warning fixtures and `connection-error`.
 Its existing `herdr-connection` route is now a picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` contains 29 routes: the previous 25 plus those same four recovery
-routes. These are source-level scopes, not remote CI or visual-review results.
+`SCREEN_NAMES` contains 31 routes: the previous 25 plus those same four recovery
+routes and the two warning fixtures. These are source-level scopes, not remote CI
+or visual-review results.
 
 The explicit iOS `polish` diagnostic adds seven presentation states and native
 navigation/keyboard/back checks. `polish-navigation` independently exercises the
@@ -339,10 +341,11 @@ backend failures, profile migration, reconnect identity, switch/release, and
 fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
 picker loading, duplicate-name, stale-selection, asynchronous refresh, and
 explicit selection/create state transitions in focused app/native tests. The
-22-screen iOS source manifest and 29-route Android observational `SCREEN_NAMES`
+25-screen iOS source manifest and 31-route Android observational `SCREEN_NAMES`
 include the four recovery visual routes `recovery-progress`,
 `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm` in
-addition to the runtime-picker routes. Android full and iOS `standard` plus `ssh`
+addition to the runtime-picker routes and the two `layout-restore-unconfirmed`
+warning fixtures. Android full and iOS `standard` plus `ssh`
 remain the required mobile paths for this connection-lifecycle change; both
 platform screenshots from the applicable exact-source acceptance runs must be
 downloaded and actually viewed before the corresponding evidence is reported.

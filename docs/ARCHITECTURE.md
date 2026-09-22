@@ -749,12 +749,15 @@ terminal data plane native. Continue to verify:
    linked/shared tmux topology-mutation tests.
 10. Android full and iOS `standard` plus the short `ssh` suite cover the
     applicable mobile connection lifecycle. The iOS `standard` source-level
-    manifest has 22 screens: the previous 18 plus `recovery-progress`,
-    `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm`; its
+    manifest has 25 screens: the previous 18 plus `recovery-progress`,
+    `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
+    `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
+    `connection-error`; its
     `herdr-connection` route is the picker with the Herdr `default` candidate's
     non-authoritative `Last used` hint. Android's observational `SCREEN_NAMES`
-    has 29 routes: the previous 25 plus those same four recovery routes. These
-    counts define source scope only; they do not claim remote CI or visual
+    has 31 routes: the previous 25 plus those four recovery routes and the two
+    layout-restore warning fixtures. These counts define source scope only; they
+    do not claim remote CI or visual
     review. Both platform screenshots must be downloaded and actually viewed
     before visual success is reported.
 11. Retained-work recovery changes additionally verify native Term/selection

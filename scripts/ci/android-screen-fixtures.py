@@ -33,6 +33,8 @@ SCREEN_NAMES = (
     "recovery-exhausted",
     "recovery-mismatch",
     "herdr-recovery-confirm",
+    "layout-restore-unconfirmed",
+    "runtime-layout-restore-unconfirmed",
     "welcome", "empty", "search-empty", "disconnected", "reconnecting",
     "connection-error", "long-workspaces",
 )
@@ -290,6 +292,34 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 any("runtime-tmux-create-submit" in value for value in normalized_values),
             ),
         ]
+    elif screen == "layout-restore-unconfirmed":
+        checks = [
+            ("disconnected_state", "Disconnected" in normalized_values),
+            (
+                "layout_restore_warning",
+                "The old connection's desktop layout restore could not be confirmed."
+                in normalized_values,
+            ),
+            ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+            (
+                "warning_dismiss_enabled",
+                has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled"),
+            ),
+        ]
+    elif screen == "runtime-layout-restore-unconfirmed":
+        checks = [
+            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
+            (
+                "layout_restore_warning",
+                "The old connection's desktop layout restore could not be confirmed."
+                in normalized_values,
+            ),
+            ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+            (
+                "warning_dismiss_enabled",
+                has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled"),
+            ),
+        ]
     elif screen == "herdr-groups":
         checks = [
             ("group_sheet_title", "Switch group" in values),
@@ -354,8 +384,29 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             "reconnecting": ("Reconnecting…", "Cancel connection"),
             "connection-error": ("Connection failed", "Reconnect"),
         }
-        checks = [(f"screen_element_{index}", value in normalized_values)
-                  for index, value in enumerate(required[screen])]
+        if screen == "connection-error":
+            checks = [
+                ("connection_error_heading", "Connection failed" in normalized_values),
+                ("connection_error_reconnect", "Reconnect" in normalized_values),
+                (
+                    "authentication_guidance",
+                    "Authentication failed. Check your username and the password or private key for your chosen sign-in method."
+                    in normalized_values,
+                ),
+                (
+                    "layout_restore_warning",
+                    "The old connection's desktop layout restore could not be confirmed."
+                    in normalized_values,
+                ),
+                ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+                (
+                    "warning_dismiss_enabled",
+                    has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled"),
+                ),
+            ]
+        else:
+            checks = [(f"screen_element_{index}", value in normalized_values)
+                      for index, value in enumerate(required[screen])]
     return [name for name, passed in checks if not passed]
 
 

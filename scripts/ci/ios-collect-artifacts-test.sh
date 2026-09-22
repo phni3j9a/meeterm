@@ -122,7 +122,9 @@ for checkpoint in \
   standard-herdr-connection standard-herdr-groups standard-herdr-terminal \
   standard-herdr-workspaces \
   standard-recovery-progress standard-recovery-exhausted \
-  standard-recovery-mismatch standard-herdr-recovery-confirm; do
+  standard-recovery-mismatch standard-herdr-recovery-confirm \
+  standard-layout-restore-unconfirmed standard-runtime-layout-restore-unconfirmed \
+  standard-connection-error; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
 done
 : > "${xcrun_log}"
