@@ -145,6 +145,136 @@ fn real_openssh_existing_tmux_runtime_selection() {
     assert_eq!(session.panes.len(), 1);
 }
 
+/// Drive the fixture-owned sshd stop/start boundary: killing the SSH server
+/// also kills the remote `tmux -C` client, so `client-detached` fires on the
+/// durable server exactly like the mobile transport-loss smoke. This is the
+/// hard-loss variant of `detach_control_mode_client`.
+fn fixture_control_action(action: &str) {
+    let request_path = PathBuf::from(value("MEETERM_SSH_FIXTURE_CONTROL_REQUEST"));
+    let status_path = PathBuf::from(value("MEETERM_SSH_FIXTURE_CONTROL_STATUS"));
+    let token = format!("transport-loss-rust-{}-{}", std::process::id(), action);
+    let expected = format!(
+        "{token}\tok\t{}",
+        if action == "stop" {
+            "stopped"
+        } else {
+            "started"
+        }
+    );
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        use std::os::unix::fs::OpenOptionsExt;
+        let request = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&request_path);
+        match request {
+            Ok(mut file) => {
+                file.write_all(format!("{token}\t{action}\n").as_bytes())
+                    .expect("write fixture control request");
+                let _ = file.sync_all();
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture control request stayed busy"
+                );
+                sleep(POLL_INTERVAL);
+            }
+            Err(error) => panic!("fixture control request failed: {error}"),
+        }
+    }
+    loop {
+        if let Ok(contents) = fs::read_to_string(&status_path) {
+            let fields: Vec<&str> = contents.trim_end_matches('\n').split('\t').collect();
+            if fields.first().copied() == Some(token.as_str()) {
+                assert_eq!(
+                    fields.join("\t"),
+                    expected,
+                    "fixture control action {action} failed"
+                );
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture control action {action} timed out"
+        );
+        sleep(POLL_INTERVAL);
+    }
+}
+
+#[test]
+#[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
+fn real_openssh_tmux_transport_loss_sshd_restart() {
+    let fixture = FixtureConfig::from_environment();
+    create_fixture_tmux_session(&fixture, "meeterm");
+    let id = create_terminal(80, 24).expect("create SSH terminal");
+    let _guard = TerminalGuard { id };
+
+    connect_host_and_select_meeterm(id, &fixture, "sshd-restart recovery selection");
+    // A third-party indexed hook on the same reserved name must survive the
+    // whole loss/recovery cycle; meeterm only ever removes its own slot.
+    run_remote_tmux(
+        &fixture,
+        "tmux set-hook -t '=meeterm:' 'client-detached[7]' 'display-message third-party'",
+        "install third-party client-detached hook",
+    );
+    let initial = wait_for_session(id, 1, "initial meeterm session");
+    let initial_pane = initial.panes.first().expect("initial pane").clone();
+    run_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux split-window -h -t %{} 'exec /bin/sh -i'",
+            initial_pane.pane_id,
+        ),
+        "split fixture pane",
+    );
+    let topology = wait_for_session(id, 2, "split topology synchronization");
+    let side = topology
+        .panes
+        .iter()
+        .find(|pane| {
+            pane.pane_id != initial_pane.pane_id && pane.window_id == initial_pane.window_id
+        })
+        .expect("split pane in selected window")
+        .clone();
+
+    select_pane(id, side.pane_id).expect("select split pane");
+    wait_for_selected_pane(id, side.pane_id, "select split pane");
+    wait_for_remote_tmux(
+        &fixture,
+        &format!(
+            "tmux display-message -p -t @{} '#{{window_zoomed_flag}}'",
+            side.window_id
+        ),
+        "meeterm zoom before transport loss",
+        |output| output.trim() == "1",
+    );
+
+    // Killing sshd terminates the remote `tmux -C` process; the durable tmux
+    // server then fires client-detached, so the indexed recovery hooks run
+    // before the replacement actor even connects.
+    fixture_control_action("stop");
+    wait_for_reconnecting(id, "sshd-stop transport loss");
+    fixture_control_action("start");
+    let recovered = wait_for_ready_without_prompt(id, "authoritative Ready after sshd restart");
+    assert_eq!(
+        connection_string(&recovered.error_code, recovered.error_code_len),
+        "",
+        "recovered connection must not carry a failure code"
+    );
+    wait_for_selected_pane(id, side.pane_id, "same pane after sshd restart");
+    wait_for_remote_tmux(
+        &fixture,
+        "tmux show-hooks -t '=meeterm:' | grep -F 'client-detached[7] display-message third-party'",
+        "third-party hook survives sshd restart recovery",
+        |output| !output.is_empty(),
+    );
+}
+
 #[test]
 #[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
 fn real_openssh_tmux_session_loop() {

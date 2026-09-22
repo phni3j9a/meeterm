@@ -1549,6 +1549,13 @@ pub(crate) fn zoom_recovery_hooks_state(
             continue;
         };
         if !entry.bracketed {
+            if entry.body.is_empty() {
+                // tmux keeps a hook array listed by bare name after its last
+                // indexed element is removed ("client-detached" alone). The
+                // remnant carries no command and can never be a live hook,
+                // so it does not block the absent classification.
+                continue;
+            }
             // The reserved hook names are only safe to classify when their
             // allocated numeric key is explicit. An unindexed occurrence is
             // ambiguous (it may be a user hook or a different tmux form), so
@@ -2050,6 +2057,35 @@ mod tests {
         assert_eq!(
             zoom_recovery_hooks_state(b"", allocation, session, 23),
             Ok(ZoomRecoveryHookState::Absent)
+        );
+        // After a fired recovery hook removes its indexed elements, tmux
+        // still lists the emptied arrays by bare name. These remnants carry
+        // no command and must not poison the absent classification that
+        // post-detach reconciliation relies on. Observed as real
+        // `show-hooks` output on the OpenSSH fixture after client-detached
+        // ran the stored removal body.
+        assert_eq!(
+            zoom_recovery_hooks_state(
+                b"client-detached\nclient-session-changed\n",
+                allocation,
+                session,
+                23,
+            ),
+            Ok(ZoomRecoveryHookState::Absent)
+        );
+        let remnant_with_user_index =
+            b"client-detached\nclient-detached[7] display-message user\nclient-session-changed\n";
+        assert_eq!(
+            zoom_recovery_hooks_state(remnant_with_user_index, allocation, session, 23),
+            Ok(ZoomRecoveryHookState::Absent)
+        );
+        let remnant_with_owned = format!(
+            "client-detached\nclient-detached[{}] {body}\nclient-session-changed[{}] {body}\nclient-session-changed\n",
+            allocation.index, allocation.index
+        );
+        assert_eq!(
+            zoom_recovery_hooks_state(remnant_with_owned.as_bytes(), allocation, session, 23),
+            Ok(ZoomRecoveryHookState::Owned)
         );
         assert_eq!(
             zoom_recovery_hooks_state(
