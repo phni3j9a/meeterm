@@ -1,4 +1,4 @@
 runner=devin-cloud-macos
 os=macOS
 arch=arm64
-commit=d766fb86caa6da21c03014e4efe58972a82baf57
+commit=3d07d2cbf8b2fd1dced2391422db39f585392692

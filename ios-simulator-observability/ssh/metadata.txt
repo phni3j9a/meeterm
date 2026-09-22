@@ -1,11 +1,14 @@
 runner=devin-cloud-macos
 os=macOS
 arch=arm64
-commit=d766fb86caa6da21c03014e4efe58972a82baf57
+commit=3d07d2cbf8b2fd1dced2391422db39f585392692
 test_scope=ssh
 build_mode=reuse-same-commit
 reuse_of=standard-fresh-cng
-ssh_renderer_backend=metal
+xcode_developer_dir=/Applications/Xcode.app/Contents/Developer
+simulator_udid=1308A109-3EE0-4711-9287-85246639DBC7
+simulator_name=unavailable
+raw_crash_reports=omitted
 xcode_developer_dir=/Applications/Xcode.app/Contents/Developer
 simulator_udid=1308A109-3EE0-4711-9287-85246639DBC7
 simulator_name=unavailable

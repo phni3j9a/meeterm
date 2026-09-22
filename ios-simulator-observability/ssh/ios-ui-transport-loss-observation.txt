@@ -1,6 +1,0 @@
-native_terminal_identifier_same=yes
-native_handle_same=yes
-selected_pane_identifier_same=yes
-cached_read_only_surface=yes
-picker_visible_during_loss=no
-input_during_loss=none

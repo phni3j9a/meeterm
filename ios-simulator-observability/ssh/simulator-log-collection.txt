@@ -1,5 +1,5 @@
-source=existing_simulator_log
+source=launch_metadata
 result=available
 reason=none
-command_status=existing
+command_status=passed
 marker_status=present

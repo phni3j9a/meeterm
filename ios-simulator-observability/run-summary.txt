@@ -1,6 +1,6 @@
-source_sha=d766fb86caa6da21c03014e4efe58972a82baf57
+source_sha=3d07d2cbf8b2fd1dced2391422db39f585392692
 branch=fix/issue-30-zoom-cleanup
-run_date_utc=2026-09-21 18:30:58Z
+run_date_utc=2026-09-22 16:33:08Z
 suites=standard,ssh
 toolchain_xcode=Xcode 26.6 (17F113)
 toolchain_sdk=iphonesimulator26.5
@@ -11,10 +11,13 @@ toolchain_pods=cocoapods-1.17.0
 simulator=iPhone 18 Pro UDID 1308A109-3EE0-4711-9287-85246639DBC7 iOS 27.0 runtime 24A434 (runtime-match override iphoneos26.5->23F73 set for SDK)
 build_mode_standard=fresh-cng build-for-testing ARCHS=arm64
 build_mode_ssh=reuse-same-commit-products (manifest sha/xcode verified)
-xctest_elapsed_ms_storage=8758
-xctest_elapsed_ms_standard_ui=801234
-xctest_elapsed_ms_ssh_ui=795014
+xctest_elapsed_ms_storage=8521
+xctest_elapsed_ms_standard_ui=779397
+xctest_elapsed_ms_ssh_ui=793306
 result_standard=passed
-result_ssh=passed
-ssh_renderer_backend=metal (see ssh metadata)
-cleanup_outcome=transport-loss fixture stopped_and_started; native_handle_same=yes; selected_pane_identifier_same=yes; cached_read_only_surface=yes; same_pane=yes; same_pane_pid=yes; other_panes_clean=yes; disconnect clean; standard teardown_complete
+result_ssh=failed
+ssh_failure_stage=xcuitest_ssh ui_test_failed
+ssh_failure_assertion=MeetermSmokeUITests.swift:890 Transport recovery did not restore the selected runtime without reopening the picker (waitForAuthoritativeReady 90s timeout after fixture sshd start)
+ssh_failure_deterministic=2 attempts identical (204.4s / 185.4s test duration); app retained stale read-only surface ("Terminal, cached output, read only" visible, both tabs present) instead of Ready restore; picker not reopened
+cleanup_outcome=standard teardown_complete; ssh stale-surface retained through restore window (fail-closed, no Ready restore)
+standard_note=first attempt hit runner xcodebuild_timeout during post-test collection (13/13 tests passed 0 failures); passed clean on retry after shutting down two stray booted iPhone 17 sims

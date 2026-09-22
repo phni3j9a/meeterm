@@ -72,6 +72,9 @@ standard_screen_layout-restore-unconfirmed_captured
 standard_screen_runtime-layout-restore-unconfirmed_open
 standard_screen_runtime-layout-restore-unconfirmed_ready
 standard_screen_runtime-layout-restore-unconfirmed_captured
+standard_screen_connection-error_open
+standard_screen_connection-error_ready
+standard_screen_connection-error_captured
 foundation_launch
 foundation_survival_start
 capture_foundation
