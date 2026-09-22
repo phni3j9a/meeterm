@@ -1,23 +1,59 @@
-source_sha=3d07d2cbf8b2fd1dced2391422db39f585392692
+ios-simulator-observability run summary
+=======================================
+source_sha=ed43536db21cd2f197c4778d12806172b6b59809
 branch=fix/issue-30-zoom-cleanup
-run_date_utc=2026-09-22 16:33:08Z
-suites=standard,ssh
-toolchain_xcode=Xcode 26.6 (17F113)
-toolchain_sdk=iphonesimulator26.5
-toolchain_cpu=arm64
-toolchain_rust=1.96.0 (aarch64-apple-ios-sim)
-toolchain_node=v22.23.2 npm=10.9.8
-toolchain_pods=cocoapods-1.17.0
-simulator=iPhone 18 Pro UDID 1308A109-3EE0-4711-9287-85246639DBC7 iOS 27.0 runtime 24A434 (runtime-match override iphoneos26.5->23F73 set for SDK)
-build_mode_standard=fresh-cng build-for-testing ARCHS=arm64
-build_mode_ssh=reuse-same-commit-products (manifest sha/xcode verified)
-xctest_elapsed_ms_storage=8521
-xctest_elapsed_ms_standard_ui=779397
-xctest_elapsed_ms_ssh_ui=793306
-result_standard=passed
-result_ssh=failed
-ssh_failure_stage=xcuitest_ssh ui_test_failed
-ssh_failure_assertion=MeetermSmokeUITests.swift:890 Transport recovery did not restore the selected runtime without reopening the picker (waitForAuthoritativeReady 90s timeout after fixture sshd start)
-ssh_failure_deterministic=2 attempts identical (204.4s / 185.4s test duration); app retained stale read-only surface ("Terminal, cached output, read only" visible, both tabs present) instead of Ready restore; picker not reopened
-cleanup_outcome=standard teardown_complete; ssh stale-surface retained through restore window (fail-closed, no Ready restore)
-standard_note=first attempt hit runner xcodebuild_timeout during post-test collection (13/13 tests passed 0 failures); passed clean on retry after shutting down two stray booted iPhone 17 sims
+run_kind=final-acceptance-rerun
+supersedes=3d07d2cbf8b2fd1dced2391422db39f585392692
+runner=devin-cloud-macos
+cpu=arm64
+os=macOS
+
+toolchain
+---------
+xcode=26.6 (build 17F113)
+sdkroot=iphonesimulator26.5
+archs=arm64
+rust=1.96.0
+node=22.23.2
+npm=10.9.8
+cocoapods=1.17.0
+tmux=3.7c
+configuration=Release-iphonesimulator
+simulator=iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7), iOS 27.0 runtime (24A434)
+
+build
+-----
+mode=fresh-cng (npm ci -> expo prebuild --platform ios -> ios-inject-ui-test.sh -> pod install -> ios-strip-storage-rust-link.py -> xcodebuild build-for-testing)
+entitlements=passed (app __entitlements + __ents_der sections present)
+storage_isolation=app_provider=single storage_sources=isolated storage_direct_native_link=absent
+test_products_pack=passed (exact source/toolchain)
+
+suite: standard (fresh build)
+-----------------------------
+result=passed
+ui_xcodebuild_elapsed_ms=815803
+storage_xcodebuild_elapsed_ms=8430
+tests=13 passed, 0 failed
+storage_cases=interrupted_write_cleanup, preferences_validation, remove_saved_credential, runtime_hint_validation (all passed)
+native_input_cases=12 passed (incl. scroll_gesture)
+screen_manifest=25/25 captured (incl. recovery-progress, recovery-exhausted, recovery-mismatch, herdr-recovery-confirm, layout-restore-unconfirmed, runtime-layout-restore-unconfirmed, connection-error)
+foundation=NATIVE_READY + FIRST_FRAME_METAL, survival ok, no crash
+teardown=complete
+
+suite: ssh (same-commit reuse, manifest sha+xcode verified)
+-----------------------------------------------------------
+result=passed
+ui_xcodebuild_elapsed_ms=767489
+fixture_preflight=passed (tmux 3.7c, authenticated SSH + remote tmux, real_openssh_existing_tmux_runtime_selection)
+host_key=real verification passed
+runtime=discovery + explicit tmux selection passed
+background_foreground=same-process return + resumed native input passed
+transport_loss=passed (fixture stop/start; native_handle_same, selected_pane_identifier_same, cached_read_only_surface, input_during_loss=none, picker_visible_during_loss=no, pre/post markers exactly-once, same_pane+same_pane_pid, other_panes_clean)
+stages=...ssh_transport_loss_injected -> stale_read_only -> restored -> authoritative_ready -> post-marker -> ssh_disconnect -> ssh_complete -> teardown_complete
+cleanup=closed verified; no layout_restore_unconfirmed surfaced
+teardown=complete
+
+notes
+-----
+vs prior run (3d07d2c): the transport-loss restore that previously failed at MeetermSmokeUITests.swift:890 now reaches authoritative_ready and completes; ed43536 skips bare empty hook-array remnants in the strict classifier.
+sanitization=raw XCTest output, xcresult bundles, credentials, keys, and auth material excluded; screenshots retained for human review.

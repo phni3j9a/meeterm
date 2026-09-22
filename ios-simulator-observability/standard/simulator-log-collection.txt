@@ -1,5 +1,0 @@
-source=existing_simulator_log
-result=available
-reason=none
-command_status=existing
-marker_status=present

@@ -1,5 +1,0 @@
-source=launch_metadata
-result=available
-reason=none
-command_status=passed
-marker_status=present

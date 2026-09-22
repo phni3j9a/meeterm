@@ -1,5 +1,5 @@
-result=failed
+result=passed
 suite=ssh
-stage=xcuitest_ssh
-reason=ui_test_failed
-ui_last_stage=teardown_complete
+stage=complete
+reason=none
+ui_last_stage=complete

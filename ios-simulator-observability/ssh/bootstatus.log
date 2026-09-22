@@ -1,8 +1,8 @@
 Monitoring boot status for iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7).
-[2026-09-22 15:31:32 +0000] Status=1, isTerminal=NO, Elapsed=00:02.
+[2026-09-22 18:21:47 +0000] Status=1, isTerminal=NO, Elapsed=00:01.
 	Waiting on BackBoard
 
-[2026-09-22 15:31:41 +0000] Status=4294967295, isTerminal=YES, Elapsed=00:12.
+[2026-09-22 18:22:03 +0000] Status=4294967295, isTerminal=YES, Elapsed=00:18.
 	Finished
 
 bootstatus=ready
