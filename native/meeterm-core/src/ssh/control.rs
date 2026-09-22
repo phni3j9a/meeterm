@@ -132,6 +132,55 @@ struct StagedCapture {
     trailing_output: Vec<u8>,
 }
 
+#[cfg(test)]
+struct ScriptedCleanupResponse {
+    blocks: Vec<Vec<Vec<u8>>>,
+}
+
+#[cfg(test)]
+struct ScriptedCleanupTransport {
+    responses: VecDeque<ScriptedCleanupResponse>,
+    sent: Vec<Vec<u8>>,
+}
+
+#[cfg(test)]
+impl ScriptedCleanupTransport {
+    fn new(responses: Vec<ScriptedCleanupResponse>) -> Self {
+        Self {
+            responses: responses.into(),
+            sent: Vec::new(),
+        }
+    }
+
+    fn send(&mut self, request: Vec<u8>) -> Option<Vec<u8>> {
+        self.sent.push(request.clone());
+        let marker_prefix = b"display-message -p '";
+        let marker_start = request
+            .windows(marker_prefix.len())
+            .rposition(|window| window == marker_prefix)?
+            + marker_prefix.len();
+        let marker_end = request.len().checked_sub(2)?;
+        if marker_start >= marker_end || request.get(marker_end..request.len()) != Some(b"'\n") {
+            return None;
+        }
+        let marker = &request[marker_start..marker_end];
+        let response = self.responses.pop_front()?;
+        let mut bytes = Vec::new();
+        for block in response.blocks {
+            bytes.extend_from_slice(b"%begin 0 0 0\n");
+            for line in block {
+                bytes.extend_from_slice(&line);
+                bytes.push(b'\n');
+            }
+            bytes.extend_from_slice(b"%end 0 0 0\n");
+        }
+        bytes.extend_from_slice(b"%begin 0 0 0\n");
+        bytes.extend_from_slice(marker);
+        bytes.extend_from_slice(b"\n%end 0 0 0\n");
+        Some(bytes)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingZoomCleanup {
     window: u64,
@@ -364,8 +413,10 @@ struct ControlClient {
     shared: Arc<ConnectionShared>,
     session: String,
     runtime_identity: tmux::SessionEpoch,
-    reader: russh::ChannelReadHalf,
-    writer: russh::ChannelWriteHalf<client::Msg>,
+    reader: Option<russh::ChannelReadHalf>,
+    writer: Option<russh::ChannelWriteHalf<client::Msg>>,
+    #[cfg(test)]
+    cleanup_transport: Option<ScriptedCleanupTransport>,
     decoder: tmux::Decoder,
     events: VecDeque<tmux::Event>,
     routes: HashMap<u64, tokio::task::JoinHandle<()>>,
@@ -500,8 +551,10 @@ pub(super) async fn run(
         shared: Arc::clone(shared),
         session: runtime_session,
         runtime_identity: selected_identity.epoch(),
-        reader,
-        writer,
+        reader: Some(reader),
+        writer: Some(writer),
+        #[cfg(test)]
+        cleanup_transport: None,
         decoder: tmux::Decoder::new(),
         events: VecDeque::new(),
         routes: HashMap::new(),
@@ -528,14 +581,23 @@ pub(super) async fn run(
     let flow_result = async {
         await_stage(
         shared,
-        client.writer.exec(true, startup.into_bytes()),
+        client
+            .writer
+            .as_mut()
+            .ok_or(FlowFailure::Stale)?
+            .exec(true, startup.into_bytes()),
         SSH_STAGE_TIMEOUT,
         FlowFailure::Channel,
         )
         .await?;
     // An SSH request success and tmux's startup block are separate boundaries.
     loop {
-        match await_channel_message(shared, &mut client.reader).await? {
+        match await_channel_message(
+            shared,
+            client.reader.as_mut().ok_or(FlowFailure::Stale)?,
+        )
+        .await?
+        {
             Some(ChannelMsg::Success) => break,
             Some(ChannelMsg::Data { data }) => client.decode(&data)?,
             Some(ChannelMsg::ExtendedData { .. }) => {}
@@ -795,7 +857,10 @@ pub(super) async fn run(
                         None => return Err(FlowFailure::Transport),
                     }
                 }
-                message = wait_channel_message(shared, &mut client.reader) => {
+                message = wait_channel_message(
+                    shared,
+                    client.reader.as_mut().ok_or(FlowFailure::Stale)?,
+                ) => {
                     client.channel_message(message?).await?;
                 }
             }
@@ -1015,7 +1080,11 @@ impl ControlClient {
             if let Some(event) = self.events.pop_front() {
                 return Ok(event);
             }
-            let message = await_channel_message(&self.shared, &mut self.reader).await?;
+            let message = await_channel_message(
+                &self.shared,
+                self.reader.as_mut().ok_or(FlowFailure::Stale)?,
+            )
+            .await?;
             self.channel_message(message).await?;
         }
     }
@@ -1029,9 +1098,33 @@ impl ControlClient {
             if let Some(event) = self.events.pop_front() {
                 return Ok(event);
             }
-            let message = self.reader.wait().await;
+            let message = self.reader.as_mut().ok_or(FlowFailure::Stale)?.wait().await;
             self.channel_message(message).await?;
         }
+    }
+
+    async fn send_cleanup_request(&mut self, request: Vec<u8>) -> Result<(), FlowFailure> {
+        #[cfg(test)]
+        if self.cleanup_transport.is_some() {
+            let response = self
+                .cleanup_transport
+                .as_mut()
+                .and_then(|transport| transport.send(request));
+            let response = response.ok_or(FlowFailure::Transport)?;
+            self.decode(&response)?;
+            return Ok(());
+        }
+
+        tokio::time::timeout(
+            EXPLICIT_CLEANUP_TIMEOUT,
+            self.writer
+                .as_mut()
+                .ok_or(FlowFailure::Stale)?
+                .data_bytes(request),
+        )
+        .await
+        .map_err(|_| FlowFailure::Tmux)?
+        .map_err(|_| FlowFailure::Transport)
     }
 
     /// Send a bounded cleanup/topology query on this exact Control Mode
@@ -1058,13 +1151,7 @@ impl ControlClient {
             self.shared.generation, self.command_number
         );
         let request = format!("{command} ; display-message -p '{marker}'\n");
-        tokio::time::timeout(
-            EXPLICIT_CLEANUP_TIMEOUT,
-            self.writer.data_bytes(request.into_bytes()),
-        )
-        .await
-        .map_err(|_| FlowFailure::Tmux)?
-        .map_err(|_| FlowFailure::Transport)?;
+        self.send_cleanup_request(request.into_bytes()).await?;
 
         let deadline = tokio::time::Instant::now() + EXPLICIT_CLEANUP_TIMEOUT;
         let mut blocks = Vec::new();
@@ -1207,7 +1294,10 @@ impl ControlClient {
         let request = format!("{command} ; display-message -p '{marker}'\n");
         await_stage(
             &self.shared,
-            self.writer.data_bytes(request.into_bytes()),
+            self.writer
+                .as_mut()
+                .ok_or(FlowFailure::Stale)?
+                .data_bytes(request.into_bytes()),
             SSH_STAGE_TIMEOUT,
             FlowFailure::Transport,
         )
@@ -1361,7 +1451,10 @@ impl ControlClient {
         let request = format!("{command}\n");
         await_stage(
             &self.shared,
-            self.writer.data_bytes(request.into_bytes()),
+            self.writer
+                .as_mut()
+                .ok_or(FlowFailure::Stale)?
+                .data_bytes(request.into_bytes()),
             SSH_STAGE_TIMEOUT,
             FlowFailure::Transport,
         )
@@ -2779,6 +2872,287 @@ mod tests {
         let mut pane = pane(id, active, window_active);
         pane.zoomed = true;
         pane
+    }
+
+    fn cleanup_reply(blocks: Vec<Vec<Vec<u8>>>) -> ScriptedCleanupResponse {
+        ScriptedCleanupResponse { blocks }
+    }
+
+    fn cleanup_topology_reply(window: u64, pane_id: u64, zoomed: bool) -> ScriptedCleanupResponse {
+        cleanup_reply(vec![vec![
+            format!(
+                "@{window}\t%{pane_id}\t0\t1\t80\t24\tpane-{pane_id}\t{}\t1",
+                u8::from(zoomed)
+            )
+            .into_bytes(),
+        ]])
+    }
+
+    fn owned_hook_reply(
+        allocation: tmux::ZoomRecoveryHookAllocation,
+        window: u64,
+    ) -> ScriptedCleanupResponse {
+        let body = format!(
+            "if-shell -F -t \"=$0:@{window}\" \"#{{window_zoomed_flag}}\" \"resize-pane -Z -t =$0:@{window}\" ; set-hook -u -t \"=$0:\" client-detached[{}] ; set-hook -u -t \"=$0:\" client-session-changed[{}]",
+            allocation.index, allocation.index
+        );
+        cleanup_reply(vec![vec![
+            format!("client-detached[{}] {body}", allocation.index).into_bytes(),
+            format!("client-session-changed[{}] {body}", allocation.index).into_bytes(),
+        ]])
+    }
+
+    fn cleanup_client(
+        shared: Arc<ConnectionShared>,
+        runtime: tmux::SessionEpoch,
+        responses: Vec<ScriptedCleanupResponse>,
+    ) -> ControlClient {
+        let (pane_sender, pane_receiver) = mpsc::channel(INPUT_QUEUE_CAPACITY);
+        ControlClient {
+            shared,
+            session: runtime.session_id.clone(),
+            runtime_identity: runtime,
+            reader: None,
+            writer: None,
+            cleanup_transport: Some(ScriptedCleanupTransport::new(responses)),
+            decoder: tmux::Decoder::new(),
+            events: VecDeque::new(),
+            routes: HashMap::new(),
+            pane_sender,
+            pane_receiver,
+            viewport: (80, 24),
+            dirty: false,
+            capturing: None,
+            capture_complete: false,
+            capture_output: Vec::new(),
+            command_number: 0,
+            zoom_hooks: None,
+            strict_recovery: false,
+            mapping: HashMap::new(),
+            staged_native: Vec::new(),
+            command_epoch: None,
+            operation_epoch: 1,
+            staged_captures: Vec::new(),
+            strict_sync_pending: false,
+            pending_zoom_cleanup: None,
+            pending_zoom_ownership: None,
+            remote_session_closed: false,
+        }
+    }
+
+    fn cleanup_shared(
+        owner: TerminalId,
+        generation: u64,
+        runtime: &tmux::SessionEpoch,
+        hooks: tmux::ZoomRecoveryHookAllocation,
+    ) -> Arc<ConnectionShared> {
+        let known_hosts_path =
+            std::path::PathBuf::from(format!("/tmp/control-cleanup-{generation}-known-hosts"));
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "control-cleanup.example".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        ));
+        {
+            let mut state = shared.session.lock().expect("cleanup session");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "control-cleanup.example".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path,
+                backend: Backend::Tmux,
+                runtime: Some(runtime.session_id.clone()),
+            });
+        }
+        assert!(shared.record_zoom_cleanup_intent(runtime.clone(), 1, 17, hooks));
+        shared
+    }
+
+    fn run_cleanup(
+        mut client: ControlClient,
+    ) -> (ZoomCleanupOutcome, Arc<ConnectionShared>, Vec<Vec<u8>>) {
+        let shared = Arc::clone(&client.shared);
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("cleanup runtime");
+        let outcome = runtime.block_on(async { client.restore_zoom().await });
+        let sent = client
+            .cleanup_transport
+            .take()
+            .expect("scripted cleanup transport")
+            .sent;
+        (outcome, shared, sent)
+    }
+
+    #[test]
+    fn restore_zoom_replays_real_cleanup_transcript_and_fails_closed_on_replaced_hooks() {
+        let owner = registry::create_terminal(80, 24).expect("replaced cleanup terminal");
+        let runtime = tmux::SessionEpoch {
+            session_id: "$0".to_owned(),
+            server_pid: 42,
+            server_start_time: 4_200_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_030 };
+        let shared = cleanup_shared(owner, 77_030, &runtime, hooks);
+        let responses = vec![
+            cleanup_topology_reply(1, 17, false),
+            cleanup_topology_reply(1, 17, false),
+            cleanup_reply(vec![vec![
+                format!("client-detached[{}] third-party-body", hooks.index).into_bytes(),
+                format!("client-session-changed[{}] third-party-body", hooks.index).into_bytes(),
+            ]]),
+        ];
+        let (outcome, shared, sent) = run_cleanup(cleanup_client(
+            Arc::clone(&shared),
+            runtime.clone(),
+            responses,
+        ));
+        assert_eq!(outcome, ZoomCleanupOutcome::UnconfirmedOrFailed);
+        assert_eq!(
+            *shared
+                .zoom_cleanup_outcome
+                .lock()
+                .expect("replaced cleanup outcome"),
+            ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
+        assert!(
+            sent.iter()
+                .any(|request| request.starts_with(b"show-hooks"))
+        );
+        assert!(!sent.iter().any(|request| {
+            request
+                .windows(b"set-hook -u".len())
+                .any(|window| window == b"set-hook -u")
+        }));
+        assert!(matches!(
+            shared.zoom_cleanup_record_for(&runtime),
+            Ok(Some(_))
+        ));
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn restore_zoom_replays_real_cleanup_transcript_and_fails_closed_on_classifier_error() {
+        let owner = registry::create_terminal(80, 24).expect("classifier cleanup terminal");
+        let runtime = tmux::SessionEpoch {
+            session_id: "$0".to_owned(),
+            server_pid: 43,
+            server_start_time: 4_300_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_031 };
+        let shared = cleanup_shared(owner, 77_031, &runtime, hooks);
+        let responses = vec![
+            cleanup_topology_reply(1, 17, false),
+            cleanup_topology_reply(1, 17, false),
+            cleanup_reply(vec![vec![
+                format!("client-detached[{} broken", hooks.index).into_bytes(),
+            ]]),
+        ];
+        let (outcome, shared, sent) = run_cleanup(cleanup_client(
+            Arc::clone(&shared),
+            runtime.clone(),
+            responses,
+        ));
+        assert_eq!(outcome, ZoomCleanupOutcome::UnconfirmedOrFailed);
+        assert_eq!(
+            *shared
+                .zoom_cleanup_outcome
+                .lock()
+                .expect("classifier cleanup outcome"),
+            ZoomCleanupOutcome::UnconfirmedOrFailed
+        );
+        assert!(
+            sent.iter()
+                .any(|request| request.starts_with(b"show-hooks"))
+        );
+        assert!(!sent.iter().any(|request| {
+            request
+                .windows(b"set-hook -u".len())
+                .any(|window| window == b"set-hook -u")
+        }));
+        assert!(matches!(
+            shared.zoom_cleanup_record_for(&runtime),
+            Ok(Some(_))
+        ));
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn restore_zoom_replays_owned_and_absent_cleanup_transcripts() {
+        for (index, hook_response, expected_removal) in [(1_032, true, true), (1_033, false, false)]
+        {
+            let owner = registry::create_terminal(80, 24).expect("positive cleanup terminal");
+            let runtime = tmux::SessionEpoch {
+                session_id: "$0".to_owned(),
+                server_pid: 44 + u64::from(!hook_response),
+                server_start_time: 4_400_000_000 + u64::from(!hook_response),
+            };
+            let hooks = tmux::ZoomRecoveryHookAllocation { index };
+            let shared = cleanup_shared(owner, 77_040 + u64::from(!hook_response), &runtime, hooks);
+            let mut responses = vec![
+                cleanup_topology_reply(1, 17, false),
+                cleanup_topology_reply(1, 17, false),
+            ];
+            responses.push(if hook_response {
+                owned_hook_reply(hooks, 1)
+            } else {
+                cleanup_reply(Vec::new())
+            });
+            if expected_removal {
+                responses.push(cleanup_reply(Vec::new()));
+                responses.push(cleanup_reply(Vec::new()));
+            }
+            let (outcome, shared, sent) = run_cleanup(cleanup_client(
+                Arc::clone(&shared),
+                runtime.clone(),
+                responses,
+            ));
+            assert_eq!(outcome, ZoomCleanupOutcome::NotNeeded);
+            assert_eq!(
+                *shared
+                    .zoom_cleanup_outcome
+                    .lock()
+                    .expect("positive cleanup outcome"),
+                ZoomCleanupOutcome::NotNeeded
+            );
+            let removals = sent
+                .iter()
+                .filter(|request| {
+                    request
+                        .windows(b"set-hook -u".len())
+                        .any(|window| window == b"set-hook -u")
+                })
+                .count();
+            assert_eq!(removals, usize::from(expected_removal));
+            if expected_removal {
+                let removal = sent
+                    .iter()
+                    .find(|request| {
+                        request
+                            .windows(b"set-hook -u".len())
+                            .any(|window| window == b"set-hook -u")
+                    })
+                    .expect("owned cleanup removal request");
+                let detached = format!("client-detached[{index}] ");
+                let session_changed = format!("client-session-changed[{index}] ");
+                assert!(
+                    removal
+                        .windows(detached.len())
+                        .any(|window| window == detached.as_bytes())
+                );
+                assert!(
+                    removal
+                        .windows(session_changed.len())
+                        .any(|window| window == session_changed.as_bytes())
+                );
+            }
+            assert!(matches!(shared.zoom_cleanup_record_for(&runtime), Ok(None)));
+            registry::destroy_terminal(owner);
+        }
     }
 
     #[test]

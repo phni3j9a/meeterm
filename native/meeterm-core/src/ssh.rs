@@ -31,8 +31,9 @@ use crate::registry::{self, TerminalId};
 use crate::terminal::INPUT_QUEUE_CAPACITY;
 use crate::tmux::{self, PaneSnapshot, SessionSnapshot, WindowSnapshot};
 use crate::workspace::{
-    self, Backend, RecoveryPhase, RecoverySnapshot, RuntimeCandidate, RuntimeControlSnapshot,
-    RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState, RuntimeSnapshot, RuntimeState,
+    self, Backend, CleanupWarning, RecoveryPhase, RecoverySnapshot, RuntimeCandidate,
+    RuntimeControlSnapshot, RuntimeDiscoverySnapshot, RuntimeSection, RuntimeSectionState,
+    RuntimeSnapshot, RuntimeState,
 };
 
 /// Maximum number of bytes used by each fixed-size string in the C snapshot.
@@ -362,8 +363,17 @@ struct ZoomCleanupRecord {
     window: u64,
     pane: u64,
     hooks: tmux::ZoomRecoveryHookAllocation,
+    /// Internal identity of one cleanup operation. It is never serialized or
+    /// exposed to JavaScript; it only keeps a warning ID stable across actor
+    /// replacement while allowing a later cleanup result to get a new ID.
+    result_id: u64,
     unconfirmed: bool,
     generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CleanupWarningResult {
+    result_id: u64,
 }
 
 impl SessionEndpoint {
@@ -464,11 +474,17 @@ struct SessionState {
     /// replacement during same-runtime recovery, but is cleared at an
     /// explicit fresh host/backend/runtime binding boundary.
     zoom_cleanup_record: Option<ZoomCleanupRecord>,
-    /// Low-frequency result of retiring an old binding whose zoom cleanup
-    /// authority could not be confirmed. Keep it beside the record so the
-    /// warning remains observable even if replacement preparation fails
-    /// before a new ConnectionShared/map entry exists.
-    layout_restore_warning: bool,
+    /// Latest single low-frequency cleanup result. It is intentionally
+    /// independent from ConnectionInfo so a replacement's auth/host-key
+    /// failure cannot overwrite the old-layout warning.
+    cleanup_warning: Option<CleanupWarning>,
+    cleanup_warning_result: Option<CleanupWarningResult>,
+    /// Native-issued warning IDs are owner-scoped and never derived from a
+    /// connection generation or operation epoch.
+    next_cleanup_warning_id: u64,
+    /// Internal identity for the latest cleanup operation. This is not
+    /// serialized and is only used to keep a result's warning ID stable.
+    next_cleanup_result_id: u64,
     runtime_operations_ready: bool,
     terminal_input_ready: bool,
 }
@@ -499,7 +515,10 @@ impl Default for SessionState {
             recovery_terminal_id: None,
             recovery_group_id: None,
             zoom_cleanup_record: None,
-            layout_restore_warning: false,
+            cleanup_warning: None,
+            cleanup_warning_result: None,
+            next_cleanup_warning_id: 0,
+            next_cleanup_result_id: 0,
             runtime_operations_ready: false,
             terminal_input_ready: false,
         }
@@ -523,6 +542,7 @@ impl SessionState {
             runtime_operations_ready: self.runtime_operations_ready,
             terminal_input_ready: self.terminal_input_ready,
             recovery: self.recovery.clone(),
+            cleanup_warning: self.cleanup_warning.clone(),
         }
     }
 }
@@ -821,18 +841,18 @@ impl ConnectionShared {
     /// Mark a surviving cleanup record as unconfirmed before its detailed
     /// target is discarded. The owner-transition caller publishes the warning
     /// while the record is still present, then calls the discard half below.
-    fn mark_zoom_cleanup_record_unconfirmed(&self) -> bool {
+    fn mark_zoom_cleanup_record_unconfirmed(&self) -> Option<CleanupWarningResult> {
         let Ok(mut state) = self.session.lock() else {
-            return false;
+            return None;
         };
         if state.generation != self.generation {
-            return false;
+            return None;
         }
-        let Some(record) = state.zoom_cleanup_record.as_mut() else {
-            return false;
-        };
+        let record = state.zoom_cleanup_record.as_mut()?;
         record.unconfirmed = true;
-        true
+        Some(CleanupWarningResult {
+            result_id: record.result_id,
+        })
     }
 
     /// Discard an already-published old-binding cleanup record. This is only
@@ -880,12 +900,22 @@ impl ConnectionShared {
             // a new target. The caller must reconcile/release it first.
             return false;
         }
+        let result_id = state
+            .zoom_cleanup_record
+            .as_ref()
+            .map(|record| record.result_id)
+            .filter(|result_id| *result_id != 0)
+            .unwrap_or_else(|| {
+                state.next_cleanup_result_id = next_nonzero_counter(state.next_cleanup_result_id);
+                state.next_cleanup_result_id
+            });
         state.zoom_cleanup_record = Some(ZoomCleanupRecord {
             endpoint,
             runtime,
             window,
             pane,
             hooks,
+            result_id,
             unconfirmed: true,
             generation: self.generation,
         });
@@ -993,14 +1023,45 @@ impl ConnectionShared {
     }
 
     fn publish_layout_restore_warning(&self) {
-        if let Ok(mut info) = self.info.lock() {
-            info.error_code = "layout_restore_unconfirmed".to_owned();
+        self.publish_layout_restore_warning_for(None);
+    }
+
+    fn publish_layout_restore_warning_for(&self, result: Option<CleanupWarningResult>) {
+        let Ok(mut state) = self.session.lock() else {
+            return;
+        };
+        if state.generation != self.generation {
+            return;
+        }
+        let replace = state.cleanup_warning.is_none()
+            || result.is_some_and(|candidate| {
+                state
+                    .cleanup_warning_result
+                    .is_some_and(|current| current != candidate)
+            });
+        if replace {
+            state.next_cleanup_warning_id = next_nonzero_counter(state.next_cleanup_warning_id);
+            state.cleanup_warning = Some(CleanupWarning {
+                id: state.next_cleanup_warning_id.to_string(),
+                code: workspace::CLEANUP_WARNING_CODE.to_owned(),
+                message: workspace::CLEANUP_WARNING_MESSAGE.to_owned(),
+            });
+            state.cleanup_warning_result = result;
+        } else if state.cleanup_warning_result.is_none() && result.is_some() {
+            // A no-record fallback may be followed by the durable record's
+            // first classification. Keep the already visible ID rather than
+            // minting a duplicate event.
+            state.cleanup_warning_result = result;
+        }
+        drop(state);
+
+        // Keep the legacy fixed C snapshot useful as a compatibility fallback,
+        // but never overwrite a newer binding's own auth/host-key diagnostic.
+        if let Ok(mut info) = self.info.lock()
+            && (info.error_code.is_empty() || info.error_code == workspace::CLEANUP_WARNING_CODE)
+        {
+            info.error_code = workspace::CLEANUP_WARNING_CODE.to_owned();
             info.error_message = recovery_reason_message("layout_restore_unconfirmed");
-            if let Ok(mut state) = self.session.lock()
-                && state.generation == self.generation
-            {
-                state.layout_restore_warning = true;
-            }
         }
     }
 
@@ -1356,7 +1417,6 @@ impl ConnectionShared {
         state.pending_confirmation_token = None;
         state.recovery_terminal_id = None;
         state.recovery_group_id = None;
-        state.layout_restore_warning = false;
         state.runtime_operations_ready = true;
         state.terminal_input_ready = state.terminal_visible
             && state.foreground
@@ -1794,7 +1854,7 @@ impl ConnectionShared {
         let warning = self
             .session
             .lock()
-            .map(|state| state.layout_restore_warning)
+            .map(|state| state.cleanup_warning.is_some())
             .unwrap_or(false);
         // Preserve a new binding's own host/auth diagnostic if it has already
         // become authoritative. The old layout result is kept separately in
@@ -2930,9 +2990,9 @@ fn retire_explicit_cleanup_result(
         return false;
     }
     let surviving_record = shared.mark_zoom_cleanup_record_unconfirmed();
-    if surviving_record {
+    if let Some(result) = surviving_record {
         shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
-        shared.publish_layout_restore_warning();
+        shared.publish_layout_restore_warning_for(Some(result));
         shared.discard_zoom_cleanup_record();
         return true;
     }
@@ -3227,11 +3287,13 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
             // An active connection implies the native runtime exists, but a
             // poisoned/unavailable runtime must still fail closed.
             let retired_record = shared.mark_zoom_cleanup_record_unconfirmed();
-            if retired_record || shared.has_zoom_cleanup_intent() {
+            if retired_record.is_some() || shared.has_zoom_cleanup_intent() {
                 shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
-                shared.publish_layout_restore_warning();
-                if retired_record {
+                if let Some(result) = retired_record {
+                    shared.publish_layout_restore_warning_for(Some(result));
                     shared.discard_zoom_cleanup_record();
+                } else {
+                    shared.publish_layout_restore_warning();
                 }
             }
             shared.cancel();
@@ -3306,7 +3368,7 @@ pub fn connection_snapshot(terminal_id: TerminalId) -> Result<ConnectionSnapshot
             let mut snapshot = ConnectionSnapshot::disconnected();
             if session_state(terminal_id)
                 .lock()
-                .map(|state| state.layout_restore_warning)
+                .map(|state| state.cleanup_warning.is_some())
                 .unwrap_or(false)
             {
                 apply_layout_restore_warning(&mut snapshot);
@@ -3744,6 +3806,11 @@ const MAX_RUNTIME_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const RECOVERY_TOKEN_MAX_BYTES: usize = 128;
 
 fn next_operation_epoch(current: u64) -> u64 {
+    let next = current.wrapping_add(1);
+    if next == 0 { 1 } else { next }
+}
+
+fn next_nonzero_counter(current: u64) -> u64 {
     let next = current.wrapping_add(1);
     if next == 0 { 1 } else { next }
 }
@@ -5576,12 +5643,76 @@ mod tests {
     use super::*;
     use crate::input::Modifiers;
     use crate::terminal::SemanticInput;
+    use russh::server::{self, Server as RusshServer};
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     const KEY_ONE: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     const KEY_TWO: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
+    const REJECTING_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCNNbbvSY1uv05KifUyTIJTMcQmVLwLgoh4mdErq34PywAAAJj4uZ/y+Lmf
+8gAAAAtzc2gtZWQyNTUxOQAAACCNNbbvSY1uv05KifUyTIJTMcQmVLwLgoh4mdErq34Pyw
+AAAEAKNpCN3J9WmHgxbJaAqFwXWdMgDpg1y2YYi7bhOvXHaY01tu9JjW6/TkqJ9TJMglMx
+xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
+-----END OPENSSH PRIVATE KEY-----";
+
+    struct RejectingServer;
+
+    impl RusshServer for RejectingServer {
+        type Handler = Self;
+
+        fn new_client(&mut self, _peer_addr: Option<std::net::SocketAddr>) -> Self::Handler {
+            Self
+        }
+    }
+
+    impl server::Handler for RejectingServer {
+        type Error = russh::Error;
+    }
+
+    fn start_rejecting_ssh_server() -> (
+        u16,
+        server::RunningServerHandle,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
+        let join = std::thread::spawn(move || {
+            let runtime = Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .expect("rejecting SSH test runtime");
+            runtime.block_on(async move {
+                let listener = TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .expect("bind rejecting SSH test server");
+                let host_key = keys::decode_secret_key(REJECTING_SERVER_KEY, None)
+                    .expect("decode rejecting SSH host key");
+                let config = Arc::new(server::Config {
+                    keys: vec![host_key],
+                    auth_rejection_time: Duration::from_millis(0),
+                    auth_rejection_time_initial: Some(Duration::from_millis(0)),
+                    ..Default::default()
+                });
+                let mut server = RejectingServer;
+                let running = server.run_on_socket(config, &listener);
+                let handle = running.handle();
+                ready_sender
+                    .send((
+                        listener.local_addr().expect("rejecting SSH address").port(),
+                        handle,
+                    ))
+                    .expect("publish rejecting SSH server");
+                let _ = running.await;
+            });
+        });
+        let (port, handle) = ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("rejecting SSH server startup");
+        (port, handle, join)
+    }
 
     enum FixtureInputReceiver {
         Bytes(mpsc::Receiver<Vec<u8>>),
@@ -6715,10 +6846,237 @@ mod tests {
                     .session
                     .lock()
                     .expect("retirement warning state")
-                    .layout_restore_warning
+                    .cleanup_warning
+                    .is_some()
             );
             registry::destroy_terminal(owner);
         }
+    }
+
+    #[test]
+    fn replacement_auth_failure_keeps_old_cleanup_warning_in_workspace_json() {
+        let (port, server_handle, server_join) = start_rejecting_ssh_server();
+        let owner = registry::create_terminal(80, 24).expect("owner transition terminal");
+        let old_generation = next_generation();
+        let old_shared = Arc::new(ConnectionShared::new(
+            owner,
+            old_generation,
+            "127.0.0.1".to_owned(),
+            port,
+            PathBuf::from(format!("/tmp/replacement-auth-{owner}-known-hosts")),
+        ));
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$30".to_owned(),
+            server_pid: 30,
+            server_start_time: 3_000_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_034 };
+        let known_hosts_path = PathBuf::from(format!("/tmp/replacement-auth-{owner}-known-hosts"));
+        let host_key = keys::decode_secret_key(REJECTING_SERVER_KEY, None)
+            .expect("decode rejecting host key for known-hosts");
+        let public_key = host_key
+            .public_key()
+            .to_openssh()
+            .expect("encode rejecting host key");
+        fs::write(
+            &known_hosts_path,
+            format!("[127.0.0.1]:{port} {public_key}\n"),
+        )
+        .expect("write rejecting host known-hosts");
+        {
+            let mut state = old_shared.session.lock().expect("owner transition state");
+            state.generation = old_generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "127.0.0.1".to_owned(),
+                port,
+                username: "fixture".to_owned(),
+                known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: Some(runtime_identity.session_id.clone()),
+            });
+        }
+        assert!(old_shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks,));
+        // The finished actor is the explicit owner-retirement precondition;
+        // start_connection must now retire this record before installing the
+        // replacement generation.
+        old_shared.finish(Ok(()));
+        let old_abort = runtime()
+            .expect("owner transition runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections()
+            .lock()
+            .expect("owner transition registry")
+            .insert(
+                owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&old_shared),
+                    abort: old_abort,
+                },
+            );
+
+        connect_terminal(
+            owner,
+            ConnectOptions {
+                host: "127.0.0.1".to_owned(),
+                port,
+                username: "fixture".to_owned(),
+                credentials: AuthOptions::password("wrong-password".to_owned()),
+                known_hosts_path: known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: None,
+            },
+        )
+        .expect("start rejecting replacement");
+        let replacement = connections()
+            .lock()
+            .expect("replacement registry")
+            .get(&owner)
+            .map(|entry| Arc::clone(&entry.shared))
+            .expect("replacement shared owner");
+
+        // Read the native actor directly until auth has failed. The public
+        // snapshot APIs are intentionally not read before this point, so the
+        // first published read observes both independent result channels.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let finished = replacement.info.lock().expect("replacement info").finished;
+            if finished {
+                break;
+            }
+            assert!(Instant::now() < deadline, "replacement auth did not fail");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let connection = connection_snapshot(owner).expect("replacement connection snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            b"auth_failed"
+        );
+        let first: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("replacement workspace snapshot"),
+        )
+        .expect("replacement workspace JSON");
+        let warning = first["control"]["cleanupWarning"].clone();
+        assert_eq!(warning["code"], "layout_restore_unconfirmed");
+        assert!(warning["id"].as_str().is_some_and(|id| !id.is_empty()));
+        let second: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("replacement repeated workspace snapshot"),
+        )
+        .expect("replacement repeated workspace JSON");
+        assert_eq!(second["control"]["cleanupWarning"]["id"], warning["id"]);
+        assert_eq!(
+            replacement
+                .info
+                .lock()
+                .expect("replacement auth info")
+                .error_code,
+            "auth_failed"
+        );
+
+        server_handle.shutdown("replacement auth test complete".to_owned());
+        server_join.join().expect("rejoining rejecting SSH server");
+        terminal_destroyed(owner);
+        registry::destroy_terminal(owner);
+        let _ = fs::remove_file(known_hosts_path);
+    }
+
+    #[test]
+    fn cleanup_warning_survives_preparation_cancel_ready_and_stale_generation() {
+        let owner = registry::create_terminal(80, 24).expect("warning lifecycle terminal");
+        let generation = next_generation();
+        let known_hosts_path = PathBuf::from(format!("/tmp/warning-lifecycle-{owner}"));
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "warning-lifecycle.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        ));
+        shared
+            .session
+            .lock()
+            .expect("warning lifecycle session")
+            .generation = generation;
+        shared.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 7 }));
+        let initial: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("initial warning workspace JSON"),
+        )
+        .expect("initial warning JSON");
+        assert_eq!(initial["control"]["cleanupWarning"]["id"], "1");
+
+        let options = ConnectOptions {
+            host: "warning-lifecycle.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            credentials: AuthOptions::password("fixture-only".to_owned()),
+            known_hosts_path: known_hosts_path.clone(),
+            backend: Backend::Tmux,
+            runtime: None,
+        };
+        let _ = prepare_host_endpoint(owner, &options).expect("prepare host endpoint");
+        let after_prepare: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("prepared warning workspace JSON"),
+        )
+        .expect("prepared warning JSON");
+        assert_eq!(
+            after_prepare["control"]["cleanupWarning"]["id"],
+            initial["control"]["cleanupWarning"]["id"]
+        );
+
+        // A canceled/prepared generation without a map binding must not clear
+        // the owner-scoped result. This is the same fail-closed path used
+        // when a replacement loses its owner ticket before map installation.
+        let replacement_generation = next_generation();
+        let replacement = Arc::new(ConnectionShared::new(
+            owner,
+            replacement_generation,
+            "warning-lifecycle.example.test".to_owned(),
+            22,
+            known_hosts_path.clone(),
+        ));
+        replacement
+            .session
+            .lock()
+            .expect("replacement warning session")
+            .generation = replacement_generation;
+        // Publishing the same result and reaching Ready keep one warning ID;
+        // a distinct cleanup result is the only event that advances it.
+        replacement.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 7 }));
+        replacement.set_state(ConnectionState::Ready);
+        let ready: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("ready warning workspace JSON"),
+        )
+        .expect("ready warning JSON");
+        assert_eq!(ready["control"]["cleanupWarning"]["id"], "1");
+
+        abandon_uninstalled_connection(&replacement, std::iter::empty());
+        let after_cancel: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("canceled warning workspace JSON"),
+        )
+        .expect("canceled warning JSON");
+        assert_eq!(
+            after_cancel["control"]["cleanupWarning"]["id"],
+            initial["control"]["cleanupWarning"]["id"]
+        );
+
+        replacement.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 8 }));
+        let newer: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("newer warning workspace JSON"),
+        )
+        .expect("newer warning JSON");
+        assert_eq!(newer["control"]["cleanupWarning"]["id"], "2");
+
+        // A completion from the old owner generation cannot overwrite the
+        // newer result after the shared SessionState generation rebases.
+        shared.publish_layout_restore_warning_for(Some(CleanupWarningResult { result_id: 9 }));
+        let after_stale: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(owner).expect("stale warning workspace JSON"),
+        )
+        .expect("stale warning JSON");
+        assert_eq!(after_stale["control"]["cleanupWarning"]["id"], "2");
+        registry::destroy_terminal(owner);
+        let _ = fs::remove_file(known_hosts_path);
     }
 
     #[test]
@@ -6997,6 +7355,7 @@ mod tests {
                 window: 31,
                 pane: 51,
                 hooks,
+                result_id: 1,
                 unconfirmed: true,
                 generation: new_generation,
             });
