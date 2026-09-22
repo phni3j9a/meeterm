@@ -392,63 +392,77 @@ machine-gated evidence が残っている。
 
 W1 の sandbox 制約で未実行だった fixture・モバイル検証を Main 環境で完了した。
 
-### ローカル / fixture
+## Main 最終検証 — candidate `ed43536` (2026-09-22)
 
-- `cargo fmt --check` / `cargo clippy --locked --all-targets -- -D warnings`: clean
-- `cargo test --locked`: 166 passed / 0 failed
-- `npm run typecheck` / `npm run test:app`: pass / 59 件 pass
-- `scripts/ssh/fixture.py` 経由の ignored OpenSSH:
-  `real_openssh_tmux_session_loop`（zoom 切替列・disconnect・recovery・2度目の
-  disconnect、saved-layout shape と zoom flag の全 checkpoint 一致）と
-  `real_openssh_existing_tmux_runtime_selection` が pass。
-- password 認証の ignored test `real_openssh_password_auth_reconnect_and_host_key_gate`:
-  disposable Docker fixture に fixture ユーザーの tmux server が居なかったため
-  `tmux_discovery_malformed`（Empty 期待）で初回失敗。fixture 側で `tmux -D`
-  を起動して verified empty にすると pass。製品・parser の変更なし。
-- Herdr: 公式 v0.9.0 binary（sha256 `4fa1a011…b71f` 検証済み）で
-  `real_herdr_native_backend_over_russh_fixture` pass（21.83s）。
+中間候補 `8c5f511`・`d766fb8` は Android full / iOS standard+ssh で pass 済みだったが、
+厳格 hook 分類器を含む最終候補 `3d07d2c` の Android final run が
+`daily_transport_loss_ready`（`authoritative_ready_timeout`、runtime-mismatch 画面）で
+3 連続失敗した。根本原因を実 fixture で再現・特定した上で `ed43536` として修正し、
+両 platform を再実行して全緑を確認した。
 
-### モバイル（Devin Cloud 常駐セッション、両方 `git reset --hard 8c5f511`）
+### `3d07d2c` で発見された回帰と `ed43536` の修正
 
-- **Android full** — session `9429c00e8cc14fb2b140b3e23bb28ec1`。
-  fresh CNG + `assembleRelease`（4m18s）→ foundation gates → 29 route fixture
-  （`empty` のみ従来どおり unavailable、観測用途）→ 実 OpenSSH/tmux smoke
-  ~22 分 pass。credential 入力・host fingerprint 確認・picker・接続・profile CRUD・
-  healthy foreground 復帰・transport loss（cached read-only、`native_handle_same`、
-  `pane_identity_same`、pre/post marker 各 1 回、loss 中の入力なし）・
-  process restart credential restore・workspace/pane 操作・CJK atlas・
-  native selection/copy・workspace switch・handoff→**disconnect #1**
-  （split shape 保持 + zoom 残存なし）→ manual reconnect（同 pane・同 PID）→
-  **disconnect #2 `disconnect_after_resume`（同 assertion）— PASS**。
-  旧 run `2c99368` で失敗した `pane_split_changed` 経路が今回は両 disconnect で緑。
-  toolchain 差分: node v24.19.0 / npm 10.8.3（blueprint pin 22.22.2/10.9.7、
-  session の `/opt/.devin/envrc` PATH 由来。gate は全て pass）。
-- **iOS `standard`** — session `7a32a4e6ed984961b5194e22feeba407`。
-  fresh CNG `build-for-testing`（ARCHS=arm64）→ storage 4 case + input/
-  recovery-bridge 12 case + 22 route manifest + fresh foundation
-  `NATIVE_READY`/`FIRST_FRAME_METAL` no-crash → pass（UI 807.7s + storage 30.3s）。
-- **iOS `ssh`** — 同一 commit 成果物を manifest/Xcode 一致確認のうえ再利用
-  （fresh build 主張なし）。fixture preflight → 実 host-key 信頼 → discovery+
-  明示選択 → healthy background/foreground → fixture 所有の sshd stop/start で
-  transport loss → 保持 read-only 画面・`native_handle_same`・
-  `selected_pane_identifier_same`・post-loss marker 単一到達 → 明示 disconnect →
-  pass（776.1s）。**`layout_restore_unconfirmed` は発火せず、disconnect の
-  cleanup は verified 完了。**
-- evidence branch: `evidence/android-20260921` @ `de9002e8`（57 ファイル）、
-  `evidence/ios-20260921` @ `6f9bc96`。
-- Main が両 platform の最終画像を実見: Android `ssh-terminal.png`
-  （Connected・pane tab・ANSI marker・日本語表示）、`ssh-handoff.png`
-  （`tmux attach -t meeterm` カード）、`terminal.png`（foundation ANSI/CJK/
-  combining/emoji）。iOS `ssh-terminal-input.png`（実 marker コマンド表示）、
-  `ssh-disconnected.png`（保持 read-only 画面 + Reconnect/Connection details）、
-  `standard-terminal.png`（Metal foundation、CJK/emoji 正常）。
+- 発火した `client-detached[1000]` / `client-session-changed[1000]` が hook 本体の
+  `set-hook -u` で除去されると、tmux は空の hook 配列を **body なしの裸名**
+  （`client-detached` / `client-session-changed`）として `show-hooks` に残す。
+- 厳格分類器 `zoom_recovery_hooks_state` は bracket なし行を一律 `Err`（曖昧）とし、
+  `TmuxProtocol` → fail-closed → `runtime_identity_uncertain`（runtime-mismatch 画面）
+  に到達していた。`d766fb8` では同じ行を無条件 skip していたため pass していた。
+- `ed43536` は **裸名かつ空 body** の行のみを無害な名残として skip する。body を持つ
+  未索引エントリ、index 不一致・重複・body 不一致の indexed エントリは従来どおり
+  fail-closed / `Replaced` のまま。`choose_zoom_recovery_hook`（裸名 → index 0 →
+  予約レンジ 1000-1100 外）と `zoom_recovery_hooks_absent`（`None ≠ Some(alloc)`）は
+  元々リムナントを正しく扱っており変更不要だった。
+- 回帰テスト `real_openssh_tmux_transport_loss_sshd_restart` を追加: fixture の
+  control channel 経由で実 sshd を stop/start し、remote `tmux -C` の kill →
+  `client-detached` 発火 → リムナント残存 → 代替 actor の回復 → Ready → 同一 pane →
+  第三者 indexed hook（`client-detached[7]`）の生存までを実経路で検証する。
+  修正前は `runtime_identity_uncertain` で決定的に失敗し、修正後 pass。
+
+### ローカル / fixture（`ed43536`）
+
+- `cargo fmt` / `cargo clippy --all-targets`: clean（0 warnings）
+- `cargo test`（lib）: 183 passed / 0 failed
+- `scripts/ssh/fixture.py` 経由の ignored OpenSSH（テストごとに独立 fixture 起動）:
+  `real_openssh_tmux_transport_loss_sshd_restart`、`real_openssh_tmux_session_loop`、
+  `real_openssh_existing_tmux_runtime_selection` — 全て pass。
+  ※同一 fixture 起動で複数テストを連続実行すると、先行テストの `meeterm` session
+  残存・host-key pinning で後続が失敗する（テスト分離の既存制約。CI もテスト単位の
+  fixture 起動）。`real_openssh_password_auth_reconnect_and_host_key_gate` は
+  `MEETERM_SSH_AUTH=password` fixture variant が fixture.py に無く手動専用（従来どおり）。
+- CI `ed43536` run `35765235639`: success。
+
+### モバイル（Devin Cloud 常駐セッション、両方 `git reset --hard ed43536`）
+
+- **Android full** — session `9429c00e8cc14fb2b140b3e23bb28ec1`。**PASS**（初回で全ゲート緑）。
+  fresh CNG + `assembleRelease`（2m41s）→ foundation gates → 31 route fixture
+  （`empty` のみ従来どおり unavailable）→ 実 OpenSSH/tmux smoke ~20 分 pass。
+  transport-loss 回復 `result=passed, reason=ok`（`3d07d2c` で 3 連続失敗した経路）。
+  警告 3 route（`layout-restore-unconfirmed` / `runtime-layout-restore-unconfirmed` /
+  `connection-error`）全 capture、`cleanup-warning-dismiss` enabled+visible。
+  side-channel `fixture-tmux-epoch-watch.log`（1s 間隔）: server `pid=9258`・
+  `start_time=1790101027` が全 run を通じて不変、zoom 1→0 は disconnect cleanup で
+  正しく解除。evidence: `evidence/android-20260921` @ `0e4e0b9`。
+  toolchain 差分: node v24.19.0 / npm 10.8.3（blueprint pin 22.22.2、記録済みの既知差分）。
+- **iOS `standard` + `ssh`** — session `7a32a4e6ed984961b5194e22feeba407`。**両方 PASS**。
+  standard: UI 815.8s + storage 8.4s（13 tests、25 route manifest、警告 3 capture 全取得、
+  foundation `NATIVE_READY`/`FIRST_FRAME_METAL` no-crash）。
+  ssh: 767.5s — `3d07d2c` では同じ回帰で `waitForAuthoritativeReady` 90s timeout
+  （stale read-only 画面に fail-closed 滞留）していたが、`ed43536` では
+  `ssh_transport_loss_restored` → `ssh_transport_loss_authoritative_ready` →
+  post-marker → `ssh_disconnect` → `ssh_complete` まで完走。`transport_loss=passed`、
+  `same_pane=yes`、`same_pane_pid=yes`、`native_handle_same=yes`、
+  `cached_read_only_surface=yes`、`input_during_loss=none`、
+  `layout_restore_unconfirmed` 非発火。
+  evidence: `evidence/ios-20260921` @ `935338e`。toolchain: Xcode 26.6 / SDK 26.5 /
+  ARCHS=arm64 / Rust 1.96.0 / iPhone 18 Pro・iOS 27.0 simulator。
 
 ### 残る限界
 
 - 実機未検証: 機内モード、Wi-Fi/モバイル切替、アプリ復帰、日本語 IME、実機 GPU。
   Simulator/エミュレータ結果を実機 acceptance としては扱わない。
 - Android session は blueprint pin ではない Node で実行（全 gate pass、記録済み）。
-- iOS session は session 側環境修正（rustup proxy、LANG、runtime match、python3
-  shim、npm 10.9.8）を記録済み。製品ソースへの影響なし。
+- iOS session の環境修正（rustup proxy、LANG、runtime match、python3 shim、npm 10.9.8）は
+  記録済み。製品ソースへの影響なし。
 - process kill / OS 強制終了後の完全復元、任意パケットロス、長時間運用は
   範囲外（従来どおり）。
