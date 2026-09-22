@@ -1,279 +1,265 @@
-09-21 17:53:59.567   674   768 D ActivityManager: sync unfroze 2457 com.google.android.googlequicksearchbox:search for 6
-09-21 17:53:59.568   674   768 D ActivityManager: sync unfroze 2506 com.google.android.tts for 6
-09-21 17:53:59.572   674   768 D ActivityManager: sync unfroze 1369 com.google.android.dialer for 6
-09-21 17:53:59.575   674   768 D ActivityManager: sync unfroze 1917 com.google.android.apps.messaging for 6
-09-21 17:53:59.700   674  1742 W ActivityManager: pid 1369 com.google.android.dialer sent binder code 24 with flags 0 to frozen apps and got error -2147483646
-09-21 17:53:59.700   674   719 I ActivityManager: Killing 1363:android.process.acore/u0a96 (adj 905): Sync transaction while frozen
-09-21 17:53:59.704   674  1182 I ActivityManager: Process android.process.acore (pid 1363) early provider death
-09-21 17:53:59.712   674  1742 V ActivityManager: Got obituary of 1363:android.process.acore
-09-21 17:54:02.537   674  1182 D ActivityManager: sync unfroze 3162 com.google.android.apps.photos for 7
-09-21 17:54:07.662   674  1182 I ActivityManager: Force stopping com.google.android.apps.nexuslauncher appid=10184 user=0: from pid 3596
-09-21 17:54:07.663   674  1182 I ActivityManager: Killing 1034:com.google.android.apps.nexuslauncher/u0a184 (adj 0): stop com.google.android.apps.nexuslauncher due to from pid 3596
-09-21 17:54:07.666   933  1019 V WindowManagerShell: Transition requested (#7): android.os.BinderProxy@be7541f TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 7 }
-09-21 17:54:07.681   674   706 W ActivityManager: pid 674 system sent binder code 12 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.681   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.681   674   706 W ActivityManager: pid 674 system sent binder code 19 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.681   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.681   674   706 W ActivityManager: pid 674 system sent binder code 12 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.681   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.682   674   706 W ActivityManager: pid 674 system sent binder code 12 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.682   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.682   674   706 W ActivityManager: pid 674 system sent binder code 12 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.682   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.682   674   706 W ActivityManager: pid 674 system sent binder code 12 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.682   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.683   674   674 W ActivityManager: ProcessRecord{76b4877 0:com.google.android.apps.nexuslauncher/u0a184} is attached to a previous process 1034
-09-21 17:54:07.683   674   706 W ActivityManager: pid 674 system sent binder code 11 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.683   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.683   674   706 W ActivityManager: pid 674 system sent binder code 20 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.685   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.685   674   706 W ActivityManager: pid 674 system sent binder code 22 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.685   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.685   674   706 W ActivityManager: pid 674 system sent binder code 20 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.685   674   706 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.690   674   786 I WindowManager: WINDOW DIED Window{2b45109 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}
-09-21 17:54:07.691   674   786 I WindowManager: WINDOW DIED Window{e32d81f u0 Taskbar}
-09-21 17:54:07.694   674   706 W ActivityManager: ProcessRecord{76b4877 0:com.google.android.apps.nexuslauncher/u0a184} is attached to a previous process 1034
-09-21 17:54:07.697   674   786 W ActivityManager: pid 674 system sent binder code 13 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.697   674   786 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.700   674  1745 W ActivityManager: pid 933 com.android.systemui sent binder code 1 with flags 1 to frozen apps and got error -32
-09-21 17:54:07.700   674  1745 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:07.710   674  1959 V ActivityManager: Got obituary of 1034:com.google.android.apps.nexuslauncher
-09-21 17:54:07.710   674  1959 I WindowManager: WIN DEATH: Window{2b45109 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity EXITING}
-09-21 17:54:07.714   674   706 W ActivityManager: setHasOverlayUi called on unknown pid: 1034
-09-21 17:54:07.726   674   720 I ActivityManager: Start proc 3603:com.google.android.apps.nexuslauncher/u0a184 for service {com.google.android.apps.nexuslauncher/com.android.launcher3.notification.NotificationListener}
-09-21 17:54:07.726   674   720 I ActivityManager: ProcessObserver broadcast disabled
-09-21 17:54:08.115  3603  3603 D TaskbarManager: cannot get mPrimaryWindowManager displayId=0 isDefaultDisplay=true
-09-21 17:54:08.115  3603  3603 D TaskbarManager: removeTaskbarRootViewFromWindow: WindowManager is null displayId=0 isDefaultDisplay=true
-09-21 17:54:08.534  3603  3603 D TaskbarManager: cannot get mPrimaryWindowManager displayId=0 isDefaultDisplay=true
-09-21 17:54:08.556   674   973 V WindowManager: Queueing transition: TransitionRecord{1afe73d id=-1 type=CHANGE flags=0x0}
-09-21 17:54:08.717   674   971 D ActivityManager: sync unfroze 2782 com.google.android.apps.wallpaper for 7
-09-21 17:54:09.559   933  3600 V WindowManagerShell: onTransitionReady(transaction=2894807957940)
-09-21 17:54:09.559   933  1019 V WindowManagerShell: onTransitionReady (#7) android.os.BinderProxy@be7541f: {id=7 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[
-09-21 17:54:09.559   933  1019 V WindowManagerShell:         {m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=75)/@0xae6aeb3 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
-09-21 17:54:09.559   933  1019 V WindowManagerShell:         {m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xee51c70 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}
-09-21 17:54:09.559   933  1019 V WindowManagerShell:     ]}
-09-21 17:54:09.560   933  1019 V WindowManagerShell: Playing animation for (#7) android.os.BinderProxy@be7541f@0
-09-21 17:54:09.560   933  1019 V WindowManagerShell: Transition doesn't have explicit remote, search filters for match for {id=7 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=75)/@0xae6aeb3 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xee51c70 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}]}
-09-21 17:54:09.560   933  1019 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=undefined independent=true modes=[CLOSE,TO_BACK] flags=IN_TASK_WITH_EMBEDDED_ACTIVITY mustBeTask=false order=ANY topActivity=null launchCookie=null taskFragmentToken=android.os.BinderProxy@1d0206e windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@293830f, appThread = android.app.IApplicationThread$Stub$Proxy@7578f9c, debugName = overlayBackTransition }}
-09-21 17:54:09.560   933  1019 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=dream independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{atype=home independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@cb1dda5, appThread = android.app.IApplicationThread$Stub$Proxy@be1d57a, debugName = LauncherToDream }}
-09-21 17:54:09.561   933  1019 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=TOP topActivity=ComponentInfo{com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity} launchCookie=null windowingMode=undefined},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{NOT atype=undefined independent=true modes=[] flags=NONE mustBeTask=true order=ANY topActivity=null launchCookie=null customAnim=true windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@48f412b, appThread = android.app.IApplicationThread$Stub$Proxy@91c0988, debugName = QuickstepLaunchHome }}
-09-21 17:54:09.561   933  1019 V WindowManagerShell:  Delegate animation for (#7) to null
-09-21 17:54:09.561   933  1019 V WindowManagerShell: start default transition animation, info = {id=7 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=75)/@0xae6aeb3 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xee51c70 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}]}
-09-21 17:54:09.561   933  1019 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@32c3634 animAttr=0x17 type=CLOSE isEntrance=false
-09-21 17:54:09.561   933  1019 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@e8199d2 animAttr=0x16 type=CLOSE isEntrance=true
-09-21 17:54:09.564   933  1019 V WindowManagerShell:  animated by com.android.wm.shell.transition.DefaultTransitionHandler@498e36d
-09-21 17:54:09.564   933  1019 V WindowManagerShell: Transition requested (#8): android.os.BinderProxy@478aaa3 TransitionRequestInfo { type = CHANGE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@87081a0, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 8 }
-09-21 17:54:09.564   933  1019 V WindowManagerShell: RemoteTransition directly requested for (#8) android.os.BinderProxy@478aaa3: RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@87081a0, appThread = null, debugName = TaskFragmentComponent }
-09-21 17:54:09.564   933  1019 V WindowManagerShell: Transition (#8): request handled by RemoteTransitionHandler
-09-21 17:54:09.582   674   703 V WindowManager: Sent Transition (#7) createdAt=09-21 17:54:07.666 via request=TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 7 }
-09-21 17:54:09.582   674   703 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
-09-21 17:54:09.582   674   703 V WindowManager:     info={id=7 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[
-09-21 17:54:09.582   674   703 V WindowManager:         {WCT{RemoteToken{8f9a1c1 Task{a2acbcb #75 type=home I=com.google.android.apps.nexuslauncher/.NexusLauncherActivity}}} m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=75)/@0x517d6bc sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
-09-21 17:54:09.582   674   703 V WindowManager:         {WCT{RemoteToken{dd8dd66 Task{202eb29 #2 type=home I=com.google.android.apps.nexuslauncher/.NexusLauncherActivity}}} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0x6d9f2af sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}
-09-21 17:54:09.582   674   703 V WindowManager:     ]}
-09-21 17:54:09.596   933  1019 V WindowManagerShell: Transition animation finished (aborted=false), notifying core (#7) android.os.BinderProxy@be7541f@0
-09-21 17:54:09.597   674  1182 W ActivityManager: pid 674 system sent binder code 7 with flags 1 to frozen apps and got error -32
-09-21 17:54:09.597   674  1182 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
-09-21 17:54:09.597   674  1182 W WindowManager: Exception thrown during dispatchAppVisibility Window{2b45109 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity EXITING}
-09-21 17:54:09.597   674  1182 W WindowManager: android.os.DeadObjectException
-09-21 17:54:09.597   674  1182 W WindowManager: 	at android.os.BinderProxy.transactNative(Native Method)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at android.os.BinderProxy.transact(BinderProxy.java:592)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at android.view.IWindow$Stub$Proxy.dispatchAppVisibility(IWindow.java:557)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.WindowState.sendAppVisibilityToClients(WindowState.java:3151)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.WindowContainer.sendAppVisibilityToClients(WindowContainer.java:1311)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.WindowToken.setClientVisible(WindowToken.java:389)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.ActivityRecord.setClientVisible(ActivityRecord.java:6650)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.ActivityRecord.commitVisibility(ActivityRecord.java:5561)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.Transition.finishTransition(Transition.java:1391)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.TransitionController.finishTransition(TransitionController.java:1029)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.finishTransition(WindowOrganizerController.java:496)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at android.window.IWindowOrganizerController$Stub.onTransact(IWindowOrganizerController.java:261)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.onTransact(WindowOrganizerController.java:223)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at android.os.Binder.execTransactInternal(Binder.java:1426)
-09-21 17:54:09.597   674  1182 W WindowManager: 	at android.os.Binder.execTransact(Binder.java:1365)
-09-21 17:54:09.597   933  1019 V WindowManagerShell: Track 0 became idle
-09-21 17:54:09.599   674   703 V WindowManager: Finish Transition (#7): created at 09-21 17:54:07.666 collect-started=0.036ms request-sent=0.05ms started=8.152ms ready=133.09ms sent=1891.295ms commit=24.278ms finished=1930.361ms
-09-21 17:54:09.617   674   776 D ActivityManager: freezing 1917 com.google.android.apps.messaging
-09-21 17:54:09.624   674   760 V WindowManager: Queueing transition: TransitionRecord{c0569f2 id=-1 type=CLOSE flags=0x0}
-09-21 17:54:09.640   674   703 V WindowManager: Sent Transition (#8) createdAt=09-21 17:54:08.556 via request=TransitionRequestInfo { type = CHANGE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@7c20843, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 8 }
-09-21 17:54:09.641   674   703 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
-09-21 17:54:09.641   674   703 V WindowManager:     info={id=8 t=CHANGE f=0x0 trk=1 r=[] c=[]}
-09-21 17:54:09.641   933  3600 V WindowManagerShell: onTransitionReady(transaction=2894807957950)
-09-21 17:54:09.641   933  1019 V WindowManagerShell: onTransitionReady (#8) android.os.BinderProxy@478aaa3: {id=8 t=CHANGE f=0x0 trk=1 r=[] c=[]}
-09-21 17:54:09.641   933  1019 V WindowManagerShell: No transition roots in (#8) android.os.BinderProxy@478aaa3@1 so abort
-09-21 17:54:09.642   933  1019 V WindowManagerShell: Transition animation finished (aborted=true), notifying core (#8) android.os.BinderProxy@478aaa3@1
-09-21 17:54:09.642   674   703 V WindowManager: Finish Transition (#8): created at 09-21 17:54:08.556 collect-started=1003.174ms request-sent=1007.108ms started=1008.594ms ready=1080.591ms sent=1080.971ms finished=1085.642ms
-09-21 17:54:09.642   933  1019 V WindowManagerShell: Track 1 became idle
-09-21 17:54:09.642   933  1019 V WindowManagerShell: All active transition animations finished
-09-21 17:54:09.642   933  1019 V WindowManagerShell: Transition requested (#9): android.os.BinderProxy@8e14dff TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@fec17cc, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 9 }
-09-21 17:54:09.642   933  1019 V WindowManagerShell: RemoteTransition directly requested for (#9) android.os.BinderProxy@8e14dff: RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@fec17cc, appThread = null, debugName = TaskFragmentComponent }
-09-21 17:54:09.642   933  1019 V WindowManagerShell: Transition (#9): request handled by RemoteTransitionHandler
-09-21 17:54:09.652   674   703 V WindowManager: Sent Transition (#9) createdAt=09-21 17:54:09.624 via request=TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@2f41ec0, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 9 }
-09-21 17:54:09.652   674   703 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
-09-21 17:54:09.652   674   703 V WindowManager:     info={id=9 t=CLOSE f=0x0 trk=2 r=[] c=[]}
-09-21 17:54:09.654   933  1351 V WindowManagerShell: onTransitionReady(transaction=2894807957958)
-09-21 17:54:09.654   933  1019 V WindowManagerShell: onTransitionReady (#9) android.os.BinderProxy@8e14dff: {id=9 t=CLOSE f=0x0 trk=2 r=[] c=[]}
-09-21 17:54:09.654   933  1019 V WindowManagerShell: No transition roots in (#9) android.os.BinderProxy@8e14dff@2 so abort
-09-21 17:54:09.660   933  1019 V WindowManagerShell: Transition animation finished (aborted=true), notifying core (#9) android.os.BinderProxy@8e14dff@2
-09-21 17:54:09.664   933  1019 V WindowManagerShell: Track 2 became idle
-09-21 17:54:09.664   933  1019 V WindowManagerShell: All active transition animations finished
-09-21 17:54:09.664   674   703 V WindowManager: Finish Transition (#9): created at 09-21 17:54:09.624 collect-started=13.107ms request-sent=16.881ms started=18.778ms ready=18.769ms sent=27.855ms finished=36.183ms
-09-21 17:54:09.680   674   776 D ActivityManager: freezing 1369 com.google.android.dialer
-09-21 17:54:10.096   674   753 D InstallDependencyHelper: No missing dependency for dev.meeterm.app
-09-21 17:54:10.104   674   745 I PackageManager: Update package dev.meeterm.app code path from /data/app/~~yNaBGIjCYSv3QFzDeyt-cw==/dev.meeterm.app-0eIfWJO3rtLIKh0WFVxYyA== to /data/app/vmdl305299013.tmp; Retain data and using new
-09-21 17:54:10.158   674  3667 I ArtService: Adjusting the compiler filter for 'dev.meeterm.app' from 'speed-profile' to 'verify' because there is no valid profile
-09-21 17:54:10.168  3663  3665 I artd    : GetBestInfo: /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk has no usable artifacts
-09-21 17:54:10.172  3663  3665 I artd    : Running dex2oat: /apex/com.android.art/bin/art_exec --drop-capabilities --set-task-profile=Dex2OatBootComplete --set-priority=background --keep-fds=7:8:9:10:11:12 -- /apex/com.android.art/bin/dex2oat64 --zip-fd=7 --zip-location=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk --oat-fd=8 --oat-location=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/oat/x86_64/base.odex --output-vdex-fd=9 --swap-fd=10 --class-loader-context-fds=11:12 --class-loader-context=PCL[]{PCL[/system_ext/framework/androidx.window.extensions.jar]#PCL[/system_ext/framework/androidx.window.sidecar.jar]} --classpath-dir=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA== --instruction-set=x86_64 --instruction-set-features=default --instruction-set-variant=x86_64 --compiler-filter=verify --compilation-reason=install --max-image-block-size=524288 --resolve-startup-const-strings=true --generate-mini-debug-info --runtime-arg -Xtarget-sdk-version:36 --runtime-arg -Xhidden-api-policy:enabled --runtime-arg -Xms64m --runtime-arg -Xmx512m --comments=app-name:dev.meeterm.app,app-version-name:0.1.0,app-version-code:1,art-version:360527520
-09-21 17:54:10.172  3663  3665 I artd    : Opened FDs: 7:/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk 8:/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/oat/x86_64/base.odex.znVAXk.tmp 9:/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/oat/x86_64/base.vdex.DlRm5y.tmp 10:/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/oat/x86_64/base.odex.swap.HkjdwT.tmp 11:/system_ext/framework/androidx.window.sidecar.jar 12:/system_ext/framework/androidx.window.extensions.jar 
-09-21 17:54:10.202  3668  3668 W dex2oat64: /apex/com.android.art/bin/dex2oat64 --zip-fd=7 --zip-location=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk --oat-fd=8 --oat-location=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/oat/x86_64/base.odex --output-vdex-fd=9 --swap-fd=10 --class-loader-context-fds=11:12 --class-loader-context=PCL[]{PCL[/system_ext/framework/androidx.window.extensions.jar]#PCL[/system_ext/framework/androidx.window.sidecar.jar]} --classpath-dir=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA== --instruction-set=x86_64 --instruction-set-features=default --instruction-set-variant=x86_64 --compiler-filter=verify --compilation-reason=install --max-image-block-size=524288 --resolve-startup-const-strings=true --generate-mini-debug-info --runtime-arg -Xtarget-sdk-version:36 --runtime-arg -Xhidden-api-policy:enabled --runtime-arg -Xms64m --runtime-arg -Xmx512m --comments=app-name:dev.meeterm.app,app-version-name:0.1.0,app-version-code:1,art-version:360527520
-09-21 17:54:10.204  3668  3668 I dex2oat64: /apex/com.android.art/bin/dex2oat64 --output-vdex-fd=9 --class-loader-context-fds=11:12 --class-loader-context=PCL[]{PCL[/system_ext/framework/androidx.window.extensions.jar]#PCL[/system_ext/framework/androidx.window.sidecar.jar]} --classpath-dir=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA== --compiler-filter=verify --compilation-reason=install --max-image-block-size=524288 --resolve-startup-const-strings=true --generate-mini-debug-info --comments=app-name:dev.meeterm.app,app-version-name:0.1.0,app-version-code:1,art-version:360527520
-09-21 17:54:10.633   674  3667 I ArtService: Dexopt result: [packageName = dev.meeterm.app] DexContainerFileDexoptResult{dexContainerFile=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk, primaryAbi=true, abi=x86_64, actualCompilerFilter=verify, status=PERFORMED, dex2oatWallTimeMillis=455, dex2oatCpuTimeMillis=850, sizeBytes=22113168, sizeBeforeBytes=0, extendedStatusFlags=[]}
-09-21 17:54:10.634   674   745 I AppsFilter: interaction: PackageSetting{b0e225c com.android.microdroid.empty_payload/10195} -> PackageSetting{9ccb49b dev.meeterm.app/10216} BLOCKED
-09-21 17:54:10.634   674   745 I AppsFilter: interaction: PackageSetting{b0e225c com.android.microdroid.empty_payload/10195} -> PackageSetting{dad33f1 dev.meeterm.app/10216} BLOCKED
-09-21 17:54:10.655   674   719 I ActivityManager: Force stopping dev.meeterm.app appid=10216 user=-1: installPackageLI
-09-21 17:54:10.656   674   745 I PackageManager: installation completed for package:dev.meeterm.app. Final code path: /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==
-09-21 17:54:10.657   674   745 I AppsFilter: interaction: PackageSetting{f1859a7 com.android.microdroid.empty_payload/10195} -> PackageSetting{fffa8b dev.meeterm.app/10216} BLOCKED
-09-21 17:54:10.661   674   745 I ActivityManager: Force stopping dev.meeterm.app appid=10216 user=0: pkg removed
-09-21 17:54:10.666   674   800 W PackageConfigPersister: App-specific configuration not found for packageName: dev.meeterm.app and userId: 0
-09-21 17:54:10.667  3603  3603 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.667  2506  2506 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.667  3162  3162 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.667  1487  1487 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.667  2782  2782 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668  1481  1481 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668  1541  1541 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668  1566  1566 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668  2457  2457 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668  1078  1078 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668  1020  1020 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.668   674   674 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.670  1592  1592 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.670  1584  1584 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.670  1601  1601 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.673  2444  2444 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.673   995   995 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.673   674   674 D ActivityManager: sync unfroze 2691 com.android.dynsystem:dynsystem for 10
-09-21 17:54:10.673   674   674 D ActivityManager: sync unfroze 2625 com.android.dynsystem for 10
-09-21 17:54:10.673   674   674 D ActivityManager: sync unfroze 1755 com.android.keychain for 10
-09-21 17:54:10.673   674   674 D ActivityManager: sync unfroze 1809 com.android.localtransport for 10
-09-21 17:54:10.674   933   933 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.675   674   674 I Telecom : CarModeTracker: Package dev.meeterm.app is not tracked.: SSH.oR@AH8🔒
-09-21 17:54:10.675  1809  1809 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.678  1163  1163 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.679  1755  1755 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.680  2625  2625 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.680  3603  3621 D PackageUpdatedTask: Package updated: mOp=UPDATE packages=[dev.meeterm.app], user=UserHandle{0}
-09-21 17:54:10.682  2691  2691 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.684  1033  1033 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.684  1584  3681 I AiAiEcho: AppIndexer Package:[dev.meeterm.app] UserProfile:[0] Enabled:[true].
-09-21 17:54:10.684  1584  3681 I AiAiEcho: AppFetcherImplV2 updateApps package:[dev.meeterm.app], userId:[0], reason:[package is updated.].
-09-21 17:54:10.686  1033  1224 I SatelliteAppTracker: onPackageUpdateFinished : dev.meeterm.app
-09-21 17:54:10.689   674   674 W AlarmManager: Package dev.meeterm.app, uid 10216 lost permission to set exact alarms!
-09-21 17:54:10.686  1033  1224 I SatelliteAppTracker: onPackageModified : dev.meeterm.app
-09-21 17:54:10.691   674   888 I SdkSandboxManager: No SDKs used. Skipping SDK data reconcilation for CallingInfo{mUid=10216, mPackageName='dev.meeterm.app, mAppProcessToken='null'}
-09-21 17:54:10.691   674   888 I SdkSandboxManager: No SDKs used. Skipping SDK data reconcilation for CallingInfo{mUid=10216, mPackageName='dev.meeterm.app, mAppProcessToken='null'}
-09-21 17:54:10.692   674   719 D ActivityManager: sync unfroze 1296 com.google.android.permissioncontroller for 3
-09-21 17:54:10.693  1033  1033 D CarrierSvcBindHelper: onPackageUpdateFinished: dev.meeterm.app
-09-21 17:54:10.696   674   881 D ShortcutService: replacing package: dev.meeterm.app userId=0
-09-21 17:54:10.702  1296  1296 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:10.707  1033  1033 D CarrierSvcBindHelper: onPackageModified: dev.meeterm.app
-09-21 17:54:10.719  1296  1296 I SafetyLabelChangedBroadcastReceiver: received broadcast packageName: dev.meeterm.app, current user: UserHandle{0}, packageChangeEvent: UPDATE, intent user: UserHandle{0}
-09-21 17:54:10.727   674  1968 I ActivityManager: Force stopping dev.meeterm.app appid=10216 user=0: from pid 3688
-09-21 17:54:10.729   674  1968 I AppsFilter: interaction: PackageSetting{f1859a7 com.android.microdroid.empty_payload/10195} -> PackageSetting{fffa8b dev.meeterm.app/10216} BLOCKED
-09-21 17:54:10.730   674   866 I AppWidgetServiceImpl: Updating package stopped masked state for uid 10216 package dev.meeterm.app isStopped true
-09-21 17:54:10.733  1033  1222 D ImsResolver: maybeAddedImsService, packageName: dev.meeterm.app
-09-21 17:54:10.733  1033  1222 V ImsResolver: searchForImsServices: package=dev.meeterm.app, users=[UserHandle{0}]
-09-21 17:54:10.733  1033  1222 V ImsResolver: searchForImsServices: package=dev.meeterm.app, users=[UserHandle{0}]
-09-21 17:54:10.735  1033  1033 W VvmPkgInstalledRcvr: carrierVvmPkgAdded: carrier vvm packages doesn't contain dev.meeterm.app
-09-21 17:54:10.736  1033  1033 D SatelliteController: packageStateChanged: package:dev.meeterm.app DefaultSmsPackageName:com.google.android.apps.messaging
-09-21 17:54:10.739  1033  1033 D CarrierSvcBindHelper: onHandleForceStop: [dev.meeterm.app]
-09-21 17:54:10.750   674   973 I ActivityTaskManager: START u0 {act=android.intent.action.VIEW dat=meeterm://foundation/... flg=0x10000000 xflg=0x4 cmp=dev.meeterm.app/.MainActivity} with LAUNCH_SINGLE_TASK from uid 2000 (BAL_ALLOW_PERMISSION) result code=0
-09-21 17:54:10.758   933  1019 V WindowManagerShell: Transition requested (#10): android.os.BinderProxy@68a56cf TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=76 effectiveUid=10216 displayId=0 isRunning=true baseIntent=Intent { act=android.intent.action.VIEW dat=meeterm://foundation/... flg=0x10000000 cmp=dev.meeterm.app/.MainActivity } baseActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} topActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} origActivity=null realActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} numActivities=1 lastActiveTime=278446 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{android.window.IWindowContainerToken$Stub$Proxy@274385c} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=Rect(0, 136 - 0, 0) topActivityInfo=ActivityInfo{7d03765 dev.meeterm.app.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isTopActivityNoDisplay=false isSleeping=false locusId=null displayAreaFeatureId=1 isTopActivityTransparent=false isActivityStackTransparent=false lastNonFullscreenBounds=Rect(276, 696 - 805, 1776) capturedLink=null capturedLinkTimestamp=0 requestedVisibleTypes=-9 topActivityRequestOpenInBrowserEducationTimestamp=0 appCompatTaskInfo=AppCompatTaskInfo { topActivityInSizeCompat=false eligibleForLetterboxEducation= false isLetterboxEducationEnabled= true isLetterboxDoubleTapEnabled= false eligibleForUserAspectRatioButton= false topActivityBoundsLetterboxed= false isFromLetterboxDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 topActivityAppBounds=Rect(0, 0 - 1080, 2400) isUserFullscreenOverrideEnabled=false isSystemFullscreenOverrideEnabled=false hasMinAspectRatioOverride=false topActivityLetterboxBounds=null cameraCompatTaskInfo=CameraCompatTaskInfo { freeformCameraCompatMode=inactive}} topActivityMainWindowFrame=null}, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 10 }
-09-21 17:54:10.759   674   971 I AppsFilter: interaction: PackageSetting{f1859a7 com.android.microdroid.empty_payload/10195} -> PackageSetting{96a2c22 dev.meeterm.app/10216} BLOCKED
-09-21 17:54:10.761   674   720 I ActivityManager: Start proc 3699:dev.meeterm.app/u0a216 for next-top-activity {dev.meeterm.app/dev.meeterm.app.MainActivity}
-09-21 17:54:10.762   674   720 I ActivityManager: ProcessObserver broadcast disabled
-09-21 17:54:10.766   933  1019 D WindowManagerShell: setLauncherKeepClearAreaHeight: visible=false, height=527
-09-21 17:54:10.766   674   866 I AppWidgetServiceImpl: Updating package stopped masked state for uid 10216 package dev.meeterm.app isStopped false
-09-21 17:54:10.785   674  1968 D CoreBackPreview: Window{a0bd017 u0 Splash Screen dev.meeterm.app}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@a0b9746, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
-09-21 17:54:10.790  3699  3699 I dev.meeterm.app: Using CollectorTypeCMC GC.
-09-21 17:54:10.790  3699  3699 W dev.meeterm.app: Unexpected CPU variant for x86: x86_64.
-09-21 17:54:10.790  3699  3699 W dev.meeterm.app: Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, goldmont-without-sha-xsaves, tremont, kabylake, alderlake, default
-09-21 17:54:10.792  3699  3699 E dev.meeterm.app: Not starting debugger since process cannot load the jdwp agent.
-09-21 17:54:10.808  3699  3699 D nativeloader: Configuring clns-9 for other apk /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk. target_sdk_version=36, uses_libraries=, library_path=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/lib/x86_64:/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/dev.meeterm.app
-09-21 17:54:10.809  3699  3699 I dev.meeterm.app: AssetManager2(0x70bccae7d3d8) locale list changing from [] to [en-US]
-09-21 17:54:10.822  3699  3699 V GraphicsEnvironment: dev.meeterm.app is not listed in per-application setting
-09-21 17:54:10.823  3699  3699 V GraphicsEnvironment: dev.meeterm.app is not listed in ANGLE allowlist or settings, returning default
-09-21 17:54:10.846  3699  3699 W SoLoader: Recording new base apk path: /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk
-09-21 17:54:10.847  3699  3699 I SoLoader: Preparing SO source: DirectApkSoSource[root = [/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64]]
-09-21 17:54:10.848  3699  3699 I SoLoader: Preparing SO source: ApplicationSoSource[DirectorySoSource[root = /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/lib/x86_64 flags = 0]]
-09-21 17:54:10.860  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libc++_shared.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.864  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libjsi.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.866  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libfbjni.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.869  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libreactnative.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.873  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libreact_codegen_rnscreens.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.879   674   703 V WindowManager: Sent Transition (#10) createdAt=09-21 17:54:10.747 via request=TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=76 effectiveUid=10216 displayId=0 isRunning=true baseIntent=Intent { act=android.intent.action.VIEW dat=meeterm://foundation/... flg=0x10000000 cmp=dev.meeterm.app/.MainActivity } baseActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} topActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} origActivity=null realActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} numActivities=1 lastActiveTime=278446 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{RemoteToken{533d92a Task{e51adca #76 type=standard A=10216:dev.meeterm.app}}} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=Rect(0, 136 - 0, 0) topActivityInfo=ActivityInfo{3ba731b dev.meeterm.app.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isTopActivityNoDisplay=false isSleeping=false locusId=null displayAreaFeatureId=1 isTopActivityTransparent=false isActivityStackTransparent=false lastNonFullscreenBounds=Rect(276, 696 - 805, 1776) capturedLink=null capturedLinkTimestamp=0 requestedVisibleTypes=-9 topActivityRequestOpenInBrowserEducationTimestamp=0 appCompatTaskInfo=AppCompatTaskInfo { topActivityInSizeCompat=false eligibleForLetterboxEducation= false isLetterboxEducationEnabled= true isLetterboxDoubleTapEnabled= false eligibleForUserAspectRatioButton= false topActivityBoundsLetterboxed= false isFromLetterboxDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 topActivityAppBounds=Rect(0, 0 - 1080, 2400) isUserFullscreenOverrideEnabled=false isSystemFullscreenOverrideEnabled=false hasMinAspectRatioOverride=false topActivityLetterboxBounds=null cameraCompatTaskInfo=CameraCompatTaskInfo { freeformCameraCompatMode=inactive}} topActivityMainWindowFrame=null}, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 10 }
-09-21 17:54:10.879   674   703 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
-09-21 17:54:10.880   674   703 V WindowManager:     info={id=10 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[
-09-21 17:54:10.880   674   703 V WindowManager:         {WCT{RemoteToken{533d92a Task{e51adca #76 type=standard A=10216:dev.meeterm.app}}} m=OPEN f=NONE leash=Surface(name=Task=76)/@0x8421fcc sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
-09-21 17:54:10.880   674   703 V WindowManager:         {WCT{RemoteToken{7576cb8 Task{41e10b0 #1 type=home}}} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0x42a75ff sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
-09-21 17:54:10.880   674   703 V WindowManager:         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{6647703 showWhenLocked=false})/@0x2d0491e sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}
-09-21 17:54:10.880   674   703 V WindowManager:     ]}
-09-21 17:54:10.880  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libreact_codegen_rnsvg.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.882  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libreact_codegen_safeareacontext.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.884  3699  3699 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libappmodules.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.885   933  1351 V WindowManagerShell: onTransitionReady(transaction=2894807957976)
-09-21 17:54:10.891   933  1019 V WindowManagerShell: onTransitionReady (#10) android.os.BinderProxy@68a56cf: {id=10 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[
-09-21 17:54:10.891   933  1019 V WindowManagerShell:         {m=OPEN f=NONE leash=Surface(name=Task=76)/@0xc78af9a sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
-09-21 17:54:10.891   933  1019 V WindowManagerShell:         {m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xe72c0a8 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
-09-21 17:54:10.891   933  1019 V WindowManagerShell:         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{6647703 showWhenLocked=false})/@0x77f67c1 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}
-09-21 17:54:10.891   933  1019 V WindowManagerShell:     ]}
-09-21 17:54:10.891   933  1019 V WindowManagerShell: Playing animation for (#10) android.os.BinderProxy@68a56cf@0
-09-21 17:54:10.891   933  1019 V WindowManagerShell: Transition doesn't have explicit remote, search filters for match for {id=10 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=NONE leash=Surface(name=Task=76)/@0xc78af9a sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xe72c0a8 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{6647703 showWhenLocked=false})/@0x77f67c1 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}]}
-09-21 17:54:10.891   933  1019 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=undefined independent=true modes=[CLOSE,TO_BACK] flags=IN_TASK_WITH_EMBEDDED_ACTIVITY mustBeTask=false order=ANY topActivity=null launchCookie=null taskFragmentToken=android.os.BinderProxy@1d0206e windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@293830f, appThread = android.app.IApplicationThread$Stub$Proxy@7578f9c, debugName = overlayBackTransition }}
-09-21 17:54:10.891   933  1019 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=dream independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{atype=home independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@cb1dda5, appThread = android.app.IApplicationThread$Stub$Proxy@be1d57a, debugName = LauncherToDream }}
-09-21 17:54:10.891   933  1019 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=TOP topActivity=ComponentInfo{com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity} launchCookie=null windowingMode=undefined},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{NOT atype=undefined independent=true modes=[] flags=NONE mustBeTask=true order=ANY topActivity=null launchCookie=null customAnim=true windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@48f412b, appThread = android.app.IApplicationThread$Stub$Proxy@91c0988, debugName = QuickstepLaunchHome }}
-09-21 17:54:10.891   933  1019 V WindowManagerShell:  Delegate animation for (#10) to null
-09-21 17:54:10.891   933  1019 V WindowManagerShell: start default transition animation, info = {id=10 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=NONE leash=Surface(name=Task=76)/@0xc78af9a sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xe72c0a8 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{6647703 showWhenLocked=false})/@0x77f67c1 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}]}
-09-21 17:54:10.891   933  1019 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@d873f54 animAttr=0x13 type=OPEN isEntrance=false
-09-21 17:54:10.892   933  1019 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@8c2fcc0 animAttr=0x12 type=OPEN isEntrance=true
-09-21 17:54:10.893   933  1019 V WindowManagerShell:  animated by com.android.wm.shell.transition.DefaultTransitionHandler@498e36d
-09-21 17:54:10.899  3699  3699 I dev.meeterm.app: AssetManager2(0x70bccae76998) locale list changing from [] to [en-US]
-09-21 17:54:10.906  3699  3699 I dev.meeterm.app: AssetManager2(0x70bccae81ed8) locale list changing from [] to [en-US]
-09-21 17:54:10.910   933  1019 V WindowManagerShell: Transition animation finished (aborted=false), notifying core (#10) android.os.BinderProxy@68a56cf@0
-09-21 17:54:10.911   933  1019 V WindowManagerShell: Track 0 became idle
-09-21 17:54:10.911   933  1019 V WindowManagerShell: All active transition animations finished
-09-21 17:54:10.911   674   703 V WindowManager: Finish Transition (#10): created at 09-21 17:54:10.747 collect-started=0.015ms request-sent=2.628ms started=14.78ms ready=131.01ms sent=131.755ms commit=15.342ms finished=162.658ms
-09-21 17:54:10.995  3699  3717 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libhermesvm.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:10.996  3699  3717 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libhermestooling.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:11.010   674   698 D CoreBackPreview: Window{7fe7a85 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@31a590b, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
-09-21 17:54:11.136  3699  3718 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libexpo-modules-core.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk): ok
-09-21 17:54:11.171   674   698 D ActivityManager: sync unfroze 1529 com.google.android.gms for 6
-09-21 17:54:11.194  2444  3735 I ProximityAuth: [RecentAppsMediator] Package added: (user=UserHandle{0}) dev.meeterm.app
-09-21 17:54:11.205  1529  1529 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
-09-21 17:54:11.251   674  1750 W WindowManager: Failed looking up window session=Session{9fa2c5b 933:u0a10183} callers=com.android.server.wm.WindowManagerService.windowForClientLocked:6410 com.android.server.wm.Session.setOnBackInvokedCallbackInfo:1002 android.view.IWindowSession$Stub.onTransact:1156 
-09-21 17:54:11.251   674  1750 I WindowManager: setOnBackInvokedCallback(): No window state for package:com.android.systemui
-09-21 17:54:11.252   674   703 I ActivityTaskManager: Displayed dev.meeterm.app/.MainActivity for user 0: +460ms
-09-21 17:54:11.287  3699  3718 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/librnscreens.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!classes2.dex): ok
-09-21 17:54:11.323  3699  3725 D nativeloader: Load /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!/lib/x86_64/libmeeterm_core.so using class loader ns clns-9 (caller=/data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA==/base.apk!classes2.dex): ok
-09-21 17:54:11.374  3699  3699 I MeetermTerminalView: bound terminalId=poc-main handle=1
-09-21 17:54:11.376  3699  3699 I MeetermTerminalView: attached
-09-21 17:54:11.378  1529  3752 W SQLiteLog: (28) double-quoted string literal: "dev.meeterm.app"
-09-21 17:54:11.384  3699  3699 I MeetermTerminalView: resized columns=54 rows=39 cell=20x54
-09-21 17:54:11.385  3699  3699 I MeetermTerminalView: window insets left=0 right=0 bottom=63
-09-21 17:54:11.385  3699  3699 I MeetermTerminalView: resized columns=54 rows=37 cell=20x54
-09-21 17:54:11.470  3699  3699 I MeetermTerminalView: ready terminalId=poc-main handle=1
-09-21 17:54:11.470  3699  3699 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
-09-21 17:54:11.470  3699  3699 I MeetermTerminalView: ready terminalId=poc-main handle=1
-09-21 17:54:11.470  3699  3699 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
-09-21 17:54:11.481  3699  3760 I MeetermRenderer: GLES surface created cell=20x54
-09-21 17:54:11.490  3699  3760 I MeetermRenderer: snapshot parsed columns=54 rows=37 cells=1989 visibleGlyphs=586 bytes=57736
-09-21 17:54:12.154  3699  3760 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
-09-21 17:54:12.207  3699  3760 E BLASTBufferQueue: [f200312 SurfaceView[dev.meeterm.app/dev.meeterm.app.MainActivity]#1](f:0,a:0) rejecting buffer:active_size=1080x1907, requested_size=1080x1907 buffer{size=1080x2043 transform=0}
-09-21 17:54:12.212  3699  3699 I MeetermTerminalView: resized columns=54 rows=35 cell=20x54
-09-21 17:54:12.628  3699  3760 E BLASTBufferQueue: [f200312 SurfaceView[dev.meeterm.app/dev.meeterm.app.MainActivity]#1](f:0,a:0) rejecting buffer:active_size=1080x1970, requested_size=1080x1970 buffer{size=1080x1907 transform=0}
-09-21 17:54:12.630  3699  3699 I MeetermTerminalView: resized columns=54 rows=36 cell=20x54
-09-21 17:54:13.096  3699  3760 E BLASTBufferQueue: [f200312 SurfaceView[dev.meeterm.app/dev.meeterm.app.MainActivity]#1](f:0,a:0) rejecting buffer:active_size=1080x1907, requested_size=1080x1907 buffer{size=1080x1970 transform=0}
-09-21 17:54:13.097  3699  3699 I MeetermTerminalView: resized columns=54 rows=35 cell=20x54
-09-21 17:54:14.576   674   776 D ActivityManager: freezing 2506 com.google.android.tts
-09-21 17:54:16.587  3699  3791 D ProfileInstaller: Installing profile for dev.meeterm.app
+09-22 15:16:31.346   673   806 D ActivityManager: freezing 1424 android.process.acore
+09-22 15:16:37.326   673  2139 I ActivityManager: Force stopping com.google.android.apps.nexuslauncher appid=10184 user=0: from pid 4185
+09-22 15:16:37.328   673  2139 I ActivityManager: Killing 1052:com.google.android.apps.nexuslauncher/u0a184 (adj 0): stop com.google.android.apps.nexuslauncher due to from pid 4185
+09-22 15:16:37.329   963  1079 V WindowManagerShell: Transition requested (#10): android.os.BinderProxy@c952e20 TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 10 }
+09-22 15:16:37.339   673   796 D ActivityManager: sync unfroze 3905 com.google.android.googlequicksearchbox:search for 6
+09-22 15:16:37.340   673   816 I WindowManager: WINDOW DIED Window{556af26 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}
+09-22 15:16:37.341   673   816 I WindowManager: WINDOW DIED Window{a50cc26 u0 Taskbar}
+09-22 15:16:37.345   673   736 W ActivityManager: pid 673 system sent binder code 12 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.345   673   736 W ActivityManager: pid 673 system sent binder code 12 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.345   673   736 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.347   673   736 W ActivityManager: pid 673 system sent binder code 12 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.347   673   736 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.347   673   736 W ActivityManager: pid 673 system sent binder code 11 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.347   673   736 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.347   673   736 W ActivityManager: pid 673 system sent binder code 20 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.347   673   736 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.347   673   736 W ActivityManager: pid 673 system sent binder code 22 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.347   673   736 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.347   673   736 W ActivityManager: pid 673 system sent binder code 20 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.347   673   736 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.353   673   816 W ActivityManager: pid 673 system sent binder code 13 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.353   673   816 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.360   673  1488 I WindowManager: WIN DEATH: Window{556af26 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity EXITING}
+09-22 15:16:37.361   673   736 W ActivityManager: ProcessRecord{e4faf21 0:com.google.android.apps.nexuslauncher/u0a184} is attached to a previous process 1052
+09-22 15:16:37.361   673  2140 V ActivityManager: Got obituary of 1052:com.google.android.apps.nexuslauncher
+09-22 15:16:37.361   673   736 W ActivityManager: setHasOverlayUi called on unknown pid: 1052
+09-22 15:16:37.362   673  1000 W ActivityManager: pid 963 com.android.systemui sent binder code 2 with flags 1 to frozen apps and got error -32
+09-22 15:16:37.362   673  1000 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:37.369   673   743 I ActivityManager: Start proc 4194:com.google.android.apps.nexuslauncher/u0a184 for top-activity {com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}
+09-22 15:16:37.369   673   743 I ActivityManager: ProcessObserver broadcast disabled
+09-22 15:16:37.371   673   736 V WindowManager: Unknown focus tokens, dropping reportFocusChanged
+09-22 15:16:37.720  4194  4194 D TaskbarManager: cannot get mPrimaryWindowManager displayId=0 isDefaultDisplay=true
+09-22 15:16:37.720  4194  4194 D TaskbarManager: removeTaskbarRootViewFromWindow: WindowManager is null displayId=0 isDefaultDisplay=true
+09-22 15:16:38.182  4194  4194 D TaskbarManager: cannot get mPrimaryWindowManager displayId=0 isDefaultDisplay=true
+09-22 15:16:38.212   673  1690 V WindowManager: Queueing transition: TransitionRecord{909df8e id=-1 type=CHANGE flags=0x0}
+09-22 15:16:38.301   963  1079 D WindowManagerShell: setLauncherKeepClearAreaHeight: visible=true, height=527
+09-22 15:16:38.330   673  2336 D ActivityManager: sync unfroze 2696 com.google.android.apps.wallpaper for 7
+09-22 15:16:39.220   963  2273 V WindowManagerShell: onTransitionReady(transaction=2890512990585)
+09-22 15:16:39.220   963  1079 V WindowManagerShell: onTransitionReady (#10) android.os.BinderProxy@c952e20: {id=10 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[
+09-22 15:16:39.220   963  1079 V WindowManagerShell:         {m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=132)/@0xf1fe676 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
+09-22 15:16:39.220   963  1079 V WindowManagerShell:         {m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xe114477 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}
+09-22 15:16:39.220   963  1079 V WindowManagerShell:     ]}
+09-22 15:16:39.220   963  1079 V WindowManagerShell: Playing animation for (#10) android.os.BinderProxy@c952e20@0
+09-22 15:16:39.220   673   733 V WindowManager: Sent Transition (#10) createdAt=09-22 15:16:37.329 via request=TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 10 }
+09-22 15:16:39.220   673   733 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+09-22 15:16:39.221   963  1079 V WindowManagerShell: Transition doesn't have explicit remote, search filters for match for {id=10 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=132)/@0xf1fe676 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xe114477 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}]}
+09-22 15:16:39.221   673   733 V WindowManager:     info={id=10 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[
+09-22 15:16:39.221   673   733 V WindowManager:         {WCT{RemoteToken{5b7d526 Task{dd7a623 #132 type=home I=com.google.android.apps.nexuslauncher/.NexusLauncherActivity}}} m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=132)/@0xefebb8b sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
+09-22 15:16:39.221   673   733 V WindowManager:         {WCT{RemoteToken{39b8567 Task{84ba1f5 #2 type=home I=com.google.android.apps.nexuslauncher/.NexusLauncherActivity}}} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xe933d5a sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}
+09-22 15:16:39.221   673   733 V WindowManager:     ]}
+09-22 15:16:39.221   963  1079 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=undefined independent=true modes=[CLOSE,TO_BACK] flags=IN_TASK_WITH_EMBEDDED_ACTIVITY mustBeTask=false order=ANY topActivity=null launchCookie=null taskFragmentToken=android.os.BinderProxy@d6ec14d windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@59bf402, appThread = android.app.IApplicationThread$Stub$Proxy@34bb113, debugName = overlayBackTransition }}
+09-22 15:16:39.221   963  1079 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=dream independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{atype=home independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@ee05f50, appThread = android.app.IApplicationThread$Stub$Proxy@a732549, debugName = LauncherToDream }}
+09-22 15:16:39.221   963  1079 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=TOP topActivity=ComponentInfo{com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity} launchCookie=null windowingMode=undefined},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{NOT atype=undefined independent=true modes=[] flags=NONE mustBeTask=true order=ANY topActivity=null launchCookie=null customAnim=true windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@7d94e4e, appThread = android.app.IApplicationThread$Stub$Proxy@bb64b6f, debugName = QuickstepLaunchHome }}
+09-22 15:16:39.221   963  1079 V WindowManagerShell:  Delegate animation for (#10) to null
+09-22 15:16:39.221   963  1079 V WindowManagerShell: start default transition animation, info = {id=10 t=CLOSE f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=SHOW_WALLPAPER|MOVE_TO_TOP leash=Surface(name=Task=132)/@0xf1fe676 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=2)/@0xe114477 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1}]}
+09-22 15:16:39.222   963  1079 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@3862f8b animAttr=0x17 type=CLOSE isEntrance=false
+09-22 15:16:39.222   963  1079 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@a753481 animAttr=0x16 type=CLOSE isEntrance=true
+09-22 15:16:39.223   963  1079 V WindowManagerShell:  animated by com.android.wm.shell.transition.DefaultTransitionHandler@e1d1326
+09-22 15:16:39.227   963  1079 V WindowManagerShell: Transition requested (#11): android.os.BinderProxy@6acd926 TransitionRequestInfo { type = CHANGE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@b263967, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 11 }
+09-22 15:16:39.227   963  1079 V WindowManagerShell: RemoteTransition directly requested for (#11) android.os.BinderProxy@6acd926: RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@b263967, appThread = null, debugName = TaskFragmentComponent }
+09-22 15:16:39.227   963  1079 V WindowManagerShell: Transition (#11): request handled by RemoteTransitionHandler
+09-22 15:16:39.234   963  1079 V WindowManagerShell: Transition animation finished (aborted=false), notifying core (#10) android.os.BinderProxy@c952e20@0
+09-22 15:16:39.235   673  1886 W ActivityManager: pid 673 system sent binder code 7 with flags 1 to frozen apps and got error -32
+09-22 15:16:39.235   673  1886 D ActivityManager: Too many transaction errors, throttling freezer binder callback.
+09-22 15:16:39.235   673  1886 W WindowManager: Exception thrown during dispatchAppVisibility Window{556af26 u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity EXITING}
+09-22 15:16:39.235   673  1886 W WindowManager: android.os.DeadObjectException
+09-22 15:16:39.235   673  1886 W WindowManager: 	at android.os.BinderProxy.transactNative(Native Method)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at android.os.BinderProxy.transact(BinderProxy.java:592)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at android.view.IWindow$Stub$Proxy.dispatchAppVisibility(IWindow.java:557)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.WindowState.sendAppVisibilityToClients(WindowState.java:3151)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.WindowContainer.sendAppVisibilityToClients(WindowContainer.java:1311)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.WindowToken.setClientVisible(WindowToken.java:389)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.ActivityRecord.setClientVisible(ActivityRecord.java:6650)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.ActivityRecord.commitVisibility(ActivityRecord.java:5561)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.Transition.finishTransition(Transition.java:1391)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.TransitionController.finishTransition(TransitionController.java:1029)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.finishTransition(WindowOrganizerController.java:496)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at android.window.IWindowOrganizerController$Stub.onTransact(IWindowOrganizerController.java:261)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.onTransact(WindowOrganizerController.java:223)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at android.os.Binder.execTransactInternal(Binder.java:1426)
+09-22 15:16:39.235   673  1886 W WindowManager: 	at android.os.Binder.execTransact(Binder.java:1365)
+09-22 15:16:39.235   963  1079 V WindowManagerShell: Track 0 became idle
+09-22 15:16:39.237   673   733 V WindowManager: Finish Transition (#10): created at 09-22 15:16:37.329 collect-started=0.027ms request-sent=0.045ms started=4.603ms ready=101.481ms sent=1890.068ms commit=15.202ms finished=1905.696ms
+09-22 15:16:39.238   673  2336 V WindowManager: Queueing transition: TransitionRecord{a055880 id=-1 type=CLOSE flags=0x0}
+09-22 15:16:39.239   963  2273 V WindowManagerShell: onTransitionReady(transaction=2890512990593)
+09-22 15:16:39.240   963  1079 V WindowManagerShell: onTransitionReady (#11) android.os.BinderProxy@6acd926: {id=11 t=CHANGE f=0x0 trk=1 r=[] c=[]}
+09-22 15:16:39.240   963  1079 V WindowManagerShell: No transition roots in (#11) android.os.BinderProxy@6acd926@1 so abort
+09-22 15:16:39.243   673   733 V WindowManager: Sent Transition (#11) createdAt=09-22 15:16:38.212 via request=TransitionRequestInfo { type = CHANGE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@83ddeb9, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 11 }
+09-22 15:16:39.243   673   733 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+09-22 15:16:39.243   673   733 V WindowManager:     info={id=11 t=CHANGE f=0x0 trk=1 r=[] c=[]}
+09-22 15:16:39.246   963  1079 V WindowManagerShell: Transition animation finished (aborted=true), notifying core (#11) android.os.BinderProxy@6acd926@1
+09-22 15:16:39.246   673   733 V WindowManager: Finish Transition (#11): created at 09-22 15:16:38.212 collect-started=1007.476ms request-sent=1014.768ms started=1015.372ms ready=1027.433ms sent=1027.699ms finished=1034.454ms
+09-22 15:16:39.247   963  1079 V WindowManagerShell: Track 1 became idle
+09-22 15:16:39.247   963  1079 V WindowManagerShell: All active transition animations finished
+09-22 15:16:39.247   963  1079 V WindowManagerShell: Transition requested (#12): android.os.BinderProxy@27d61b2 TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@4d30503, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 12 }
+09-22 15:16:39.247   963  1079 V WindowManagerShell: RemoteTransition directly requested for (#12) android.os.BinderProxy@27d61b2: RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@4d30503, appThread = null, debugName = TaskFragmentComponent }
+09-22 15:16:39.247   963  1079 V WindowManagerShell: Transition (#12): request handled by RemoteTransitionHandler
+09-22 15:16:39.250   673   733 V WindowManager: Sent Transition (#12) createdAt=09-22 15:16:39.238 via request=TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@84a62fe, appThread = null, debugName = TaskFragmentComponent }, displayChange = null, flags = 0, debugId = 12 }
+09-22 15:16:39.250   673   733 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+09-22 15:16:39.250   673   733 V WindowManager:     info={id=12 t=CLOSE f=0x0 trk=2 r=[] c=[]}
+09-22 15:16:39.250   963  2273 V WindowManagerShell: onTransitionReady(transaction=2890512990600)
+09-22 15:16:39.250   963  1079 V WindowManagerShell: onTransitionReady (#12) android.os.BinderProxy@27d61b2: {id=12 t=CLOSE f=0x0 trk=2 r=[] c=[]}
+09-22 15:16:39.250   963  1079 V WindowManagerShell: No transition roots in (#12) android.os.BinderProxy@27d61b2@2 so abort
+09-22 15:16:39.251   963  1079 V WindowManagerShell: Transition animation finished (aborted=true), notifying core (#12) android.os.BinderProxy@27d61b2@2
+09-22 15:16:39.251   963  1079 V WindowManagerShell: Track 2 became idle
+09-22 15:16:39.251   963  1079 V WindowManagerShell: All active transition animations finished
+09-22 15:16:39.252   673   733 V WindowManager: Finish Transition (#12): created at 09-22 15:16:39.238 collect-started=1.545ms request-sent=4.351ms started=8.645ms ready=8.639ms sent=11.815ms finished=12.733ms
+09-22 15:16:39.687   673   777 D InstallDependencyHelper: No missing dependency for dev.meeterm.app
+09-22 15:16:39.691   673   769 I PackageManager: Update package dev.meeterm.app code path from /data/app/~~d1lxFODamJp4lTcNfXkZiQ==/dev.meeterm.app-XIetUv7WgeJwRxSYa1ETDA== to /data/app/vmdl1808815414.tmp; Retain data and using new
+09-22 15:16:39.785   673  4285 I ArtService: Adjusting the compiler filter for 'dev.meeterm.app' from 'speed-profile' to 'verify' because there is no valid profile
+09-22 15:16:39.807  4271  4278 I artd    : GetBestInfo: /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk has no usable artifacts
+09-22 15:16:39.812  4271  4278 I artd    : Running dex2oat: /apex/com.android.art/bin/art_exec --drop-capabilities --set-task-profile=Dex2OatBootComplete --set-priority=background --keep-fds=7:8:9:10:11:12 -- /apex/com.android.art/bin/dex2oat64 --zip-fd=7 --zip-location=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk --oat-fd=8 --oat-location=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/oat/x86_64/base.odex --output-vdex-fd=9 --swap-fd=10 --class-loader-context-fds=11:12 --class-loader-context=PCL[]{PCL[/system_ext/framework/androidx.window.extensions.jar]#PCL[/system_ext/framework/androidx.window.sidecar.jar]} --classpath-dir=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw== --instruction-set=x86_64 --instruction-set-features=default --instruction-set-variant=x86_64 --compiler-filter=verify --compilation-reason=install --max-image-block-size=524288 --resolve-startup-const-strings=true --generate-mini-debug-info --runtime-arg -Xtarget-sdk-version:36 --runtime-arg -Xhidden-api-policy:enabled --runtime-arg -Xms64m --runtime-arg -Xmx512m --comments=app-name:dev.meeterm.app,app-version-name:0.1.0,app-version-code:1,art-version:360527520
+09-22 15:16:39.812  4271  4278 I artd    : Opened FDs: 7:/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk 8:/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/oat/x86_64/base.odex.if92ov.tmp 9:/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/oat/x86_64/base.vdex.GGXdGj.tmp 10:/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/oat/x86_64/base.odex.swap.8t4mWp.tmp 11:/system_ext/framework/androidx.window.sidecar.jar 12:/system_ext/framework/androidx.window.extensions.jar 
+09-22 15:16:39.863  4288  4288 W dex2oat64: /apex/com.android.art/bin/dex2oat64 --zip-fd=7 --zip-location=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk --oat-fd=8 --oat-location=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/oat/x86_64/base.odex --output-vdex-fd=9 --swap-fd=10 --class-loader-context-fds=11:12 --class-loader-context=PCL[]{PCL[/system_ext/framework/androidx.window.extensions.jar]#PCL[/system_ext/framework/androidx.window.sidecar.jar]} --classpath-dir=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw== --instruction-set=x86_64 --instruction-set-features=default --instruction-set-variant=x86_64 --compiler-filter=verify --compilation-reason=install --max-image-block-size=524288 --resolve-startup-const-strings=true --generate-mini-debug-info --runtime-arg -Xtarget-sdk-version:36 --runtime-arg -Xhidden-api-policy:enabled --runtime-arg -Xms64m --runtime-arg -Xmx512m --comments=app-name:dev.meeterm.app,app-version-name:0.1.0,app-version-code:1,art-version:360527520
+09-22 15:16:39.866  4288  4288 I dex2oat64: /apex/com.android.art/bin/dex2oat64 --output-vdex-fd=9 --class-loader-context-fds=11:12 --class-loader-context=PCL[]{PCL[/system_ext/framework/androidx.window.extensions.jar]#PCL[/system_ext/framework/androidx.window.sidecar.jar]} --classpath-dir=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw== --compiler-filter=verify --compilation-reason=install --max-image-block-size=524288 --resolve-startup-const-strings=true --generate-mini-debug-info --comments=app-name:dev.meeterm.app,app-version-name:0.1.0,app-version-code:1,art-version:360527520
+09-22 15:16:40.285   673  4285 I ArtService: Dexopt result: [packageName = dev.meeterm.app] DexContainerFileDexoptResult{dexContainerFile=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk, primaryAbi=true, abi=x86_64, actualCompilerFilter=verify, status=PERFORMED, dex2oatWallTimeMillis=469, dex2oatCpuTimeMillis=840, sizeBytes=22113168, sizeBeforeBytes=0, extendedStatusFlags=[]}
+09-22 15:16:40.286   673   769 I AppsFilter: interaction: PackageSetting{d8be8da com.android.microdroid.empty_payload/10195} -> PackageSetting{f05e1f dev.meeterm.app/10216} BLOCKED
+09-22 15:16:40.286   673   742 I ActivityManager: Force stopping dev.meeterm.app appid=10216 user=-1: installPackageLI
+09-22 15:16:40.287   673   769 I AppsFilter: interaction: PackageSetting{d8be8da com.android.microdroid.empty_payload/10195} -> PackageSetting{9e35677 dev.meeterm.app/10216} BLOCKED
+09-22 15:16:40.308   673   769 I PackageManager: installation completed for package:dev.meeterm.app. Final code path: /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==
+09-22 15:16:40.309   673   769 I AppsFilter: interaction: PackageSetting{6403522 com.android.microdroid.empty_payload/10195} -> PackageSetting{5dae921 dev.meeterm.app/10216} BLOCKED
+09-22 15:16:40.316   673   769 I ActivityManager: Force stopping dev.meeterm.app appid=10216 user=0: pkg removed
+09-22 15:16:40.326   673   832 W PackageConfigPersister: App-specific configuration not found for packageName: dev.meeterm.app and userId: 0
+09-22 15:16:40.326   673   673 D ActivityManager: sync unfroze 1679 com.android.keychain for 10
+09-22 15:16:40.326   673   673 D ActivityManager: sync unfroze 2662 com.android.dynsystem:dynsystem for 10
+09-22 15:16:40.326   673   673 D ActivityManager: sync unfroze 2617 com.android.dynsystem for 10
+09-22 15:16:40.326   673   673 D ActivityManager: sync unfroze 1987 com.android.localtransport for 10
+09-22 15:16:40.330  1048  1313 I SatelliteAppTracker: onPackageUpdateFinished : dev.meeterm.app
+09-22 15:16:40.330  1048  1313 I SatelliteAppTracker: onPackageModified : dev.meeterm.app
+09-22 15:16:40.334   673   918 I SdkSandboxManager: No SDKs used. Skipping SDK data reconcilation for CallingInfo{mUid=10216, mPackageName='dev.meeterm.app, mAppProcessToken='null'}
+09-22 15:16:40.335   673   910 D ShortcutService: replacing package: dev.meeterm.app userId=0
+09-22 15:16:40.335   673   673 I Telecom : CarModeTracker: Package dev.meeterm.app is not tracked.: SSH.oR@AJM🔒
+09-22 15:16:40.346  4194  4216 D PackageUpdatedTask: Package updated: mOp=UPDATE packages=[dev.meeterm.app], user=UserHandle{0}
+09-22 15:16:40.347   673   742 D ActivityManager: sync unfroze 1095 com.google.android.permissioncontroller for 3
+09-22 15:16:40.349  1565  4256 I AiAiEcho: AppIndexer Package:[dev.meeterm.app] UserProfile:[0] Enabled:[true].
+09-22 15:16:40.349  1565  4256 I AiAiEcho: AppFetcherImplV2 updateApps package:[dev.meeterm.app], userId:[0], reason:[package is updated.].
+09-22 15:16:40.350  1506  1506 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.350  1679  1679 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.351  1630  1630 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.351  1170  1170 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.351  1048  1048 D CarrierSvcBindHelper: onPackageUpdateFinished: dev.meeterm.app
+09-22 15:16:40.352  2662  2662 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  2696  2696 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  1507  1507 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  1565  1565 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  1570  1570 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  4194  4194 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  2617  2617 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.352  1046  1046 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.353  3905  3905 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.354  1045  1045 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.354  1631  1631 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.354   963   963 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.354  1569  1569 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.355  1275  1275 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.355  1987  1987 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.364  1095  1095 I SafetyLabelChangedBroadcastReceiver: received broadcast packageName: dev.meeterm.app, current user: UserHandle{0}, packageChangeEvent: UPDATE, intent user: UserHandle{0}
+09-22 15:16:40.367   673   918 I SdkSandboxManager: No SDKs used. Skipping SDK data reconcilation for CallingInfo{mUid=10216, mPackageName='dev.meeterm.app, mAppProcessToken='null'}
+09-22 15:16:40.368  1048  1048 D CarrierSvcBindHelper: onPackageModified: dev.meeterm.app
+09-22 15:16:40.370  1095  1095 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.370   673   673 W AlarmManager: Package dev.meeterm.app, uid 10216 lost permission to set exact alarms!
+09-22 15:16:40.371   673   673 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.372  1107  1107 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.386  1048  1310 D ImsResolver: maybeAddedImsService, packageName: dev.meeterm.app
+09-22 15:16:40.386  1048  1310 V ImsResolver: searchForImsServices: package=dev.meeterm.app, users=[UserHandle{0}]
+09-22 15:16:40.386  1048  1310 V ImsResolver: searchForImsServices: package=dev.meeterm.app, users=[UserHandle{0}]
+09-22 15:16:40.386  1048  1048 W VvmPkgInstalledRcvr: carrierVvmPkgAdded: carrier vvm packages doesn't contain dev.meeterm.app
+09-22 15:16:40.386  1048  1048 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.393   673  1690 I ActivityManager: Force stopping dev.meeterm.app appid=10216 user=0: from pid 4305
+09-22 15:16:40.396   673  1690 I AppsFilter: interaction: PackageSetting{6403522 com.android.microdroid.empty_payload/10195} -> PackageSetting{5dae921 dev.meeterm.app/10216} BLOCKED
+09-22 15:16:40.398   673   894 I AppWidgetServiceImpl: Updating package stopped masked state for uid 10216 package dev.meeterm.app isStopped true
+09-22 15:16:40.405  1048  1048 D SatelliteController: packageStateChanged: package:dev.meeterm.app DefaultSmsPackageName:com.google.android.apps.messaging
+09-22 15:16:40.407  1048  1048 D CarrierSvcBindHelper: onHandleForceStop: [dev.meeterm.app]
+09-22 15:16:40.439   673  1690 I ActivityTaskManager: START u0 {act=android.intent.action.VIEW dat=meeterm://foundation/... flg=0x10000000 xflg=0x4 cmp=dev.meeterm.app/.MainActivity} with LAUNCH_SINGLE_TASK from uid 2000 (BAL_ALLOW_PERMISSION) result code=0
+09-22 15:16:40.440   673  2129 I AppsFilter: interaction: PackageSetting{6403522 com.android.microdroid.empty_payload/10195} -> PackageSetting{99584d5 dev.meeterm.app/10216} BLOCKED
+09-22 15:16:40.441   963  1079 D WindowManagerShell: setLauncherKeepClearAreaHeight: visible=false, height=527
+09-22 15:16:40.445   963  1079 V WindowManagerShell: Transition requested (#13): android.os.BinderProxy@a25944 TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=133 effectiveUid=10216 displayId=0 isRunning=true baseIntent=Intent { act=android.intent.action.VIEW dat=meeterm://foundation/... flg=0x10000000 cmp=dev.meeterm.app/.MainActivity } baseActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} topActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} origActivity=null realActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} numActivities=1 lastActiveTime=210201 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{android.window.IWindowContainerToken$Stub$Proxy@27c45f8} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=Rect(0, 136 - 0, 0) topActivityInfo=ActivityInfo{20b8ad1 dev.meeterm.app.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isTopActivityNoDisplay=false isSleeping=false locusId=null displayAreaFeatureId=1 isTopActivityTransparent=false isActivityStackTransparent=false lastNonFullscreenBounds=Rect(276, 696 - 805, 1776) capturedLink=null capturedLinkTimestamp=0 requestedVisibleTypes=-9 topActivityRequestOpenInBrowserEducationTimestamp=0 appCompatTaskInfo=AppCompatTaskInfo { topActivityInSizeCompat=false eligibleForLetterboxEducation= false isLetterboxEducationEnabled= true isLetterboxDoubleTapEnabled= false eligibleForUserAspectRatioButton= false topActivityBoundsLetterboxed= false isFromLetterboxDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 topActivityAppBounds=Rect(0, 0 - 1080, 2400) isUserFullscreenOverrideEnabled=false isSystemFullscreenOverrideEnabled=false hasMinAspectRatioOverride=false topActivityLetterboxBounds=null cameraCompatTaskInfo=CameraCompatTaskInfo { freeformCameraCompatMode=inactive}} topActivityMainWindowFrame=null}, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 13 }
+09-22 15:16:40.446   673   894 I AppWidgetServiceImpl: Updating package stopped masked state for uid 10216 package dev.meeterm.app isStopped false
+09-22 15:16:40.446   673   743 I ActivityManager: Start proc 4315:dev.meeterm.app/u0a216 for next-top-activity {dev.meeterm.app/dev.meeterm.app.MainActivity}
+09-22 15:16:40.446   673   743 I ActivityManager: ProcessObserver broadcast disabled
+09-22 15:16:40.463  4315  4315 I dev.meeterm.app: Using CollectorTypeCMC GC.
+09-22 15:16:40.464  4315  4315 W dev.meeterm.app: Unexpected CPU variant for x86: x86_64.
+09-22 15:16:40.464  4315  4315 W dev.meeterm.app: Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, goldmont-without-sha-xsaves, tremont, kabylake, alderlake, default
+09-22 15:16:40.472  4315  4315 E dev.meeterm.app: Not starting debugger since process cannot load the jdwp agent.
+09-22 15:16:40.479   673  2342 D CoreBackPreview: Window{236358e u0 Splash Screen dev.meeterm.app}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@5e41c9a, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
+09-22 15:16:40.495  4315  4315 D nativeloader: Configuring clns-9 for other apk /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk. target_sdk_version=36, uses_libraries=, library_path=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/lib/x86_64:/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64, permitted_path=/data:/mnt/expand:/data/user/0/dev.meeterm.app
+09-22 15:16:40.500  4315  4315 I dev.meeterm.app: AssetManager2(0x7b7b8046be58) locale list changing from [] to [en-US]
+09-22 15:16:40.532  4315  4315 V GraphicsEnvironment: dev.meeterm.app is not listed in per-application setting
+09-22 15:16:40.532  4315  4315 V GraphicsEnvironment: dev.meeterm.app is not listed in ANGLE allowlist or settings, returning default
+09-22 15:16:40.580  4315  4315 W SoLoader: Recording new base apk path: /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk
+09-22 15:16:40.580  4315  4315 I SoLoader: Preparing SO source: DirectApkSoSource[root = [/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64]]
+09-22 15:16:40.582  4315  4315 I SoLoader: Preparing SO source: ApplicationSoSource[DirectorySoSource[root = /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/lib/x86_64 flags = 0]]
+09-22 15:16:40.587  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libc++_shared.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.603  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libjsi.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.605  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libfbjni.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.607  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libreactnative.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.611   673   733 V WindowManager: Sent Transition (#13) createdAt=09-22 15:16:40.435 via request=TransitionRequestInfo { type = OPEN, triggerTask = TaskInfo{userId=0 taskId=133 effectiveUid=10216 displayId=0 isRunning=true baseIntent=Intent { act=android.intent.action.VIEW dat=meeterm://foundation/... flg=0x10000000 cmp=dev.meeterm.app/.MainActivity } baseActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} topActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} origActivity=null realActivity=ComponentInfo{dev.meeterm.app/dev.meeterm.app.MainActivity} numActivities=1 lastActiveTime=210201 supportsMultiWindow=true resizeMode=1 isResizeable=true minWidth=-1 minHeight=-1 defaultMinSize=220 token=WCT{RemoteToken{2597ef9 Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}}} topActivityType=1 pictureInPictureParams=null shouldDockBigOverlays=false launchIntoPipHostTaskId=-1 lastParentTaskIdBeforePip=-1 displayCutoutSafeInsets=Rect(0, 136 - 0, 0) topActivityInfo=ActivityInfo{2611e3e dev.meeterm.app.MainActivity} launchCookies=[] positionInParent=Point(0, 0) parentTaskId=-1 isFocused=false isVisible=false isVisibleRequested=false isTopActivityNoDisplay=false isSleeping=false locusId=null displayAreaFeatureId=1 isTopActivityTransparent=false isActivityStackTransparent=false lastNonFullscreenBounds=Rect(276, 696 - 805, 1776) capturedLink=null capturedLinkTimestamp=0 requestedVisibleTypes=-9 topActivityRequestOpenInBrowserEducationTimestamp=0 appCompatTaskInfo=AppCompatTaskInfo { topActivityInSizeCompat=false eligibleForLetterboxEducation= false isLetterboxEducationEnabled= true isLetterboxDoubleTapEnabled= false eligibleForUserAspectRatioButton= false topActivityBoundsLetterboxed= false isFromLetterboxDoubleTap= false topActivityLetterboxVerticalPosition= -1 topActivityLetterboxHorizontalPosition= -1 topActivityLetterboxWidth=-1 topActivityLetterboxHeight=-1 topActivityAppBounds=Rect(0, 0 - 1080, 2400) isUserFullscreenOverrideEnabled=false isSystemFullscreenOverrideEnabled=false hasMinAspectRatioOverride=false topActivityLetterboxBounds=null cameraCompatTaskInfo=CameraCompatTaskInfo { freeformCameraCompatMode=inactive}} topActivityMainWindowFrame=null}, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 13 }
+09-22 15:16:40.612  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libreact_codegen_rnscreens.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.614   673   733 V WindowManager:     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+09-22 15:16:40.614  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libreact_codegen_rnsvg.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.615   673   733 V WindowManager:     info={id=13 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[
+09-22 15:16:40.615   673   733 V WindowManager:         {WCT{RemoteToken{2597ef9 Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}}} m=OPEN f=NONE leash=Surface(name=Task=133)/@0xb61a4f2 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
+09-22 15:16:40.615   673   733 V WindowManager:         {WCT{RemoteToken{e4e3bbb Task{7732c #1 type=home}}} m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0xb49dffd sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
+09-22 15:16:40.615   673   733 V WindowManager:         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{ee1a069 showWhenLocked=false})/@0x50f4454 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}
+09-22 15:16:40.615   673   733 V WindowManager:     ]}
+09-22 15:16:40.616   963  1483 V WindowManagerShell: onTransitionReady(transaction=2890512990621)
+09-22 15:16:40.616   963  1079 V WindowManagerShell: onTransitionReady (#13) android.os.BinderProxy@a25944: {id=13 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[
+09-22 15:16:40.616   963  1079 V WindowManagerShell:         {m=OPEN f=NONE leash=Surface(name=Task=133)/@0xf1e7a22 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
+09-22 15:16:40.616   963  1079 V WindowManagerShell:         {m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0x17c8cb3 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},
+09-22 15:16:40.616   963  1079 V WindowManagerShell:         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{ee1a069 showWhenLocked=false})/@0xa58a270 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}
+09-22 15:16:40.616   963  1079 V WindowManagerShell:     ]}
+09-22 15:16:40.617  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libreact_codegen_safeareacontext.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.617   963  1079 V WindowManagerShell: Playing animation for (#13) android.os.BinderProxy@a25944@0
+09-22 15:16:40.617   963  1079 V WindowManagerShell: Transition doesn't have explicit remote, search filters for match for {id=13 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=NONE leash=Surface(name=Task=133)/@0xf1e7a22 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0x17c8cb3 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{ee1a069 showWhenLocked=false})/@0xa58a270 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}]}
+09-22 15:16:40.617   963  1079 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=undefined independent=true modes=[CLOSE,TO_BACK] flags=IN_TASK_WITH_EMBEDDED_ACTIVITY mustBeTask=false order=ANY topActivity=null launchCookie=null taskFragmentToken=android.os.BinderProxy@d6ec14d windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@59bf402, appThread = android.app.IApplicationThread$Stub$Proxy@34bb113, debugName = overlayBackTransition }}
+09-22 15:16:40.617   963  1079 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x0 checks=[{atype=dream independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{atype=home independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@ee05f50, appThread = android.app.IApplicationThread$Stub$Proxy@a732549, debugName = LauncherToDream }}
+09-22 15:16:40.617   963  1079 V WindowManagerShell:  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=TOP topActivity=ComponentInfo{com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity} launchCookie=null windowingMode=undefined},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{NOT atype=undefined independent=true modes=[] flags=NONE mustBeTask=true order=ANY topActivity=null launchCookie=null customAnim=true windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@7d94e4e, appThread = android.app.IApplicationThread$Stub$Proxy@bb64b6f, debugName = QuickstepLaunchHome }}
+09-22 15:16:40.617   963  1079 V WindowManagerShell:  Delegate animation for (#13) to null
+09-22 15:16:40.617   963  1079 V WindowManagerShell: start default transition animation, info = {id=13 t=OPEN f=0x0 trk=0 r=[0@Point(0, 0)] c=[{m=OPEN f=NONE leash=Surface(name=Task=133)/@0xf1e7a22 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=SHOW_WALLPAPER leash=Surface(name=Task=1)/@0x17c8cb3 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0 taskParent=-1},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{ee1a069 showWhenLocked=false})/@0xa58a270 sb=Rect(0, 0 - 1080, 2400) eb=Rect(0, 0 - 1080, 2400) epz=Point(1080, 2400) d=0}]}
+09-22 15:16:40.618   963  1079 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@fa9410f animAttr=0x13 type=OPEN isEntrance=false
+09-22 15:16:40.618  4315  4315 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libappmodules.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.618   963  1079 V WindowManagerShell: loadAnimation: anim=android.view.animation.AnimationSet@42df2b animAttr=0x12 type=OPEN isEntrance=true
+09-22 15:16:40.621   963  1079 V WindowManagerShell:  animated by com.android.wm.shell.transition.DefaultTransitionHandler@e1d1326
+09-22 15:16:40.640   963  1079 V WindowManagerShell: Transition animation finished (aborted=false), notifying core (#13) android.os.BinderProxy@a25944@0
+09-22 15:16:40.641   673   733 V WindowManager: Finish Transition (#13): created at 09-22 15:16:40.435 collect-started=0.017ms request-sent=3.34ms started=10.663ms ready=173.202ms sent=174.09ms commit=11.209ms finished=205.562ms
+09-22 15:16:40.642   963  1079 V WindowManagerShell: Track 0 became idle
+09-22 15:16:40.642   963  1079 V WindowManagerShell: All active transition animations finished
+09-22 15:16:40.661  4315  4315 I dev.meeterm.app: AssetManager2(0x7b7b8046dd98) locale list changing from [] to [en-US]
+09-22 15:16:40.666  4315  4315 I dev.meeterm.app: AssetManager2(0x7b7b80468618) locale list changing from [] to [en-US]
+09-22 15:16:40.775  4315  4335 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libhermesvm.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.776  4315  4335 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libhermestooling.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.812   673  1886 D CoreBackPreview: Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@4cd1587, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
+09-22 15:16:40.855   673  2129 D ActivityManager: sync unfroze 1551 com.google.android.gms for 6
+09-22 15:16:40.870  1551  1551 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.
+09-22 15:16:40.877  1275  4352 I ProximityAuth: [RecentAppsMediator] Package added: (user=UserHandle{0}) dev.meeterm.app
+09-22 15:16:40.900  4315  4336 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libexpo-modules-core.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk): ok
+09-22 15:16:40.905   673   733 I ActivityTaskManager: Displayed dev.meeterm.app/.MainActivity for user 0: +469ms
+09-22 15:16:40.929   673  2129 D CoreBackPreview: Window{236358e u0 Splash Screen dev.meeterm.app EXITING}: Setting back callback null
+09-22 15:16:40.987   673   825 I ImeTracker: dev.meeterm.app:91dce791: onRequestHide at ORIGIN_SERVER reason HIDE_UNSPECIFIED_WINDOW fromUser false
+09-22 15:16:40.988  4315  4315 I ImeTracker: dev.meeterm.app:91dce791: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+09-22 15:16:40.989  1506  1506 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1293 onStartInput(EditorInfo{EditorInfo{packageName=dev.meeterm.app, inputType=0, inputTypeString=NULL, enableLearning=false, autoCorrection=false, autoComplete=false, imeOptions=0, privateImeOptions=null, actionName=UNSPECIFIED, actionLabel=null, initialSelStart=-1, initialSelEnd=-1, initialCapsMode=0, label=null, fieldId=0, fieldName=null, extras=null, hintText=null, hintLocales=[]}}, false)
+09-22 15:16:41.005   673  2342 W PackageConfigPersister: App-specific configuration not found for packageName: dev.meeterm.app and userId: 0
+09-22 15:16:41.024  1551  4377 W SQLiteLog: (28) double-quoted string literal: "dev.meeterm.app"
+09-22 15:16:41.029  4315  4336 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/librnscreens.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!classes2.dex): ok
+09-22 15:16:41.074  4315  4343 D nativeloader: Load /data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!/lib/x86_64/libmeeterm_core.so using class loader ns clns-9 (caller=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk!classes2.dex): ok
+09-22 15:16:41.101  4315  4315 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-22 15:16:41.103  4315  4315 I MeetermTerminalView: attached
+09-22 15:16:41.105  4315  4315 I MeetermTerminalView: resized columns=54 rows=39 cell=20x54
+09-22 15:16:41.105  4315  4315 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-22 15:16:41.105  4315  4315 I MeetermTerminalView: resized columns=54 rows=37 cell=20x54
+09-22 15:16:41.114  4315  4315 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-22 15:16:41.114  4315  4315 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-22 15:16:41.114  4315  4315 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-22 15:16:41.114  4315  4315 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-22 15:16:41.132  4315  4383 I MeetermRenderer: GLES surface created cell=20x54
+09-22 15:16:41.139  4315  4383 I MeetermRenderer: snapshot parsed columns=54 rows=37 cells=1989 visibleGlyphs=586 bytes=57736
+09-22 15:16:41.832  4315  4383 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
+09-22 15:16:41.869  4315  4383 E BLASTBufferQueue: [1ab533 SurfaceView[dev.meeterm.app/dev.meeterm.app.MainActivity]#1](f:0,a:0) rejecting buffer:active_size=1080x1907, requested_size=1080x1907 buffer{size=1080x2043 transform=0}
+09-22 15:16:41.872  4315  4315 I MeetermTerminalView: resized columns=54 rows=35 cell=20x54
+09-22 15:16:42.371  4315  4383 E BLASTBufferQueue: [1ab533 SurfaceView[dev.meeterm.app/dev.meeterm.app.MainActivity]#1](f:0,a:0) rejecting buffer:active_size=1080x1970, requested_size=1080x1970 buffer{size=1080x1907 transform=0}
+09-22 15:16:42.372  4315  4315 I MeetermTerminalView: resized columns=54 rows=36 cell=20x54
+09-22 15:16:42.873  4315  4315 I MeetermTerminalView: resized columns=54 rows=35 cell=20x54
+09-22 15:16:46.014  4315  4413 D ProfileInstaller: Installing profile for dev.meeterm.app
+09-22 15:16:46.047   673  2342 D ActivityManager: sync unfroze 3163 com.google.android.apps.photos for 7
+09-22 15:16:46.047  3163  3163 D ActivityThread: Package [dev.meeterm.app] reported as REPLACED, but missing application info. Assuming REMOVED.

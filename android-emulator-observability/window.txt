@@ -3,18 +3,17 @@
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
-  Window #6 Window{b43b1ab u0 Application Not Responding: com.android.systemui}:
-    WindowStateAnimator{63b32c6 Application Not Responding: com.android.systemui}:
-       mAnimationIsEntrance=true      mSurface=Surface(name=Application Not Responding: com.android.systemui)/@0xbd12287
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=SYSTEM_ALERT_WINDOW
-  Window #9 Window{7fe7a85 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
+  Window #8 Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
     mOwnerUid=10216 showForAllUsers=false package=dev.meeterm.app appop=NONE
-    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{3384629 u0 dev.meeterm.app/.MainActivity t76}
-    mActivityRecord=ActivityRecord{3384629 u0 dev.meeterm.app/.MainActivity t76}
-    WindowStateAnimator{41cc920 dev.meeterm.app/dev.meeterm.app.MainActivity}:
-      mSurface=Surface(name=dev.meeterm.app/dev.meeterm.app.MainActivity)/@0x44992d9
-  Window #11 Window{1fbf340 u0 com.android.systemui.wallpapers.ImageWallpaper}:
+    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
+    mActivityRecord=ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
+    WindowStateAnimator{1a6b93b dev.meeterm.app/dev.meeterm.app.MainActivity}:
+      mSurface=Surface(name=dev.meeterm.app/dev.meeterm.app.MainActivity)/@0xf0f0858
+  Window #10 Window{a2d46f3 u0 com.android.systemui.wallpapers.ImageWallpaper}:
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
-    WindowStateAnimator{7b1db7f com.android.systemui.wallpapers.ImageWallpaper}:
-      mSurface=Surface(name=com.android.systemui.wallpapers.ImageWallpaper)/@0xad5574c
-  imeLayeringTarget in display# 0 Window{7fe7a85 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+    WindowStateAnimator{3bb7296 com.android.systemui.wallpapers.ImageWallpaper}:
+      mSurface=Surface(name=com.android.systemui.wallpapers.ImageWallpaper)/@0x9bdae17
+  imeLayeringTarget in display# 0 Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeInputTarget in display# 0 Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeControlTarget in display# 0 Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}

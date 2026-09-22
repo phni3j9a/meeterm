@@ -1,43 +1,65 @@
-run_record:
-  source_sha=d766fb86caa6da21c03014e4efe58972a82baf57
-  source_branch=fix/issue-30-zoom-cleanup
-  suite=android-full (foundation gates + screen fixtures + real disposable OpenSSH/tmux smoke)
-  build_mode=fresh (git reset --hard <sha>, npm ci, expo prebuild, assembleRelease — no reuse of prior-run build/evidence)
-  result=passed
+suite=android-emulator-observability
+source_sha=3d07d2cbf8b2fd1dced2391422db39f585392692
+branch=fix/issue-30-zoom-cleanup
+run_label=issue-30-final-acceptance
+build_mode=clean CNG (npm ci + expo prebuild --platform android) + assembleRelease
+result=failed
+failure_stage=ssh-smoke daily_transport_loss_ready (authoritative_ready_timeout)
+attempts=3 (identical failure at the same stage on all three)
 
 toolchain:
-  node=v24.19.0 (deviation: blueprint/retired-CI pin is 22.22.2 — installed via nvm but the live PATH resolved v24.19.0)
-  npm=10.8.3 (deviation: retired-CI pinned 10.9.7)
-  rustc=1.96.0 (rust-toolchain.toml pin; RUSTUP_TOOLCHAIN=1.96.0 for the build)
-  cargo_ndk=4.1.2
-  ndk=27.1.12297006
-  android_platform=android-36
-  build_tools=36.0.0 (35.0.0 also installed)
-  cmake=3.22.1
-  gradle=9.3.1 (wrapper)
-  jdk=openjdk 17.0.19
-  emulator=37.1.11.0
-  adb=1.0.41
-  avd=meeterm_api36 (pixel_7 profile, system-images;android-36;google_apis;x86_64, cores=4, memory=4096, -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none)
+  node=v24.19.0 (deviation: blueprint pins 22.22.2; /opt/.devin/envrc puts v24 first in PATH - reported)
+  npm=10.8.3
+  rustc=1.96.0 (RUSTUP_TOOLCHAIN pin)
+  cargo-ndk=4.1.2
+  ndk=27.1.12297006, build-tools=36.0.0, cmake=3.22.1, jdk=17.0.19
+  emulator=meeterm_api36 pixel_7 android-36 x86_64, cold-booted headless (swiftshader_indirect, -no-snapshot)
 
-stage_timings_utc (approximate; artifact mtimes and tool-reported):
-  npm_ci+expo_prebuild=~2m
-  gradle_assembleRelease=4m11s (BUILD SUCCESSFUL, 668 tasks)
-  emulator_boot_to_sys_boot_completed=~40s (cold reboot after session restart)
-  android_smoke_sh=~35s (launch.txt 17:54:11, smoke_exit=0) result: passed
-  android_screen_fixtures=first pass aborted by a platform "System UI isn't responding" ANR dialog covering the screen (all checked elements missing; uiautomator dumps showed only the dialog); SystemUI process restarted and the full re-run passed 30/31 captures (~4m) -> android-screen-fixtures.txt 18:11:28
-  fixture_py_android_smoke_py=attempt 1 failed at daily_foreground_return/marker_timeout (~18:29) after daily_foreground_authoritative_ready + native_binding_verified — post-foreground remote marker did not land in time on the flaky emulator; logcat input summary shows all commits accepted, 0 rejected. attempt 2 after pm clear passed fully (~23m) -> ssh-validation.txt 18:53:05, result=passed, stage=disconnect_after_resume, reason=ok
-  total_wall_clock=~1h20m (includes ANR abort + two SSH re-runs)
+stage_timings (approx):
+  npm ci + prebuild ~4m; assembleRelease 3m1s
+  android-smoke.sh foundation ~35s: install, launch, MEETERM_SMOKE_NATIVE_READY + FIRST_FRAME, same-PID, no ANR/crash - PASS
+  android-screen-fixtures.py 31 routes: 30 captured; empty=unavailable (known observational gap)
+    required warning captures all present+verified:
+      layout-restore-unconfirmed.png - warning banner + dismiss (X) over Workspaces/Disconnected
+      runtime-layout-restore-unconfirmed.png - warning banner + dismiss over runtime picker
+      connection-error.png - warning coexisting with auth-failure guidance card + dismiss
+    checker required enabled+visible cleanup-warning-dismiss control: satisfied on all three routes
+  ssh fixture + android-smoke.py attempt1 ~11m: FAIL daily_transport_loss_ready
+    attempt2 ~12m: FAIL daily_transport_loss_ready (instrumentation prep)
+    attempt3 ~18m: FAIL daily_transport_loss_ready (epoch watcher active)
 
-cleanup_outcome:
-  fixture_tmpdirs=removed
-  fixture_sshd=none_remaining
-  fixture_tmux_server=none_remaining
-  app_process=stopped (force-stop by smoke)
-  emulator=left running on emulator-5554 for this persistent session
+failure_detail:
+  completed chain (all 3 runs identical):
+    device_ready,emulator_host_loopback,emulator_host_alias_reachable,adb_reverse_preflight_empty,
+    connect_form_open,host_filled,port_filled,username_filled,password_form_*,
+    authentication_selector_verified,daily_profile_persistence_selected,form_filled,form_submitted,
+    host_key_verified,initial_runtime_selection_*,connected,daily_profile_* (CRUD suite),
+    daily_app_backgrounded,daily_foreground_* (authoritative_ready,native_binding,marker,resumed),
+    daily_transport_loss_pre_marker_once,daily_transport_loss_injected,
+    daily_transport_loss_stale_read_only,daily_transport_loss_restored
+    -> TIMEOUT waiting for authoritative Ready; app parked on fail-closed surface:
+       "This runtime can't be restored - The runtime named \"meeterm\" is not the same
+        instance as before." (Retry / Change...)  ssh-failure-state: connection_state=failed
+       UI reason bucket = runtimeMismatch
 
-notes:
-  - Round-2 reworked candidate; prior runs (8c5f511, f45cbd4) are preserved in this branch's history.
-  - Two environment flakes this session, both recovered and re-run cleanly: (1) SystemUI ANR overlay during screen-fixtures (uiautomator saw only the dialog; SystemUI restarted, stage re-run passed), (2) one daily_foreground_return marker_timeout during the first SSH attempt, then passed on re-run. Neither failure reproduced and neither correlates with the reworked code paths; recorded here for transparency.
-  - New required captures present: layout-restore-unconfirmed.png, runtime-layout-restore-unconfirmed.png (both =captured).
-  - app-release.apk excluded from this bundle by default policy.
+environment_evidence (fixture-tmux-epoch-watch.log, 1s samples across whole attempt-3 run):
+  fixture tmux server pid=27153 start_time=1790092738 session=$0 name=meeterm
+  epoch value NEVER changed for the entire run (all samples identical)
+  session $0 and panes %0..%3 (windows @0,@1) intact throughout the transport-loss window
+  window_zoomed_flag transitions only reflect app behavior (0->1 during use, 1->0 near cleanup)
+  => remote runtime identity was stable; "not the same instance" verdict is a false negative
+     produced by the candidate's recovery path, not by fixture/server replacement.
+
+regression_assessment:
+  identical suite+fixture+VM passed this stage on d766fb8 (evidence commit 2df59ef),
+  f45cbd4 (dac3ce1), 8c5f511 (de9002e). scripts/ssh/android_smoke_impl.py unchanged
+  between d766fb8..3d07d2c; epoch comparison code (SessionEpoch::matches /
+  server_pid+server_start_time) also untouched in the diff. The new work in the range
+  (cleanupWarning field, stable warning IDs, exact-body hook classifier, cross-generation
+  cleanup record, dismiss control) is the suspect set. runtimeMismatch bucket also covers
+  runtime_identity_uncertain / tmux_runtime_missing / tmux_topology_unsafe / runtime_replaced
+  - the exact emitted native reason is not visible in artifacts.
+
+cleanup_outcome: fixture tmpdirs/sshd/tmux removed by fixture.py on each attempt;
+  app force-stopped by harness; emulator emulator-5554 left running for debugging;
+  checkout remains at 3d07d2c; artifacts dir preserved intact.

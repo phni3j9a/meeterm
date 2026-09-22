@@ -1,4 +1,4 @@
 emulator_host_loopback
 emulator_host_alias_reachable=yes
 adb_reverse_preflight_empty=yes
-adb_reverse_postflight_empty=yes
+adb_reverse_postflight_empty=unavailable
