@@ -170,6 +170,7 @@ case "${suite}" in
       standard-recovery-progress standard-recovery-exhausted
       standard-recovery-mismatch standard-herdr-recovery-confirm
       standard-layout-restore-unconfirmed standard-runtime-layout-restore-unconfirmed
+      standard-connection-error
     )
     ;;
   polish)

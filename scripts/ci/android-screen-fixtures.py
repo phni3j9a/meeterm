@@ -297,20 +297,20 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             ("disconnected_state", "Disconnected" in normalized_values),
             (
                 "layout_restore_warning",
-                "The connection closed, but the desktop layout could not be confirmed as restored."
+                "The old connection's desktop layout restore could not be confirmed."
                 in normalized_values,
             ),
-            ("warning_dismiss", "Dismiss message" in normalized_values),
+            ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
         ]
     elif screen == "runtime-layout-restore-unconfirmed":
         checks = [
             ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
             (
                 "layout_restore_warning",
-                "The connection closed, but the desktop layout could not be confirmed as restored."
+                "The old connection's desktop layout restore could not be confirmed."
                 in normalized_values,
             ),
-            ("warning_dismiss", "Dismiss message" in normalized_values),
+            ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
         ]
     elif screen == "herdr-groups":
         checks = [
@@ -376,8 +376,25 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             "reconnecting": ("Reconnecting…", "Cancel connection"),
             "connection-error": ("Connection failed", "Reconnect"),
         }
-        checks = [(f"screen_element_{index}", value in normalized_values)
-                  for index, value in enumerate(required[screen])]
+        if screen == "connection-error":
+            checks = [
+                ("connection_error_heading", "Connection failed" in normalized_values),
+                ("connection_error_reconnect", "Reconnect" in normalized_values),
+                (
+                    "authentication_guidance",
+                    "Authentication failed. Check your username and the password or private key for your chosen sign-in method."
+                    in normalized_values,
+                ),
+                (
+                    "layout_restore_warning",
+                    "The old connection's desktop layout restore could not be confirmed."
+                    in normalized_values,
+                ),
+                ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+            ]
+        else:
+            checks = [(f"screen_element_{index}", value in normalized_values)
+                      for index, value in enumerate(required[screen])]
     return [name for name, passed in checks if not passed]
 
 

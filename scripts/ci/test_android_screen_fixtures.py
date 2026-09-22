@@ -112,11 +112,11 @@ class PresentationReadinessTests(unittest.TestCase):
         )
 
     def test_layout_restore_warning_routes_require_real_message_and_dismiss_action(self):
-        warning = "The connection closed, but the desktop layout could not be confirmed as restored."
+        warning = "The old connection's desktop layout restore could not be confirmed."
         self.assertEqual(
             fixtures.screen_checks(
                 "layout-restore-unconfirmed",
-                {"Disconnected", warning, "Dismiss message"},
+                {"Disconnected", warning, "Dismiss desktop layout warning"},
             ),
             [],
         )
@@ -126,10 +126,60 @@ class PresentationReadinessTests(unittest.TestCase):
                 {
                     "Choose a runtime for Smoke server",
                     warning,
-                    "Dismiss message",
+                    "Dismiss desktop layout warning",
                 },
             ),
             [],
+        )
+
+    def test_layout_restore_warning_rejects_old_only_or_incomplete_display(self):
+        old_only = {
+            "Disconnected",
+            "The connection closed, but the desktop layout could not be confirmed as restored.",
+            "Dismiss message",
+        }
+        missing_warning = {"Disconnected", "Dismiss desktop layout warning"}
+        missing_dismiss = {
+            "Disconnected",
+            "The old connection's desktop layout restore could not be confirmed.",
+        }
+        self.assertIn(
+            "layout_restore_warning",
+            fixtures.screen_checks("layout-restore-unconfirmed", old_only),
+        )
+        self.assertIn(
+            "warning_dismiss",
+            fixtures.screen_checks("layout-restore-unconfirmed", old_only),
+        )
+        self.assertIn(
+            "layout_restore_warning",
+            fixtures.screen_checks("layout-restore-unconfirmed", missing_warning),
+        )
+        self.assertIn(
+            "warning_dismiss",
+            fixtures.screen_checks("layout-restore-unconfirmed", missing_dismiss),
+        )
+
+    def test_connection_error_requires_auth_guidance_and_independent_warning(self):
+        auth_guidance = (
+            "Authentication failed. Check your username and the password or private key "
+            "for your chosen sign-in method."
+        )
+        warning = "The old connection's desktop layout restore could not be confirmed."
+        dismiss = "Dismiss desktop layout warning"
+        canonical = {"Connection failed", "Reconnect", auth_guidance, warning, dismiss}
+        self.assertEqual(fixtures.screen_checks("connection-error", canonical), [])
+        self.assertIn(
+            "authentication_guidance",
+            fixtures.screen_checks("connection-error", canonical - {auth_guidance}),
+        )
+        self.assertIn(
+            "layout_restore_warning",
+            fixtures.screen_checks("connection-error", canonical - {warning}),
+        )
+        self.assertIn(
+            "warning_dismiss",
+            fixtures.screen_checks("connection-error", canonical - {dismiss}),
         )
 
     def test_ui_values_records_visibility_state_for_test_ids(self):

@@ -92,6 +92,7 @@ rm -f \
   "${artifact_dir}/standard-herdr-recovery-confirm.png" \
   "${artifact_dir}/standard-layout-restore-unconfirmed.png" \
   "${artifact_dir}/standard-runtime-layout-restore-unconfirmed.png" \
+  "${artifact_dir}/standard-connection-error.png" \
   "${artifact_dir}/polish-welcome.png" \
   "${artifact_dir}/polish-empty.png" \
   "${artifact_dir}/polish-search-empty.png" \

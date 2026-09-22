@@ -283,10 +283,10 @@ and launch it, observe native readiness and a first terminal frame, and check
 that the process does not crash. It is not a substitute for final full and
 `standard` acceptance.
 
-The iOS `standard` source-level manifest is 24 screens: the previous 18 plus
+The iOS `standard` source-level manifest is 25 screens: the previous 18 plus
 `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
 `herdr-recovery-confirm`, plus the `layout-restore-unconfirmed` and
-`runtime-layout-restore-unconfirmed` warning fixtures.
+`runtime-layout-restore-unconfirmed` warning fixtures and `connection-error`.
 Its existing `herdr-connection` route is now a picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
 `SCREEN_NAMES` contains 31 routes: the previous 25 plus those same four recovery

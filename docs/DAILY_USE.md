@@ -184,10 +184,11 @@ loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
 selection/create transitions are covered by focused app/native tests. The fixed
 source-level visual manifests include the picker routes plus retained-work
 recovery progress, exhaustion, mismatch, and Herdr confirmation. The iOS
-`standard` manifest has 24 screens: the Issue #21 set of 18 plus
+`standard` manifest has 25 screens: the Issue #21 set of 18 plus
 `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
 `herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
-`runtime-layout-restore-unconfirmed`.
+`runtime-layout-restore-unconfirmed`, plus the `connection-error`
+auth-warning coexistence fixture.
 The existing `herdr-connection` route is the picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
 `SCREEN_NAMES` has 31 routes: the Issue #21 set of 25 plus those four recovery

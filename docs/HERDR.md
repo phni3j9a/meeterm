@@ -267,8 +267,9 @@ topology の安全性は、Herdr の既存 close contract と混同せず、tmux
 モバイルでは Android full、iOS `standard`、接続・認証・native input を含む短い iOS `ssh` を
 影響範囲に応じて実行します。runtime picker の loading、mixed、empty、partial error、重複名、
 明示的作成、stale selection の画面は fixture で確認します。iOS `standard` の source-level
-manifest は24画面で、Issue #21の18画面に `recovery-progress`、
-`recovery-exhausted`、`recovery-mismatch`、`herdr-recovery-confirm`を加えたものです。
+manifest は25画面で、Issue #21の18画面に `recovery-progress`、
+`recovery-exhausted`、`recovery-mismatch`、`herdr-recovery-confirm`、
+`connection-error`を加えたものです。
 `layout-restore-unconfirmed` と `runtime-layout-restore-unconfirmed` の warning fixture も含みます。
 既存の `herdr-connection` は、
 Herdr `default` candidate に non-authoritative な `Last used` hint を表示する picker state

@@ -200,6 +200,7 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-herdr-recovery-confirm.png",
       "standard-layout-restore-unconfirmed.png",
       "standard-runtime-layout-restore-unconfirmed.png",
+      "standard-connection-error.png",
       "polish-welcome.png",
       "polish-empty.png",
       "polish-search-empty.png",
@@ -604,6 +605,7 @@ final class MeetermSmokeUITests: XCTestCase {
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
       "recovery-progress", "recovery-exhausted", "recovery-mismatch", "herdr-recovery-confirm",
       "layout-restore-unconfirmed", "runtime-layout-restore-unconfirmed",
+      "connection-error",
     ]
     for screen in screens {
       record("standard_screen_\(screen)_open")
@@ -634,7 +636,7 @@ final class MeetermSmokeUITests: XCTestCase {
     record("standard_complete")
   }
 
-  /// Additional states and native navigation, separate from the 24-screen
+  /// Additional states and native navigation, separate from the 25-screen
   /// daily gate so both scopes retain their own bounded execution budget.
   func testPolishStatesAndNavigation() throws {
     for screen in ["welcome", "empty", "search-empty", "disconnected", "reconnecting", "connection-error", "long-workspaces"] {
@@ -965,8 +967,13 @@ final class MeetermSmokeUITests: XCTestCase {
       return app.staticTexts.matching(NSPredicate(format: "label == %@", "Reconnecting…")).firstMatch.waitForExistence(timeout: 30)
         && waitForHittable(button("Cancel connection"), timeout: 30)
     case "connection-error":
+      let authentication = "Authentication failed. Check your username and the password or private key for your chosen sign-in method."
+      let warning = "The old connection's desktop layout restore could not be confirmed."
       return app.staticTexts.matching(NSPredicate(format: "label == %@", "Connection failed")).firstMatch.waitForExistence(timeout: 30)
         && waitForHittable(button("Reconnect"), timeout: 30)
+        && app.staticTexts[authentication].waitForExistence(timeout: 30)
+        && app.staticTexts[warning].waitForExistence(timeout: 30)
+        && waitForHittable(button("Dismiss desktop layout warning"), timeout: 30)
     case "long-workspaces":
       return waitForHittable(buttonStarting(with: "Workspace Production infrastructure — migration and release preparation"), timeout: 30)
         && waitForHittable(buttonStarting(with: "Workspace Research / terminal typography and international text"), timeout: 30)
@@ -1037,15 +1044,15 @@ final class MeetermSmokeUITests: XCTestCase {
         && input("tmux session name").waitForExistence(timeout: 30)
         && waitForHittable(app.buttons["runtime-tmux-create-submit"], timeout: 30)
     case "layout-restore-unconfirmed":
-      let warning = "The connection closed, but the desktop layout could not be confirmed as restored."
+      let warning = "The old connection's desktop layout restore could not be confirmed."
       return app.staticTexts["Disconnected"].waitForExistence(timeout: 30)
         && app.staticTexts[warning].waitForExistence(timeout: 30)
-        && waitForHittable(button("Dismiss message"), timeout: 30)
+        && waitForHittable(button("Dismiss desktop layout warning"), timeout: 30)
     case "runtime-layout-restore-unconfirmed":
-      let warning = "The connection closed, but the desktop layout could not be confirmed as restored."
+      let warning = "The old connection's desktop layout restore could not be confirmed."
       return app.staticTexts["Choose a runtime for Smoke server"].waitForExistence(timeout: 30)
         && app.staticTexts[warning].waitForExistence(timeout: 30)
-        && waitForHittable(button("Dismiss message"), timeout: 30)
+        && waitForHittable(button("Dismiss desktop layout warning"), timeout: 30)
     case "herdr-connection":
       // The Last used badge is visible presentation inside the explicitly
       // labelled runtime button. Screen readiness therefore uses the same
