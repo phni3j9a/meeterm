@@ -1,6 +1,0 @@
-connection_state=failed
-runtime_picker=no
-workspace_row=no
-saved_servers_sheet=no
-switch_confirmation=no
-profile_connect_error=no

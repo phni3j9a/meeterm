@@ -1,34 +1,34 @@
-  * Task{e45a360 #133 type=standard A=10216:dev.meeterm.app U=0 visible=true visibleRequested=true mode=fullscreen translucent=false sz=1}
-    topResumedActivity=ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
-    * Hist  #0: ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
+  * Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app U=0 visible=true visibleRequested=true mode=fullscreen translucent=false sz=1}
+    topResumedActivity=ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
+    * Hist  #0: ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
       packageName=dev.meeterm.app processName=dev.meeterm.app
-      app=ProcessRecord{951958c 4315:dev.meeterm.app/u0a216}
+      app=ProcessRecord{51f9452 3788:dev.meeterm.app/u0a216}
       Intent { act=android.intent.action.VIEW dat=meeterm://foundation?foundation=1 flg=0x10000000 xflg=0x4 cmp=dev.meeterm.app/.MainActivity }
-      rootOfTask=true task=Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}
+      rootOfTask=true task=Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app}
       taskAffinity=10216:dev.meeterm.app
       mActivityComponent=dev.meeterm.app/.MainActivity
-      baseDir=/data/app/~~zsR6sl6t9RxvojJomdYBig==/dev.meeterm.app-VTG902gzkMkXZkxYWh9oUw==/base.apk
+      baseDir=/data/app/~~J-UhG-bccc_g9d9mTd7ytQ==/dev.meeterm.app-EwyV5NjJnLJhP8o_UBOoAw==/base.apk
       dataDir=/data/user/0/dev.meeterm.app
-      windows=[Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}]
-    Resumed: ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
-  ResumedActivity: ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
-  topDisplayFocusedRootTask=Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}
-  deepestLastOrientationSource=ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
-  mCurrentFocus=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-  mFocusedApp=ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
-      mPreferredTopFocusableRootTask=Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}
-      mLastFocusedRootTask=Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}
-      * Task{e45a360 #133 type=standard A=10216:dev.meeterm.app U=0 visible=true visibleRequested=true mode=fullscreen translucent=false sz=1}
-        * ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}
-    mFocusedWindow=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-    mTopFullscreenOpaqueWindowState=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-    mSystemBarColorApps={ActivityRecord{189414243 u0 dev.meeterm.app/.MainActivity t133}}
-    mNavBarColorWindowCandidate=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-    mNavBarBackgroundWindowCandidate=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-      Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-      Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
-        mControlTarget=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-        mControlTarget=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-        mControlTarget=Window{4846ba1 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-        (fullscreen) Task{e45a360 #133 type=standard A=10216:dev.meeterm.app}
-  VisibleActivityProcess:[ ProcessRecord{951958c 4315:dev.meeterm.app/u0a216}]
+      windows=[Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}]
+    Resumed: ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
+  ResumedActivity: ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
+  topDisplayFocusedRootTask=Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app}
+  deepestLastOrientationSource=ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
+  mCurrentFocus=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  mFocusedApp=ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
+      mPreferredTopFocusableRootTask=Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app}
+      mLastFocusedRootTask=Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app}
+      * Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app U=0 visible=true visibleRequested=true mode=fullscreen translucent=false sz=1}
+        * ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}
+    mFocusedWindow=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+    mTopFullscreenOpaqueWindowState=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+    mSystemBarColorApps={ActivityRecord{166925852 u0 dev.meeterm.app/.MainActivity t169}}
+    mNavBarColorWindowCandidate=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+    mNavBarBackgroundWindowCandidate=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+      Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+      Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
+        mControlTarget=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+        mControlTarget=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+        mControlTarget=Window{affba37 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+        (fullscreen) Task{fcb59ab #169 type=standard A=10216:dev.meeterm.app}
+  VisibleActivityProcess:[ ProcessRecord{51f9452 3788:dev.meeterm.app/u0a216}]

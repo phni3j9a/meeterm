@@ -1,11 +1,10 @@
 suite=android-emulator-observability
-source_sha=3d07d2cbf8b2fd1dced2391422db39f585392692
+source_sha=ed43536 (Accept bare hook-name remnants as absent in zoom recovery classification)
 branch=fix/issue-30-zoom-cleanup
-run_label=issue-30-final-acceptance
+run_label=issue-30-final-acceptance-reissued
 build_mode=clean CNG (npm ci + expo prebuild --platform android) + assembleRelease
-result=failed
-failure_stage=ssh-smoke daily_transport_loss_ready (authoritative_ready_timeout)
-attempts=3 (identical failure at the same stage on all three)
+result=passed
+attempts=1 (SSH stage passed on first attempt; prior candidate 3d07d2c failed this stage 3x)
 
 toolchain:
   node=v24.19.0 (deviation: blueprint pins 22.22.2; /opt/.devin/envrc puts v24 first in PATH - reported)
@@ -16,7 +15,7 @@ toolchain:
   emulator=meeterm_api36 pixel_7 android-36 x86_64, cold-booted headless (swiftshader_indirect, -no-snapshot)
 
 stage_timings (approx):
-  npm ci + prebuild ~4m; assembleRelease 3m1s
+  npm ci + prebuild ~4m; assembleRelease 2m41s
   android-smoke.sh foundation ~35s: install, launch, MEETERM_SMOKE_NATIVE_READY + FIRST_FRAME, same-PID, no ANR/crash - PASS
   android-screen-fixtures.py 31 routes: 30 captured; empty=unavailable (known observational gap)
     required warning captures all present+verified:
@@ -24,42 +23,20 @@ stage_timings (approx):
       runtime-layout-restore-unconfirmed.png - warning banner + dismiss over runtime picker
       connection-error.png - warning coexisting with auth-failure guidance card + dismiss
     checker required enabled+visible cleanup-warning-dismiss control: satisfied on all three routes
-  ssh fixture + android-smoke.py attempt1 ~11m: FAIL daily_transport_loss_ready
-    attempt2 ~12m: FAIL daily_transport_loss_ready (instrumentation prep)
-    attempt3 ~18m: FAIL daily_transport_loss_ready (epoch watcher active)
+  ssh fixture + android-smoke.py ~20m: PASS end-to-end
 
-failure_detail:
-  completed chain (all 3 runs identical):
-    device_ready,emulator_host_loopback,emulator_host_alias_reachable,adb_reverse_preflight_empty,
-    connect_form_open,host_filled,port_filled,username_filled,password_form_*,
-    authentication_selector_verified,daily_profile_persistence_selected,form_filled,form_submitted,
-    host_key_verified,initial_runtime_selection_*,connected,daily_profile_* (CRUD suite),
-    daily_app_backgrounded,daily_foreground_* (authoritative_ready,native_binding,marker,resumed),
-    daily_transport_loss_pre_marker_once,daily_transport_loss_injected,
-    daily_transport_loss_stale_read_only,daily_transport_loss_restored
-    -> TIMEOUT waiting for authoritative Ready; app parked on fail-closed surface:
-       "This runtime can't be restored - The runtime named \"meeterm\" is not the same
-        instance as before." (Retry / Change...)  ssh-failure-state: connection_state=failed
-       UI reason bucket = runtimeMismatch
+ssh_validation:
+  result=passed stage=disconnect_after_resume reason=ok
+  transport_loss=passed fixture_control=stopped_and_started recovery_surface=cached_read_only
+  native_handle_same=yes pane_identity_same=yes pre/post_marker_exactly_once=yes
+  other_panes_clean=yes input_during_loss=none screenrecord=ok (daily-use.mp4)
+  both explicit disconnects: split shape intact + no mobile zoom remaining - PASS
 
-environment_evidence (fixture-tmux-epoch-watch.log, 1s samples across whole attempt-3 run):
-  fixture tmux server pid=27153 start_time=1790092738 session=$0 name=meeterm
-  epoch value NEVER changed for the entire run (all samples identical)
-  session $0 and panes %0..%3 (windows @0,@1) intact throughout the transport-loss window
-  window_zoomed_flag transitions only reflect app behavior (0->1 during use, 1->0 near cleanup)
-  => remote runtime identity was stable; "not the same instance" verdict is a false negative
-     produced by the candidate's recovery path, not by fixture/server replacement.
+environment_evidence (fixture-tmux-epoch-watch.log, 1s samples, whole run):
+  fixture tmux server pid=9258 start_time=1790101027 session=$0/meeterm - epoch CONSTANT all run
+  panes %0..%3 on windows @0,@1 stable; zoom 0->1 during mobile use, 1->0 at disconnect cleanup
+  => on ed43536 the recovery path correctly identifies the surviving runtime AND the
+     disconnect cleanup correctly unzooms - regression from 3d07d2c resolved.
 
-regression_assessment:
-  identical suite+fixture+VM passed this stage on d766fb8 (evidence commit 2df59ef),
-  f45cbd4 (dac3ce1), 8c5f511 (de9002e). scripts/ssh/android_smoke_impl.py unchanged
-  between d766fb8..3d07d2c; epoch comparison code (SessionEpoch::matches /
-  server_pid+server_start_time) also untouched in the diff. The new work in the range
-  (cleanupWarning field, stable warning IDs, exact-body hook classifier, cross-generation
-  cleanup record, dismiss control) is the suspect set. runtimeMismatch bucket also covers
-  runtime_identity_uncertain / tmux_runtime_missing / tmux_topology_unsafe / runtime_replaced
-  - the exact emitted native reason is not visible in artifacts.
-
-cleanup_outcome: fixture tmpdirs/sshd/tmux removed by fixture.py on each attempt;
-  app force-stopped by harness; emulator emulator-5554 left running for debugging;
-  checkout remains at 3d07d2c; artifacts dir preserved intact.
+notes: single clean pass, no flakes this session; checkout left at ed43536;
+  emulator emulator-5554 left running; fixture tmpdirs/sshd/tmux cleaned by fixture.py.
