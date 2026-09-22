@@ -1686,6 +1686,26 @@ impl ControlClient {
             .map_err(|_| FlowFailure::TmuxProtocol)
     }
 
+    /// Return the only command that is safe to send after hook classification.
+    /// `Replaced` deliberately returns before command construction so the
+    /// release path cannot accidentally unset a third-party slot.
+    fn release_record_hooks_command(
+        hook_state: tmux::ZoomRecoveryHookState,
+        session: &str,
+        allocation: tmux::ZoomRecoveryHookAllocation,
+    ) -> Result<Option<String>, FlowFailure> {
+        match hook_state {
+            tmux::ZoomRecoveryHookState::Absent => Ok(None),
+            tmux::ZoomRecoveryHookState::Owned => {
+                tmux::remove_zoom_recovery_hooks_command_for_session(session, allocation)
+                    .map(Some)
+                    .map_err(|_| FlowFailure::TmuxProtocol)
+            }
+            // Never remove a slot whose body no longer proves it is ours.
+            tmux::ZoomRecoveryHookState::Replaced => Err(FlowFailure::TmuxRuntimeMissing),
+        }
+    }
+
     async fn cleanup_topology(&mut self) -> Result<Vec<tmux::PaneInfo>, FlowFailure> {
         let command = tmux::list_panes_command_for_session(&self.session)
             .map_err(|_| FlowFailure::TmuxProtocol)?;
@@ -1697,26 +1717,19 @@ impl ControlClient {
         &mut self,
         record: &ZoomCleanupRecord,
     ) -> Result<(), FlowFailure> {
-        match self
+        let hook_state = self
             .zoom_recovery_hooks_state(record.hooks, record.window)
-            .await?
-        {
-            tmux::ZoomRecoveryHookState::Absent => Ok(()),
-            tmux::ZoomRecoveryHookState::Owned => {
-                let remove = tmux::remove_zoom_recovery_hooks_command_for_session(
-                    &self.session,
-                    record.hooks,
-                )
-                .map_err(|_| FlowFailure::TmuxProtocol)?;
-                self.cleanup_query(&remove).await?;
-                if self.zoom_recovery_hooks_absent(record.hooks).await? {
-                    Ok(())
-                } else {
-                    Err(FlowFailure::TmuxRuntimeMissing)
-                }
-            }
-            // Never remove a slot whose body no longer proves it is ours.
-            tmux::ZoomRecoveryHookState::Replaced => Err(FlowFailure::TmuxRuntimeMissing),
+            .await?;
+        let Some(remove) =
+            Self::release_record_hooks_command(hook_state, &self.session, record.hooks)?
+        else {
+            return Ok(());
+        };
+        self.cleanup_query(&remove).await?;
+        if self.zoom_recovery_hooks_absent(record.hooks).await? {
+            Ok(())
+        } else {
+            Err(FlowFailure::TmuxRuntimeMissing)
         }
     }
 
@@ -3479,6 +3492,36 @@ mod tests {
                 .is_some()
         );
         registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn replaced_zoom_hook_release_never_builds_a_remove_command() {
+        let allocation = tmux::ZoomRecoveryHookAllocation { index: 1_027 };
+        assert!(matches!(
+            ControlClient::release_record_hooks_command(
+                tmux::ZoomRecoveryHookState::Replaced,
+                "meeterm",
+                allocation,
+            ),
+            Err(FlowFailure::TmuxRuntimeMissing)
+        ));
+        assert!(matches!(
+            ControlClient::release_record_hooks_command(
+                tmux::ZoomRecoveryHookState::Absent,
+                "meeterm",
+                allocation,
+            ),
+            Ok(None)
+        ));
+        let remove = match ControlClient::release_record_hooks_command(
+            tmux::ZoomRecoveryHookState::Owned,
+            "meeterm",
+            allocation,
+        ) {
+            Ok(Some(remove)) => remove,
+            Ok(None) | Err(_) => panic!("owned hook must produce a remove command"),
+        };
+        assert!(remove.contains("set-hook -u"));
     }
 
     #[test]

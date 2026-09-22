@@ -1361,21 +1361,24 @@ fn remove_zoom_recovery_commands(allocation: ZoomRecoveryHookAllocation) -> Vec<
     commands
 }
 
-type HookEntry<'a> = (&'a [u8], Option<u32>);
+struct HookEntry<'a> {
+    name: &'a [u8],
+    index: Option<u32>,
+    body: &'a [u8],
+    bracketed: bool,
+}
 
-fn parse_hook_entry(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
-    let token = line
-        .split(|byte| byte.is_ascii_whitespace())
-        .find(|field| !field.is_empty())
-        .unwrap_or_default();
+type HookNameIndex<'a> = (&'a [u8], Option<u32>);
+
+fn parse_hook_token(token: &[u8]) -> Result<(&[u8], Option<u32>, bool), ()> {
     if token.is_empty() {
-        return Ok(None);
+        return Err(());
     }
     let Some(open) = token.iter().position(|byte| *byte == b'[') else {
         if token.contains(&b']') {
             return Err(());
         }
-        return Ok(Some((token, None)));
+        return Ok((token, None, false));
     };
     if !token.ends_with(b"]") || open == 0 || open + 1 >= token.len() - 1 {
         return Err(());
@@ -1388,7 +1391,7 @@ fn parse_hook_entry(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
         return Err(());
     }
     if !digits.iter().all(u8::is_ascii_digit) {
-        return Ok(Some((name, None)));
+        return Ok((name, None, true));
     }
     let index = digits.iter().try_fold(0_u32, |value, byte| {
         if !byte.is_ascii_digit() {
@@ -1399,7 +1402,41 @@ fn parse_hook_entry(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
             .and_then(|value| value.checked_add(u32::from(byte - b'0')))
             .ok_or(())
     })?;
-    Ok(Some((name, Some(index))))
+    Ok((name, Some(index), true))
+}
+
+fn parse_hook_line(line: &[u8]) -> Result<Option<HookEntry<'_>>, ()> {
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let Some(start) = line.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return Ok(None);
+    };
+    let line = &line[start..];
+    let token_end = line
+        .iter()
+        .position(|byte| byte.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    let token = &line[..token_end];
+    let body = if token_end == line.len() {
+        &[]
+    } else {
+        let separator = &line[token_end..];
+        let body_start = separator
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .unwrap_or(separator.len());
+        &separator[body_start..]
+    };
+    let (name, index, bracketed) = parse_hook_token(token)?;
+    Ok(Some(HookEntry {
+        name,
+        index,
+        body,
+        bracketed,
+    }))
+}
+
+fn parse_hook_entry(line: &[u8]) -> Result<Option<HookNameIndex<'_>>, ()> {
+    Ok(parse_hook_line(line)?.map(|entry| (entry.name, entry.index)))
 }
 
 /// Confirm that both indexed hooks allocated by meeterm are absent. Other
@@ -1428,74 +1465,112 @@ pub(crate) fn zoom_recovery_hooks_absent(
 /// than deleted: another client may have taken the slot after a transport
 /// loss, and `set-hook -u` would otherwise remove third-party state.
 ///
-/// tmux re-parses the stored hook body when rendering `show-hooks`, so the
-/// exact quoting we sent is not preserved. A numeric session target sent as
-/// `-t '=$0':` is rendered `-t "=$0:"`, while a name target loses its quotes
-/// entirely (`-t =meeterm:`), and quotes inside double-quoted arguments
-/// remain. Comparisons therefore ignore both quote characters on both sides.
-/// Session names are restricted to `[0-9A-Za-z._-]` and window IDs are
-/// numeric, so stripping quotes cannot make a different body compare equal.
+/// tmux re-parses the stored hook body when rendering `show-hooks`, so two
+/// known target renderings need to be accepted. A numeric session target sent
+/// as `-t '=$0':` is rendered as `-t "=$0:"`, and the nested resize command
+/// loses the quotes around its target. A safe named session loses the quotes
+/// around the outer targets (`-t =meeterm:`), while the nested command keeps
+/// its quoted argument. These are explicit whole-body variants; arbitrary
+/// quote removal or substring matching would make a third-party body appear
+/// owned.
+fn zoom_recovery_hook_body_variants(
+    allocation: ZoomRecoveryHookAllocation,
+    session: &str,
+    window_id: u64,
+) -> Result<Vec<Vec<u8>>, ()> {
+    let expected = zoom_recovery_hook_body_for_session(session, allocation, window_id)
+        .map_err(|_| ())?
+        .into_bytes();
+    let mut variants = vec![expected];
+
+    let safe_named_session = !session.is_empty()
+        && session
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    let numeric_session = session.strip_prefix('$').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    if numeric_session || safe_named_session {
+        let raw_target = format!("={session}:@{window_id}");
+        let raw_session = format!("={session}:");
+        let observed = if numeric_session {
+            format!(
+                "if-shell -F -t \"{raw_target}\" \"#{{window_zoomed_flag}}\" \"resize-pane -Z -t {raw_target}\" ; set-hook -u -t \"{raw_session}\" {ZOOM_RECOVERY_DETACHED_HOOK}[{}] ; set-hook -u -t \"{raw_session}\" {ZOOM_RECOVERY_SESSION_CHANGED_HOOK}[{}]",
+                allocation.index, allocation.index
+            )
+        } else {
+            format!(
+                "if-shell -F -t {raw_target} \"#{{window_zoomed_flag}}\" \"resize-pane -Z -t '{raw_target}'\" ; set-hook -u -t {raw_session} {ZOOM_RECOVERY_DETACHED_HOOK}[{}] ; set-hook -u -t {raw_session} {ZOOM_RECOVERY_SESSION_CHANGED_HOOK}[{}]",
+                allocation.index, allocation.index
+            )
+        };
+        variants.push(observed.into_bytes());
+    }
+    Ok(variants)
+}
+
+fn zoom_recovery_hook_body_matches(
+    body: &[u8],
+    allocation: ZoomRecoveryHookAllocation,
+    session: &str,
+    window_id: u64,
+) -> Result<bool, ()> {
+    // A hook body is a shell command string. Non-UTF-8 bytes cannot be one of
+    // the known tmux renderings and are malformed rather than a safe
+    // third-party replacement.
+    std::str::from_utf8(body).map_err(|_| ())?;
+    Ok(
+        zoom_recovery_hook_body_variants(allocation, session, window_id)?
+            .iter()
+            .any(|candidate| candidate.as_slice() == body),
+    )
+}
+
 pub(crate) fn zoom_recovery_hooks_state(
     hooks: &[u8],
     allocation: ZoomRecoveryHookAllocation,
     session: &str,
     window_id: u64,
 ) -> Result<ZoomRecoveryHookState, ()> {
-    fn unquoted(value: &[u8]) -> Vec<u8> {
-        // tmux re-renders stored hook bodies with its own quoting: a target
-        // sent as `-t '=$0':` is shown as `-t "=$0:"`, and a name session as
-        // `-t =meeterm:`. Strip both quote styles before comparing.
-        value
-            .iter()
-            .copied()
-            .filter(|byte| *byte != b'\'' && *byte != b'"')
-            .collect()
-    }
-    let target = window_target(session, window_id).map_err(|_| ())?;
-    let target = unquoted(target.as_bytes());
-    let session = session_target(session).map_err(|_| ())?;
-    let session = unquoted(session.as_bytes());
-    let session = String::from_utf8_lossy(&session);
-    let resize = format!("resize-pane -Z -t {}", String::from_utf8_lossy(&target));
-    let remove_detached = format!(
-        "set-hook -u -t {session}: client-detached[{}]",
-        allocation.index
-    );
-    let remove_session_changed = format!(
-        "set-hook -u -t {session}: client-session-changed[{}]",
-        allocation.index
-    );
+    // Build the accepted variants up front so malformed session/window
+    // identities fail before any hook line can be treated as owned.
+    let _ = zoom_recovery_hook_body_variants(allocation, session, window_id)?;
     let mut found = [false; 2];
     let mut owned = [false; 2];
     for raw_line in hooks.split(|byte| *byte == b'\n') {
-        let raw_line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
-        let Some((name, index)) = parse_hook_entry(raw_line)? else {
+        let Some(entry) = parse_hook_line(raw_line)? else {
             continue;
         };
-        if index != Some(allocation.index) {
-            continue;
-        }
-        let slot = if name == ZOOM_RECOVERY_DETACHED_HOOK.as_bytes() {
+        let slot = if entry.name == ZOOM_RECOVERY_DETACHED_HOOK.as_bytes() {
             0
-        } else if name == ZOOM_RECOVERY_SESSION_CHANGED_HOOK.as_bytes() {
+        } else if entry.name == ZOOM_RECOVERY_SESSION_CHANGED_HOOK.as_bytes() {
             1
         } else {
             continue;
         };
-        let line = unquoted(raw_line);
+        if !entry.bracketed {
+            // The reserved hook names are only safe to classify when their
+            // allocated numeric key is explicit. An unindexed occurrence is
+            // ambiguous (it may be a user hook or a different tmux form), so
+            // it must not be reported as both entries absent.
+            return Err(());
+        }
+        if entry.index.is_none() {
+            // A named/invalid key on one of the reserved hook names is not a
+            // valid representation of our numeric allocation and is
+            // ambiguous enough to fail closed.
+            return Err(());
+        }
+        if entry.index != Some(allocation.index) {
+            continue;
+        }
+        if entry.body.is_empty() || found[slot] {
+            // A target without a body, or duplicate target entries, cannot
+            // be classified safely from bounded line parsing.
+            return Err(());
+        }
         found[slot] = true;
-        owned[slot] = line
-            .windows(target.len())
-            .any(|part| part == target.as_slice())
-            && line
-                .windows(resize.len())
-                .any(|part| part == resize.as_bytes())
-            && line
-                .windows(remove_detached.len())
-                .any(|part| part == remove_detached.as_bytes())
-            && line
-                .windows(remove_session_changed.len())
-                .any(|part| part == remove_session_changed.as_bytes());
+        owned[slot] = zoom_recovery_hook_body_matches(entry.body, allocation, session, window_id)?;
     }
     if !found[0] && !found[1] {
         Ok(ZoomRecoveryHookState::Absent)
@@ -1989,5 +2064,109 @@ mod tests {
             ),
             Ok(ZoomRecoveryHookState::Replaced)
         );
+    }
+
+    #[test]
+    fn zoom_recovery_hook_state_rejects_full_body_mutations_in_both_session_forms() {
+        let cases = [("meeterm", 23_u64), ("$0", 0_u64)];
+        for (session, window) in cases {
+            let allocation = ZoomRecoveryHookAllocation { index: 1_026 };
+            let variants = zoom_recovery_hook_body_variants(allocation, session, window)
+                .expect("hook body variants");
+            assert_eq!(variants.len(), 2);
+            let expected = String::from_utf8(variants[0].clone()).expect("expected body UTF-8");
+            let observed = String::from_utf8(variants[1].clone()).expect("observed body UTF-8");
+            let lines = |body: &str| {
+                format!(
+                    "client-detached[{}] {body}\nclient-session-changed[{}] {body}\n",
+                    allocation.index, allocation.index
+                )
+            };
+
+            for body in [&expected, &observed] {
+                assert_eq!(
+                    zoom_recovery_hooks_state(lines(body).as_bytes(), allocation, session, window,),
+                    Ok(ZoomRecoveryHookState::Owned),
+                    "generated and observed bodies must both be owned for {session}"
+                );
+            }
+            let with_unrelated = format!(
+                "pane-died[55] display-message user-hook\n{}",
+                lines(&observed)
+            );
+            assert_eq!(
+                zoom_recovery_hooks_state(with_unrelated.as_bytes(), allocation, session, window,),
+                Ok(ZoomRecoveryHookState::Owned)
+            );
+            assert_eq!(
+                zoom_recovery_hooks_state(
+                    b"pane-died[55] display-message user-hook\n",
+                    allocation,
+                    session,
+                    window,
+                ),
+                Ok(ZoomRecoveryHookState::Absent)
+            );
+
+            let first_command_end = observed.find(" ; ").expect("first command separator");
+            let first_command = &observed[..first_command_end];
+            let last_command_start = observed.rfind(" ; ").expect("last command separator") + 3;
+            let last_command = &observed[last_command_start..];
+            let reordered = format!(
+                "{last_command} ; {} ; {first_command}",
+                &observed[first_command_end + 3..last_command_start - 3]
+            );
+            let mut mutations = vec![
+                format!("display-message prefix ; {observed}"),
+                format!("{observed} ; display-message suffix"),
+                observed.replace("#{window_zoomed_flag}", "0"),
+                format!("display-message \"{observed}\""),
+                observed.replace(" ; ", "; "),
+                reordered,
+            ];
+            mutations.push(observed.replace(&format!("@{window}"), &format!("@{window}0")));
+            let changed_session = if session == "$0" { "$01" } else { "meeterm1" };
+            mutations.push(observed.replace(session, changed_session));
+            mutations.push(observed.replace(
+                &format!("[{}]", allocation.index),
+                &format!("[{}0]", allocation.index),
+            ));
+            for mutation in mutations {
+                assert_eq!(
+                    zoom_recovery_hooks_state(
+                        lines(&mutation).as_bytes(),
+                        allocation,
+                        session,
+                        window,
+                    ),
+                    Ok(ZoomRecoveryHookState::Replaced),
+                    "body mutation must be replaced for {session}: {mutation}"
+                );
+            }
+
+            let one_sided = format!("client-detached[{}] {observed}\n", allocation.index);
+            assert_eq!(
+                zoom_recovery_hooks_state(one_sided.as_bytes(), allocation, session, window,),
+                Ok(ZoomRecoveryHookState::Replaced)
+            );
+            let duplicate = format!(
+                "client-detached[{}] {observed}\nclient-detached[{}] {observed}\nclient-session-changed[{}] {observed}\n",
+                allocation.index, allocation.index, allocation.index
+            );
+            assert!(
+                zoom_recovery_hooks_state(duplicate.as_bytes(), allocation, session, window,)
+                    .is_err()
+            );
+            let malformed = format!("client-detached[{} {observed}\n", allocation.index);
+            assert!(
+                zoom_recovery_hooks_state(malformed.as_bytes(), allocation, session, window,)
+                    .is_err()
+            );
+            let unindexed = format!("client-detached {observed}\n");
+            assert!(
+                zoom_recovery_hooks_state(unindexed.as_bytes(), allocation, session, window,)
+                    .is_err()
+            );
+        }
     }
 }

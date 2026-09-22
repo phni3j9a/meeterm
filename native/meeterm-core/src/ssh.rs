@@ -464,6 +464,11 @@ struct SessionState {
     /// replacement during same-runtime recovery, but is cleared at an
     /// explicit fresh host/backend/runtime binding boundary.
     zoom_cleanup_record: Option<ZoomCleanupRecord>,
+    /// Low-frequency result of retiring an old binding whose zoom cleanup
+    /// authority could not be confirmed. Keep it beside the record so the
+    /// warning remains observable even if replacement preparation fails
+    /// before a new ConnectionShared/map entry exists.
+    layout_restore_warning: bool,
     runtime_operations_ready: bool,
     terminal_input_ready: bool,
 }
@@ -494,6 +499,7 @@ impl Default for SessionState {
             recovery_terminal_id: None,
             recovery_group_id: None,
             zoom_cleanup_record: None,
+            layout_restore_warning: false,
             runtime_operations_ready: false,
             terminal_input_ready: false,
         }
@@ -812,6 +818,41 @@ impl ConnectionShared {
         self.zoom_cleanup_pending.store(false, Ordering::Release);
     }
 
+    /// Mark a surviving cleanup record as unconfirmed before its detailed
+    /// target is discarded. The owner-transition caller publishes the warning
+    /// while the record is still present, then calls the discard half below.
+    fn mark_zoom_cleanup_record_unconfirmed(&self) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        if state.generation != self.generation {
+            return false;
+        }
+        let Some(record) = state.zoom_cleanup_record.as_mut() else {
+            return false;
+        };
+        record.unconfirmed = true;
+        true
+    }
+
+    /// Discard an already-published old-binding cleanup record. This is only
+    /// called at explicit retirement, never for automatic same-runtime
+    /// recovery, and therefore cannot transfer a target to a new binding.
+    fn discard_zoom_cleanup_record(&self) -> bool {
+        let Ok(mut state) = self.session.lock() else {
+            return false;
+        };
+        if state.generation != self.generation || state.zoom_cleanup_record.is_none() {
+            return false;
+        }
+        state.zoom_cleanup_record = None;
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_window = None;
+        state.meeterm_zoomed_pane = None;
+        self.zoom_cleanup_pending.store(false, Ordering::Release);
+        true
+    }
+
     fn record_zoom_cleanup_intent(
         &self,
         runtime: tmux::SessionEpoch,
@@ -955,6 +996,11 @@ impl ConnectionShared {
         if let Ok(mut info) = self.info.lock() {
             info.error_code = "layout_restore_unconfirmed".to_owned();
             info.error_message = recovery_reason_message("layout_restore_unconfirmed");
+            if let Ok(mut state) = self.session.lock()
+                && state.generation == self.generation
+            {
+                state.layout_restore_warning = true;
+            }
         }
     }
 
@@ -1310,6 +1356,7 @@ impl ConnectionShared {
         state.pending_confirmation_token = None;
         state.recovery_terminal_id = None;
         state.recovery_group_id = None;
+        state.layout_restore_warning = false;
         state.runtime_operations_ready = true;
         state.terminal_input_ready = state.terminal_visible
             && state.foreground
@@ -1739,10 +1786,24 @@ impl ConnectionShared {
     }
 
     fn snapshot(&self) -> Result<ConnectionSnapshot, ConnectionError> {
-        self.info
+        let mut snapshot = self
+            .info
             .lock()
             .map(|info| info.snapshot())
-            .map_err(|_| ConnectionError::Internal)
+            .map_err(|_| ConnectionError::Internal)?;
+        let warning = self
+            .session
+            .lock()
+            .map(|state| state.layout_restore_warning)
+            .unwrap_or(false);
+        // Preserve a new binding's own host/auth diagnostic if it has already
+        // become authoritative. The old layout result is kept separately in
+        // SessionState and was already surfaced through the warning boundary
+        // while the replacement was being prepared.
+        if warning && snapshot.error_code_len == 0 {
+            apply_layout_restore_warning(&mut snapshot);
+        }
+        Ok(snapshot)
     }
 }
 
@@ -2854,6 +2915,34 @@ struct ExplicitShutdownResult {
     cleanup: ZoomCleanupOutcome,
 }
 
+/// Convert a surviving cleanup authority into the old-binding warning at an
+/// explicit retirement boundary. A previous actor outcome is not proof that a
+/// still-present record was released: the detailed target is retired only
+/// after this conversion has been published into SessionState/UI state.
+fn retire_explicit_cleanup_result(
+    shared: &ConnectionShared,
+    shutdown: ExplicitShutdownResult,
+    automatic_reconnect: bool,
+) -> bool {
+    if automatic_reconnect {
+        // Same-runtime recovery keeps the record for the replacement actor;
+        // transport loss alone is not an explicit retirement result.
+        return false;
+    }
+    let surviving_record = shared.mark_zoom_cleanup_record_unconfirmed();
+    if surviving_record {
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+        shared.publish_layout_restore_warning();
+        shared.discard_zoom_cleanup_record();
+        return true;
+    }
+    if shutdown.cleanup == ZoomCleanupOutcome::UnconfirmedOrFailed {
+        shared.publish_layout_restore_warning();
+        return true;
+    }
+    false
+}
+
 fn finish_or_force_explicit_shutdown(
     runtime: &'static Runtime,
     shared: Arc<ConnectionShared>,
@@ -2951,9 +3040,13 @@ fn start_connection(
         // forces both cancellation and task abort before the new generation
         // is allowed to touch SessionState.
         let shutdown = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
-        if shutdown.cleanup == ZoomCleanupOutcome::UnconfirmedOrFailed {
-            inherited_cleanup_warning = true;
-            old_shared.publish_layout_restore_warning();
+        if !reconnecting {
+            // An explicit binding retirement is the last point at which the
+            // old generation may decide what to do with its detailed cleanup
+            // target. Automatic same-runtime recovery deliberately keeps a
+            // surviving record for post-identity-verification reconciliation.
+            inherited_cleanup_warning =
+                retire_explicit_cleanup_result(&old_shared, shutdown, reconnecting);
         }
     }
 
@@ -3128,15 +3221,18 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
     match runtime() {
         Ok(runtime) => {
             let shutdown = finish_or_force_explicit_shutdown(runtime, Arc::clone(&shared), abort);
-            if shutdown.cleanup == ZoomCleanupOutcome::UnconfirmedOrFailed {
-                shared.publish_layout_restore_warning();
-            }
+            let _ = retire_explicit_cleanup_result(&shared, shutdown, false);
         }
         Err(_) => {
             // An active connection implies the native runtime exists, but a
             // poisoned/unavailable runtime must still fail closed.
-            if shared.has_zoom_cleanup_intent() {
+            let retired_record = shared.mark_zoom_cleanup_record_unconfirmed();
+            if retired_record || shared.has_zoom_cleanup_intent() {
                 shared.record_zoom_cleanup(ZoomCleanupOutcome::UnconfirmedOrFailed);
+                shared.publish_layout_restore_warning();
+                if retired_record {
+                    shared.discard_zoom_cleanup_record();
+                }
             }
             shared.cancel();
             abort.abort();
@@ -3206,7 +3302,17 @@ pub fn connection_snapshot(terminal_id: TerminalId) -> Result<ConnectionSnapshot
     entries
         .get(&terminal_id)
         .map(|entry| entry.shared.snapshot())
-        .unwrap_or_else(|| Ok(ConnectionSnapshot::disconnected()))
+        .unwrap_or_else(|| {
+            let mut snapshot = ConnectionSnapshot::disconnected();
+            if session_state(terminal_id)
+                .lock()
+                .map(|state| state.layout_restore_warning)
+                .unwrap_or(false)
+            {
+                apply_layout_restore_warning(&mut snapshot);
+            }
+            Ok(snapshot)
+        })
 }
 
 /// Answer the one-shot prompt for a previously unknown host key.
@@ -5196,6 +5302,19 @@ fn copy_string(destination: &mut [u8], length: &mut u16, value: &str) {
     *length = u16::try_from(end).unwrap_or(u16::MAX);
 }
 
+fn apply_layout_restore_warning(snapshot: &mut ConnectionSnapshot) {
+    copy_string(
+        &mut snapshot.error_code,
+        &mut snapshot.error_code_len,
+        "layout_restore_unconfirmed",
+    );
+    copy_string(
+        &mut snapshot.error_message,
+        &mut snapshot.error_message_len,
+        &recovery_reason_message("layout_restore_unconfirmed"),
+    );
+}
+
 mod trust {
     use super::*;
 
@@ -6506,6 +6625,207 @@ mod tests {
             std::str::from_utf8(&snapshot.error_code[..usize::from(snapshot.error_code_len)])
                 .expect("cleanup error code UTF-8"),
             "layout_restore_unconfirmed"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn explicit_retirement_promotes_surviving_record_after_finished_actor() {
+        let cases = [
+            (1_021, true, ZoomCleanupOutcome::NotNeeded),
+            (1_022, false, ZoomCleanupOutcome::NotNeeded),
+            (1_023, false, ZoomCleanupOutcome::RestoredConfirmed),
+        ];
+        for (index, unconfirmed, prior_outcome) in cases {
+            let owner = registry::create_terminal(80, 24).expect("retirement owner terminal");
+            let generation = next_generation();
+            let shared = Arc::new(ConnectionShared::new(
+                owner,
+                generation,
+                "retirement.example.test".to_owned(),
+                22,
+                PathBuf::from("/tmp/retirement-known-hosts"),
+            ));
+            let runtime_identity = tmux::SessionEpoch {
+                session_id: "$21".to_owned(),
+                server_pid: 21,
+                server_start_time: 2_100_000_000,
+            };
+            let hooks = tmux::ZoomRecoveryHookAllocation { index };
+            {
+                let mut state = shared.session.lock().expect("retirement state");
+                state.generation = generation;
+                state.endpoint = Some(SessionEndpoint {
+                    host: "retirement.example.test".to_owned(),
+                    port: 22,
+                    username: "fixture".to_owned(),
+                    known_hosts_path: PathBuf::from("/tmp/retirement-known-hosts"),
+                    backend: Backend::Tmux,
+                    runtime: Some("$21".to_owned()),
+                });
+            }
+            assert!(shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+            if !unconfirmed {
+                shared
+                    .session
+                    .lock()
+                    .expect("confirmed retirement state")
+                    .zoom_cleanup_record
+                    .as_mut()
+                    .expect("retirement record")
+                    .unconfirmed = false;
+            }
+            shared.record_zoom_cleanup(prior_outcome);
+            // The old actor has already finished, so the normal shutdown
+            // helper reports its prior outcome and cannot perform cleanup.
+            shared.finish(Ok(()));
+            let abort = runtime()
+                .expect("retirement runtime")
+                .spawn(std::future::pending::<()>())
+                .abort_handle();
+            let shutdown = finish_or_force_explicit_shutdown(
+                runtime().expect("retirement runtime"),
+                Arc::clone(&shared),
+                abort,
+            );
+            assert!(shutdown.finished);
+            assert_eq!(shutdown.cleanup, prior_outcome);
+
+            assert!(retire_explicit_cleanup_result(&shared, shutdown, false));
+            assert!(
+                shared
+                    .zoom_cleanup_record_for(&runtime_identity)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            );
+            let snapshot = shared.snapshot().expect("retirement warning snapshot");
+            assert_eq!(
+                &snapshot.error_code[..usize::from(snapshot.error_code_len)],
+                b"layout_restore_unconfirmed"
+            );
+            let no_binding_snapshot =
+                connection_snapshot(owner).expect("warning survives missing replacement");
+            assert_eq!(
+                &no_binding_snapshot.error_code[..usize::from(no_binding_snapshot.error_code_len)],
+                b"layout_restore_unconfirmed"
+            );
+            assert!(
+                shared
+                    .session
+                    .lock()
+                    .expect("retirement warning state")
+                    .layout_restore_warning
+            );
+            registry::destroy_terminal(owner);
+        }
+    }
+
+    #[test]
+    fn automatic_recovery_retirement_keeps_record_without_warning() {
+        let owner = registry::create_terminal(80, 24).expect("automatic retirement terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "automatic-retirement.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/automatic-retirement-known-hosts"),
+        ));
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$22".to_owned(),
+            server_pid: 22,
+            server_start_time: 2_200_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_024 };
+        {
+            let mut state = shared.session.lock().expect("automatic retirement state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "automatic-retirement.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/automatic-retirement-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$22".to_owned()),
+            });
+        }
+        assert!(shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+        shared.finish(Err(FlowFailure::Transport));
+        let abort = runtime()
+            .expect("automatic retirement runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let shutdown = finish_or_force_explicit_shutdown(
+            runtime().expect("automatic retirement runtime"),
+            Arc::clone(&shared),
+            abort,
+        );
+        assert!(!retire_explicit_cleanup_result(&shared, shutdown, true));
+        assert!(
+            shared
+                .zoom_cleanup_record_for(&runtime_identity)
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        let snapshot = shared.snapshot().expect("automatic recovery snapshot");
+        assert_ne!(
+            &snapshot.error_code[..usize::from(snapshot.error_code_len)],
+            b"layout_restore_unconfirmed"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn authoritative_record_clearance_does_not_publish_retirement_warning() {
+        let owner = registry::create_terminal(80, 24).expect("cleared retirement terminal");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            "cleared-retirement.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/cleared-retirement-known-hosts"),
+        ));
+        let runtime_identity = tmux::SessionEpoch {
+            session_id: "$23".to_owned(),
+            server_pid: 23,
+            server_start_time: 2_300_000_000,
+        };
+        let hooks = tmux::ZoomRecoveryHookAllocation { index: 1_025 };
+        {
+            let mut state = shared.session.lock().expect("cleared retirement state");
+            state.generation = generation;
+            state.endpoint = Some(SessionEndpoint {
+                host: "cleared-retirement.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/cleared-retirement-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: Some("$23".to_owned()),
+            });
+        }
+        assert!(shared.record_zoom_cleanup_intent(runtime_identity.clone(), 23, 41, hooks));
+        assert!(shared.clear_zoom_cleanup_record(&runtime_identity, 23, hooks));
+        shared.record_zoom_cleanup(ZoomCleanupOutcome::RestoredConfirmed);
+        shared.finish(Ok(()));
+        let abort = runtime()
+            .expect("cleared retirement runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let shutdown = finish_or_force_explicit_shutdown(
+            runtime().expect("cleared retirement runtime"),
+            Arc::clone(&shared),
+            abort,
+        );
+        assert!(!retire_explicit_cleanup_result(&shared, shutdown, false));
+        assert_eq!(
+            shared
+                .snapshot()
+                .expect("cleared retirement snapshot")
+                .error_code_len,
+            0
         );
         registry::destroy_terminal(owner);
     }
