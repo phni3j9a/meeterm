@@ -333,6 +333,7 @@ function makeNativeEnvironment() {
     runtimeBrowseCommitMode: 'ready',
     runtimeBrowseReadyDelay: false,
     pendingBrowseCommit: null,
+    sourceConnectionRetired: false,
     runtimeBrowseHostKey: null,
     runtimeBrowseHostKeyByProfile: null,
     runtimeBrowseCleanupWarning: null,
@@ -521,7 +522,16 @@ function makeNativeEnvironment() {
         return;
       }
       if (state.phase === 'committed') completeRuntimeBrowseCommit(environment, state, target);
-      else environment.pendingBrowseCommit = { token, target: clone(target) };
+      else {
+        environment.connection.state = 'Synchronizing';
+        environment.snapshot.control = workspaceControl({
+          hasRetainedWork: true,
+          runtimeOperationsReady: false,
+          terminalInputReady: false,
+          recovery: { phase: 'stopped', reason: 'runtime_changed' },
+        });
+        environment.pendingBrowseCommit = { token, target: clone(target) };
+      }
     },
     async retryRecovery(_connectionId, operationEpoch) {
       environment.calls.push({ method: 'retryRecovery', operationEpoch });
@@ -643,6 +653,23 @@ function makeNativeEnvironment() {
     const state = environment.runtimeBrowseStates.get(pending.token);
     state.phase = 'committed';
     completeRuntimeBrowseCommit(environment, state, pending.target);
+  };
+  environment.failPendingBrowseCommitAfterRelease = (errorMessage = 'The target session stopped after the previous connection was released.') => {
+    assert.ok(environment.pendingBrowseCommit, 'a runtime browse commit should be pending');
+    const pending = environment.pendingBrowseCommit;
+    environment.pendingBrowseCommit = null;
+    const state = environment.runtimeBrowseStates.get(pending.token);
+    state.phase = 'failed';
+    state.errorCode = 'runtime_unavailable';
+    state.errorMessage = errorMessage;
+    environment.sourceConnectionRetired = true;
+    environment.connection.state = 'Failed';
+    environment.snapshot.control = workspaceControl({
+      hasRetainedWork: true,
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      recovery: { phase: 'stopped', reason: 'runtime_changed' },
+    });
   };
   environment.releaseBrowseReady = () => {
     environment.runtimeBrowseReadyDelay = false;
@@ -1937,7 +1964,7 @@ test('other-server selection waits for a Ready authoritative snapshot before cha
   assert.equal(fixture.environment.runtimeBrowseCommits[0].target.candidateId, 'target-prod');
   assert.equal(fixture.environment.lastUsedUpdates.length, 0, 'the legacy profile hint must wait for Ready');
   assert.ok(findText(fixture.root, 'Switch session'));
-  assert.equal(findLabel(fixture.root, 'Close session switcher').props.disabled, true);
+  assert.equal(findLabel(fixture.root, 'Close session switcher').props.disabled, false, 'the sheet can be dismissed while native finishes the switch');
   assert.equal(findTestId(fixture.root, 'switcher-manage-servers').props.disabled, true);
   assert.equal(findTestId(fixture.root, 'switcher-disconnect').props.disabled, true);
   assert.ok(fixture.environment.workspaceStateOwners.includes('native:502'));
@@ -1949,6 +1976,100 @@ test('other-server selection waits for a Ready authoritative snapshot before cha
   assert.ok(fixture.environment.connectionStateOwners.includes('native:502'));
   assert.match(findTestId(fixture.root, 'open-session-switcher').props.accessibilityLabel, /Target Ready, prod/);
   assert.equal(all(fixture.root, node => textContent(node) === 'Switch session').length, 0);
+});
+
+test('post-release switch failure unlocks retry, server change, and disconnect while cached work stays read-only', async t => {
+  const target = { ...pickerProfile('failed-target.example'), id: 'server-failed-target', name: 'Failed target' };
+  const alternate = { ...pickerProfile('alternate.example'), id: 'server-alternate', name: 'Alternate server' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target, alternate];
+    environment.runtimeBrowseCommitMode = 'delayed';
+    environment.runtimeBrowseDiscoveryByProfile = {
+      [target.id]: pickerDiscovery(51, [runtimeCandidate('failed-target-tmux', 'tmux', 'prod')]),
+      [alternate.id]: pickerDiscovery(52, [runtimeCandidate('alternate-tmux', 'tmux', 'other')]),
+    };
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-failed-target'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-failed-target-tmux'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.runtimeBrowseStates.get(fixture.environment.pendingBrowseCommit.token).phase, 'committing');
+  fixture.environment.failPendingBrowseCommitAfterRelease();
+  await poll(fixture.environment);
+
+  assert.equal(fixture.environment.sourceConnectionRetired, true);
+  assert.equal(fixture.environment.connection.state, 'Failed');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.ok(all(fixture.root, node => node.type === 'Text' && textContent(node).includes('Cached work is read-only')).length > 0,
+    all(fixture.root, node => node.type === 'Text').map(textContent).join(' | '));
+  assert.equal(findLabel(fixture.root, 'Close session switcher').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'switcher-retry').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-failed-target-tmux').props.disabled, true, 'failed discovery rows must be refreshed before reuse');
+  assert.equal(findTestId(fixture.root, 'switcher-manage-servers').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'switcher-disconnect').props.disabled, false);
+
+  const sourceOwner = fixture.environment.runtimeBrowseStarts[1].terminalId;
+  await press(fixture.root, findTestId(fixture.root, 'switcher-retry'));
+  await settleAsync();
+  assert.equal(fixture.environment.sourceConnectionRetired, true);
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).kind, 'profile');
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).profileId, target.id);
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).terminalId, sourceOwner, 'retry starts a fresh browse from retained source state');
+
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-alternate'));
+  await settleAsync();
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).profileId, alternate.id, 'another server can be explored after the failed release');
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-alternate-tmux').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'switcher-disconnect').props.disabled, false);
+  await press(fixture.root, findTestId(fixture.root, 'switcher-disconnect'));
+  await settleAsync();
+  assert.ok(fixture.environment.nativeCalls.includes('disconnect'));
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+});
+
+test('a long pending switch can be dismissed without restoring the released source as Ready', async t => {
+  const target = { ...pickerProfile('pending-target.example'), id: 'server-pending-target', name: 'Pending target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseCommitMode = 'delayed';
+    environment.runtimeBrowseDiscoveryByProfile = {
+      [target.id]: pickerDiscovery(53, [runtimeCandidate('pending-target-tmux', 'tmux', 'prod')]),
+    };
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-pending-target'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-pending-target-tmux'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.runtimeBrowseStates.get(fixture.environment.pendingBrowseCommit.token).phase, 'committing');
+  assert.equal(findLabel(fixture.root, 'Close session switcher').props.disabled, false);
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Switch session').length, 0);
+  assert.equal(fixture.environment.connection.state, 'Synchronizing');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  await poll(fixture.environment);
+  assert.notEqual(fixture.environment.connection.state, 'Ready');
+  fixture.environment.failPendingBrowseCommitAfterRelease();
+  await poll(fixture.environment);
+  assert.equal(fixture.environment.connection.state, 'Failed');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Switch session').length, 0);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0, 'the failed target must not become a persisted hint');
 });
 
 test('stale browse commit restores the source only after native confirms it is still Ready', async t => {

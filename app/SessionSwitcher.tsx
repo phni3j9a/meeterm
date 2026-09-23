@@ -35,6 +35,8 @@ type Props = {
   freshDiscovery: RuntimeDiscovery | null;
   currentBinding: { backend: RuntimeBackend; runtime: string } | null;
   busy: boolean;
+  allowCloseWhileBusy?: boolean;
+  retryAvailable?: boolean;
   selectingId: string;
   selectionErrors?: Record<string, string>;
   error: string;
@@ -44,6 +46,7 @@ type Props = {
   createError: string;
   cleanupWarning: string;
   onClose: () => void;
+  onRetry: () => void;
   onToggleServer: (server: SessionSwitcherServer) => void;
   onSelect: (candidate: RuntimeCandidate) => void;
   onRefresh: () => void;
@@ -96,6 +99,8 @@ export function SessionSwitcher({
   freshDiscovery,
   currentBinding,
   busy,
+  allowCloseWhileBusy = false,
+  retryAvailable = false,
   selectingId,
   selectionErrors = {},
   error,
@@ -105,6 +110,7 @@ export function SessionSwitcher({
   createError,
   cleanupWarning,
   onClose,
+  onRetry,
   onToggleServer,
   onSelect,
   onRefresh,
@@ -134,7 +140,8 @@ export function SessionSwitcher({
       && currentBinding.backend === candidate.backend
       && currentBinding.runtime === candidate.name);
     const sameTmuxBindingCanBeConfirmed = selected && candidate.backend === 'tmux';
-    const disabled = unavailable || busy || (selected && !sameTmuxBindingCanBeConfirmed) || hostKeyPending;
+    const candidateListReady = fresh ? discoveryReady : browse?.phase === 'ready';
+    const disabled = unavailable || busy || !candidateListReady || (selected && !sameTmuxBindingCanBeConfirmed) || hostKeyPending;
     const pending = selectingId === candidate.id;
     const errorText = candidateError(candidate) || selectionErrors[candidate.id] || '';
     const label = `${candidate.backend === 'tmux' ? 'tmux' : 'Herdr'} session ${candidate.name} on ${server.name} (${address(server)})`;
@@ -258,10 +265,11 @@ export function SessionSwitcher({
       >
         <View style={styles.titleRow}>
           <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>{mode === 'fresh' ? 'Choose a session' : 'Switch session'}</Text><Text style={[styles.intro, { color: colors.muted }]}>{mode === 'fresh' ? 'Choose a real session to open. Nothing is selected automatically.' : 'Choose a server, then select one of its running sessions.'}</Text></View>
-          {mode === 'switch' ? <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy} onPress={onClose} /> : null}
+          {mode === 'switch' ? <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy && !allowCloseWhileBusy} onPress={onClose} /> : null}
         </View>
         {cleanupWarning ? <View style={[styles.warning, { backgroundColor: colors.surface }]}><Text style={[styles.rowDetail, { color: colors.danger }]}>{cleanupWarning}</Text></View> : null}
         {error ? <Text accessibilityRole="alert" style={[styles.inlineError, { color: colors.danger }]}>{error}</Text> : null}
+        {retryAvailable ? <Pressable testID="switcher-retry" accessibilityRole="button" accessibilityLabel="Retry session discovery" disabled={busy} onPress={onRetry} style={styles.refreshAction}><Text style={[styles.action, { color: colors.accent }]}>Retry</Text></Pressable> : null}
         {renderServer(currentServer, true)}
         {mode === 'switch' ? availableProfiles.map(profile => renderServer(profile, false)) : null}
         {showFooter ? <View style={[styles.footer, { borderTopColor: colors.border }]}>

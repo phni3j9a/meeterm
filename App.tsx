@@ -93,7 +93,7 @@ type PendingRuntimeRefresh = {
   clearSelectionErrors: boolean;
 };
 type BrowseOwner = { token: string; sourceOwner: string; ownerAttempt: number; serverId: string };
-type SwitchAttempt = { id: number; sourceOwner: string; ownerAttempt: number; targetServerId: string; candidateId: string };
+type SwitchAttempt = { id: number; sourceOwner: string; ownerAttempt: number; targetServerId: string; candidateId: string; sourceWasRetained: boolean };
 type SessionSwitcherFixture =
   | 'session-switcher-current'
   | 'session-switcher-loading'
@@ -1674,6 +1674,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const recoveredCopy = recoveredEpoch === control.operationEpoch && strongReady && surfaceAvailable
     ? recoveryRailCopy(control, session.backend, session.runtime, recoveryServerLabel, true)
     : null;
+  const switchFailureBrowseAllowed = switchBoundaryCrossed && connection.state === 'Failed';
 
   const startRuntimeBrowse = useCallback(async (server: SessionSwitcherServer, current: boolean) => {
     if (commandPending.current || switchAttemptRef.current) return false;
@@ -1681,7 +1682,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       && retainedWorkAvailable
       && !control.runtimeOperationsReady
       && !switchBoundaryCrossed;
-    if (!runtimeReady && !recoveryBrowseAllowed) {
+    if (!runtimeReady && !recoveryBrowseAllowed && !switchFailureBrowseAllowed) {
       setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
       return false;
     }
@@ -1728,12 +1729,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       }
       return false;
     }
-  }, [control.runtimeOperationsReady, observeCleanupWarning, recoveryPhaseActive, retainedWorkAvailable, runtimeReady, smokeFixtureActive, switchBoundaryCrossed]);
+  }, [connection.state, control.runtimeOperationsReady, observeCleanupWarning, recoveryPhaseActive, retainedWorkAvailable, runtimeReady, smokeFixtureActive, switchBoundaryCrossed, switchFailureBrowseAllowed]);
+
+  const retrySwitcherBrowse = useCallback(() => {
+    if (switchAttemptRef.current || commandPending.current) return;
+    const targetId = browseTargetId || activeServer.id;
+    const target = profiles.find(profile => profile.id === targetId) ?? activeServer;
+    void startRuntimeBrowse(target, targetId === activeServer.id);
+  }, [activeServer, browseTargetId, profiles, startRuntimeBrowse]);
 
   const openSessionSwitcher = useCallback((target?: SessionSwitcherServer) => {
     if (commandPending.current || switchAttemptRef.current) return;
     Keyboard.dismiss();
-    const mode = runtimeReady || recoveryPhaseActive ? 'switch' : 'fresh';
+    const mode = runtimeReady || recoveryPhaseActive || switchFailureBrowseAllowed ? 'switch' : 'fresh';
     setSessionSwitcherMode(mode);
     setSessionSwitcherOpen(true);
     setSessionSwitcherError('');
@@ -1748,7 +1756,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         void startRuntimeBrowse(target ?? activeServer, !target || target.id === activeServer.id);
       }
     }
-  }, [activeServer, recoveryPhaseActive, runtimeReady, startRuntimeBrowse]);
+  }, [activeServer, recoveryPhaseActive, runtimeReady, startRuntimeBrowse, switchFailureBrowseAllowed]);
 
   useEffect(() => {
     const previous = recoveryMilestoneRef.current;
@@ -2478,6 +2486,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       || attempt.sourceOwner !== owner.sourceOwner
       || attempt.ownerAttempt !== owner.ownerAttempt) return;
 
+    if (attempt.sourceWasRetained) {
+      const detail = 'The previous connection is no longer live. Choose a session to reconnect to the retained work.';
+      switchBoundaryCrossedRef.current = true;
+      setSwitchBoundaryCrossed(true);
+      updateRuntimeBound(false);
+      setConnection(current => ({ ...current, state: 'Failed', errorCode: 'runtime_browse_unchanged_after_release', errorMessage: detail }));
+      setSessionSwitcherError(`${detail} Cached work is read-only. Retry discovery, choose another server, or disconnect.`);
+      setSessionSwitcherSelectingId('');
+      switchAttemptRef.current = null;
+      setSwitchAttempt(null);
+      void MeetermTerminal.runtimeBrowseCancel(snapshot.token).catch(() => {});
+      return;
+    }
+
     finishingBrowseTokenRef.current = snapshot.token;
     handledBrowseTokenRef.current = snapshot.token;
     browseOwnerRef.current = null;
@@ -2545,6 +2567,25 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
   }, [updateRuntimeBound]);
 
+  const finishFailedSwitch = useCallback((snapshot: RuntimeBrowseState, attempt: SwitchAttempt, fallback: string) => {
+    if (switchAttemptRef.current?.id !== attempt.id) return;
+    const detail = snapshot.errorMessage || fallback;
+    switchBoundaryCrossedRef.current = true;
+    setSwitchBoundaryCrossed(true);
+    updateRuntimeBound(false);
+    setConnection(current => ({
+      ...current,
+      state: 'Failed',
+      errorCode: snapshot.errorCode || 'runtime_browse_failed',
+      errorMessage: detail,
+    }));
+    setSessionSwitcherError(`${detail} The previous connection was released, so cached work is read-only. Retry discovery, choose another server, or disconnect.`);
+    setSessionSwitcherSelectingId('');
+    setCreateSessionVisible(false);
+    switchAttemptRef.current = null;
+    setSwitchAttempt(null);
+  }, [updateRuntimeBound]);
+
   const selectSwitcherCandidate = useCallback(async (candidate: RuntimeCandidate) => {
     if (sessionSwitcherMode === 'fresh') {
       setSessionSwitcherSelectingId(candidate.id);
@@ -2562,6 +2603,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ownerAttempt: owner.ownerAttempt,
       targetServerId: owner.serverId,
       candidateId: candidate.id,
+      sourceWasRetained: switchBoundaryCrossedRef.current || recoveryPhaseActive,
     };
     switchAttemptRef.current = attempt;
     setSwitchAttempt(attempt);
@@ -2589,18 +2631,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
       if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
       else if (next.phase === 'unchanged') await finishUnchangedBrowse(next, owner);
-      else if (next.phase === 'failed' || next.phase === 'cancelled') {
-        setSessionSwitcherSelectingId('');
-        setSessionSwitcherError(next.errorMessage || 'The selected session could not be opened. Refresh and try another session.');
-        setConnection(current => ({ ...current, state: 'Failed', errorCode: next.errorCode, errorMessage: next.errorMessage }));
-      }
+      else if (next.phase === 'failed' || next.phase === 'cancelled') finishFailedSwitch(next, attempt, 'The selected session could not be opened.');
     } catch {
       if (switchAttemptRef.current?.id !== attempt.id) return;
       try {
         const next = await MeetermTerminal.runtimeBrowseState(state.token);
         if (switchAttemptRef.current?.id !== attempt.id) return;
         setBrowse(next);
-        if (next.phase === 'ready' && await restoreSourceAfterRejectedBrowse(owner)) {
+        if (next.phase === 'ready' && !attempt.sourceWasRetained && await restoreSourceAfterRejectedBrowse(owner)) {
           setSessionSwitcherError('The selection was rejected as stale. Refresh sessions before choosing again.');
           return;
         }
@@ -2617,7 +2655,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           return;
         }
         if (next.phase === 'failed' || next.phase === 'cancelled') {
-          setSessionSwitcherError(next.errorMessage || 'The selected session could not be opened. Refresh and try again.');
+          finishFailedSwitch(next, attempt, 'The selected session could not be opened.');
+          return;
         } else {
           setSessionSwitcherError('The selection was rejected as stale. Refresh sessions before choosing again.');
         }
@@ -2632,7 +2671,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setConnection(current => ({ ...current, state: 'Failed' }));
       }
     }
-  }, [browse, finishCommittedBrowse, finishUnchangedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, selectRuntime, sessionSwitcherMode, updateRuntimeBound]);
+  }, [browse, finishCommittedBrowse, finishFailedSwitch, finishUnchangedBrowse, observeCleanupWarning, recoveryPhaseActive, restoreSourceAfterRejectedBrowse, selectRuntime, sessionSwitcherMode, updateRuntimeBound]);
 
   const refreshSwitcherBrowse = useCallback(() => {
     const owner = browseOwnerRef.current;
@@ -2660,6 +2699,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ownerAttempt: owner.ownerAttempt,
       targetServerId: owner.serverId,
       candidateId: `create:${createSessionName.trim()}`,
+      sourceWasRetained: switchBoundaryCrossedRef.current || recoveryPhaseActive,
     };
     switchAttemptRef.current = attempt;
     setSwitchAttempt(attempt);
@@ -2682,13 +2722,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setBrowse(next);
       if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
       if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+      else if (next.phase === 'failed' || next.phase === 'cancelled') finishFailedSwitch(next, attempt, 'The session could not be created.');
     } catch {
       if (switchAttemptRef.current?.id !== attempt.id) return;
       try {
         const next = await MeetermTerminal.runtimeBrowseState(state.token);
         if (switchAttemptRef.current?.id !== attempt.id) return;
         setBrowse(next);
-        if (next.phase === 'ready' && await restoreSourceAfterRejectedBrowse(owner)) {
+        if (next.phase === 'ready' && !attempt.sourceWasRetained && await restoreSourceAfterRejectedBrowse(owner)) {
           setCreateSessionError('The session selection was stale. Refresh sessions before trying again.');
           return;
         }
@@ -2698,6 +2739,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           updateRuntimeBound(false);
           setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
           if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+          return;
+        }
+        if (next.phase === 'failed' || next.phase === 'cancelled') {
+          finishFailedSwitch(next, attempt, 'The session could not be created.');
           return;
         }
         setCreateSessionError(next.errorMessage || 'The session could not be created. Refresh and try another name.');
@@ -2710,7 +2755,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setSessionSwitcherSelectingId('');
       } else setConnection(current => ({ ...current, state: 'Failed' }));
     }
-  }, [browse, createSessionName, createTmuxSession, finishCommittedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, sessionSwitcherMode, updateRuntimeBound]);
+  }, [browse, createSessionName, createTmuxSession, finishCommittedBrowse, finishFailedSwitch, observeCleanupWarning, recoveryPhaseActive, restoreSourceAfterRejectedBrowse, sessionSwitcherMode, updateRuntimeBound]);
 
   const openSwitcherCreate = useCallback(() => {
     if (sessionSwitcherMode === 'fresh') {
@@ -2745,7 +2790,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   const closeSessionSwitcher = useCallback(() => {
-    if (switchAttemptRef.current || switchBoundaryCrossedRef.current) return;
     setSessionSwitcherOpen(false);
   }, []);
 
@@ -2779,7 +2823,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [activeOwnerRevision, activeServer.name, browse, browseTargetId, profiles, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive]);
 
   useEffect(() => {
-    if (!sessionSwitcherOpen || sessionSwitcherMode !== 'switch' || !browseOwnerRef.current || smokeFixtureActive) return;
+    if ((!sessionSwitcherOpen && !switchAttempt) || sessionSwitcherMode !== 'switch' || !browseOwnerRef.current || smokeFixtureActive) return;
     const owner = browseOwnerRef.current;
     let mounted = true;
     let polling = false;
@@ -2807,12 +2851,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         } else if (next.phase === 'unchanged') {
           await finishUnchangedBrowse(next, owner);
         } else if (next.phase === 'failed' || next.phase === 'cancelled') {
-          setSessionSwitcherSelectingId('');
-          setSessionSwitcherError(next.errorMessage || 'Could not open sessions from this server.');
-          if (switchBoundaryCrossedRef.current) setConnection(current => ({ ...current, state: 'Failed', errorCode: next.errorCode, errorMessage: next.errorMessage }));
-          else {
-            switchAttemptRef.current = null;
-            setSwitchAttempt(null);
+          const attempt = switchAttemptRef.current;
+          if (attempt && switchBoundaryCrossedRef.current) {
+            finishFailedSwitch(next, attempt, 'Could not open sessions from this server.');
+          } else if (switchBoundaryCrossedRef.current) {
+            setSessionSwitcherSelectingId('');
+            setSessionSwitcherError(`${next.errorMessage || 'Could not open sessions from this server.'} Cached work is read-only. Retry discovery, choose another server, or disconnect.`);
+            setConnection(current => ({ ...current, state: 'Failed', errorCode: next.errorCode, errorMessage: next.errorMessage }));
+          } else {
+            setSessionSwitcherSelectingId('');
+            setSessionSwitcherError(next.errorMessage || 'Could not open sessions from this server.');
           }
         } else if (next.phase === 'ready' && createAfterBrowseRef.current === owner.serverId) {
           createAfterBrowseRef.current = '';
@@ -2826,7 +2874,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     void refresh();
     const interval = setInterval(() => { void refresh(); }, 750);
     return () => { mounted = false; clearInterval(interval); };
-  }, [activeOwnerRevision, browse?.token, finishCommittedBrowse, finishUnchangedBrowse, observeCleanupWarning, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive, switchBoundaryCrossed, updateRuntimeBound]);
+  }, [activeOwnerRevision, browse?.token, finishCommittedBrowse, finishFailedSwitch, finishUnchangedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive, switchAttempt, switchBoundaryCrossed, updateRuntimeBound]);
 
   const finishConnectionForm = useCallback(() => {
     if (Platform.OS === 'ios' && returnToServersAfterForm.current) setModalPending(true);
@@ -3005,11 +3053,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [connection, recoveryPhaseActive, runCommand]);
 
   const onSessionSwitcherDismiss = useCallback(() => {
-    if ((switchAttemptRef.current || switchBoundaryCrossedRef.current)
+    if (switchAttemptRef.current && switchBoundaryCrossedRef.current
       && afterSwitcherDismissRef.current !== 'disconnect') {
-      // A drag/back dismissal must not stop phase observation after native
-      // release begins. Reopen the sheet and keep polling until Ready.
-      setSessionSwitcherOpen(true);
+      // Dismiss the UI while native finishes the already accepted switch.
+      // Keep polling and keep the retained source read-only until native state
+      // is reconciled; never restore the old owner as Ready here.
+      setSessionSwitcherOpen(false);
       return;
     }
     setSessionSwitcherOpen(false);
@@ -3438,7 +3487,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <StatusBar hidden={false} backgroundColor={colors.background} barStyle={colors === DARK ? 'light-content' : 'dark-content'} />
     <WorkspaceNavigation screen={screen} colors={homeColors} onScreenChange={next => { if (next === 'workspaces') Keyboard.dismiss(); setScreen(next); }}
       sessionSwitcherOpen={sessionSwitcherOpen || runtimePickerVisible}
-      sessionSwitcherBusy={Boolean(switchAttempt || switchBoundaryCrossed)}
+      sessionSwitcherBusy={runtimePickerVisible && (commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId))}
       onSessionSwitcherDismiss={onSessionSwitcherDismiss}
       sessionSwitcher={<SessionSwitcher
         mode={runtimePickerVisible ? 'fresh' : sessionSwitcherMode}
@@ -3449,7 +3498,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         browse={runtimePickerVisible ? null : browse}
         freshDiscovery={runtimePickerVisible ? runtimeDiscovery : null}
         currentBinding={runtimePickerVisible || !runtimeReady ? null : { backend: session.backend, runtime: session.runtime }}
-        busy={commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId) || Boolean(sessionSwitcherSelectingId) || Boolean(switchAttempt) || switchBoundaryCrossed}
+        busy={commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId) || Boolean(sessionSwitcherSelectingId) || Boolean(switchAttempt)}
+        allowCloseWhileBusy={!runtimePickerVisible && sessionSwitcherMode === 'switch'}
+        retryAvailable={!runtimePickerVisible && sessionSwitcherMode === 'switch' && !switchAttempt && (browse?.phase === 'failed' || switchFailureBrowseAllowed)}
         selectingId={runtimePickerVisible ? runtimeSelectingId : sessionSwitcherSelectingId}
         selectionErrors={runtimeSelectionErrors}
         error={runtimePickerVisible ? runtimeMessage : sessionSwitcherError}
@@ -3467,6 +3518,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         createError={runtimePickerVisible ? runtimeCreationError : createSessionError}
         cleanupWarning={cleanupWarning?.message ?? ''}
         onClose={runtimePickerVisible ? cancelRuntimeSelection : closeSessionSwitcher}
+        onRetry={runtimePickerVisible ? refreshRuntimes : retrySwitcherBrowse}
         onToggleServer={server => runtimePickerVisible
           ? setExpandedServerId(current => current === server.id ? '' : server.id)
           : toggleSwitcherServer(server)}

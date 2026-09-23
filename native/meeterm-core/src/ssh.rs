@@ -2147,6 +2147,9 @@ struct RuntimeBrowseEntry {
     provisional_shared: Arc<ConnectionShared>,
     target_endpoint: SessionEndpoint,
     browse_generation: u64,
+    /// Revision visible when a refresh was accepted. Until the actor publishes
+    /// a complete later revision, candidates from this snapshot are stale.
+    refresh_pending_from_revision: Option<u64>,
     phase: RuntimeBrowsePhase,
     target: Option<RuntimeBrowseTarget>,
     error_code: String,
@@ -2637,11 +2640,11 @@ pub fn runtime_browse_refresh(token: &str) -> Result<(), ConnectionError> {
         .lock()
         .map_err(|_| ConnectionError::Internal)?;
     let token = parse_browse_token(token)?;
-    let browse = runtime_browse()
+    let mut browse = runtime_browse()
         .lock()
         .map_err(|_| ConnectionError::Internal)?;
     let entry = browse
-        .as_ref()
+        .as_mut()
         .filter(|entry| entry.token == token)
         .ok_or(ConnectionError::BrowseStale)?;
     if matches!(
@@ -2657,38 +2660,69 @@ pub fn runtime_browse_refresh(token: &str) -> Result<(), ConnectionError> {
     if !shared.is_provisional() || shared.is_cancelled() {
         return Err(ConnectionError::BrowseStale);
     }
+    let discovery = runtime_discovery_snapshot(entry.provisional_owner)?;
+    if let Some(previous_revision) = entry.refresh_pending_from_revision {
+        if !runtime_discovery_refresh_published(
+            &discovery,
+            entry.provisional_generation,
+            previous_revision,
+        ) {
+            return Err(ConnectionError::BrowseStale);
+        }
+        entry.refresh_pending_from_revision = None;
+    }
+    if !runtime_discovery_is_ready(&discovery)
+        || discovery.connection_generation != entry.provisional_generation
+    {
+        return Err(ConnectionError::BrowseStale);
+    }
+    let previous_revision = discovery.discovery_revision;
     let epoch = shared.operation_epoch();
     let sender = shared
         .command_sender()
         .ok_or(ConnectionError::BrowseUnavailable)?;
-    sender
+    entry.refresh_pending_from_revision = Some(previous_revision);
+    if sender
         .try_send(ControlRequest {
             epoch,
             command: ControlCommand::RefreshRuntimes,
         })
-        .map_err(|_| ConnectionError::BrowseUnavailable)
+        .is_err()
+    {
+        entry.refresh_pending_from_revision = None;
+        return Err(ConnectionError::BrowseUnavailable);
+    }
+    Ok(())
 }
 
 /// Cancel an uncommitted browse and release its SSH actor, native root, child
 /// terminals, and process-local credentials. A committed token only clears
 /// the low-frequency record; it never tears down the promoted active owner.
 pub fn runtime_browse_cancel(token: &str) -> Result<(), ConnectionError> {
-    let _serial = runtime_browse_serial()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?;
-    let token = parse_browse_token(token)?;
-    let entry = {
-        let mut browse = runtime_browse()
+    let retired = {
+        let _serial = runtime_browse_serial()
             .lock()
             .map_err(|_| ConnectionError::Internal)?;
-        let matches = browse.as_ref().is_some_and(|entry| entry.token == token);
-        if !matches {
-            return Err(ConnectionError::BrowseStale);
-        }
-        browse.take().expect("browse entry matched above")
+        let token = parse_browse_token(token)?;
+        let entry = {
+            let mut browse = runtime_browse()
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?;
+            let matches = browse.as_ref().is_some_and(|entry| entry.token == token);
+            if !matches {
+                return Err(ConnectionError::BrowseStale);
+            }
+            browse.take().expect("browse entry matched above")
+        };
+        (!matches!(entry.phase, RuntimeBrowsePhase::Committed)).then(|| {
+            (
+                entry.provisional_shared.generation,
+                retire_runtime_browse_target(&entry),
+            )
+        })
     };
-    if !matches!(entry.phase, RuntimeBrowsePhase::Committed) {
-        retire_runtime_browse_target(&entry);
+    if let Some((generation, stale_terminals)) = retired {
+        destroy_stale_terminals(generation, stale_terminals);
     }
     Ok(())
 }
@@ -2700,7 +2734,7 @@ fn fail_runtime_browse_commit(
     error: ConnectionError,
 ) -> ConnectionError {
     mark_runtime_browse_failed(token, error.error_code(), error.to_string());
-    retire_runtime_browse_target_by_id(provisional_owner, provisional_shared);
+    retire_and_destroy_runtime_browse_target_by_id(provisional_owner, provisional_shared);
     error
 }
 
@@ -2761,6 +2795,15 @@ pub fn runtime_browse_commit(
         let discovery = runtime_discovery_snapshot(entry.provisional_owner)?;
         if discovery.discovery_revision != discovery_revision
             || discovery.connection_generation != entry.provisional_generation
+            || entry
+                .refresh_pending_from_revision
+                .is_some_and(|previous_revision| {
+                    !runtime_discovery_refresh_published(
+                        &discovery,
+                        entry.provisional_generation,
+                        previous_revision,
+                    )
+                })
         {
             return Err(ConnectionError::BrowseStale);
         }
@@ -2882,6 +2925,7 @@ pub fn runtime_browse_commit(
         }
         entry.phase = RuntimeBrowsePhase::Unchanged;
         entry.target = Some(target);
+        entry.refresh_pending_from_revision = None;
         entry.active_terminal_id = Some(source_owner);
         return Ok(());
     }
@@ -2906,6 +2950,7 @@ pub fn runtime_browse_commit(
         }
         entry.phase = RuntimeBrowsePhase::Committing;
         entry.target = Some(target.clone());
+        entry.refresh_pending_from_revision = None;
     }
 
     // Keep the source owner's serial/commit boundary across the fence, map
@@ -2914,6 +2959,7 @@ pub fn runtime_browse_commit(
     let owner = match owner_transition(source_owner) {
         Ok(owner) => owner,
         Err(error) => {
+            drop(_serial);
             return Err(fail_runtime_browse_commit(
                 token_value,
                 provisional_owner,
@@ -2925,6 +2971,7 @@ pub fn runtime_browse_commit(
     let _owner_serial = match owner.serial.lock() {
         Ok(guard) => guard,
         Err(_) => {
+            drop(_serial);
             return Err(fail_runtime_browse_commit(
                 token_value,
                 provisional_owner,
@@ -2936,6 +2983,8 @@ pub fn runtime_browse_commit(
     let _owner_commit = match owner.commit.lock() {
         Ok(guard) => guard,
         Err(_) => {
+            drop(_owner_serial);
+            drop(_serial);
             return Err(fail_runtime_browse_commit(
                 token_value,
                 provisional_owner,
@@ -2944,13 +2993,21 @@ pub fn runtime_browse_commit(
             ));
         }
     };
+    macro_rules! fail_commit {
+        ($error:expr) => {{
+            drop(_owner_commit);
+            drop(_owner_serial);
+            drop(_serial);
+            return Err(fail_runtime_browse_commit(
+                token_value,
+                provisional_owner,
+                &provisional_shared,
+                $error,
+            ));
+        }};
+    }
     if let Err(error) = source_shared.fence_for_runtime_switch(source_epoch, &source_recovery) {
-        return Err(fail_runtime_browse_commit(
-            token_value,
-            provisional_owner,
-            &provisional_shared,
-            error,
-        ));
+        fail_commit!(error);
     }
     owner.cancel_current_locked();
     detach_all(&source_shared);
@@ -2960,31 +3017,16 @@ pub fn runtime_browse_commit(
             .remove(&source_owner)
             .filter(|entry| Arc::ptr_eq(&entry.shared, &source_shared)),
         Err(_) => {
-            return Err(fail_runtime_browse_commit(
-                token_value,
-                provisional_owner,
-                &provisional_shared,
-                ConnectionError::Internal,
-            ));
+            fail_commit!(ConnectionError::Internal);
         }
     };
     let Some(old_entry) = old_entry else {
-        return Err(fail_runtime_browse_commit(
-            token_value,
-            provisional_owner,
-            &provisional_shared,
-            ConnectionError::BrowseStale,
-        ));
+        fail_commit!(ConnectionError::BrowseStale);
     };
     let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
-            return Err(fail_runtime_browse_commit(
-                token_value,
-                provisional_owner,
-                &provisional_shared,
-                error,
-            ));
+            fail_commit!(error);
         }
     };
     let shutdown =
@@ -2993,12 +3035,7 @@ pub fn runtime_browse_commit(
     let cleanup_warning = match source_shared.session.lock() {
         Ok(state) => state.cleanup_warning.clone(),
         Err(_) => {
-            return Err(fail_runtime_browse_commit(
-                token_value,
-                provisional_owner,
-                &provisional_shared,
-                ConnectionError::Internal,
-            ));
+            fail_commit!(ConnectionError::Internal);
         }
     };
 
@@ -3014,7 +3051,10 @@ pub fn runtime_browse_commit(
     };
     if let Err(error) = queue_result {
         mark_runtime_browse_failed(token_value, error.error_code(), error.to_string());
-        retire_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
+        drop(_owner_commit);
+        drop(_owner_serial);
+        drop(_serial);
+        retire_and_destroy_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
         return Err(error);
     }
 
@@ -3253,34 +3293,48 @@ fn runtime_browse_noop_is_confirmed(
 }
 
 fn cancel_active_runtime_browse() {
-    let Ok(_serial) = runtime_browse_serial().lock() else {
-        return;
+    let retired = {
+        let Ok(_serial) = runtime_browse_serial().lock() else {
+            return;
+        };
+        runtime_browse()
+            .lock()
+            .ok()
+            .and_then(|mut browse| browse.take())
+            .filter(|entry| !matches!(entry.phase, RuntimeBrowsePhase::Committed))
+            .map(|entry| {
+                (
+                    entry.provisional_shared.generation,
+                    retire_runtime_browse_target(&entry),
+                )
+            })
     };
-    let entry = runtime_browse()
-        .lock()
-        .ok()
-        .and_then(|mut browse| browse.take());
-    if let Some(entry) = entry
-        && !matches!(entry.phase, RuntimeBrowsePhase::Committed)
-    {
-        retire_runtime_browse_target(&entry);
+    if let Some((generation, stale_terminals)) = retired {
+        destroy_stale_terminals(generation, stale_terminals);
     }
 }
 
 fn cancel_runtime_browse_for_source(source_owner: TerminalId) {
-    let Ok(_serial) = runtime_browse_serial().lock() else {
-        return;
+    let retired = {
+        let Ok(_serial) = runtime_browse_serial().lock() else {
+            return;
+        };
+        runtime_browse().lock().ok().and_then(|mut browse| {
+            browse
+                .as_ref()
+                .is_some_and(|entry| entry.source_owner == source_owner)
+                .then(|| browse.take().expect("browse entry matched above"))
+                .filter(|entry| !matches!(entry.phase, RuntimeBrowsePhase::Committed))
+                .map(|entry| {
+                    (
+                        entry.provisional_shared.generation,
+                        retire_runtime_browse_target(&entry),
+                    )
+                })
+        })
     };
-    let entry = runtime_browse().lock().ok().and_then(|mut browse| {
-        browse
-            .as_ref()
-            .is_some_and(|entry| entry.source_owner == source_owner)
-            .then(|| browse.take().expect("browse entry matched above"))
-    });
-    if let Some(entry) = entry
-        && !matches!(entry.phase, RuntimeBrowsePhase::Committed)
-    {
-        retire_runtime_browse_target(&entry);
+    if let Some((generation, stale_terminals)) = retired {
+        destroy_stale_terminals(generation, stale_terminals);
     }
 }
 
@@ -3295,76 +3349,113 @@ fn runtime_browse_start(
     let _serial = runtime_browse_serial()
         .lock()
         .map_err(|_| ConnectionError::Internal)?;
-    // Opening a different server or reopening the same row cancels the prior
-    // uncommitted browse before allocating another root. The global slot is
-    // deliberately singular, not one slot per profile.
-    if let Some(previous) = runtime_browse()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .take()
-        && !matches!(previous.phase, RuntimeBrowsePhase::Committed)
-    {
-        retire_runtime_browse_target(&previous);
-    }
-
-    let source_generation = source_shared.generation;
-    let dimensions = registry::terminal_dimensions(source_owner).unwrap_or((80, 24));
-    let provisional_owner =
-        registry::create_terminal(dimensions.0, dimensions.1).map_err(map_terminal_error)?;
-    let target_endpoint = match &start {
-        ConnectionStart::ProvisionalHost(options) => SessionEndpoint::from_options(options),
-        ConnectionStart::ProvisionalProfile(profile) => SessionEndpoint::from_profile(profile),
-        _ => {
-            registry::discard_terminal(provisional_owner);
-            return Err(ConnectionError::InvalidArgument);
+    let mut retired = None;
+    let result = (|| {
+        // Opening a different server or reopening the same row cancels the
+        // prior uncommitted browse before allocating another root. Keep the
+        // single-slot transaction serialized, but defer child destruction
+        // until after its locks are released.
+        if let Some(previous) = runtime_browse()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .take()
+            && !matches!(previous.phase, RuntimeBrowsePhase::Committed)
+        {
+            retired = Some((
+                previous.provisional_shared.generation,
+                retire_runtime_browse_target(&previous),
+            ));
         }
-    };
-    if let Err(error) = start_connection(provisional_owner, start) {
-        registry::discard_terminal(provisional_owner);
-        return Err(error);
-    }
-    let provisional_shared = match current_connection(provisional_owner) {
-        Ok(shared) => shared,
-        Err(error) => {
+
+        let source_generation = source_shared.generation;
+        let dimensions = registry::terminal_dimensions(source_owner).unwrap_or((80, 24));
+        let provisional_owner =
+            registry::create_terminal(dimensions.0, dimensions.1).map_err(map_terminal_error)?;
+        let target_endpoint = match &start {
+            ConnectionStart::ProvisionalHost(options) => SessionEndpoint::from_options(options),
+            ConnectionStart::ProvisionalProfile(profile) => SessionEndpoint::from_profile(profile),
+            _ => {
+                registry::discard_terminal(provisional_owner);
+                return Err(ConnectionError::InvalidArgument);
+            }
+        };
+        if let Err(error) = start_connection(provisional_owner, start) {
             registry::discard_terminal(provisional_owner);
             return Err(error);
         }
-    };
-    let entry = RuntimeBrowseEntry {
-        token: next_browse_token(),
-        source_owner,
-        source_generation,
-        source_epoch,
-        source_recovery,
-        source_runtime_operations_ready,
-        source_shared,
-        provisional_owner,
-        provisional_generation: provisional_shared.generation,
-        provisional_shared,
-        target_endpoint,
-        browse_generation: next_browse_token(),
-        phase: RuntimeBrowsePhase::Discovering,
-        target: None,
-        error_code: String::new(),
-        error_message: String::new(),
-        cleanup_warning: None,
-        active_terminal_id: None,
-    };
-    let snapshot = runtime_browse_view(&entry)?;
-    runtime_browse()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .replace(entry);
-    Ok(snapshot)
+        let provisional_shared = match current_connection(provisional_owner) {
+            Ok(shared) => shared,
+            Err(error) => {
+                registry::discard_terminal(provisional_owner);
+                return Err(error);
+            }
+        };
+        let entry = RuntimeBrowseEntry {
+            token: next_browse_token(),
+            source_owner,
+            source_generation,
+            source_epoch,
+            source_recovery,
+            source_runtime_operations_ready,
+            source_shared,
+            provisional_owner,
+            provisional_generation: provisional_shared.generation,
+            provisional_shared,
+            target_endpoint,
+            browse_generation: next_browse_token(),
+            refresh_pending_from_revision: None,
+            phase: RuntimeBrowsePhase::Discovering,
+            target: None,
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        };
+        let snapshot = runtime_browse_view(&entry)?;
+        runtime_browse()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .replace(entry);
+        Ok(snapshot)
+    })();
+    drop(_serial);
+    if let Some((generation, stale_terminals)) = retired {
+        destroy_stale_terminals(generation, stale_terminals);
+    }
+    result
 }
 
 fn runtime_browse_view(
     entry: &RuntimeBrowseEntry,
 ) -> Result<RuntimeBrowseSnapshot, ConnectionError> {
-    let discovery = if entry.provisional_owner == 0 {
+    let published_discovery = if entry.provisional_owner == 0 {
         RuntimeDiscoverySnapshot::default()
     } else {
         runtime_discovery_snapshot(entry.provisional_owner).unwrap_or_default()
+    };
+    let refresh_pending = entry
+        .refresh_pending_from_revision
+        .is_some_and(|previous_revision| {
+            !runtime_discovery_refresh_published(
+                &published_discovery,
+                entry.provisional_generation,
+                previous_revision,
+            )
+        });
+    // A refresh is accepted synchronously, before the actor can consume its
+    // bounded command queue. Hide the old candidate IDs during that interval
+    // so a snapshot read cannot make a queued stale selection look current.
+    let discovery = if refresh_pending {
+        RuntimeDiscoverySnapshot::loading(
+            entry.provisional_generation,
+            entry
+                .refresh_pending_from_revision
+                .unwrap_or_default()
+                .saturating_add(1)
+                .max(1),
+        )
+    } else {
+        published_discovery
     };
     let connection = if entry.provisional_owner == 0 {
         ConnectionSnapshot::disconnected()
@@ -3372,7 +3463,11 @@ fn runtime_browse_view(
         connection_snapshot(entry.provisional_owner)
             .unwrap_or_else(|_| ConnectionSnapshot::disconnected())
     };
-    let mut phase = entry.phase;
+    let mut phase = if refresh_pending {
+        RuntimeBrowsePhase::Discovering
+    } else {
+        entry.phase
+    };
     let mut error_code = entry.error_code.clone();
     let mut error_message = entry.error_message.clone();
     if matches!(
@@ -3443,6 +3538,16 @@ fn runtime_discovery_is_ready(discovery: &RuntimeDiscoverySnapshot) -> bool {
         && discovery.discovery_revision != 0
 }
 
+fn runtime_discovery_refresh_published(
+    discovery: &RuntimeDiscoverySnapshot,
+    generation: u64,
+    previous_revision: u64,
+) -> bool {
+    discovery.connection_generation == generation
+        && discovery.discovery_revision > previous_revision
+        && runtime_discovery_is_ready(discovery)
+}
+
 fn mark_runtime_browse_failed(token: u64, code: &str, message: String) {
     if let Ok(mut browse) = runtime_browse().lock()
         && let Some(entry) = browse.as_mut().filter(|entry| entry.token == token)
@@ -3454,16 +3559,16 @@ fn mark_runtime_browse_failed(token: u64, code: &str, message: String) {
     }
 }
 
-fn retire_runtime_browse_target(entry: &RuntimeBrowseEntry) {
-    retire_runtime_browse_target_by_id(entry.provisional_owner, &entry.provisional_shared);
+fn retire_runtime_browse_target(entry: &RuntimeBrowseEntry) -> Vec<TerminalId> {
+    retire_runtime_browse_target_by_id(entry.provisional_owner, &entry.provisional_shared)
 }
 
 fn retire_runtime_browse_target_by_id(
     provisional_owner: TerminalId,
     provisional_shared: &Arc<ConnectionShared>,
-) {
+) -> Vec<TerminalId> {
     if provisional_owner == 0 {
-        return;
+        return Vec::new();
     }
     // A promotion changes both the public owner and the shared actor's native
     // root before the browse record is allowed to become `Committed`. A late
@@ -3471,21 +3576,23 @@ fn retire_runtime_browse_target_by_id(
     // not cancel the actor that now owns the source handle.
     if !provisional_shared.is_provisional() && provisional_shared.terminal_id() != provisional_owner
     {
-        return;
+        return Vec::new();
     }
     let owner = match owner_transition(provisional_owner) {
         Ok(owner) => owner,
         Err(_) => {
             provisional_shared.cancel();
+            let stale_terminals = take_runtime_browse_children(provisional_owner);
             let _ = registry::discard_terminal(provisional_owner);
-            return;
+            return stale_terminals;
         }
     };
     let entry = {
         let Ok(_commit) = owner.commit.lock() else {
             provisional_shared.cancel();
+            let stale_terminals = take_runtime_browse_children(provisional_owner);
             let _ = registry::discard_terminal(provisional_owner);
-            return;
+            return stale_terminals;
         };
         owner.cancel_current_locked();
         connections().lock().ok().and_then(|mut entries| {
@@ -3515,22 +3622,34 @@ fn retire_runtime_browse_target_by_id(
     } else {
         provisional_shared.cancel();
     }
-    let stale_terminals = session_states()
+    let stale_terminals = take_runtime_browse_children(provisional_owner);
+    let _ = registry::discard_terminal(provisional_owner);
+    stale_terminals
+}
+
+fn take_runtime_browse_children(owner: TerminalId) -> Vec<TerminalId> {
+    session_states()
         .lock()
         .ok()
-        .and_then(|mut states| states.remove(&provisional_owner))
+        .and_then(|mut states| states.remove(&owner))
         .and_then(|state| {
             state.lock().ok().map(|state| {
                 state
                     .pane_terminals
                     .values()
                     .copied()
-                    .filter(|id| *id != provisional_owner)
+                    .filter(|id| *id != owner)
                     .collect::<Vec<_>>()
             })
         })
-        .unwrap_or_default();
-    let _ = registry::discard_terminal(provisional_owner);
+        .unwrap_or_default()
+}
+
+fn retire_and_destroy_runtime_browse_target_by_id(
+    provisional_owner: TerminalId,
+    provisional_shared: &Arc<ConnectionShared>,
+) {
+    let stale_terminals = retire_runtime_browse_target_by_id(provisional_owner, provisional_shared);
     destroy_stale_terminals(provisional_shared.generation, stale_terminals);
 }
 
@@ -3546,7 +3665,7 @@ fn schedule_runtime_browse_promotion(
             "runtime_unavailable",
             "Native runtime is unavailable.".to_owned(),
         );
-        retire_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
+        retire_and_destroy_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
         return;
     };
     runtime.spawn(async move {
@@ -3559,7 +3678,10 @@ fn schedule_runtime_browse_promotion(
                         "runtime_browse_promotion_failed",
                         "The selected runtime could not be promoted safely.".to_owned(),
                     );
-                    retire_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
+                    retire_and_destroy_runtime_browse_target_by_id(
+                        provisional_owner,
+                        &provisional_shared,
+                    );
                     return;
                 };
                 let epoch = provisional_shared.operation_epoch();
@@ -3579,7 +3701,10 @@ fn schedule_runtime_browse_promotion(
                         "runtime_browse_promotion_failed",
                         "The selected runtime could not be promoted safely.".to_owned(),
                     );
-                    retire_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
+                    retire_and_destroy_runtime_browse_target_by_id(
+                        provisional_owner,
+                        &provisional_shared,
+                    );
                 } else {
                     monitor_runtime_browse_promotion(
                         token,
@@ -3598,7 +3723,10 @@ fn schedule_runtime_browse_promotion(
                     "runtime_browse_commit_failed",
                     "The selected runtime could not be committed safely.".to_owned(),
                 );
-                retire_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
+                retire_and_destroy_runtime_browse_target_by_id(
+                    provisional_owner,
+                    &provisional_shared,
+                );
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -3632,7 +3760,10 @@ fn monitor_runtime_browse_promotion(
                     "runtime_browse_promotion_failed",
                     "The selected runtime could not be promoted safely.".to_owned(),
                 );
-                retire_runtime_browse_target_by_id(provisional_owner, &provisional_shared);
+                retire_and_destroy_runtime_browse_target_by_id(
+                    provisional_owner,
+                    &provisional_shared,
+                );
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -3706,90 +3837,98 @@ fn promote_runtime_browse(
     provisional_owner: TerminalId,
     provisional_shared: Arc<ConnectionShared>,
 ) -> Result<(), ConnectionError> {
-    let _serial = runtime_browse_serial()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?;
-    let mut browse = runtime_browse()
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?;
-    let entry = browse
-        .as_mut()
-        .filter(|entry| {
+    let (old_generation, old_children) = {
+        let serial = runtime_browse_serial()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        let mut browse = runtime_browse()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        let entry_matches = browse.as_ref().is_some_and(|entry| {
             entry.token == token
                 && entry.source_owner == source_owner
                 && entry.provisional_owner == provisional_owner
                 && Arc::ptr_eq(&entry.provisional_shared, &provisional_shared)
                 && entry.phase == RuntimeBrowsePhase::Committing
-        })
-        .ok_or(ConnectionError::BrowseStale)?;
-
-    // Keep owner disposal/reconnect from interleaving with the final root
-    // move. `terminal_destroyed` waits on the browse serial before touching
-    // the same owner transition, so a missing source root is observed before
-    // any SessionState or connection-map mutation.
-    let owner = owner_transition(source_owner)?;
-    let _owner_serial = owner.serial.lock().map_err(|_| ConnectionError::Internal)?;
-    let _owner_commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
-    {
-        let entries = connections()
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
-        if entries.contains_key(&source_owner)
-            || !entries
-                .get(&provisional_owner)
-                .is_some_and(|connection| Arc::ptr_eq(&connection.shared, &provisional_shared))
-        {
+        });
+        if !entry_matches {
             return Err(ConnectionError::BrowseStale);
         }
-    }
-    {
-        let states = session_states()
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
-        let old_state = states
-            .get(&source_owner)
-            .cloned()
-            .ok_or(ConnectionError::BrowseStale)?;
-        let new_state = states
-            .get(&provisional_owner)
-            .cloned()
-            .ok_or(ConnectionError::BrowseStale)?;
-        let _old = old_state.lock().map_err(|_| ConnectionError::Internal)?;
-        let _new = new_state.lock().map_err(|_| ConnectionError::Internal)?;
-        registry::shared_terminal(source_owner).map_err(|_| ConnectionError::BrowseStale)?;
-        registry::shared_terminal(provisional_owner).map_err(|_| ConnectionError::BrowseStale)?;
-    }
 
-    registry::promote_terminal(provisional_owner, source_owner)
-        .map_err(|_| ConnectionError::BrowseStale)?;
-    {
-        let mut entries = connections()
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
-        let target = entries
-            .remove(&provisional_owner)
-            .ok_or(ConnectionError::BrowseStale)?;
-        entries.insert(source_owner, target);
-    }
-    let (old_state, new_state, old_children) = {
-        let mut states = session_states()
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
-        let old_state = states
-            .get(&source_owner)
-            .cloned()
-            .ok_or(ConnectionError::BrowseStale)?;
-        let new_state = states
-            .remove(&provisional_owner)
-            .ok_or(ConnectionError::BrowseStale)?;
-        let old_children = old_state
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?
-            .pane_terminals
-            .values()
-            .copied()
-            .filter(|id| *id != source_owner)
-            .collect::<Vec<_>>();
+        // Keep owner disposal/reconnect from interleaving with the final root
+        // move. `terminal_destroyed` waits on the browse serial before touching
+        // the same owner transition, so a missing source root is observed
+        // before any SessionState or connection-map mutation.
+        let owner = owner_transition(source_owner)?;
+        let owner_serial = owner.serial.lock().map_err(|_| ConnectionError::Internal)?;
+        let owner_commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+        {
+            let entries = connections()
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?;
+            if entries.contains_key(&source_owner)
+                || !entries
+                    .get(&provisional_owner)
+                    .is_some_and(|connection| Arc::ptr_eq(&connection.shared, &provisional_shared))
+            {
+                return Err(ConnectionError::BrowseStale);
+            }
+        }
+        {
+            let states = session_states()
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?;
+            let old_state = states
+                .get(&source_owner)
+                .cloned()
+                .ok_or(ConnectionError::BrowseStale)?;
+            let new_state = states
+                .get(&provisional_owner)
+                .cloned()
+                .ok_or(ConnectionError::BrowseStale)?;
+            let _old = old_state.lock().map_err(|_| ConnectionError::Internal)?;
+            let _new = new_state.lock().map_err(|_| ConnectionError::Internal)?;
+            registry::shared_terminal(source_owner).map_err(|_| ConnectionError::BrowseStale)?;
+            registry::shared_terminal(provisional_owner)
+                .map_err(|_| ConnectionError::BrowseStale)?;
+        }
+
+        registry::promote_terminal(provisional_owner, source_owner)
+            .map_err(|_| ConnectionError::BrowseStale)?;
+        {
+            let mut entries = connections()
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?;
+            let target = entries
+                .remove(&provisional_owner)
+                .ok_or(ConnectionError::BrowseStale)?;
+            entries.insert(source_owner, target);
+        }
+        let (old_state, new_state) = {
+            let mut states = session_states()
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?;
+            let old_state = states
+                .get(&source_owner)
+                .cloned()
+                .ok_or(ConnectionError::BrowseStale)?;
+            let new_state = states
+                .remove(&provisional_owner)
+                .ok_or(ConnectionError::BrowseStale)?;
+            states.insert(source_owner, Arc::clone(&new_state));
+            (old_state, new_state)
+        };
+        let (old_generation, old_children) = {
+            let old = old_state.lock().map_err(|_| ConnectionError::Internal)?;
+            (
+                old.generation,
+                old.pane_terminals
+                    .values()
+                    .copied()
+                    .filter(|id| *id != source_owner)
+                    .collect::<Vec<_>>(),
+            )
+        };
         {
             let old = old_state.lock().map_err(|_| ConnectionError::Internal)?;
             let mut new = new_state.lock().map_err(|_| ConnectionError::Internal)?;
@@ -3806,28 +3945,40 @@ fn promote_runtime_browse(
             }
             new.generation = provisional_shared.generation;
         }
-        states.insert(source_owner, Arc::clone(&new_state));
-        (old_state, new_state, old_children)
+
+        // The map entry now owns the candidate actor under the source owner.
+        // Its command loop is paused in this promotion command, so the backend
+        // adapter remaps its private pane mapping immediately after return.
+        provisional_shared.promote_terminal(source_owner);
+        clear_terminal_data_plane_fence(source_owner);
+        let cleanup_warning = new_state
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?
+            .cleanup_warning
+            .clone();
+        let entry = browse
+            .as_mut()
+            .filter(|entry| entry.token == token)
+            .ok_or(ConnectionError::BrowseStale)?;
+        entry.source_shared = Arc::clone(&provisional_shared);
+        entry.provisional_owner = 0;
+        entry.provisional_generation = provisional_shared.generation;
+        entry.refresh_pending_from_revision = None;
+        entry.phase = RuntimeBrowsePhase::Committed;
+        entry.active_terminal_id = Some(source_owner);
+        entry.cleanup_warning = cleanup_warning;
+
+        // Child destruction calls back into terminal_destroyed, which needs
+        // the browse serial and owner transition. Root/map promotion stays
+        // atomic above; only cleanup runs after every lifecycle lock is free.
+        drop(old_state);
+        drop(owner_commit);
+        drop(owner_serial);
+        drop(browse);
+        drop(serial);
+        (old_generation, old_children)
     };
-    // The map entry now owns the candidate actor under the source owner. The
-    // actor command loop is paused in this promotion command, so its private
-    // pane mapping is remapped by the backend adapter immediately after this
-    // function returns.
-    provisional_shared.promote_terminal(source_owner);
-    clear_terminal_data_plane_fence(source_owner);
-    let cleanup_warning = new_state
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .cleanup_warning
-        .clone();
-    entry.source_shared = Arc::clone(&provisional_shared);
-    entry.provisional_owner = 0;
-    entry.provisional_generation = provisional_shared.generation;
-    entry.phase = RuntimeBrowsePhase::Committed;
-    entry.active_terminal_id = Some(source_owner);
-    entry.cleanup_warning = cleanup_warning;
-    drop(old_state);
-    destroy_stale_terminals(provisional_shared.generation, old_children);
+    destroy_stale_terminals(old_generation, old_children);
     Ok(())
 }
 
@@ -7478,6 +7629,40 @@ AAAEAKNpCN3J9WmHgxbJaAqFwXWdMgDpg1y2YYi7bhOvXHaY01tu9JjW6/TkqJ9TJMglMx
 xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
 -----END OPENSSH PRIVATE KEY-----";
 
+    fn run_lock_regression_subprocess(test_name: &str, marker: &str) -> bool {
+        if std::env::var_os(marker).is_some() {
+            return false;
+        }
+        let executable = std::env::current_exe().expect("current Rust test executable");
+        let mut child = std::process::Command::new(executable)
+            .args(["--exact", test_name, "--nocapture"])
+            .env(marker, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("spawn isolated lock regression test");
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            match child.try_wait().expect("poll isolated regression test") {
+                Some(status) => {
+                    assert!(
+                        status.success(),
+                        "isolated regression test failed: {status}"
+                    );
+                    return true;
+                }
+                None if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                None => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{test_name} did not complete within its 8-second bound");
+                }
+            }
+        }
+    }
+
     struct RejectingServer;
 
     impl RusshServer for RejectingServer {
@@ -8172,6 +8357,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             provisional_shared: Arc::clone(&provisional),
             target_endpoint: target_endpoint.clone(),
             browse_generation: 92,
+            refresh_pending_from_revision: None,
             phase: RuntimeBrowsePhase::Ready,
             target: None,
             error_code: String::new(),
@@ -8374,6 +8560,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 runtime: None,
             },
             browse_generation: 502,
+            refresh_pending_from_revision: None,
             phase: RuntimeBrowsePhase::Ready,
             target: None,
             error_code: String::new(),
@@ -8542,6 +8729,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             provisional_shared: Arc::clone(&provisional_shared),
             target_endpoint,
             browse_generation: 602,
+            refresh_pending_from_revision: None,
             phase: RuntimeBrowsePhase::Ready,
             target: None,
             error_code: String::new(),
@@ -8857,11 +9045,696 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
 
         registry::promote_terminal(provisional, source).expect("promote late-cleanup root");
         shared.promote_terminal(source);
-        retire_runtime_browse_target_by_id(provisional, &shared);
+        assert!(retire_runtime_browse_target_by_id(provisional, &shared).is_empty());
 
         assert!(!shared.is_cancelled());
         assert_eq!(shared.terminal_id(), source);
         registry::destroy_terminal(source);
+    }
+
+    #[test]
+    fn browse_promotion_destroys_old_children_after_releasing_locks() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::browse_promotion_destroys_old_children_after_releasing_locks",
+            "MEETERM_TEST_BROWSE_PROMOTION_CHILD",
+        ) {
+            return;
+        }
+
+        let source_owner = registry::create_terminal(80, 24).expect("promotion source root");
+        let provisional_owner =
+            registry::create_terminal(80, 24).expect("promotion provisional root");
+        let old_child_one = registry::create_terminal(80, 24).expect("first old pane terminal");
+        let old_child_two = registry::create_terminal(80, 24).expect("second old pane terminal");
+        let selected_child =
+            registry::create_terminal(80, 24).expect("promoted selected pane terminal");
+        let source_generation = next_generation();
+        let provisional_generation = next_generation();
+        let provisional_shared = Arc::new(ConnectionShared::new_with_provisional(
+            provisional_owner,
+            provisional_generation,
+            "target.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/browse-promotion-target-known-hosts"),
+            true,
+        ));
+        let source_state = session_state(source_owner);
+        *source_state.lock().expect("old source session state") = SessionState {
+            generation: source_generation,
+            snapshot: SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 1,
+                    name: "old workspace".to_owned(),
+                    panes: Vec::new(),
+                    selected: true,
+                    zoomed: false,
+                }],
+                panes: vec![
+                    PaneSnapshot {
+                        window_id: 1,
+                        pane_id: 11,
+                        terminal_id: old_child_one,
+                        window_name: "old workspace".to_owned(),
+                        active: true,
+                        selected: false,
+                        index: 0,
+                        columns: 80,
+                        rows: 24,
+                        pane_name: "one".to_owned(),
+                        title: "one".to_owned(),
+                    },
+                    PaneSnapshot {
+                        window_id: 1,
+                        pane_id: 12,
+                        terminal_id: old_child_two,
+                        window_name: "old workspace".to_owned(),
+                        active: true,
+                        selected: true,
+                        index: 1,
+                        columns: 80,
+                        rows: 24,
+                        pane_name: "two".to_owned(),
+                        title: "two".to_owned(),
+                    },
+                ],
+                selected_pane: Some(12),
+            },
+            pane_terminals: HashMap::from([(11, old_child_one), (12, old_child_two)]),
+            selected_pane: Some(12),
+            ..SessionState::default()
+        };
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("provisional session state");
+            *state = SessionState {
+                generation: provisional_generation,
+                snapshot: SessionSnapshot {
+                    windows: vec![WindowSnapshot {
+                        window_id: 2,
+                        name: "new workspace".to_owned(),
+                        panes: Vec::new(),
+                        selected: true,
+                        zoomed: false,
+                    }],
+                    panes: vec![PaneSnapshot {
+                        window_id: 2,
+                        pane_id: 22,
+                        terminal_id: selected_child,
+                        window_name: "new workspace".to_owned(),
+                        active: true,
+                        selected: true,
+                        index: 0,
+                        columns: 80,
+                        rows: 24,
+                        pane_name: "selected".to_owned(),
+                        title: "selected".to_owned(),
+                    }],
+                    selected_pane: Some(22),
+                },
+                pane_terminals: HashMap::from([
+                    (provisional_owner, provisional_owner),
+                    (22, selected_child),
+                ]),
+                selected_pane: Some(22),
+                runtime_operations_ready: true,
+                terminal_input_ready: true,
+                ..SessionState::default()
+            };
+        }
+        registry::begin_remote(provisional_owner, provisional_generation)
+            .expect("begin provisional root Term");
+        assert!(registry::feed_remote(
+            provisional_owner,
+            provisional_generation,
+            b"promoted root screen"
+        ));
+        let promoted_root = registry::snapshot(provisional_owner).expect("target root Term");
+        provisional_shared.set_state(ConnectionState::Ready);
+        provisional_shared.ready_once.store(true, Ordering::Release);
+        let target_endpoint = SessionEndpoint {
+            host: "target.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/browse-promotion-target-known-hosts"),
+            backend: Backend::Tmux,
+            runtime: None,
+        };
+        let actor = runtime()
+            .expect("promotion runtime")
+            .spawn(std::future::pending::<()>());
+        connections()
+            .lock()
+            .expect("promotion connection map")
+            .insert(
+                provisional_owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&provisional_shared),
+                    abort: actor.abort_handle(),
+                },
+            );
+        let source_shared = Arc::new(ConnectionShared::new(
+            source_owner,
+            source_generation,
+            "source.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/browse-promotion-source-known-hosts"),
+        ));
+        *runtime_browse().lock().expect("promotion browse slot") = Some(RuntimeBrowseEntry {
+            token: 71,
+            source_owner,
+            source_generation,
+            source_epoch: 1,
+            source_recovery: RecoverySnapshot::default(),
+            source_runtime_operations_ready: true,
+            source_shared,
+            provisional_owner,
+            provisional_generation,
+            provisional_shared: Arc::clone(&provisional_shared),
+            target_endpoint,
+            browse_generation: 72,
+            refresh_pending_from_revision: None,
+            phase: RuntimeBrowsePhase::Committing,
+            target: Some(RuntimeBrowseTarget::Candidate("candidate".to_owned())),
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        });
+
+        promote_runtime_browse(
+            71,
+            source_owner,
+            provisional_owner,
+            Arc::clone(&provisional_shared),
+        )
+        .expect("multi-pane browse promotion completes");
+
+        assert_eq!(
+            registry::snapshot(source_owner).expect("promoted source root Term"),
+            promoted_root
+        );
+        assert!(registry::shared_terminal(provisional_owner).is_err());
+        assert!(registry::shared_terminal(old_child_one).is_err());
+        assert!(registry::shared_terminal(old_child_two).is_err());
+        assert!(registry::shared_terminal(selected_child).is_ok());
+        let promoted_state = session_state(source_owner);
+        let promoted_state = promoted_state.lock().expect("promoted session state");
+        assert_eq!(promoted_state.selected_pane, Some(22));
+        assert_eq!(promoted_state.snapshot.selected_pane, Some(22));
+        assert_eq!(promoted_state.snapshot.panes[0].terminal_id, selected_child);
+        assert!(
+            promoted_state
+                .pane_terminals
+                .values()
+                .any(|id| *id == source_owner)
+        );
+        drop(promoted_state);
+        let browse = runtime_browse().lock().expect("committed browse record");
+        assert_eq!(
+            browse.as_ref().map(|entry| entry.phase),
+            Some(RuntimeBrowsePhase::Committed)
+        );
+        drop(browse);
+        assert!(runtime_browse_serial().try_lock().is_ok());
+        let owner = owner_transition(source_owner).expect("promoted owner transition");
+        assert!(owner.serial.try_lock().is_ok());
+        assert!(owner.commit.try_lock().is_ok());
+
+        runtime_browse()
+            .lock()
+            .expect("promotion cleanup browse")
+            .take();
+        if let Some(entry) = connections()
+            .lock()
+            .expect("promotion cleanup connection map")
+            .remove(&source_owner)
+        {
+            entry.shared.cancel();
+            entry.abort.abort();
+        }
+        session_states()
+            .lock()
+            .expect("promotion cleanup session map")
+            .remove(&source_owner);
+        registry::destroy_terminal(source_owner);
+        registry::destroy_terminal(selected_child);
+    }
+
+    #[test]
+    fn browse_retirement_destroys_acquired_children_after_releasing_locks() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::browse_retirement_destroys_acquired_children_after_releasing_locks",
+            "MEETERM_TEST_BROWSE_RETIREMENT_CHILD",
+        ) {
+            return;
+        }
+
+        let source_owner = registry::create_terminal(80, 24).expect("retirement source root");
+        let provisional_owner =
+            registry::create_terminal(80, 24).expect("retirement provisional root");
+        let acquired_child =
+            registry::create_terminal(80, 24).expect("acquired provisional pane terminal");
+        let source_generation = next_generation();
+        let provisional_generation = next_generation();
+        let source_shared = Arc::new(ConnectionShared::new(
+            source_owner,
+            source_generation,
+            "source.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/browse-retirement-source-known-hosts"),
+        ));
+        let provisional_shared = Arc::new(ConnectionShared::new_with_provisional(
+            provisional_owner,
+            provisional_generation,
+            "target.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/browse-retirement-target-known-hosts"),
+            true,
+        ));
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("partial target session state");
+            *state = SessionState {
+                generation: provisional_generation,
+                endpoint: Some(SessionEndpoint {
+                    host: "target.example.test".to_owned(),
+                    port: 22,
+                    username: "fixture".to_owned(),
+                    known_hosts_path: PathBuf::from("/tmp/browse-retirement-target-known-hosts"),
+                    backend: Backend::Tmux,
+                    runtime: Some("meeterm".to_owned()),
+                }),
+                snapshot: SessionSnapshot {
+                    panes: vec![PaneSnapshot {
+                        window_id: 3,
+                        pane_id: 31,
+                        terminal_id: acquired_child,
+                        window_name: "partially bound".to_owned(),
+                        active: true,
+                        selected: true,
+                        index: 0,
+                        columns: 80,
+                        rows: 24,
+                        pane_name: "child".to_owned(),
+                        title: "child".to_owned(),
+                    }],
+                    selected_pane: Some(31),
+                    ..SessionSnapshot::default()
+                },
+                pane_terminals: HashMap::from([
+                    (provisional_owner, provisional_owner),
+                    (31, acquired_child),
+                ]),
+                selected_pane: Some(31),
+                ..SessionState::default()
+            };
+        }
+        provisional_shared.set_state(ConnectionState::AwaitingRuntimeSelection);
+        let actor = runtime()
+            .expect("retirement runtime")
+            .spawn(std::future::pending::<()>());
+        let actor_abort = actor.abort_handle();
+        provisional_shared.finish(Ok(()));
+        connections()
+            .lock()
+            .expect("retirement connection map")
+            .insert(
+                provisional_owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&provisional_shared),
+                    abort: actor_abort.clone(),
+                },
+            );
+        *runtime_browse().lock().expect("retirement browse slot") = Some(RuntimeBrowseEntry {
+            token: 81,
+            source_owner,
+            source_generation,
+            source_epoch: 1,
+            source_recovery: RecoverySnapshot::default(),
+            source_runtime_operations_ready: true,
+            source_shared,
+            provisional_owner,
+            provisional_generation,
+            provisional_shared: Arc::clone(&provisional_shared),
+            target_endpoint: SessionEndpoint {
+                host: "target.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/browse-retirement-target-known-hosts"),
+                backend: Backend::Tmux,
+                runtime: None,
+            },
+            browse_generation: 82,
+            refresh_pending_from_revision: None,
+            phase: RuntimeBrowsePhase::Ready,
+            target: None,
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        });
+
+        runtime_browse_cancel("81").expect("retire partially bound target");
+
+        assert!(registry::shared_terminal(provisional_owner).is_err());
+        assert!(registry::shared_terminal(acquired_child).is_err());
+        assert!(
+            !connections()
+                .lock()
+                .expect("retirement map after cleanup")
+                .contains_key(&provisional_owner)
+        );
+        assert!(
+            !session_states()
+                .lock()
+                .expect("retirement state after cleanup")
+                .contains_key(&provisional_owner)
+        );
+        assert!(
+            runtime_browse()
+                .lock()
+                .expect("retirement slot after cancel")
+                .is_none()
+        );
+        assert!(runtime_browse_serial().try_lock().is_ok());
+        let owner = owner_transition(provisional_owner).expect("retired owner transition");
+        assert!(owner.serial.try_lock().is_ok());
+        assert!(owner.commit.try_lock().is_ok());
+
+        actor_abort.abort();
+        registry::destroy_terminal(source_owner);
+    }
+
+    #[test]
+    fn queued_browse_refresh_refuses_old_revision_before_source_fence() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::queued_browse_refresh_refuses_old_revision_before_source_fence",
+            "MEETERM_TEST_BROWSE_REFRESH_CHILD",
+        ) {
+            return;
+        }
+
+        let source_owner = registry::create_terminal(80, 24).expect("refresh source root");
+        let provisional_owner =
+            registry::create_terminal(80, 24).expect("refresh provisional root");
+        let source_generation = next_generation();
+        let provisional_generation = next_generation();
+        let source_secret = Arc::new(Zeroizing::new("source-fixture".to_owned()));
+        let source_profile = ConnectionProfile {
+            host: "source.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/browse-refresh-source-known-hosts"),
+            credentials: StoredCredentials::Password {
+                password: Arc::clone(&source_secret),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("source".to_owned()),
+            tmux_identity: Some(tmux::SessionIdentity {
+                session_id: "$10".to_owned(),
+                name: "source".to_owned(),
+                server_pid: 10,
+                server_start_time: 1_700_000_010,
+            }),
+            herdr_executable: None,
+        };
+        let target_endpoint = SessionEndpoint {
+            host: "target.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/browse-refresh-target-known-hosts"),
+            backend: Backend::Tmux,
+            runtime: None,
+        };
+        let source_shared = Arc::new(ConnectionShared::new(
+            source_owner,
+            source_generation,
+            source_profile.host.clone(),
+            source_profile.port,
+            source_profile.known_hosts_path.clone(),
+        ));
+        let provisional_shared = Arc::new(ConnectionShared::new_with_provisional(
+            provisional_owner,
+            provisional_generation,
+            target_endpoint.host.clone(),
+            target_endpoint.port,
+            target_endpoint.known_hosts_path.clone(),
+            true,
+        ));
+        let source_term = b"source still interactive after queued refresh";
+        registry::begin_remote(source_owner, source_generation).expect("begin source Term");
+        assert!(registry::feed_remote(
+            source_owner,
+            source_generation,
+            source_term
+        ));
+        let source_term_before = registry::snapshot(source_owner).expect("source Term snapshot");
+        {
+            let mut state = source_shared.session.lock().expect("refresh source state");
+            state.generation = source_generation;
+            state.operation_epoch = 13;
+            state.endpoint = Some(SessionEndpoint::from_profile(&source_profile));
+            state.profile = Some(source_profile.clone());
+            state.selected_pane = Some(source_owner);
+            state.runtime_operations_ready = true;
+            state.terminal_input_ready = true;
+        }
+        source_shared.set_state(ConnectionState::Ready);
+        source_shared.ready_once.store(true, Ordering::Release);
+        source_shared
+            .session
+            .lock()
+            .expect("ready source input gate")
+            .terminal_input_ready = true;
+        let (source_sender, _source_receiver) = mpsc::channel(4);
+        source_shared.set_commands(source_sender);
+        let source_actor_shared = Arc::clone(&source_shared);
+        let source_actor = runtime().expect("refresh test runtime").spawn(async move {
+            source_actor_shared.explicit_cleanup().await;
+            source_actor_shared.finish(Ok(()));
+        });
+
+        let old_candidate = RuntimeCandidate {
+            id: "candidate-old-revision".to_owned(),
+            backend: Backend::Tmux,
+            name: "old-list-session".to_owned(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: false,
+            error_code: None,
+            error_message: None,
+        };
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("refresh provisional state");
+            state.generation = provisional_generation;
+            state.endpoint = Some(target_endpoint.clone());
+            state.runtime_discovery = RuntimeDiscoverySnapshot {
+                connection_generation: provisional_generation,
+                discovery_revision: 7,
+                tmux: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![old_candidate.clone()],
+                    ..RuntimeSection::default()
+                },
+                herdr: RuntimeSection {
+                    state: RuntimeSectionState::Empty,
+                    ..RuntimeSection::default()
+                },
+            };
+            state.runtime_candidates.insert(
+                old_candidate.id.clone(),
+                RuntimeBinding::Tmux(tmux::SessionIdentity {
+                    session_id: "$20".to_owned(),
+                    name: old_candidate.name.clone(),
+                    server_pid: 20,
+                    server_start_time: 1_700_000_020,
+                }),
+            );
+        }
+        provisional_shared.set_state(ConnectionState::AwaitingRuntimeSelection);
+        let (target_sender, mut target_receiver) = mpsc::channel(4);
+        provisional_shared.set_commands(target_sender);
+        let provisional_actor = runtime()
+            .expect("refresh target actor runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let browse_generation = 92;
+        *runtime_browse().lock().expect("refresh browse slot") = Some(RuntimeBrowseEntry {
+            token: 91,
+            source_owner,
+            source_generation,
+            source_epoch: 13,
+            source_recovery: RecoverySnapshot::default(),
+            source_runtime_operations_ready: true,
+            source_shared: Arc::clone(&source_shared),
+            provisional_owner,
+            provisional_generation,
+            provisional_shared: Arc::clone(&provisional_shared),
+            target_endpoint: target_endpoint.clone(),
+            browse_generation,
+            refresh_pending_from_revision: None,
+            phase: RuntimeBrowsePhase::Ready,
+            target: None,
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        });
+        connections()
+            .lock()
+            .expect("refresh connection map")
+            .extend([
+                (
+                    source_owner,
+                    ConnectionEntry {
+                        shared: Arc::clone(&source_shared),
+                        abort: source_actor.abort_handle(),
+                    },
+                ),
+                (
+                    provisional_owner,
+                    ConnectionEntry {
+                        shared: Arc::clone(&provisional_shared),
+                        abort: provisional_actor.clone(),
+                    },
+                ),
+            ]);
+
+        let target_discovery = runtime_discovery_snapshot(provisional_owner)
+            .expect("paused target discovery snapshot");
+        assert_eq!(
+            target_discovery.connection_generation,
+            provisional_generation
+        );
+        assert_eq!(target_discovery.discovery_revision, 7);
+        assert!(runtime_discovery_is_ready(&target_discovery));
+        assert!(provisional_shared.is_provisional());
+        assert!(!provisional_shared.is_cancelled());
+        assert!(provisional_shared.command_sender().is_some());
+        runtime_browse_refresh("91").expect("queue refresh on paused provisional actor");
+        let refreshing = runtime_browse_snapshot("91").expect("refresh-pending snapshot");
+        assert_eq!(refreshing.phase, RuntimeBrowsePhase::Discovering);
+        assert_eq!(refreshing.discovery_revision, 8);
+        assert!(refreshing.discovery.tmux.candidates.is_empty());
+        assert!(matches!(
+            target_receiver
+                .try_recv()
+                .expect("queued refresh request")
+                .command,
+            ControlCommand::RefreshRuntimes
+        ));
+
+        assert_eq!(
+            runtime_browse_commit("91", browse_generation, 7, Some(&old_candidate.id), None,),
+            Err(ConnectionError::BrowseStale)
+        );
+        assert!(
+            connections()
+                .lock()
+                .expect("source map before fresh publication")
+                .get(&source_owner)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.shared, &source_shared))
+        );
+        assert!(source_shared.command_sender().is_some());
+        assert!(!source_shared.is_cancelled());
+        assert!(!source_shared.explicit_cleanup_requested());
+        {
+            let info = source_shared
+                .info
+                .lock()
+                .expect("source info after stale commit");
+            assert_eq!(info.state, ConnectionState::Ready);
+            assert!(!info.finished);
+        }
+        {
+            let state = source_shared
+                .session
+                .lock()
+                .expect("source state after stale commit");
+            assert_eq!(state.operation_epoch, 13);
+            assert!(state.runtime_operations_ready);
+            assert!(state.terminal_input_ready);
+        }
+        assert_eq!(
+            registry::snapshot(source_owner).expect("source Term after stale commit"),
+            source_term_before
+        );
+
+        let fresh_candidate = RuntimeCandidate {
+            id: "candidate-fresh-revision".to_owned(),
+            backend: Backend::Tmux,
+            name: "fresh-list-session".to_owned(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: false,
+            error_code: None,
+            error_message: None,
+        };
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("publish fresh discovery revision");
+            state.runtime_candidates.clear();
+            state.runtime_candidates.insert(
+                fresh_candidate.id.clone(),
+                RuntimeBinding::Tmux(tmux::SessionIdentity {
+                    session_id: "$21".to_owned(),
+                    name: fresh_candidate.name.clone(),
+                    server_pid: 20,
+                    server_start_time: 1_700_000_020,
+                }),
+            );
+            state.runtime_discovery = RuntimeDiscoverySnapshot {
+                connection_generation: provisional_generation,
+                discovery_revision: 8,
+                tmux: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![fresh_candidate.clone()],
+                    ..RuntimeSection::default()
+                },
+                herdr: RuntimeSection {
+                    state: RuntimeSectionState::Empty,
+                    ..RuntimeSection::default()
+                },
+            };
+        }
+        let fresh_snapshot = runtime_browse_snapshot("91").expect("published fresh snapshot");
+        assert_eq!(fresh_snapshot.phase, RuntimeBrowsePhase::Ready);
+        assert_eq!(fresh_snapshot.discovery_revision, 8);
+        assert_eq!(
+            fresh_snapshot.discovery.tmux.candidates,
+            vec![fresh_candidate.clone()]
+        );
+        runtime_browse_commit("91", browse_generation, 8, Some(&fresh_candidate.id), None)
+            .expect("fresh-revision candidate can be selected");
+        assert!(source_shared.explicit_cleanup_requested());
+        assert!(
+            connections()
+                .lock()
+                .expect("source removed after fresh commit")
+                .get(&source_owner)
+                .is_none()
+        );
+        assert!(matches!(
+            target_receiver
+                .try_recv()
+                .expect("fresh candidate bind request")
+                .command,
+            ControlCommand::SelectRuntime { candidate_id } if candidate_id == fresh_candidate.id
+        ));
+
+        provisional_shared.finish(Ok(()));
+        runtime_browse_cancel("91").expect("clean up paused target after fresh commit");
+        provisional_actor.abort();
+        registry::destroy_terminal(source_owner);
     }
 
     #[test]
