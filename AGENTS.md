@@ -305,7 +305,11 @@ required visual review.
 
 Read `docs/TESTING.md` before changing tests, CI, or native code. Use it for the
 current suite contents and commands; the tier and trigger policy below controls
-when those suites run. Use these test tiers:
+when those suites run. Drive the Devin Cloud mobile sessions with
+`scripts/ci/devin-cloud.py`, which creates and messages SWE-2 sessions through
+`devin acp --cloud` without the Web UI. See `docs/CI_MOBILE.md`. Do not run a
+validation under a different model when SWE-2 is unavailable. Use these test
+tiers:
 
 - On every relevant push, run the fast Rust, JavaScript, Swift/Kotlin, native
   bridge, and build-contract checks selected for the changed paths.

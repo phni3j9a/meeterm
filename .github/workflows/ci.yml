@@ -73,6 +73,9 @@ jobs:
       - name: Check portable exact-source iOS test products
         run: python3 scripts/ci/test_ios_test_products.py
 
+      - name: Check Devin Cloud ACP driver
+        run: python3 scripts/ci/test_devin_cloud.py
+
       - name: Validate Expo configuration
         run: npx expo config --type public >/tmp/meeterm-expo-config.json
 

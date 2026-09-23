@@ -259,8 +259,10 @@ fixtureも実際のAppState通知に追従しますが、Rustへの接続・再�
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |
 
 モバイル検証は [CI_MOBILE.md](CI_MOBILE.md) のDevin Cloud常駐セッションで実行します。
-依頼はMainへ「対象commitとsuite」を伝えるだけです。MainがSessions APIで各セッションへ
-検証プロンプトを送り、完了を監視して証跡ブランチとともに結果を報告します。
+依頼はMainへ「対象commitとsuite」を伝えるだけです。Mainは `scripts/ci/devin-cloud.py`
+（Devin CLIの `devin acp --cloud` 経由、SWE-2 Max指定）で各セッションへ検証プロンプトを送り、
+`status` で完了を確認して、証跡ブランチとともに結果を報告します。セッションが失われた場合は、
+Web UIを使わずに `devin-cloud.py new --platform linux|macos` で作り直せます。
 
 - 通常の両OS検証: Androidセッションへfull相当、iOSセッションへ `MEETERM_IOS_SUITE=standard`
 - iOSだけを調べる場合: iOSセッションへ `MEETERM_IOS_SUITE=standard`

@@ -26,32 +26,24 @@ builds and runtime verification run on the sessions below.
 | [`7a32a4e6ed984961b5194e22feeba407`](https://app.devin.ai/sessions/7a32a4e6ed984961b5194e22feeba407) | Devin Cloud macOS (Apple Silicon) | iOS Simulator suites: `standard`, `ssh`, `polish`, `polish-navigation`, `native`, `forms`, `names`, optional `full` |
 | [`9429c00e8cc14fb2b140b3e23bb28ec1`](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) | Devin Cloud Linux (KVM) | Android build, emulator smoke, screen fixtures, real SSH/tmux smoke |
 
+The two sessions above were created in the Devin Web UI; they are still the
+default targets because they keep warm build caches and same-session product
+reuse. They are no longer a manual prerequisite: Main can create, message, and
+inspect SWE-2 sessions itself (see [Driving sessions](#driving-sessions)).
+
 How a run works:
 
-1. Sessions are created once in the Devin Web UI with the **SWE-2** model.
-   The Sessions API cannot select SWE-2 (`devin_mode` accepts only
-   `normal/fast/lite/ultra/fusion`); web-created SWE-2 sessions report
-   `devin_mode: null`. Session creation is therefore a one-time manual step per
-   platform; everything after that is API-driven.
-   The repository's `.devin/blueprint.yaml` is a multi-document blueprint
-   (`runs-on: linux` / `runs-on: macos`). On this org, snapshot builds
-   (`sbj-*`) currently produce a **Linux snapshot only** — the `macos` label
-   requires a machine configuration that is not registered on the account, so
-   that document is silently skipped during builds.
-   - **Linux sessions boot warm**: Node 22.22.2 (nvm), Rust 1.96.0 + Android
-     targets, Android SDK/NDK 27.1.12297006, cargo-ndk 4.1.2, and the Maven
-     mirror init script are preinstalled.
-   - **macOS sessions start from the base image** (Xcode, iOS Simulators,
-     Homebrew, brew-managed rustup with 1.96.0 + iOS targets, Node). They need
-     a one-time bootstrap message that creates the `~/.cargo/bin` rustup
-     proxies and runs `brew install tmux cocoapods node@22`; the macOS
-     blueprint document holds the canonical commands if `runs-on: macos`
-     builds ever become available.
-   After creating a replacement session, update the ID in the table above.
-2. The driver (Main) sends a validation prompt through the Sessions API
-   (`POST /v3/organizations/{org}/sessions/{id}/messages`), then polls session
-   status. Sessions sleep while idle and wake on the message; idle time does
-   not consume quota.
+1. Main drives sessions through the Devin CLI's cloud ACP relay
+   (`devin acp --cloud`) with `scripts/ci/devin-cloud.py`, using the CLI's own
+   `devin auth login` credentials; no `DEVIN_API_KEY` is involved. A new
+   session is created with explicit `repos=phni3j9a/meeterm`,
+   `devin_version=devin-swe-2-max`, and `platform=linux|macos`; the helper
+   refuses a value the relay does not offer and verifies that the created
+   session reports the requested version.
+2. Main sends a validation prompt to the target session (`send`), which wakes a
+   suspended session. Sessions sleep while idle; idle time does not consume
+   quota. The cloud turn continues after the driver detaches, so long suites
+   are sent with a short `--wait` and followed with `status`.
 3. The session executes the suite, pushes the observability bundle to an
    `evidence/<platform>-<yyyymmdd>` orphan branch, and reports a structured
    result. Main fetches the branch and actually views the images; the Director
@@ -63,10 +55,60 @@ How a run works:
 Persistent VMs keep the installed toolchain, so runs after the first skip
 setup. Every run still starts with `git fetch` and `git reset --hard <SHA>` on
 the exact candidate commit and regenerates CNG output; persistent state is
-cache, never source of truth. If a VM drifts, recreate the session — Linux
-sessions re-warm automatically from `.devin/blueprint.yaml`; macOS sessions
-need the one-time bootstrap message again (or a saved-snapshot blueprint
-created from a warmed macOS session in the web UI).
+cache, never source of truth. If a VM drifts or a session is lost, create a
+replacement with `devin-cloud.py new` and update the ID in the table above.
+
+## Driving sessions
+
+```sh
+python3 scripts/ci/devin-cloud.py list                    # add --all for archived
+python3 scripts/ci/devin-cloud.py new --platform macos --prompt-file prompt.md --wait 60
+python3 scripts/ci/devin-cloud.py send <session-id> --prompt-file prompt.md --wait 60
+python3 scripts/ci/devin-cloud.py status <session-id> --messages 3
+```
+
+`new` defaults to `--version devin-swe-2-max --repo phni3j9a/meeterm`. A turn
+still running when `--wait` expires is reported as detached, not failed.
+`status` replays the session's most recent Devin messages and prints its
+status, platform, `devinVersionOverride`, and URL. The helper declines any
+request the cloud agent makes to the local client, such as local file access
+or a permission prompt; validation runs need no local tools.
+
+Why ACP rather than the REST API: `POST /v3/organizations/{org}/sessions`
+cannot select SWE-2 — `devin_mode` accepts only
+`normal/fast/lite/ultra/fusion`. The ACP relay's `session/new` returns
+`configOptions` whose `devin_version` offers `devin-swe-2-low/high/max` and
+`devin-swe-2-priority-low/high/max`, and whose `platform` offers
+`linux/macos/windows`; `session/set_config_option` applies them before the
+first prompt. A session exists in the cloud only after that first prompt.
+Web-created SWE-2 Max sessions report the same `devinVersionOverride`
+(`devin-swe-2-max`).
+
+Compatibility limits: the CLI documentation labels cloud ACP as insiders-only,
+and `devin_version` values are internal identifiers rather than a published
+API. Verified with Devin CLI 3000.11.1 on 2026-09-23. If the relay stops
+offering a value, `new` fails closed. In that case, create the session in the
+Web UI with SWE-2 and continue with `send`/`status`. Do not silently run a
+validation under another model.
+
+Measured on 2026-09-23 with sessions created by `new`:
+
+- Linux: blueprint warm state was present. That covered Rust 1.96.0,
+  cargo-ndk 4.1.2, NDK 27.1.12297006, `~/.gradle/init.gradle`, `/dev/kvm`,
+  8 vCPU / 31 GiB, and `~/repos/meeterm`. Node resolved to 22.23.2, not the
+  22.22.2 pinned in `.nvmrc` and `ci.yml`.
+- macOS: Apple M4 Pro (Virtual), 16 GiB. The session booted with the macOS
+  blueprint state already applied: `~/.cargo/bin` rustup proxies, Rust 1.96.0
+  with the iOS targets, Homebrew `tmux`, `cocoapods` 1.17.0, and `node@22`
+  22.23.2, plus the blueprint `ENVRC` PATH entries. It also had Xcode 26.6
+  (17F113), the iOS 26.5 and 27.0 Simulator runtimes, and `~/repos/meeterm`.
+  The manual bootstrap below was not needed. Keep it as a fallback for a
+  session that lacks these tools.
+- A cloud turn continued after the driver detached mid-command, and a later
+  `status` call returned the completed output.
+- `send` to the suspended Web-created Android session woke it and returned a
+  read-only reply over the same relay (`devin-swe-2-max`, checkout still at
+  `ed43536`).
 
 ## Source of truth and CNG
 
@@ -350,9 +392,10 @@ There is no screenshot-existence or pixel-difference machine gate at this stage.
   swiftshader_indirect`; screenshots come from `adb exec-out screencap`, so no
   visible window appears on the session desktop. The iOS Simulator.app shows a
   window — that difference is expected.
-- **macOS session bootstrap** (run once per new macOS session until
-  `runs-on: macos` snapshot builds are available): the image ships brew-managed
-  rustup but no `~/.cargo/bin` proxies, so `rustc`/`cargo` do not resolve.
+- **macOS session bootstrap** (fallback only; sessions created on 2026-09-23
+  already had this state, see [Driving sessions](#driving-sessions)): the base
+  image ships brew-managed rustup but no `~/.cargo/bin` proxies, so
+  `rustc`/`cargo` do not resolve.
   Link proxies to the real binary — `/opt/homebrew/bin/rustup` is a brew
   wrapper that drops argv[0], so symlinks to it do not dispatch.
   ```bash
