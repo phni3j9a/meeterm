@@ -20,3 +20,6 @@ sysdiagnose: skipped — wedged collector subsystem on this host (simctl diagnos
 STALE/HISTORICAL artifacts (kept for completeness, NOT from this run's failure):
 - ios-simulator-observability-switcher/ios-issue27-sw_add_f2-add-missing-tree.txt — tree dump from a prior wedge-era attempt (stale stage records since truncated); does not reflect this run.
 - ios-simulator-observability-switcher/sw-add-f2-missing.png (11:08 timestamp) — same historical attempt.
+
+--- d5113e8 parity append ---
+Branch tip d5113e8 = a066f79 + one #[cfg(test)]-only commit (Rust test deadlines 2s/3s->30s in ssh.rs test module). Verified via git diff a066f79..d5113e8 (5 lines, all inside the cfg(test) scope at line 8047+). Suites NOT re-run per instruction — a066f79 results carry over as parity evidence for d5113e8.

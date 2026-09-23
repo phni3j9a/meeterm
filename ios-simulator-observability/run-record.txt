@@ -7,3 +7,8 @@ simulator_note=ALL stages (standard, ssh, drive) targeted this device: ios-smoke
 metadata_discrepancy=simulator.txt/metadata.txt record iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7): ios-select-simulator.sh independently auto-picks the first available 'iPhone * Pro' device in simctl list and boots it; it does NOT determine the test destination. 1308A109 is booted but was not used for testing.
 xctest_elapsed=standard UI+storage per ios-*-validation.txt; ssh per ios-transport-loss-validation.txt; drive 723.0s
 sysdiagnose=skipped: wedged collector subsystem (simctl diagnose runs to 600s cap on this host; killed ~46s in by session watchdog). All tests complete before diagnostics; results unaffected.
+
+# d5113e8 parity append (2026-09-23)
+parity_source_sha=d5113e838e84163717e02291c4fda1a728fb0962
+parity_delta=a066f79..d5113e8 is 1 file, 5 changed lines: native/meeterm-core/src/ssh.rs recv_timeout/deadline bumps 2s/3s -> 30s inside #[cfg(test)] scope (test module starts line 8047; hunks at 8902/8985/12339/12424 are test helpers + test bodies). Zero product-code change.
+parity_suites=NOT re-run per instruction; a066f79 evidence above applies to d5113e8 (compiled products identical for product code).
