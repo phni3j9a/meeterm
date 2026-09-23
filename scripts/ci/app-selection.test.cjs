@@ -2034,6 +2034,118 @@ test('post-release switch failure unlocks retry, server change, and disconnect w
   assert.equal(fixture.environment.connection.state, 'Disconnected');
 });
 
+test('post-release retry uses a fresh discovery revision and can commit to Ready', async t => {
+  const target = { ...pickerProfile('retry-target.example'), id: 'server-retry-target', name: 'Retry target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseCommitMode = 'delayed';
+    environment.runtimeBrowseDiscoveryByProfile = {
+      [target.id]: pickerDiscovery(61, [runtimeCandidate('retry-old-tmux', 'tmux', 'old-session')]),
+    };
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-retry-target'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-retry-old-tmux'));
+  await settleAsync();
+
+  fixture.environment.failPendingBrowseCommitAfterRelease();
+  await poll(fixture.environment);
+  assert.equal(fixture.environment.connection.state, 'Failed');
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-retry-old-tmux').props.disabled, true);
+  const retiredSourceOwner = fixture.environment.runtimeBrowseStarts[1].terminalId;
+  const failedBrowse = [...fixture.environment.runtimeBrowseStates.values()].find(state => state.phase === 'failed');
+  assert.ok(failedBrowse, 'the released attempt must have a failed browse snapshot');
+  const failedToken = failedBrowse.token;
+
+  fixture.environment.runtimeBrowseCommitMode = 'ready';
+  fixture.environment.runtimeBrowseDiscoveryByProfile[target.id] = pickerDiscovery(62, [
+    runtimeCandidate('retry-fresh-tmux', 'tmux', 'recovered-session'),
+  ]);
+  await press(fixture.root, findTestId(fixture.root, 'switcher-retry'));
+  await settleAsync();
+
+  const retryStart = fixture.environment.runtimeBrowseStarts.at(-1);
+  assert.equal(retryStart.kind, 'profile');
+  assert.equal(retryStart.profileId, target.id);
+  assert.equal(retryStart.terminalId, retiredSourceOwner, 'Retry browses from the tombstoned source identity');
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 3, 'Retry performs a new browse rather than reusing the failed token');
+  const retryToken = `browse-${fixture.environment.runtimeBrowseCounter}`;
+  assert.notEqual(retryToken, failedToken);
+  assert.equal(fixture.environment.runtimeBrowseStates.get(retryToken).discoveryRevision, 62);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'runtime-row-tmux-retry-old-tmux').length, 0);
+  const freshCandidate = findTestId(fixture.root, 'runtime-row-tmux-retry-fresh-tmux');
+  assert.equal(freshCandidate.props.disabled, false, 'only the new Ready revision is selectable');
+
+  await press(fixture.root, freshCandidate);
+  await settleAsync();
+  assert.equal(fixture.environment.runtimeBrowseCommits.length, 2);
+  assert.equal(fixture.environment.runtimeBrowseCommits.at(-1).token, retryToken);
+  assert.equal(fixture.environment.runtimeBrowseCommits.at(-1).discoveryRevision, 62);
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.equal(fixture.environment.snapshot.control.runtimeOperationsReady, true);
+  assert.equal(fixture.environment.snapshot.runtime, 'recovered-session');
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{
+    profileId: target.id,
+    backend: 'tmux',
+    runtime: 'recovered-session',
+  }]);
+});
+
+test('cancelling a retry after release leaves the retained source browsable again', async t => {
+  const target = { ...pickerProfile('cancel-target.example'), id: 'server-cancel-target', name: 'Cancel target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseCommitMode = 'delayed';
+    environment.runtimeBrowseDiscoveryByProfile = {
+      [target.id]: pickerDiscovery(63, [runtimeCandidate('cancel-target-tmux', 'tmux', 'prod')]),
+    };
+    environment.runtimeDiscovery = pickerDiscovery(64, [runtimeCandidate('retained-source-tmux', 'tmux', 'source')]);
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-cancel-target'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-cancel-target-tmux'));
+  await settleAsync();
+
+  fixture.environment.failPendingBrowseCommitAfterRelease();
+  await poll(fixture.environment);
+  const retiredSourceOwner = fixture.environment.runtimeBrowseStarts[1].terminalId;
+  await press(fixture.root, findTestId(fixture.root, 'switcher-retry'));
+  await settleAsync();
+  const retryToken = `browse-${fixture.environment.runtimeBrowseCounter}`;
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).terminalId, retiredSourceOwner);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-cancel-target-tmux').props.disabled, false);
+
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
+  await settleAsync();
+  assert.ok(fixture.environment.runtimeBrowseCancelCalls.includes(retryToken));
+  assert.equal(fixture.environment.connection.state, 'Failed');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  const reopenedBrowse = fixture.environment.runtimeBrowseStarts.at(-1);
+  assert.equal(reopenedBrowse.kind, 'current');
+  assert.equal(reopenedBrowse.terminalId, retiredSourceOwner, 'reopening uses the retained browse anchor after cancellation');
+  assert.notEqual(reopenedBrowse.token, retryToken);
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-retained-source-tmux'));
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-retained-source-tmux').props.disabled, false);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+});
+
 test('a long pending switch can be dismissed without restoring the released source as Ready', async t => {
   const target = { ...pickerProfile('pending-target.example'), id: 'server-pending-target', name: 'Pending target' };
   const fixture = await mountForTest(t, makeSnapshot(), environment => {
