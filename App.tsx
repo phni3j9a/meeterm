@@ -2811,8 +2811,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   const openManageServers = useCallback(() => {
+    // Stack Saved servers on top of the still-presented switcher. Dismissing
+    // the iOS formSheet first drops a modal that appears while the sheet is
+    // mid-dismiss; Android stacks the same dialogs without a race.
     reopenSwitcherAfterManageRef.current = true;
-    setSessionSwitcherOpen(false);
+    setSheet('servers');
   }, []);
 
   const closeSessionSwitcher = useCallback(() => {

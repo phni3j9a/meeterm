@@ -1130,10 +1130,12 @@ final class MeetermSmokeUITests: XCTestCase {
         && app.staticTexts["The old connection's desktop layout restore could not be confirmed."].waitForExistence(timeout: 30)
         && waitForHittable(button("Dismiss desktop layout warning"), timeout: 30)
     case "session-switcher-long-names":
+      // Row children are grouped into the row's accessibility label on iOS,
+      // so the long server/session strings live on the aggregated buttons.
       return app.staticTexts["Switch session"].waitForExistence(timeout: 30)
-        && app.staticTexts["東京・多地域インフラ移行とリリース準備用の作業サーバー"].waitForExistence(timeout: 30)
-        && app.staticTexts["日本語ログ確認と多地域デプロイ前の長時間リリース準備セッション"].waitForExistence(timeout: 30)
-        && app.staticTexts["Production mirror · 日本語ログと運用監視用サーバー"].waitForExistence(timeout: 30)
+        && button("Current server 東京・多地域インフラ移行とリリース準備用の作業サーバー").waitForExistence(timeout: 30)
+        && button("tmux session 日本語ログ確認と多地域デプロイ前の長時間リリース準備セッション on 東京・多地域インフラ移行とリリース準備用の作業サーバー (release-operator@release-workspace-east-2.fixture.invalid:22)").waitForExistence(timeout: 30)
+        && button("Server Production mirror · 日本語ログと運用監視用サーバー").waitForExistence(timeout: 30)
     case "layout-restore-unconfirmed":
       let warning = "The old connection's desktop layout restore could not be confirmed."
       return app.staticTexts["Disconnected"].waitForExistence(timeout: 30)
@@ -1444,12 +1446,12 @@ final class MeetermSmokeUITests: XCTestCase {
   ) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     let pickerTitle = app.staticTexts.matching(
-      NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
+      NSPredicate(format: "label == %@ OR label == %@", "Choose a session", "Switch session")
     ).firstMatch
     let pickerRuntime = app.buttons.matching(
       NSPredicate(
-        format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@",
-        "tmux runtime ", "Herdr runtime "
+        format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@",
+        "runtime-row-", "tmux runtime ", "Herdr runtime ", "tmux session ", "Herdr session "
       )
     ).firstMatch
     let rail = recoveryElement("recovery-rail")
@@ -1529,9 +1531,7 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func selectFixtureTmuxRuntimeAndWaitForConnected(stage: String) -> Bool {
-    let pickerTitle = app.staticTexts.matching(
-      NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
-    ).firstMatch
+    let pickerTitle = app.staticTexts["Choose a session"]
     record("\(stage)_await_runtime_picker")
     guard pickerTitle.waitForExistence(timeout: 60) else {
       record("\(stage)_runtime_picker_missing")
@@ -2756,14 +2756,14 @@ final class MeetermSmokeUITests: XCTestCase {
   ) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     let pickerTitle = app.staticTexts.matching(
-      NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")
+      NSPredicate(format: "label == %@ OR label == %@", "Choose a session", "Switch session")
     ).firstMatch
     let recoveryRail = recoveryElement("recovery-rail")
     let connected = connectedElement()
     let pickerRuntime = app.buttons.matching(
       NSPredicate(
-        format: "label BEGINSWITH %@ OR identifier BEGINSWITH %@",
-        "tmux runtime ", "Herdr runtime "
+        format: "identifier BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@",
+        "runtime-row-", "tmux runtime ", "Herdr runtime ", "tmux session ", "Herdr session "
       )
     ).firstMatch
     while Date() < deadline {
