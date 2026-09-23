@@ -692,7 +692,7 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         self.assertEqual(wait_boundary_mock.call_count, 2)
         self.assertFalse(
             any(
-                "Choose a runtime for" in marker
+                "Choose a session" in marker
                 or marker in {
                     smoke.DAILY_SECOND_PROFILE_NAME,
                     smoke.DAILY_PROFILE_NAME,
@@ -1048,7 +1048,7 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
 
     def test_foreground_recovery_ready_rejects_picker_and_cached_terminal(self) -> None:
         picker = smoke.Node(
-            "Choose a runtime for Smoke server",
+            "Choose a session",
             "",
             "android.widget.TextView",
             (0, 0, 100, 40),
@@ -1480,7 +1480,7 @@ class TransportLossTests(unittest.TestCase):
                 )
             )
         if picker:
-            nodes.append(smoke.Node("Choose a runtime for fixture", "", "android.widget.TextView", (0, 0, 100, 20)))
+            nodes.append(smoke.Node("Choose a session", "", "android.widget.TextView", (0, 0, 100, 20)))
         return nodes
 
     def test_stale_recovery_requires_cached_surface_rail_and_disabled_same_pane(self) -> None:

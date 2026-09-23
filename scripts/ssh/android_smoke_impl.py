@@ -113,7 +113,7 @@ RECONNECT_LABELS = (
 TMUX_RUNTIME_LABELS = (
     "tmux runtime meeterm",
 )
-RUNTIME_PICKER_HEADING_PREFIX = "Choose a runtime for "
+RUNTIME_PICKER_HEADING_PREFIX = "Choose a session"
 RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",

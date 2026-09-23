@@ -102,7 +102,7 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         helper_end = source.index("func testConnectionFormControlsWithoutSecrets", helper_start)
         helper = source[helper_start:helper_end]
         self.assertIn(
-            'NSPredicate(format: "label BEGINSWITH %@", "Choose a runtime for ")',
+            'app.staticTexts["Choose a session"]',
             helper,
         )
         self.assertIn("waitForHittable(runtime, timeout: 30)", helper)
