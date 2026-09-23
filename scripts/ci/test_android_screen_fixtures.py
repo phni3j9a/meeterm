@@ -291,13 +291,24 @@ class PresentationReadinessTests(unittest.TestCase):
     def test_fresh_session_switcher_requires_both_backends_and_stopped_herdr(self):
         values = {
             "Choose a session",
-            "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)",
-            "Herdr session default on Smoke server (fixture@fixture.invalid:22)",
-            "Herdr session paused on Smoke server (fixture@fixture.invalid:22)",
+            "tmux runtime meeterm",
+            "Herdr runtime default",
+            "Herdr runtime paused",
         }
         self.assertEqual(fixtures.screen_checks("runtime-picker", values), [])
-        values.remove("Herdr session paused on Smoke server (fixture@fixture.invalid:22)")
+        values.remove("Herdr runtime paused")
         self.assertIn("herdr_paused", fixtures.screen_checks("runtime-picker", values))
+        self.assertEqual(
+            fixtures.screen_checks("runtime-empty", {
+                "Choose a session", "No tmux sessions found.", "Herdr runtime paused", "Stopped",
+                "No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer.",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("empty", {"A fresh workspace starts here.", "Create workspace"}),
+            [],
+        )
 
     def test_fresh_session_creation_uses_the_unified_switcher_form(self):
         values = {
@@ -310,7 +321,7 @@ class PresentationReadinessTests(unittest.TestCase):
     def test_herdr_connection_route_is_fresh_session_selection_with_last_used_hint(self):
         values = {
             "Choose a session",
-            "Herdr session default on Smoke server (fixture@fixture.invalid:22)",
+            "Herdr runtime default",
             "Last used",
         }
         self.assertEqual(fixtures.screen_checks("herdr-connection", values), [])
@@ -321,7 +332,7 @@ class PresentationReadinessTests(unittest.TestCase):
         self.assertEqual(
             fixtures.screen_checks("session-switcher-current", switcher | {
                 "Current server Smoke server",
-                "runtime-row-smoke-tmux-meeterm::selected",
+                "runtime-row-tmux-smoke-tmux-meeterm::selected",
                 "switcher-new-tmux::enabled",
                 "switcher-manage-servers::enabled",
                 "switcher-disconnect::enabled",
@@ -331,7 +342,10 @@ class PresentationReadinessTests(unittest.TestCase):
         self.assertEqual(
             fixtures.screen_checks("session-switcher-loading", {
                 "Switch session", "Choose a server, then select one of its running sessions.",
-                "tmux", "Herdr",
+                current_session,
+                "Herdr session default on Smoke server (fixture@fixture.invalid:22)",
+                "runtime-row-tmux-smoke-tmux-meeterm::disabled",
+                "runtime-row-herdr-smoke-herdr-default::disabled",
             }),
             [],
         )
@@ -344,8 +358,8 @@ class PresentationReadinessTests(unittest.TestCase):
         self.assertEqual(
             fixtures.screen_checks("session-switcher-stopped-herdr", switcher | {
                 "Herdr session paused on Smoke server (fixture@fixture.invalid:22)",
-                "Stopped", "Start it in the existing Herdr client, then Refresh.",
-                "runtime-row-smoke-herdr-paused::disabled",
+                "Herdr · Stopped", "Start it in the existing Herdr client, then Refresh.",
+                "runtime-row-herdr-smoke-herdr-paused::disabled",
             }),
             [],
         )
@@ -372,13 +386,15 @@ class PresentationReadinessTests(unittest.TestCase):
         )
         self.assertEqual(
             fixtures.screen_checks("session-switcher-pending", {
-                "Switch session", "Switching…", "runtime-row-smoke-tmux-release::disabled",
+                "Switch session", "tmux · Switching…", "runtime-row-tmux-smoke-tmux-release::disabled",
             }),
             [],
         )
         self.assertEqual(
             fixtures.screen_checks("session-switcher-failure", {
                 "Switch session", "The selected session could not be opened. Refresh and try another session.",
+                "The old connection's desktop layout restore could not be confirmed.",
+                "Dismiss desktop layout warning", "cleanup-warning-dismiss::enabled",
             }),
             [],
         )
@@ -395,7 +411,7 @@ class PresentationReadinessTests(unittest.TestCase):
         self.assertEqual(
             fixtures.screen_checks("session-switcher-current-dark", switcher | {
                 "Current server Smoke server",
-                "runtime-row-smoke-tmux-meeterm::selected",
+                "runtime-row-tmux-smoke-tmux-meeterm::selected",
                 "switcher-new-tmux::enabled",
                 "switcher-manage-servers::enabled",
                 "switcher-disconnect::enabled",

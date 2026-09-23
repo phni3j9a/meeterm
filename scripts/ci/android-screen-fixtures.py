@@ -275,20 +275,20 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
     elif screen == "herdr-connection":
         checks = [
             ("session_picker_heading", "Choose a session" in normalized_values),
-            ("herdr_default", "Herdr session default on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ("herdr_default", "Herdr runtime default" in normalized_values),
             ("last_used_hint", "Last used" in normalized_values),
         ]
     elif screen == "runtime-picker":
         checks = [
             ("session_picker_heading", "Choose a session" in normalized_values),
-            ("tmux_meeterm", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
-            ("herdr_default", "Herdr session default on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
-            ("herdr_paused", "Herdr session paused on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
+            ("herdr_default", "Herdr runtime default" in normalized_values),
+            ("herdr_paused", "Herdr runtime paused" in normalized_values),
         ]
     elif screen == "runtime-partial-error":
         checks = [
             ("session_picker_heading", "Choose a session" in normalized_values),
-            ("tmux_meeterm", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
             (
                 "herdr_error",
                 "Herdr is not available over SSH. Open Herdr on your computer or check its installation."
@@ -299,7 +299,7 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         checks = [
             ("session_picker_heading", "Choose a session" in normalized_values),
             ("tmux_empty", "No tmux sessions found." in normalized_values),
-            ("herdr_paused", "Herdr session paused on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ("herdr_paused", "Herdr runtime paused" in normalized_values),
             ("stopped", "Stopped" in normalized_values),
             ("no_running_runtime_message", "No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer." in normalized_values),
         ]
@@ -318,7 +318,7 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 ("switch_heading", "Switch session" in normalized_values),
                 ("current_server", "Current server Smoke server" in normalized_values),
                 ("current_tmux_session", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
-                ("current_tmux_row_selected", has_visible_test_id(values, "runtime-row-smoke-tmux-meeterm", state="selected")),
+                ("current_tmux_row_selected", has_visible_test_id(values, "runtime-row-tmux-smoke-tmux-meeterm", state="selected")),
                 ("new_session_action", has_visible_test_id(values, "switcher-new-tmux")),
                 ("manage_servers_action", has_visible_test_id(values, "switcher-manage-servers")),
                 ("disconnect_action", has_visible_test_id(values, "switcher-disconnect")),
@@ -327,8 +327,10 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             checks = [
                 ("switch_heading", "Switch session" in normalized_values),
                 ("switch_intro", "Choose a server, then select one of its running sessions." in normalized_values),
-                ("tmux_section", "tmux" in normalized_values),
-                ("herdr_section", "Herdr" in normalized_values),
+                ("loading_tmux_candidate", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+                ("loading_herdr_candidate", "Herdr session default on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+                ("loading_tmux_disabled", has_visible_test_id(values, "runtime-row-tmux-smoke-tmux-meeterm", state="disabled")),
+                ("loading_herdr_disabled", has_visible_test_id(values, "runtime-row-herdr-smoke-herdr-default", state="disabled")),
             ]
         elif screen in ("session-switcher-partial-error", "session-switcher-stopped-herdr"):
             checks = [
@@ -340,9 +342,9 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             else:
                 checks.extend([
                     ("stopped_herdr_session", "Herdr session paused on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
-                    ("stopped_state", "Stopped" in normalized_values),
+                    ("stopped_state", "Herdr · Stopped" in normalized_values),
                     ("herdr_start_guidance", "Start it in the existing Herdr client, then Refresh." in normalized_values),
-                    ("stopped_herdr_disabled", has_visible_test_id(values, "runtime-row-smoke-herdr-paused", state="disabled")),
+                    ("stopped_herdr_disabled", has_visible_test_id(values, "runtime-row-herdr-smoke-herdr-paused", state="disabled")),
                 ])
         elif screen == "session-switcher-credentials":
             checks = [
@@ -369,13 +371,16 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         elif screen == "session-switcher-pending":
             checks = [
                 ("switch_heading", "Switch session" in normalized_values),
-                ("pending_copy", "Switching…" in normalized_values),
-                ("pending_tmux_row_disabled", has_visible_test_id(values, "runtime-row-smoke-tmux-release", state="disabled")),
+                ("pending_copy", "tmux · Switching…" in normalized_values),
+                ("pending_tmux_row_disabled", has_visible_test_id(values, "runtime-row-tmux-smoke-tmux-release", state="disabled")),
             ]
         elif screen == "session-switcher-failure":
             checks = [
                 ("switch_heading", "Switch session" in normalized_values),
                 ("switch_failure", "The selected session could not be opened. Refresh and try another session." in normalized_values),
+                ("layout_restore_warning", "The old connection's desktop layout restore could not be confirmed." in normalized_values),
+                ("warning_dismiss", "Dismiss desktop layout warning" in normalized_values),
+                ("warning_dismiss_enabled", has_visible_test_id(values, "cleanup-warning-dismiss", state="enabled")),
             ]
         elif screen == "session-switcher-long-names":
             checks = [

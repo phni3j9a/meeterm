@@ -1025,6 +1025,9 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
   assert.equal(smoke.smokeFixture('welcome').profiles.length, 0);
   assert.equal(smoke.smokeFixture('empty').panes.length, 0);
+  assert.equal(smoke.smokeFixture('empty').connection.state, 'Ready');
+  assert.equal(smoke.smokeFixture('empty').control.runtimeOperationsReady, true);
+  assert.equal(smoke.smokeFixture('empty').profileId, 'smoke-profile');
   assert.equal(smoke.smokeFixture('search-empty').query, 'deployment');
   assert.equal(smoke.smokeFixture('disconnected').connection.state, 'Disconnected');
   assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
@@ -1041,16 +1044,25 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(switcherCurrent.sessionSwitcherMode, 'switch');
   assert.equal(switcherCurrent.browse.phase, 'ready');
   assert.equal(switcherCurrent.browse.discovery.backends[0].candidates[0].name, 'meeterm');
+  assert.equal(switcherCurrent.profiles.length, 1, 'the current fixture keeps the footer in view on a phone-sized sheet');
+  assert.deepEqual(Array.from(switcherCurrent.browse.discovery.backends, section => section.candidates.length), [1, 1]);
   assert.equal(switcherCurrent.preferences.theme, 'light');
   assert.equal(smoke.smokeFixture('session-switcher-current-dark').preferences.theme, 'dark');
-  assert.equal(smoke.smokeFixture('session-switcher-loading').browse.phase, 'discovering');
+  const loadingSwitcher = smoke.smokeFixture('session-switcher-loading');
+  assert.equal(loadingSwitcher.browse.phase, 'discovering');
+  assert.deepEqual(Array.from(loadingSwitcher.browse.discovery.backends, section => section.candidates.length), [1, 1]);
+  assert.ok(loadingSwitcher.browse.discovery.backends.every(section => section.state === 'loading'));
   assert.equal(smoke.smokeFixture('session-switcher-partial-error').browse.discovery.backends[1].state, 'error');
   assert.equal(smoke.smokeFixture('session-switcher-stopped-herdr').browse.discovery.backends[1].candidates[0].state, 'stopped');
   assert.equal(smoke.smokeFixture('session-switcher-credentials').credentialTargetId, 'smoke-password-profile');
-  assert.equal(smoke.smokeFixture('session-switcher-host-key').browse.hostKey.pending, true);
+  const hostKeySwitcher = smoke.smokeFixture('session-switcher-host-key');
+  assert.equal(hostKeySwitcher.browse.phase, 'discovering');
+  assert.equal(hostKeySwitcher.browse.hostKey.pending, true);
+  assert.deepEqual(Array.from(hostKeySwitcher.browse.discovery.backends, section => section.candidates.length), [0, 0]);
   assert.equal(smoke.smokeFixture('session-switcher-create').createSessionVisible, true);
   assert.equal(smoke.smokeFixture('session-switcher-pending').sessionSwitcherSelectingId, 'smoke-tmux-release');
   assert.match(smoke.smokeFixture('session-switcher-failure').sessionSwitcherError, /could not be opened/);
+  assert.equal(smoke.smokeFixture('session-switcher-failure').control.cleanupWarning.id, '104');
   assert.equal(smoke.smokeFixture('session-switcher-long-names').profileId, 'smoke-long-switcher-profile');
   const layoutWarning = smoke.smokeFixture('layout-restore-unconfirmed');
   assert.equal(layoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
@@ -1088,6 +1100,36 @@ test('Herdr terminal fixture keeps exactly five statuses and an agentless pane',
     .map(pane => pane.agent.status);
   assert.deepEqual([...new Set(statuses)].sort(), ['blocked', 'done', 'idle', 'unknown', 'working']);
   assert.ok(fixture.panes.some(pane => pane.agent === null), 'fixture must include an agentless pane');
+});
+
+test('desktop layout warnings can be dismissed from switcher and fresh-picker rows', async t => {
+  for (const screen of ['session-switcher-failure', 'runtime-layout-restore-unconfirmed']) {
+    await t.test(screen, async nested => {
+      const fixture = await mountSmokeForTest(nested, screen);
+      const warning = findTestId(fixture.root, 'switcher-cleanup-warning');
+      assert.ok(warning);
+      const dismissButtons = all(fixture.root, node => node.props?.testID === 'cleanup-warning-dismiss');
+      assert.ok(dismissButtons.length >= 1);
+      await press(fixture.root, dismissButtons.at(-1));
+      assert.equal(all(fixture.root, node => node.props?.testID === 'switcher-cleanup-warning').length, 0);
+      assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === "The old connection's desktop layout restore could not be confirmed.").length, 0);
+    });
+  }
+});
+
+test('empty smoke routes show an empty remote workspace and a stopped-only runtime list', async t => {
+  const emptyWorkspace = await mountSmokeForTest(t, 'empty');
+  assert.ok(findText(emptyWorkspace.root, 'A fresh workspace starts here.'));
+  assert.ok(findLabel(emptyWorkspace.root, 'Create workspace'));
+  assert.equal(all(emptyWorkspace.root, node => node.props?.testID?.startsWith('workspace-row-')).length, 0);
+
+  const emptyRuntime = await mountSmokeForTest(t, 'runtime-empty');
+  assert.ok(findText(emptyRuntime.root, 'No tmux sessions found.'));
+  assert.ok(findText(emptyRuntime.root, 'No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer.'));
+  const stopped = findTestId(emptyRuntime.root, 'runtime-row-herdr-smoke-herdr-paused');
+  assert.equal(stopped.props.accessibilityLabel, 'Herdr runtime paused');
+  assert.equal(stopped.props.accessibilityState.disabled, true);
+  assert.equal(stopped.props.accessibilityHint, 'Open this runtime on your computer, then refresh.');
 });
 
 test('smoke startup diagnostics classify URL and profile boundaries without fixture effects', async t => {
@@ -1627,6 +1669,24 @@ async function mountForTest(t, snapshot, configure) {
   return fixture;
 }
 
+async function mountSmokeForTest(t, screen) {
+  const { environment, native } = makeNativeEnvironment();
+  environment.initialURL = `meeterm://smoke?screen=${screen}`;
+  const App = loadApp(environment, native, false, true);
+  const root = createRoot();
+  await act(async () => {
+    root.render(React.createElement(App));
+  });
+  await settleAsync();
+  const fixture = { root, environment, native };
+  t.after(async () => {
+    await act(async () => {
+      fixture.root.unmount();
+    });
+  });
+  return fixture;
+}
+
 async function mountConfiguredForTest(t, configure) {
   const { environment, native } = makeNativeEnvironment();
   configure(environment, native);
@@ -1747,7 +1807,7 @@ async function closeCurrentPane(root, environment) {
   });
 }
 
-test('active saved-profile switch explores the target in the unified session sheet without extra confirmation', async t => {
+test('saved-profile switch commits directly to the promoted Ready owner without reopening Saved servers', async t => {
   const target = {
     id: '00000000-0000-4000-8000-000000000031', name: 'Active target',
     host: 'target.example', port: 22, username: 'developer', authMethod: 'password',
@@ -1755,7 +1815,7 @@ test('active saved-profile switch explores the target in the unified session she
   };
   const fixture = await mountConfiguredForTest(t, environment => {
     environment.profiles = [target];
-    environment.runtimeDiscovery = pickerDiscovery(3, [runtimeCandidate('active-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]);
+    environment.runtimeDiscovery = pickerDiscovery(3, [runtimeCandidate('active-tmux', 'tmux', 'prod', 'running', { isDefault: true })]);
     environment.snapshot = makeSnapshot();
   });
 
@@ -1776,6 +1836,46 @@ test('active saved-profile switch explores the target in the unified session she
     1,
   );
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-active-tmux'));
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-active-tmux'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.runtimeBrowseCommits.length, 1);
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.equal(fixture.environment.connection.host, target.host);
+  assert.equal(fixture.environment.snapshot.runtime, 'prod');
+  assert.ok(fixture.environment.connectionStateOwners.includes('native:502'));
+  assert.equal(fixture.environment.lastUsedUpdates.at(-1).profileId, target.id);
+  assert.match(findTestId(fixture.root, 'open-session-switcher').props.accessibilityLabel, /Active target, prod/);
+  assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Connect saved server Active target').length, 0,
+    'a successful candidate commit does not strand the user in the Saved servers sheet');
+});
+
+test('closing a target switcher returns to the originating terminal after Manage servers', async t => {
+  const target = { ...pickerProfile('close-target.example'), id: 'server-close-target', name: 'Close target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(6) };
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  const originatingTerminal = terminalViews(fixture.root)[0].props.terminalId;
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Close target'));
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
+
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
+  await settleAsync();
+
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), [originatingTerminal]);
+  assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Connect saved server Close target').length, 0);
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Saved servers').length, 0,
+    'closing the switcher returns to its original terminal instead of opening the server list');
 });
 
 test('header shows the Ready binding, current check, stable server order, and lazy profile exploration', async t => {
@@ -1804,6 +1904,7 @@ test('header shows the Ready binding, current check, stable server order, and la
   await settleAsync();
 
   const current = findTestId(fixture.root, 'runtime-row-herdr-current-default');
+  assert.match(current.props.accessibilityLabel, /^Herdr session default on /, 'switch mode keeps its server-qualified accessibility contract');
   assert.equal(current.props.accessibilityState.selected, true);
   assert.equal(current.props.accessibilityState.disabled, true, 'Herdr cannot confirm a same-live binding from discovery');
   assert.equal(fixture.environment.runtimeBrowseStarts.filter(item => item.kind === 'current').length, 1);
@@ -2299,6 +2400,41 @@ test('saved-profile connection opens the unified explicit session picker', async
   assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
   assert.ok(findText(fixture.root, 'Choose a session'));
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-failed-tmux'));
+});
+
+test('fresh runtime rows keep the legacy labels, hints, status, and row identifiers', async t => {
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.connection = {
+      ...environment.connection,
+      state: 'AwaitingRuntimeSelection',
+      host: 'fresh.example',
+      port: 22,
+    };
+    environment.runtimeDiscovery = pickerDiscovery(5, [
+      runtimeCandidate('fresh-tmux', 'tmux', 'meeterm', 'running', { isDefault: true }),
+    ]);
+    environment.runtimeDiscovery.backends[1].candidates = [
+      runtimeCandidate('fresh-herdr-stopped', 'herdr', 'paused', 'stopped'),
+      runtimeCandidate('fresh-herdr-unavailable', 'herdr', 'incompatible', 'running', { selectable: false }),
+    ];
+  });
+
+  const tmux = findTestId(fixture.root, 'runtime-row-tmux-fresh-tmux');
+  assert.equal(tmux.props.accessibilityLabel, 'tmux runtime meeterm');
+  assert.equal(tmux.props.accessibilityHint, undefined);
+  assert.equal(tmux.props.accessibilityState.selected, false);
+
+  const stopped = findTestId(fixture.root, 'runtime-row-herdr-fresh-herdr-stopped');
+  assert.equal(stopped.props.accessibilityLabel, 'Herdr runtime paused');
+  assert.equal(stopped.props.accessibilityHint, 'Open this runtime on your computer, then refresh.');
+  assert.equal(stopped.props.accessibilityState.disabled, true);
+  assert.match(textContent(stopped), /Stopped/);
+  assert.match(textContent(stopped), /Open this session in Herdr on your computer, then tap Refresh\./);
+
+  const unavailable = findTestId(fixture.root, 'runtime-row-herdr-fresh-herdr-unavailable');
+  assert.equal(unavailable.props.accessibilityLabel, 'Herdr runtime incompatible');
+  assert.equal(unavailable.props.accessibilityHint, 'This runtime is unavailable. Refresh runtimes and try again.');
+  assert.equal(unavailable.props.accessibilityState.disabled, true);
 });
 
 test('saved-server connect authenticates first, then requires explicit runtime selection', async t => {

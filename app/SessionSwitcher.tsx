@@ -45,6 +45,7 @@ type Props = {
   createName: string;
   createError: string;
   cleanupWarning: string;
+  onDismissCleanupWarning: () => void;
   onClose: () => void;
   onRetry: () => void;
   onToggleServer: (server: SessionSwitcherServer) => void;
@@ -109,6 +110,7 @@ export function SessionSwitcher({
   createName,
   createError,
   cleanupWarning,
+  onDismissCleanupWarning,
   onClose,
   onRetry,
   onToggleServer,
@@ -134,7 +136,8 @@ export function SessionSwitcher({
 
   const renderCandidate = (candidate: RuntimeCandidate, server: SessionSwitcherServer, fresh = false) => {
     const stopped = candidate.state === 'stopped';
-    const unavailable = stopped || !candidate.selectable;
+    const notRunning = candidate.state !== 'running';
+    const unavailable = (fresh ? notRunning : stopped) || !candidate.selectable;
     const selected = Boolean(currentBinding
       && server.id === currentServer.id
       && currentBinding.backend === candidate.backend
@@ -143,33 +146,55 @@ export function SessionSwitcher({
     const candidateListReady = fresh ? discoveryReady : browse?.phase === 'ready';
     const disabled = unavailable || busy || !candidateListReady || (selected && !sameTmuxBindingCanBeConfirmed) || hostKeyPending;
     const pending = selectingId === candidate.id;
+    const rowSelected = fresh ? pending : selected;
+    const rowOpacity = fresh && (unavailable || busy)
+      ? { opacity: notRunning ? .55 : .8 }
+      : !fresh && unavailable ? { opacity: .62 } : null;
+    const statusColor = fresh && !notRunning && candidate.selectable ? colors.accent : colors.muted;
     const errorText = candidateError(candidate) || selectionErrors[candidate.id] || '';
-    const label = `${candidate.backend === 'tmux' ? 'tmux' : 'Herdr'} session ${candidate.name} on ${server.name} (${address(server)})`;
-    const hint = stopped && candidate.backend === 'herdr'
-      ? 'Start this session in the existing Herdr client, then refresh.'
-      : selected ? 'Currently selected session.' : undefined;
+    const backendName = candidate.backend === 'tmux' ? 'tmux' : 'Herdr';
+    const label = fresh
+      ? `${backendName} runtime ${candidate.name}`
+      : `${backendName} session ${candidate.name} on ${server.name} (${address(server)})`;
+    const hint = fresh
+      ? notRunning
+        ? 'Open this runtime on your computer, then refresh.'
+        : !candidate.selectable
+          ? 'This runtime is unavailable. Refresh runtimes and try again.'
+          : undefined
+      : stopped && candidate.backend === 'herdr'
+        ? 'Start this session in the existing Herdr client, then refresh.'
+        : selected ? 'Currently selected session.' : undefined;
     return <View key={`${server.id}:${candidate.backend}:${candidate.id}`} style={[styles.sessionRow, { borderBottomColor: colors.border }]}>
       <Pressable
         testID={`runtime-row-${candidate.backend}-${candidate.id}`}
         accessibilityRole="button"
         accessibilityLabel={label}
         accessibilityHint={hint}
-        accessibilityState={{ selected, disabled }}
+        accessibilityState={{ selected: rowSelected, disabled }}
         disabled={disabled}
         onPress={() => onSelect(candidate)}
-        style={({ pressed }) => [styles.sessionChoice, pressed && { backgroundColor: colors.surface }, unavailable && { opacity: .62 }]}
+        style={({ pressed }) => [styles.sessionChoice, pressed && { backgroundColor: colors.surface }, rowOpacity]}
       >
         <View style={styles.sessionCopy}>
           <View style={styles.sessionTitleLine}>
             <Text numberOfLines={2} style={[styles.sessionName, { color: colors.text }]}>{candidate.name}</Text>
             {candidate.lastUsed ? <Text style={[styles.hintBadge, { color: colors.accent, borderColor: colors.accent }]}>Last used</Text> : null}
           </View>
-          <Text style={[styles.auxLabel, { color: colors.muted }]}>{candidate.backend === 'tmux' ? 'tmux' : 'Herdr'}{stopped ? ' · Stopped' : ''}{pending ? ' · Switching…' : ''}</Text>
-          {stopped && candidate.backend === 'herdr' ? <Text style={[styles.rowDetail, { color: colors.muted }]}>Start it in the existing Herdr client, then Refresh.</Text> : null}
-          {!candidate.selectable && !stopped ? <Text style={[styles.rowDetail, { color: colors.muted }]}>This session is unavailable. Refresh to check again.</Text> : null}
+          <Text style={[styles.auxLabel, { color: statusColor }]}>{fresh
+            ? notRunning ? 'Stopped' : candidate.selectable ? 'Running' : 'Unavailable'
+            : `${backendName}${stopped ? ' · Stopped' : ''}${pending ? ' · Switching…' : ''}`}</Text>
+          {fresh && notRunning
+            ? <Text style={[styles.rowDetail, { color: colors.muted }]}>Open this session in {backendName} on your computer, then tap Refresh.</Text>
+            : stopped && candidate.backend === 'herdr'
+              ? <Text style={[styles.rowDetail, { color: colors.muted }]}>Start it in the existing Herdr client, then Refresh.</Text>
+              : null}
+          {!fresh && !candidate.selectable && !stopped ? <Text style={[styles.rowDetail, { color: colors.muted }]}>This session is unavailable. Refresh to check again.</Text> : null}
           {errorText ? <Text accessibilityRole="alert" style={[styles.rowDetail, { color: colors.danger }]}>{errorText}</Text> : null}
         </View>
-        {pending ? <ActivityIndicator color={colors.accent} /> : selected ? <Icon name="check" color={colors.accent} size={20} /> : <View style={styles.checkSlot} />}
+        {pending ? <ActivityIndicator color={colors.accent} /> : fresh
+          ? <Icon name="chevron" color={notRunning ? colors.muted : colors.accent} size={18} />
+          : selected ? <Icon name="check" color={colors.accent} size={20} /> : <View style={styles.checkSlot} />}
       </Pressable>
     </View>;
   };
@@ -267,7 +292,10 @@ export function SessionSwitcher({
           <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>{mode === 'fresh' ? 'Choose a session' : 'Switch session'}</Text><Text style={[styles.intro, { color: colors.muted }]}>{mode === 'fresh' ? 'Choose a real session to open. Nothing is selected automatically.' : 'Choose a server, then select one of its running sessions.'}</Text></View>
           {mode === 'switch' ? <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy && !allowCloseWhileBusy} onPress={onClose} /> : null}
         </View>
-        {cleanupWarning ? <View style={[styles.warning, { backgroundColor: colors.surface }]}><Text style={[styles.rowDetail, { color: colors.danger }]}>{cleanupWarning}</Text></View> : null}
+        {cleanupWarning ? <View testID="switcher-cleanup-warning" style={[styles.warning, { backgroundColor: colors.surface }]}>
+          <Text style={[styles.rowDetail, { color: colors.danger, flex: 1 }]}>{cleanupWarning}</Text>
+          <IconButton icon="close" label="Dismiss desktop layout warning" testID="cleanup-warning-dismiss" colors={colors} onPress={onDismissCleanupWarning} />
+        </View> : null}
         {error ? <Text accessibilityRole="alert" style={[styles.inlineError, { color: colors.danger }]}>{error}</Text> : null}
         {retryAvailable ? <Pressable testID="switcher-retry" accessibilityRole="button" accessibilityLabel="Retry session discovery" disabled={busy} onPress={onRetry} style={styles.refreshAction}><Text style={[styles.action, { color: colors.accent }]}>Retry</Text></Pressable> : null}
         {renderServer(currentServer, true)}
@@ -304,7 +332,7 @@ const styles = StyleSheet.create({
   expandedContent: { paddingLeft: 30, paddingBottom: 8 },
   inlineMessage: { paddingVertical: 8, gap: 4 },
   inlineError: { fontSize: 13, lineHeight: 19 },
-  warning: { padding: 10, borderRadius: 10 },
+  warning: { padding: 10, borderRadius: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
   backendSection: { paddingTop: 8 },
   backendHeader: { minHeight: 30, flexDirection: 'row', alignItems: 'center', gap: 10 },
   backendTitle: { flex: 1, fontSize: 12, lineHeight: 18, textTransform: 'uppercase', letterSpacing: .5, fontWeight: '600' },

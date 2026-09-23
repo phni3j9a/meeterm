@@ -1057,14 +1057,14 @@ final class MeetermSmokeUITests: XCTestCase {
         && waitForHittable(button("Disconnect"), timeout: 30)
     case "runtime-picker":
       return app.staticTexts["Choose a session"].waitForExistence(timeout: 30)
-        && waitForHittable(button("tmux session meeterm on Smoke server (fixture@fixture.invalid:22)"), timeout: 30)
-        && waitForHittable(button("Herdr session default on Smoke server (fixture@fixture.invalid:22)"), timeout: 30)
-        && button("Herdr session paused on Smoke server (fixture@fixture.invalid:22)").waitForExistence(timeout: 30)
+        && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
+        && waitForHittable(button("Herdr runtime default"), timeout: 30)
+        && button("Herdr runtime paused").waitForExistence(timeout: 30)
     case "runtime-partial-error":
       return app.staticTexts["Herdr is not available over SSH. Open Herdr on your computer or check its installation."].waitForExistence(timeout: 30)
-        && waitForHittable(button("tmux session meeterm on Smoke server (fixture@fixture.invalid:22)"), timeout: 30)
+        && waitForHittable(button("tmux runtime meeterm"), timeout: 30)
     case "runtime-empty":
-      let paused = button("Herdr session paused on Smoke server (fixture@fixture.invalid:22)")
+      let paused = button("Herdr runtime paused")
       return app.staticTexts["No tmux sessions found."].waitForExistence(timeout: 30)
         && app.staticTexts["No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer."].waitForExistence(timeout: 30)
         && paused.waitForExistence(timeout: 30)
@@ -1086,10 +1086,14 @@ final class MeetermSmokeUITests: XCTestCase {
         && waitForHittable(app.buttons["switcher-manage-servers"], timeout: 30)
         && waitForHittable(app.buttons["switcher-disconnect"], timeout: 30)
     case "session-switcher-loading":
+      let tmux = button("tmux session meeterm on Smoke server (fixture@fixture.invalid:22)")
+      let herdr = button("Herdr session default on Smoke server (fixture@fixture.invalid:22)")
       return app.staticTexts["Switch session"].waitForExistence(timeout: 30)
         && app.staticTexts["Choose a server, then select one of its running sessions."].waitForExistence(timeout: 30)
-        && app.staticTexts["tmux"].waitForExistence(timeout: 30)
-        && app.staticTexts["Herdr"].waitForExistence(timeout: 30)
+        && tmux.waitForExistence(timeout: 30)
+        && !tmux.isEnabled
+        && herdr.waitForExistence(timeout: 30)
+        && !herdr.isEnabled
     case "session-switcher-partial-error":
       return app.staticTexts["Switch session"].waitForExistence(timeout: 30)
         && app.staticTexts["Herdr is not available over SSH. Open Herdr on your computer or check its installation."].waitForExistence(timeout: 30)
@@ -1118,12 +1122,13 @@ final class MeetermSmokeUITests: XCTestCase {
     case "session-switcher-pending":
       let pending = button("tmux session release-prep on Smoke server (fixture@fixture.invalid:22)")
       return app.staticTexts["Switch session"].waitForExistence(timeout: 30)
-        && app.staticTexts["Switching…"].waitForExistence(timeout: 30)
         && pending.waitForExistence(timeout: 30)
         && !pending.isEnabled
     case "session-switcher-failure":
       return app.staticTexts["Switch session"].waitForExistence(timeout: 30)
         && app.staticTexts["The selected session could not be opened. Refresh and try another session."].waitForExistence(timeout: 30)
+        && app.staticTexts["The old connection's desktop layout restore could not be confirmed."].waitForExistence(timeout: 30)
+        && waitForHittable(button("Dismiss desktop layout warning"), timeout: 30)
     case "session-switcher-long-names":
       return app.staticTexts["Switch session"].waitForExistence(timeout: 30)
         && app.staticTexts["東京・多地域インフラ移行とリリース準備用の作業サーバー"].waitForExistence(timeout: 30)
@@ -1145,7 +1150,7 @@ final class MeetermSmokeUITests: XCTestCase {
       // accessible row that VoiceOver and the selection flow receive; the
       // downloaded screenshot covers the badge itself.
       return app.staticTexts["Choose a session"].waitForExistence(timeout: 30)
-        && waitForHittable(button("Herdr session default on Smoke server (fixture@fixture.invalid:22)"), timeout: 30)
+        && waitForHittable(button("Herdr runtime default"), timeout: 30)
     case "herdr-groups":
       let title = app.staticTexts["Switch group"]
       let development = buttonStarting(with: "Group Development")

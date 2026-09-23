@@ -301,15 +301,20 @@ function createSmokeFixture(screen: SmokeScreen): SmokeFixtureState {
   if (screen.startsWith('session-switcher-')) {
     const base = createSmokeFixture('workspaces');
     const isLongNames = screen === 'session-switcher-long-names';
+    const isCompactState = screen === 'session-switcher-current' || screen === 'session-switcher-loading';
     const currentServer = isLongNames ? SMOKE_LONG_SWITCHER_PROFILE : SMOKE_PROFILE;
     const profiles = isLongNames
       ? [SMOKE_LONG_SWITCHER_PROFILE, { ...SMOKE_SWITCHER_SAVED_PROFILE, id: 'smoke-long-alternate-profile', name: 'Production mirror · 日本語ログと運用監視用サーバー' }]
-      : [SMOKE_PROFILE, SMOKE_SWITCHER_SAVED_PROFILE, SMOKE_PASSWORD_PROFILE];
+      : isCompactState ? [SMOKE_PROFILE] : [SMOKE_PROFILE, SMOKE_SWITCHER_SAVED_PROFILE, SMOKE_PASSWORD_PROFILE];
     const discovery = screen === 'session-switcher-loading' || screen === 'session-switcher-host-key'
       ? {
         ...SMOKE_RUNTIME_DISCOVERY,
         revision: 0,
-        backends: SMOKE_RUNTIME_DISCOVERY.backends.map(section => ({ ...section, state: 'loading' as const, candidates: [] })),
+        backends: SMOKE_RUNTIME_DISCOVERY.backends.map(section => ({
+          ...section,
+          state: 'loading' as const,
+          candidates: screen === 'session-switcher-loading' ? section.candidates : [],
+        })),
       }
       : screen === 'session-switcher-partial-error'
         ? smokeRuntimeDiscovery('runtime-partial-error')
@@ -322,6 +327,12 @@ function createSmokeFixture(screen: SmokeScreen): SmokeFixtureState {
             }],
           }
           : JSON.parse(JSON.stringify(SMOKE_RUNTIME_DISCOVERY)) as RuntimeDiscovery;
+    if (isCompactState) {
+      discovery.backends = discovery.backends.map(section => ({
+        ...section,
+        candidates: section.candidates.filter(candidate => candidate.name === (section.backend === 'tmux' ? 'meeterm' : 'default')),
+      }));
+    }
     if (screen === 'session-switcher-long-names') {
       discovery.backends = discovery.backends.map(section => ({
         ...section,
@@ -361,6 +372,13 @@ function createSmokeFixture(screen: SmokeScreen): SmokeFixtureState {
     if (screen === 'session-switcher-pending') base.sessionSwitcherSelectingId = 'smoke-tmux-release';
     if (screen === 'session-switcher-failure') {
       base.sessionSwitcherError = 'The selected session could not be opened. Refresh and try another session.';
+      base.control = smokeControl({
+        cleanupWarning: {
+          id: '104',
+          code: 'layout_restore_unconfirmed',
+          message: SMOKE_CLEANUP_WARNING_MESSAGE,
+        },
+      });
     }
     return base;
   }
@@ -449,7 +467,10 @@ function createSmokeFixture(screen: SmokeScreen): SmokeFixtureState {
   if (['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error'].includes(screen)) {
     const base = createSmokeFixture(screen === 'welcome' ? 'home' : 'workspaces');
     if (screen === 'welcome') base.profiles = [];
-    if (screen === 'empty') base.panes = [];
+    if (screen === 'empty') {
+      base.panes = [];
+      base.control = smokeControl();
+    }
     if (screen === 'search-empty') { base.searching = true; base.query = 'deployment'; }
     if (screen === 'disconnected') base.connection.state = 'Disconnected';
     if (screen === 'reconnecting') base.connection.state = 'Reconnecting';
@@ -2417,6 +2438,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       }
       setRuntimeHint({ backend: nextSession.backend, runtime: nextSession.runtime });
       setSessionSwitcherMode('switch');
+      // A session may have been opened from the Saved servers sheet. Once the
+      // promoted owner is Ready, its pending sheet-return intent is complete.
+      reopenSwitcherAfterManageRef.current = false;
+      openSwitcherAfterServerMenuRef.current = false;
+      switcherProfileAfterServerSheetRef.current = null;
       setSessionSwitcherOpen(false);
       setRuntimePickerVisible(false);
       setRuntimeCreateVisible(false);
@@ -2790,6 +2816,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   const closeSessionSwitcher = useCallback(() => {
+    // Dismissing the switcher returns to the workspace route that opened it.
+    // Do not let an earlier Manage servers transition reopen that sheet.
+    reopenSwitcherAfterManageRef.current = false;
+    openSwitcherAfterServerMenuRef.current = false;
+    switcherProfileAfterServerSheetRef.current = null;
     setSessionSwitcherOpen(false);
   }, []);
 
@@ -3517,6 +3548,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         createName={createSessionName}
         createError={runtimePickerVisible ? runtimeCreationError : createSessionError}
         cleanupWarning={cleanupWarning?.message ?? ''}
+        onDismissCleanupWarning={dismissCleanupWarning}
         onClose={runtimePickerVisible ? cancelRuntimeSelection : closeSessionSwitcher}
         onRetry={runtimePickerVisible ? refreshRuntimes : retrySwitcherBrowse}
         onToggleServer={server => runtimePickerVisible
@@ -3618,6 +3650,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const target = switcherProfileAfterServerSheetRef.current;
       if (target) {
         switcherProfileAfterServerSheetRef.current = null;
+        reopenSwitcherAfterManageRef.current = false;
+        openSwitcherAfterServerMenuRef.current = false;
         openSessionSwitcher(target);
       } else if (openSwitcherAfterServerMenuRef.current) {
         openSwitcherAfterServerMenuRef.current = false;
