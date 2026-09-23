@@ -195,7 +195,7 @@ public final class MeetermTerminalModule: Module {
     }
     // `unchanged` is a confirmed no-op outcome; preserve the existing Ready owner.
     AsyncFunction("runtimeBrowseState") { (token: String) throws -> [String: Any] in
-      guard Self.validBrowseToken(token), let json = MeetermCore.runtimeBrowseState(token),
+      guard Self.validBrowseToken(token), let json = MeetermCore.runtimeBrowseState(token: token),
             let data = json.data(using: .utf8),
             let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         throw Self.error("The runtime browse state is unavailable.")
@@ -203,12 +203,12 @@ public final class MeetermTerminalModule: Module {
       return try Self.runtimeBrowseRecord(value)
     }
     AsyncFunction("runtimeBrowseRefresh") { (token: String) throws in
-      guard Self.validBrowseToken(token), MeetermCore.runtimeBrowseRefresh(token) == 0 else {
+      guard Self.validBrowseToken(token), MeetermCore.runtimeBrowseRefresh(token: token) == 0 else {
         throw Self.error("Runtime browse could not be refreshed.")
       }
     }
     AsyncFunction("runtimeBrowseCancel") { (token: String) throws in
-      guard Self.validBrowseToken(token), MeetermCore.runtimeBrowseCancel(token) == 0 else {
+      guard Self.validBrowseToken(token), MeetermCore.runtimeBrowseCancel(token: token) == 0 else {
         throw Self.error("Runtime browse could not be cancelled.")
       }
     }
