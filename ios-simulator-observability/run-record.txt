@@ -1,0 +1,9 @@
+source_sha=a066f796fac31cf5c05d9a88693c6cb8023975b4
+suites=standard,ssh,switcher-drive
+toolchain=Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c
+build=fresh CNG build-for-testing; ssh + drive reused same-commit products (pack manifest SHA a066f79 verified)
+simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0
+simulator_note=ALL stages (standard, ssh, drive) targeted this device: ios-smoke.py passes -destination platform=iOS Simulator,id=$IOS_SIMULATOR_UDID and the drive script uses id=$UDID; app install/test/log capture all ran against 7EE2EBC1.
+metadata_discrepancy=simulator.txt/metadata.txt record iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7): ios-select-simulator.sh independently auto-picks the first available 'iPhone * Pro' device in simctl list and boots it; it does NOT determine the test destination. 1308A109 is booted but was not used for testing.
+xctest_elapsed=standard UI+storage per ios-*-validation.txt; ssh per ios-transport-loss-validation.txt; drive 723.0s
+sysdiagnose=skipped: wedged collector subsystem (simctl diagnose runs to 600s cap on this host; killed ~46s in by session watchdog). All tests complete before diagnostics; results unaffected.

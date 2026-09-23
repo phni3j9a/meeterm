@@ -5,3 +5,5 @@ layout_profile=default
 renderer_backend=metal
 ssh_renderer_backend=metal
 renderer_backend=metal
+renderer_backend=metal
+ssh_renderer_backend=metal

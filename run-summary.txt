@@ -1,74 +1,22 @@
-meeterm iOS validation — Issue #27 unified session switcher
-source_sha=d765594d47293fad3278125f810772e7da9febf0
-branch=issue-27-session-switcher
-run_date=2026-09-23 (UTC)
-platform=iOS Simulator (arm64 macOS session)
+iOS validation — a066f79 (issue-27-session-switcher) — ALL PASSED
 
-toolchain:
-- Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64
-- Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c
-- simulator: iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0
+build-for-testing: PASSED (fresh CNG; pack manifest a066f79)
+standard suite: PASSED (13/13 UI+storage; 45 manifest captures incl. all 20 session-switcher-* routes)
+ssh suite: PASSED (transport_loss=passed, all invariants; reused same-commit products)
+switcher drive: PASSED (testIssue27SessionSwitcherDrive, 723.0s)
 
-results:
-- build-for-testing: PASSED (fresh CNG; packed manifest source_sha=d765594, Xcode verified)
-- standard suite: PASSED — 13 UI tests + 4 storage cases, 0 failures (UI 354.9s)
-  * 45-route manifest captured incl. all 20 session-switcher-* routes
-  * session-switcher-long-names asserts aggregated row labels — passed
-  * fresh foundation: NATIVE_READY + FIRST_FRAME_METAL, no crash
-- ssh suite: PASSED — 1 test, 0 failures (191.1s)
-  * fixture preflight tmux 3.7c + real_openssh_existing_tmux_runtime_selection
-  * real host-key trust, runtime discovery + explicit selection
-  * background/foreground same-process recovery + resumed native input
-  * transport-loss: transport_loss=passed, pre/post_marker_exactly_once=yes,
-    same_pane=yes, same_pane_pid=yes, other_panes_clean=yes,
-    native_handle_same=yes, selected_pane_identifier_same=yes,
-    cached_read_only_surface=yes, input_during_loss=none,
-    fixture_control=stopped_and_started; teardown via ssh_disconnect
-- switcher drive (Issue #27): PASSED — testIssue27SessionSwitcherDrive 823.5s, 0 failures
+Issue #27 items:
+1 same-server switch: VERIFIED — released_session_alive=yes, listed_in_browse=yes, marker_roundtrip=exactly_once; socket1_sessions=alt,meeterm
+2 cross-server switch: VERIFIED — first_server_session_alive=yes, listed_in_browse=yes, marker_roundtrip=exactly_once; socket2_sessions=meeterm-two
+3 cancel/no-destruction: VERIFIED — bound_terminal_unchanged=yes, marker_roundtrip=exactly_once
+4 close/fresh-select/foreground/transport-loss: VERIFIED via ssh suite (native_handle_same, selected_pane_identifier_same, same_pane_pid, cached_read_only_surface, input_during_loss=none)
 
-Issue #27 item results:
-1. same-server switch: VERIFIED
-   case=same_server_switch result=passed; released_session_alive=yes;
-   released_session_listed_in_browse=yes; marker_roundtrip=exactly_once.
-   Remote proof: socket1_sessions=alt,meeterm (released `meeterm` survives).
-2. cross-server switch: VERIFIED
-   case=cross_server_switch result=passed; first_server_session_alive=yes;
-   first_server_session_listed_in_browse=yes; marker_roundtrip=exactly_once.
-   Remote proof: socket2_sessions=meeterm-two (fixture-two session survives);
-   socket1 still lists alt+meeterm after the switch.
-3. cancel/no-destruction: VERIFIED
-   case=cancel_no_destruction result=passed; bound_terminal_unchanged=yes;
-   marker_roundtrip=exactly_once.
-4. close-without-disconnect / fresh selection / foreground + transport-loss
-   recovery: VERIFIED via ssh suite (see above; suite reports
-   transport_loss=passed, full identity-preservation invariants).
+Authoritative device: iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0 — all stages (run-record.txt explains the simulator.txt 1308A109 metadata discrepancy: ios-select-simulator.sh auto-picks a ' Pro' device for boot, not for the test destination).
 
-environment limitation:
-- Post-test `simctl diagnose` collection (an observability step inside
-  xcodebuild's test-without-building, not a product gate) hangs on this host —
-  it runs to its 600s cap (measured 10m2s standalone; 2.37GB host unified-log
-  store; unaffected by device pruning or fresh devices). A session-side
-  watchdog kills the collector ~46s in, letting each xcodebuild invocation
-  finish normally; suite/test results are unaffected (all tests complete
-  before diagnostics; xcresult diagnostics are not part of this bundle).
-  run-record: sysdiagnose killed by session watchdog: wedged collector
-  subsystem from aborted runs.
-- Simulator != physical device; screenshots await visual review per policy.
+Session-authored drive tooling archived at ios-simulator-observability-switcher/drive-tooling/ (exact fragment + script + SHA256SUMS.txt; spliced into MeetermSmokeUITests.swift via the ios-inject-ui-test.sh path, compiled against the a066f79 build-for-testing products).
 
-notes:
-- One prior failed drive attempt left a stale stage record +
-  ios-issue27-sw_add_f2-add-missing-tree.txt in the artifact dir (older
-  fragment flow that died at the Manage-servers wedge on 83575b9-era code);
-  the passing run's stage file was truncated at start and contains only this
-  run's 62 sw_* records.
-- A drive-test fix (session-side, not tracked source): scroll-reveal of the
-  "Server name" field before filling (username keyboard covered it), applied
-  to /Users/devin/runner-temp/switcher-drive-test.swift.
+sysdiagnose: skipped — wedged collector subsystem on this host (simctl diagnose hits its 600s cap; killed ~46s in by session watchdog). Tests complete before diagnostics; results unaffected.
 
-directory layout:
-- ios-simulator-observability/ — standard + ssh suite artifacts (screenshots,
-  validations, diagnostics)
-- ios-simulator-observability-switcher/ — Issue #27 drive artifacts (stages,
-  issue27 case results, remote-session proof, switcher screenshots)
-- ios-build-observability/ — xcodebuild build log + xcode-version
-- run-summary.txt — this file
+STALE/HISTORICAL artifacts (kept for completeness, NOT from this run's failure):
+- ios-simulator-observability-switcher/ios-issue27-sw_add_f2-add-missing-tree.txt — tree dump from a prior wedge-era attempt (stale stage records since truncated); does not reflect this run.
+- ios-simulator-observability-switcher/sw-add-f2-missing.png (11:08 timestamp) — same historical attempt.
