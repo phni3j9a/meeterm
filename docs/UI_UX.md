@@ -31,14 +31,16 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 
 ## Navigation and state
 
-- Workspaces are the main destination. A server name opens the saved-server
-  selector; the adjacent menu opens connection actions. Settings is a helper
-  opened from the top toolbar or terminal menu.
+- Workspaces are the main destination. Its header shows `Server · Session ▾`;
+  tapping it opens the shared native session sheet. The adjacent menu still
+  opens connection actions. Settings is a helper opened from the top toolbar
+  or terminal menu.
 - Workspace rows show their terminal names. Selecting a workspace opens its
   selected pane. Pane tabs and Herdr groups retain the remote hierarchy.
 - Search and its list offset survive opening and leaving a workspace.
-- A two-screen native stack provides platform navigation transitions and the
-  iOS edge-back gesture. Switching terminals does not push additional routes.
+- A native stack keeps Workspaces and Terminal as the two primary destinations
+  and presents the session switcher as a native bottom sheet. Switching
+  terminals does not push additional routes.
   Reduced Motion selects a fade; no terminal frames cross JavaScript.
 - The iOS history-pan delegate yields horizontal motion to navigation while
   keeping selection dragging away from the left edge. Search lists use native
@@ -50,12 +52,23 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   48 dp tall, preserving its terminal sizing and native input contract.
 - Server management, naming, connection details, and settings have explicit
   close/cancel boundaries. Unsaved forms ask before discarding changes.
-- After SSH host-key verification and authentication, a runtime picker presents
-  independent tmux and Herdr sections. It highlights a last-used hint without
-  auto-selecting it, keeps loading/mixed/empty/partial-error and stale-selection
-  states explicit, and exposes tmux creation separately from running-only
-  Herdr selection. Herdr stopped rows explain the external-client refresh path;
-  they do not offer a meeterm start/create promise or fallback to tmux.
+- The same session sheet handles fresh selection and Ready-state switching. It
+  shows the current server first, expands server rows in place, and lists
+  tmux/Herdr sessions only after bounded discovery. A last-used hint never
+  selects a session. If another profile has no stored credential, its SSH
+  credential form stays inside the sheet; an unverified host key retains its
+  explicit trust prompt. Loading, partial backend failure, empty results,
+  stopped Herdr sessions, selection errors, and switch progress remain visible
+  in that flow. Herdr stopped rows explain the external-client refresh path and
+  do not offer a meeterm start/create promise or fallback to tmux.
+- The sheet footer offers `New tmux session`, `Manage servers`, and a separate
+  `Disconnect` action while switching. The create form names its target server
+  and preserves existing sessions. Fresh selection retains its explicit
+  candidate choice and uses a cancel-connection action in the footer.
+- Tapping the currently selected tmux row is a native-confirmed `unchanged`
+  no-op that closes the sheet without releasing and reacquiring the runtime.
+  The current Herdr row stays inert because its public 0.9.0 interface cannot
+  prove the same-instance no-op safely.
 - Connection progress, empty results, empty workspaces, lost connections,
   authentication problems, and host-key changes use English copy. Host-key
   verification and destructive remote actions remain explicit.
@@ -65,8 +78,8 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   retry exhaustion and fail-closed identity errors expose Retry and Change
   actions in place. Herdr continuity confirmation opens only after an explicit
   Review action and never implies takeover, compatibility override, or tmux
-  fallback. Fresh/cold connection discovery continues to use the runtime
-  picker.
+  fallback. Recovery's explicit Change action opens the shared session sheet;
+  viewing or dismissing it alone does not discard retained work.
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
 
@@ -229,14 +242,13 @@ new fixed input diagnostics; local revalidation identified Metal without
 overwriting their artifacts. The complete sequence is retained in
 [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The current iOS `standard` source-level manifest has 25 screens: the previous
-18 plus `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
-`runtime-layout-restore-unconfirmed`, plus `connection-error`. The existing `herdr-connection` route remains the
-picker state whose Herdr `default` candidate carries the non-authoritative
-`Last used` hint. Android's observational `SCREEN_NAMES` has 31 routes: the
-previous 25 plus those four recovery routes and the two layout-restore warning
-fixtures. These counts describe source scope only; the
+The current iOS `standard` source-level manifest has 45 screens: its previous
+25 plus ten `session-switcher-*` states, each with a `-dark` counterpart.
+Android's observational `SCREEN_NAMES` has 51 routes: its previous 31 plus
+those same 20 light/dark switcher fixtures. The existing `runtime-picker` and
+related `runtime-*` routes remain fresh selection fixtures, now rendered by the
+shared switcher; `herdr-connection` shows the Herdr `default` candidate's
+non-authoritative `Last used` hint. These counts describe source scope only; the
 historical run table above remains historical and does not establish new remote
 CI or visual-review results. The seven extra states and navigation belong to
 the separate `polish` diagnostic with independent completion markers and the

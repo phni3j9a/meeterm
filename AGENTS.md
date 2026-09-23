@@ -283,15 +283,16 @@ and launch it, observe native readiness and a first terminal frame, and check
 that the process does not crash. It is not a substitute for final full and
 `standard` acceptance.
 
-The iOS `standard` source-level manifest is 25 screens: the previous 18 plus
-`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`, plus the `layout-restore-unconfirmed` and
-`runtime-layout-restore-unconfirmed` warning fixtures and `connection-error`.
-Its existing `herdr-connection` route is now a picker state whose Herdr `default`
-candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` contains 31 routes: the previous 25 plus those same four recovery
-routes and the two warning fixtures. These are source-level scopes, not remote CI
-or visual-review results.
+The iOS `standard` source-level manifest has 45 screens: its previous 25 plus
+the ten `session-switcher-*` states and a `-dark` variant of each. Android's
+observational `SCREEN_NAMES` has 51 routes: its previous 31 plus those same 20
+light/dark switcher fixtures. The switcher states are `current`, `loading`,
+`partial-error`, `stopped-herdr`, `credentials`, `host-key`, `create`, `pending`,
+`failure`, and `long-names`. The existing `runtime-picker` and related
+`runtime-*` routes remain fresh selection states, now rendered through the
+unified `SessionSwitcher`; `herdr-connection` shows the Herdr `default`
+candidate's non-authoritative `Last used` hint. These are source-level scopes,
+not remote CI or visual-review results.
 
 The explicit iOS `polish` diagnostic adds seven presentation states and native
 navigation/keyboard/back checks. `polish-navigation` independently exercises the
@@ -338,18 +339,18 @@ test launch route; screenshots of seeded state verify presentation, not the user
 actions that would ordinarily create that state. Preserve real native terminal
 rendering and never send fixture terminal bytes/cells through JS.
 
-For the runtime picker, the applicable Rust/native checks also cover bounded
+For runtime selection and the session switcher, the applicable Rust/native checks also cover bounded
 side-effect-free discovery, tmux list/create/select and exact identity,
 Herdr executable resolution and running-session list/select, independent
 backend failures, profile migration, reconnect identity, switch/release, and
 fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
 picker loading, duplicate-name, stale-selection, asynchronous refresh, and
 explicit selection/create state transitions in focused app/native tests. The
-25-screen iOS source manifest and 31-route Android observational `SCREEN_NAMES`
+45-screen iOS source manifest and 51-route Android observational `SCREEN_NAMES`
 include the four recovery visual routes `recovery-progress`,
 `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm` in
-addition to the runtime-picker routes and the two `layout-restore-unconfirmed`
-warning fixtures. Android full and iOS `standard` plus `ssh`
+addition to the fresh-selection routes, the two `layout-restore-unconfirmed`
+warning fixtures, and all ten light/dark session-switcher fixture pairs. Android full and iOS `standard` plus `ssh`
 remain the required mobile paths for this connection-lifecycle change; both
 platform screenshots from the applicable exact-source acceptance runs must be
 downloaded and actually viewed before the corresponding evidence is reported.

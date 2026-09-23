@@ -93,6 +93,26 @@ rm -f \
   "${artifact_dir}/standard-layout-restore-unconfirmed.png" \
   "${artifact_dir}/standard-runtime-layout-restore-unconfirmed.png" \
   "${artifact_dir}/standard-connection-error.png" \
+  "${artifact_dir}/standard-session-switcher-current.png" \
+  "${artifact_dir}/standard-session-switcher-loading.png" \
+  "${artifact_dir}/standard-session-switcher-partial-error.png" \
+  "${artifact_dir}/standard-session-switcher-stopped-herdr.png" \
+  "${artifact_dir}/standard-session-switcher-credentials.png" \
+  "${artifact_dir}/standard-session-switcher-host-key.png" \
+  "${artifact_dir}/standard-session-switcher-create.png" \
+  "${artifact_dir}/standard-session-switcher-pending.png" \
+  "${artifact_dir}/standard-session-switcher-failure.png" \
+  "${artifact_dir}/standard-session-switcher-long-names.png" \
+  "${artifact_dir}/standard-session-switcher-current-dark.png" \
+  "${artifact_dir}/standard-session-switcher-loading-dark.png" \
+  "${artifact_dir}/standard-session-switcher-partial-error-dark.png" \
+  "${artifact_dir}/standard-session-switcher-stopped-herdr-dark.png" \
+  "${artifact_dir}/standard-session-switcher-credentials-dark.png" \
+  "${artifact_dir}/standard-session-switcher-host-key-dark.png" \
+  "${artifact_dir}/standard-session-switcher-create-dark.png" \
+  "${artifact_dir}/standard-session-switcher-pending-dark.png" \
+  "${artifact_dir}/standard-session-switcher-failure-dark.png" \
+  "${artifact_dir}/standard-session-switcher-long-names-dark.png" \
   "${artifact_dir}/polish-welcome.png" \
   "${artifact_dir}/polish-empty.png" \
   "${artifact_dir}/polish-search-empty.png" \

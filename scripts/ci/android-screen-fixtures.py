@@ -21,6 +21,18 @@ import xml.etree.ElementTree as ET
 PACKAGE_NAME = "dev.meeterm.app"
 ACTIVITY_NAME = ".MainActivity"
 UI_DUMP_PATH = "/sdcard/meeterm-screen-fixture.xml"
+SESSION_SWITCHER_SCREEN_NAMES = (
+    "session-switcher-current",
+    "session-switcher-loading",
+    "session-switcher-partial-error",
+    "session-switcher-stopped-herdr",
+    "session-switcher-credentials",
+    "session-switcher-host-key",
+    "session-switcher-create",
+    "session-switcher-pending",
+    "session-switcher-failure",
+    "session-switcher-long-names",
+)
 SCREEN_NAMES = (
     "home", "servers", "connection", "password", "workspaces", "terminal",
     "settings", "workspace-name", "terminal-name", "handoff",
@@ -37,7 +49,7 @@ SCREEN_NAMES = (
     "runtime-layout-restore-unconfirmed",
     "welcome", "empty", "search-empty", "disconnected", "reconnecting",
     "connection-error", "long-workspaces",
-)
+) + SESSION_SWITCHER_SCREEN_NAMES + tuple(f"{screen}-dark" for screen in SESSION_SWITCHER_SCREEN_NAMES)
 
 
 @dataclass(frozen=True)
@@ -177,6 +189,9 @@ def ui_values(root: ET.Element) -> set[str]:
             state = "enabled" if node.attrib.get("enabled", "true") == "true" else "disabled"
             values.add(f"{resource_id}::{state}")
             values.add(f"{normalized(resource_id)}::{state}")
+            if node.attrib.get("selected", "false") == "true":
+                values.add(f"{resource_id}::selected")
+                values.add(f"{normalized(resource_id)}::selected")
     return values
 
 
@@ -212,6 +227,8 @@ def recovery_screen_checks(values: set[str]) -> list[tuple[str, bool]]:
 def screen_checks(screen: str, values: set[str]) -> list[str]:
     checks: list[tuple[str, bool]]
     normalized_values = {normalized(value) for value in values}
+    if screen.endswith("-dark") and screen[:-5] in SESSION_SWITCHER_SCREEN_NAMES:
+        screen = screen[:-5]
     if screen in {
         "recovery-progress",
         "recovery-exhausted",
@@ -257,20 +274,21 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         )
     elif screen == "herdr-connection":
         checks = [
-            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
-            ("herdr_default", "Herdr runtime default" in normalized_values),
+            ("session_picker_heading", "Choose a session" in normalized_values),
+            ("herdr_default", "Herdr session default on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
             ("last_used_hint", "Last used" in normalized_values),
         ]
     elif screen == "runtime-picker":
         checks = [
-            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
-            ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
-            ("herdr_default", "Herdr runtime default" in normalized_values),
-            ("herdr_paused", "Herdr runtime paused" in normalized_values),
+            ("session_picker_heading", "Choose a session" in normalized_values),
+            ("tmux_meeterm", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ("herdr_default", "Herdr session default on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ("herdr_paused", "Herdr session paused on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
         ]
     elif screen == "runtime-partial-error":
         checks = [
-            ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
+            ("session_picker_heading", "Choose a session" in normalized_values),
+            ("tmux_meeterm", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
             (
                 "herdr_error",
                 "Herdr is not available over SSH. Open Herdr on your computer or check its installation."
@@ -279,19 +297,93 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         ]
     elif screen == "runtime-empty":
         checks = [
-            ("tmux_empty", "No running tmux sessions found." in normalized_values),
-            ("herdr_paused", "Herdr runtime paused" in normalized_values),
+            ("session_picker_heading", "Choose a session" in normalized_values),
+            ("tmux_empty", "No tmux sessions found." in normalized_values),
+            ("herdr_paused", "Herdr session paused on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
             ("stopped", "Stopped" in normalized_values),
+            ("no_running_runtime_message", "No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer." in normalized_values),
         ]
     elif screen == "runtime-create":
         checks = [
-            ("create_heading", "Create tmux session" in normalized_values),
-            ("session_name", "tmux session name" in normalized_values),
+            ("create_heading", "New tmux session" in normalized_values),
+            ("session_name", "New tmux session name" in normalized_values),
             (
                 "create_submit",
-                any("runtime-tmux-create-submit" in value for value in normalized_values),
+                has_visible_test_id(values, "switcher-create-submit"),
             ),
         ]
+    elif screen.startswith("session-switcher-"):
+        if screen == "session-switcher-current":
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("current_server", "Current server Smoke server" in normalized_values),
+                ("current_tmux_session", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+                ("current_tmux_row_selected", has_visible_test_id(values, "runtime-row-smoke-tmux-meeterm", state="selected")),
+                ("new_session_action", has_visible_test_id(values, "switcher-new-tmux")),
+                ("manage_servers_action", has_visible_test_id(values, "switcher-manage-servers")),
+                ("disconnect_action", has_visible_test_id(values, "switcher-disconnect")),
+            ]
+        elif screen == "session-switcher-loading":
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("switch_intro", "Choose a server, then select one of its running sessions." in normalized_values),
+                ("tmux_section", "tmux" in normalized_values),
+                ("herdr_section", "Herdr" in normalized_values),
+            ]
+        elif screen in ("session-switcher-partial-error", "session-switcher-stopped-herdr"):
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("current_tmux_session", "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+            ]
+            if screen == "session-switcher-partial-error":
+                checks.append(("herdr_error", "Herdr is not available over SSH. Open Herdr on your computer or check its installation." in normalized_values))
+            else:
+                checks.extend([
+                    ("stopped_herdr_session", "Herdr session paused on Smoke server (fixture@fixture.invalid:22)" in normalized_values),
+                    ("stopped_state", "Stopped" in normalized_values),
+                    ("herdr_start_guidance", "Start it in the existing Herdr client, then Refresh." in normalized_values),
+                    ("stopped_herdr_disabled", has_visible_test_id(values, "runtime-row-smoke-herdr-paused", state="disabled")),
+                ])
+        elif screen == "session-switcher-credentials":
+            checks = [
+                ("credential_heading", "Credentials" in normalized_values),
+                ("password_field", "SSH password" in normalized_values),
+                ("back_to_sessions", "Back to sessions" in normalized_values),
+            ]
+        elif screen == "session-switcher-host-key":
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("host_key_guidance", "Verify the SSH host key for fixture.invalid:22 in the confirmation prompt." in normalized_values),
+                ("host_key_prompt", "Trust this SSH host?" in normalized_values),
+                ("host_key_fingerprint", "SHA256:fixture-switcher-host-key" in normalized_values),
+                ("host_key_reject_action", "Cancel" in normalized_values),
+                ("host_key_trust_action", "Trust and continue" in normalized_values),
+            ]
+        elif screen == "session-switcher-create":
+            checks = [
+                ("create_heading", "New tmux session" in normalized_values),
+                ("target_server", "On Smoke server · fixture@fixture.invalid:22" in normalized_values),
+                ("session_name", "New tmux session name" in normalized_values),
+                ("create_submit", has_visible_test_id(values, "switcher-create-submit")),
+            ]
+        elif screen == "session-switcher-pending":
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("pending_copy", "Switching…" in normalized_values),
+                ("pending_tmux_row_disabled", has_visible_test_id(values, "runtime-row-smoke-tmux-release", state="disabled")),
+            ]
+        elif screen == "session-switcher-failure":
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("switch_failure", "The selected session could not be opened. Refresh and try another session." in normalized_values),
+            ]
+        elif screen == "session-switcher-long-names":
+            checks = [
+                ("switch_heading", "Switch session" in normalized_values),
+                ("long_current_server", "東京・多地域インフラ移行とリリース準備用の作業サーバー" in normalized_values),
+                ("long_session_name", "日本語ログ確認と多地域デプロイ前の長時間リリース準備セッション" in normalized_values),
+                ("long_alternate_server", "Production mirror · 日本語ログと運用監視用サーバー" in normalized_values),
+            ]
     elif screen == "layout-restore-unconfirmed":
         checks = [
             ("disconnected_state", "Disconnected" in normalized_values),
@@ -308,7 +400,7 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         ]
     elif screen == "runtime-layout-restore-unconfirmed":
         checks = [
-            ("runtime_picker_heading", "Choose a runtime for Smoke server" in normalized_values),
+            ("session_picker_heading", "Choose a session" in normalized_values),
             (
                 "layout_restore_warning",
                 "The old connection's desktop layout restore could not be confirmed."

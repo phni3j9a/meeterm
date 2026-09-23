@@ -98,8 +98,10 @@ Connecting
 ```
 
 Fresh manual connection and cold start always enter `DiscoveringRuntimes` and
-show an explicit picker. The picker exposes only bounded, low-frequency
-candidate summaries: a native candidate ID, backend, display name, status,
+show explicit session selection. Fresh selection and post-Ready switching use
+the same `SessionSwitcher` sheet; recovery opens it only after an explicit
+`Change` action. The sheet exposes only bounded, low-frequency candidate
+summaries: a native candidate ID, backend, display name, status,
 suggested/last-used state, and backend-local error. It also carries a
 connection generation and discovery revision so stale asynchronous results and
 double taps can be discarded. The user must explicitly select a candidate even
@@ -134,7 +136,7 @@ Each backend owns independent bounds and error state, so a missing tmux binary,
 missing/incompatible Herdr executable, or one backend's malformed response does
 not hide candidates from the other section. Duplicate names remain distinct by
 backend. A runtime deleted between list and selection returns a stale-selection
-error and refreshes the picker; it never silently creates the missing runtime.
+error and refreshes the session list; it never silently creates the missing runtime.
 
 There is one selected runtime actor per authenticated SSH host connection. A
 server switch or runtime switch releases the current controller in the actor's
@@ -146,7 +148,34 @@ operation epoch. It may return directly only after host-key/authentication,
 backend capability, runtime identity, selected terminal, topology, and
 authoritative screen resynchronization are committed. A missing, replaced,
 restarted, incompatible, or uncertain target remains fail-closed in that stale
-work screen; only an explicit Change action enters a fresh picker.
+  work screen; only an explicit Change action opens the shared session switcher.
+
+The session switcher may own at most one additional host-only provisional SSH
+connection while it is open. This owner performs authentication and bounded,
+read-only discovery but cannot acquire a runtime controller or issue terminal
+input, resize, create, or attach operations. The current connection's native
+credential capability may be reused; credentials for another saved profile are
+resolved natively, and an unsaved credential uses the existing secure form path.
+
+Switch commit is a single-use ordered operation. Native validates the source
+owner and generation/operation epoch together with the browse token, browse
+generation, discovery revision, and exact candidate. It closes old-owner input,
+resize, and mutation gates, drains/releases the old controller, and records any
+layout-cleanup warning. Only after release does it bind the exact candidate or
+perform an explicitly requested tmux create on that same authenticated
+provisional connection. Native promotes that connection handle, synchronizes
+authoritative workspace, topology, selected terminal, and screen state, then
+publishes `Ready` and updates the last-used hint. No selected runtime is exposed
+before synchronization finishes.
+
+The native `unchanged` outcome means that native confirmed the tapped tmux
+candidate is already the current live binding. It closes the sheet without
+releasing or reacquiring the controller or updating the hint. The current Herdr
+row remains inert because Herdr 0.9.0 exposes no comparable same-instance
+identity for a safe no-op. Discovery failure or dismissal before commit keeps
+the source binding. Failure after release begins remains fail-closed on retained
+read-only state; it does not present the old binding as live or silently
+reattach it.
 
 tmux supplies a server PID/start-time epoch that can prove an unchanged server
 for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
@@ -420,8 +449,8 @@ pane changes. View unmount does not disconnect or destroy the remote pane.
 
 Rust owns bounded automatic retry after transient transport loss and foreground
 return. The public recovery control plane distinguishes Retry of the same
-retained intent, one-use Herdr confirmation, and explicit Change to a fresh
-runtime picker. A connection generation scopes the actor; a separate monotonic
+retained intent, one-use Herdr confirmation, and explicit Change to the shared
+session switcher. A connection generation scopes the actor; a separate monotonic
 operation epoch invalidates delayed key, paste, resize, terminal-generated
 reply, and topology-mutation callbacks. Cached native output can remain visible
 while that gate is closed, but only a complete authoritative resynchronization
@@ -487,9 +516,9 @@ stream for the exact `$N` target. A bounded byte parser reads
 `session_id|pid|start_time` and compares all three values with the selected
 `SessionIdentity`. During fresh selection, a mismatch, malformed reply, command
 error, or uncertain result fails as `TmuxRuntimeMissing` and returns the actor
-to the picker. During retained-work recovery, the same failure instead leaves
+to fresh session selection. During retained-work recovery, the same failure instead leaves
 the cached terminal visible and fail-closed; only the explicit Change action
-starts a new picker flow.
+opens the shared switcher in fresh-selection mode.
 
 Control Mode provides structured notifications and identifies pane output by pane ID. The Rust core should parse Control Mode as a byte-oriented protocol and route each pane's output to its own terminal state.
 
@@ -749,14 +778,12 @@ terminal data plane native. Continue to verify:
    linked/shared tmux topology-mutation tests.
 10. Android full and iOS `standard` plus the short `ssh` suite cover the
     applicable mobile connection lifecycle. The iOS `standard` source-level
-    manifest has 25 screens: the previous 18 plus `recovery-progress`,
-    `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
-    `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
-    `connection-error`; its
-    `herdr-connection` route is the picker with the Herdr `default` candidate's
-    non-authoritative `Last used` hint. Android's observational `SCREEN_NAMES`
-    has 31 routes: the previous 25 plus those four recovery routes and the two
-    layout-restore warning fixtures. These counts define source scope only; they
+    manifest has 45 screens: its previous 25 plus ten `session-switcher-*`
+    states and a `-dark` variant of each. Its `herdr-connection` route is the
+    fresh-selection view with the Herdr `default` candidate's non-authoritative
+    `Last used` hint. Android's observational `SCREEN_NAMES` has 51 routes: its
+    previous 31 plus those same 20 switcher fixtures. These counts define source
+    scope only; they
     do not claim remote CI or visual
     review. Both platform screenshots must be downloaded and actually viewed
     before visual success is reported.

@@ -124,7 +124,17 @@ for checkpoint in \
   standard-recovery-progress standard-recovery-exhausted \
   standard-recovery-mismatch standard-herdr-recovery-confirm \
   standard-layout-restore-unconfirmed standard-runtime-layout-restore-unconfirmed \
-  standard-connection-error; do
+  standard-connection-error \
+  standard-session-switcher-current standard-session-switcher-loading \
+  standard-session-switcher-partial-error standard-session-switcher-stopped-herdr \
+  standard-session-switcher-credentials standard-session-switcher-host-key \
+  standard-session-switcher-create standard-session-switcher-pending \
+  standard-session-switcher-failure standard-session-switcher-long-names \
+  standard-session-switcher-current-dark standard-session-switcher-loading-dark \
+  standard-session-switcher-partial-error-dark standard-session-switcher-stopped-herdr-dark \
+  standard-session-switcher-credentials-dark standard-session-switcher-host-key-dark \
+  standard-session-switcher-create-dark standard-session-switcher-pending-dark \
+  standard-session-switcher-failure-dark standard-session-switcher-long-names-dark; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
 done
 : > "${xcrun_log}"
@@ -141,10 +151,12 @@ cmp "${artifact_root}/standard-terminal-name.png" "${temporary_root}/expected.pn
 : > "${artifact_root}/standard-handoff.png"
 : > "${artifact_root}/standard-herdr-workspaces.png"
 : > "${artifact_root}/standard-herdr-recovery-confirm.png"
+: > "${artifact_root}/standard-session-switcher-current.png"
 run_collector standard
 grep -Fq 'standard-handoff' "${artifact_root}/ui-screenshots-unavailable.txt"
 grep -Fq 'standard-herdr-workspaces' "${artifact_root}/ui-screenshots-unavailable.txt"
 grep -Fq 'standard-herdr-recovery-confirm' "${artifact_root}/ui-screenshots-unavailable.txt"
+grep -Fq 'standard-session-switcher-current' "${artifact_root}/ui-screenshots-unavailable.txt"
 if grep -Eq 'host-trust|reconnected|forms-controls' "${artifact_root}/ui-screenshots-unavailable.txt"; then
   echo "standard evidence incorrectly requires old full or form checkpoints" >&2
   exit 1

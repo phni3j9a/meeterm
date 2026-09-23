@@ -70,10 +70,49 @@ terminal close that may remove the final pane, the same Rust actor/control
 queue must prove safety immediately before execution; otherwise it fails
 closed.
 
+## Issue #27 unified session switcher
+
+The Workspaces header reads `Server · Session ▾` and opens one sheet for both
+fresh selection and switching an already selected runtime. The current server
+appears first; other saved profiles expand in place and trigger read-only
+discovery only when opened. The last-used hint is informational and never
+selects a row. If a profile has no saved credential, its SSH credential form
+stays inside this sheet; a new or changed SSH host key still requires the
+explicit host-key trust prompt before discovery continues.
+
+The sheet keeps tmux and Herdr discovery errors local to their sections and
+shows stopped Herdr candidates with the instruction to start them in the
+ordinary Herdr client and refresh. Its footer has a target-labeled `New tmux
+session` action, `Manage servers`, and a separate `Disconnect`. Creating a
+tmux session is a distinct detached operation; it does not replace an existing
+session. Normal session selection is an explicit row tap and does not add a
+second server-switch confirmation.
+
+Tapping the currently selected tmux candidate can return the native
+`unchanged` result. That closes the sheet without disconnecting, releasing, or
+reacquiring the current binding. The current Herdr candidate is inert because
+Herdr 0.9.0 does not expose the comparable instance identity needed to prove a
+safe no-op. A real switch first blocks old-owner operations, releases the old
+controller, then binds the exact candidate on the authenticated provisional
+connection and commits its authoritative workspace/terminal state before
+`Ready` and the profile hint update. Browsing, dismissing the sheet, or an
+authentication/discovery failure before that commit keeps the current work
+binding. A failure after the release boundary remains fail-closed instead of
+showing the old binding as live.
+
+During retained-work recovery, `Change` opens this same sheet only after the
+user asks for it. Opening or dismissing the sheet does not erase the retained
+screen; a selected new session becomes current only after native commit and
+authoritative synchronization. Fixture screenshots cover presentation states
+only and do not prove that a real switch succeeds.
+
 ## Control contract for this milestone
 
-One existing connection owner remains active at a time. Profiles are local client
-metadata, never a second source of truth for tmux topology. New low-frequency APIs:
+One selected interactive runtime owner remains active. While the switcher is
+open, native code may hold at most one host-only provisional browse connection;
+it can authenticate and perform bounded discovery but cannot acquire a runtime
+controller. Profiles are local client metadata, never a second source of truth
+for tmux topology. New low-frequency APIs:
 
 ```ts
 type ServerProfile = {
@@ -94,6 +133,17 @@ type RuntimeBackendDiscovery = {
 type RuntimeDiscovery = {
   revision: number; backends: RuntimeBackendDiscovery[];
 };
+type RuntimeBrowseState = {
+  token: string; browseGeneration: string; discoveryRevision: number;
+  phase: 'starting' | 'discovering' | 'ready' | 'committing' | 'committed' | 'unchanged' | 'failed' | 'cancelled';
+  discovery: RuntimeDiscovery; errorCode: string; errorMessage: string;
+  hostKey: { pending: boolean; host: string; port: number; fingerprint: string;
+    algorithm: string; knownFingerprint: string };
+  activeTerminalId: string | null;
+};
+type RuntimeBrowseCommitTarget =
+  | { kind: 'candidate'; candidateId: string }
+  | { kind: 'createTmux'; name: string };
 type SavedCredential =
   | { authMethod: 'publicKey'; privateKey: string; passphrase: string }
   | { authMethod: 'password'; password: string };
@@ -115,6 +165,15 @@ getRuntimeDiscovery(connectionId: string): Promise<RuntimeDiscovery>;
 refreshRuntimes(connectionId: string): Promise<void>;
 selectRuntime(connectionId: string, candidateId: string): Promise<void>;
 createTmuxSession(connectionId: string, name: string): Promise<void>;
+runtimeBrowseStartCurrent(terminalId: string): Promise<RuntimeBrowseState>;
+runtimeBrowseStartProfile(terminalId: string, profileId: string): Promise<RuntimeBrowseState>;
+runtimeBrowseStartCredential(terminalId: string, options: SshConnectOptions): Promise<RuntimeBrowseState>;
+runtimeBrowseState(token: string): Promise<RuntimeBrowseState>;
+runtimeBrowseRefresh(token: string): Promise<void>;
+runtimeBrowseCancel(token: string): Promise<void>;
+runtimeBrowseRespondToHostKey(token: string, fingerprint: string, accept: boolean): Promise<void>;
+runtimeBrowseCommit(token: string, browseGeneration: string, discoveryRevision: number,
+  target: RuntimeBrowseCommitTarget): Promise<void>;
 setLastUsedRuntime(profileId: string, backend: 'tmux' | 'herdr', runtime: string): Promise<ServerProfile>;
 disconnect(terminalId: string): Promise<void>;
 getPreferences(): Promise<TerminalPreferences>;
@@ -132,11 +191,16 @@ refreshTerminal(terminalId: string): Promise<void>;
 
 The legacy `connect` and `connectProfile` native bridge methods are host-only
 aliases for `connectHost` and `connectProfileHost`. They authenticate the SSH
-host and enter the picker; any persisted or supplied `backend`/`runtime` values
-remain hints and cannot bind a runtime. Runtime binding is available only
-through `selectRuntime` (or the separate explicit `createTmuxSession` action).
-The Rust-only direct-options helper is compiled only for internal lifecycle
-tests and is not exposed by the production Android JNI or iOS C bridges.
+host and enter fresh session selection; persisted `backend`/`runtime` values
+remain hints and cannot bind a runtime. Fresh binding uses `selectRuntime` (or
+the separate explicit `createTmuxSession` action). After Ready, switcher binding
+uses the single-use `runtimeBrowseCommit` on its authenticated provisional
+connection, then promotes that owner and waits for authoritative synchronization.
+Native can report `unchanged` for a verified already-selected tmux candidate;
+the Herdr current row is disabled because its interface has no matching
+same-instance identity proof. The Rust-only direct-options helper is compiled
+only for internal lifecycle tests and is not exposed by the production Android
+JNI or iOS C bridges.
 
 Empty profile IDs request a new native-generated UUID. A null credential with
 `keepCredential=false` removes any saved credential; `true` preserves it only
@@ -149,10 +213,11 @@ controls its chrome and auxiliary screens; the product terminal view is always
 dark for consistent ANSI colors. The native view still supports both palettes,
 and the historical light/dark evidence below describes its tested source.
 
-`connectHost` stops after host-key/authentication and runtime discovery;
-`selectRuntime` performs the explicit backend binding. `createTmuxSession` is
-the only runtime-creation operation in Issue #21; there is no Herdr creation
-operation. The native bridge must discard candidates from an older connection
+`connectHost` stops after host-key/authentication and bounded runtime discovery;
+`selectRuntime` performs fresh explicit backend binding. `runtimeBrowseCommit`
+performs a post-Ready switch on the matching host-only provisional connection.
+`createTmuxSession` is the only runtime-creation operation; there is no Herdr
+creation operation. The native bridge must discard candidates from an older connection
 generation/revision and must never return the resolved Herdr binary path or any
 credential to JavaScript. `setLastUsedRuntime` updates the legacy
 backend/runtime hint only after synchronization reaches `Ready`.
@@ -182,18 +247,16 @@ workspace close and final-pane close. Mobile validation remains Android full
 and iOS `standard` plus the short `ssh` suite for connection changes. Picker
 loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
 selection/create transitions are covered by focused app/native tests. The fixed
-source-level visual manifests include the picker routes plus retained-work
-recovery progress, exhaustion, mismatch, and Herdr confirmation. The iOS
-`standard` manifest has 25 screens: the Issue #21 set of 18 plus
-`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
-`runtime-layout-restore-unconfirmed`, plus the `connection-error`
-auth-warning coexistence fixture.
-The existing `herdr-connection` route is the picker state whose Herdr `default`
-candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` has 31 routes: the Issue #21 set of 25 plus those four recovery
-routes and the two layout-restore warning fixtures. These counts describe source
-scope only; Main must still record actual
+source-level visual manifests include fresh selection, the unified session
+switcher, and retained-work recovery. The iOS `standard` manifest has 45
+screens: its previous 25 plus ten switcher states with light and dark variants.
+Android's observational `SCREEN_NAMES` has 51 routes: its previous 31 plus the
+same 20 switcher fixtures. The switcher states are `current`, `loading`,
+`partial-error`, `stopped-herdr`, `credentials`, `host-key`, `create`, `pending`,
+`failure`, and `long-names`. The existing `runtime-picker` and related
+`runtime-*` routes remain fresh-selection states rendered through the shared
+`SessionSwitcher`; `herdr-connection` shows the Herdr `default` candidate's
+non-authoritative `Last used` hint. These counts describe source scope only; Main must still record actual
 CI results and downloaded, viewed screenshots before visual success is reported.
 
 ### Accepted candidate under the revised policy

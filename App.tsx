@@ -94,7 +94,18 @@ type PendingRuntimeRefresh = {
 };
 type BrowseOwner = { token: string; sourceOwner: string; ownerAttempt: number; serverId: string };
 type SwitchAttempt = { id: number; sourceOwner: string; ownerAttempt: number; targetServerId: string; candidateId: string };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SessionSwitcherFixture =
+  | 'session-switcher-current'
+  | 'session-switcher-loading'
+  | 'session-switcher-partial-error'
+  | 'session-switcher-stopped-herdr'
+  | 'session-switcher-credentials'
+  | 'session-switcher-host-key'
+  | 'session-switcher-create'
+  | 'session-switcher-pending'
+  | 'session-switcher-failure'
+  | 'session-switcher-long-names';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff' | SessionSwitcherFixture | `${SessionSwitcherFixture}-dark`;
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 // This is the native message published after an explicit disconnect cannot
@@ -126,6 +137,21 @@ const SMOKE_PROFILES: ServerProfile[] = [
   SMOKE_PROFILE,
   SMOKE_PASSWORD_PROFILE,
 ];
+const SMOKE_SWITCHER_SAVED_PROFILE: ServerProfile = {
+  ...SMOKE_PASSWORD_PROFILE,
+  id: 'smoke-switcher-saved-profile',
+  name: 'Build server',
+  host: 'build.fixture.invalid',
+  credentialSaved: true,
+};
+const SMOKE_LONG_SWITCHER_PROFILE: ServerProfile = {
+  ...SMOKE_PROFILE,
+  id: 'smoke-long-switcher-profile',
+  name: '東京・多地域インフラ移行とリリース準備用の作業サーバー',
+  host: 'release-workspace-east-2.fixture.invalid',
+  username: 'release-operator',
+  credentialSaved: true,
+};
 const SMOKE_PANES: RemoteTerminal[] = [
   { workspaceId: '@smoke-main', id: '%smoke-main-1', terminalId: CONNECTION_ID, groupId: '@smoke-main', agent: null, name: 'Shell', active: true, selected: true },
   { workspaceId: '@smoke-main', id: '%smoke-main-2', terminalId: 'smoke-terminal-2', groupId: '@smoke-main', agent: null, name: 'Logs', active: false, selected: false },
@@ -170,6 +196,15 @@ type SmokeFixtureState = {
   runtimePickerVisible?: boolean;
   runtimeCreateVisible?: boolean;
   runtimeMessage?: string;
+  sessionSwitcherOpen?: boolean;
+  sessionSwitcherMode?: 'switch' | 'fresh';
+  browse?: RuntimeBrowseState | null;
+  browseTargetId?: string;
+  expandedServerId?: string;
+  sessionSwitcherError?: string;
+  sessionSwitcherSelectingId?: string;
+  credentialTargetId?: string;
+  createSessionVisible?: boolean;
   controlMessage?: string;
   control?: WorkspaceControl;
 };
@@ -236,6 +271,22 @@ function smokeRuntimeDiscovery(screen: SmokeScreen): RuntimeDiscovery {
   return JSON.parse(JSON.stringify(SMOKE_RUNTIME_DISCOVERY)) as RuntimeDiscovery;
 }
 
+function smokeRuntimeBrowse(discovery: RuntimeDiscovery, overrides: Partial<RuntimeBrowseState> = {}): RuntimeBrowseState {
+  return {
+    token: 'smoke-runtime-browse',
+    browseGeneration: '7',
+    discoveryRevision: discovery.revision,
+    phase: 'ready',
+    discovery,
+    errorCode: '',
+    errorMessage: '',
+    hostKey: { pending: false, host: '', port: 0, fingerprint: '', algorithm: '', knownFingerprint: '' },
+    cleanupWarning: null,
+    activeTerminalId: CONNECTION_ID,
+    ...overrides,
+  };
+}
+
 function smokeReadyConnection(): SshConnectionState {
   return { ...INITIAL_CONNECTION, state: 'Ready', host: SMOKE_PROFILE.host, port: SMOKE_PROFILE.port };
 }
@@ -246,9 +297,75 @@ function smokeWorkspace(panes: RemoteTerminal[], workspaceId: string): Workspace
   return { id: workspaceId, name: workspaceId === '@smoke-main' ? 'Main workspace' : 'Tools workspace', agentStatus: null, panes: panes.filter(pane => pane.workspaceId === workspaceId) };
 }
 
-function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
+function createSmokeFixture(screen: SmokeScreen): SmokeFixtureState {
+  if (screen.startsWith('session-switcher-')) {
+    const base = createSmokeFixture('workspaces');
+    const isLongNames = screen === 'session-switcher-long-names';
+    const currentServer = isLongNames ? SMOKE_LONG_SWITCHER_PROFILE : SMOKE_PROFILE;
+    const profiles = isLongNames
+      ? [SMOKE_LONG_SWITCHER_PROFILE, { ...SMOKE_SWITCHER_SAVED_PROFILE, id: 'smoke-long-alternate-profile', name: 'Production mirror · 日本語ログと運用監視用サーバー' }]
+      : [SMOKE_PROFILE, SMOKE_SWITCHER_SAVED_PROFILE, SMOKE_PASSWORD_PROFILE];
+    const discovery = screen === 'session-switcher-loading' || screen === 'session-switcher-host-key'
+      ? {
+        ...SMOKE_RUNTIME_DISCOVERY,
+        revision: 0,
+        backends: SMOKE_RUNTIME_DISCOVERY.backends.map(section => ({ ...section, state: 'loading' as const, candidates: [] })),
+      }
+      : screen === 'session-switcher-partial-error'
+        ? smokeRuntimeDiscovery('runtime-partial-error')
+        : screen === 'session-switcher-stopped-herdr'
+          ? {
+            ...SMOKE_RUNTIME_DISCOVERY,
+            backends: [SMOKE_RUNTIME_DISCOVERY.backends[0], {
+              ...SMOKE_RUNTIME_DISCOVERY.backends[1],
+              candidates: [{ ...SMOKE_RUNTIME_DISCOVERY.backends[1].candidates[1] }],
+            }],
+          }
+          : JSON.parse(JSON.stringify(SMOKE_RUNTIME_DISCOVERY)) as RuntimeDiscovery;
+    if (screen === 'session-switcher-long-names') {
+      discovery.backends = discovery.backends.map(section => ({
+        ...section,
+        candidates: section.candidates.map(candidate => candidate.backend === 'tmux' && candidate.name === 'release-prep'
+          ? { ...candidate, name: '日本語ログ確認と多地域デプロイ前の長時間リリース準備セッション' }
+          : candidate.backend === 'herdr' && candidate.name === 'default'
+            ? { ...candidate, name: 'default · production handoff and international release review' }
+            : candidate),
+      }));
+    }
+    const browse = smokeRuntimeBrowse(discovery, screen === 'session-switcher-loading' || screen === 'session-switcher-host-key'
+      ? { phase: 'discovering' }
+      : screen === 'session-switcher-failure'
+        ? { phase: 'ready' }
+        : {});
+    if (screen === 'session-switcher-host-key') {
+      browse.hostKey = {
+        pending: true,
+        host: currentServer.host,
+        port: currentServer.port,
+        fingerprint: 'SHA256:fixture-switcher-host-key',
+        algorithm: 'ssh-ed25519',
+        knownFingerprint: '',
+      };
+    }
+    base.connection = { ...smokeReadyConnection(), host: currentServer.host, port: currentServer.port };
+    base.profiles = profiles.map(profile => ({ ...profile }));
+    base.profileId = currentServer.id;
+    base.hasConnected = true;
+    base.sessionSwitcherOpen = true;
+    base.sessionSwitcherMode = 'switch';
+    base.browse = browse;
+    base.browseTargetId = currentServer.id;
+    base.expandedServerId = currentServer.id;
+    if (screen === 'session-switcher-credentials') base.credentialTargetId = SMOKE_PASSWORD_PROFILE.id;
+    if (screen === 'session-switcher-create') base.createSessionVisible = true;
+    if (screen === 'session-switcher-pending') base.sessionSwitcherSelectingId = 'smoke-tmux-release';
+    if (screen === 'session-switcher-failure') {
+      base.sessionSwitcherError = 'The selected session could not be opened. Refresh and try another session.';
+    }
+    return base;
+  }
   if (screen === 'runtime-picker' || screen === 'runtime-partial-error' || screen === 'runtime-empty' || screen === 'runtime-create') {
-    const base = smokeFixture('workspaces');
+    const base = createSmokeFixture('workspaces');
     base.connection = { ...base.connection, state: 'AwaitingRuntimeSelection' };
     base.panes = [];
     base.screen = 'workspaces';
@@ -264,7 +381,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     return base;
   }
   if (screen === 'herdr-connection') {
-    const base = smokeFixture('runtime-picker');
+    const base = createSmokeFixture('runtime-picker');
     const discovery = JSON.parse(JSON.stringify(base.runtimeDiscovery)) as RuntimeDiscovery;
     discovery.backends = discovery.backends.map(section => ({
       ...section,
@@ -278,7 +395,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
   }
   if (screen === 'layout-restore-unconfirmed' || screen === 'runtime-layout-restore-unconfirmed') {
     const picker = screen === 'runtime-layout-restore-unconfirmed';
-    const base = smokeFixture(picker ? 'runtime-picker' : 'workspaces');
+    const base = createSmokeFixture(picker ? 'runtime-picker' : 'workspaces');
     base.connection = {
       ...base.connection,
       state: picker ? 'AwaitingRuntimeSelection' : 'Disconnected',
@@ -298,7 +415,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     return base;
   }
   if (screen === 'recovery-progress' || screen === 'recovery-exhausted' || screen === 'recovery-mismatch' || screen === 'herdr-recovery-confirm') {
-    const base = smokeFixture(screen === 'herdr-recovery-confirm' ? 'herdr-terminal' : 'terminal');
+    const base = createSmokeFixture(screen === 'herdr-recovery-confirm' ? 'herdr-terminal' : 'terminal');
     base.connection = {
       ...base.connection,
       state: screen === 'recovery-progress' || screen === 'herdr-recovery-confirm' ? 'Reconnecting' : 'Failed',
@@ -320,7 +437,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     return base;
   }
   if (screen === 'long-workspaces') {
-    const base = smokeFixture('herdr-workspaces');
+    const base = createSmokeFixture('herdr-workspaces');
     base.panes = base.panes.map(pane => ({
       ...pane,
       name: pane.workspaceId === '@smoke-main'
@@ -330,7 +447,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     return base;
   }
   if (['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error'].includes(screen)) {
-    const base = smokeFixture(screen === 'welcome' ? 'home' : 'workspaces');
+    const base = createSmokeFixture(screen === 'welcome' ? 'home' : 'workspaces');
     if (screen === 'welcome') base.profiles = [];
     if (screen === 'empty') base.panes = [];
     if (screen === 'search-empty') { base.searching = true; base.query = 'deployment'; }
@@ -352,7 +469,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     return base;
   }
   if (screen.startsWith('herdr-')) {
-    const base = smokeFixture(screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
+    const base = createSmokeFixture(screen === 'herdr-workspaces' ? 'workspaces' : 'terminal');
     base.panes = SMOKE_HERDR_PANES.map(pane => ({ ...pane, selected: pane.id === SMOKE_HERDR_PANES[0].id }));
     base.selectedPaneIds = { 'smoke-code': base.panes[0].id };
     base.sheet = screen === 'herdr-groups' ? 'groups' : null;
@@ -363,7 +480,8 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
   const mainWorkspace = smokeWorkspace(panes, '@smoke-main');
   const selectedPaneIds = { '@smoke-main': '%smoke-main-1', '@smoke-tools': '%smoke-tools-1' };
   const base: SmokeFixtureState = {
-    // Keep screenshot colors independent of the Simulator's appearance.
+    // Keep fixture appearance deterministic; explicit switcher dark routes
+    // override this light baseline in smokeFixture below.
     preferences: { ...DEFAULT_PREFERENCES, theme: 'light' },
     connection: ready ? smokeReadyConnection() : { ...INITIAL_CONNECTION },
     panes: ready ? panes : [],
@@ -389,6 +507,21 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
   return base;
 }
 
+function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
+  const darkVariant = screen.startsWith('session-switcher-') && screen.endsWith('-dark');
+  const baseScreen = darkVariant ? screen.slice(0, -5) as SmokeScreen : screen;
+  const fixture = createSmokeFixture(baseScreen);
+  fixture.preferences = { ...fixture.preferences, theme: darkVariant ? 'dark' : 'light' };
+  return fixture;
+}
+
+const SESSION_SWITCHER_SMOKE_SCREENS: SessionSwitcherFixture[] = [
+  'session-switcher-current', 'session-switcher-loading', 'session-switcher-partial-error',
+  'session-switcher-stopped-herdr', 'session-switcher-credentials', 'session-switcher-host-key',
+  'session-switcher-create', 'session-switcher-pending', 'session-switcher-failure',
+  'session-switcher-long-names',
+];
+
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
@@ -397,6 +530,8 @@ const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
+  ...SESSION_SWITCHER_SMOKE_SCREENS,
+  ...SESSION_SWITCHER_SMOKE_SCREENS.map(screen => `${screen}-dark` as SmokeScreen),
 ];
 
 function smokeRouteForUrl(url: string | null): SmokeRoute | undefined {
@@ -1034,15 +1169,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
   const [activeServerDraft, setActiveServerDraft] = useState<SessionSwitcherServer | null>(null);
   const [activeOwnerRevision, setActiveOwnerRevision] = useState(0);
-  const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const [sessionSwitcherMode, setSessionSwitcherMode] = useState<'switch' | 'fresh'>('fresh');
-  const [browse, setBrowse] = useState<RuntimeBrowseState | null>(null);
-  const [browseTargetId, setBrowseTargetId] = useState('');
-  const [expandedServerId, setExpandedServerId] = useState('');
-  const [sessionSwitcherError, setSessionSwitcherError] = useState('');
-  const [sessionSwitcherSelectingId, setSessionSwitcherSelectingId] = useState('');
-  const [credentialTargetId, setCredentialTargetId] = useState('');
-  const [createSessionVisible, setCreateSessionVisible] = useState(false);
+  const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(() => fixture?.sessionSwitcherOpen ?? false);
+  const [sessionSwitcherMode, setSessionSwitcherMode] = useState<'switch' | 'fresh'>(() => fixture?.sessionSwitcherMode ?? 'fresh');
+  const [browse, setBrowse] = useState<RuntimeBrowseState | null>(() => fixture?.browse ?? null);
+  const [browseTargetId, setBrowseTargetId] = useState(() => fixture?.browseTargetId ?? '');
+  const [expandedServerId, setExpandedServerId] = useState(() => fixture?.expandedServerId ?? '');
+  const [sessionSwitcherError, setSessionSwitcherError] = useState(() => fixture?.sessionSwitcherError ?? '');
+  const [sessionSwitcherSelectingId, setSessionSwitcherSelectingId] = useState(() => fixture?.sessionSwitcherSelectingId ?? '');
+  const [credentialTargetId, setCredentialTargetId] = useState(() => fixture?.credentialTargetId ?? '');
+  const [createSessionVisible, setCreateSessionVisible] = useState(() => fixture?.createSessionVisible ?? false);
   const [createSessionName, setCreateSessionName] = useState('meeterm');
   const [createSessionError, setCreateSessionError] = useState('');
   const [switchAttempt, setSwitchAttempt] = useState<SwitchAttempt | null>(null);
@@ -2615,7 +2750,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   useEffect(() => {
-    if (!sessionSwitcherOpen || sessionSwitcherMode !== 'switch' || !browse?.hostKey.pending || smokeFixtureActive) {
+    const hostKeyFixture = smokeScreen === 'session-switcher-host-key'
+      || smokeScreen === 'session-switcher-host-key-dark';
+    if (!sessionSwitcherOpen || sessionSwitcherMode !== 'switch' || !browse?.hostKey.pending
+      || (smokeFixtureActive && !hostKeyFixture)) {
       if (!browse?.hostKey.pending) hostKeyPromptRef.current = '';
       return;
     }

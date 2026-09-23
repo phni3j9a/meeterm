@@ -138,16 +138,15 @@ substitute a large device for a small one.
 - `standard`: four production storage cases, eleven native input/recovery-bridge
   cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
-  has 25 routes: the previous 18 plus `recovery-progress`,
-  `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
-  `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
-  `connection-error`. The existing
-  `herdr-connection` route is the picker with the Herdr `default` candidate's
-  non-authoritative `Last used` hint. The four recovery presentation routes
-  are `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-  `herdr-recovery-confirm`; they retain the native terminal and verify the
-  applicable recovery rail copy/action state. Runtime-picker and recovery
-  states are seeded only for presentation; no SSH fixture is started.
+  has 45 routes: the previous 25 plus ten `session-switcher-*` states and a
+  `-dark` variant of each. The existing `herdr-connection` route is fresh
+  selection with the Herdr `default` candidate's non-authoritative `Last used`
+  hint. The four recovery presentation routes are `recovery-progress`,
+  `recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm`; they
+  retain the native terminal and verify the applicable recovery rail copy/action
+  state. Android's observational `SCREEN_NAMES` contains 51 routes: its previous
+  31 plus the same 20 switcher fixtures. Fresh-selection and recovery states are
+  seeded only for presentation; no SSH fixture is started.
 - `ssh`: the actual connection and host-key boundary, runtime discovery and
   explicit selection, a healthy same-process app background/foreground return
   while the selected tmux pane remains active, and a resumed native input and
@@ -178,15 +177,22 @@ switch/release, backend-local partial failures, and fail-closed linked/shared
 tmux mutations. Retained-work checks additionally cover strict original tmux
 pane recovery, Herdr in-work confirmation, operation-epoch input gating, no
 automatic picker/fallback, and authoritative resynchronization before Ready.
-The iOS `standard` source-level manifest has 25 routes and Android's
-observational `SCREEN_NAMES` has 31 routes: each includes the four
-runtime-picker routes `runtime-picker`, `runtime-partial-error`, `runtime-empty`,
-and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
-`recovery-mismatch`, and `herdr-recovery-confirm`, plus the two
-`layout-restore-unconfirmed` warning fixtures and the `connection-error`
-auth-warning coexistence fixture, while `herdr-connection` is
-the repurposed picker state described above. These are source-level scopes only;
-this document does not claim remote CI or visual review.
+The iOS `standard` source-level manifest has 45 screens and Android's
+observational `SCREEN_NAMES` has 51 routes. Both retain the four fresh-selection
+routes `runtime-picker`, `runtime-partial-error`, `runtime-empty`, and
+`runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
+`recovery-mismatch`, `herdr-recovery-confirm`, the two
+`layout-restore-unconfirmed` warning fixtures, and the `connection-error`
+auth-warning coexistence fixture. `herdr-connection` remains the fresh-selection
+state whose Herdr `default` candidate carries the `Last used` hint. The new ten
+Ready-state switcher fixtures are `session-switcher-current`,
+`session-switcher-loading`, `session-switcher-partial-error`,
+`session-switcher-stopped-herdr`, `session-switcher-credentials`,
+`session-switcher-host-key`, `session-switcher-create`,
+`session-switcher-pending`, `session-switcher-failure`, and
+`session-switcher-long-names`, each with an additional `-dark` variant. These
+are source-level scopes only; this document does not claim remote CI or visual
+review.
 
 Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
 forms/names have 15, and optional full retains its 30-minute storage/UI budget.

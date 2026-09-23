@@ -171,6 +171,16 @@ case "${suite}" in
       standard-recovery-mismatch standard-herdr-recovery-confirm
       standard-layout-restore-unconfirmed standard-runtime-layout-restore-unconfirmed
       standard-connection-error
+      standard-session-switcher-current standard-session-switcher-loading
+      standard-session-switcher-partial-error standard-session-switcher-stopped-herdr
+      standard-session-switcher-credentials standard-session-switcher-host-key
+      standard-session-switcher-create standard-session-switcher-pending
+      standard-session-switcher-failure standard-session-switcher-long-names
+      standard-session-switcher-current-dark standard-session-switcher-loading-dark
+      standard-session-switcher-partial-error-dark standard-session-switcher-stopped-herdr-dark
+      standard-session-switcher-credentials-dark standard-session-switcher-host-key-dark
+      standard-session-switcher-create-dark standard-session-switcher-pending-dark
+      standard-session-switcher-failure-dark standard-session-switcher-long-names-dark
     )
     ;;
   polish)

@@ -16,12 +16,17 @@ APP_SOURCE = Path(__file__).parents[2] / "App.tsx"
 
 
 class PresentationReadinessTests(unittest.TestCase):
-    def test_all_thirty_one_routes_require_visible_content(self):
-        self.assertEqual(len(fixtures.SCREEN_NAMES), 31)
-        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 31)
+    def test_all_fifty_one_routes_require_visible_content_and_app_fixtures(self):
+        self.assertEqual(len(fixtures.SCREEN_NAMES), 51)
+        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 51)
+        source = APP_SOURCE.read_text(encoding="utf-8")
         for screen in fixtures.SCREEN_NAMES:
             with self.subTest(screen=screen):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
+                source_name = screen[:-5] if screen.endswith("-dark") else screen
+                self.assertIn(f"'{source_name}'", source)
+                if screen.endswith("-dark"):
+                    self.assertIn("screen.slice(0, -5)", source)
 
     def test_recovery_routes_are_stably_ordered_after_runtime_routes(self):
         self.assertEqual(
@@ -125,7 +130,7 @@ class PresentationReadinessTests(unittest.TestCase):
             fixtures.screen_checks(
                 "runtime-layout-restore-unconfirmed",
                 {
-                    "Choose a runtime for Smoke server",
+                    "Choose a session",
                     warning,
                     "Dismiss desktop layout warning",
                     dismiss_enabled,
@@ -229,11 +234,14 @@ class PresentationReadinessTests(unittest.TestCase):
             'visible-to-user="true" enabled="true" bounds="[0,0][20,20]" />'
             '<node resource-id="dev.meeterm.app:id/recovery-change" '
             'visible-to-user="true" enabled="false" bounds="[0,0][20,20]" />'
+            '<node resource-id="dev.meeterm.app:id/runtime-row-current" '
+            'visible-to-user="true" enabled="true" selected="true" bounds="[0,0][20,20]" />'
             '</hierarchy>'
         )
         values = fixtures.ui_values(root)
         self.assertIn("dev.meeterm.app:id/recovery-retry::enabled", values)
         self.assertIn("dev.meeterm.app:id/recovery-change::disabled", values)
+        self.assertIn("dev.meeterm.app:id/runtime-row-current::selected", values)
 
         hidden = fixtures.ET.fromstring(
             '<hierarchy><node resource-id="dev.meeterm.app:id/recovery-rail" '
@@ -280,32 +288,120 @@ class PresentationReadinessTests(unittest.TestCase):
         self.assertEqual(fixtures.screen_checks("empty", empty), [])
         self.assertTrue(fixtures.screen_checks("disconnected", empty))
 
-    def test_runtime_picker_requires_both_backends_and_stopped_herdr(self):
+    def test_fresh_session_switcher_requires_both_backends_and_stopped_herdr(self):
         values = {
-            "Choose a runtime for Smoke server",
-            "tmux runtime meeterm",
-            "Herdr runtime default",
-            "Herdr runtime paused",
+            "Choose a session",
+            "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)",
+            "Herdr session default on Smoke server (fixture@fixture.invalid:22)",
+            "Herdr session paused on Smoke server (fixture@fixture.invalid:22)",
         }
         self.assertEqual(fixtures.screen_checks("runtime-picker", values), [])
-        values.remove("Herdr runtime paused")
+        values.remove("Herdr session paused on Smoke server (fixture@fixture.invalid:22)")
         self.assertIn("herdr_paused", fixtures.screen_checks("runtime-picker", values))
 
-    def test_runtime_create_requires_the_native_form_contract(self):
+    def test_fresh_session_creation_uses_the_unified_switcher_form(self):
         values = {
-            "Create tmux session",
-            "tmux session name",
-            "dev.meeterm.app:id/runtime-tmux-create-submit",
+            "New tmux session",
+            "New tmux session name",
+            "dev.meeterm.app:id/switcher-create-submit::enabled",
         }
         self.assertEqual(fixtures.screen_checks("runtime-create", values), [])
 
-    def test_herdr_connection_route_is_the_picker_with_last_used_hint(self):
+    def test_herdr_connection_route_is_fresh_session_selection_with_last_used_hint(self):
         values = {
-            "Choose a runtime for Smoke server",
-            "Herdr runtime default",
+            "Choose a session",
+            "Herdr session default on Smoke server (fixture@fixture.invalid:22)",
             "Last used",
         }
         self.assertEqual(fixtures.screen_checks("herdr-connection", values), [])
+
+    def test_switcher_fixtures_cover_loading_errors_auth_trust_create_and_selection(self):
+        current_session = "tmux session meeterm on Smoke server (fixture@fixture.invalid:22)"
+        switcher = {"Switch session", current_session}
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-current", switcher | {
+                "Current server Smoke server",
+                "runtime-row-smoke-tmux-meeterm::selected",
+                "switcher-new-tmux::enabled",
+                "switcher-manage-servers::enabled",
+                "switcher-disconnect::enabled",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-loading", {
+                "Switch session", "Choose a server, then select one of its running sessions.",
+                "tmux", "Herdr",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-partial-error", switcher | {
+                "Herdr is not available over SSH. Open Herdr on your computer or check its installation.",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-stopped-herdr", switcher | {
+                "Herdr session paused on Smoke server (fixture@fixture.invalid:22)",
+                "Stopped", "Start it in the existing Herdr client, then Refresh.",
+                "runtime-row-smoke-herdr-paused::disabled",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-credentials", {
+                "Credentials", "SSH password", "Back to sessions",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-host-key", {
+                "Switch session", "Verify the SSH host key for fixture.invalid:22 in the confirmation prompt.",
+                "Trust this SSH host?", "SHA256:fixture-switcher-host-key",
+                "Cancel", "Trust and continue",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-create", {
+                "New tmux session", "On Smoke server · fixture@fixture.invalid:22",
+                "New tmux session name", "switcher-create-submit::enabled",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-pending", {
+                "Switch session", "Switching…", "runtime-row-smoke-tmux-release::disabled",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-failure", {
+                "Switch session", "The selected session could not be opened. Refresh and try another session.",
+            }),
+            [],
+        )
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-long-names", {
+                "Switch session",
+                "東京・多地域インフラ移行とリリース準備用の作業サーバー",
+                "日本語ログ確認と多地域デプロイ前の長時間リリース準備セッション",
+                "Production mirror · 日本語ログと運用監視用サーバー",
+            }),
+            [],
+        )
+        self.assertIn("session-switcher-current-dark", fixtures.SCREEN_NAMES)
+        self.assertEqual(
+            fixtures.screen_checks("session-switcher-current-dark", switcher | {
+                "Current server Smoke server",
+                "runtime-row-smoke-tmux-meeterm::selected",
+                "switcher-new-tmux::enabled",
+                "switcher-manage-servers::enabled",
+                "switcher-disconnect::enabled",
+            }),
+            [],
+        )
 
 
 if __name__ == "__main__":

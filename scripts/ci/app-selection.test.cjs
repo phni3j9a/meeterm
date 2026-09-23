@@ -984,10 +984,15 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.deepEqual(environment.startupPhases, []);
   assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=welcome'), undefined);
   const smoke = loadApp(environment, native, true, true);
+  const switcherScreens = ['session-switcher-current', 'session-switcher-loading', 'session-switcher-partial-error',
+    'session-switcher-stopped-herdr', 'session-switcher-credentials', 'session-switcher-host-key',
+    'session-switcher-create', 'session-switcher-pending', 'session-switcher-failure',
+    'session-switcher-long-names'];
   for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
     'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
-    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
+    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
+    ...switcherScreens, ...switcherScreens.map(name => `${name}-dark`)]) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
@@ -1004,6 +1009,22 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('runtime-partial-error').runtimeDiscovery.backends[1].state, 'error');
   assert.equal(smoke.smokeFixture('runtime-empty').runtimeDiscovery.backends[0].candidates.length, 0);
   assert.equal(smoke.smokeFixture('runtime-create').runtimeCreateVisible, true);
+  const switcherCurrent = smoke.smokeFixture('session-switcher-current');
+  assert.equal(switcherCurrent.sessionSwitcherOpen, true);
+  assert.equal(switcherCurrent.sessionSwitcherMode, 'switch');
+  assert.equal(switcherCurrent.browse.phase, 'ready');
+  assert.equal(switcherCurrent.browse.discovery.backends[0].candidates[0].name, 'meeterm');
+  assert.equal(switcherCurrent.preferences.theme, 'light');
+  assert.equal(smoke.smokeFixture('session-switcher-current-dark').preferences.theme, 'dark');
+  assert.equal(smoke.smokeFixture('session-switcher-loading').browse.phase, 'discovering');
+  assert.equal(smoke.smokeFixture('session-switcher-partial-error').browse.discovery.backends[1].state, 'error');
+  assert.equal(smoke.smokeFixture('session-switcher-stopped-herdr').browse.discovery.backends[1].candidates[0].state, 'stopped');
+  assert.equal(smoke.smokeFixture('session-switcher-credentials').credentialTargetId, 'smoke-password-profile');
+  assert.equal(smoke.smokeFixture('session-switcher-host-key').browse.hostKey.pending, true);
+  assert.equal(smoke.smokeFixture('session-switcher-create').createSessionVisible, true);
+  assert.equal(smoke.smokeFixture('session-switcher-pending').sessionSwitcherSelectingId, 'smoke-tmux-release');
+  assert.match(smoke.smokeFixture('session-switcher-failure').sessionSwitcherError, /could not be opened/);
+  assert.equal(smoke.smokeFixture('session-switcher-long-names').profileId, 'smoke-long-switcher-profile');
   const layoutWarning = smoke.smokeFixture('layout-restore-unconfirmed');
   assert.equal(layoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
   assert.equal(layoutWarning.control.cleanupWarning.code, 'layout_restore_unconfirmed');
