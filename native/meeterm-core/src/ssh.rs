@@ -2262,6 +2262,8 @@ impl OwnerTransition {
         // and must not publish/install after that cancellation returns.
         let request_epoch = self.cancel_epoch.load(Ordering::Acquire);
         let ticket = self.next_ticket.fetch_add(1, Ordering::AcqRel).max(1);
+        #[cfg(test)]
+        observe_owner_serial_wait(&self.serial);
         let serial = self.serial.lock().map_err(|_| ConnectionError::Internal)?;
         if let Some((entered, release)) = barriers {
             // Test-only pause: the caller can accept Disconnect while this
@@ -2337,6 +2339,29 @@ static START_BROWSE_CANCELLATION_PAUSE: OnceLock<Mutex<Option<StartBrowseCancell
     OnceLock::new();
 
 #[cfg(test)]
+#[derive(Clone)]
+struct StartLockRacePause {
+    terminal_id: TerminalId,
+    entered: Arc<std::sync::Barrier>,
+    resume: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static START_STALE_CHILD_PAUSE: OnceLock<Mutex<Option<StartLockRacePause>>> = OnceLock::new();
+
+#[cfg(test)]
+static START_BROWSE_SERIAL_PAUSE: OnceLock<Mutex<Option<StartLockRacePause>>> = OnceLock::new();
+
+#[cfg(test)]
+struct OwnerSerialWaitPause {
+    waiting: Arc<std::sync::Barrier>,
+    resume: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static OWNER_SERIAL_WAIT_PAUSE: OnceLock<Mutex<Option<OwnerSerialWaitPause>>> = OnceLock::new();
+
+#[cfg(test)]
 fn pause_after_start_browse_cancellation() {
     let pause = START_BROWSE_CANCELLATION_PAUSE
         .get_or_init(|| Mutex::new(None))
@@ -2345,6 +2370,58 @@ fn pause_after_start_browse_cancellation() {
         .take();
     if let Some(pause) = pause {
         pause.cancelled.wait();
+        pause.resume.wait();
+    }
+}
+
+#[cfg(test)]
+fn pause_start_lock_race(
+    pauses: &'static OnceLock<Mutex<Option<StartLockRacePause>>>,
+    terminal_id: TerminalId,
+) {
+    let pause = {
+        let mut pauses = pauses
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("start lock race test hook");
+        if pauses
+            .as_ref()
+            .is_some_and(|pause| pause.terminal_id == terminal_id)
+        {
+            pauses.take()
+        } else {
+            None
+        }
+    };
+    if let Some(pause) = pause {
+        pause.entered.wait();
+        pause.resume.wait();
+    }
+}
+
+#[cfg(test)]
+fn pause_after_start_stale_children(terminal_id: TerminalId) {
+    pause_start_lock_race(&START_STALE_CHILD_PAUSE, terminal_id);
+}
+
+#[cfg(test)]
+fn pause_after_start_browse_serial(terminal_id: TerminalId) {
+    pause_start_lock_race(&START_BROWSE_SERIAL_PAUSE, terminal_id);
+}
+
+#[cfg(test)]
+fn observe_owner_serial_wait(serial: &Mutex<()>) {
+    let pause = OWNER_SERIAL_WAIT_PAUSE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("owner serial wait test hook")
+        .take();
+    if let Some(pause) = pause {
+        assert!(
+            matches!(serial.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+            "the staged owner start must still hold its serial lock"
+        );
+        pause.waiting.wait();
         pause.resume.wait();
     }
 }
@@ -5236,18 +5313,14 @@ fn destroy_stale_terminals(generation: u64, terminals: impl IntoIterator<Item = 
     }
 }
 
-/// Tear down a prepared generation that lost its owner ticket before the
-/// connection entry could be installed. This is deliberately separate from a
-/// normal actor drop: there is no map entry for Disconnect to cancel, so the
-/// local transport and its child native terminals must be revoked here.
-fn abandon_uninstalled_connection(
-    shared: &ConnectionShared,
-    stale_terminals: impl IntoIterator<Item = TerminalId>,
-) {
+/// Revoke a prepared generation that lost its owner ticket before the
+/// connection entry could be installed. There is no map entry for Disconnect
+/// to cancel; stale child terminals are destroyed by the caller only after it
+/// releases the owner serial.
+fn abandon_uninstalled_connection(shared: &ConnectionShared) {
     shared.invalidate_explicitly("explicit_disconnect");
     shared.cancel();
     registry::detach_transport(shared.terminal_id(), shared.generation);
-    destroy_stale_terminals(shared.generation, stale_terminals);
 }
 
 fn start_connection(
@@ -5275,6 +5348,8 @@ fn start_connection(
             let browse_serial = runtime_browse_serial()
                 .lock()
                 .map_err(|_| ConnectionError::Internal)?;
+            #[cfg(test)]
+            pause_after_start_browse_serial(terminal_id);
             let (owner_serial, ticket) = owner.begin()?;
             retired_browse = take_runtime_browse_for_source_locked(terminal_id);
             #[cfg(test)]
@@ -5324,13 +5399,39 @@ fn start_connection_after_transition(
     runtime: &'static Runtime,
     transition: OwnerStartTransition<'_>,
 ) -> Result<(), ConnectionError> {
+    let generation = next_generation();
+    let mut stale_terminals = Vec::new();
+    let result = start_connection_under_owner_serial(
+        terminal_id,
+        start,
+        provisional,
+        runtime,
+        transition,
+        generation,
+        &mut stale_terminals,
+    );
+    // The helper owns and releases the owner serial before returning on both
+    // success and error paths. Child destruction can then reenter the browse
+    // lifecycle without waiting under that owner lock.
+    destroy_stale_terminals(generation, stale_terminals);
+    result
+}
+
+fn start_connection_under_owner_serial(
+    terminal_id: TerminalId,
+    start: ConnectionStart,
+    provisional: bool,
+    runtime: &'static Runtime,
+    transition: OwnerStartTransition<'_>,
+    generation: u64,
+    stale_terminals: &mut Vec<TerminalId>,
+) -> Result<(), ConnectionError> {
     let OwnerStartTransition {
         owner,
         _serial,
         ticket,
         old,
     } = transition;
-    let generation = next_generation();
     let reconnecting = start.is_automatic_reconnect();
     let manual_reconnect = start.is_manual_reconnect();
 
@@ -5356,7 +5457,7 @@ fn start_connection_after_transition(
         return Err(ConnectionError::RecoveryUnavailable);
     }
 
-    let stale_terminals = match &start {
+    *stale_terminals = match &start {
         #[cfg(test)]
         ConnectionStart::Options(options) => prepare_session_endpoint(terminal_id, options)?,
         ConnectionStart::Host(options) | ConnectionStart::ProvisionalHost(options) => {
@@ -5370,15 +5471,12 @@ fn start_connection_after_transition(
             prepare_manual_reconnect(terminal_id, profile)?
         }
     };
+    #[cfg(test)]
+    pause_after_start_stale_children(terminal_id);
     if !owner.install_allowed(ticket) {
-        destroy_stale_terminals(generation, stale_terminals);
         return Err(ConnectionError::RecoveryUnavailable);
     }
-    if let Err(error) = registry::begin_remote(terminal_id, generation).map_err(map_terminal_error)
-    {
-        destroy_stale_terminals(generation, stale_terminals);
-        return Err(error);
-    }
+    registry::begin_remote(terminal_id, generation).map_err(map_terminal_error)?;
     if manual_reconnect {
         // A manual runtime picker is a new binding, not a reconnect capture.
         // Replace the owner's native Term before authentication so stale
@@ -5387,7 +5485,6 @@ fn start_connection_after_transition(
             registry::reset_remote_binding(terminal_id, generation).map_err(map_terminal_error)
         {
             registry::detach_transport(terminal_id, generation);
-            destroy_stale_terminals(generation, stale_terminals);
             return Err(error);
         }
     }
@@ -5462,7 +5559,7 @@ fn start_connection_after_transition(
         shared.set_state(ConnectionState::Reconnecting);
     }
     if !owner.install_allowed(ticket) {
-        abandon_uninstalled_connection(&shared, stale_terminals);
+        abandon_uninstalled_connection(&shared);
         return Err(ConnectionError::RecoveryUnavailable);
     }
     let (command_sender, command_receiver) = mpsc::channel(32);
@@ -5476,7 +5573,7 @@ fn start_connection_after_transition(
         let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
         if !owner.install_allowed(ticket) {
             drop(start_gate_sender);
-            abandon_uninstalled_connection(&shared, stale_terminals);
+            abandon_uninstalled_connection(&shared);
             join.abort();
             return Err(ConnectionError::RecoveryUnavailable);
         }
@@ -5500,7 +5597,6 @@ fn start_connection_after_transition(
             clear_terminal_data_plane_fence(terminal_id);
         }
     }
-    destroy_stale_terminals(generation, stale_terminals);
     Ok(())
 }
 
@@ -12452,7 +12548,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         assert_eq!(ready["control"]["cleanupWarning"]["id"], "1");
 
         registry::begin_remote(owner, replacement_generation).expect("canceled remote binding");
-        abandon_uninstalled_connection(&replacement, std::iter::empty());
+        abandon_uninstalled_connection(&replacement);
         assert!(replacement.is_cancelled());
         assert!(registry::send_bytes(owner, b"cancelled-input").is_err());
         assert!(refresh_terminal(owner).is_err());
@@ -13212,6 +13308,152 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         let (_serial, replacement_ticket) = owner.begin().expect("next owner ticket");
         assert!(owner.install_allowed(replacement_ticket));
         owner.finish(replacement_ticket);
+    }
+
+    #[test]
+    fn concurrent_starts_destroy_stale_children_after_releasing_owner_serial() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::concurrent_starts_destroy_stale_children_after_releasing_owner_serial",
+            "MEETERM_TEST_START_CHILD_DESTRUCTION_LOCK_RACE_CHILD",
+        ) {
+            return;
+        }
+
+        assert!(
+            connections()
+                .lock()
+                .expect("empty connection map before lock race")
+                .is_empty()
+        );
+        let initial_terminal_count = registry::terminal_count();
+        let owner = registry::create_terminal(80, 24).expect("lock race owner terminal");
+        let stale_child = registry::create_terminal(80, 24).expect("stale child terminal");
+        session_state(owner)
+            .lock()
+            .expect("seed owner pane state")
+            .pane_terminals
+            .insert(1, stale_child);
+
+        let stale_children_staged = Arc::new(std::sync::Barrier::new(2));
+        let resume_first_start = Arc::new(std::sync::Barrier::new(2));
+        *START_STALE_CHILD_PAUSE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("stale child stage hook") = Some(StartLockRacePause {
+            terminal_id: owner,
+            entered: Arc::clone(&stale_children_staged),
+            resume: Arc::clone(&resume_first_start),
+        });
+
+        let host_start = move || {
+            ConnectionStart::Host(ConnectOptions {
+                host: "127.0.0.1".to_owned(),
+                port: 1,
+                username: "lock-race".to_owned(),
+                credentials: AuthOptions::password("fixture-only".to_owned()),
+                known_hosts_path: PathBuf::from(format!("/tmp/start-lock-race-{owner}")),
+                backend: Backend::Tmux,
+                runtime: None,
+            })
+        };
+        let (first_sender, first_receiver) = std::sync::mpsc::channel();
+        let first_owner = owner;
+        let first = std::thread::spawn(move || {
+            let _ = first_sender.send(start_connection(first_owner, host_start()));
+        });
+
+        stale_children_staged.wait();
+        assert!(registry::shared_terminal(stale_child).is_ok());
+
+        let browse_locked = Arc::new(std::sync::Barrier::new(2));
+        let resume_second_start = Arc::new(std::sync::Barrier::new(2));
+        *START_BROWSE_SERIAL_PAUSE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("browse serial stage hook") = Some(StartLockRacePause {
+            terminal_id: owner,
+            entered: Arc::clone(&browse_locked),
+            resume: Arc::clone(&resume_second_start),
+        });
+        let owner_waiting = Arc::new(std::sync::Barrier::new(2));
+        let resume_owner_wait = Arc::new(std::sync::Barrier::new(2));
+        *OWNER_SERIAL_WAIT_PAUSE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("owner serial wait hook") = Some(OwnerSerialWaitPause {
+            waiting: Arc::clone(&owner_waiting),
+            resume: Arc::clone(&resume_owner_wait),
+        });
+        let (second_sender, second_receiver) = std::sync::mpsc::channel();
+        let second_owner = owner;
+        let second = std::thread::spawn(move || {
+            let _ = second_sender.send(start_connection(second_owner, host_start()));
+        });
+
+        browse_locked.wait();
+        // The second start owns runtime_browse_serial while the staged first
+        // start still owns this same owner's serial lock.
+        resume_second_start.wait();
+        owner_waiting.wait();
+        resume_owner_wait.wait();
+        resume_first_start.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let first_result = first_receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("first start finishes within the race bound");
+        let second_result = second_receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("second start finishes within the race bound");
+        assert_eq!(first_result, Ok(()));
+        assert_eq!(second_result, Ok(()));
+        first.join().expect("first start thread");
+        second.join().expect("second start thread");
+
+        assert!(registry::shared_terminal(stale_child).is_err());
+        assert!(
+            !session_states()
+                .lock()
+                .expect("session map after child destruction")
+                .contains_key(&stale_child)
+        );
+        {
+            let entries = connections()
+                .lock()
+                .expect("connection map after both starts");
+            assert_eq!(entries.len(), 1, "one owner has one installed connection");
+            assert!(entries.contains_key(&owner));
+            assert!(!entries.contains_key(&stale_child));
+        }
+        assert!(runtime_browse_serial().try_lock().is_ok());
+        let owner_transition = owner_transition(owner).expect("single owner transition");
+        assert!(owner_transition.serial.try_lock().is_ok());
+
+        if let Some(entry) = connections()
+            .lock()
+            .expect("connection cleanup map")
+            .remove(&owner)
+        {
+            entry.shared.cancel();
+            entry.abort.abort();
+        }
+        session_states()
+            .lock()
+            .expect("session cleanup map")
+            .remove(&owner);
+        registry::destroy_terminal(owner);
+        OWNER_TRANSITIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("owner transition cleanup map")
+            .retain(|terminal_id, _| *terminal_id != owner && *terminal_id != stale_child);
+        assert!(
+            connections()
+                .lock()
+                .expect("empty connection map after cleanup")
+                .is_empty()
+        );
+        assert_eq!(registry::terminal_count(), initial_terminal_count);
     }
 
     #[test]
