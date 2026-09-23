@@ -1,1 +1,70 @@
-<no filtered native log lines>
+09-23 17:17:59.836 30584 30584 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-23 17:17:59.845 30584 30584 I MeetermTerminalView: attached
+09-23 17:17:59.850 30584 30584 I MeetermTerminalView: resized columns=54 rows=36 cell=20x54
+09-23 17:17:59.851 30584 30584 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-23 17:17:59.851 30584 30584 I MeetermTerminalView: resized columns=54 rows=35 cell=20x54
+09-23 17:17:59.858 30584 30584 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:17:59.858 30584 30584 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:17:59.864 30584 30584 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:17:59.864 30584 30584 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:17:59.880 30584 30623 I MeetermRenderer: GLES surface created cell=20x54
+09-23 17:17:59.886 30584 30623 I MeetermRenderer: snapshot parsed columns=54 rows=35 cells=1881 visibleGlyphs=523 bytes=54604
+09-23 17:18:00.465 30584 30623 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
+09-23 17:18:00.495 30584 30584 I MeetermTerminalView: resized columns=54 rows=32 cell=20x54
+09-23 17:18:00.846 30584 30584 I MeetermTerminalView: resized columns=54 rows=33 cell=20x54
+09-23 17:18:01.226 30584 30584 I MeetermTerminalView: resized columns=54 rows=32 cell=20x54
+09-23 17:18:35.510 31432 31432 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-23 17:18:35.516 31432 31432 I MeetermTerminalView: attached
+09-23 17:18:35.522 31432 31432 I MeetermTerminalView: resized columns=54 rows=32 cell=20x54
+09-23 17:18:35.524 31432 31432 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-23 17:18:35.524 31432 31432 I MeetermTerminalView: resized columns=54 rows=31 cell=20x54
+09-23 17:18:35.542 31432 31432 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:35.542 31432 31432 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:35.542 31432 31432 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:35.542 31432 31432 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:35.576 31432 31470 I MeetermRenderer: GLES surface created cell=20x54
+09-23 17:18:35.581 31432 31470 I MeetermRenderer: snapshot parsed columns=54 rows=31 cells=1665 visibleGlyphs=439 bytes=48340
+09-23 17:18:36.092 31432 31470 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
+09-23 17:18:36.122 31432 31432 I MeetermTerminalView: resized columns=54 rows=28 cell=20x54
+09-23 17:18:36.433 31432 31432 I MeetermTerminalView: resized columns=54 rows=30 cell=20x54
+09-23 17:18:36.796 31432 31432 I MeetermTerminalView: resized columns=54 rows=28 cell=20x54
+09-23 17:18:43.522 31597 31597 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-23 17:18:43.530 31597 31597 I MeetermTerminalView: attached
+09-23 17:18:43.537 31597 31597 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-23 17:18:43.556 31597 31597 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:43.556 31597 31597 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:43.556 31597 31597 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:43.556 31597 31597 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:43.579 31597 31635 I MeetermRenderer: GLES surface created cell=20x54
+09-23 17:18:43.585 31597 31635 I MeetermRenderer: snapshot parsed columns=80 rows=24 cells=1911 visibleGlyphs=271 bytes=55474
+09-23 17:18:44.113 31597 31635 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
+09-23 17:18:48.792 31688 31688 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-23 17:18:48.798 31688 31688 I MeetermTerminalView: attached
+09-23 17:18:48.806 31688 31688 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-23 17:18:48.824 31688 31688 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:48.824 31688 31688 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:48.825 31688 31688 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:48.825 31688 31688 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:48.848 31688 31727 I MeetermRenderer: GLES surface created cell=20x54
+09-23 17:18:48.855 31688 31727 I MeetermRenderer: snapshot parsed columns=80 rows=24 cells=1911 visibleGlyphs=271 bytes=55474
+09-23 17:18:49.361 31688 31727 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
+09-23 17:18:53.998 31780 31780 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-23 17:18:54.003 31780 31780 I MeetermTerminalView: attached
+09-23 17:18:54.010 31780 31780 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-23 17:18:54.017 31780 31780 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:54.017 31780 31780 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:54.017 31780 31780 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:54.017 31780 31780 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:54.044 31780 31819 I MeetermRenderer: GLES surface created cell=20x54
+09-23 17:18:54.049 31780 31819 I MeetermRenderer: snapshot parsed columns=80 rows=24 cells=1911 visibleGlyphs=271 bytes=55474
+09-23 17:18:54.620 31780 31819 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME
+09-23 17:18:59.175 31872 31872 I MeetermTerminalView: bound terminalId=poc-main handle=1
+09-23 17:18:59.181 31872 31872 I MeetermTerminalView: attached
+09-23 17:18:59.188 31872 31872 I MeetermTerminalView: window insets left=0 right=0 bottom=63
+09-23 17:18:59.212 31872 31872 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:59.212 31872 31872 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:59.213 31872 31872 I MeetermTerminalView: ready terminalId=poc-main handle=1
+09-23 17:18:59.213 31872 31872 I MeetermTerminalView: MEETERM_SMOKE_NATIVE_READY
+09-23 17:18:59.231 31872 31910 I MeetermRenderer: GLES surface created cell=20x54
+09-23 17:18:59.237 31872 31910 I MeetermRenderer: snapshot parsed columns=80 rows=24 cells=1911 visibleGlyphs=271 bytes=55474
+09-23 17:18:59.717 31872 31910 I MeetermRenderer: MEETERM_SMOKE_FIRST_FRAME

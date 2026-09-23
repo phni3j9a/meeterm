@@ -1,3 +1,0 @@
-screen=session-switcher-host-key-dark
-result=unavailable
-reason=missing_switch_heading,host_key_guidance,host_key_fingerprint,host_key_reject_action,host_key_trust_action
