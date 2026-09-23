@@ -2573,7 +2573,7 @@ pub fn runtime_browse_start_current(
 ) -> Result<RuntimeBrowseSnapshot, ConnectionError> {
     cancel_active_runtime_browse();
     let source = browse_source_profile(source_owner)?;
-    let mut profile = source.profile;
+    let mut profile = source.profile.clone();
     profile.backend = Backend::Tmux;
     profile.runtime = None;
     profile.tmux_identity = None;
@@ -2581,11 +2581,7 @@ pub fn runtime_browse_start_current(
     runtime_browse_start(
         source_owner,
         ConnectionStart::ProvisionalProfile(profile),
-        source.shared,
-        source.operation_epoch,
-        source.recovery,
-        source.runtime_operations_ready,
-        source.retired,
+        source,
     )
 }
 
@@ -2605,11 +2601,7 @@ pub fn runtime_browse_start_with_options(
     runtime_browse_start(
         source_owner,
         ConnectionStart::ProvisionalHost(options),
-        source.shared,
-        source.operation_epoch,
-        source.recovery,
-        source.runtime_operations_ready,
-        source.retired,
+        source,
     )
 }
 
@@ -3200,6 +3192,8 @@ fn browse_source_profile(source_owner: TerminalId) -> Result<BrowseSource, Conne
             && !state.runtime_operations_ready
             && state.has_retained_work();
         if state.generation != shared.generation
+            || !state.foreground
+            || !shared.is_foreground()
             || (!source_is_ready && !source_is_retained_recovery)
         {
             return Err(ConnectionError::BrowseUnavailable);
@@ -3239,6 +3233,8 @@ fn browse_source_profile(source_owner: TerminalId) -> Result<BrowseSource, Conne
         && state.recovery.phase != RecoveryPhase::None
         && !state.runtime_operations_ready
         && !state.terminal_input_ready
+        && state.foreground
+        && retired.shared.is_foreground()
         && state.has_retained_work()
         && state.endpoint.as_ref() == Some(&SessionEndpoint::from_profile(&retired.profile))
         && same_ssh_endpoint(state_profile, &retired.profile)
@@ -3257,6 +3253,36 @@ fn browse_source_profile(source_owner: TerminalId) -> Result<BrowseSource, Conne
         runtime_operations_ready: false,
         retired: true,
     })
+}
+
+/// Recheck the exact source capability captured before a browse request was
+/// queued. Callers hold `runtime_browse_serial` so explicit disposal and
+/// foreground cancellation cannot finish between this check and publication.
+fn browse_source_capture_is_current(
+    source_owner: TerminalId,
+    captured: &BrowseSource,
+) -> Result<(), ConnectionError> {
+    let current = browse_source_profile(source_owner).map_err(|_| ConnectionError::BrowseStale)?;
+    let profile_matches = same_ssh_endpoint(&current.profile, &captured.profile)
+        && current.profile.backend == captured.profile.backend
+        && current.profile.runtime == captured.profile.runtime
+        && current.profile.tmux_identity == captured.profile.tmux_identity
+        && current.profile.herdr_executable == captured.profile.herdr_executable
+        && stored_credentials_share_identity(
+            &current.profile.credentials,
+            &captured.profile.credentials,
+        );
+    if !Arc::ptr_eq(&current.shared, &captured.shared)
+        || current.shared.generation != captured.shared.generation
+        || current.operation_epoch != captured.operation_epoch
+        || current.recovery != captured.recovery
+        || current.runtime_operations_ready != captured.runtime_operations_ready
+        || current.retired != captured.retired
+        || !profile_matches
+    {
+        return Err(ConnectionError::BrowseStale);
+    }
+    Ok(())
 }
 
 fn browse_source_state_matches(entry: &RuntimeBrowseEntry, state: &SessionState) -> bool {
@@ -3516,20 +3542,33 @@ fn cancel_runtime_browse_for_source(source_owner: TerminalId) {
         let Ok(_serial) = runtime_browse_serial().lock() else {
             return;
         };
-        runtime_browse().lock().ok().and_then(|mut browse| {
-            browse
-                .as_ref()
-                .is_some_and(|entry| entry.source_owner == source_owner)
-                .then(|| browse.take().expect("browse entry matched above"))
-                .filter(|entry| !matches!(entry.phase, RuntimeBrowsePhase::Committed))
-                .map(|entry| {
-                    (
-                        entry.provisional_shared.generation,
-                        retire_runtime_browse_target(&entry),
-                    )
-                })
-        })
+        take_runtime_browse_for_source_locked(source_owner)
     };
+    destroy_retired_browse_target(retired);
+}
+
+/// Remove and locally retire a source browse while the caller owns
+/// `runtime_browse_serial`. Terminal destruction is returned to the caller
+/// so it can run after the serial and browse mutexes are released.
+fn take_runtime_browse_for_source_locked(
+    source_owner: TerminalId,
+) -> Option<(u64, Vec<TerminalId>)> {
+    runtime_browse().lock().ok().and_then(|mut browse| {
+        browse
+            .as_ref()
+            .is_some_and(|entry| entry.source_owner == source_owner)
+            .then(|| browse.take().expect("browse entry matched above"))
+            .filter(|entry| !matches!(entry.phase, RuntimeBrowsePhase::Committed))
+            .map(|entry| {
+                (
+                    entry.provisional_shared.generation,
+                    retire_runtime_browse_target(&entry),
+                )
+            })
+    })
+}
+
+fn destroy_retired_browse_target(retired: Option<(u64, Vec<TerminalId>)>) {
     if let Some((generation, stale_terminals)) = retired {
         destroy_stale_terminals(generation, stale_terminals);
     }
@@ -3538,15 +3577,21 @@ fn cancel_runtime_browse_for_source(source_owner: TerminalId) {
 fn runtime_browse_start(
     source_owner: TerminalId,
     start: ConnectionStart,
-    source_shared: Arc<ConnectionShared>,
-    source_epoch: u64,
-    source_recovery: RecoverySnapshot,
-    source_runtime_operations_ready: bool,
-    source_retired: bool,
+    source: BrowseSource,
 ) -> Result<RuntimeBrowseSnapshot, ConnectionError> {
     let _serial = runtime_browse_serial()
         .lock()
         .map_err(|_| ConnectionError::Internal)?;
+    browse_source_capture_is_current(source_owner, &source)?;
+
+    let BrowseSource {
+        shared: source_shared,
+        profile: _,
+        operation_epoch: source_epoch,
+        recovery: source_recovery,
+        runtime_operations_ready: source_runtime_operations_ready,
+        retired: source_retired,
+    } = source;
     let mut retired = None;
     let result = (|| {
         // Opening a different server or reopening the same row cancels the
@@ -4639,27 +4684,37 @@ pub fn refresh_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> 
 /// transition; no timer state machine is needed in JavaScript.
 pub fn set_foreground(terminal_id: TerminalId, foreground: bool) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    if !foreground {
-        cancel_runtime_browse_for_source(terminal_id);
-    }
-    let shared = connections()
+    let serial = runtime_browse_serial()
         .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .get(&terminal_id)
-        .map(|entry| Arc::clone(&entry.shared));
-    if let Some(shared) = shared {
-        if !shared.normal_control_allowed() {
-            return Err(ConnectionError::BrowsePermissionDenied);
-        }
-        shared.set_foreground(foreground);
+        .map_err(|_| ConnectionError::Internal)?;
+    let retired = if foreground {
+        None
     } else {
-        let state = session_state(terminal_id);
-        state
+        take_runtime_browse_for_source_locked(terminal_id)
+    };
+    let result = (|| {
+        let shared = connections()
             .lock()
             .map_err(|_| ConnectionError::Internal)?
-            .foreground = foreground;
-    }
-    Ok(())
+            .get(&terminal_id)
+            .map(|entry| Arc::clone(&entry.shared));
+        if let Some(shared) = shared {
+            if !shared.normal_control_allowed() {
+                return Err(ConnectionError::BrowsePermissionDenied);
+            }
+            shared.set_foreground(foreground);
+        } else {
+            let state = session_state(terminal_id);
+            state
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?
+                .foreground = foreground;
+        }
+        Ok(())
+    })();
+    drop(serial);
+    destroy_retired_browse_target(retired);
+    result
 }
 
 /// Enable or disable bounded native reconnect attempts for this owner. The
@@ -5385,20 +5440,28 @@ fn start_connection(
 /// disabled.  The registry entry remains available for state polling.
 pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    cancel_runtime_browse_for_source(terminal_id);
+    let serial = runtime_browse_serial()
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
+    let retired_browse = take_runtime_browse_for_source_locked(terminal_id);
     clear_retired_browse_source(terminal_id);
-    let owner = owner_transition(terminal_id)?;
-    let (shared, abort) = {
+    let source = (|| {
+        let owner = owner_transition(terminal_id)?;
         let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
         owner.cancel_current_locked();
         let entries = connections()
             .lock()
             .map_err(|_| ConnectionError::Internal)?;
         let Some(entry) = entries.get(&terminal_id) else {
-            return Ok(());
+            return Ok(None);
         };
         entry.shared.invalidate_explicitly("explicit_disconnect");
-        (Arc::clone(&entry.shared), entry.abort.clone())
+        Ok(Some((Arc::clone(&entry.shared), entry.abort.clone())))
+    })();
+    drop(serial);
+    destroy_retired_browse_target(retired_browse);
+    let Some((shared, abort)) = source? else {
+        return Ok(());
     };
 
     detach_all(&shared);
@@ -5454,7 +5517,10 @@ fn cancel_entry_locked(
 /// stable terminal ID and its connection.
 pub(crate) fn terminal_destroyed(terminal_id: TerminalId) {
     clear_terminal_data_plane_fence(terminal_id);
-    cancel_runtime_browse_for_source(terminal_id);
+    let serial = runtime_browse_serial().lock().ok();
+    let retired_browse = serial
+        .as_ref()
+        .and_then(|_| take_runtime_browse_for_source_locked(terminal_id));
     clear_retired_browse_source(terminal_id);
     let owner = owner_transition(terminal_id).ok();
     let entry = owner.as_ref().and_then(|owner| {
@@ -5462,6 +5528,8 @@ pub(crate) fn terminal_destroyed(terminal_id: TerminalId) {
         owner.cancel_current_locked();
         connections().lock().ok()?.remove(&terminal_id)
     });
+    drop(serial);
+    destroy_retired_browse_target(retired_browse);
     if let Some(entry) = entry {
         entry.shared.mark_closing();
         entry.shared.cancel();
@@ -7864,6 +7932,495 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 }
             }
         }
+    }
+
+    fn seed_retired_browse_source(
+        host: &str,
+        port: u16,
+    ) -> (
+        TerminalId,
+        Arc<ConnectionShared>,
+        ConnectionProfile,
+        RecoverySnapshot,
+    ) {
+        let owner = registry::create_terminal(80, 24).expect("retired browse source terminal");
+        let generation = next_generation();
+        let password = Arc::new(Zeroizing::new("retired-browse-secret".to_owned()));
+        let profile = ConnectionProfile {
+            host: host.to_owned(),
+            port,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from(format!("/tmp/retired-browse-{owner}")),
+            credentials: StoredCredentials::Password {
+                password: Arc::clone(&password),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("retained".to_owned()),
+            tmux_identity: Some(tmux::SessionIdentity {
+                session_id: "$31".to_owned(),
+                name: "retained".to_owned(),
+                server_pid: 31,
+                server_start_time: 1_700_000_031,
+            }),
+            herdr_executable: None,
+        };
+        let recovery = RecoverySnapshot {
+            phase: RecoveryPhase::Stopped,
+            reason: "runtime_changed".to_owned(),
+            attempt: 1,
+            max_attempts: 1,
+            confirmation_token: String::new(),
+        };
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            profile.host.clone(),
+            profile.port,
+            profile.known_hosts_path.clone(),
+        ));
+        {
+            let mut state = shared.session.lock().expect("retired browse session");
+            state.generation = generation;
+            state.operation_epoch = 19;
+            state.endpoint = Some(SessionEndpoint::from_profile(&profile));
+            state.profile = Some(profile.clone());
+            state.snapshot = SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 1,
+                    name: "retained".to_owned(),
+                    panes: Vec::new(),
+                    selected: true,
+                    zoomed: false,
+                }],
+                panes: vec![PaneSnapshot {
+                    window_id: 1,
+                    pane_id: 31,
+                    terminal_id: owner,
+                    window_name: "retained".to_owned(),
+                    active: true,
+                    selected: true,
+                    index: 0,
+                    columns: 80,
+                    rows: 24,
+                    pane_name: "shell".to_owned(),
+                    title: "shell".to_owned(),
+                }],
+                selected_pane: Some(31),
+            };
+            state.pane_terminals.insert(31, owner);
+            state.selected_pane = Some(31);
+            state.recovery = recovery.clone();
+            state.runtime_operations_ready = false;
+            state.terminal_input_ready = false;
+            state.foreground = true;
+        }
+        registry::begin_remote(owner, generation).expect("begin retained native Term");
+        assert!(registry::feed_remote(
+            owner,
+            generation,
+            b"retained browse work"
+        ));
+        shared.set_state(ConnectionState::Failed);
+        shared.finish(Err(FlowFailure::Stale));
+        retired_browse_sources()
+            .lock()
+            .expect("retired browse source map")
+            .insert(
+                owner,
+                RetiredBrowseSource {
+                    shared: Arc::clone(&shared),
+                    profile: profile.clone(),
+                    generation,
+                    operation_epoch: 19,
+                    recovery: recovery.clone(),
+                },
+            );
+        fence_terminal_data_plane(owner).expect("fence retained source data plane");
+        (owner, shared, profile, recovery)
+    }
+
+    fn provisional_start_for_profile(profile: &ConnectionProfile) -> ConnectionStart {
+        let mut profile = profile.clone();
+        profile.backend = Backend::Tmux;
+        profile.runtime = None;
+        profile.tmux_identity = None;
+        profile.herdr_executable = None;
+        ConnectionStart::ProvisionalProfile(profile)
+    }
+
+    #[test]
+    fn delayed_browse_after_disconnect_and_destroy_is_stale() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::delayed_browse_after_disconnect_and_destroy_is_stale",
+            "MEETERM_TEST_BROWSE_DISPOSED_SOURCE_CHILD",
+        ) {
+            return;
+        }
+
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("auth-attempt observer listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let port = listener.local_addr().expect("observer endpoint").port();
+        let (owner, _source_shared, profile, _recovery) =
+            seed_retired_browse_source("127.0.0.1", port);
+        let captured = browse_source_profile(owner).expect("capture authorized tombstone");
+        let start = provisional_start_for_profile(&profile);
+
+        disconnect_terminal(owner).expect("disconnect retained source");
+        assert!(
+            !retired_browse_sources()
+                .lock()
+                .expect("retired sources after disconnect")
+                .contains_key(&owner),
+            "Disconnect clears the credential-bearing tombstone"
+        );
+        assert!(registry::destroy_terminal(owner), "destroy captured source");
+        let terminal_count_after_disposal = registry::terminal_count();
+
+        assert!(matches!(
+            runtime_browse_start(owner, start, captured),
+            Err(ConnectionError::BrowseStale)
+        ));
+        assert_eq!(registry::terminal_count(), terminal_count_after_disposal);
+        assert!(
+            runtime_browse()
+                .lock()
+                .expect("browse slot after stale start")
+                .is_none()
+        );
+        assert!(
+            !connections()
+                .lock()
+                .expect("connection map after stale start")
+                .contains_key(&owner)
+        );
+        assert!(
+            !retired_browse_sources()
+                .lock()
+                .expect("retired source map after stale start")
+                .contains_key(&owner)
+        );
+        assert!(
+            matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "stale retry does not make an SSH connection attempt"
+        );
+    }
+
+    #[test]
+    fn delayed_browse_after_background_cancellation_is_stale() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::delayed_browse_after_background_cancellation_is_stale",
+            "MEETERM_TEST_BROWSE_BACKGROUND_SOURCE_CHILD",
+        ) {
+            return;
+        }
+
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("auth-attempt observer listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let port = listener.local_addr().expect("observer endpoint").port();
+        let (owner, _source_shared, profile, _recovery) =
+            seed_retired_browse_source("127.0.0.1", port);
+        let captured = browse_source_profile(owner).expect("capture authorized tombstone");
+        let start = provisional_start_for_profile(&profile);
+
+        set_foreground(owner, false).expect("complete foreground cancellation");
+        assert!(
+            !session_state(owner)
+                .lock()
+                .expect("background source state")
+                .foreground
+        );
+        assert!(matches!(
+            runtime_browse_start(owner, start, captured),
+            Err(ConnectionError::BrowseStale)
+        ));
+        assert!(
+            runtime_browse()
+                .lock()
+                .expect("browse slot after background cancellation")
+                .is_none()
+        );
+        assert_eq!(registry::terminal_count(), 1);
+        assert!(
+            matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "background cancellation prevents a delayed SSH attempt"
+        );
+
+        assert!(
+            registry::destroy_terminal(owner),
+            "destroy background source"
+        );
+    }
+
+    #[test]
+    fn retired_tombstone_retry_commits_and_promotes_to_ready() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::retired_tombstone_retry_commits_and_promotes_to_ready",
+            "MEETERM_TEST_BROWSE_TOMBSTONE_COMMIT_CHILD",
+        ) {
+            return;
+        }
+
+        let (source_owner, source_shared, _source_profile, recovery) =
+            seed_retired_browse_source("source.example.test", 22);
+        let source = browse_source_profile(source_owner).expect("authorized tombstone retry");
+        let provisional_owner = registry::create_terminal(80, 24).expect("provisional retry root");
+        let provisional_generation = next_generation();
+        let target_password = Arc::new(Zeroizing::new("target-browse-secret".to_owned()));
+        let target_profile = ConnectionProfile {
+            host: "target.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/tombstone-commit-target-known-hosts"),
+            credentials: StoredCredentials::Password {
+                password: Arc::clone(&target_password),
+            },
+            backend: Backend::Tmux,
+            runtime: None,
+            tmux_identity: None,
+            herdr_executable: None,
+        };
+        let target_endpoint = SessionEndpoint::from_profile(&target_profile);
+        let provisional_shared = Arc::new(ConnectionShared::new_with_provisional(
+            provisional_owner,
+            provisional_generation,
+            target_endpoint.host.clone(),
+            target_endpoint.port,
+            target_endpoint.known_hosts_path.clone(),
+            true,
+        ));
+        let target_identity = tmux::SessionIdentity {
+            session_id: "$41".to_owned(),
+            name: "next".to_owned(),
+            server_pid: 41,
+            server_start_time: 1_700_000_041,
+        };
+        let candidate = RuntimeCandidate {
+            id: "tombstone-target".to_owned(),
+            backend: Backend::Tmux,
+            name: "next".to_owned(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: false,
+            error_code: None,
+            error_message: None,
+        };
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("provisional retry state");
+            state.generation = provisional_generation;
+            state.endpoint = Some(target_endpoint.clone());
+            state.profile = Some(target_profile.clone());
+            state.runtime_discovery = RuntimeDiscoverySnapshot {
+                connection_generation: provisional_generation,
+                discovery_revision: 1,
+                tmux: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![candidate.clone()],
+                    ..RuntimeSection::default()
+                },
+                herdr: RuntimeSection {
+                    state: RuntimeSectionState::Empty,
+                    ..RuntimeSection::default()
+                },
+            };
+            state.runtime_candidates.insert(
+                candidate.id.clone(),
+                RuntimeBinding::Tmux(target_identity.clone()),
+            );
+        }
+        provisional_shared.set_state(ConnectionState::AwaitingRuntimeSelection);
+        let (command_sender, mut command_receiver) = mpsc::channel(8);
+        provisional_shared.set_commands(command_sender);
+        let abort = runtime()
+            .expect("tombstone commit runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections()
+            .lock()
+            .expect("tombstone commit connections")
+            .insert(
+                provisional_owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&provisional_shared),
+                    abort,
+                },
+            );
+
+        let token = next_browse_token();
+        let browse_generation = next_browse_token();
+        let source_generation = source.shared.generation;
+        let source_epoch = source.operation_epoch;
+        *runtime_browse()
+            .lock()
+            .expect("tombstone commit browse slot") = Some(RuntimeBrowseEntry {
+            token,
+            source_owner,
+            source_generation,
+            source_epoch,
+            source_recovery: recovery.clone(),
+            source_runtime_operations_ready: false,
+            source_retired: true,
+            source_shared: Arc::clone(&source_shared),
+            provisional_owner,
+            provisional_generation,
+            provisional_shared: Arc::clone(&provisional_shared),
+            target_endpoint,
+            browse_generation,
+            refresh_pending_from_revision: None,
+            phase: RuntimeBrowsePhase::Ready,
+            target: None,
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        });
+
+        runtime_browse_commit(
+            &token.to_string(),
+            browse_generation,
+            1,
+            Some(&candidate.id),
+            None,
+        )
+        .expect("authorized tombstone selection commits");
+        let selection = command_receiver
+            .blocking_recv()
+            .expect("queued explicit runtime selection");
+        assert!(matches!(
+            selection.command,
+            ControlCommand::SelectRuntime { candidate_id } if candidate_id == candidate.id
+        ));
+
+        let selected_child =
+            registry::create_terminal(80, 24).expect("selected target child terminal");
+        registry::begin_remote(provisional_owner, provisional_generation)
+            .expect("begin target root Term");
+        assert!(registry::feed_remote(
+            provisional_owner,
+            provisional_generation,
+            b"committed tombstone retry screen"
+        ));
+        let target_root = registry::snapshot(provisional_owner).expect("target root snapshot");
+        let target_profile = ConnectionProfile {
+            runtime: Some("next".to_owned()),
+            tmux_identity: Some(target_identity),
+            ..target_profile
+        };
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("selected target state");
+            state.endpoint = Some(SessionEndpoint {
+                runtime: Some("next".to_owned()),
+                ..SessionEndpoint::from_profile(&target_profile)
+            });
+            state.profile = Some(target_profile);
+            state.snapshot = SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 4,
+                    name: "selected workspace".to_owned(),
+                    panes: Vec::new(),
+                    selected: true,
+                    zoomed: false,
+                }],
+                panes: vec![PaneSnapshot {
+                    window_id: 4,
+                    pane_id: 44,
+                    terminal_id: selected_child,
+                    window_name: "selected workspace".to_owned(),
+                    active: true,
+                    selected: true,
+                    index: 0,
+                    columns: 80,
+                    rows: 24,
+                    pane_name: "selected".to_owned(),
+                    title: "selected".to_owned(),
+                }],
+                selected_pane: Some(44),
+            };
+            state.pane_terminals =
+                HashMap::from([(provisional_owner, provisional_owner), (44, selected_child)]);
+            state.selected_pane = Some(44);
+            state.runtime_operations_ready = true;
+            state.terminal_input_ready = true;
+            state.recovery = RecoverySnapshot::default();
+        }
+        registry::begin_remote(selected_child, provisional_generation)
+            .expect("begin selected pane Term");
+        provisional_shared.set_state(ConnectionState::Ready);
+        provisional_shared.ready_once.store(true, Ordering::Release);
+
+        let promotion = runtime()
+            .expect("tombstone promotion runtime")
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(2), command_receiver.recv()).await
+            })
+            .expect("promotion command arrives within bound")
+            .expect("promotion command remains queued");
+        assert!(matches!(
+            promotion.command,
+            ControlCommand::PromoteRuntimeBrowse {
+                token: command_token,
+                source_owner: command_source,
+                provisional_owner: command_provisional,
+            } if command_token == token
+                && command_source == source_owner
+                && command_provisional == provisional_owner
+        ));
+        promote_runtime_browse(
+            token,
+            source_owner,
+            provisional_owner,
+            Arc::clone(&provisional_shared),
+        )
+        .expect("promote committed tombstone retry");
+
+        assert_eq!(
+            runtime_browse_snapshot(&token.to_string())
+                .expect("committed browse snapshot")
+                .phase,
+            RuntimeBrowsePhase::Committed
+        );
+        assert_eq!(
+            connection_snapshot(source_owner).unwrap().state,
+            ConnectionState::Ready as u32
+        );
+        assert_eq!(registry::snapshot(source_owner).unwrap(), target_root);
+        assert!(
+            !retired_browse_sources()
+                .lock()
+                .expect("tombstone after promotion")
+                .contains_key(&source_owner)
+        );
+
+        runtime_browse_cancel(&token.to_string()).expect("clear committed browse record");
+        if let Some(entry) = connections()
+            .lock()
+            .expect("tombstone promotion cleanup connections")
+            .remove(&source_owner)
+        {
+            entry.shared.cancel();
+            entry.abort.abort();
+        }
+        assert!(
+            registry::destroy_terminal(source_owner),
+            "destroy promoted owner"
+        );
     }
 
     struct RejectingServer;
