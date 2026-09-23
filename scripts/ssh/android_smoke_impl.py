@@ -118,11 +118,11 @@ RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",
 )
-PROFILE_SWITCH_CONFIRMATION_BRANCH = "confirmation"
-PROFILE_SWITCH_TARGET_PICKER_BRANCH = "target_picker"
+PROFILE_SWITCH_SESSION_SWITCHER_BRANCH = "session_switcher"
 PROFILE_SWITCH_BOUNDARY_AMBIGUOUS = "profile_switch_boundary_ambiguous"
 PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER = "unexpected_profile_picker"
-PROFILE_SWITCH_BOUNDARY_TIMEOUT = "confirmation_or_target_picker_timeout"
+PROFILE_SWITCH_BOUNDARY_UNEXPECTED_CONFIRMATION = "unexpected_profile_switch_confirmation"
+PROFILE_SWITCH_BOUNDARY_TIMEOUT = "session_switcher_timeout"
 STALE_READ_ONLY_DIAGNOSTIC_NAME = "stale-read-only-diagnostic.txt"
 STALE_READ_ONLY_DIAGNOSTIC_KEYS = (
     "runtime_picker_hidden",
@@ -1578,14 +1578,13 @@ def wait_for_profile_switch_boundary(
     *,
     timeout: float = RECONNECT_TIMEOUT,
 ) -> str:
-    """Wait once for the confirmation or exact target-picker boundary.
+    """Wait for the selected profile's expanded session-switcher rows.
 
-    The expected heading is compared only in memory.  Failure stages and
+    The expected profile is compared only in memory. Failure stages and
     reasons remain fixed so a profile name or raw accessibility value cannot
     leak into smoke artifacts.
     """
 
-    expected_heading = f"{RUNTIME_PICKER_HEADING_PREFIX}{expected_profile_name}"
     boundary_stage = f"{stage}_boundary"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1596,20 +1595,37 @@ def wait_for_profile_switch_boundary(
             continue
 
         confirmation_visible = visible_exact_label(nodes, "Switch servers?")
-        target_picker_visible = visible_exact_label(nodes, expected_heading)
         picker_visible = runtime_picker_is_visible(nodes)
+        session_switcher_visible = any(
+            node.visible_to_user
+            and node.enabled
+            and node.bounds[2] > node.bounds[0]
+            and node.bounds[3] > node.bounds[1]
+            and any(
+                label.startswith(("tmux session ", "Herdr session "))
+                and f" on {expected_profile_name} (" in label
+                for label in (node.text, node.content_description)
+            )
+            for node in nodes
+        )
 
-        if confirmation_visible and target_picker_visible:
+        visible_surfaces = sum(
+            (confirmation_visible, picker_visible, session_switcher_visible)
+        )
+        if visible_surfaces > 1:
             raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_AMBIGUOUS)
+        if session_switcher_visible:
+            return PROFILE_SWITCH_SESSION_SWITCHER_BRANCH
         if picker_visible:
-            if target_picker_visible:
-                return PROFILE_SWITCH_TARGET_PICKER_BRANCH
             raise SmokeFailure(
                 boundary_stage,
                 PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER,
             )
         if confirmation_visible:
-            return PROFILE_SWITCH_CONFIRMATION_BRANCH
+            raise SmokeFailure(
+                boundary_stage,
+                PROFILE_SWITCH_BOUNDARY_UNEXPECTED_CONFIRMATION,
+            )
         time.sleep(0.2)
 
     raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_TIMEOUT)
@@ -3748,34 +3764,47 @@ def add_second_saved_fixture_profile(
 def switch_saved_profile(
     device: AndroidDevice,
     name: str,
+    host: str,
+    port: int,
+    username: str,
     stage: str,
 ) -> str:
     profile = wait_for_saved_profile(device, stage, name, selected=False)
     tap_node(device, profile, stage)
-    confirmation_stage = f"{stage}_confirmation"
     boundary = wait_for_profile_switch_boundary(
         device,
         stage,
         name,
         timeout=RECONNECT_TIMEOUT,
     )
-    if boundary == PROFILE_SWITCH_CONFIRMATION_BRANCH:
-        tap_action(device, confirmation_stage, ("Switch server",))
-    elif boundary != PROFILE_SWITCH_TARGET_PICKER_BRANCH:
+    if boundary != PROFILE_SWITCH_SESSION_SWITCHER_BRANCH:
         raise SmokeFailure(
             f"{stage}_boundary",
             "profile_switch_boundary_invalid",
         )
-    select_fixture_tmux_runtime_and_wait_for_connected(
+
+    target_session_label = (
+        f"tmux session meeterm on {name} ({username}@{host}:{port})"
+    )
+    target_session = wait_for_node(
         device,
         f"{stage}_runtime_selection",
+        content_description=target_session_label,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, target_session, f"{stage}_runtime_selection")
+    wait_for_node(
+        device,
+        f"{stage}_runtime_connected",
+        text="Connected",
+        timeout=RECONNECT_TIMEOUT,
     )
 
     # `Connected` is the native Ready boundary, but the React workspace
-    # snapshot is loaded by the completion effect immediately afterward.  A
+    # snapshot is loaded by the completion effect immediately afterward. A
     # second profile switch must not overlap that read-only snapshot request:
     # the faster direct emulator host route exposed the race by starting the
-    # next disconnect/connect while the previous picker completion was still
+    # next disconnect/connect while the previous switcher completion was still
     # settling.  Require one real fixture workspace row before opening the
     # server sheet again.  This is a state boundary, not a retry or a longer
     # deadline, and it also proves that the picker closed onto authoritative
@@ -3785,6 +3814,7 @@ def switch_saved_profile(
         f"{stage}_workspace_ready",
         timeout=RECONNECT_TIMEOUT,
     )
+    tap_action(device, stage, SERVER_CONNECTION_LABELS)
     tap_action(device, stage, ("Saved servers",))
     wait_for_saved_profile(device, stage, name, selected=True)
     return boundary
@@ -3799,14 +3829,10 @@ def append_profile_switch_boundary_marker(
     """Append only fixed, sanitized evidence for an accepted branch."""
 
     markers = {
-        ("second", PROFILE_SWITCH_CONFIRMATION_BRANCH):
-            "daily_profile_switch_second_boundary_confirmation",
-        ("second", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
-            "daily_profile_switch_second_boundary_target_picker",
-        ("primary", PROFILE_SWITCH_CONFIRMATION_BRANCH):
-            "daily_profile_switch_primary_boundary_confirmation",
-        ("primary", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
-            "daily_profile_switch_primary_boundary_target_picker",
+        ("second", PROFILE_SWITCH_SESSION_SWITCHER_BRANCH):
+            "daily_profile_switch_second_boundary_session_switcher",
+        ("primary", PROFILE_SWITCH_SESSION_SWITCHER_BRANCH):
+            "daily_profile_switch_primary_boundary_session_switcher",
     }
     marker = markers.get((switch_name, boundary))
     if marker is None:
@@ -3825,6 +3851,7 @@ def exercise_saved_profile_management(
     """Exercise fixture-owned profile edit, switch, cancellation, and removal."""
 
     stage = "daily_profile_management_open"
+    tap_action(device, stage, SERVER_CONNECTION_LABELS)
     tap_action(device, stage, ("Saved servers",))
     wait_for_saved_profile(device, stage, DAILY_PROFILE_NAME, selected=True)
 
@@ -3848,6 +3875,9 @@ def exercise_saved_profile_management(
     second_boundary = switch_saved_profile(
         device,
         DAILY_SECOND_PROFILE_NAME,
+        host,
+        port,
+        username,
         "daily_profile_switch_second",
     )
     append_profile_switch_boundary_marker(
@@ -3860,6 +3890,9 @@ def exercise_saved_profile_management(
     primary_boundary = switch_saved_profile(
         device,
         DAILY_PROFILE_NAME,
+        host,
+        port,
+        username,
         "daily_profile_switch_primary",
     )
     append_profile_switch_boundary_marker(

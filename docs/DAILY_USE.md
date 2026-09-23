@@ -88,6 +88,11 @@ tmux session is a distinct detached operation; it does not replace an existing
 session. Normal session selection is an explicit row tap and does not add a
 second server-switch confirmation.
 
+From connected workspaces, the `Server connection` menu opens `Saved servers`
+directly for profile management. Switching to another saved profile expands
+that profile in the session switcher; selecting one of its listed runtimes is
+the explicit action that releases the current binding and begins the switch.
+
 Tapping the currently selected tmux candidate can return the native
 `unchanged` result. That closes the sheet without disconnecting, releasing, or
 reacquiring the current binding. The current Herdr candidate is inert because
@@ -348,9 +353,10 @@ for the preserved investigation history.
 
 The server list manages local profiles; only one server/runtime actor is
 interactive at a time. A profile stores SSH endpoint/authentication metadata;
-its legacy backend/runtime fields are only a display hint until a fresh picker selection
-reaches `Ready`. Connecting to another saved server or switching runtime asks
-before releasing the current transport/controller.
+its legacy backend/runtime fields are only a display hint until a selected runtime
+reaches `Ready`. For an active connection, a saved-profile switch proceeds
+through the session switcher and requires an explicit runtime selection before
+the current transport/controller is released.
 A profile can be saved without a credential. Credential saving is opt-in, and an
 endpoint, username or authentication-method change invalidates the old credential.
 Renaming a profile preserves its credential. Migrating the legacy

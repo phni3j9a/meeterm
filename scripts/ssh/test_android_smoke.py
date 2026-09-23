@@ -577,8 +577,8 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             events.append(("credential", "entered"))
 
         boundary_results = [
-            smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH,
-            smoke.PROFILE_SWITCH_CONFIRMATION_BRANCH,
+            smoke.PROFILE_SWITCH_SESSION_SWITCHER_BRANCH,
+            smoke.PROFILE_SWITCH_SESSION_SWITCHER_BRANCH,
         ]
 
         def wait_boundary(
@@ -592,6 +592,24 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             events.append(("boundary", stage, boundary_results[0]))
             return boundary_results.pop(0)
 
+        def wait_node(
+            _device: object,
+            stage: str,
+            **selectors: object,
+        ) -> smoke.Node:
+            label = str(
+                selectors.get("content_description")
+                or selectors.get("text")
+                or "public-control"
+            )
+            events.append(("wait_node", stage, label))
+            return smoke.Node(
+                str(selectors.get("text") or ""),
+                str(selectors.get("content_description") or ""),
+                "android.view.View",
+                (0, 0, 100, 100),
+            )
+
         completed: list[str] = []
         with (
             mock.patch.object(smoke, "wait_for_saved_profile", side_effect=wait_profile),
@@ -599,18 +617,14 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             mock.patch.object(
                 smoke,
                 "wait_for_node",
-                return_value=smoke.Node("", "public-control", "android.view.View", (0, 0, 100, 100)),
-            ),
-            mock.patch.object(smoke, "tap_node"),
+                side_effect=wait_node,
+            ) as wait_node_mock,
+            mock.patch.object(smoke, "tap_node") as tap_node,
             mock.patch.object(smoke, "fill_field", side_effect=fill),
             mock.patch.object(smoke, "set_toggle") as set_toggle,
             mock.patch.object(smoke, "fill_multiline_key", side_effect=key_entry),
             mock.patch.object(smoke, "wait_for_saved_profile_absent") as wait_absent,
             mock.patch.object(smoke, "capture_optional_screenshot") as capture,
-            mock.patch.object(
-                smoke,
-                "select_fixture_tmux_runtime_and_wait_for_connected",
-            ) as select_runtime,
             mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
             mock.patch.object(
                 smoke,
@@ -632,9 +646,9 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             [
                 "daily_profile_edited",
                 "daily_second_profile_saved",
-                "daily_profile_switch_second_boundary_target_picker",
+                "daily_profile_switch_second_boundary_session_switcher",
                 "daily_profile_switched",
-                "daily_profile_switch_primary_boundary_confirmation",
+                "daily_profile_switch_primary_boundary_session_switcher",
                 "daily_profile_switch_restored",
                 "daily_profile_delete_cancelled",
                 "daily_second_profile_deleted",
@@ -654,19 +668,25 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             (
                 "boundary",
                 "daily_profile_switch_second",
-                smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH,
+                smoke.PROFILE_SWITCH_SESSION_SWITCHER_BRANCH,
             )
         )
         self.assertLess(credential_index, second_save_index)
         self.assertLess(second_save_index, first_switch_index)
         self.assertEqual(
-            [event for event in events if event[0] == "action" and event[2] == "Switch server"],
             [
-                (
-                    "action",
-                    "daily_profile_switch_primary_confirmation",
-                    "Switch server",
-                ),
+                event
+                for event in events
+                if event[0] == "action"
+                and event[2] in {"Server connection", "Saved servers"}
+            ],
+            [
+                ("action", "daily_profile_management_open", "Server connection"),
+                ("action", "daily_profile_management_open", "Saved servers"),
+                ("action", "daily_profile_switch_second", "Server connection"),
+                ("action", "daily_profile_switch_second", "Saved servers"),
+                ("action", "daily_profile_switch_primary", "Server connection"),
+                ("action", "daily_profile_switch_primary", "Saved servers"),
             ],
         )
         self.assertEqual(wait_boundary_mock.call_count, 2)
@@ -704,15 +724,71 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
         )
         capture.assert_not_called()
         self.assertEqual(
-            select_runtime.call_args_list,
+            [
+                call
+                for call in wait_node_mock.call_args_list
+                if call.kwargs.get("content_description", "").startswith(
+                    "tmux session "
+                )
+            ],
             [
                 mock.call(
                     device,
                     "daily_profile_switch_second_runtime_selection",
+                    content_description=(
+                        "tmux session meeterm on Android daily second "
+                        "(fixture@127.0.0.1:2222)"
+                    ),
+                    timeout=smoke.RECONNECT_TIMEOUT,
                 ),
                 mock.call(
                     device,
                     "daily_profile_switch_primary_runtime_selection",
+                    content_description=(
+                        "tmux session meeterm on Android daily fixture "
+                        "(fixture@127.0.0.1:2222)"
+                    ),
+                    timeout=smoke.RECONNECT_TIMEOUT,
+                ),
+            ],
+        )
+        selected_rows = [
+            call
+            for call in tap_node.call_args_list
+            if call.args[2]
+            in {
+                "daily_profile_switch_second_runtime_selection",
+                "daily_profile_switch_primary_runtime_selection",
+            }
+        ]
+        self.assertEqual(
+            [call.args[1].content_description for call in selected_rows],
+            [
+                "tmux session meeterm on Android daily second "
+                "(fixture@127.0.0.1:2222)",
+                "tmux session meeterm on Android daily fixture "
+                "(fixture@127.0.0.1:2222)",
+            ],
+        )
+        self.assertEqual(
+            [
+                call
+                for call in wait_node_mock.call_args_list
+                if call.kwargs.get("text") == "Connected"
+                and call.args[1].endswith("_runtime_connected")
+            ],
+            [
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_runtime_connected",
+                    text="Connected",
+                    timeout=smoke.RECONNECT_TIMEOUT,
+                ),
+                mock.call(
+                    device,
+                    "daily_profile_switch_primary_runtime_connected",
+                    text="Connected",
+                    timeout=smoke.RECONNECT_TIMEOUT,
                 ),
             ],
         )
@@ -1060,6 +1136,9 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
 
 class ProfileSwitchBoundaryTests(unittest.TestCase):
     PROFILE_NAME = "Android daily second"
+    HOST = "127.0.0.1"
+    PORT = 2222
+    USERNAME = "fixture"
 
     @staticmethod
     def confirmation_node() -> smoke.Node:
@@ -1088,6 +1167,26 @@ class ProfileSwitchBoundaryTests(unittest.TestCase):
             (0, 120, 800, 240),
         )
 
+    @classmethod
+    def session_row(
+        cls,
+        *,
+        name: str | None = None,
+        backend: str = "tmux",
+        enabled: bool = True,
+        visible: bool = True,
+    ) -> smoke.Node:
+        profile_name = name or cls.PROFILE_NAME
+        return smoke.Node(
+            "",
+            f"{backend} session meeterm on {profile_name} "
+            f"({cls.USERNAME}@{cls.HOST}:{cls.PORT})",
+            "android.widget.Button",
+            (0, 120, 800, 240),
+            enabled=enabled,
+            visible_to_user=visible,
+        )
+
     @staticmethod
     def profile_node() -> smoke.Node:
         return smoke.Node(
@@ -1097,9 +1196,27 @@ class ProfileSwitchBoundaryTests(unittest.TestCase):
             (0, 100, 800, 220),
         )
 
-    def test_confirmation_branch_taps_switch_exactly_once(self) -> None:
+    def test_session_switcher_branch_selects_exact_session_before_ready(self) -> None:
         device = mock.Mock(spec=smoke.AndroidDevice)
-        device.dump_ui.return_value = [self.confirmation_node()]
+        device.dump_ui.return_value = [self.session_row()]
+        target_label = self.session_row().content_description
+
+        def wait_node(
+            _device: object,
+            _stage: str,
+            *,
+            text: str | None = None,
+            content_description: str | None = None,
+            timeout: float = smoke.DEFAULT_UI_TIMEOUT,
+        ) -> smoke.Node:
+            del timeout
+            return smoke.Node(
+                text or "",
+                content_description or "",
+                "android.widget.Button",
+                (0, 120, 800, 240),
+            )
+
         with (
             mock.patch.object(
                 smoke,
@@ -1108,108 +1225,113 @@ class ProfileSwitchBoundaryTests(unittest.TestCase):
             ),
             mock.patch.object(smoke, "tap_node") as tap_node,
             mock.patch.object(smoke, "tap_action") as tap_action,
-            mock.patch.object(smoke, "select_fixture_tmux_runtime_and_wait_for_connected") as select_runtime,
+            mock.patch.object(smoke, "wait_for_node", side_effect=wait_node) as wait_node_mock,
             mock.patch.object(smoke, "wait_for_workspace"),
         ):
             branch = smoke.switch_saved_profile(
                 device,
                 self.PROFILE_NAME,
+                self.HOST,
+                self.PORT,
+                self.USERNAME,
                 "daily_profile_switch_second",
             )
 
-        self.assertEqual(branch, smoke.PROFILE_SWITCH_CONFIRMATION_BRANCH)
-        tap_node.assert_called_once()
-        self.assertEqual(tap_node.call_args.args[0], device)
-        self.assertEqual(tap_node.call_args.args[2], "daily_profile_switch_second")
+        self.assertEqual(branch, smoke.PROFILE_SWITCH_SESSION_SWITCHER_BRANCH)
+        self.assertEqual(tap_node.call_count, 2)
+        self.assertEqual(
+            [call.args[1].content_description for call in tap_node.call_args_list],
+            [
+                f"Connect saved server {self.PROFILE_NAME}",
+                target_label,
+            ],
+        )
+        self.assertEqual(
+            [call.args[2] for call in tap_node.call_args_list],
+            [
+                "daily_profile_switch_second",
+                "daily_profile_switch_second_runtime_selection",
+            ],
+        )
         self.assertEqual(device.dump_ui.call_count, 1)
         self.assertEqual(
-            [call for call in tap_action.call_args_list if call.args[2] == ("Switch server",)],
+            wait_node_mock.call_args_list,
             [
                 mock.call(
                     device,
-                    "daily_profile_switch_second_confirmation",
-                    ("Switch server",),
-                )
+                    "daily_profile_switch_second_runtime_selection",
+                    content_description=target_label,
+                    timeout=smoke.RECONNECT_TIMEOUT,
+                ),
+                mock.call(
+                    device,
+                    "daily_profile_switch_second_runtime_connected",
+                    text="Connected",
+                    timeout=smoke.RECONNECT_TIMEOUT,
+                ),
             ],
         )
-        select_runtime.assert_called_once_with(
-            device,
-            "daily_profile_switch_second_runtime_selection",
+        self.assertEqual(
+            tap_action.call_args_list,
+            [
+                mock.call(device, "daily_profile_switch_second", smoke.SERVER_CONNECTION_LABELS),
+                mock.call(device, "daily_profile_switch_second", ("Saved servers",)),
+            ],
         )
 
-    def test_exact_target_picker_branch_never_confirms_and_keeps_ready_guards(self) -> None:
+    def test_herdr_session_row_is_also_a_session_switcher_boundary(self) -> None:
         device = mock.Mock(spec=smoke.AndroidDevice)
-        device.dump_ui.return_value = [
-            self.picker_heading(self.PROFILE_NAME),
-            self.picker_row(),
-        ]
-        with (
-            mock.patch.object(
-                smoke,
-                "wait_for_saved_profile",
-                side_effect=[self.profile_node(), self.profile_node()],
-            ),
-            mock.patch.object(smoke, "tap_node"),
-            mock.patch.object(smoke, "tap_action") as tap_action,
-            mock.patch.object(smoke, "select_fixture_tmux_runtime_and_wait_for_connected") as select_runtime,
-            mock.patch.object(smoke, "wait_for_workspace") as wait_workspace,
-        ):
-            branch = smoke.switch_saved_profile(
+        device.dump_ui.return_value = [self.session_row(backend="Herdr")]
+        self.assertEqual(
+            smoke.wait_for_profile_switch_boundary(
                 device,
-                self.PROFILE_NAME,
                 "daily_profile_switch_second",
-            )
-
-        self.assertEqual(branch, smoke.PROFILE_SWITCH_TARGET_PICKER_BRANCH)
-        self.assertEqual(device.dump_ui.call_count, 1)
-        self.assertFalse(
-            any(call.args[2] == ("Switch server",) for call in tap_action.call_args_list)
-        )
-        select_runtime.assert_called_once_with(
-            device,
-            "daily_profile_switch_second_runtime_selection",
-        )
-        wait_workspace.assert_called_once_with(
-            device,
-            "daily_profile_switch_second_workspace_ready",
-            timeout=smoke.RECONNECT_TIMEOUT,
+                self.PROFILE_NAME,
+            ),
+            smoke.PROFILE_SWITCH_SESSION_SWITCHER_BRANCH,
         )
 
-    def test_wrong_generic_and_prefix_picker_fail_before_runtime_selection(self) -> None:
-        picker_nodes = (
-            [self.picker_heading("Android daily primary")],
-            [self.picker_heading("")],
-            [self.picker_row()],
+    def test_unexpected_picker_and_confirmation_fail_closed(self) -> None:
+        surfaces = (
+            (
+                [self.picker_heading(self.PROFILE_NAME), self.picker_row()],
+                smoke.PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER,
+            ),
+            (
+                [self.confirmation_node()],
+                smoke.PROFILE_SWITCH_BOUNDARY_UNEXPECTED_CONFIRMATION,
+            ),
         )
-        for nodes in picker_nodes:
-            with self.subTest(node_label=nodes[0].text or nodes[0].content_description):
+        for nodes, expected_reason in surfaces:
+            with self.subTest(reason=expected_reason):
                 device = mock.Mock(spec=smoke.AndroidDevice)
                 device.dump_ui.return_value = nodes
-                select_runtime = mock.Mock()
                 with (
-                    mock.patch.object(smoke, "wait_for_saved_profile", return_value=self.profile_node()),
-                    mock.patch.object(smoke, "tap_node"),
                     mock.patch.object(
                         smoke,
-                        "select_fixture_tmux_runtime_and_wait_for_connected",
-                        select_runtime,
+                        "wait_for_saved_profile",
+                        return_value=self.profile_node(),
                     ),
+                    mock.patch.object(smoke, "tap_node"),
+                    mock.patch.object(smoke, "wait_for_node") as wait_node,
                 ):
                     with self.assertRaises(smoke.SmokeFailure) as error:
                         smoke.switch_saved_profile(
                             device,
                             self.PROFILE_NAME,
+                            self.HOST,
+                            self.PORT,
+                            self.USERNAME,
                             "daily_profile_switch_second",
                         )
-                self.assertEqual(error.exception.reason, smoke.PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER)
-                select_runtime.assert_not_called()
+                self.assertEqual(error.exception.reason, expected_reason)
+                wait_node.assert_not_called()
 
-    def test_simultaneous_confirmation_and_exact_picker_fails_closed(self) -> None:
+    def test_simultaneous_session_switcher_and_removed_surface_is_ambiguous(self) -> None:
         device = mock.Mock(spec=smoke.AndroidDevice)
         device.dump_ui.return_value = [
             self.confirmation_node(),
-            self.picker_heading(self.PROFILE_NAME),
-            self.picker_row(),
+            self.session_row(),
         ]
         with self.assertRaises(smoke.SmokeFailure) as error:
             smoke.wait_for_profile_switch_boundary(
