@@ -216,6 +216,48 @@ int32_t meeterm_refresh_runtimes(uint64_t terminal_id);
 int32_t meeterm_select_runtime(uint64_t terminal_id, const uint8_t *candidate_id, size_t candidate_id_length);
 int32_t meeterm_create_tmux_session(uint64_t terminal_id, const uint8_t *name, size_t name_length);
 
+/* Native provisional session switcher. The browse root is never returned;
+ * phase=committed carries the promoted active terminal handle. */
+size_t meeterm_runtime_browse_start_current(uint64_t terminal_id, uint8_t *output, size_t capacity);
+size_t meeterm_runtime_browse_start_profile(
+  uint64_t terminal_id,
+  const uint8_t *host, size_t host_length, uint16_t port,
+  const uint8_t *username, size_t username_length,
+  const uint8_t *private_key, size_t private_key_length,
+  const uint8_t *passphrase, size_t passphrase_length,
+  const uint8_t *known_hosts_path, size_t known_hosts_path_length,
+  const uint8_t *auth_method, size_t auth_method_length,
+  const uint8_t *password, size_t password_length,
+  uint8_t *output, size_t capacity
+);
+size_t meeterm_runtime_browse_start_credential(
+  uint64_t terminal_id,
+  const uint8_t *host, size_t host_length, uint16_t port,
+  const uint8_t *username, size_t username_length,
+  const uint8_t *private_key, size_t private_key_length,
+  const uint8_t *passphrase, size_t passphrase_length,
+  const uint8_t *known_hosts_path, size_t known_hosts_path_length,
+  const uint8_t *auth_method, size_t auth_method_length,
+  const uint8_t *password, size_t password_length,
+  uint8_t *output, size_t capacity
+);
+size_t meeterm_runtime_browse_snapshot(
+  const uint8_t *token, size_t token_length, uint8_t *output, size_t capacity
+);
+int32_t meeterm_runtime_browse_refresh(const uint8_t *token, size_t token_length);
+int32_t meeterm_runtime_browse_cancel(const uint8_t *token, size_t token_length);
+int32_t meeterm_runtime_browse_respond_host_key(
+  const uint8_t *token, size_t token_length,
+  const uint8_t *fingerprint, size_t fingerprint_length,
+  uint8_t accept
+);
+int32_t meeterm_runtime_browse_commit(
+  const uint8_t *token, size_t token_length,
+  uint64_t browse_generation, uint64_t discovery_revision,
+  const uint8_t *candidate, size_t candidate_length,
+  const uint8_t *create_name, size_t create_name_length
+);
+
 /* Trust-store deletion is explicit and scoped to one endpoint. */
 int32_t meeterm_forget_host_key(
   const uint8_t *host,

@@ -4,8 +4,11 @@ use std::slice;
 use crate::input::SpecialKey;
 use crate::registry;
 use crate::ssh::{
-    AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot, connection_snapshot,
-    disconnect_terminal, forget_host_key, respond_to_host_key, terminal_revision,
+    AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot, RuntimeBrowseSnapshot,
+    connection_snapshot, disconnect_terminal, forget_host_key, respond_to_host_key,
+    runtime_browse_cancel, runtime_browse_commit, runtime_browse_refresh,
+    runtime_browse_respond_to_host_key, runtime_browse_snapshot, runtime_browse_start_current,
+    runtime_browse_start_with_options, terminal_revision,
 };
 use crate::workspace::{
     Backend, RuntimeCandidate, RuntimeSection, RuntimeSectionState, RuntimeState,
@@ -17,6 +20,7 @@ const FFI_INVALID_KEY: i32 = -2;
 const MAX_RECOVERY_TOKEN_BYTES: usize = 128;
 pub const MAX_WORKSPACE_STATE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_RUNTIME_DISCOVERY_BYTES: usize = 1024 * 1024;
+pub const MAX_RUNTIME_BROWSE_BYTES: usize = 1024 * 1024;
 const RUNTIME_DISPLAY_NAME_BYTES: usize = 256;
 
 #[derive(serde::Serialize)]
@@ -144,6 +148,101 @@ fn runtime_discovery_bytes(id: u64) -> Option<Vec<u8>> {
     };
     let bytes = serde_json::to_vec(&bridge).ok()?;
     (bytes.len() <= MAX_RUNTIME_DISCOVERY_BYTES).then_some(bytes)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeBrowseBridge {
+    token: String,
+    browse_generation: String,
+    discovery_revision: u64,
+    phase: &'static str,
+    discovery: RuntimeDiscoveryBridge,
+    error_code: String,
+    error_message: String,
+    host_key: RuntimeBrowseHostKeyBridge,
+    cleanup_warning: Option<crate::workspace::CleanupWarning>,
+    active_terminal_id: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeBrowseHostKeyBridge {
+    pending: bool,
+    host: String,
+    port: u16,
+    fingerprint: String,
+    algorithm: String,
+    known_fingerprint: String,
+}
+
+fn runtime_discovery_bridge(
+    snapshot: &crate::workspace::RuntimeDiscoverySnapshot,
+) -> RuntimeDiscoveryBridge {
+    RuntimeDiscoveryBridge {
+        connection_generation: snapshot.connection_generation.to_string(),
+        revision: snapshot.discovery_revision,
+        backends: vec![
+            runtime_backend_bridge(Backend::Tmux, &snapshot.tmux, true),
+            runtime_backend_bridge(Backend::Herdr, &snapshot.herdr, false),
+        ],
+    }
+}
+
+fn runtime_browse_bytes(snapshot: &RuntimeBrowseSnapshot) -> Option<Vec<u8>> {
+    let bridge = RuntimeBrowseBridge {
+        token: snapshot.token.clone(),
+        browse_generation: snapshot.browse_generation.to_string(),
+        discovery_revision: snapshot.discovery_revision,
+        phase: snapshot.phase.wire_name(),
+        discovery: runtime_discovery_bridge(&snapshot.discovery),
+        error_code: runtime_error_text(Some(&snapshot.error_code), crate::ssh::ERROR_CODE_CAPACITY),
+        error_message: runtime_error_text(
+            Some(&snapshot.error_message),
+            crate::ssh::ERROR_MESSAGE_CAPACITY,
+        ),
+        host_key: RuntimeBrowseHostKeyBridge {
+            pending: snapshot.host_key.pending,
+            host: runtime_error_text(Some(&snapshot.host_key.host), crate::ssh::HOST_CAPACITY),
+            port: snapshot.host_key.port,
+            fingerprint: runtime_error_text(
+                Some(&snapshot.host_key.fingerprint),
+                crate::ssh::FINGERPRINT_CAPACITY,
+            ),
+            algorithm: runtime_error_text(
+                Some(&snapshot.host_key.algorithm),
+                crate::ssh::ALGORITHM_CAPACITY,
+            ),
+            known_fingerprint: runtime_error_text(
+                Some(&snapshot.host_key.known_fingerprint),
+                crate::ssh::FINGERPRINT_CAPACITY,
+            ),
+        },
+        cleanup_warning: snapshot.cleanup_warning.clone(),
+        active_terminal_id: snapshot.active_terminal_id.map(|id| id.to_string()),
+    };
+    let bytes = serde_json::to_vec(&bridge).ok()?;
+    (bytes.len() <= MAX_RUNTIME_BROWSE_BYTES).then_some(bytes)
+}
+
+fn copy_runtime_browse_snapshot(
+    snapshot: Result<RuntimeBrowseSnapshot, ConnectionError>,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    let Some(bytes) = snapshot
+        .ok()
+        .and_then(|snapshot| runtime_browse_bytes(&snapshot))
+    else {
+        return 0;
+    };
+    if output.is_null() || capacity < bytes.len() {
+        return bytes.len();
+    }
+    // SAFETY: the caller's capacity was checked above and the exported C
+    // contract requires writable storage for the returned byte count.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()) };
+    bytes.len()
 }
 
 fn terminal_error_code(error: crate::terminal::TerminalError) -> i32 {
@@ -892,6 +991,323 @@ pub unsafe extern "C" fn meeterm_runtime_snapshot(
     // SAFETY: this compatibility wrapper has the same caller contract as the
     // canonical byte-copy operation.
     unsafe { meeterm_runtime_discovery(id, output, capacity) }
+}
+
+/// Start a current-connection provisional browse and return its sanitized
+/// state. The returned payload contains an opaque token and discovery rows;
+/// it never contains a provisional root handle or credentials.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_start_current(
+    id: u64,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    copy_runtime_browse_snapshot(runtime_browse_start_current(id), output, capacity)
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn browse_options_from_arguments(
+    host: *const u8,
+    host_length: usize,
+    port: u16,
+    username: *const u8,
+    username_length: usize,
+    private_key: *const u8,
+    private_key_length: usize,
+    passphrase: *const u8,
+    passphrase_length: usize,
+    known_hosts_path: *const u8,
+    known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
+) -> Result<ConnectOptions, ConnectionError> {
+    let host = unsafe { utf8_argument(host, host_length) }
+        .map_err(|_| ConnectionError::InvalidArgument)?;
+    let username = unsafe { utf8_argument(username, username_length) }
+        .map_err(|_| ConnectionError::InvalidArgument)?;
+    let private_key = Zeroizing::new(
+        unsafe { utf8_argument(private_key, private_key_length) }
+            .map_err(|_| ConnectionError::InvalidArgument)?,
+    );
+    let passphrase = Zeroizing::new(
+        unsafe { utf8_argument(passphrase, passphrase_length) }
+            .map_err(|_| ConnectionError::InvalidArgument)?,
+    );
+    let known_hosts_path = unsafe { utf8_argument(known_hosts_path, known_hosts_path_length) }
+        .map_err(|_| ConnectionError::InvalidArgument)?;
+    let auth_method = unsafe { utf8_argument(auth_method, auth_method_length) }
+        .map_err(|_| ConnectionError::InvalidArgument)?;
+    let password = Zeroizing::new(
+        unsafe { utf8_argument(password, password_length) }
+            .map_err(|_| ConnectionError::InvalidArgument)?,
+    );
+    let credentials = match auth_method.as_str() {
+        "" | "publicKey" => {
+            if !password.is_empty() {
+                return Err(ConnectionError::InvalidArgument);
+            }
+            AuthOptions::PublicKey {
+                private_key,
+                passphrase: (!passphrase.is_empty()).then_some(passphrase),
+            }
+        }
+        "password" => {
+            if !private_key.is_empty() || !passphrase.is_empty() {
+                return Err(ConnectionError::InvalidArgument);
+            }
+            AuthOptions::Password { password }
+        }
+        _ => return Err(ConnectionError::InvalidArgument),
+    };
+    Ok(ConnectOptions {
+        host,
+        port,
+        username,
+        credentials,
+        known_hosts_path: known_hosts_path.into(),
+        backend: Backend::Tmux,
+        runtime: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn meeterm_runtime_browse_start_with_options(
+    id: u64,
+    host: *const u8,
+    host_length: usize,
+    port: u16,
+    username: *const u8,
+    username_length: usize,
+    private_key: *const u8,
+    private_key_length: usize,
+    passphrase: *const u8,
+    passphrase_length: usize,
+    known_hosts_path: *const u8,
+    known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    let options = match unsafe {
+        browse_options_from_arguments(
+            host,
+            host_length,
+            port,
+            username,
+            username_length,
+            private_key,
+            private_key_length,
+            passphrase,
+            passphrase_length,
+            known_hosts_path,
+            known_hosts_path_length,
+            auth_method,
+            auth_method_length,
+            password,
+            password_length,
+        )
+    } {
+        Ok(options) => options,
+        Err(_) => return 0,
+    };
+    copy_runtime_browse_snapshot(
+        runtime_browse_start_with_options(id, options),
+        output,
+        capacity,
+    )
+}
+
+/// Start a provisional browse for a platform-resolved saved profile.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_start_profile(
+    id: u64,
+    host: *const u8,
+    host_length: usize,
+    port: u16,
+    username: *const u8,
+    username_length: usize,
+    private_key: *const u8,
+    private_key_length: usize,
+    passphrase: *const u8,
+    passphrase_length: usize,
+    known_hosts_path: *const u8,
+    known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    unsafe {
+        meeterm_runtime_browse_start_with_options(
+            id,
+            host,
+            host_length,
+            port,
+            username,
+            username_length,
+            private_key,
+            private_key_length,
+            passphrase,
+            passphrase_length,
+            known_hosts_path,
+            known_hosts_path_length,
+            auth_method,
+            auth_method_length,
+            password,
+            password_length,
+            output,
+            capacity,
+        )
+    }
+}
+
+/// Start a provisional browse for an entered, unsaved credential.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_start_credential(
+    id: u64,
+    host: *const u8,
+    host_length: usize,
+    port: u16,
+    username: *const u8,
+    username_length: usize,
+    private_key: *const u8,
+    private_key_length: usize,
+    passphrase: *const u8,
+    passphrase_length: usize,
+    known_hosts_path: *const u8,
+    known_hosts_path_length: usize,
+    auth_method: *const u8,
+    auth_method_length: usize,
+    password: *const u8,
+    password_length: usize,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    unsafe {
+        meeterm_runtime_browse_start_with_options(
+            id,
+            host,
+            host_length,
+            port,
+            username,
+            username_length,
+            private_key,
+            private_key_length,
+            passphrase,
+            passphrase_length,
+            known_hosts_path,
+            known_hosts_path_length,
+            auth_method,
+            auth_method_length,
+            password,
+            password_length,
+            output,
+            capacity,
+        )
+    }
+}
+
+/// Read one browse snapshot by opaque token.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_snapshot(
+    token: *const u8,
+    token_length: usize,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    let Ok(token) = (unsafe { utf8_argument(token, token_length) }) else {
+        return 0;
+    };
+    copy_runtime_browse_snapshot(runtime_browse_snapshot(&token), output, capacity)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_refresh(
+    token: *const u8,
+    token_length: usize,
+) -> i32 {
+    let Ok(token) = (unsafe { utf8_argument(token, token_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    runtime_browse_refresh(&token)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_cancel(
+    token: *const u8,
+    token_length: usize,
+) -> i32 {
+    let Ok(token) = (unsafe { utf8_argument(token, token_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    runtime_browse_cancel(&token)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_respond_host_key(
+    token: *const u8,
+    token_length: usize,
+    fingerprint: *const u8,
+    fingerprint_length: usize,
+    accept: u8,
+) -> i32 {
+    if accept > 1 {
+        return ConnectionError::InvalidArgument.code();
+    }
+    let Ok(token) = (unsafe { utf8_argument(token, token_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(fingerprint) = (unsafe { utf8_argument(fingerprint, fingerprint_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    runtime_browse_respond_to_host_key(&token, &fingerprint, accept != 0)
+        .map(|()| 0)
+        .unwrap_or_else(connection_error_code)
+}
+
+/// Commit an exact candidate or an explicit tmux create action. Both target
+/// fields are empty except for the selected variant. The eventual promoted
+/// handle is returned by a later snapshot with phase `committed`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_runtime_browse_commit(
+    token: *const u8,
+    token_length: usize,
+    browse_generation: u64,
+    discovery_revision: u64,
+    candidate: *const u8,
+    candidate_length: usize,
+    create_name: *const u8,
+    create_name_length: usize,
+) -> i32 {
+    let Ok(token) = (unsafe { utf8_argument(token, token_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(candidate) = (unsafe { utf8_argument(candidate, candidate_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    let Ok(create_name) = (unsafe { utf8_argument(create_name, create_name_length) }) else {
+        return ConnectionError::InvalidArgument.code();
+    };
+    runtime_browse_commit(
+        &token,
+        browse_generation,
+        discovery_revision,
+        (!candidate.is_empty()).then_some(candidate.as_str()),
+        (!create_name.is_empty()).then_some(create_name.as_str()),
+    )
+    .map(|()| 0)
+    .unwrap_or_else(connection_error_code)
 }
 
 /// Select a candidate ID returned by the current runtime snapshot. Raw

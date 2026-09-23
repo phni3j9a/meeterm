@@ -60,6 +60,39 @@ pub fn destroy_terminal(id: TerminalId) -> bool {
     removed
 }
 
+/// Atomically move a provisional root's native Term into the source owner's
+/// public handle. The caller has already completed ordered SSH shutdown and
+/// keeps the returned old root alive only until the promotion transaction
+/// finishes. This helper deliberately does not call `ssh::terminal_destroyed`
+/// for either root; promotion is one ownership transfer, not destruction.
+pub(crate) fn promote_terminal(
+    provisional: TerminalId,
+    owner: TerminalId,
+) -> Result<(), TerminalError> {
+    if provisional == owner {
+        return Err(TerminalError::RemoteGenerationMismatch);
+    }
+    let mut terminals = registry()
+        .lock()
+        .map_err(|_| TerminalError::RegistryPoisoned)?;
+    let terminal = terminals
+        .remove(&provisional)
+        .ok_or(TerminalError::UnknownTerminal)?;
+    if !terminals.contains_key(&owner) {
+        terminals.insert(provisional, terminal);
+        return Err(TerminalError::UnknownTerminal);
+    }
+    terminals.insert(owner, terminal);
+    Ok(())
+}
+
+/// Remove a provisional root without invoking the normal owner-destroy hook.
+/// Browse cleanup already owns the actor cancellation and must not re-enter
+/// the browse mutex through `terminal_destroyed`.
+pub(crate) fn discard_terminal(id: TerminalId) -> Option<SharedTerminal> {
+    registry().lock().ok()?.remove(&id)
+}
+
 pub fn terminal_count() -> usize {
     registry()
         .lock()
@@ -216,6 +249,7 @@ pub(crate) fn operation_epoch(id: TerminalId) -> Result<u64, TerminalError> {
 }
 
 pub fn resize_terminal(id: TerminalId, columns: u16, rows: u16) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| terminal.resize(columns, rows))
 }
 
@@ -225,6 +259,7 @@ pub(crate) fn resize_terminal_at_epoch(
     columns: u16,
     rows: u16,
 ) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.resize_at_epoch(expected_epoch, columns, rows)
     })
@@ -342,6 +377,7 @@ pub(crate) fn restore_strict_capture_batch(
 }
 
 pub fn commit_utf8(id: TerminalId, bytes: &[u8]) -> Result<u64, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| terminal.commit_utf8(bytes))
 }
 
@@ -350,12 +386,14 @@ pub(crate) fn commit_utf8_at_epoch(
     expected_epoch: u64,
     bytes: &[u8],
 ) -> Result<u64, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.commit_utf8_at_epoch(expected_epoch, bytes)
     })
 }
 
 pub fn send_special_key(id: TerminalId, key: SpecialKey) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| terminal.send_special_key(key))
 }
 
@@ -364,6 +402,7 @@ pub(crate) fn send_special_key_at_epoch(
     expected_epoch: u64,
     key: SpecialKey,
 ) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.send_special_key_at_epoch(expected_epoch, key)
     })
@@ -372,6 +411,7 @@ pub(crate) fn send_special_key_at_epoch(
 /// Send a generic ABI key. The raw values are parsed here so platform code
 /// cannot smuggle unknown key or modifier bits into the terminal encoder.
 pub fn send_key(id: TerminalId, key: u32, modifiers: u32) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     let key = KeyCode::try_from(key).map_err(|_| TerminalError::InvalidKey)?;
     let modifiers = Modifiers::from_bits(modifiers).ok_or(TerminalError::InvalidModifiers)?;
     with_terminal(id, |terminal| terminal.send_key(key, modifiers))
@@ -383,6 +423,7 @@ pub(crate) fn send_key_at_epoch(
     key: u32,
     modifiers: u32,
 ) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     let key = KeyCode::try_from(key).map_err(|_| TerminalError::InvalidKey)?;
     let modifiers = Modifiers::from_bits(modifiers).ok_or(TerminalError::InvalidModifiers)?;
     with_terminal(id, |terminal| {
@@ -391,6 +432,7 @@ pub(crate) fn send_key_at_epoch(
 }
 
 pub fn paste_utf8(id: TerminalId, bytes: &[u8]) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| terminal.paste_utf8(bytes))
 }
 
@@ -399,6 +441,7 @@ pub(crate) fn paste_utf8_at_epoch(
     expected_epoch: u64,
     bytes: &[u8],
 ) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.paste_utf8_at_epoch(expected_epoch, bytes)
     })
@@ -409,6 +452,7 @@ pub fn commit_modified_utf8(
     bytes: &[u8],
     modifiers: u32,
 ) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     let modifiers = Modifiers::from_bits(modifiers).ok_or(TerminalError::InvalidModifiers)?;
     with_terminal(id, |terminal| {
         terminal.commit_modified_utf8(bytes, modifiers)
@@ -421,6 +465,7 @@ pub(crate) fn commit_modified_utf8_at_epoch(
     bytes: &[u8],
     modifiers: u32,
 ) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     let modifiers = Modifiers::from_bits(modifiers).ok_or(TerminalError::InvalidModifiers)?;
     with_terminal(id, |terminal| {
         terminal.commit_modified_utf8_at_epoch(expected_epoch, bytes, modifiers)
@@ -432,6 +477,7 @@ pub fn select_start(
     viewport_row: u32,
     viewport_column: u32,
 ) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.select_start(viewport_row, viewport_column)
     })
@@ -442,12 +488,14 @@ pub fn select_update(
     viewport_row: u32,
     viewport_column: u32,
 ) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.select_update(viewport_row, viewport_column)
     })
 }
 
 pub fn clear_selection(id: TerminalId) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.clear_selection();
         Ok(())
@@ -455,10 +503,12 @@ pub fn clear_selection(id: TerminalId) -> Result<(), TerminalError> {
 }
 
 pub fn selection_text(id: TerminalId) -> Result<Option<String>, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| Ok(terminal.selection_text()))
 }
 
 pub fn set_theme(id: TerminalId, light: bool) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.set_theme(light);
         Ok(())
@@ -488,6 +538,7 @@ pub fn set_scrollback_limit(lines: usize) -> Result<(), TerminalError> {
 }
 
 pub fn scroll_lines(id: TerminalId, lines: i32) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.scroll_lines(lines);
         Ok(())
@@ -499,12 +550,14 @@ pub(crate) fn scroll_lines_at_epoch(
     expected_epoch: u64,
     lines: i32,
 ) -> Result<(), TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.scroll_lines_at_epoch(expected_epoch, lines)
     })
 }
 
 pub(crate) fn send_bytes(id: TerminalId, bytes: &[u8]) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| terminal.send_bytes(bytes))
 }
 
@@ -513,6 +566,7 @@ pub(crate) fn send_bytes_at_epoch(
     expected_epoch: u64,
     bytes: &[u8],
 ) -> Result<usize, TerminalError> {
+    ensure_data_plane_allowed(id)?;
     with_terminal(id, |terminal| {
         terminal.send_bytes_at_epoch(expected_epoch, bytes)
     })
@@ -538,6 +592,14 @@ fn with_terminal<R>(
         .lock()
         .map_err(|_| TerminalError::RegistryPoisoned)?;
     operation(&mut terminal)
+}
+
+fn ensure_data_plane_allowed(id: TerminalId) -> Result<(), TerminalError> {
+    if crate::ssh::terminal_data_plane_allowed(id) {
+        Ok(())
+    } else {
+        Err(TerminalError::TransportClosed)
+    }
 }
 
 #[cfg(test)]

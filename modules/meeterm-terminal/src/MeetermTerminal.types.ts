@@ -290,6 +290,43 @@ export type RuntimeDiscovery = {
   backends: RuntimeBackendDiscovery[];
 };
 
+export type RuntimeBrowsePhase =
+  | 'starting'
+  | 'discovering'
+  | 'ready'
+  | 'committing'
+  | 'committed'
+  | 'failed'
+  | 'cancelled';
+
+export type RuntimeBrowseHostKey = {
+  pending: boolean;
+  host: string;
+  port: number;
+  fingerprint: string;
+  algorithm: string;
+  knownFingerprint: string;
+};
+
+/** One short-lived host-only browse owned by the native switch transaction. */
+export type RuntimeBrowseState = {
+  token: string;
+  browseGeneration: string;
+  discoveryRevision: number;
+  phase: RuntimeBrowsePhase;
+  discovery: RuntimeDiscovery;
+  errorCode: string;
+  errorMessage: string;
+  hostKey: RuntimeBrowseHostKey;
+  cleanupWarning: WorkspaceCleanupWarning | null;
+  /** Set only after the provisional root has been promoted. */
+  activeTerminalId: string | null;
+};
+
+export type RuntimeBrowseCommitTarget =
+  | { kind: 'candidate'; candidateId: string }
+  | { kind: 'createTmux'; name: string };
+
 export type NativeReadyEvent = {
   terminalId: string;
   native: true;

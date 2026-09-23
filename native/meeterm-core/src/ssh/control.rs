@@ -461,7 +461,7 @@ impl Drop for ControlClient {
             task.abort();
         }
         for native in self.staged_native.drain(..) {
-            if native != self.shared.terminal_id {
+            if native != self.shared.terminal_id() {
                 registry::detach_transport(native, self.shared.generation);
                 registry::destroy_terminal(native);
             }
@@ -539,7 +539,7 @@ pub(super) async fn run(
         .map_err(|_| FlowFailure::Stale)?
         .viewport
         .unwrap_or(
-            registry::terminal_dimensions(shared.terminal_id).map_err(|_| FlowFailure::Stale)?,
+            registry::terminal_dimensions(shared.terminal_id()).map_err(|_| FlowFailure::Stale)?,
         );
     shared
         .session
@@ -806,6 +806,29 @@ pub(super) async fn run(
                         // first selection reaches Ready. It belongs to the
                         // old picker state and must not tear down the newly
                         // selected runtime (double taps are discarded).
+                    }
+                    Some(ControlCommand::PromoteRuntimeBrowse {
+                        token,
+                        source_owner,
+                        provisional_owner,
+                    }) => {
+                        if super::promote_runtime_browse(
+                            token,
+                            source_owner,
+                            provisional_owner,
+                            Arc::clone(shared),
+                        )
+                        .is_err()
+                        {
+                            super::mark_runtime_browse_failed(
+                                token,
+                                "runtime_browse_promotion_failed",
+                                "The selected runtime could not be promoted safely.".to_owned(),
+                            );
+                            shared.invalidate_explicitly("runtime_browse_promotion_failed");
+                            return Err(FlowFailure::Stale);
+                        }
+                        client.remap_native_root(provisional_owner, source_owner);
                     }
                     Some(ControlCommand::CreateGroup { .. } | ControlCommand::RenameGroup { .. }
                         | ControlCommand::CloseGroup { .. } | ControlCommand::SelectGroup { .. }) => return Err(FlowFailure::TmuxProtocol),
@@ -2261,7 +2284,7 @@ impl ControlClient {
                 Some(id) => id,
                 None => {
                     let id = if mapping.is_empty() && old.panes.is_empty() {
-                        self.shared.terminal_id
+                        self.shared.terminal_id()
                     } else {
                         let id = registry::create_terminal(pane.columns, pane.rows)
                             .map_err(|_| FlowFailure::TmuxProtocol)?;
@@ -2451,7 +2474,7 @@ impl ControlClient {
             }
             for id in stale_native {
                 registry::detach_transport(id, self.shared.generation);
-                if id != self.shared.terminal_id {
+                if id != self.shared.terminal_id() {
                     registry::destroy_terminal(id);
                 }
             }
@@ -2500,7 +2523,7 @@ impl ControlClient {
         }
         for id in stale_native.iter().copied() {
             registry::detach_transport(id, self.shared.generation);
-            if id != self.shared.terminal_id {
+            if id != self.shared.terminal_id() {
                 registry::destroy_terminal(id);
             }
         }
@@ -2707,6 +2730,19 @@ fn apply_staged_captures_locked(
 }
 
 impl ControlClient {
+    fn remap_native_root(&mut self, provisional: TerminalId, owner: TerminalId) {
+        for native in self.mapping.values_mut() {
+            if *native == provisional {
+                *native = owner;
+            }
+        }
+        for native in &mut self.staged_native {
+            if *native == provisional {
+                *native = owner;
+            }
+        }
+    }
+
     async fn capture(&mut self, pane: u64) -> Result<(), FlowFailure> {
         self.capturing = Some(pane);
         self.capture_complete = false;

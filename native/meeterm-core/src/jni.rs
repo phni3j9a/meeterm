@@ -730,6 +730,34 @@ fn runtime_discovery_json(handle: u64) -> Option<String> {
     None
 }
 
+fn runtime_browse_json_from_bytes(bytes: Vec<u8>, copied: usize) -> Option<String> {
+    if copied == 0 || copied > crate::ffi::MAX_RUNTIME_BROWSE_BYTES || copied > bytes.len() {
+        return None;
+    }
+    String::from_utf8(bytes[..copied].to_vec()).ok()
+}
+
+fn runtime_browse_start_current_json(handle: u64) -> Option<String> {
+    let mut bytes = vec![0_u8; crate::ffi::MAX_RUNTIME_BROWSE_BYTES];
+    let copied = unsafe {
+        crate::ffi::meeterm_runtime_browse_start_current(handle, bytes.as_mut_ptr(), bytes.len())
+    };
+    runtime_browse_json_from_bytes(bytes, copied)
+}
+
+fn runtime_browse_snapshot_json(token: &str) -> Option<String> {
+    let mut bytes = vec![0_u8; crate::ffi::MAX_RUNTIME_BROWSE_BYTES];
+    let copied = unsafe {
+        crate::ffi::meeterm_runtime_browse_snapshot(
+            token.as_ptr(),
+            token.len(),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        )
+    };
+    runtime_browse_json_from_bytes(bytes, copied)
+}
+
 /// Return the bounded, sanitized runtime discovery object expected by the
 /// Android module. Runtime candidate IDs are opaque and all terminal data
 /// stays in the native registry.
@@ -752,6 +780,269 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeDiscovery<
         Outcome::Ok(value) => value,
         Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseStartCurrent<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JString::default();
+    };
+    let outcome = unowned_env
+        .with_env(|env| match runtime_browse_start_current_json(handle) {
+            Some(json) => env.new_string(json),
+            None => Ok(JString::default()),
+        })
+        .into_outcome();
+    match outcome {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
+}
+
+fn runtime_browse_options_args<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    handle: jlong,
+    host: JString<'caller>,
+    port: jint,
+    username: JString<'caller>,
+    private_key: JString<'caller>,
+    passphrase: JString<'caller>,
+    known_hosts_path: JString<'caller>,
+    auth_method: JString<'caller>,
+    password: JString<'caller>,
+) -> jni::EnvOutcome<'caller, JString<'caller>, JniError> {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return unowned_env.with_env(|_env| Ok(JString::default()));
+    };
+    let Some(port) = u16::try_from(port).ok() else {
+        return unowned_env.with_env(|_env| Ok(JString::default()));
+    };
+    unowned_env.with_env(|env| {
+        let host = string_from_java(env, &host)?;
+        let username = string_from_java(env, &username)?;
+        let private_key = string_from_java(env, &private_key)?;
+        let passphrase = string_from_java(env, &passphrase)?;
+        let known_hosts_path = string_from_java(env, &known_hosts_path)?;
+        let auth_method = string_from_java(env, &auth_method)?;
+        let password = string_from_java(env, &password)?;
+        let mut bytes = vec![0_u8; crate::ffi::MAX_RUNTIME_BROWSE_BYTES];
+        let copied = unsafe {
+            crate::ffi::meeterm_runtime_browse_start_profile(
+                handle,
+                host.as_ptr(),
+                host.len(),
+                port,
+                username.as_ptr(),
+                username.len(),
+                private_key.as_ptr(),
+                private_key.len(),
+                passphrase.as_ptr(),
+                passphrase.len(),
+                known_hosts_path.as_ptr(),
+                known_hosts_path.len(),
+                auth_method.as_ptr(),
+                auth_method.len(),
+                password.as_ptr(),
+                password.len(),
+                bytes.as_mut_ptr(),
+                bytes.len(),
+            )
+        };
+        let json = runtime_browse_json_from_bytes(bytes, copied).unwrap_or_default();
+        env.new_string(json)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseStartProfile<
+    'caller,
+>(
+    unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    handle: jlong,
+    host: JString<'caller>,
+    port: jint,
+    username: JString<'caller>,
+    private_key: JString<'caller>,
+    passphrase: JString<'caller>,
+    known_hosts_path: JString<'caller>,
+    auth_method: JString<'caller>,
+    password: JString<'caller>,
+) -> JString<'caller> {
+    match runtime_browse_options_args(
+        unowned_env,
+        handle,
+        host,
+        port,
+        username,
+        private_key,
+        passphrase,
+        known_hosts_path,
+        auth_method,
+        password,
+    )
+    .into_outcome()
+    {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseStartCredential<
+    'caller,
+>(
+    unowned_env: EnvUnowned<'caller>,
+    this: JObject<'caller>,
+    handle: jlong,
+    host: JString<'caller>,
+    port: jint,
+    username: JString<'caller>,
+    private_key: JString<'caller>,
+    passphrase: JString<'caller>,
+    known_hosts_path: JString<'caller>,
+    auth_method: JString<'caller>,
+    password: JString<'caller>,
+) -> JString<'caller> {
+    Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseStartProfile(
+        unowned_env,
+        this,
+        handle,
+        host,
+        port,
+        username,
+        private_key,
+        passphrase,
+        known_hosts_path,
+        auth_method,
+        password,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseState<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    token: JString<'caller>,
+) -> JString<'caller> {
+    let outcome = unowned_env
+        .with_env(|env| {
+            let token = string_from_java(env, &token)?;
+            match runtime_browse_snapshot_json(&token) {
+                Some(json) => env.new_string(json),
+                None => Ok(JString::default()),
+            }
+        })
+        .into_outcome();
+    match outcome {
+        Outcome::Ok(value) => value,
+        Outcome::Err(_) | Outcome::Panic(_) => JString::default(),
+    }
+}
+
+fn runtime_browse_token_call<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    token: JString<'caller>,
+    operation: unsafe extern "C" fn(*const u8, usize) -> i32,
+) -> jint {
+    code_from_outcome(unowned_env.with_env(|env| {
+        let token = string_from_java(env, &token)?;
+        Ok(unsafe { operation(token.as_ptr(), token.len()) })
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseRefresh<'caller>(
+    unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    token: JString<'caller>,
+) -> jint {
+    runtime_browse_token_call(
+        unowned_env,
+        token,
+        crate::ffi::meeterm_runtime_browse_refresh,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseCancel<'caller>(
+    unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    token: JString<'caller>,
+) -> jint {
+    runtime_browse_token_call(
+        unowned_env,
+        token,
+        crate::ffi::meeterm_runtime_browse_cancel,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseRespondToHostKey<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    token: JString<'caller>,
+    fingerprint: JString<'caller>,
+    accept: jboolean,
+) -> jint {
+    code_from_outcome(unowned_env.with_env(|env| {
+        let token = string_from_java(env, &token)?;
+        let fingerprint = string_from_java(env, &fingerprint)?;
+        Ok(unsafe {
+            crate::ffi::meeterm_runtime_browse_respond_host_key(
+                token.as_ptr(),
+                token.len(),
+                fingerprint.as_ptr(),
+                fingerprint.len(),
+                accept,
+            )
+        })
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseCommit<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    token: JString<'caller>,
+    browse_generation: JString<'caller>,
+    discovery_revision: JString<'caller>,
+    candidate: JString<'caller>,
+    create_name: JString<'caller>,
+) -> jint {
+    code_from_outcome(unowned_env.with_env(|env| {
+        let token = string_from_java(env, &token)?;
+        let browse_generation = string_from_java(env, &browse_generation)?;
+        let discovery_revision = string_from_java(env, &discovery_revision)?;
+        let candidate = string_from_java(env, &candidate)?;
+        let create_name = string_from_java(env, &create_name)?;
+        let Some(browse_generation) = crate::ffi::parse_decimal_u64(&browse_generation) else {
+            return Ok(ConnectionError::InvalidArgument.code());
+        };
+        let Some(discovery_revision) = crate::ffi::parse_decimal_u64(&discovery_revision) else {
+            return Ok(ConnectionError::InvalidArgument.code());
+        };
+        Ok(unsafe {
+            crate::ffi::meeterm_runtime_browse_commit(
+                token.as_ptr(),
+                token.len(),
+                browse_generation,
+                discovery_revision,
+                candidate.as_ptr(),
+                candidate.len(),
+                create_name.as_ptr(),
+                create_name.len(),
+            )
+        })
+    }))
 }
 
 #[unsafe(no_mangle)]

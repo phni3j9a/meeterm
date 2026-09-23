@@ -11,6 +11,8 @@ import type {
   WorkspaceState,
   RuntimeBackend,
   RuntimeDiscovery,
+  RuntimeBrowseState,
+  RuntimeBrowseCommitTarget,
 } from './MeetermTerminal.types';
 
 const WEB_UNAVAILABLE =
@@ -105,6 +107,19 @@ class MeetermTerminalModule extends NativeModule<{}> {
   async refreshRuntimes(_connectionId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async selectRuntime(_connectionId: string, _candidateId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async createTmuxSession(_connectionId: string, _name: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseStartCurrent(_terminalId: string): Promise<RuntimeBrowseState> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseStartProfile(_terminalId: string, _profileId: string): Promise<RuntimeBrowseState> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseStartCredential(_terminalId: string, _options: SshConnectOptions): Promise<RuntimeBrowseState> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseState(_token: string): Promise<RuntimeBrowseState> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseRefresh(_token: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseCancel(_token: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseRespondToHostKey(_token: string, _fingerprint: string, _accept: boolean): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  async runtimeBrowseCommit(
+    _token: string,
+    _browseGeneration: string,
+    _discoveryRevision: number,
+    _target: RuntimeBrowseCommitTarget,
+  ): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async setLastUsedRuntime(_profileId: string, _backend: RuntimeBackend, _runtime: string): Promise<ServerProfile> { throw new Error(WEB_UNAVAILABLE); }
 
   async respondToHostKey(

@@ -46,10 +46,13 @@ pub use snapshot::{Snapshot, Theme};
 pub use ssh::{
     ALGORITHM_CAPACITY, AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot,
     ConnectionState, ERROR_CODE_CAPACITY, ERROR_MESSAGE_CAPACITY, FINGERPRINT_CAPACITY,
-    HOST_CAPACITY, close_group, close_pane, close_workspace, connect_host, connection_snapshot,
-    create_group, create_pane, create_runtime, create_workspace, disconnect_terminal,
-    forget_host_key, list_runtimes, reconnect_terminal, refresh_terminal, rename_group,
-    rename_pane, rename_workspace, runtime_discovery_snapshot, select_group, select_pane,
+    HOST_CAPACITY, RuntimeBrowseHostKeySnapshot, RuntimeBrowsePhase, RuntimeBrowseSnapshot,
+    close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
+    create_pane, create_runtime, create_workspace, disconnect_terminal, forget_host_key,
+    list_runtimes, reconnect_terminal, refresh_terminal, rename_group, rename_pane,
+    rename_workspace, runtime_browse_cancel, runtime_browse_commit, runtime_browse_refresh,
+    runtime_browse_respond_to_host_key, runtime_browse_snapshot, runtime_browse_start_current,
+    runtime_browse_start_with_options, runtime_discovery_snapshot, select_group, select_pane,
     select_runtime, send_bytes, session_snapshot, set_automatic_reconnect, set_foreground,
     set_terminal_visible, terminal_revision, workspace_snapshot_json,
 };

@@ -19,12 +19,14 @@ use meeterm_core::workspace::{
 };
 use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, PaneSnapshot,
-    SessionSnapshot, SpecialKey, close_pane, close_workspace, connect_host, connection_snapshot,
-    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
-    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
-    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
-    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
-    runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
+    RuntimeBrowsePhase, RuntimeBrowseSnapshot, SessionSnapshot, SpecialKey, close_pane,
+    close_workspace, connect_host, connection_snapshot, create_pane, create_runtime,
+    create_terminal, create_workspace, destroy_terminal, disconnect_terminal, meeterm_commit_utf8,
+    meeterm_input_commit_count, meeterm_resize_terminal, meeterm_respond_host_key,
+    meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size, reconnect_terminal,
+    refresh_terminal, rename_pane, rename_workspace, runtime_browse_commit,
+    runtime_browse_snapshot, runtime_browse_start_current, runtime_discovery_snapshot, select_pane,
+    select_runtime, send_bytes, session_snapshot, workspace_snapshot_json,
 };
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -129,6 +131,62 @@ enum LayoutShape {
 enum LayoutSplitDirection {
     Horizontal,
     Vertical,
+}
+
+#[test]
+#[ignore = "requires python3 scripts/ssh/fixture.py to provide a real local sshd"]
+fn real_openssh_provisional_browse_switches_selected_runtime() {
+    let fixture = FixtureConfig::from_environment();
+    create_fixture_tmux_session(&fixture, "meeterm");
+    create_fixture_tmux_session(&fixture, "other");
+    let id = create_terminal(80, 24).expect("create SSH terminal");
+    let _guard = TerminalGuard { id };
+
+    connect_host_and_select_meeterm(id, &fixture, "provisional browse source");
+    let browse = runtime_browse_start_current(id).expect("start provisional browse");
+    let ready = wait_for_runtime_browse_phase(
+        &browse.token,
+        RuntimeBrowsePhase::Ready,
+        "provisional browse discovery",
+    );
+    let candidate = ready
+        .discovery
+        .tmux
+        .candidates
+        .iter()
+        .find(|candidate| candidate.name == "other" && candidate.selectable)
+        .expect("second tmux session candidate");
+
+    runtime_browse_commit(
+        &browse.token,
+        ready.browse_generation,
+        ready.discovery_revision,
+        Some(&candidate.id),
+        None,
+    )
+    .expect("commit provisional runtime switch");
+    let committed = wait_for_runtime_browse_phase(
+        &browse.token,
+        RuntimeBrowsePhase::Committed,
+        "provisional browse commit",
+    );
+    assert_eq!(committed.active_terminal_id, Some(id));
+    wait_for_ready_without_prompt(id, "selected second runtime Ready");
+
+    let workspace: serde_json::Value =
+        serde_json::from_str(&workspace_snapshot_json(id).expect("selected workspace JSON"))
+            .expect("selected workspace JSON parses");
+    assert_eq!(workspace["runtime"], "other");
+    run_remote_tmux(
+        &fixture,
+        "tmux has-session -t meeterm",
+        "old tmux session survives switch",
+    );
+    run_remote_tmux(
+        &fixture,
+        "tmux has-session -t other",
+        "selected tmux session remains live",
+    );
 }
 
 #[test]
@@ -1870,6 +1928,30 @@ fn wait_for_runtime_picker_with_optional_host_key(
                 "timed out waiting for {label}: state={}",
                 state_name(snapshot.state)
             );
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn wait_for_runtime_browse_phase(
+    token: &str,
+    expected: RuntimeBrowsePhase,
+    label: &str,
+) -> RuntimeBrowseSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let state = runtime_browse_snapshot(token).expect("runtime browse snapshot");
+        if state.phase == expected {
+            return state;
+        }
+        if state.phase == RuntimeBrowsePhase::Failed {
+            panic!(
+                "{label} failed: code={}, message={}",
+                state.error_code, state.error_message
+            );
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {label}: phase={:?}", state.phase);
         }
         sleep(POLL_INTERVAL);
     }

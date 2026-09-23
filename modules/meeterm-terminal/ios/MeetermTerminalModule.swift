@@ -157,6 +157,100 @@ public final class MeetermTerminalModule: Module {
       }
     }
 
+    AsyncFunction("runtimeBrowseStartCurrent") { (terminalId: String) throws -> [String: Any] in
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard let json = MeetermCore.runtimeBrowseStartCurrent(terminalId: handle),
+            let data = json.data(using: .utf8),
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw Self.error("The runtime browse could not be started.")
+      }
+      return try Self.runtimeBrowseRecord(value)
+    }
+    AsyncFunction("runtimeBrowseStartProfile") { (terminalId: String, profileId: String) throws -> [String: Any] in
+      let profile = try ClientStore.connectionOptions(profileId)
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      let options = try Self.decodeOptions(profile)
+      guard let json = MeetermCore.runtimeBrowseStartProfile(
+        terminalId: handle, host: options.host, port: options.port,
+        username: options.username, privateKey: options.privateKey, passphrase: options.passphrase,
+        knownHostsPath: try KnownHostsStore.path(), authMethod: options.authMethod, password: options.password
+      ), let data = json.data(using: .utf8),
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw Self.error("The runtime browse could not be started.")
+      }
+      return try Self.runtimeBrowseRecord(value)
+    }
+    AsyncFunction("runtimeBrowseStartCredential") { (terminalId: String, values: [String: Any]) throws -> [String: Any] in
+      let options = try Self.decodeOptions(values)
+      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
+      guard let json = MeetermCore.runtimeBrowseStartCredential(
+        terminalId: handle, host: options.host, port: options.port,
+        username: options.username, privateKey: options.privateKey, passphrase: options.passphrase,
+        knownHostsPath: try KnownHostsStore.path(), authMethod: options.authMethod, password: options.password
+      ), let data = json.data(using: .utf8),
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw Self.error("The runtime browse could not be started.")
+      }
+      return try Self.runtimeBrowseRecord(value)
+    }
+    AsyncFunction("runtimeBrowseState") { (token: String) throws -> [String: Any] in
+      guard Self.validBrowseToken(token), let json = MeetermCore.runtimeBrowseState(token),
+            let data = json.data(using: .utf8),
+            let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw Self.error("The runtime browse state is unavailable.")
+      }
+      return try Self.runtimeBrowseRecord(value)
+    }
+    AsyncFunction("runtimeBrowseRefresh") { (token: String) throws in
+      guard Self.validBrowseToken(token), MeetermCore.runtimeBrowseRefresh(token) == 0 else {
+        throw Self.error("Runtime browse could not be refreshed.")
+      }
+    }
+    AsyncFunction("runtimeBrowseCancel") { (token: String) throws in
+      guard Self.validBrowseToken(token), MeetermCore.runtimeBrowseCancel(token) == 0 else {
+        throw Self.error("Runtime browse could not be cancelled.")
+      }
+    }
+    AsyncFunction("runtimeBrowseRespondToHostKey") { (token: String, fingerprint: String, accept: Bool) throws in
+      guard Self.validBrowseToken(token), !fingerprint.isEmpty,
+            fingerprint.utf8.count <= 128, !Self.containsControl(fingerprint),
+            MeetermCore.runtimeBrowseRespondToHostKey(token: token, fingerprint: fingerprint, accept: accept) == 0 else {
+        throw Self.error("The runtime browse host key response could not be sent.")
+      }
+    }
+    AsyncFunction("runtimeBrowseCommit") {
+      (token: String, browseGeneration: String, discoveryRevision: Int, target: [String: Any]) throws in
+      guard Self.validBrowseToken(token), let generation = UInt64(browseGeneration),
+            discoveryRevision >= 0 else {
+        throw Self.error("The runtime browse identity is invalid.")
+      }
+      let kind = target["kind"] as? String
+      let candidate: String
+      let createName: String
+      switch kind {
+      case "candidate":
+        candidate = target["candidateId"] as? String ?? ""
+        createName = ""
+        guard !candidate.isEmpty, candidate.utf8.count <= 256, !Self.containsControl(candidate) else {
+          throw Self.error("The runtime candidate is invalid.")
+        }
+      case "createTmux":
+        candidate = ""
+        createName = target["name"] as? String ?? ""
+        guard !createName.isEmpty, createName.utf8.count <= 64, !Self.containsControl(createName) else {
+          throw Self.error("The tmux session name is invalid.")
+        }
+      default:
+        throw Self.error("The runtime browse target is invalid.")
+      }
+      guard MeetermCore.runtimeBrowseCommit(
+        token: token, browseGeneration: generation, discoveryRevision: UInt64(discoveryRevision),
+        candidateId: candidate, createName: createName
+      ) == 0 else {
+        throw Self.error("The runtime browse commit could not be started.")
+      }
+    }
+
     AsyncFunction("reconnect") { (terminalId: String) throws in
       let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
       guard MeetermCore.reconnect(terminalId: handle) == 0 else {
@@ -336,6 +430,68 @@ public final class MeetermTerminalModule: Module {
       ])
     }
     return ["connectionGeneration": connectionGeneration, "revision": revision, "backends": backends]
+  }
+
+  private static func runtimeBrowseRecord(_ value: [String: Any]) throws -> [String: Any] {
+    guard let token = value["token"] as? String, validBrowseToken(token),
+          let generation = value["browseGeneration"] as? String, UInt64(generation) != nil,
+          let phase = value["phase"] as? String,
+          ["starting", "discovering", "ready", "committing", "committed", "failed", "cancelled"].contains(phase),
+          let revision = integer(value["discoveryRevision"]), revision >= 0,
+          let rawDiscovery = value["discovery"] as? [String: Any] else {
+      throw error("The native runtime browse is invalid.")
+    }
+    let discovery = try runtimeDiscoveryRecord(rawDiscovery)
+    guard let rawHostKey = value["hostKey"] as? [String: Any],
+          let hostKeyPending = rawHostKey["pending"] as? Bool,
+          let hostKeyHost = rawHostKey["host"] as? String,
+          let hostKeyPort = integer(rawHostKey["port"]),
+          let hostKeyFingerprint = rawHostKey["fingerprint"] as? String,
+          let hostKeyAlgorithm = rawHostKey["algorithm"] as? String,
+          let hostKeyKnownFingerprint = rawHostKey["knownFingerprint"] as? String,
+          hostKeyPort >= 0, hostKeyPort <= 65535,
+          hostKeyHost.utf8.count <= 256, hostKeyFingerprint.utf8.count <= 128,
+          hostKeyAlgorithm.utf8.count <= 64, hostKeyKnownFingerprint.utf8.count <= 128,
+          !containsControl(hostKeyHost), !containsControl(hostKeyFingerprint),
+          !containsControl(hostKeyAlgorithm), !containsControl(hostKeyKnownFingerprint) else {
+      throw error("The native runtime browse is invalid.")
+    }
+    let active = value["activeTerminalId"] as? String
+    if let active { guard UInt64(active) != nil else { throw error("The native runtime browse is invalid.") } }
+    let warning: [String: Any]?
+    if let raw = value["cleanupWarning"] as? [String: Any] {
+      guard let id = raw["id"] as? String, UInt64(id) != nil,
+            raw["code"] as? String == "layout_restore_unconfirmed",
+            let message = raw["message"] as? String else {
+        throw error("The native runtime browse is invalid.")
+      }
+      warning = ["id": id, "code": "layout_restore_unconfirmed", "message": sanitize(message, maxLength: 256)]
+    } else {
+      warning = nil
+    }
+    return [
+      "token": token,
+      "browseGeneration": generation,
+      "discoveryRevision": revision,
+      "phase": phase,
+      "discovery": discovery,
+      "hostKey": [
+        "pending": hostKeyPending,
+        "host": sanitize(hostKeyHost, maxLength: 256),
+        "port": hostKeyPort,
+        "fingerprint": sanitize(hostKeyFingerprint, maxLength: 128),
+        "algorithm": sanitize(hostKeyAlgorithm, maxLength: 64),
+        "knownFingerprint": sanitize(hostKeyKnownFingerprint, maxLength: 128)
+      ],
+      "errorCode": sanitizeErrorCode(value["errorCode"] as? String ?? ""),
+      "errorMessage": sanitize(value["errorMessage"] as? String ?? "", maxLength: 256),
+      "cleanupWarning": warning ?? NSNull(),
+      "activeTerminalId": active ?? NSNull()
+    ]
+  }
+
+  private static func validBrowseToken(_ value: String) -> Bool {
+    !value.isEmpty && value.utf8.count <= 20 && value.allSatisfy { $0.isASCII && $0.isNumber } && UInt64(value).map { $0 != 0 } == true
   }
 
   private static func targetId(_ value: String, prefix: Character) throws -> UInt64 {

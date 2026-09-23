@@ -860,7 +860,7 @@ async fn run_impl(
         .map_err(|_| FlowFailure::Stale)?
         .viewport
         .unwrap_or(
-            registry::terminal_dimensions(shared.terminal_id).map_err(|_| FlowFailure::Stale)?,
+            registry::terminal_dimensions(shared.terminal_id()).map_err(|_| FlowFailure::Stale)?,
         );
     let subscription =
         subscribe(shared, session, &socket, &HashSet::new(), operation_epoch).await?;
@@ -1613,7 +1613,7 @@ impl HerdrClient<'_> {
             })
             .unwrap_or_default();
         for native in projection.mapping.values().copied() {
-            if native != self.shared.terminal_id && !committed.contains(&native) {
+            if native != self.shared.terminal_id() && !committed.contains(&native) {
                 registry::detach_transport(native, self.shared.generation);
                 registry::destroy_terminal(native);
             }
@@ -1653,7 +1653,7 @@ impl HerdrClient<'_> {
     fn cleanup_projection_stale(&self, projection: &SnapshotProjection) {
         for native in &projection.stale {
             registry::detach_transport(*native, self.shared.generation);
-            if *native != self.shared.terminal_id {
+            if *native != self.shared.terminal_id() {
                 registry::destroy_terminal(*native);
             }
         }
@@ -1769,6 +1769,35 @@ impl HerdrClient<'_> {
                 // state and must not tear down the selected runtime.
                 return Ok(());
             }
+            ControlCommand::PromoteRuntimeBrowse {
+                token,
+                source_owner,
+                provisional_owner,
+            } => {
+                if super::promote_runtime_browse(
+                    token,
+                    source_owner,
+                    provisional_owner,
+                    Arc::clone(self.shared),
+                )
+                .is_err()
+                {
+                    super::mark_runtime_browse_failed(
+                        token,
+                        "runtime_browse_promotion_failed",
+                        "The selected runtime could not be promoted safely.".to_owned(),
+                    );
+                    self.shared
+                        .invalidate_explicitly("runtime_browse_promotion_failed");
+                    return Err(FlowFailure::Stale);
+                }
+                if let Some(controller) = self.controller.as_mut()
+                    && controller.native == provisional_owner
+                {
+                    controller.native = source_owner;
+                }
+                return Ok(());
+            }
             ControlCommand::RetryRecovery | ControlCommand::ConfirmRecovery { .. } => {
                 // Recovery commands are consumed by the native recovery
                 // coordinator before a selected backend actor is started.
@@ -1815,6 +1844,7 @@ impl HerdrClient<'_> {
                 ControlCommand::RefreshRuntimes
                 | ControlCommand::SelectRuntime { .. }
                 | ControlCommand::CreateRuntime { .. }
+                | ControlCommand::PromoteRuntimeBrowse { .. }
                 | ControlCommand::SelectPane { .. }
                 | ControlCommand::SelectGroup { .. }
                 | ControlCommand::RefreshTerminal
@@ -2299,7 +2329,7 @@ impl HerdrClient<'_> {
             controller.ready = true;
             for native in stale {
                 registry::detach_transport(native, self.shared.generation);
-                if native != self.shared.terminal_id {
+                if native != self.shared.terminal_id() {
                     registry::destroy_terminal(native);
                 }
             }

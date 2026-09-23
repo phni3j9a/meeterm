@@ -123,6 +123,40 @@ internal object MeetermNative {
   external fun refreshRuntimes(handle: Long): Int
   external fun selectRuntime(handle: Long, candidateId: String): Int
   external fun createTmuxSession(handle: Long, name: String): Int
+  external fun runtimeBrowseStartCurrent(handle: Long): String?
+  external fun runtimeBrowseStartProfile(
+    handle: Long,
+    host: String,
+    port: Int,
+    username: String,
+    privateKey: String,
+    passphrase: String,
+    knownHostsPath: String,
+    authMethod: String,
+    password: String,
+  ): String?
+  external fun runtimeBrowseStartCredential(
+    handle: Long,
+    host: String,
+    port: Int,
+    username: String,
+    privateKey: String,
+    passphrase: String,
+    knownHostsPath: String,
+    authMethod: String,
+    password: String,
+  ): String?
+  external fun runtimeBrowseState(token: String): String?
+  external fun runtimeBrowseRefresh(token: String): Int
+  external fun runtimeBrowseCancel(token: String): Int
+  external fun runtimeBrowseRespondToHostKey(token: String, fingerprint: String, accept: Boolean): Int
+  external fun runtimeBrowseCommit(
+    token: String,
+    browseGeneration: String,
+    discoveryRevision: String,
+    candidateId: String,
+    createName: String,
+  ): Int
 }
 
 internal class RustInputSink(

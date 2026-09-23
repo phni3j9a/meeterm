@@ -66,6 +66,7 @@ struct MeetermConnectionSnapshot {
 enum MeetermCore {
   private static let maximumSnapshotBytes = 64 * 1024 * 1024
   private static let maximumWorkspaceStateBytes = 4 * 1024 * 1024
+  private static let maximumRuntimeBrowseBytes = 1024 * 1024
 
   static func create(columns: Int, rows: Int) -> UInt64 {
     guard let columns = UInt16(exactly: columns),
@@ -310,6 +311,155 @@ enum MeetermCore {
     withUTF8(name) { pointer, length in
       meeterm_create_tmux_session(terminalId, pointer, length)
     }
+  }
+
+  static func runtimeBrowseStartCurrent(terminalId: UInt64) -> String? {
+    guard terminalId != 0 else { return nil }
+    return readRuntimeBrowse { buffer, capacity in
+      meeterm_runtime_browse_start_current(terminalId, buffer, capacity)
+    }
+  }
+
+  static func runtimeBrowseStartProfile(
+    terminalId: UInt64,
+    host: String,
+    port: Int,
+    username: String,
+    privateKey: String,
+    passphrase: String,
+    knownHostsPath: String,
+    authMethod: String,
+    password: String
+  ) -> String? {
+    guard terminalId != 0, let port = UInt16(exactly: port) else { return nil }
+    return readRuntimeBrowse { buffer, capacity in
+      withUTF8Size(host) { hostPointer, hostLength in
+        withUTF8Size(username) { usernamePointer, usernameLength in
+          withUTF8Size(privateKey) { keyPointer, keyLength in
+            withUTF8Size(passphrase) { passphrasePointer, passphraseLength in
+              withUTF8Size(knownHostsPath) { pathPointer, pathLength in
+                withUTF8Size(authMethod) { authPointer, authLength in
+                  withUTF8Size(password) { passwordPointer, passwordLength in
+                    meeterm_runtime_browse_start_profile(
+                      terminalId,
+                      hostPointer, hostLength, port,
+                      usernamePointer, usernameLength,
+                      keyPointer, keyLength,
+                      passphrasePointer, passphraseLength,
+                      pathPointer, pathLength,
+                      authPointer, authLength,
+                      passwordPointer, passwordLength,
+                      buffer, capacity
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  static func runtimeBrowseStartCredential(
+    terminalId: UInt64,
+    host: String,
+    port: Int,
+    username: String,
+    privateKey: String,
+    passphrase: String,
+    knownHostsPath: String,
+    authMethod: String,
+    password: String
+  ) -> String? {
+    guard terminalId != 0, let port = UInt16(exactly: port) else { return nil }
+    return readRuntimeBrowse { buffer, capacity in
+      withUTF8Size(host) { hostPointer, hostLength in
+        withUTF8Size(username) { usernamePointer, usernameLength in
+          withUTF8Size(privateKey) { keyPointer, keyLength in
+            withUTF8Size(passphrase) { passphrasePointer, passphraseLength in
+              withUTF8Size(knownHostsPath) { pathPointer, pathLength in
+                withUTF8Size(authMethod) { authPointer, authLength in
+                  withUTF8Size(password) { passwordPointer, passwordLength in
+                    meeterm_runtime_browse_start_credential(
+                      terminalId,
+                      hostPointer, hostLength, port,
+                      usernamePointer, usernameLength,
+                      keyPointer, keyLength,
+                      passphrasePointer, passphraseLength,
+                      pathPointer, pathLength,
+                      authPointer, authLength,
+                      passwordPointer, passwordLength,
+                      buffer, capacity
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  static func runtimeBrowseState(token: String) -> String? {
+    readRuntimeBrowse { buffer, capacity in
+      withUTF8Size(token) { pointer, length in
+        meeterm_runtime_browse_snapshot(pointer, length, buffer, capacity)
+      }
+    }
+  }
+
+  static func runtimeBrowseRefresh(token: String) -> Int32 {
+    withUTF8(token) { pointer, length in meeterm_runtime_browse_refresh(pointer, length) }
+  }
+
+  static func runtimeBrowseCancel(token: String) -> Int32 {
+    withUTF8(token) { pointer, length in meeterm_runtime_browse_cancel(pointer, length) }
+  }
+
+  static func runtimeBrowseRespondToHostKey(token: String, fingerprint: String, accept: Bool) -> Int32 {
+    withUTF8(token) { tokenPointer, tokenLength in
+      withUTF8(fingerprint) { fingerprintPointer, fingerprintLength in
+        meeterm_runtime_browse_respond_host_key(
+          tokenPointer, tokenLength, fingerprintPointer, fingerprintLength, accept ? 1 : 0
+        )
+      }
+    }
+  }
+
+  static func runtimeBrowseCommit(
+    token: String,
+    browseGeneration: UInt64,
+    discoveryRevision: UInt64,
+    candidateId: String,
+    createName: String
+  ) -> Int32 {
+    withUTF8(token) { tokenPointer, tokenLength in
+      withUTF8(candidateId) { candidatePointer, candidateLength in
+        withUTF8(createName) { createPointer, createLength in
+          meeterm_runtime_browse_commit(
+            tokenPointer, tokenLength,
+            browseGeneration, discoveryRevision,
+            candidatePointer, candidateLength,
+            createPointer, createLength
+          )
+        }
+      }
+    }
+  }
+
+  private static func readRuntimeBrowse(
+    _ body: (UnsafeMutablePointer<UInt8>?, Int) -> Int
+  ) -> String? {
+    var data = Data(count: maximumRuntimeBrowseBytes)
+    let copied = data.withUnsafeMutableBytes { buffer -> Int in
+      let bytes = buffer.bindMemory(to: UInt8.self)
+      return body(bytes.baseAddress, bytes.count)
+    }
+    guard copied > 0, copied <= maximumRuntimeBrowseBytes else { return nil }
+    if copied < data.count { data.removeSubrange(copied..<data.count) }
+    return String(data: data, encoding: .utf8)
   }
 
   static func connectionSnapshot(terminalId: UInt64) -> MeetermConnectionSnapshot? {
@@ -654,6 +804,17 @@ enum MeetermCore {
     _ value: String,
     _ body: (UnsafePointer<UInt8>?, Int) -> Int32
   ) -> Int32 {
+    let data = Data(value.utf8)
+    return data.withUnsafeBytes { buffer in
+      let bytes = buffer.bindMemory(to: UInt8.self)
+      return body(bytes.baseAddress, bytes.count)
+    }
+  }
+
+  private static func withUTF8Size(
+    _ value: String,
+    _ body: (UnsafePointer<UInt8>?, Int) -> Int
+  ) -> Int {
     let data = Data(value.utf8)
     return data.withUnsafeBytes { buffer in
       let bytes = buffer.bindMemory(to: UInt8.self)

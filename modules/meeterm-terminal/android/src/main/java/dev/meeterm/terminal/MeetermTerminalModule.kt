@@ -122,6 +122,79 @@ class MeetermTerminalModule : Module() {
       }
     }
 
+    AsyncFunction("runtimeBrowseStartCurrent") { terminalId: String ->
+      runtimeBrowseStateValue(MeetermNative.runtimeBrowseStartCurrent(ensureHandle(normalizeTerminalId(terminalId))))
+    }
+    AsyncFunction("runtimeBrowseStartProfile") { terminalId: String, profileId: String ->
+      val options = ClientStore.connectionOptions(storageContext(), profileId).toMutableMap().apply {
+        remove("backend")
+        remove("runtime")
+      }
+      val nativeOptions = SshOptions.from(options)
+      val raw = MeetermNative.runtimeBrowseStartProfile(
+        ensureHandle(normalizeTerminalId(terminalId)), nativeOptions.host, nativeOptions.port,
+        nativeOptions.username, nativeOptions.privateKey, nativeOptions.passphrase,
+        KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password,
+      )
+      runtimeBrowseStateValue(raw)
+    }
+    AsyncFunction("runtimeBrowseStartCredential") { terminalId: String, options: Map<String, Any?> ->
+      val nativeOptions = SshOptions.from(options)
+      runtimeBrowseStateValue(MeetermNative.runtimeBrowseStartCredential(
+        ensureHandle(normalizeTerminalId(terminalId)), nativeOptions.host, nativeOptions.port,
+        nativeOptions.username, nativeOptions.privateKey, nativeOptions.passphrase,
+        KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password,
+      ))
+    }
+    AsyncFunction("runtimeBrowseState") { token: String ->
+      runtimeBrowseStateValue(MeetermNative.runtimeBrowseState(token))
+    }
+    AsyncFunction("runtimeBrowseRefresh") { token: String ->
+      requireValidBrowseToken(token)
+      check(MeetermNative.runtimeBrowseRefresh(token) == 0) { "Runtime browse could not be refreshed." }
+    }
+    AsyncFunction("runtimeBrowseCancel") { token: String ->
+      requireValidBrowseToken(token)
+      check(MeetermNative.runtimeBrowseCancel(token) == 0) { "Runtime browse could not be cancelled." }
+    }
+    AsyncFunction("runtimeBrowseRespondToHostKey") { token: String, fingerprint: String, accept: Boolean ->
+      requireValidBrowseToken(token)
+      require(fingerprint.isNotEmpty() && fingerprint.toByteArray(Charsets.UTF_8).size <= FINGERPRINT_MAX_BYTES &&
+        fingerprint.none(Char::isISOControl)) {
+        "The runtime browse host key is invalid."
+      }
+      check(MeetermNative.runtimeBrowseRespondToHostKey(token, fingerprint, accept) == 0) {
+        "The runtime browse host key response could not be sent."
+      }
+    }
+    AsyncFunction("runtimeBrowseCommit") {
+        token: String,
+        browseGeneration: String,
+        discoveryRevision: Int,
+        target: Map<String, Any?>,
+      ->
+      requireValidBrowseToken(token)
+      requireDecimalBrowseValue(browseGeneration)
+      require(discoveryRevision >= 0) { "The runtime browse revision is invalid." }
+      val kind = target["kind"] as? String
+      val candidate = if (kind == "candidate") {
+        val id = target["candidateId"] as? String
+        require(!id.isNullOrEmpty() && id.toByteArray(Charsets.UTF_8).size <= RUNTIME_ID_MAX_BYTES &&
+          id.none(Char::isISOControl)) { "The runtime candidate is invalid." }
+        id
+      } else ""
+      val createName = if (kind == "createTmux") {
+        val name = target["name"] as? String
+        require(!name.isNullOrEmpty() && name.toByteArray(Charsets.UTF_8).size <= TMUX_CREATE_NAME_MAX_BYTES &&
+          name.none(Char::isISOControl)) { "The tmux session name is invalid." }
+        name
+      } else ""
+      require(kind == "candidate" || kind == "createTmux") { "The runtime browse target is invalid." }
+      check(MeetermNative.runtimeBrowseCommit(
+        token, browseGeneration, discoveryRevision.toString(), candidate, createName,
+      ) == 0) { "The runtime browse commit could not be started." }
+    }
+
     AsyncFunction("reconnect") { terminalId: String ->
       val handle = ensureHandle(normalizeTerminalId(terminalId))
       check(MeetermNative.sshReconnect(handle) == 0) { "The reconnect request could not be started." }
@@ -276,6 +349,10 @@ class MeetermTerminalModule : Module() {
   private fun runtimeDiscovery(handle: Long): Map<String, Any?> {
     val raw = MeetermNative.runtimeDiscovery(handle)
       ?: throw IllegalStateException("Native runtime discovery is unavailable.")
+    return runtimeDiscoveryValue(raw)
+  }
+
+  private fun runtimeDiscoveryValue(raw: String): Map<String, Any?> {
     require(raw.toByteArray(Charsets.UTF_8).size <= RUNTIME_DISCOVERY_MAX_BYTES) {
       "The native runtime discovery is invalid."
     }
@@ -341,6 +418,73 @@ class MeetermTerminalModule : Module() {
       "connectionGeneration" to connectionGeneration,
       "revision" to revision.toInt(),
       "backends" to backends,
+    )
+  }
+
+  private fun runtimeBrowseStateValue(raw: String?): Map<String, Any?> {
+    require(!raw.isNullOrEmpty() && raw.toByteArray(Charsets.UTF_8).size <= RUNTIME_BROWSE_MAX_BYTES) {
+      "The native runtime browse is unavailable."
+    }
+    val root = JSONObject(raw)
+    val token = root.getString("token")
+    val browseGeneration = root.getString("browseGeneration")
+    val phase = root.getString("phase")
+    requireValidBrowseToken(token)
+    requireDecimalBrowseValue(browseGeneration)
+    require(phase in RUNTIME_BROWSE_PHASES) { "The native runtime browse is invalid." }
+    val revision = root.getLong("discoveryRevision")
+    require(revision in 0L..Int.MAX_VALUE.toLong()) { "The native runtime browse is invalid." }
+    val discovery = root.getJSONObject("discovery")
+    val normalizedDiscovery = runtimeDiscoveryValue(discovery.toString())
+    val hostKey = root.getJSONObject("hostKey")
+    val hostKeyPending = hostKey.getBoolean("pending")
+    val hostKeyHost = hostKey.getString("host")
+    val hostKeyPort = hostKey.getInt("port")
+    val hostKeyFingerprint = hostKey.getString("fingerprint")
+    val hostKeyAlgorithm = hostKey.getString("algorithm")
+    val hostKeyKnownFingerprint = hostKey.getString("knownFingerprint")
+    require(hostKeyPort in 0..65535 &&
+      hostKeyHost.toByteArray(Charsets.UTF_8).size <= HOST_MAX_BYTES &&
+      hostKeyFingerprint.toByteArray(Charsets.UTF_8).size <= FINGERPRINT_MAX_BYTES &&
+      hostKeyAlgorithm.toByteArray(Charsets.UTF_8).size <= ALGORITHM_MAX_BYTES &&
+      hostKeyKnownFingerprint.toByteArray(Charsets.UTF_8).size <= FINGERPRINT_MAX_BYTES &&
+      listOf(hostKeyHost, hostKeyFingerprint, hostKeyAlgorithm, hostKeyKnownFingerprint)
+        .none { it.any(Char::isISOControl) }) {
+      "The native runtime browse is invalid."
+    }
+    val active = if (root.isNull("activeTerminalId")) null else root.getString("activeTerminalId")
+    if (active != null) requireDecimalBrowseValue(active)
+    val warning = if (root.isNull("cleanupWarning")) null else {
+      val value = root.getJSONObject("cleanupWarning")
+      val id = value.getString("id")
+      requireDecimalBrowseValue(id)
+      require(value.getString("code") == "layout_restore_unconfirmed") {
+        "The native runtime browse is invalid."
+      }
+      mapOf(
+        "id" to id,
+        "code" to "layout_restore_unconfirmed",
+        "message" to sanitize(value.getString("message"), RUNTIME_ERROR_MAX_BYTES),
+      )
+    }
+    return mapOf(
+      "token" to token,
+      "browseGeneration" to browseGeneration,
+      "discoveryRevision" to revision.toInt(),
+      "phase" to phase,
+      "discovery" to normalizedDiscovery,
+      "hostKey" to mapOf(
+        "pending" to hostKeyPending,
+        "host" to sanitize(hostKeyHost, HOST_MAX_BYTES),
+        "port" to hostKeyPort,
+        "fingerprint" to sanitize(hostKeyFingerprint, FINGERPRINT_MAX_BYTES),
+        "algorithm" to sanitize(hostKeyAlgorithm, ALGORITHM_MAX_BYTES),
+        "knownFingerprint" to sanitize(hostKeyKnownFingerprint, FINGERPRINT_MAX_BYTES),
+      ),
+      "errorCode" to sanitizeErrorCode(root.optString("errorCode", "")),
+      "errorMessage" to sanitize(root.optString("errorMessage", ""), RUNTIME_ERROR_MAX_BYTES),
+      "cleanupWarning" to warning,
+      "activeTerminalId" to active,
     )
   }
 
@@ -453,11 +597,16 @@ class MeetermTerminalModule : Module() {
     const val STATE_MAX = 14
     const val RUNTIME_CANDIDATE_LIMIT = 256
     const val RUNTIME_DISCOVERY_MAX_BYTES = 1024 * 1024
+    const val RUNTIME_BROWSE_MAX_BYTES = 1024 * 1024
     const val RUNTIME_ID_MAX_BYTES = 256
     const val RUNTIME_NAME_MAX_BYTES = 256
+    const val HOST_MAX_BYTES = 256
+    const val ALGORITHM_MAX_BYTES = 64
+    const val FINGERPRINT_MAX_BYTES = 128
     const val RUNTIME_ERROR_CODE_MAX_BYTES = 64
     const val RUNTIME_ERROR_MAX_BYTES = 256
     const val TMUX_CREATE_NAME_MAX_BYTES = 64
+    val RUNTIME_BROWSE_PHASES = setOf("starting", "discovering", "ready", "committing", "committed", "failed", "cancelled")
 
     fun normalizeTerminalId(value: String): String {
       val normalized = value.trim()
@@ -470,6 +619,19 @@ class MeetermTerminalModule : Module() {
     fun requireValidPort(port: Int) {
       if (port !in 1..65535) {
         throw IllegalArgumentException("The SSH port is invalid.")
+      }
+    }
+
+    fun requireValidBrowseToken(value: String) {
+      require(value.isNotEmpty() && value.length <= 20 && value.all { it in '0'..'9' } &&
+        value.toULongOrNull()?.let { it != 0UL } == true) {
+        "The runtime browse token is invalid."
+      }
+    }
+
+    fun requireDecimalBrowseValue(value: String) {
+      require(value.isNotEmpty() && value.length <= 20 && value.all { it in '0'..'9' } && value.toULongOrNull() != null) {
+        "The runtime browse identity is invalid."
       }
     }
 

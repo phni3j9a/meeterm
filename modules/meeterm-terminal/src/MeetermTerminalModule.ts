@@ -9,6 +9,8 @@ import type {
   TmuxSessionState,
   RuntimeBackend,
   RuntimeDiscovery,
+  RuntimeBrowseState,
+  RuntimeBrowseCommitTarget,
   WorkspaceState,
 } from './MeetermTerminal.types';
 
@@ -54,6 +56,19 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   refreshRuntimes(connectionId: string): Promise<void>;
   selectRuntime(connectionId: string, candidateId: string): Promise<void>;
   createTmuxSession(connectionId: string, name: string): Promise<void>;
+  runtimeBrowseStartCurrent(terminalId: string): Promise<RuntimeBrowseState>;
+  runtimeBrowseStartProfile(terminalId: string, profileId: string): Promise<RuntimeBrowseState>;
+  runtimeBrowseStartCredential(terminalId: string, options: SshConnectOptions): Promise<RuntimeBrowseState>;
+  runtimeBrowseState(token: string): Promise<RuntimeBrowseState>;
+  runtimeBrowseRefresh(token: string): Promise<void>;
+  runtimeBrowseCancel(token: string): Promise<void>;
+  runtimeBrowseRespondToHostKey(token: string, fingerprint: string, accept: boolean): Promise<void>;
+  runtimeBrowseCommit(
+    token: string,
+    browseGeneration: string,
+    discoveryRevision: number,
+    target: RuntimeBrowseCommitTarget,
+  ): Promise<void>;
   setLastUsedRuntime(profileId: string, backend: RuntimeBackend, runtime: string): Promise<ServerProfile>;
   respondToHostKey(
     terminalId: string,
