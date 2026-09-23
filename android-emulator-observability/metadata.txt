@@ -1,0 +1,4 @@
+runner=devin-vm
+os=Linux
+arch=X64
+commit=8d9a20a71f994d11ac38626511be75ef359c3177

@@ -1,0 +1,67 @@
+# Android Emulator Validation Run Record
+#
+# Issue #27 unified session switcher — FINAL candidate
+# Commit: 8d9a20a71f994d11ac38626511be75ef359c3177 (branch issue-27-session-switcher)
+# Result: FAIL — candidate does not compile for Android (hard rustc E0308)
+
+## Verdict
+
+FAIL at build stage. `:meeterm-terminal:buildRustAndroid` (arm64-v8a) aborts with:
+
+    error[E0308]: mismatched types
+        --> src/jni.rs:1007:17
+         |
+    1002 |             crate::ffi::meeterm_runtime_browse_respond_host_key(
+         |             --------------------------------------------------- arguments to this function are incorrect
+    ...
+    1007 |                 accept,
+         |                 ^^^^^^ expected `u8`, found `bool`
+    note: function defined here
+        --> src/ffi.rs:1260:26
+         |
+    1260 | pub unsafe extern "C" fn meeterm_runtime_browse_respond_host_key(
+    ...
+    1265 |     accept: u8,
+
+Defect (verified against `git show HEAD` on a clean tree — no local edits):
+`Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseRespondHostKey`
+(native/meeterm-core/src/jni.rs ~L990-1013) declares `accept: jboolean` and
+passes it verbatim into `meeterm_runtime_browse_respond_host_key`
+(native/meeterm-core/src/ffi.rs L1260), whose signature takes `accept: u8`
+(`if accept > 1 → InvalidArgument`; then `runtime_browse_respond_to_host_key(.., accept != 0)`).
+jni crate pin is `jni = "=0.22.4"` where `jboolean` resolves to `bool`,
+so the call is a type mismatch.
+
+Why it slipped through: `mod jni` is `#[cfg(target_os = "android")]` in
+src/lib.rs, so host `cargo check` / `cargo test` never compile the JNI layer.
+Verified: `cargo check` on host PASSES on this commit (10.9s). The break is
+exclusive to Android target compilation (`cargo ndk` / gradle buildRustAndroid).
+
+Sibling site is fine: `sshRespondHostKey` (jni.rs ~L1173) passes its
+`accept: jboolean` to `crate::ssh::respond_to_host_key` which accepts bool —
+only the new browse wrapper mismatches.
+
+## Consequence
+
+No `app-release.apk` produced → install/launch/smoke/SSH stages cannot run.
+No screenshots possible (nothing to capture); none faked per policy.
+Issue #27 items 1–5: NOT VERIFIABLE on this commit — no runnable build exists.
+
+## Environment
+
+- runner=devin-vm, os=Linux, arch=X64
+- commit=8d9a20a71f994d11ac38626511be75ef359c3177 (clean checkout, `git status` clean)
+- fresh/reuse: FRESH (rm -rf android artifacts/…, npm ci, expo prebuild, no artifact reuse)
+- Toolchain: node v24.19.0 / npm 10.8.3 (blueprint pins 22.22.2 — /opt/.devin/envrc PATH deviation, already reported); OpenJDK 17.0.19; Gradle 9.3.1; rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN=1.96.0); NDK 27.1.12297006; build-tools 36.0.0
+- Emulator: meeterm_api36 cold-booted headless (emulator-5554); unused — no APK to install; left running for debugging.
+
+## Stage timings
+
+- npm ci + expo prebuild: ~1m10s — OK
+- ./gradlew :app:assembleRelease: FAILED at 58s at :meeterm-terminal:buildRustAndroid (BUILD FAILED, 297 actionable tasks)
+- All downstream stages: not reached (no APK)
+
+## Cleanup
+
+- No fixture instances spawned; emulator left running; checkout left at 8d9a20a.
+- Environment intact for follow-up debugging per procedure.
