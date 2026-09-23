@@ -24,9 +24,11 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
-import type { AgentStatus, RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
+import type { AgentStatus, RuntimeBackend, RuntimeBrowseState, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
+import { SessionSwitcher } from './app/SessionSwitcher';
+import type { SessionSwitcherServer } from './app/SessionSwitcher';
 import type { ConnectionSubmission } from './app/ConnectionForm';
 import { DEFAULT_PREFERENCES, itemActions, NameForm, ProfileList, SettingsForm } from './app/DailyUse';
 import { Button, Companion, DARK, Icon, IconButton, MONO, usePalette, useReducedMotion } from './app/ui';
@@ -90,6 +92,8 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
+type BrowseOwner = { token: string; sourceOwner: string; ownerAttempt: number; serverId: string };
+type SwitchAttempt = { id: number; sourceOwner: string; ownerAttempt: number; targetServerId: string; candidateId: string };
 type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
@@ -1028,6 +1032,21 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [runtimeMessage, setRuntimeMessage] = useState(() => fixture?.runtimeMessage ?? '');
   const [runtimeCreationError, setRuntimeCreationError] = useState('');
   const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
+  const [activeServerDraft, setActiveServerDraft] = useState<SessionSwitcherServer | null>(null);
+  const [activeOwnerRevision, setActiveOwnerRevision] = useState(0);
+  const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
+  const [sessionSwitcherMode, setSessionSwitcherMode] = useState<'switch' | 'fresh'>('fresh');
+  const [browse, setBrowse] = useState<RuntimeBrowseState | null>(null);
+  const [browseTargetId, setBrowseTargetId] = useState('');
+  const [expandedServerId, setExpandedServerId] = useState('');
+  const [sessionSwitcherError, setSessionSwitcherError] = useState('');
+  const [sessionSwitcherSelectingId, setSessionSwitcherSelectingId] = useState('');
+  const [credentialTargetId, setCredentialTargetId] = useState('');
+  const [createSessionVisible, setCreateSessionVisible] = useState(false);
+  const [createSessionName, setCreateSessionName] = useState('meeterm');
+  const [createSessionError, setCreateSessionError] = useState('');
+  const [switchAttempt, setSwitchAttempt] = useState<SwitchAttempt | null>(null);
+  const [switchBoundaryCrossed, setSwitchBoundaryCrossed] = useState(false);
   const [, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
   const [controlMessage, setControlMessage] = useState(() => fixture?.controlMessage ?? '');
   const [cleanupWarning, setCleanupWarning] = useState<WorkspaceControl['cleanupWarning']>(() => (
@@ -1050,6 +1069,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const formSavedProfile = useRef<ServerProfile | undefined>(undefined);
   const returnToServersAfterForm = useRef(false);
   const foregroundCommands = useRef(Promise.resolve());
+  const activeOwnerRef = useRef(CONNECTION_ID);
+  const activeOwnerAttemptRef = useRef(0);
+  const browseOwnerRef = useRef<BrowseOwner | null>(null);
+  const browseAttemptRef = useRef(0);
+  const handledBrowseTokenRef = useRef('');
+  const finishingBrowseTokenRef = useRef('');
+  const createAfterBrowseRef = useRef('');
+  const switchBoundaryCrossedRef = useRef(false);
+  const switchAttemptRef = useRef<SwitchAttempt | null>(null);
+  const hostKeyPromptRef = useRef('');
+  const reopenSwitcherAfterManageRef = useRef(false);
+  const openSwitcherAfterServerMenuRef = useRef(false);
+  const switcherProfileAfterServerSheetRef = useRef<SessionSwitcherServer | null>(null);
+  const afterSwitcherDismissRef = useRef<'disconnect' | null>(null);
   const listOffsets = useRef({ normal: 0, search: 0 });
   const workspaceList = useRef<FlatList<Workspace>>(null);
   const foreground = useRef(AppState.currentState === 'active');
@@ -1145,7 +1178,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (smokeFixtureActive) return;
     try {
       const next = await MeetermTerminal.getPreferences();
-      await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, next.automaticReconnect);
+      await MeetermTerminal.setAutomaticReconnect(activeOwnerRef.current, next.automaticReconnect);
       setPreferences(next);
       setPreferencesLoaded(true);
     } catch {
@@ -1165,8 +1198,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       // reconnect or otherwise touch a remote runtime.
       if (smokeFixtureActive) return;
       // Preserve OS event order. Rust owns reconnect policy and timers.
+      const ownerId = activeOwnerRef.current;
+      const ownerAttempt = activeOwnerAttemptRef.current;
       foregroundCommands.current = foregroundCommands.current
-        .then(() => MeetermTerminal.setForeground(CONNECTION_ID, isForeground))
+        .then(() => ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current
+          ? MeetermTerminal.setForeground(ownerId, isForeground)
+          : undefined)
         .catch(() => setControlMessage('Could not update the connection after the app changed state. Check your connection.'));
     };
     // A deep link may mount its screen while iOS is still inactive. Keep
@@ -1180,7 +1217,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       applyForeground(foreground.current);
     });
     return () => subscription.remove();
-  }, [smokeFixtureActive]);
+  }, [activeOwnerRevision, smokeFixtureActive]);
 
   useEffect(() => {
     if (smokeFixtureActive) return;
@@ -1189,6 +1226,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const refresh = async () => {
       if (polling || !foreground.current) return;
       polling = true;
+      const ownerId = activeOwnerRef.current;
+      const ownerAttempt = activeOwnerAttemptRef.current;
       const version = commandVersion.current;
       const observationAttempt = runtimeDiscoveryAttempt.current;
       const pendingSelectionAtStart = pendingRuntimeSelection.current;
@@ -1196,7 +1235,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const pendingRefreshAtStart = pendingRuntimeRefresh.current;
       const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart || pendingRefreshAtStart);
       try {
-        const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        const next = await MeetermTerminal.getConnectionState(ownerId);
         // Host authentication and fresh runtime discovery do not have
         // workspace metadata yet. A retained-work recovery is the exception:
         // keep polling its coherent cached snapshot so the existing native
@@ -1205,7 +1244,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         const observeRecoveryState = ['Reconnecting', 'Synchronizing', 'Failed', 'Disconnected', 'Closing', 'HostKeyPending', 'AwaitingRuntimeSelection', 'DiscoveringRuntimes'].includes(next.state);
         const nextSession = (next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current)
           || observeRetainedWork || observeRecoveryState
-          ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+          ? await MeetermTerminal.getWorkspaceState(ownerId)
           : null;
         const nextSessionControl = nextSession
           ? normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control)
@@ -1219,16 +1258,21 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         let pendingDiscovery: RuntimeDiscovery | null = null;
         if ((observePendingRuntime || observeInitialRuntime) && !['Failed', 'Disconnected', 'Closing', 'HostKeyPending'].includes(next.state)) {
           try {
-            pendingDiscovery = await MeetermTerminal.getRuntimeDiscovery(CONNECTION_ID);
+            pendingDiscovery = await MeetermTerminal.getRuntimeDiscovery(ownerId);
           } catch {
             // A transient snapshot read failure is not an operation failure.
             // The next existing connection poll can observe it again.
           }
         }
+        if (switchBoundaryCrossedRef.current && ownerId === activeOwnerRef.current) {
+          if (mounted) setConnection(current => current.state === 'Ready' ? { ...current, state: 'Synchronizing' } : current);
+          return;
+        }
         const operationStillPending = pendingRuntimeSelection.current === pendingSelectionAtStart
           && pendingRuntimeCreation.current === pendingCreationAtStart
           && pendingRuntimeRefresh.current === pendingRefreshAtStart;
-        if (mounted && version === commandVersion.current && observationAttempt === runtimeDiscoveryAttempt.current && !commandPending.current) {
+        if (mounted && ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current
+          && version === commandVersion.current && observationAttempt === runtimeDiscoveryAttempt.current && !commandPending.current) {
           const generationMatches = pendingDiscovery
             && (runtimeConnectionGeneration.current === null
               || runtimeConnectionGeneration.current === pendingDiscovery.connectionGeneration);
@@ -1316,7 +1360,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // frames, and all remote discovery/actor work.
     const interval = setInterval(() => { void refresh(); }, 1000);
     return () => { mounted = false; clearInterval(interval); };
-  }, [invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, updateRuntimeBound]);
+  }, [activeOwnerRevision, invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, updateRuntimeBound]);
 
   useEffect(() => {
     if (smokeFixtureActive) return;
@@ -1328,8 +1372,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const promptId = [connection.host, connection.port, connection.algorithm, connection.fingerprint].join('|');
     if (shownHostKey.current === promptId) return;
     shownHostKey.current = promptId;
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
     const respond = (accept: boolean) => {
-      void MeetermTerminal.respondToHostKey(CONNECTION_ID, connection.fingerprint, accept).catch(() => {
+      if (ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) return;
+      void MeetermTerminal.respondToHostKey(ownerId, connection.fingerprint, accept).catch(() => {
+        if (ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) return;
         shownHostKey.current = '';
         setControlMessage('Your host-key decision could not be sent. Connect again.');
       });
@@ -1338,7 +1386,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       { text: 'Cancel', style: 'cancel', onPress: () => respond(false) },
       { text: 'Trust and connect', onPress: () => respond(true) },
     ], { cancelable: false });
-  }, [connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
+  }, [activeOwnerRevision, connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
 
   const recoveryPhaseActive = !recoveryInvalidated && control.recovery.phase !== 'none';
   const retainedWorkAvailable = !recoveryInvalidated && control.hasRetainedWork;
@@ -1389,6 +1437,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const colors = screen === 'terminal' ? DARK : homeColors;
   const resolvedTheme = 'dark';
   const currentProfile = profiles.find(profile => profile.id === profileId);
+  const activeServer = useMemo(() => currentProfile ?? activeServerDraft ?? {
+    id: profileId || '__current__',
+    name: connection.host ? `${connection.host}:${connection.port}` : 'Current server',
+    host: connection.host,
+    port: connection.port,
+    username: '',
+    credentialSaved: false,
+  }, [activeServerDraft, connection.host, connection.port, currentProfile, profileId]);
   const effectiveRuntimeHint = runtimeHint ?? runtimeHintForProfile(currentProfile);
   runtimeHintRef.current = effectiveRuntimeHint;
 
@@ -1412,7 +1468,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setRuntimeBusy(true);
       setRuntimeActionBusy(true);
       try {
-        await MeetermTerminal.refreshRuntimes(CONNECTION_ID);
+        await MeetermTerminal.refreshRuntimes(activeOwnerRef.current);
         if (attempt !== runtimeDiscoveryAttempt.current || pendingRuntimeRefresh.current !== pending) return null;
         // Native accepted the request, but the actor may not have published
         // the new snapshot yet. The existing connection poll completes it.
@@ -1437,7 +1493,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRuntimeBusy(true);
     try {
       if (attempt !== runtimeDiscoveryAttempt.current) return null;
-      const next = await MeetermTerminal.getRuntimeDiscovery(CONNECTION_ID);
+      const next = await MeetermTerminal.getRuntimeDiscovery(activeOwnerRef.current);
       if (attempt !== runtimeDiscoveryAttempt.current) return null;
       if (runtimeConnectionGeneration.current !== null
         && runtimeConnectionGeneration.current !== next.connectionGeneration) return null;
@@ -1470,10 +1526,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   // These are native-published gates, not guesses derived from the transport
   // phase or the presence of cached JS metadata. Keep the two gates separate
   // so a drawable recovery surface can never imply writable input.
-  const runtimeReady = Boolean(ready && control.runtimeOperationsReady && !recoveryPhaseActive && !recoveryInvalidated);
-  const terminalInputReady = Boolean(ready && control.terminalInputReady && !recoveryPhaseActive && !recoveryInvalidated);
+  const runtimeReady = Boolean(ready && control.runtimeOperationsReady && !recoveryPhaseActive && !recoveryInvalidated && !switchBoundaryCrossed);
+  const terminalInputReady = Boolean(ready && control.terminalInputReady && !recoveryPhaseActive && !recoveryInvalidated && !switchBoundaryCrossed);
   const strongReady = runtimeReady && terminalInputReady;
-  const surfaceAvailable = Boolean(workspace && selectedPane && (strongReady || retainedWorkAvailable));
+  const switchRetainedWorkAvailable = Boolean(switchBoundaryCrossed && workspace && selectedPane);
+  const surfaceAvailable = Boolean(workspace && selectedPane && (strongReady || retainedWorkAvailable || switchRetainedWorkAvailable));
   const surfaceVisible = Boolean(surfaceAvailable)
     && screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible
     && !nameRequest && appState === 'active';
@@ -1482,6 +1539,83 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const recoveredCopy = recoveredEpoch === control.operationEpoch && strongReady && surfaceAvailable
     ? recoveryRailCopy(control, session.backend, session.runtime, recoveryServerLabel, true)
     : null;
+
+  const startRuntimeBrowse = useCallback(async (server: SessionSwitcherServer, current: boolean) => {
+    if (commandPending.current || switchAttemptRef.current) return false;
+    if (!runtimeReady || recoveryPhaseActive) {
+      setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
+      return false;
+    }
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
+    const attempt = ++browseAttemptRef.current;
+    const previous = browseOwnerRef.current;
+    browseOwnerRef.current = null;
+    if (previous) {
+      try { await MeetermTerminal.runtimeBrowseCancel(previous.token); } catch { /* a stale token is already retired */ }
+    }
+    if (attempt !== browseAttemptRef.current || ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) return false;
+    setBrowse(null);
+    setBrowseTargetId(server.id);
+    setExpandedServerId(server.id);
+    setSessionSwitcherError('');
+    setSessionSwitcherSelectingId('');
+    setCreateSessionVisible(false);
+    setCreateSessionError('');
+    try {
+      const next = smokeFixtureActive
+        ? null
+        : current
+          ? await MeetermTerminal.runtimeBrowseStartCurrent(ownerId)
+          : await MeetermTerminal.runtimeBrowseStartProfile(ownerId, server.id);
+      if (!next) return false;
+      if (attempt !== browseAttemptRef.current || ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) {
+        void MeetermTerminal.runtimeBrowseCancel(next.token).catch(() => {});
+        return false;
+      }
+      browseOwnerRef.current = { token: next.token, sourceOwner: ownerId, ownerAttempt, serverId: server.id };
+      setBrowse(next);
+      if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
+      return true;
+    } catch (error) {
+      if (attempt === browseAttemptRef.current && ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current) {
+        setSessionSwitcherError(error instanceof Error && error.message
+          ? error.message
+          : 'Could not explore this server. Check its credentials and try again.');
+        setBrowseTargetId(server.id);
+        setExpandedServerId(server.id);
+      }
+      return false;
+    }
+  }, [observeCleanupWarning, recoveryPhaseActive, runtimeReady, smokeFixtureActive]);
+
+  const openSessionSwitcher = useCallback((target?: SessionSwitcherServer) => {
+    if (commandPending.current || switchAttemptRef.current) return;
+    Keyboard.dismiss();
+    const mode = runtimeReady || recoveryPhaseActive ? 'switch' : 'fresh';
+    setSessionSwitcherMode(mode);
+    setSessionSwitcherOpen(true);
+    setSessionSwitcherError('');
+    setCreateSessionVisible(false);
+    setCredentialTargetId('');
+    setExpandedServerId(target?.id ?? activeServer.id);
+    if (mode === 'switch') {
+      if (recoveryPhaseActive) {
+        // Keep retained work mounted underneath the sheet. Native currently
+        // rejects runtime browsing while the recovery actor is active.
+        setBrowse(null);
+        setBrowseTargetId('');
+        setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
+        return;
+      }
+      if (target && target.id !== activeServer.id && !target.credentialSaved) {
+        setCredentialTargetId(target.id);
+        setBrowseTargetId('');
+      } else {
+        void startRuntimeBrowse(target ?? activeServer, !target || target.id === activeServer.id);
+      }
+    }
+  }, [activeServer, recoveryPhaseActive, runtimeReady, startRuntimeBrowse]);
 
   useEffect(() => {
     const previous = recoveryMilestoneRef.current;
@@ -1536,14 +1670,18 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   useEffect(() => {
     if (smokeFixtureActive) return;
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
     foregroundCommands.current = foregroundCommands.current
       // A cached recovery view is visible to the user but is never reported
       // as writable/live. Native treats visibility as a surface lifecycle
       // signal and keeps controller acquisition/input behind its recovery
       // gates, so a cached surface may still report visible here.
-      .then(() => MeetermTerminal.setTerminalVisible(CONNECTION_ID, surfaceVisible))
+      .then(() => ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current
+        ? MeetermTerminal.setTerminalVisible(ownerId, surfaceVisible)
+        : undefined)
       .catch(() => setControlMessage('Could not update terminal visibility. Reconnect to continue.'));
-  }, [smokeFixtureActive, strongReady, surfaceVisible]);
+  }, [activeOwnerRevision, smokeFixtureActive, strongReady, surfaceVisible]);
   const closing = connection.state === 'Closing';
   const active = !['Disconnected', 'Failed', 'Closing'].includes(connection.state);
   const attempted = Boolean(connection.host);
@@ -1554,21 +1692,25 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const runCommand = useCallback(async (action: () => Promise<void>, errorMessage: string) => {
     if (smokeFixtureActive) return false;
     if (commandPending.current) return false;
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
     commandPending.current = true;
     commandVersion.current += 1;
     setCommandBusy(true);
     setControlMessage('');
     try {
       await action();
+      if (ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) return false;
       try {
-        const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        const next = await MeetermTerminal.getConnectionState(ownerId);
         const nextSession = (next.state === 'Ready' && !runtimeSelectionRequired.current && !ignoreReadyUntilNewConnection.current)
           || ['Failed', 'Disconnected', 'Closing', 'HostKeyPending', 'AwaitingRuntimeSelection', 'DiscoveringRuntimes'].includes(next.state)
-          ? await MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+          ? await MeetermTerminal.getWorkspaceState(ownerId)
           : null;
         const nextSessionControl = nextSession
           ? normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control)
           : null;
+        if (ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) return false;
         setConnection(next);
         if (nextSessionControl?.cleanupWarning) observeCleanupWarning(nextSessionControl.cleanupWarning);
         else observeCleanupWarning(legacyCleanupWarning(next));
@@ -1637,7 +1779,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       token: current.recovery.confirmationToken,
     };
     if (!startRecoveryAction('retry', identity)) return;
-    void MeetermTerminal.retryRecovery(CONNECTION_ID, identity.epoch)
+    void MeetermTerminal.retryRecovery(activeOwnerRef.current, identity.epoch)
       .catch(() => {
         clearRecoveryAction('retry', identity);
         setControlMessage('Recovery could not be started. Try again or change the destination.');
@@ -1656,7 +1798,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       token,
     };
     if (!startRecoveryAction('confirm', identity)) return;
-    void MeetermTerminal.confirmRecovery(CONNECTION_ID, token)
+    void MeetermTerminal.confirmRecovery(activeOwnerRef.current, token)
       .catch(() => {
         clearRecoveryAction('confirm', identity);
         setControlMessage('This recovery confirmation is no longer valid. Review the workspace again.');
@@ -1685,8 +1827,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (recoveryInvalidatedRef.current || !current.hasRetainedWork
       || current.recovery.phase === 'none' || recoveryPendingRef.current.change) return;
     Keyboard.dismiss();
-    setSheet('recovery');
-  }, []);
+    openSessionSwitcher();
+  }, [openSessionSwitcher]);
 
   const changeRecoveryDestination = useCallback(async (destination: 'runtime' | 'server') => {
     const current = controlRef.current;
@@ -1702,10 +1844,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
     try {
       if (!smokeFixtureActive) {
-        await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
-        const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        await MeetermTerminal.changeRuntime(activeOwnerRef.current, identity.epoch);
+        const released = await MeetermTerminal.getConnectionState(activeOwnerRef.current);
         try {
-          const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+          const releasedSession = await MeetermTerminal.getWorkspaceState(activeOwnerRef.current);
           const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
           observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
         } catch {
@@ -1855,7 +1997,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (connection.state === 'Ready') {
       const operationAttempt = runtimeDiscoveryAttempt.current;
       finishRuntimeSelection(candidate ?? createdTmuxCandidate(creationName));
-      void MeetermTerminal.getWorkspaceState(CONNECTION_ID)
+      void MeetermTerminal.getWorkspaceState(activeOwnerRef.current)
         .then(next => {
           if (operationAttempt !== runtimeDiscoveryAttempt.current) return;
           setSession(next);
@@ -1912,7 +2054,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRuntimeMessage('');
     pendingRuntimeSelection.current = candidate;
     try {
-      if (!smokeFixtureActive) await MeetermTerminal.selectRuntime(CONNECTION_ID, candidate.id);
+      if (!smokeFixtureActive) await MeetermTerminal.selectRuntime(activeOwnerRef.current, candidate.id);
       if (operationAttempt !== runtimeDiscoveryAttempt.current || !pendingRuntimeSelection.current) return false;
       setRuntimeMessage('Runtime selected. Waiting for its workspace to become ready…');
       return true;
@@ -1953,7 +2095,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     updateRuntimeBound(false);
     if (smokeFixtureActive) return;
     setConnection(current => ({ ...current, state: 'Closing' }));
-    void runCommand(() => MeetermTerminal.disconnect(CONNECTION_ID), 'Could not cancel the provisional connection. Please try again.');
+    void runCommand(() => MeetermTerminal.disconnect(activeOwnerRef.current), 'Could not cancel the provisional connection. Please try again.');
   }, [invalidateRuntimeDiscovery, runCommand, smokeFixtureActive, updateRuntimeBound]);
 
   const createTmuxSession = useCallback(async (name: string) => {
@@ -1972,7 +2114,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRuntimeCreationError('');
     pendingRuntimeCreation.current = name;
     try {
-      if (!smokeFixtureActive) await MeetermTerminal.createTmuxSession(CONNECTION_ID, name);
+      if (!smokeFixtureActive) await MeetermTerminal.createTmuxSession(activeOwnerRef.current, name);
       if (operationAttempt !== runtimeDiscoveryAttempt.current || !pendingRuntimeCreation.current) return false;
       setRuntimeMessage('Session creation requested. Waiting for it to become ready…');
       return true;
@@ -1990,6 +2132,505 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       }
     }
   }, [runtimeActionBusy, runtimeDiscovery, smokeFixtureActive]);
+
+  const toggleSwitcherServer = useCallback((server: SessionSwitcherServer) => {
+    if (commandPending.current || switchAttemptRef.current) return;
+    if (expandedServerId === server.id) {
+      const previous = browseOwnerRef.current;
+      browseOwnerRef.current = null;
+      browseAttemptRef.current += 1;
+      setExpandedServerId('');
+      setBrowseTargetId('');
+      setBrowse(null);
+      setSessionSwitcherError('');
+      setCredentialTargetId('');
+      if (previous) void MeetermTerminal.runtimeBrowseCancel(previous.token).catch(() => {});
+      return;
+    }
+    if (server.id !== activeServer.id && !server.credentialSaved) {
+      const previous = browseOwnerRef.current;
+      browseOwnerRef.current = null;
+      browseAttemptRef.current += 1;
+      if (previous) void MeetermTerminal.runtimeBrowseCancel(previous.token).catch(() => {});
+      setBrowse(null);
+      setBrowseTargetId('');
+      setExpandedServerId(server.id);
+      setSessionSwitcherError('');
+      setCredentialTargetId(server.id);
+      return;
+    }
+    void startRuntimeBrowse(server, server.id === activeServer.id);
+  }, [activeServer.id, expandedServerId, startRuntimeBrowse]);
+
+  const openSwitcherCredential = useCallback((server: SessionSwitcherServer) => {
+    const previous = browseOwnerRef.current;
+    browseOwnerRef.current = null;
+    browseAttemptRef.current += 1;
+    if (previous) void MeetermTerminal.runtimeBrowseCancel(previous.token).catch(() => {});
+    setBrowse(null);
+    setBrowseTargetId('');
+    setExpandedServerId(server.id);
+    setCredentialTargetId(server.id);
+    setSessionSwitcherError('');
+  }, []);
+
+  const submitSwitcherCredential = useCallback(async (submission: ConnectionSubmission) => {
+    if (recoveryPhaseActive) {
+      setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
+      return false;
+    }
+    const target = profiles.find(profile => profile.id === credentialTargetId);
+    if (!target || !submission.credential || commandPending.current || switchAttemptRef.current) return false;
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
+    const attempt = ++browseAttemptRef.current;
+    const previous = browseOwnerRef.current;
+    browseOwnerRef.current = null;
+    if (previous) {
+      try { await MeetermTerminal.runtimeBrowseCancel(previous.token); } catch { /* retired token */ }
+    }
+    try {
+      if (submission.saveProfile) {
+        const updated = await MeetermTerminal.saveProfile(
+          { ...submission.profile, id: target.id },
+          submission.saveCredential ? submission.credential : null,
+          submission.keepCredential,
+        );
+        setProfiles(current => current.map(profile => profile.id === updated.id ? updated : profile));
+      }
+      if (attempt !== browseAttemptRef.current || ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) return false;
+      const options: SshConnectOptions = {
+        host: submission.profile.host,
+        port: submission.profile.port,
+        username: submission.profile.username,
+        ...submission.credential,
+      };
+      const next = await MeetermTerminal.runtimeBrowseStartCredential(ownerId, options);
+      if (attempt !== browseAttemptRef.current || ownerId !== activeOwnerRef.current || ownerAttempt !== activeOwnerAttemptRef.current) {
+        void MeetermTerminal.runtimeBrowseCancel(next.token).catch(() => {});
+        return false;
+      }
+      browseOwnerRef.current = { token: next.token, sourceOwner: ownerId, ownerAttempt, serverId: target.id };
+      setBrowse(next);
+      setBrowseTargetId(target.id);
+      setExpandedServerId(target.id);
+      setCredentialTargetId('');
+      setSessionSwitcherError('');
+      if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
+      return true;
+    } catch (error) {
+      if (attempt === browseAttemptRef.current && ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current) {
+        setSessionSwitcherError(error instanceof Error && error.message ? error.message : 'Could not authenticate to this server. Check the credentials and try again.');
+      }
+      return false;
+    }
+  }, [credentialTargetId, observeCleanupWarning, profiles, recoveryPhaseActive]);
+
+  const finishCommittedBrowse = useCallback(async (snapshot: RuntimeBrowseState, owner: BrowseOwner) => {
+    if (snapshot.phase !== 'committed' || !snapshot.activeTerminalId
+      || handledBrowseTokenRef.current === snapshot.token
+      || finishingBrowseTokenRef.current === snapshot.token) return;
+    const nextOwner = `native:${snapshot.activeTerminalId}`;
+    const sourceStillOwnsSwitch = activeOwnerRef.current === owner.sourceOwner
+      && activeOwnerAttemptRef.current === owner.ownerAttempt;
+    const transactionStillOwnsPromotedHandle = activeOwnerRef.current === nextOwner
+      && switchAttemptRef.current?.sourceOwner === owner.sourceOwner
+      && switchAttemptRef.current.ownerAttempt === owner.ownerAttempt;
+    if (!sourceStillOwnsSwitch && !transactionStillOwnsPromotedHandle) return;
+    finishingBrowseTokenRef.current = snapshot.token;
+    if (sourceStillOwnsSwitch) {
+      activeOwnerRef.current = nextOwner;
+      activeOwnerAttemptRef.current += 1;
+      setActiveOwnerRevision(value => value + 1);
+      commandVersion.current += 1;
+    }
+    const nextOwnerAttempt = activeOwnerAttemptRef.current;
+    updateRuntimeBound(false);
+    setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+    if (snapshot.cleanupWarning) observeCleanupWarning(snapshot.cleanupWarning);
+    const targetProfile = profiles.find(profile => profile.id === owner.serverId);
+    const targetServer = targetProfile ?? (owner.serverId === activeServer.id ? activeServer : null);
+    try {
+      const [nextConnection, nextSession] = await Promise.all([
+        MeetermTerminal.getConnectionState(nextOwner),
+        MeetermTerminal.getWorkspaceState(nextOwner),
+      ]);
+      if (activeOwnerRef.current !== nextOwner || activeOwnerAttemptRef.current !== nextOwnerAttempt) return;
+      const nextControl = normalizeWorkspaceControl((nextSession as WorkspaceState & { control?: unknown }).control);
+      if (nextConnection.state !== 'Ready' || !nextControl.runtimeOperationsReady || !nextSession.runtime.trim()) {
+        setConnection({ ...nextConnection, state: nextConnection.state === 'Ready' ? 'Synchronizing' : nextConnection.state });
+        switchBoundaryCrossedRef.current = true;
+        setSwitchBoundaryCrossed(true);
+        setSessionSwitcherError('Waiting for the selected session’s authoritative workspace snapshot. Keep this sheet open.');
+        return;
+      }
+      handledBrowseTokenRef.current = snapshot.token;
+      setConnection(nextConnection);
+      setSession(nextSession);
+      if (targetServer) {
+        setActiveServerDraft(targetServer);
+        setProfileId(targetProfile?.id ?? '');
+      } else {
+        setActiveServerDraft(null);
+        setProfileId('');
+      }
+      setRuntimeHint({ backend: nextSession.backend, runtime: nextSession.runtime });
+      setSessionSwitcherMode('switch');
+      setSessionSwitcherOpen(false);
+      setRuntimePickerVisible(false);
+      setRuntimeCreateVisible(false);
+      setCreateSessionVisible(false);
+      setCredentialTargetId('');
+      setBrowse(null);
+      setBrowseTargetId('');
+      setExpandedServerId('');
+      setSessionSwitcherSelectingId('');
+      setSessionSwitcherError('');
+      setScreen('workspaces');
+      setSheet(null);
+      setPickerQuery('');
+      setHasConnected(true);
+      setSwitchAttempt(null);
+      switchAttemptRef.current = null;
+      switchBoundaryCrossedRef.current = false;
+      setSwitchBoundaryCrossed(false);
+      runtimeSelectionRequired.current = false;
+      ignoreReadyUntilNewConnection.current = false;
+      recoveryInvalidatedRef.current = false;
+      setRecoveryInvalidated(false);
+      updateRuntimeBound(true);
+      workspaceObservationRef.current = true;
+      if (targetProfile) {
+        const hintOwner = nextOwner;
+        const hintAttempt = nextOwnerAttempt;
+        void MeetermTerminal.setLastUsedRuntime(targetProfile.id, nextSession.backend, nextSession.runtime)
+          .then(updated => {
+            setProfiles(current => current.map(profile => profile.id === updated.id ? updated : profile));
+            if (activeOwnerRef.current === hintOwner && activeOwnerAttemptRef.current === hintAttempt) {
+              setRuntimeHint({ backend: nextSession.backend, runtime: nextSession.runtime });
+            }
+          })
+          .catch(() => {
+            if (activeOwnerRef.current === hintOwner && activeOwnerAttemptRef.current === hintAttempt) {
+              setControlMessage('Session opened. The last-used hint could not be saved.');
+            }
+          });
+      }
+    } catch {
+      if (activeOwnerRef.current !== nextOwner || activeOwnerAttemptRef.current !== nextOwnerAttempt) return;
+      switchBoundaryCrossedRef.current = true;
+      setSwitchBoundaryCrossed(true);
+      setSessionSwitcherError('Could not read the selected session’s authoritative workspace snapshot yet. Keep this sheet open.');
+    } finally {
+      finishingBrowseTokenRef.current = '';
+      if (activeOwnerRef.current === nextOwner && activeOwnerAttemptRef.current === nextOwnerAttempt) {
+        if (!switchBoundaryCrossedRef.current) {
+          void MeetermTerminal.runtimeBrowseCancel(snapshot.token).catch(() => {});
+          switchAttemptRef.current = null;
+          setSwitchAttempt(null);
+        }
+      }
+    }
+  }, [activeServer, observeCleanupWarning, profiles, updateRuntimeBound]);
+
+  const restoreSourceAfterRejectedBrowse = useCallback(async (owner: BrowseOwner) => {
+    if (activeOwnerRef.current !== owner.sourceOwner || activeOwnerAttemptRef.current !== owner.ownerAttempt) return false;
+    try {
+      const [sourceConnection, sourceSession] = await Promise.all([
+        MeetermTerminal.getConnectionState(owner.sourceOwner),
+        MeetermTerminal.getWorkspaceState(owner.sourceOwner),
+      ]);
+      if (activeOwnerRef.current !== owner.sourceOwner || activeOwnerAttemptRef.current !== owner.ownerAttempt) return false;
+      const sourceControl = normalizeWorkspaceControl((sourceSession as WorkspaceState & { control?: unknown }).control);
+      if (sourceConnection.state !== 'Ready' || !sourceControl.runtimeOperationsReady
+        || sourceControl.recovery.phase !== 'none') return false;
+      setConnection(sourceConnection);
+      setSession(sourceSession);
+      switchBoundaryCrossedRef.current = false;
+      setSwitchBoundaryCrossed(false);
+      switchAttemptRef.current = null;
+      setSwitchAttempt(null);
+      setSessionSwitcherSelectingId('');
+      workspaceObservationRef.current = true;
+      updateRuntimeBound(true);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [updateRuntimeBound]);
+
+  const selectSwitcherCandidate = useCallback(async (candidate: RuntimeCandidate) => {
+    if (sessionSwitcherMode === 'fresh') {
+      setSessionSwitcherSelectingId(candidate.id);
+      await selectRuntime(candidate);
+      setSessionSwitcherSelectingId(current => current === candidate.id ? '' : current);
+      return;
+    }
+    const owner = browseOwnerRef.current;
+    const state = browse;
+    if (!owner || !state || state.phase !== 'ready' || candidate.state !== 'running' || !candidate.selectable
+      || commandPending.current || switchAttemptRef.current) return;
+    const attempt: SwitchAttempt = {
+      id: browseAttemptRef.current,
+      sourceOwner: owner.sourceOwner,
+      ownerAttempt: owner.ownerAttempt,
+      targetServerId: owner.serverId,
+      candidateId: candidate.id,
+    };
+    switchAttemptRef.current = attempt;
+    setSwitchAttempt(attempt);
+    setSessionSwitcherSelectingId(candidate.id);
+    setSessionSwitcherError('');
+    // Fence stale Ready observations as soon as the explicit native commit
+    // request begins. A rejected pre-commit request may restore the source
+    // only after native still reports its exact Ready binding.
+    switchBoundaryCrossedRef.current = true;
+    setSwitchBoundaryCrossed(true);
+    updateRuntimeBound(false);
+    setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+    try {
+      await MeetermTerminal.runtimeBrowseCommit(state.token, state.browseGeneration, state.discoveryRevision, {
+        kind: 'candidate', candidateId: candidate.id,
+      });
+      if (switchAttemptRef.current?.id !== attempt.id) return;
+      switchBoundaryCrossedRef.current = true;
+      setSwitchBoundaryCrossed(true);
+      updateRuntimeBound(false);
+      setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+      const next = await MeetermTerminal.runtimeBrowseState(state.token);
+      if (switchAttemptRef.current?.id !== attempt.id) return;
+      setBrowse(next);
+      if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
+      if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+      else if (next.phase === 'failed' || next.phase === 'cancelled') {
+        setSessionSwitcherSelectingId('');
+        setSessionSwitcherError(next.errorMessage || 'The selected session could not be opened. Refresh and try another session.');
+        setConnection(current => ({ ...current, state: 'Failed', errorCode: next.errorCode, errorMessage: next.errorMessage }));
+      }
+    } catch {
+      if (switchAttemptRef.current?.id !== attempt.id) return;
+      try {
+        const next = await MeetermTerminal.runtimeBrowseState(state.token);
+        if (switchAttemptRef.current?.id !== attempt.id) return;
+        setBrowse(next);
+        if (next.phase === 'ready' && await restoreSourceAfterRejectedBrowse(owner)) {
+          setSessionSwitcherError('The selection was rejected as stale. Refresh sessions before choosing again.');
+          return;
+        }
+        if (next.phase === 'committing' || next.phase === 'committed') {
+          switchBoundaryCrossedRef.current = true;
+          setSwitchBoundaryCrossed(true);
+          updateRuntimeBound(false);
+          setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+          if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+          return;
+        }
+        if (next.phase === 'failed' || next.phase === 'cancelled') {
+          setSessionSwitcherError(next.errorMessage || 'The selected session could not be opened. Refresh and try again.');
+        } else {
+          setSessionSwitcherError('The selection was rejected as stale. Refresh sessions before choosing again.');
+        }
+      } catch {
+        setSessionSwitcherError('The selection could not be confirmed. The existing workspace remains available as read-only until its state is checked.');
+      }
+      if (!switchBoundaryCrossedRef.current) {
+        switchAttemptRef.current = null;
+        setSwitchAttempt(null);
+        setSessionSwitcherSelectingId('');
+      } else {
+        setConnection(current => ({ ...current, state: 'Failed' }));
+      }
+    }
+  }, [browse, finishCommittedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, selectRuntime, sessionSwitcherMode, updateRuntimeBound]);
+
+  const refreshSwitcherBrowse = useCallback(() => {
+    const owner = browseOwnerRef.current;
+    if (!owner || !browse || browse.phase !== 'ready' || switchAttemptRef.current) return;
+    setSessionSwitcherError('');
+    void MeetermTerminal.runtimeBrowseRefresh(owner.token).catch(() => {
+      if (browseOwnerRef.current?.token === owner.token) setSessionSwitcherError('Could not refresh sessions. Try again.');
+    });
+  }, [browse]);
+
+  const handleSwitcherCreate = useCallback(async () => {
+    const error = validateTmuxSessionName(createSessionName);
+    if (error) { setCreateSessionError(error); return; }
+    setCreateSessionError('');
+    if (sessionSwitcherMode === 'fresh') {
+      await createTmuxSession(createSessionName.trim());
+      return;
+    }
+    const owner = browseOwnerRef.current;
+    const state = browse;
+    if (!owner || !state || state.phase !== 'ready' || switchAttemptRef.current) return;
+    const attempt: SwitchAttempt = {
+      id: browseAttemptRef.current,
+      sourceOwner: owner.sourceOwner,
+      ownerAttempt: owner.ownerAttempt,
+      targetServerId: owner.serverId,
+      candidateId: `create:${createSessionName.trim()}`,
+    };
+    switchAttemptRef.current = attempt;
+    setSwitchAttempt(attempt);
+    setSessionSwitcherSelectingId(attempt.candidateId);
+    switchBoundaryCrossedRef.current = true;
+    setSwitchBoundaryCrossed(true);
+    updateRuntimeBound(false);
+    setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+    try {
+      await MeetermTerminal.runtimeBrowseCommit(state.token, state.browseGeneration, state.discoveryRevision, {
+        kind: 'createTmux', name: createSessionName.trim(),
+      });
+      if (switchAttemptRef.current?.id !== attempt.id) return;
+      switchBoundaryCrossedRef.current = true;
+      setSwitchBoundaryCrossed(true);
+      updateRuntimeBound(false);
+      setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+      const next = await MeetermTerminal.runtimeBrowseState(state.token);
+      if (switchAttemptRef.current?.id !== attempt.id) return;
+      setBrowse(next);
+      if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
+      if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+    } catch {
+      if (switchAttemptRef.current?.id !== attempt.id) return;
+      try {
+        const next = await MeetermTerminal.runtimeBrowseState(state.token);
+        if (switchAttemptRef.current?.id !== attempt.id) return;
+        setBrowse(next);
+        if (next.phase === 'ready' && await restoreSourceAfterRejectedBrowse(owner)) {
+          setCreateSessionError('The session selection was stale. Refresh sessions before trying again.');
+          return;
+        }
+        if (next.phase === 'committing' || next.phase === 'committed') {
+          switchBoundaryCrossedRef.current = true;
+          setSwitchBoundaryCrossed(true);
+          updateRuntimeBound(false);
+          setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+          if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+          return;
+        }
+        setCreateSessionError(next.errorMessage || 'The session could not be created. Refresh and try another name.');
+      } catch {
+        setCreateSessionError('The result could not be confirmed. Keep this workspace read-only until its state is checked.');
+      }
+      if (!switchBoundaryCrossedRef.current) {
+        switchAttemptRef.current = null;
+        setSwitchAttempt(null);
+        setSessionSwitcherSelectingId('');
+      } else setConnection(current => ({ ...current, state: 'Failed' }));
+    }
+  }, [browse, createSessionName, createTmuxSession, finishCommittedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, sessionSwitcherMode, updateRuntimeBound]);
+
+  const openSwitcherCreate = useCallback(() => {
+    if (sessionSwitcherMode === 'fresh') {
+      setCreateSessionName(suggestedTmuxName(runtimeDiscovery) || '');
+      setCreateSessionError('');
+      setRuntimeCreateVisible(true);
+      return;
+    }
+    const targetId = browseTargetId || activeServer.id;
+    const target = profiles.find(profile => profile.id === targetId) ?? activeServer;
+    createAfterBrowseRef.current = targetId;
+    if (browseTargetId === targetId && browse?.phase === 'ready') {
+      createAfterBrowseRef.current = '';
+      setCreateSessionName(suggestedTmuxName(browse.discovery) || '');
+      setCreateSessionError('');
+      setCreateSessionVisible(true);
+    } else if (targetId !== activeServer.id && !target.credentialSaved) {
+      openSwitcherCredential(target);
+    } else {
+      void startRuntimeBrowse(target, targetId === activeServer.id);
+    }
+  }, [activeServer, browse, browseTargetId, openSwitcherCredential, profiles, runtimeDiscovery, sessionSwitcherMode, startRuntimeBrowse]);
+
+  const cancelSwitcherCreate = useCallback(() => {
+    setCreateSessionVisible(false);
+    setCreateSessionError('');
+  }, []);
+
+  const openManageServers = useCallback(() => {
+    reopenSwitcherAfterManageRef.current = true;
+    setSessionSwitcherOpen(false);
+  }, []);
+
+  const closeSessionSwitcher = useCallback(() => {
+    if (switchAttemptRef.current || switchBoundaryCrossedRef.current) return;
+    setSessionSwitcherOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionSwitcherOpen || sessionSwitcherMode !== 'switch' || !browse?.hostKey.pending || smokeFixtureActive) {
+      if (!browse?.hostKey.pending) hostKeyPromptRef.current = '';
+      return;
+    }
+    const token = browse.token;
+    const fingerprint = browse.hostKey.fingerprint;
+    const promptId = `${token}:${fingerprint}`;
+    if (!fingerprint || hostKeyPromptRef.current === promptId) return;
+    hostKeyPromptRef.current = promptId;
+    const serverName = profiles.find(profile => profile.id === browseTargetId)?.name ?? activeServer.name;
+    const respond = (accept: boolean) => {
+      if (browseOwnerRef.current?.token !== token || activeOwnerAttemptRef.current !== browseOwnerRef.current.ownerAttempt) return;
+      void MeetermTerminal.runtimeBrowseRespondToHostKey(token, fingerprint, accept).catch(() => {
+        if (browseOwnerRef.current?.token === token) {
+          hostKeyPromptRef.current = '';
+          setSessionSwitcherError('The SSH host-key decision could not be sent. Refresh this server and verify its key again.');
+        }
+      });
+    };
+    Alert.alert('Trust this SSH host?', `${serverName}\n${browse.hostKey.host}:${browse.hostKey.port}\n\nAlgorithm: ${browse.hostKey.algorithm || '(unavailable)'}\nSHA256 fingerprint:\n${fingerprint}\n\nCompare this key through another trusted channel before continuing.`, [
+      { text: 'Cancel', style: 'cancel', onPress: () => respond(false) },
+      { text: 'Trust and continue', onPress: () => respond(true) },
+    ], { cancelable: false });
+  }, [activeOwnerRevision, activeServer.name, browse, browseTargetId, profiles, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive]);
+
+  useEffect(() => {
+    if (!sessionSwitcherOpen || sessionSwitcherMode !== 'switch' || !browseOwnerRef.current || smokeFixtureActive) return;
+    const owner = browseOwnerRef.current;
+    let mounted = true;
+    let polling = false;
+    const refresh = async () => {
+      if (polling || browseOwnerRef.current?.token !== owner.token) return;
+      polling = true;
+      try {
+        const next = await MeetermTerminal.runtimeBrowseState(owner.token);
+        const sourceStillOwnsBrowse = owner.sourceOwner === activeOwnerRef.current
+          && owner.ownerAttempt === activeOwnerAttemptRef.current;
+        const promotedHandleStillOwned = switchBoundaryCrossedRef.current
+          && switchAttemptRef.current?.sourceOwner === owner.sourceOwner
+          && switchAttemptRef.current.ownerAttempt === owner.ownerAttempt;
+        if (!mounted || browseOwnerRef.current?.token !== owner.token
+          || (!sourceStillOwnsBrowse && !promotedHandleStillOwned)) return;
+        setBrowse(next);
+        if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
+        if (next.phase === 'committing') {
+          switchBoundaryCrossedRef.current = true;
+          setSwitchBoundaryCrossed(true);
+          updateRuntimeBound(false);
+          setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
+        } else if (next.phase === 'committed') {
+          await finishCommittedBrowse(next, owner);
+        } else if (next.phase === 'failed' || next.phase === 'cancelled') {
+          setSessionSwitcherSelectingId('');
+          setSessionSwitcherError(next.errorMessage || 'Could not open sessions from this server.');
+          if (switchBoundaryCrossedRef.current) setConnection(current => ({ ...current, state: 'Failed', errorCode: next.errorCode, errorMessage: next.errorMessage }));
+          else {
+            switchAttemptRef.current = null;
+            setSwitchAttempt(null);
+          }
+        } else if (next.phase === 'ready' && createAfterBrowseRef.current === owner.serverId) {
+          createAfterBrowseRef.current = '';
+          setCreateSessionName(suggestedTmuxName(next.discovery) || '');
+          setCreateSessionVisible(true);
+        }
+      } catch {
+        if (mounted && browseOwnerRef.current?.token === owner.token) setSessionSwitcherError('Could not read session discovery. Refresh to try again.');
+      } finally { polling = false; }
+    };
+    void refresh();
+    const interval = setInterval(() => { void refresh(); }, 750);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [activeOwnerRevision, browse?.token, finishCommittedBrowse, observeCleanupWarning, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive, switchBoundaryCrossed, updateRuntimeBound]);
 
   const finishConnectionForm = useCallback(() => {
     if (Platform.OS === 'ios' && returnToServersAfterForm.current) setModalPending(true);
@@ -2009,7 +2650,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
   }, []);
 
-  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>) => {
+  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port'> & Partial<Pick<ServerProfile, 'id' | 'name' | 'username' | 'authMethod' | 'credentialSaved' | 'backend' | 'runtime'>>) => {
     if (Platform.OS === 'ios' && (formVisible || sheet !== null)) setHostPromptDeferred(true);
     recoveryInvalidatedRef.current = false;
     setRecoveryInvalidated(false);
@@ -2036,6 +2677,28 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRuntimeBusy(false);
     setRuntimeActionBusy(false);
     setRuntimeMessage('');
+    setSessionSwitcherOpen(false);
+    setBrowse(null);
+    setBrowseTargetId('');
+    setExpandedServerId('');
+    setSessionSwitcherError('');
+    setSessionSwitcherSelectingId('');
+    setCredentialTargetId('');
+    setCreateSessionVisible(false);
+    setSwitchAttempt(null);
+    switchAttemptRef.current = null;
+    switchBoundaryCrossedRef.current = false;
+    setSwitchBoundaryCrossed(false);
+    browseOwnerRef.current = null;
+    browseAttemptRef.current += 1;
+    setActiveServerDraft({
+      id: profile.id ?? '',
+      name: profile.name ?? `${profile.host}:${profile.port}`,
+      host: profile.host,
+      port: profile.port,
+      username: profile.username ?? '',
+      credentialSaved: profile.credentialSaved ?? false,
+    });
     selectedRuntimeRef.current = null;
     pendingRuntimeSelection.current = null;
     pendingRuntimeCreation.current = '';
@@ -2050,14 +2713,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const prepareConnection = useCallback(async () => {
     if (smokeFixtureActive) return;
     const currentPreferences = preferencesLoaded ? preferences : await MeetermTerminal.getPreferences();
-    await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, currentPreferences.automaticReconnect);
+    await MeetermTerminal.setAutomaticReconnect(activeOwnerRef.current, currentPreferences.automaticReconnect);
     await foregroundCommands.current;
-    await MeetermTerminal.setForeground(CONNECTION_ID, foreground.current);
+    await MeetermTerminal.setForeground(activeOwnerRef.current, foreground.current);
     // Switching endpoints explicitly releases the previous connection owner.
-    await MeetermTerminal.disconnect(CONNECTION_ID);
-    const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+    await MeetermTerminal.disconnect(activeOwnerRef.current);
+    const released = await MeetermTerminal.getConnectionState(activeOwnerRef.current);
     try {
-      const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+      const releasedSession = await MeetermTerminal.getWorkspaceState(activeOwnerRef.current);
       const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
       observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
     } catch {
@@ -2077,20 +2740,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       await prepareConnection();
       if (submission.credential) {
         const options: SshConnectOptions = { host: submission.profile.host, port: submission.profile.port, username: submission.profile.username, ...submission.credential };
-        await MeetermTerminal.connectHost(CONNECTION_ID, options);
+        await MeetermTerminal.connectHost(activeOwnerRef.current, options);
       } else if (savedProfile?.credentialSaved) {
-        await MeetermTerminal.connectProfileHost(CONNECTION_ID, savedProfile.id);
+        await MeetermTerminal.connectProfileHost(activeOwnerRef.current, savedProfile.id);
       } else { throw new Error('Credential required'); }
       resetForConnection(savedProfile ?? submission.profile);
       setProfileId(savedProfile?.id ?? '');
     }, 'Could not save or connect to this server. Check the address and credentials.');
-    if (success) finishConnectionForm();
+    if (success) {
+      if (submission.connect) {
+        activeOwnerAttemptRef.current += 1;
+        setActiveOwnerRevision(value => value + 1);
+      }
+      finishConnectionForm();
+    }
     return success;
   }, [finishConnectionForm, prepareConnection, resetForConnection, runCommand]);
 
   const disconnect = useCallback(() => {
     if (commandPending.current) return;
     Keyboard.dismiss();
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
+    const keepFailedReadOnly = switchBoundaryCrossedRef.current;
     recoveryInvalidatedRef.current = true;
     setRecoveryInvalidated(true);
     setRecoveredEpoch('');
@@ -2098,15 +2770,26 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     completedRecoveryEpochRef.current = '';
     retainedPaneRef.current = null;
     setSheet(null);
+    setSessionSwitcherOpen(false);
+    setRuntimePickerVisible(false);
+    const browseEntry = browseOwnerRef.current;
+    browseOwnerRef.current = null;
+    if (browseEntry) void MeetermTerminal.runtimeBrowseCancel(browseEntry.token).catch(() => {});
     const previous = connection;
+    switchBoundaryCrossedRef.current = false;
+    setSwitchBoundaryCrossed(false);
     setConnection(current => ({ ...current, state: 'Closing' }));
-    void runCommand(() => MeetermTerminal.disconnect(CONNECTION_ID), 'Could not disconnect. Please try again.').then(success => {
-      if (!success) setConnection(previous);
+    void runCommand(() => MeetermTerminal.disconnect(ownerId), 'Could not disconnect. Please try again.').then(success => {
+      if (!success && activeOwnerRef.current === ownerId && activeOwnerAttemptRef.current === ownerAttempt) {
+        setConnection(keepFailedReadOnly ? { ...previous, state: 'Failed' } : previous);
+      }
     });
   }, [connection, runCommand]);
 
   const reconnect = useCallback(() => {
     if (commandPending.current) return;
+    const ownerId = activeOwnerRef.current;
+    const ownerAttempt = activeOwnerAttemptRef.current;
     // This legacy action is the fresh-picker-compatible reconnect path. It is
     // intentionally distinct from the retained-work Retry rail action.
     if (recoveryPhaseActive) {
@@ -2120,10 +2803,55 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSheet(null);
     const previous = connection;
     setConnection(current => ({ ...current, state: 'Reconnecting', errorCode: '', errorMessage: '' }));
-    void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), 'Could not reconnect. Choose Connection details to enter your credentials again.').then(success => {
-      if (!success) setConnection(previous);
+    void runCommand(() => MeetermTerminal.reconnect(ownerId), 'Could not reconnect. Choose Connection details to enter your credentials again.').then(success => {
+      if (!success && activeOwnerRef.current === ownerId && activeOwnerAttemptRef.current === ownerAttempt) setConnection(previous);
     });
   }, [connection, recoveryPhaseActive, runCommand]);
+
+  const onSessionSwitcherDismiss = useCallback(() => {
+    if ((switchAttemptRef.current || switchBoundaryCrossedRef.current)
+      && afterSwitcherDismissRef.current !== 'disconnect') {
+      // A drag/back dismissal must not stop phase observation after native
+      // release begins. Reopen the sheet and keep polling until Ready.
+      setSessionSwitcherOpen(true);
+      return;
+    }
+    setSessionSwitcherOpen(false);
+    if (runtimePickerVisible) {
+      cancelRuntimeSelection();
+      return;
+    }
+    const owner = browseOwnerRef.current;
+    const commitStarted = switchBoundaryCrossedRef.current || Boolean(switchAttemptRef.current);
+    if (owner) {
+      browseOwnerRef.current = null;
+      browseAttemptRef.current += 1;
+      void MeetermTerminal.runtimeBrowseCancel(owner.token).catch(() => {});
+    }
+    if (commitStarted) {
+      switchBoundaryCrossedRef.current = true;
+      setSwitchBoundaryCrossed(true);
+      updateRuntimeBound(false);
+      setConnection(current => ({ ...current, state: 'Failed', errorCode: 'runtime_browse_cancelled', errorMessage: 'The session switch was cancelled after release began.' }));
+      setControlMessage('The previous connection is no longer live. Cached work is read-only until you reconnect.');
+    }
+    switchAttemptRef.current = null;
+    setSwitchAttempt(null);
+    setSessionSwitcherSelectingId('');
+    setCredentialTargetId('');
+    setCreateSessionVisible(false);
+    setBrowse(null);
+    setBrowseTargetId('');
+    setExpandedServerId('');
+    if (reopenSwitcherAfterManageRef.current) {
+      setSheet('servers');
+      return;
+    }
+    if (afterSwitcherDismissRef.current === 'disconnect') {
+      afterSwitcherDismissRef.current = null;
+      disconnect();
+    }
+  }, [cancelRuntimeSelection, disconnect, runtimePickerVisible, updateRuntimeBound]);
 
   const retainedWorkspaceId = retainedWorkAvailable && retainedPane ? retainedPane.workspaceId : '';
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
@@ -2141,7 +2869,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ? pane.terminalId === CONNECTION_ID
       : retainedSelection
         ? true
-        : await runCommand(() => MeetermTerminal.selectPane(CONNECTION_ID, pane.id), 'Could not open this terminal. Check the list and select it again.');
+        : await runCommand(() => MeetermTerminal.selectPane(activeOwnerRef.current, pane.id), 'Could not open this terminal. Check the list and select it again.');
     if (!success) setSelectedPaneIds(current => {
         const next = { ...current };
         if (previous) next[pane.groupId] = previous; else delete next[pane.groupId];
@@ -2172,7 +2900,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setPickerQuery('');
       });
     } else if (chosenGroup && session.groupsSupported) {
-      void runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, chosenGroup.id), 'Could not open this group.').then(success => {
+      void runCommand(() => MeetermTerminal.selectGroup(activeOwnerRef.current, chosenGroup.id), 'Could not open this group.').then(success => {
         if (success) { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
       });
     } else { setWorkspaceId(item.id); setScreen('terminal'); setSheet(null); }
@@ -2216,23 +2944,31 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const connectSavedProfile = useCallback((profile: ServerProfile) => {
     if (commandPending.current) return;
-    const connect = () => {
+    if (active) {
+      if (!runtimeReady && !recoveryPhaseActive) {
+        setControlMessage('Wait for this connection to finish before choosing another server.');
+        return;
+      }
+      if (profile.id === profileId) { setSheet(null); return; }
+      switcherProfileAfterServerSheetRef.current = profile;
+      setSheet(null);
+      return;
+    }
+    const connect = async () => {
       if (!profile.credentialSaved) { openProfileForm(profile); return; }
-      void runCommand(async () => {
+      const success = await runCommand(async () => {
         await prepareConnection();
-        await MeetermTerminal.connectProfileHost(CONNECTION_ID, profile.id);
+        await MeetermTerminal.connectProfileHost(activeOwnerRef.current, profile.id);
         resetForConnection(profile);
         setProfileId(profile.id);
       }, 'Could not connect to this saved server. Choose Edit server to check its address and credentials.');
+      if (success) {
+        activeOwnerAttemptRef.current += 1;
+        setActiveOwnerRevision(value => value + 1);
+      }
     };
-    if (active && profile.id !== profileId) {
-      Alert.alert('Switch servers?', 'This disconnects the current server and connects to the selected one. Your remote work keeps running.', [
-        { text: 'Cancel', style: 'cancel' }, { text: 'Switch server', onPress: connect },
-      ]);
-    } else if (active && profile.id === profileId) {
-      setSheet(null);
-    } else connect();
-  }, [active, openProfileForm, prepareConnection, profileId, resetForConnection, runCommand]);
+    void connect();
+  }, [active, openProfileForm, prepareConnection, profileId, recoveryPhaseActive, resetForConnection, runCommand, runtimeReady]);
 
   const deleteProfile = useCallback((profile: ServerProfile) => {
     Alert.alert('Remove saved server?', `${profile.name}\n\nThis removes the server and its saved credentials from this device. Your remote work stays on the server.`, [
@@ -2256,7 +2992,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!preferencesLoaded) {
       void runCommand(async () => {
         const next = await MeetermTerminal.getPreferences();
-        await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, next.automaticReconnect);
+        await MeetermTerminal.setAutomaticReconnect(activeOwnerRef.current, next.automaticReconnect);
         setPreferences(next);
         setPreferencesLoaded(true);
         showModal(() => setSettingsVisible(true));
@@ -2270,7 +3006,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const success = await runCommand(async () => {
       await MeetermTerminal.setPreferences(next);
       setPreferences(next);
-      await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, next.automaticReconnect);
+      await MeetermTerminal.setAutomaticReconnect(activeOwnerRef.current, next.automaticReconnect);
     }, 'Could not save or apply settings. Open Settings and save again.');
     if (success) setSettingsVisible(false);
     return success;
@@ -2285,14 +3021,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!nameRequest || !runtimeReady) return false;
     const request = nameRequest;
     const success = await runCommand(() => request.kind === 'createWorkspace'
-      ? MeetermTerminal.createWorkspace(CONNECTION_ID, name)
+      ? MeetermTerminal.createWorkspace(activeOwnerRef.current, name)
       : request.kind === 'renameWorkspace'
-        ? MeetermTerminal.renameWorkspace(CONNECTION_ID, request.workspace.id, name)
+        ? MeetermTerminal.renameWorkspace(activeOwnerRef.current, request.workspace.id, name)
         : request.kind === 'createGroup'
-          ? MeetermTerminal.createGroup(CONNECTION_ID, request.workspace.id, name)
+          ? MeetermTerminal.createGroup(activeOwnerRef.current, request.workspace.id, name)
           : request.kind === 'renameGroup'
-            ? MeetermTerminal.renameGroup(CONNECTION_ID, request.group.id, name)
-            : MeetermTerminal.renamePane(CONNECTION_ID, request.pane.id, name), 'Could not update the name. Check your connection and try again.');
+            ? MeetermTerminal.renameGroup(activeOwnerRef.current, request.group.id, name)
+            : MeetermTerminal.renamePane(activeOwnerRef.current, request.pane.id, name), 'Could not update the name. Check your connection and try again.');
     if (success) setNameRequest(null);
     return success;
   }, [nameRequest, runCommand, runtimeReady]);
@@ -2302,7 +3038,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     Alert.alert('Close workspace?', `${item.name}\n\n${item.panes.length} terminals and their running processes will close. Unsaved work will be lost.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closeWorkspace(CONNECTION_ID, item.id), 'Could not close this workspace. Check your connection.').then(success => {
+        void runCommand(() => MeetermTerminal.closeWorkspace(activeOwnerRef.current, item.id), 'Could not close this workspace. Check your connection.').then(success => {
           if (success) { setSheet(null); if (workspaceId === item.id) backToWorkspaces(); }
         });
       } },
@@ -2320,7 +3056,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setControlMessage('This group has no terminal to split. Create a new group from the menu.');
       return;
     }
-    void runCommand(() => MeetermTerminal.createPane(CONNECTION_ID, workspace.id), 'Could not create a terminal. Check your connection.').then(success => {
+    void runCommand(() => MeetermTerminal.createPane(activeOwnerRef.current, workspace.id), 'Could not create a terminal. Check your connection.').then(success => {
       if (success) {
         setSelectedPaneIds(current => { const next = { ...current }; if (group) delete next[group.id]; return next; });
         setSheet(null);
@@ -2336,7 +3072,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     Alert.alert('Close terminal?', `${pane.name || pane.id}\n\nThe running process will stop. Unsaved work will be lost.${consequence}`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closePane(CONNECTION_ID, pane.id), 'Could not close this terminal. Check your connection.').then(success => {
+        void runCommand(() => MeetermTerminal.closePane(activeOwnerRef.current, pane.id), 'Could not close this terminal. Check your connection.').then(success => {
           if (success) {
             setSelectedPaneIds(current => { const next = { ...current }; delete next[pane.groupId]; return next; });
             setSheet(null);
@@ -2350,7 +3086,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const chooseGroup = useCallback((item: TerminalGroup) => {
     if (!runtimeReady || commandPending.current) return;
     const remembered = panes.find(pane => pane.groupId === item.id && pane.id === selectedPaneIds[item.id]);
-    const selection = remembered ? choosePane(remembered) : runCommand(() => MeetermTerminal.selectGroup(CONNECTION_ID, item.id), 'Could not open this group. Check the list and try again.');
+    const selection = remembered ? choosePane(remembered) : runCommand(() => MeetermTerminal.selectGroup(activeOwnerRef.current, item.id), 'Could not open this group. Check the list and try again.');
     void selection.then(success => { if (success) setSheet(null); });
   }, [runtimeReady, runCommand, panes, selectedPaneIds, choosePane]);
 
@@ -2361,7 +3097,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     Alert.alert('Close group?', `${item.name}\n\n${terminals.length} terminals and their running processes will close. Unsaved work will be lost.${last ? 'This is the last group, so its workspace will also close.' : ''}`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
-        void runCommand(() => MeetermTerminal.closeGroup(CONNECTION_ID, item.id), 'Could not close this group. Check your connection.').then(success => {
+        void runCommand(() => MeetermTerminal.closeGroup(activeOwnerRef.current, item.id), 'Could not close this group. Check your connection.').then(success => {
           if (success) { setSheet(null); if (last) backToWorkspaces(); }
         });
       } },
@@ -2370,7 +3106,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const refreshTerminal = useCallback(() => {
     if (!runtimeReady || commandPending.current) return;
-    void runCommand(() => MeetermTerminal.refreshTerminal(CONNECTION_ID), 'Could not refresh this terminal. Check your connection.').then(success => { if (success) setSheet(null); });
+    void runCommand(() => MeetermTerminal.refreshTerminal(activeOwnerRef.current), 'Could not refresh this terminal. Check your connection.').then(success => { if (success) setSheet(null); });
   }, [runCommand, runtimeReady]);
   const closeSearch = useCallback(() => {
     Keyboard.dismiss();
@@ -2431,6 +3167,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, review: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
     : null;
 
+  const headerSessionName = runtimeReady
+    ? session.runtime || 'Selected session'
+    : connection.state === 'AwaitingRuntimeSelection' ? 'Select a session'
+      : connection.state === 'DiscoveringRuntimes' ? 'Finding sessions…'
+        : connection.state === 'Ready' ? 'Confirming session…' : presentation.label;
+  const headerServerName = currentProfile?.name ?? activeServerDraft?.name ?? endpoint(connection);
+
   const listHeader = <View>
     {searching ? <View style={styles.searchHeader}>
       <View style={styles.flex}>
@@ -2448,12 +3191,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Companion small />
       </View> : null}
       {attempted ? <View style={[styles.serverRow, { borderBottomColor: homeColors.border }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" accessibilityHint="Choose a saved server" onPress={() => openSheet('servers')} style={({ pressed }) => [styles.serverTarget, pressed && { backgroundColor: homeColors.surface }]}>
+        <Pressable testID="open-session-switcher" accessibilityRole="button" accessibilityLabel={`Switch server and session, ${headerServerName}, ${headerSessionName}`} accessibilityHint="Open the session switcher" onPress={() => openSessionSwitcher()} style={({ pressed }) => [styles.serverTarget, pressed && { backgroundColor: homeColors.surface }]}>
           <Icon name="server" color={homeColors.muted} size={17} />
-          <Text numberOfLines={1} style={[styles.serverName, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
+          <Text numberOfLines={2} style={[styles.serverName, { color: homeColors.text }]}>{headerServerName} · {headerSessionName}</Text>
           <Icon name="down" color={homeColors.muted} size={12} />
         </Pressable>
-        <ConnectionStatus connection={connection} colors={homeColors} />
         <IconButton icon="menu" label="Server connection" colors={homeColors} onPress={() => openSheet('server')} />
       </View> : null}
     </>}
@@ -2493,12 +3235,63 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   if (foundation) return <SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: DARK.background }]}>
     <StatusBar barStyle="light-content" backgroundColor={DARK.background} />
     <View style={styles.terminalHeader}><Text style={[styles.foundationTitle, { color: DARK.text }]}>Native foundation preview</Text><IconButton icon="close" label="Close foundation preview" colors={DARK} onPress={() => setFoundation(false)} /></View>
-    <TerminalView terminalId={CONNECTION_ID} fontSize={15} theme="dark" scrollbackLines={10000} style={styles.flex} />
+    <TerminalView terminalId={activeOwnerRef.current} fontSize={15} theme="dark" scrollbackLines={10000} style={styles.flex} />
   </SafeAreaView>;
 
   return <View style={[styles.flex, { backgroundColor: homeColors.background }]}>
     <StatusBar hidden={false} backgroundColor={colors.background} barStyle={colors === DARK ? 'light-content' : 'dark-content'} />
     <WorkspaceNavigation screen={screen} colors={homeColors} onScreenChange={next => { if (next === 'workspaces') Keyboard.dismiss(); setScreen(next); }}
+      sessionSwitcherOpen={sessionSwitcherOpen || runtimePickerVisible}
+      sessionSwitcherBusy={Boolean(switchAttempt || switchBoundaryCrossed)}
+      onSessionSwitcherDismiss={onSessionSwitcherDismiss}
+      sessionSwitcher={<SessionSwitcher
+        mode={runtimePickerVisible ? 'fresh' : sessionSwitcherMode}
+        currentServer={activeServer}
+        profiles={profiles}
+        expandedServerId={runtimePickerVisible ? activeServer.id : expandedServerId}
+        browseTargetId={runtimePickerVisible ? activeServer.id : browseTargetId}
+        browse={runtimePickerVisible ? null : browse}
+        freshDiscovery={runtimePickerVisible ? runtimeDiscovery : null}
+        currentBinding={runtimePickerVisible || !runtimeReady ? null : { backend: session.backend, runtime: session.runtime }}
+        busy={commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId) || Boolean(sessionSwitcherSelectingId) || Boolean(switchAttempt) || switchBoundaryCrossed}
+        selectingId={runtimePickerVisible ? runtimeSelectingId : sessionSwitcherSelectingId}
+        selectionErrors={runtimeSelectionErrors}
+        error={runtimePickerVisible ? runtimeMessage : sessionSwitcherError}
+        credentialStep={!runtimePickerVisible && credentialTargetId ? <ConnectionForm
+          visible
+          initialProfile={profiles.find(profile => profile.id === credentialTargetId)}
+          mode="connect"
+          embedded
+          colors={homeColors}
+          onClose={() => setCredentialTargetId('')}
+          onSubmit={submitSwitcherCredential}
+        /> : null}
+        createVisible={runtimePickerVisible ? runtimeCreateVisible : createSessionVisible}
+        createName={createSessionName}
+        createError={runtimePickerVisible ? runtimeCreationError : createSessionError}
+        cleanupWarning={cleanupWarning?.message ?? ''}
+        onClose={runtimePickerVisible ? cancelRuntimeSelection : closeSessionSwitcher}
+        onToggleServer={server => runtimePickerVisible
+          ? setExpandedServerId(current => current === server.id ? '' : server.id)
+          : toggleSwitcherServer(server)}
+        onSelect={candidate => { void selectSwitcherCandidate(candidate); }}
+        onRefresh={runtimePickerVisible ? refreshRuntimes : refreshSwitcherBrowse}
+        onRetryBackend={() => runtimePickerVisible
+          ? (!commandPending.current && !runtimeBusy ? void loadRuntimeDiscovery(true, false) : undefined)
+          : refreshSwitcherBrowse()}
+        onOpenCredential={openSwitcherCredential}
+        onOpenCreate={openSwitcherCreate}
+        onCreateNameChange={setCreateSessionName}
+        onCreate={() => { void handleSwitcherCreate(); }}
+        onCancelCreate={() => runtimePickerVisible ? setRuntimeCreateVisible(false) : cancelSwitcherCreate()}
+        onManageServers={openManageServers}
+        onDisconnect={() => {
+          if (runtimePickerVisible) { cancelRuntimeSelection(); return; }
+          afterSwitcherDismissRef.current = 'disconnect';
+          setSessionSwitcherOpen(false);
+        }}
+        colors={homeColors}
+      />}
       workspaces={<SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: homeColors.background }]}><FlatList
       key={searching ? 'workspace-search' : 'workspace-list'}
       ref={workspaceList}
@@ -2564,37 +3357,28 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     </View></SafeAreaView>}
     />
 
-    <RuntimePicker
-      // The Change → server path temporarily keeps the existing saved-server
-      // sheet in front of the fresh runtime picker. Closing that sheet then
-      // exposes the picker if the new connection is already awaiting a
-      // runtime; the old retained recovery is never restored.
-      visible={runtimePickerVisible && sheet !== 'servers'}
-      serverName={currentProfile?.name ?? endpoint(connection)}
-      discovery={runtimeDiscovery}
-      createVisible={runtimeCreateVisible}
-      busy={commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId)}
-      discoveryBusy={runtimeBusy && !runtimeActionBusy && !runtimeSelectingId}
-      cancelDisabled={commandBusy}
-      selectingId={runtimeSelectingId}
-      selectionErrors={runtimeSelectionErrors}
-      message={runtimeMessage}
-      creationError={runtimeCreationError}
-      notification={runtimePickerVisible ? <>{cleanupWarningNotice}{feedback}</> : null}
-      onCancel={cancelRuntimeSelection}
-      onDismiss={() => {}}
-      onRefresh={refreshRuntimes}
-      onRetryBackend={() => { if (!commandPending.current && !runtimeBusy) void loadRuntimeDiscovery(true, false); }}
-      onSelect={candidate => { void selectRuntime(candidate); }}
-      onOpenCreate={() => { if (!runtimeBusy) { setRuntimeCreationError(''); setRuntimeCreateVisible(true); } }}
-      onBackToList={() => { if (!runtimeBusy) { setRuntimeCreationError(''); setRuntimeCreateVisible(false); } }}
-      onCreate={createTmuxSession}
-      colors={homeColors}
-    />
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={() => {
+      setHostPromptDeferred(false);
+      setModalPending(false);
+      const show = pendingModal.current;
+      pendingModal.current = null;
+      show?.();
+      if (returnToServersAfterForm.current) return;
+      const target = switcherProfileAfterServerSheetRef.current;
+      if (target) {
+        switcherProfileAfterServerSheetRef.current = null;
+        openSessionSwitcher(target);
+      } else if (openSwitcherAfterServerMenuRef.current) {
+        openSwitcherAfterServerMenuRef.current = false;
+        openSessionSwitcher();
+      } else if (reopenSwitcherAfterManageRef.current) {
+        reopenSwitcherAfterManageRef.current = false;
+        openSessionSwitcher();
+      }
+    }} colors={homeColors}>
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'recovery' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
@@ -2637,7 +3421,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {canReconnect ? <Button label="Reconnect" colors={homeColors} disabled={commandBusy} onPress={reconnect}>Reconnect</Button> : null}
         {!active && !closing ? <Button label="Connect" colors={homeColors} secondary onPress={openForm}>Connection details</Button> : null}
         {active ? <Button label="Disconnect" colors={homeColors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? 'Disconnect' : 'Cancel connection'}</Button> : null}
-        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" disabled={commandBusy} onPress={() => setSheet('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Switch session" disabled={commandBusy} onPress={() => { openSwitcherAfterServerMenuRef.current = true; setSheet(null); }} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch session</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Settings</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
           <Text numberOfLines={2} style={[styles.sectionLabel, { color: homeColors.muted }]}>{selectedPane.name || selectedPane.id}</Text>

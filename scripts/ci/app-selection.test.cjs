@@ -165,6 +165,69 @@ function runtimeBackend(backend, candidates = [], overrides = {}) {
   };
 }
 
+function startRuntimeBrowse(environment, request) {
+  environment.runtimeBrowseStarts.push(clone(request));
+  environment.nativeCalls.push({ method: `runtimeBrowseStart${request.kind[0].toUpperCase()}${request.kind.slice(1)}`, ...clone(request) });
+  if (environment.runtimeBrowseStartShouldFail) throw new Error('runtime browse unavailable');
+  let serverId = request.profileId || '';
+  if (request.kind === 'credential') {
+    serverId = environment.profiles.find(profile => profile.host === request.options.host)?.id || '__credential__';
+  }
+  const discovery = clone(environment.runtimeBrowseDiscoveryByProfile?.[serverId] || environment.runtimeDiscovery);
+  const hostKey = clone(environment.runtimeBrowseHostKeyByProfile?.[serverId] || environment.runtimeBrowseHostKey || {
+    pending: false, host: '', port: 22, fingerprint: '', algorithm: '', knownFingerprint: '',
+  });
+  const state = {
+    token: `browse-${++environment.runtimeBrowseCounter}`,
+    browseGeneration: String(environment.runtimeBrowseCounter),
+    discoveryRevision: discovery.revision,
+    phase: environment.runtimeBrowseFailure
+      ? 'failed'
+      : hostKey.pending ? 'discovering' : 'ready',
+    discovery,
+    errorCode: environment.runtimeBrowseFailure?.errorCode || '',
+    errorMessage: environment.runtimeBrowseFailure?.errorMessage || '',
+    hostKey,
+    cleanupWarning: clone(environment.runtimeBrowseCleanupWarning),
+    activeTerminalId: null,
+    serverId,
+  };
+  environment.runtimeBrowseStates.set(state.token, state);
+  return clone(state);
+}
+
+function completeRuntimeBrowseCommit(environment, state, target) {
+  const candidate = target.kind === 'candidate'
+    ? state.discovery.backends.flatMap(section => section.candidates).find(item => item.id === target.candidateId)
+    : null;
+  if (target.kind === 'candidate' && (!candidate || candidate.state !== 'running' || !candidate.selectable)) {
+    state.phase = 'failed';
+    state.errorCode = 'runtime_unavailable';
+    state.errorMessage = 'The selected session is no longer available.';
+    return;
+  }
+  const backend = target.kind === 'createTmux' ? 'tmux' : candidate.backend;
+  const runtime = target.kind === 'createTmux' ? target.name : candidate.name;
+  const profile = environment.profiles.find(item => item.id === state.serverId);
+  state.activeTerminalId = String(500 + environment.runtimeBrowseCounter);
+  state.cleanupWarning = clone(environment.runtimeBrowseCleanupWarning);
+  environment.connection = {
+    ...environment.connection,
+    state: environment.runtimeBrowseReadyDelay ? 'Synchronizing' : 'Ready',
+    host: profile?.host || state.hostKey.host || environment.connection.host || 'fixture.example',
+    port: profile?.port || state.hostKey.port || environment.connection.port || 22,
+    errorCode: '',
+    errorMessage: '',
+  };
+  environment.snapshot.backend = backend;
+  environment.snapshot.runtime = runtime;
+  environment.snapshot.control = workspaceControl({
+    hasRetainedWork: true,
+    runtimeOperationsReady: !environment.runtimeBrowseReadyDelay,
+    terminalInputReady: !environment.runtimeBrowseReadyDelay,
+  });
+}
+
 function SafeAreaProvider({ children }) {
   return React.createElement(React.Fragment, null, children);
 }
@@ -173,7 +236,12 @@ function SafeAreaView(props) {
   return React.createElement('SafeAreaView', props, props.children);
 }
 
-function Modal({ visible, children }) {
+function Modal({ visible, children, onDismiss }) {
+  const previousVisible = React.useRef(Boolean(visible));
+  React.useEffect(() => {
+    if (previousVisible.current && !visible) onDismiss?.();
+    previousVisible.current = Boolean(visible);
+  }, [visible]);
   return visible ? React.createElement(React.Fragment, null, children) : null;
 }
 
@@ -251,12 +319,31 @@ function makeNativeEnvironment() {
     pendingRefresh: null,
     refreshRuntimeShouldFail: false,
     refreshRuntimeCalls: 0,
+    runtimeBrowseStates: new Map(),
+    runtimeBrowseStarts: [],
+    runtimeBrowseCommits: [],
+    runtimeBrowseCancelCalls: [],
+    runtimeBrowseResponses: [],
+    runtimeBrowseCounter: 0,
+    runtimeBrowseStartShouldFail: false,
+    runtimeBrowseFailure: null,
+    runtimeBrowseDiscoveryByProfile: null,
+    runtimeBrowseCommitShouldFail: false,
+    runtimeBrowseCommitMode: 'ready',
+    runtimeBrowseReadyDelay: false,
+    pendingBrowseCommit: null,
+    runtimeBrowseHostKey: null,
+    runtimeBrowseHostKeyByProfile: null,
+    runtimeBrowseCleanupWarning: null,
     createdRuntime: null,
     lastUsedUpdates: [],
     appStateListeners: new Set(),
     visibility: [],
+    connectionStateOwners: [],
+    workspaceStateOwners: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
+    nextIntervalId: 1,
     fakeTimers: false,
     timeoutCallbacks: [],
     nextTimeoutId: 1,
@@ -368,8 +455,67 @@ function makeNativeEnvironment() {
       throw new Error('terminal refresh rejected');
     },
     async setForeground(_connectionId, foreground) { environment.foregroundCalls.push(foreground); },
-    async getConnectionState() { return { ...environment.connection }; },
-    async getWorkspaceState() { return clone(environment.snapshot); },
+    async getConnectionState(terminalId) {
+      environment.connectionStateOwners.push(terminalId);
+      return { ...environment.connection };
+    },
+    async getWorkspaceState(terminalId) {
+      environment.workspaceStateOwners.push(terminalId);
+      return clone(environment.snapshot);
+    },
+    async runtimeBrowseStartCurrent(terminalId) {
+      return startRuntimeBrowse(environment, { kind: 'current', terminalId });
+    },
+    async runtimeBrowseStartProfile(terminalId, profileId) {
+      return startRuntimeBrowse(environment, { kind: 'profile', terminalId, profileId });
+    },
+    async runtimeBrowseStartCredential(terminalId, options) {
+      return startRuntimeBrowse(environment, { kind: 'credential', terminalId, options });
+    },
+    async runtimeBrowseState(token) {
+      environment.nativeCalls.push({ method: 'runtimeBrowseState', token });
+      const state = environment.runtimeBrowseStates.get(token);
+      if (!state) throw new Error('browse token unavailable');
+      return clone(state);
+    },
+    async runtimeBrowseRefresh(token) {
+      environment.nativeCalls.push({ method: 'runtimeBrowseRefresh', token });
+      const state = environment.runtimeBrowseStates.get(token);
+      if (!state) throw new Error('browse token unavailable');
+      state.discoveryRevision += 1;
+      state.discovery.revision += 1;
+      state.phase = 'ready';
+    },
+    async runtimeBrowseCancel(token) {
+      environment.runtimeBrowseCancelCalls.push(token);
+      const state = environment.runtimeBrowseStates.get(token);
+      if (state && state.phase !== 'committed' && state.phase !== 'committing') state.phase = 'cancelled';
+    },
+    async runtimeBrowseRespondToHostKey(token, fingerprint, accept) {
+      environment.runtimeBrowseResponses.push({ token, fingerprint, accept });
+      const state = environment.runtimeBrowseStates.get(token);
+      if (!state) throw new Error('browse token unavailable');
+      state.hostKey.pending = false;
+      if (accept) {
+        state.phase = 'ready';
+      } else {
+        state.phase = 'failed';
+        state.errorCode = 'host_key_rejected';
+        state.errorMessage = 'The SSH host key was not trusted.';
+      }
+    },
+    async runtimeBrowseCommit(token, browseGeneration, discoveryRevision, target) {
+      const state = environment.runtimeBrowseStates.get(token);
+      if (!state) throw new Error('browse token unavailable');
+      environment.runtimeBrowseCommits.push({ token, browseGeneration, discoveryRevision, target: clone(target) });
+      if (environment.runtimeBrowseCommitShouldFail
+        || state.phase !== 'ready'
+        || state.browseGeneration !== browseGeneration
+        || state.discoveryRevision !== discoveryRevision) throw new Error('stale browse selection');
+      state.phase = environment.runtimeBrowseCommitMode === 'delayed' ? 'committing' : 'committed';
+      if (state.phase === 'committed') completeRuntimeBrowseCommit(environment, state, target);
+      else environment.pendingBrowseCommit = { token, target: clone(target) };
+    },
     async retryRecovery(_connectionId, operationEpoch) {
       environment.calls.push({ method: 'retryRecovery', operationEpoch });
       if (environment.recoveryRetryShouldFail) throw new Error('recovery retry rejected');
@@ -483,6 +629,19 @@ function makeNativeEnvironment() {
       pending.resolve();
     }
   };
+  environment.resolvePendingBrowseCommit = () => {
+    assert.ok(environment.pendingBrowseCommit, 'a runtime browse commit should be pending');
+    const pending = environment.pendingBrowseCommit;
+    environment.pendingBrowseCommit = null;
+    const state = environment.runtimeBrowseStates.get(pending.token);
+    state.phase = 'committed';
+    completeRuntimeBrowseCommit(environment, state, pending.target);
+  };
+  environment.releaseBrowseReady = () => {
+    environment.runtimeBrowseReadyDelay = false;
+    environment.connection.state = 'Ready';
+    environment.snapshot.control = workspaceControl({ hasRetainedWork: true, runtimeOperationsReady: true, terminalInputReady: true });
+  };
   environment.runFakeTimers = (maxDelay = Infinity) => {
     const due = environment.timeoutCallbacks.filter(timer => !timer.canceled && timer.delay <= maxDelay);
     environment.timeoutCallbacks = environment.timeoutCallbacks.filter(timer => !due.includes(timer));
@@ -563,6 +722,7 @@ function makeReactNativeMocks(environment) {
     BackHandler,
     FlatList,
     Keyboard,
+    KeyboardAvoidingView: 'KeyboardAvoidingView',
     Linking,
     Modal,
     Platform,
@@ -623,6 +783,25 @@ function makeUiMocks() {
 
 function makeFormMocks() {
   const hidden = () => null;
+  function ConnectionForm(props) {
+    if (!props.embedded) return null;
+    const profile = props.initialProfile || {};
+    const credential = profile.authMethod === 'password'
+      ? { authMethod: 'password', password: 'fixture-password' }
+      : { authMethod: 'publicKey', privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n-----END OPENSSH PRIVATE KEY-----', passphrase: '' };
+    return React.createElement('ConnectionForm', { testID: 'switcher-credential-step' },
+      React.createElement('Text', null, 'Credentials'),
+      React.createElement('Pressable', {
+        accessibilityRole: 'button', accessibilityLabel: 'Back to sessions', onPress: props.onClose,
+      }),
+      React.createElement('Pressable', {
+        accessibilityRole: 'button', accessibilityLabel: 'Submit credentials',
+        onPress: () => props.onSubmit({
+          profile: { ...profile }, credential, saveProfile: false,
+          saveCredential: false, keepCredential: false, connect: true,
+        }),
+      }));
+  }
   function ProfileList({ profiles = [], busy = false, onConnect }) {
     return React.createElement(
       'ProfileList',
@@ -641,7 +820,7 @@ function makeFormMocks() {
   }
   return {
     __esModule: true,
-    ConnectionForm: hidden,
+    ConnectionForm,
     DEFAULT_PREFERENCES: { ...PREFERENCES },
     itemActions() {},
     NameForm: hidden,
@@ -665,6 +844,42 @@ function makeTerminalModule(native, environment) {
   return module;
 }
 
+function compileSessionSwitcher(rn, safeArea, ui) {
+  const filename = path.join(REPO_ROOT, 'app', 'SessionSwitcher.tsx');
+  const source = fs.readFileSync(filename, 'utf8');
+  const transpiled = TypeScript.transpileModule(source, {
+    compilerOptions: {
+      target: TypeScript.ScriptTarget.ES2022,
+      module: TypeScript.ModuleKind.CommonJS,
+      jsx: TypeScript.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+      sourceMap: false,
+    },
+    fileName: filename,
+  }).outputText;
+  const appModule = { exports: {} };
+  const dependencies = new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn],
+    ['react-native-safe-area-context', safeArea],
+    ['./ui', ui],
+  ]);
+  const context = {
+    require(request) {
+      if (dependencies.has(request)) return dependencies.get(request);
+      return require(request);
+    },
+    module: appModule,
+    exports: appModule.exports,
+    __filename: filename,
+    __dirname: path.dirname(filename),
+    console,
+  };
+  vm.runInNewContext(transpiled, context, { filename });
+  return appModule.exports;
+}
+
 function loadApp(environment, native, presentationOnly = false, smokeEnabled = false) {
   const source = fs.readFileSync(APP_SOURCE, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
@@ -683,6 +898,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const ui = makeUiMocks();
   const forms = makeFormMocks();
   const terminal = makeTerminalModule(native, environment);
+  const SessionSwitcher = compileSessionSwitcher(rn, safeArea, ui);
   const scheduleTimeout = environment.fakeTimers
     ? (callback, delay) => {
       const id = environment.nextTimeoutId++;
@@ -708,8 +924,18 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     // Navigation's native view/gesture execution belongs to mobile evidence.
     // These tests retain their real App selection and registry assertions.
     ['./app/WorkspaceNavigation', {
-      WorkspaceNavigation: ({ screen, workspaces, terminal }) => screen === 'terminal' ? terminal : workspaces,
+      WorkspaceNavigation: ({ screen, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, onSessionSwitcherDismiss }) => {
+        const previousOpen = React.useRef(Boolean(sessionSwitcherOpen));
+        React.useEffect(() => {
+          if (previousOpen.current && !sessionSwitcherOpen) onSessionSwitcherDismiss();
+          previousOpen.current = Boolean(sessionSwitcherOpen);
+        }, [sessionSwitcherOpen]);
+        return React.createElement(React.Fragment, null,
+          screen === 'terminal' ? terminal : workspaces,
+          sessionSwitcherOpen ? sessionSwitcher : null);
+      },
     }],
+    ['./app/SessionSwitcher', SessionSwitcher],
   ]);
   function localRequire(request) {
     if (moduleMap.has(request)) return moduleMap.get(request);
@@ -730,10 +956,14 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     setImmediate,
     clearImmediate,
     setInterval(callback) {
-      environment.intervalCallbacks.push(callback);
-      return environment.intervalCallbacks.length;
+      const interval = { id: environment.nextIntervalId++, callback, cancelled: false };
+      environment.intervalCallbacks.push(interval);
+      return interval.id;
     },
-    clearInterval() {},
+    clearInterval(id) {
+      const interval = environment.intervalCallbacks.find(item => item.id === id);
+      if (interval) interval.cancelled = true;
+    },
     globalThis,
   };
   vm.runInNewContext(transpiled, context, { filename: APP_SOURCE });
@@ -1351,6 +1581,10 @@ async function mountConfiguredForTest(t, configure) {
     root.render(React.createElement(App));
   });
   await settleAsync();
+  if (['DiscoveringRuntimes', 'AwaitingRuntimeSelection'].includes(environment.connection.state)) {
+    await poll(environment);
+    await settleAsync();
+  }
   const fixture = { root, environment, native };
   t.after(async () => {
     await act(async () => {
@@ -1396,14 +1630,18 @@ async function mountSavedPicker(t, configure) {
   });
   await press(fixture.root, findLabel(fixture.root, 'Connect saved server Queued picker'));
   await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
   return { fixture, profile };
 }
 
 async function poll(env) {
-  assert.equal(env.intervalCallbacks.length, 1, 'App should register one metadata polling interval');
+  const active = env.intervalCallbacks.filter(interval => !interval.cancelled);
+  assert.ok(active.length >= 1, 'App should register a metadata polling interval');
   await act(async () => {
-    env.intervalCallbacks[0]();
+    for (const interval of active) interval.callback();
   });
+  await settleAsync();
 }
 
 async function press(root, node) {
@@ -1454,7 +1692,7 @@ async function closeCurrentPane(root, environment) {
   });
 }
 
-test('active saved-profile switch waits for confirmation before starting the target host', async t => {
+test('active saved-profile switch explores the target in the unified session sheet without extra confirmation', async t => {
   const target = {
     id: '00000000-0000-4000-8000-000000000031', name: 'Active target',
     host: 'target.example', port: 22, username: 'developer', authMethod: 'password',
@@ -1466,52 +1704,299 @@ test('active saved-profile switch waits for confirmation before starting the tar
     environment.snapshot = makeSnapshot();
   });
 
-  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
   await settleAsync();
   await press(fixture.root, findLabel(fixture.root, 'Connect saved server Active target'));
-  assert.equal(fixture.environment.alert?.title, 'Switch servers?');
+  await settleAsync();
+  assert.equal(fixture.environment.alert, null);
   assert.equal(
     fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
     0,
-    'the target host must not start before confirmation',
+    'switching should browse the target without replacing the active host first',
   );
+  assert.equal(
+    fixture.environment.nativeCalls.filter(call => call.method === 'runtimeBrowseStartProfile').length,
+    1,
+  );
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-active-tmux'));
+});
 
-  const confirm = fixture.environment.alert.buttons.find(button => button.text === 'Switch server');
-  assert.ok(confirm);
-  fixture.environment.alert = null;
-  await act(async () => {
-    confirm.onPress();
+test('header shows the Ready binding, current check, stable server order, and lazy profile exploration', async t => {
+  const alpha = { ...pickerProfile('alpha.example'), id: 'server-alpha', name: 'Alpha', runtime: 'legacy-hint' };
+  const zulu = { ...pickerProfile('zulu.example'), id: 'server-zulu', name: 'Zulu' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [zulu, alpha];
+    environment.runtimeDiscovery = {
+      connectionGeneration: '30', revision: 30,
+      backends: [runtimeBackend('tmux', []), runtimeBackend('herdr', [runtimeCandidate('current-default', 'herdr', 'default')])],
+    };
+    environment.runtimeBrowseDiscoveryByProfile = {
+      [alpha.id]: {
+        connectionGeneration: '30', revision: 31,
+        backends: [runtimeBackend('tmux', []), runtimeBackend('herdr', [])],
+      },
+    };
   });
   await settleAsync();
 
-  assert.equal(
-    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
-    1,
-  );
-  assert.ok(findText(fixture.root, 'Choose a runtime for Active target'));
+  const header = findTestId(fixture.root, 'open-session-switcher');
+  assert.match(header.props.accessibilityLabel, /fixture\.example, default/);
+  assert.match(textContent(header), /fixture\.example · default/);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  await press(fixture.root, header);
+  await settleAsync();
+
+  const current = findTestId(fixture.root, 'runtime-row-herdr-current-default');
+  assert.equal(current.props.accessibilityState.selected, true);
+  assert.equal(current.props.accessibilityState.disabled, true, 'same-live selection stays inert until native can confirm it');
+  assert.equal(fixture.environment.runtimeBrowseStarts.filter(item => item.kind === 'current').length, 1);
+  assert.equal(fixture.environment.runtimeBrowseStarts.some(item => item.kind === 'profile'), false);
+  const serverRows = all(fixture.root, node => node.props?.testID?.startsWith('switcher-server-'))
+    .map(node => node.props.testID);
+  assert.deepEqual(serverRows, ['switcher-server-__current__', 'switcher-server-server-alpha', 'switcher-server-server-zulu']);
+
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-alpha'));
+  await settleAsync();
+  assert.deepEqual(fixture.environment.runtimeBrowseStarts.filter(item => item.kind === 'profile').map(item => item.profileId), [alpha.id]);
+  assert.ok(findText(fixture.root, 'No tmux sessions found.'));
+  assert.ok(findText(fixture.root, 'No Herdr sessions found.'));
+  assert.equal(all(fixture.root, node => textContent(node).includes('legacy-hint')).length, 0, 'profile hints never become selectable sessions');
 });
 
-test('failed saved-profile connection skips switch confirmation but still opens target picker', async t => {
+test('switcher keeps partial backend errors and stopped Herdr rows visible together', async t => {
+  const target = { ...pickerProfile('partial.example'), id: 'server-partial', name: 'Partial server', runtime: 'hint-only' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseDiscoveryByProfile = {
+      [target.id]: {
+        connectionGeneration: '33', revision: 34,
+        backends: [
+          runtimeBackend('tmux', [], { state: 'error', errorCode: 'tmux_missing', errorMessage: 'tmux is unavailable' }),
+          runtimeBackend('herdr', [runtimeCandidate('partial-stopped', 'herdr', 'paused', 'stopped')]),
+        ],
+      },
+    };
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-partial'));
+  await settleAsync();
+
+  assert.ok(findText(fixture.root, 'tmux is unavailable'));
+  const stopped = findTestId(fixture.root, 'runtime-row-herdr-partial-stopped');
+  assert.equal(stopped.props.accessibilityState.disabled, true);
+  assert.match(textContent(stopped), /Stopped/);
+  assert.match(textContent(stopped), /Start it in the existing Herdr client, then Refresh/);
+  assert.equal(all(fixture.root, node => textContent(node).includes('hint-only')).length, 0);
+});
+
+test('missing saved credentials stay in the switcher and saving credentials remains opt-in', async t => {
+  const target = { ...pickerProfile('credential.example'), id: 'server-credential', name: 'Credential server', credentialSaved: false };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(35, [runtimeCandidate('credential-tmux', 'tmux', 'prod')]) };
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-credential'));
+  assert.ok(findTestId(fixture.root, 'switcher-credential-step'));
+  await press(fixture.root, findLabel(fixture.root, 'Back to sessions'));
+  assert.ok(findTestId(fixture.root, 'switcher-server-server-credential'));
+
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-credential'));
+  await press(fixture.root, findLabel(fixture.root, 'Submit credentials'));
+  await settleAsync();
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).kind, 'credential');
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).options.password, 'fixture-password');
+  assert.equal(fixture.environment.nativeCalls.some(call => call.method === 'saveProfile'), false);
+  assert.equal(fixture.environment.profiles.find(item => item.id === target.id).credentialSaved, false);
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-credential-tmux'));
+});
+
+test('host-key confirmation names the explored target profile and gates its candidates', async t => {
+  const target = { ...pickerProfile('trusted-target.example'), id: 'server-trust', name: 'Trusted target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseHostKeyByProfile = {
+      [target.id]: {
+        pending: true, host: target.host, port: target.port,
+        fingerprint: 'SHA256:target-fingerprint', algorithm: 'ssh-ed25519', knownFingerprint: '',
+      },
+    };
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(36, [runtimeCandidate('trusted-tmux', 'tmux', 'prod')]) };
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-trust'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.alert.title, 'Trust this SSH host?');
+  assert.match(fixture.environment.alert.message, /Trusted target/);
+  assert.match(fixture.environment.alert.message, /trusted-target\.example:22/);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-trusted-tmux').props.accessibilityState.disabled, true);
+  const trust = fixture.environment.alert.buttons.find(button => button.text === 'Trust and continue');
+  assert.ok(trust);
+  fixture.environment.alert = null;
+  await act(async () => { trust.onPress(); });
+  await poll(fixture.environment);
+  assert.deepEqual(fixture.environment.runtimeBrowseResponses, [{
+    token: 'browse-2', fingerprint: 'SHA256:target-fingerprint', accept: true,
+  }]);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-trusted-tmux').props.accessibilityState.disabled, false);
+});
+
+test('other-server selection waits for a Ready authoritative snapshot before changing the profile hint', async t => {
+  const target = { ...pickerProfile('target-ready.example'), id: 'server-ready', name: 'Target Ready', runtime: 'old-hint' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseReadyDelay = true;
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(37, [runtimeCandidate('target-prod', 'tmux', 'prod')]) };
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-ready'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-target-prod'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.runtimeBrowseCommits.length, 1);
+  assert.equal(fixture.environment.runtimeBrowseCommits[0].target.candidateId, 'target-prod');
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0, 'the legacy profile hint must wait for Ready');
+  assert.ok(findText(fixture.root, 'Switch session'));
+  assert.equal(findLabel(fixture.root, 'Close session switcher').props.disabled, true);
+  assert.equal(findTestId(fixture.root, 'switcher-manage-servers').props.disabled, true);
+  assert.equal(findTestId(fixture.root, 'switcher-disconnect').props.disabled, true);
+  assert.ok(fixture.environment.workspaceStateOwners.includes('native:502'));
+
+  fixture.environment.releaseBrowseReady();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{ profileId: target.id, backend: 'tmux', runtime: 'prod' }]);
+  assert.ok(fixture.environment.connectionStateOwners.includes('native:502'));
+  assert.match(findTestId(fixture.root, 'open-session-switcher').props.accessibilityLabel, /Target Ready, prod/);
+  assert.equal(all(fixture.root, node => textContent(node) === 'Switch session').length, 0);
+});
+
+test('stale browse commit restores the source only after native confirms it is still Ready', async t => {
+  const target = { ...pickerProfile('stale-target.example'), id: 'server-stale-target', name: 'Stale target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseCommitShouldFail = true;
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(40, [runtimeCandidate('stale-target-tmux', 'tmux', 'prod')]) };
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-stale-target'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-stale-target-tmux'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.runtimeBrowseCommits.length, 1);
+  assert.ok(all(fixture.root, node => textContent(node).includes('rejected as stale')).length > 0);
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(findTestId(fixture.root, 'runtime-row-tmux-stale-target-tmux').props.accessibilityState.disabled, false);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+});
+
+test('tmux creation shows its target server and commits only after explicit confirmation', async t => {
+  const target = { ...pickerProfile('create-target.example'), id: 'server-create-target', name: 'Create target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(38, []) };
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-create-target'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-new-tmux'));
+  assert.ok(findText(fixture.root, 'On Create target · developer@create-target.example:22'));
+  const input = findTestId(fixture.root, 'switcher-create-name');
+  await act(async () => { input.props.onChangeText('new-prod'); });
+  assert.equal(fixture.environment.runtimeBrowseCommits.length, 0);
+  await press(fixture.root, findTestId(fixture.root, 'switcher-create-submit'));
+  await settleAsync();
+  assert.deepEqual(fixture.environment.runtimeBrowseCommits.map(item => item.target), [{ kind: 'createTmux', name: 'new-prod' }]);
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{ profileId: target.id, backend: 'tmux', runtime: 'new-prod' }]);
+});
+
+test('switcher dismissal cancels exploration and ignores a late browse completion', async t => {
+  const target = { ...pickerProfile('late.example'), id: 'server-late', name: 'Late target' };
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.profiles = [target];
+    environment.runtimeBrowseDiscoveryByProfile = { [target.id]: pickerDiscovery(39, [runtimeCandidate('late-prod', 'tmux', 'prod')]) };
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-server-late'));
+  await settleAsync();
+  const browse = fixture.environment.runtimeBrowseStarts.at(-1);
+  const token = `browse-${fixture.environment.runtimeBrowseCounter}`;
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
+  await settleAsync();
+  assert.ok(fixture.environment.runtimeBrowseCancelCalls.includes(token));
+
+  const late = fixture.environment.runtimeBrowseStates.get(token);
+  late.phase = 'committed';
+  late.activeTerminalId = '777';
+  fixture.environment.connection.state = 'Ready';
+  await poll(fixture.environment);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(fixture.environment.snapshot.runtime, 'default');
+  assert.equal(fixture.environment.connection.host, 'fixture.example');
+  assert.equal(browse.kind, 'profile');
+});
+
+test('Manage servers returns to the switcher and Disconnect releases the active owner', async t => {
+  const fixture = await mountForTest(t, makeSnapshot());
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Saved servers'));
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Switch session'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-disconnect'));
+  await settleAsync();
+  assert.ok(fixture.environment.nativeCalls.includes('disconnect'));
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+});
+
+test('saved-profile connection opens the unified explicit session picker', async t => {
   const profile = {
     id: '00000000-0000-4000-8000-000000000033', name: 'Failed picker',
     host: 'failed.example', port: 22, username: 'developer', authMethod: 'password',
     credentialSaved: true, backend: 'tmux', runtime: 'meeterm',
   };
   const fixture = await mountConfiguredForTest(t, environment => {
-    environment.connection = { ...environment.connection, state: 'Failed', host: profile.host, port: profile.port };
+    environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
     environment.profiles = [profile];
     environment.runtimeDiscovery = pickerDiscovery(4, [runtimeCandidate('failed-tmux', 'tmux', 'meeterm', 'running', { isDefault: true })]);
     environment.snapshot = makeSnapshot();
   });
 
-  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
-  await settleAsync();
   await press(fixture.root, findLabel(fixture.root, 'Connect saved server Failed picker'));
+  await settleAsync();
+  await poll(fixture.environment);
   await settleAsync();
 
   assert.equal(fixture.environment.alert, null);
   assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
-  assert.ok(findText(fixture.root, 'Choose a runtime for Failed picker'));
+  assert.ok(findText(fixture.root, 'Choose a session'));
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-failed-tmux'));
 });
 
@@ -1542,9 +2027,11 @@ test('saved-server connect authenticates first, then requires explicit runtime s
 
   await press(fixture.root, findLabel(fixture.root, 'Connect saved server Picker server'));
   await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
   assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
   assert.equal(fixture.environment.nativeCalls.some(call => call.method === 'connectProfile'), false);
-  assert.ok(findText(fixture.root, 'Choose a runtime for Picker server'));
+  assert.ok(findText(fixture.root, 'Choose a session'));
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-tmux-one'));
   assert.ok(findTestId(fixture.root, 'runtime-row-herdr-herdr-one'));
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-herdr-stopped').props.accessibilityState.disabled, true);
@@ -1577,7 +2064,7 @@ test('runtime picker cancellation disconnects provisional SSH and leaves backend
   });
   assert.ok(findTestId(partial.root, 'runtime-row-tmux-partial-tmux'));
   assert.ok(all(partial.root, node => textContent(node).includes('Herdr unavailable')).length > 0);
-  await press(partial.root, findLabel(partial.root, 'Cancel runtime selection'));
+  await press(partial.root, findLabel(partial.root, 'Cancel connection'));
   await settleAsync();
   assert.ok(partial.environment.nativeCalls.includes('disconnect'));
   assert.equal(partial.environment.connection.state, 'Disconnected');
@@ -1642,19 +2129,19 @@ test('tmux creation is an explicit editable step and opens only after native con
     };
     environment.snapshot = makeSnapshot();
   });
-  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
-  const nameInput = findTestId(fixture.root, 'runtime-tmux-name');
+  await press(fixture.root, findTestId(fixture.root, 'switcher-new-tmux'));
+  const nameInput = findTestId(fixture.root, 'switcher-create-name');
   assert.equal(nameInput.props.value, 'meeterm');
   assert.equal(fixture.environment.calls.some(call => call.method === 'createTmuxSession'), false);
   await act(async () => { nameInput.props.onChangeText('scratch'); });
-  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-create-submit'));
   await settleAsync();
   await poll(fixture.environment);
   await settleAsync();
   assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
     { method: 'createTmuxSession', name: 'scratch' },
   ]);
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-tmux-create-submit').length, 0);
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'switcher-create-submit').length, 0);
   assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
 });
 
@@ -1714,7 +2201,7 @@ test('cancel invalidates a queued selection and ignores a late Ready snapshot', 
   await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-queued-tmux'));
   await settleAsync();
   assert.ok(fixture.environment.pendingSelection);
-  await press(fixture.root, findLabel(fixture.root, 'Cancel runtime selection'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel connection'));
   await settleAsync();
   assert.ok(fixture.environment.nativeCalls.includes('disconnect'));
   assert.equal(all(fixture.root, node => node.props && node.props.testID === 'runtime-row-tmux-queued-tmux').length, 0);
@@ -1734,10 +2221,10 @@ test('queued tmux creation waits for delayed success and never refreshes implici
     environment.runtimeDiscovery = pickerDiscovery(10, []);
   });
 
-  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
-  const nameInput = findTestId(fixture.root, 'runtime-tmux-name');
+  await press(fixture.root, findTestId(fixture.root, 'switcher-new-tmux'));
+  const nameInput = findTestId(fixture.root, 'switcher-create-name');
   await act(async () => { nameInput.props.onChangeText('scratch'); });
-  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-create-submit'));
   await settleAsync();
   assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
     { method: 'createTmuxSession', name: 'scratch' },
@@ -1767,8 +2254,8 @@ test('queued tmux creation reports delayed native failure without hiding Herdr',
     environment.runtimeDiscovery = pickerDiscovery(11, []);
   });
 
-  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
-  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-new-tmux'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-create-submit'));
   await settleAsync();
   await poll(fixture.environment);
   await settleAsync();
@@ -1783,7 +2270,7 @@ test('queued tmux creation reports delayed native failure without hiding Herdr',
   assert.equal(fixture.environment.lastUsedUpdates.length, 0);
   assert.equal(fixture.environment.refreshRuntimeCalls, 0);
 
-  await press(fixture.root, findLabel(fixture.root, 'Back to runtime list'));
+  await press(fixture.root, findLabel(fixture.root, 'Back to sessions'));
   assert.ok(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr'));
 });
 
@@ -1795,10 +2282,10 @@ test('repeated tmux creation failure clears the old section error and preserves 
 
   assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
-  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
-  const firstName = findTestId(fixture.root, 'runtime-tmux-name');
+  await press(fixture.root, findTestId(fixture.root, 'switcher-new-tmux'));
+  const firstName = findTestId(fixture.root, 'switcher-create-name');
   await act(async () => { firstName.props.onChangeText('first-attempt'); });
-  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-create-submit'));
   await settleAsync();
   assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
     { method: 'createTmuxSession', name: 'first-attempt' },
@@ -1809,17 +2296,17 @@ test('repeated tmux creation failure clears the old section error and preserves 
   await settleAsync();
   assert.equal(fixture.environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux').errorCode, 'tmux_create_failed');
   assert.equal(fixture.environment.lastUsedUpdates.length, 0);
-  assert.equal(findTestId(fixture.root, 'runtime-tmux-create-submit').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'switcher-create-submit').props.disabled, false);
 
-  await press(fixture.root, findLabel(fixture.root, 'Back to runtime list'));
+  await press(fixture.root, findLabel(fixture.root, 'Back to sessions'));
   const tmuxRow = findTestId(fixture.root, 'runtime-row-tmux-queued-tmux');
   assert.equal(tmuxRow.props.accessibilityState.disabled, false);
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
 
-  await press(fixture.root, findTestId(fixture.root, 'runtime-create-tmux'));
-  const secondName = findTestId(fixture.root, 'runtime-tmux-name');
+  await press(fixture.root, findTestId(fixture.root, 'switcher-new-tmux'));
+  const secondName = findTestId(fixture.root, 'switcher-create-name');
   await act(async () => { secondName.props.onChangeText('second-attempt'); });
-  await press(fixture.root, findTestId(fixture.root, 'runtime-tmux-create-submit'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-create-submit'));
   await settleAsync();
   assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'createTmuxSession'), [
     { method: 'createTmuxSession', name: 'first-attempt' },
@@ -1835,10 +2322,10 @@ test('repeated tmux creation failure clears the old section error and preserves 
   await settleAsync();
   assert.equal(fixture.environment.runtimeDiscovery.backends.find(item => item.backend === 'tmux').errorCode, 'tmux_create_failed');
   assert.ok(all(fixture.root, node => textContent(node).includes('tmux could not create this session')).length > 0);
-  assert.equal(findTestId(fixture.root, 'runtime-tmux-create-submit').props.disabled, false);
+  assert.equal(findTestId(fixture.root, 'switcher-create-submit').props.disabled, false);
   assert.equal(fixture.environment.lastUsedUpdates.length, 0);
   assert.equal(fixture.environment.refreshRuntimeCalls, 0);
-  await press(fixture.root, findLabel(fixture.root, 'Back to runtime list'));
+  await press(fixture.root, findLabel(fixture.root, 'Back to sessions'));
   assert.equal(findTestId(fixture.root, 'runtime-row-tmux-queued-tmux').props.accessibilityState.disabled, false);
   assert.equal(findTestId(fixture.root, 'runtime-row-herdr-queued-herdr').props.accessibilityState.disabled, false);
   assert.equal(fixture.environment.profiles.find(item => item.id === profile.id).runtime, 'meeterm');
@@ -1918,7 +2405,7 @@ test('cancel invalidates a queued runtime refresh and ignores a late revision', 
   await settleAsync();
   assert.equal(fixture.environment.refreshRuntimeCalls, 1);
   assert.ok(fixture.environment.pendingRefresh);
-  await press(fixture.root, findLabel(fixture.root, 'Cancel runtime selection'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel connection'));
   await settleAsync();
   assert.equal(fixture.environment.connection.state, 'Disconnected');
   assert.equal(fixture.environment.refreshRuntimeCalls, 1);
@@ -2076,29 +2563,23 @@ test('polling a disconnected connection keeps the layout-restore warning visible
   assert.equal(all(fixture.root, node => node.props?.testID === 'cleanup-warning').length, 0);
 });
 
-test('recovery Change keeps the layout-restore warning after the release read', async t => {
+test('recovery Change keeps the layout warning and retained work under the unified switcher', async t => {
   const warning = 'The previous desktop layout could not be confirmed before switching runtime.';
   const fixture = await mountRecovering(t, workspaceControl({
     operationEpoch: '115',
     runtimeOperationsReady: false,
     terminalInputReady: false,
+    cleanupWarning: { id: '115', code: 'layout_restore_unconfirmed', message: warning },
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }), 'Failed', environment => {
-    environment.changeRuntimeRelease = {
-      errorCode: 'layout_restore_unconfirmed',
-      errorMessage: warning,
-    };
-  });
+  }), 'Failed');
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
-  await settleAsync();
-
-  assert.equal(fixture.environment.connection.state, 'AwaitingRuntimeSelection');
-  assert.equal(terminalViews(fixture.root).length, 0, 'runtime switch must not restore the retired Ready terminal');
-  assert.ok(findTestId(fixture.root, 'runtime-refresh'), 'the switch result must remain visible in the runtime picker');
+  assert.ok(findText(fixture.root, 'Switch session'));
   assert.ok(findLabel(fixture.root, 'Dismiss desktop layout warning'));
   assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
 });
 
 test('cleanup warning is independent from auth errors, dismissal, command feedback, and new results', async t => {
@@ -2243,176 +2724,84 @@ test('runtime identity mismatch keeps the last native terminal instead of bindin
   assert.deepEqual(fixture.environment.calls.slice(callsBefore).filter(call => call.method === 'selectPane'), []);
 });
 
-test('Change sheet preserves recovery on dismiss and invalidates it only on destination selection', async t => {
+test('recovery Change opens the unified switcher and preserves retained work on dismissal', async t => {
   const fixture = await mountRecovering(t, workspaceControl({
     operationEpoch: '81',
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
   }), 'Failed');
+  const before = clone(fixture.environment.snapshot);
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  assert.equal(findTestId(fixture.root, 'recovery-change-intro').children[0], 'Choosing another destination stops recovery for this workspace. Remote work will not be closed.');
-  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
-  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.ok(findText(fixture.root, 'Switch session'));
+  assert.ok(all(fixture.root, node => textContent(node).includes('Session discovery is unavailable while this workspace is recovering. Retry recovery first.')).length > 0);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
 
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
   await settleAsync();
-  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'changeRuntime'), [
-    { method: 'changeRuntime', operationEpoch: '81' },
-  ]);
-  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
-  assert.equal(terminalViews(fixture.root).length, 0);
-  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-change').length, 0);
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(fixture.environment.snapshot.control.operationEpoch, before.control.operationEpoch);
+  assert.equal(fixture.environment.snapshot.control.recovery.phase, 'stopped');
 });
 
-test('recovery Change keeps the cached terminal pending native acceptance', async t => {
+test('recovery Change keeps retained state and never queues the legacy release operation', async t => {
   const fixture = await mountRecovering(t, workspaceControl({
     operationEpoch: '101',
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
   }), 'Failed');
-  fixture.environment.changeRuntimeMode = 'pending';
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  const destination = findTestId(fixture.root, 'recovery-change-runtime');
-  await act(async () => { destination.props.onPress(); });
+  const change = findTestId(fixture.root, 'recovery-change');
+  await act(async () => { change.props.onPress(); change.props.onPress(); });
   await settleAsync();
 
-  assert.ok(fixture.environment.pendingChangeRuntime, 'native acceptance should still be pending');
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.calls.filter(call => call.method === 'changeRuntime').length, 0);
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-  assert.ok(findLabel(fixture.root, 'Back to workspaces'));
-  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, true);
-  assert.equal(destination.props.accessibilityState.disabled, true);
-  assert.equal(all(fixture.root, node => node.props?.testID === 'runtime-refresh').length, 0);
-
-  fixture.environment.resolvePendingChangeRuntime('accept');
-  await settleAsync();
-  assert.equal(terminalViews(fixture.root).length, 0);
-  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
-  assert.ok(findTestId(fixture.root, 'runtime-refresh'), 'the runtime picker should bind only after native acceptance');
-});
-
-test('stale recovery Change rejection retains the latest cached snapshot and clears busy', async t => {
-  const fixture = await mountRecovering(t, workspaceControl({
-    operationEpoch: '111',
-    runtimeOperationsReady: false,
-    terminalInputReady: false,
-    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }));
-  fixture.environment.changeRuntimeMode = 'pending';
-
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  const destination = findTestId(fixture.root, 'recovery-change-runtime');
-  await act(async () => { destination.props.onPress(); });
-  await settleAsync();
-
-  const latestControl = workspaceControl({
-    operationEpoch: '112',
-    runtimeOperationsReady: false,
-    terminalInputReady: false,
-    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  });
-  await updateSnapshot(fixture.environment, makeSnapshot({
-    control: latestControl,
-    terminals: [
-      pane('P1', 'W1', 'G1', 'native:P1', true, true, 'P1 latest', { name: 'Latest agent', status: 'working' }),
-      pane('P2', 'W1', 'G1', 'native:P2', false, false, 'P2'),
-      pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
-    ],
-  }));
-  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Latest agent, Agent status unavailable');
-
-  fixture.environment.resolvePendingChangeRuntime('reject');
-  await settleAsync();
-
-  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-  assert.equal(workspaceTitle(fixture.root), 'Workspace One');
-  assert.ok(findLabel(fixture.root, 'Back to workspaces'));
   assert.ok(findTestId(fixture.root, 'recovery-rail'));
-  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, false);
-  assert.equal(findTestId(fixture.root, 'recovery-change-runtime').props.accessibilityState.disabled, false);
-  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Latest agent, Agent status unavailable');
-  assert.equal(fixture.environment.snapshot.control.operationEpoch, '112');
-  assert.ok(all(fixture.root, node => textContent(node).includes('Could not change the destination. Choose Connection details to continue.')).length > 0);
+  assert.ok(all(fixture.root, node => textContent(node).includes('Retry recovery first.')).length > 0);
 });
 
-test('rapid repeated recovery Change taps enqueue only one native request', async t => {
-  const fixture = await mountRecovering(t, workspaceControl({
-    operationEpoch: '121',
-    runtimeOperationsReady: false,
-    terminalInputReady: false,
-    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }), 'Failed');
-  fixture.environment.changeRuntimeMode = 'pending';
-
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  const destination = findTestId(fixture.root, 'recovery-change-runtime');
-  await act(async () => {
-    destination.props.onPress();
-    destination.props.onPress();
-  });
-  await settleAsync();
-
-  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'changeRuntime'), [
-    { method: 'changeRuntime', operationEpoch: '121' },
-  ]);
-  assert.ok(fixture.environment.pendingChangeRuntime);
-  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, true);
-  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-
-  fixture.environment.resolvePendingChangeRuntime('reject');
-  await settleAsync();
-  assert.equal(findTestId(fixture.root, 'recovery-change').props.disabled, false);
-  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-});
-
-test('accepted recovery Change ignores a late old Ready snapshot', async t => {
+test('a late Ready poll cannot discard retained recovery when Change opens the switcher', async t => {
   const fixture = await mountRecovering(t, workspaceControl({
     operationEpoch: '131',
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }));
+  }), 'Failed');
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
 
-  const oldSnapshot = clone(fixture.environment.snapshot);
+  const retainedSnapshot = clone(fixture.environment.snapshot);
   let releaseSnapshot;
   const snapshotGate = new Promise(resolve => { releaseSnapshot = resolve; });
   const originalGetWorkspaceState = fixture.native.getWorkspaceState;
-  let holdingOldSnapshot = true;
+  let holdingSnapshot = true;
   fixture.native.getWorkspaceState = async (...args) => {
-    if (holdingOldSnapshot) {
-      holdingOldSnapshot = false;
+    if (holdingSnapshot) {
+      holdingSnapshot = false;
       await snapshotGate;
-      return oldSnapshot;
+      return retainedSnapshot;
     }
     return originalGetWorkspaceState(...args);
   };
   fixture.environment.connection.state = 'Ready';
-  // Start the interval callback directly so the intentionally held native
-  // snapshot does not keep the test helper's act() scope open.
-  fixture.environment.intervalCallbacks[0]();
+  const connectionInterval = fixture.environment.intervalCallbacks.find(interval => !interval.cancelled);
+  connectionInterval.callback();
   await settleAsync();
-  assert.equal(holdingOldSnapshot, false, 'the old Ready poll should be paused at workspace snapshot read');
-
-  fixture.environment.changeRuntimeMode = 'pending';
-  const destination = findTestId(fixture.root, 'recovery-change-runtime');
-  await act(async () => { destination.props.onPress(); });
-  await settleAsync();
-  fixture.environment.resolvePendingChangeRuntime('accept');
-  await settleAsync();
-  assert.equal(terminalViews(fixture.root).length, 0);
-  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
-  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
+  assert.equal(holdingSnapshot, false);
 
   releaseSnapshot();
   await settleAsync();
-  assert.equal(terminalViews(fixture.root).length, 0);
-  assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-rail').length, 0);
-  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
+  assert.ok(findText(fixture.root, 'Switch session'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
 });
 
 test('strong Ready restores native input and live agent status with a short recovered rail', async t => {
@@ -2477,8 +2866,8 @@ test('retained recovery rail stays reachable from Workspaces and reopens only th
   assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Back to workspaces').length, 0);
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  assert.ok(findTestId(fixture.root, 'recovery-change-intro'));
-  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findText(fixture.root, 'Switch session'));
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
   assert.ok(findTestId(fixture.root, 'recovery-rail'));
 
   const callsBeforeRetainedWorkspace = fixture.environment.calls.length;
@@ -2495,8 +2884,8 @@ test('healthy visibility and foreground cycles never announce Back online', asyn
   await openWorkspace(fixture.root, 'W1');
   await act(async () => { fixture.environment.emitAppState('background'); fixture.environment.emitAppState('active'); });
   await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
-  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
-  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
   await act(async () => { fixture.environment.emitAppState('inactive'); fixture.environment.emitAppState('active'); });
 
   const gatesClosed = workspaceControl({
@@ -2556,7 +2945,7 @@ test('a real recovery announces Back online once, expires after two seconds, and
   assert.equal(fixture.environment.accessibilityAnnouncements.filter(message => message.startsWith('Back online.')).length, 1);
 });
 
-test('terminal_missing recovery offers Change instead of a fake terminal picker', async t => {
+test('terminal_missing recovery offers Change through the shared switcher without a fake terminal picker', async t => {
   const fixture = await mountRecovering(t, workspaceControl({
     operationEpoch: '171',
     runtimeOperationsReady: false,
@@ -2570,22 +2959,15 @@ test('terminal_missing recovery offers Change instead of a fake terminal picker'
   assert.match(findTestId(fixture.root, 'recovery-meta').children[0], /Change/);
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  assert.ok(findTestId(fixture.root, 'recovery-change-intro'));
-  await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+  assert.ok(findText(fixture.root, 'Switch session'));
+  assert.ok(all(fixture.root, node => textContent(node).includes('Retry recovery first.')).length > 0);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
+
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
   assert.ok(findTestId(fixture.root, 'recovery-rail'));
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-
-  fixture.environment.changeRuntimeMode = 'pending';
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
-  await press(fixture.root, findTestId(fixture.root, 'recovery-change-runtime'));
-  await settleAsync();
-  assert.ok(fixture.environment.pendingChangeRuntime);
-  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-
-  fixture.environment.resolvePendingChangeRuntime('accept');
-  await settleAsync();
-  assert.equal(terminalViews(fixture.root).length, 0);
-  assert.ok(findTestId(fixture.root, 'runtime-refresh'));
 });
 
 test('external cross-workspace move follows selected stable native terminal', async t => {
