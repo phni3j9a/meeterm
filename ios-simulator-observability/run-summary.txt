@@ -1,0 +1,8 @@
+meeterm iOS validation — 8d9a20a (issue-27-session-switcher) — BUILD FAILED
+source_sha=8d9a20a71f994d11ac38626511be75ef359c3177
+suites=none (build-for-testing failed; no suite ran)
+failure_stage=xcodebuild build-for-testing → Swift type-check of Pods/MeetermTerminal
+failure=modules/meeterm-terminal/ios/MeetermTerminalModule.swift:198:85 error: missing argument label 'token:' in call
+detail=three unlabeled call sites vs token:-labeled bridge (MeetermCore.swift): runtimeBrowseState(token) :198, runtimeBrowseRefresh(token) :206, runtimeBrowseCancel(token) :211 — all added in a887a5b (#27)
+toolchain=Xcode 26.6 (17F113) SDKROOT iphonesimulator26.5 ARCHS=arm64 fresh-CNG build
+diagnostics=artifacts/ios-build-observability/xcodebuild.log (sanitized)
