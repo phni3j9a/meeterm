@@ -1,0 +1,86 @@
+Attributes: Application, 0x10a18ad00, pid: 39061, label: 'meeterm'
+Element subtree:
+ →Application, 0x10a18ad00, pid: 39061, label: 'meeterm'
+    Window (Main), 0x10a1883c0, {{0.0, 0.0}, {402.0, 874.0}}
+      Other, 0x10a1888c0, {{0.0, 0.0}, {402.0, 874.0}}
+        Other, 0x10a18b200, {{0.0, 0.0}, {402.0, 874.0}}
+          Other, 0x10a188b40, {{0.0, 0.0}, {402.0, 874.0}}
+            Other, 0x10a18a300, {{0.0, 0.0}, {402.0, 874.0}}
+              Other, 0x10a18be80, {{0.0, 0.0}, {402.0, 874.0}}
+                Other, 0x10a18ae40, {{0.0, 0.0}, {402.0, 874.0}}
+                  Other, 0x10a189040, {{0.0, 0.0}, {402.0, 874.0}}
+                  Other, 0x10a188a00, {{0.0, 0.0}, {402.0, 874.0}}
+                    Other, 0x10a189cc0, {{0.0, 0.0}, {402.0, 874.0}}
+                      Other, 0x10a00a800, {{0.0, 0.0}, {402.0, 874.0}}
+                        Other, 0x10a009040, {{0.0, 0.0}, {402.0, 874.0}}
+                          Other, 0x10a00ae40, {{0.0, 0.0}, {402.0, 874.0}}
+                            Other, 0x10a00abc0, {{0.0, 0.0}, {402.0, 874.0}}
+                              Other, 0x10a00b0c0, {{0.0, 0.0}, {402.0, 874.0}}
+                                Other, 0x10a0c75c0, {{0.0, 0.0}, {402.0, 874.0}}
+                                  Other, 0x10a0c5f40, {{0.0, 62.0}, {402.0, 812.0}}
+                                    ScrollView, 0x10a0c6080, {{0.0, 62.0}, {402.0, 812.0}}
+                                      Other, 0x10a0c6f80, {{0.0, 62.0}, {402.0, 472.7}}
+                                        Other, 0x10a0c70c0, {{0.0, 62.0}, {402.0, 472.7}}
+                                          Other, 0x10a0c5b80, {{0.0, 62.0}, {402.0, 324.3}}
+                                            Button, 0x10a0c7c00, {{334.0, 68.0}, {44.0, 44.0}}, identifier: 'open-settings', label: 'Terminal settings'
+                                            StaticText, 0x10a1b4000, {{24.0, 76.7}, {84.7, 26.3}}, label: 'meeterm'
+                                              StaticText, 0x10a1b4140, {{24.0, 76.7}, {84.7, 26.3}}, label: 'meeterm'
+                                            StaticText, 0x10a1b4280, {{24.0, 151.0}, {278.0, 38.0}}, label: 'Workspaces'
+                                              StaticText, 0x10a1b43c0, {{24.0, 151.0}, {278.0, 38.0}}, label: 'Workspaces'
+                                            StaticText, 0x10a1b4500, {{24.0, 197.0}, {278.0, 20.0}}, label: 'Your work, right where you left it.'
+                                              StaticText, 0x10a1b4640, {{24.0, 197.0}, {278.0, 20.0}}, label: 'Your work, right where you left it.'
+                                            Other, 0x10a1b4780, {{24.0, 254.0}, {354.0, 68.3}}
+                                            Button, 0x10a1b48c0, {{24.0, 266.0}, {224.7, 44.0}}, identifier: 'open-session-switcher', label: 'Switch server and session, Fixture One, meeterm'
+                                            Button, 0x10a1b4a00, {{334.0, 266.0}, {44.0, 44.0}}, label: 'Server connection'
+                                            Other, 0x10a1b4b40, {{256.7, 285.0}, {6.0, 6.0}}
+                                            StaticText, 0x10a1b4c80, {{268.7, 279.0}, {57.3, 18.0}}, label: 'Connected'
+                                              StaticText, 0x10a1b4dc0, {{268.7, 279.0}, {57.3, 18.0}}, label: 'Connected'
+                                            Button, 0x10a1b4f00, {{290.0, 340.3}, {44.0, 44.0}}, label: 'Search workspaces'
+                                              Other, 0x10a1b5040, {{301.7, 352.0}, {21.0, 21.0}}
+                                                Other, 0x10a1b5180, {{301.7, 352.0}, {21.0, 21.0}}
+                                                  Other, 0x10a1b52c0, {{303.6, 353.9}, {17.2, 17.2}}
+                                                    Other, 0x10a1b5400, {{303.6, 353.9}, {15.4, 15.4}}
+                                                    Other, 0x10a1b5540, {{315.5, 365.9}, {5.2, 5.2}}
+                                            Button, 0x10a1b5680, {{342.0, 340.3}, {44.0, 44.0}}, label: 'Create workspace'
+                                              Other, 0x10a1b57c0, {{353.7, 352.0}, {21.0, 21.0}}
+                                                Other, 0x10a1b5900, {{353.7, 352.0}, {21.0, 21.0}}
+                                                  Other, 0x10a1b5a40, {{357.3, 355.7}, {13.7, 13.7}}
+                                                    Other, 0x10a1b5b80, {{357.3, 361.8}, {13.7, 1.4}}
+                                                    Other, 0x10a1b5cc0, {{363.4, 355.7}, {1.4, 13.7}}
+                                            StaticText, 0x10a1b5e00, {{24.0, 352.3}, {30.7, 20.0}}, label: 'All  1'
+                                              StaticText, 0x10a1b5f40, {{24.0, 352.3}, {30.7, 20.0}}, label: 'All  1'
+                                          Button, 0x10a1b6080, {{24.0, 386.3}, {306.0, 90.0}}, identifier: 'workspace-row-@0', label: 'Workspace main', Selected
+                                            Other, 0x10a1b61c0, {{24.0, 420.0}, {23.0, 23.0}}
+                                              Other, 0x10a1b6300, {{24.0, 420.0}, {23.0, 23.0}}
+                                                Other, 0x10a1b6440, {{27.0, 424.0}, {16.9, 15.0}}
+                                                  Other, 0x10a1b6580, {{27.0, 424.0}, {7.3, 13.1}}
+                                                  Other, 0x10a1b66c0, {{34.7, 437.4}, {9.2, 1.6}}
+                                          Other, 0x10a1b6800, {{24.0, 386.3}, {354.0, 90.3}}
+                                          Button, 0x10a1b6940, {{334.0, 409.3}, {44.0, 44.0}}, label: 'Workspace options main'
+                                            Other, 0x10a1b6a80, {{345.7, 421.0}, {21.0, 21.0}}
+                                              Other, 0x10a1b6bc0, {{345.7, 421.0}, {21.0, 21.0}}
+                                                Other, 0x10a1b6d00, {{348.4, 429.9}, {15.4, 3.2}}
+                                                  Other, 0x10a1b6e40, {{348.4, 429.9}, {3.2, 3.2}}
+                                                  Other, 0x10a1b6f80, {{354.6, 429.9}, {3.2, 3.2}}
+                                                  Other, 0x10a1b70c0, {{360.7, 429.9}, {3.2, 3.2}}
+                                      Other, 0x10a1b7200, {{369.0, 62.0}, {30.0, 750.0}}, label: 'Vertical scroll bar, 1 page', value: 0%
+                                        Other, 0x10a1b7340, {{396.0, 370.3}, {3.0, 438.7}}
+                                      Other, 0x10a1b7480, {{62.0, 841.0}, {278.0, 30.0}}, label: 'Horizontal scroll bar, 1 page', value: 0%
+                                        Other, 0x10a1b75c0, {{65.0, 868.0}, {272.0, 3.0}}
+                                      Other, 0x10a1b7700, {{369.0, 62.0}, {30.0, 750.0}}, label: 'Vertical scroll bar, 1 page', value: 0%
+                                        Other, 0x10a1b7840, {{396.0, 370.3}, {3.0, 438.7}}
+                                      Other, 0x10a1b7980, {{62.0, 841.0}, {278.0, 30.0}}, label: 'Horizontal scroll bar, 1 page', value: 0%
+                                        Other, 0x10a1b7ac0, {{65.0, 868.0}, {272.0, 3.0}}
+                      Toolbar, 0x10a1b7c00, {{0.0, 0.0}, {402.0, 874.0}}, identifier: 'Toolbar', label: 'Toolbar'
+                        Other, 0x10a1b7d40, {{0.0, 0.0}, {402.0, 874.0}}
+                  Other, 0x10a1b7e80, {{0.0, 0.0}, {402.0, 874.0}}
+    Window, 0x10a1a4000, {{0.0, 0.0}, {402.0, 874.0}}
+      Other, 0x10a1a4140, {{0.0, 0.0}, {402.0, 874.0}}
+        Other, 0x10a1a4280, {{0.0, 0.0}, {402.0, 874.0}}
+Path to element:
+ →Application, 0x10a18ad00, pid: 39061, label: 'meeterm'
+Query chain:
+ →Find: Target Application 'dev.meeterm.app'
+  Output: {
+    Application, 0x10a1a43c0, pid: 39061, label: 'meeterm'
+  }

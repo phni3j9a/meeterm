@@ -1,0 +1,4 @@
+case=same_server_switch result=passed
+case=cross_server_switch result=passed
+case=cancel_no_destruction result=passed
+case=switcher_drive result=passed
