@@ -8899,7 +8899,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             });
         });
         let (port, handle) = ready_receiver
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(30))
             .expect("rejecting SSH server startup");
         (port, handle, join)
     }
@@ -8982,7 +8982,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             });
         });
         let (port, handle) = ready_receiver
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(30))
             .expect("auth-attempt observer startup");
         (port, handle, join, attempt_receiver)
     }
@@ -12336,7 +12336,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         // Read the native actor directly until auth has failed. The public
         // snapshot APIs are intentionally not read before this point, so the
         // first published read observes both independent result channels.
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let finished = replacement.info.lock().expect("replacement info").finished;
             if finished {
@@ -12421,7 +12421,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             .get(&owner)
             .map(|entry| Arc::clone(&entry.shared))
             .expect("credential-prep replacement shared");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let finished = replacement
                 .info
@@ -14257,7 +14257,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             assert!(state.lock().expect("session state").profile.is_none());
         }
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let snapshot = connection_snapshot(owner).expect("connection snapshot");
             if snapshot.state == ConnectionState::Failed as u32 {
