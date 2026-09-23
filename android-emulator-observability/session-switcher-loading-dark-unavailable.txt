@@ -1,3 +1,0 @@
-screen=session-switcher-loading-dark
-result=unavailable
-reason=missing_tmux_section,herdr_section

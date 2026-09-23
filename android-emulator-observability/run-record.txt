@@ -1,122 +1,158 @@
-meeterm Android validation — run record
-=======================================
-commit=8835e03b69f66f9c00b721b0ea31e1196221e08a
-branch=issue-27-session-switcher
-run_type=full (fresh checkout, npm ci, expo prebuild, native rebuild; no artifact reuse)
-verdict=FAIL (deterministic acceptance-suite break; Issue #27 items verified manually — see below)
+meeterm Android smoke validation run record
+=============================================
 
-Environment
------------
-runner=devin-vm os=Linux arch=x86_64
-avd=meeterm_api36 (emulator-5554, headless: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -cores 4 -memory 4096)
-toolchains: node v24.19.0, npm 10.8.3 (blueprint pins 22.22.2 — DEVIATION, already reported; PATH deviation from /opt/.devin/envrc)
-            rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN=1.96.0), NDK 27.1.12297006, build-tools 36.0.0
-            tmux 3.2a on VM, python 3.12.13
-gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release
+Candidate: ad91680f49f663fec9d856d9060d5d0d80f2e4f3
+Branch: issue-27-session-switcher
+Suite: Android full validation (build + gates + 51-route screen manifest + real OpenSSH/tmux SSH flow) + Issue #27 items 1-5 re-verification
+VM: Devin Cloud Android validation box (persistent session)
+Date: 2026-09-23 UTC
+Result: FAIL — suite dies at initial_runtime_selection_runtime_connected
+        (runtime_selection_ui_timeout), a deterministic contract break.
+        App itself reaches Ready correctly; Issue #27 items 1-5 all
+        verified manually against two live fixtures.
+
+Environment / toolchain
+-----------------------
+- OS: Linux x86_64
+- Node: v24.19.0, npm 10.8.3 (DEVIATION: blueprint pins node 22.22.2 — same as prior runs)
+- Rust: 1.96.0 (ac68faa20 2026-05-25), RUSTUP_TOOLCHAIN=1.96.0
+- Android SDK: ANDROID_HOME=/home/ubuntu/android-sdk, NDK 27.1.12297006, build-tools 36.0.0
+- AVD: meeterm_api36, API 36, x86_64 (emulator-5554), headless, animation scales 0.0
+- tmux on fixture host: 3.2a
+- Fresh/reuse: FULLY FRESH — reset --hard, rm -rf android + artifacts, npm ci, expo prebuild, full assembleRelease.
 
 Stage results
 -------------
-1. checkout+deps+prebuild: PASS (~1m10s)
-2. assembleRelease: PASS — BUILD SUCCESSFUL in ~2m18s (previous 8d9a20a E0308 jni bool→u8 defect fixed by u8::from(accept) at jni.rs:1007)
-3. android-smoke.sh (install/launch, NATIVE_READY+FIRST_FRAME, same-PID, no-ANR): PASS (~35s)
-4. android-screen-fixtures.py (51-route manifest): 38 captured / 12 unavailable + 1 known gap
-5. fixture.py + android-smoke.py (real OpenSSH/tmux suite): **FAIL** — stage=initial_runtime_selection_runtime_picker, reason=runtime_picker_ui_timeout, after host_key_verified
-6. Issue #27 items 1–5: driven manually against two live fixtures — ALL VERIFIED (evidence below)
+1. npm ci + expo prebuild (android only): PASS
+2. assembleRelease (arm64-v8a,x86_64, Rust release): PASS — BUILD SUCCESSFUL ~2m34s
+3. android-smoke.sh (install/launch/native-ready/first-frame/same-PID/no-ANR): PASS
+4. android-screen-fixtures.py — 51 routes: 49 captured, 2 unavailable
+   (session-switcher-host-key, session-switcher-host-key-dark)
+5. fixture.py + android-smoke.py real SSH/tmux flow: FAIL
+   stage=initial_runtime_selection_runtime_connected
+   reason=runtime_selection_ui_timeout
+   completed=...host_key_verified, initial_runtime_selection_runtime_picker_ready,
+             initial_runtime_selection_runtime_picker_selected
+   => the picker-label fix WORKS (picker_ready+picker_selected now complete);
+      the run now fails one stage later.
 
-SSH suite failure analysis (deterministic, not a flake)
---------------------------------------------------------
-The unified SessionSwitcher now renders runtime rows (fresh picker AND switch mode) with
-accessibilityLabel "tmux session {name} on {server} ({user}@{host}:{port})" (app/SessionSwitcher.tsx:148).
-scripts/ssh/android_smoke_impl.py TMUX_RUNTIME_LABELS still expects "tmux runtime {name}" —
-unchanged on this branch (no main..HEAD commits touch it). Live uiautomator dump confirms the real
-picker row: 'tmux session meeterm on 10.0.2.2 (ubuntu@10.0.2.2:35213)' — the suite can never match
-=> runtime_picker_ui_timeout before any session can be selected. The legacy App.tsx RuntimePicker
-component carrying the old label is dead code (no <RuntimePicker> instantiation).
-Candidate-side break: either preserve the "tmux runtime {name}" label contract in fresh mode or
-update TMUX_RUNTIME_LABELS/RUNTIME_PICKER_ROW_PREFIXES in the same change.
+Suite failure root cause (verified live + in source)
+----------------------------------------------------
+select_fixture_tmux_runtime_and_wait_for_connected()
+(android_smoke_impl.py:2865) taps the 'tmux runtime meeterm' row — which now
+succeeds — then does wait_for_node(text="Connected") for RECONNECT_TIMEOUT.
 
-Screen-fixture unavailable routes (deterministic candidate-side contract gaps)
-------------------------------------------------------------------------------
-10/20 session-switcher-* routes + runtime-layout-restore-unconfirmed + runtime-empty unavailable:
-- Row testID is runtime-row-{backend}-{candidate.id} (e.g. runtime-row-tmux-smoke-tmux-meeterm);
-  checker expects runtime-row-{id} (runtime-row-smoke-tmux-meeterm). Row itself renders selected=true.
-- Aux labels render as composites "{backend} · Stopped" / "{backend} · Switching…"; checker wants
-  standalone "Stopped"/"Switching…" literals => stopped-herdr, runtime-empty, pending.
-- *-loading: seed sets state='loading' with empty candidates -> only TMUX/HERDR headers render;
-  required lowercase 'tmux'/'Herdr' aux labels unsatisfiable as seeded.
-- *-host-key: hostKey pending renders inline guidance + bare 'Trust this SSH host?' alert;
-  no heading/fingerprint/Trust-Cancel inside the sheet as checker expects.
-- cleanup-warning-dismiss IconButton only exists in workspace listHeader/terminalFeedback contexts;
-  SessionSwitcher receives cleanupWarning as a plain text prop -> runtime-layout-restore-unconfirmed
-  regression (dismiss control present in ed43536's runtime picker context is gone in picker context).
-- *-current footer (switcher-new-tmux/manage-servers/disconnect) is present in DOM but below the
-  viewport fold — excluded from compressed a11y dump; scrape limitation, verified via screencap.
+'Connected' is only ever produced by <ConnectionStatus> (App.tsx:666-670;
+accessibility label + text 'Connected' when connection.state==='Ready').
+It is mounted in exactly two places on ad91680:
+- terminal header terminalStatusRow (App.tsx:3603) — terminal screen only
+- server sheet (App.tsx:3700) — only when the sheet is opened
 
-Issue #27 items (manually verified with live fixtures + uiautomator)
--------------------------------------------------------------------
-Fixture #1: sshd port 35213, tmux socket meeterm-ssh-fixture-gcf44jr9
-Fixture #2: sshd port 35201, tmux socket meeterm-ssh-fixture-e6lt_r_v (saved profile "Android daily second", credentials stored)
+After fresh selection, finishRuntimeSelection() lands on the WORKSPACES list
+(setScreen('workspaces')), which on ad91680 renders the unified switcher
+target row: `Switch server and session, {server}, {session}` — and nothing
+else. ZERO 'Connected' nodes exist on that surface (verified live: dump
+contained Workspaces/10.0.2.2 · meeterm/rows, grep 'Connected' = 0).
 
-1. SAME-SERVER SWITCH — VERIFIED.
-   Connected to fx1, selected 'meeterm'. Created 'second' session on same tmux socket.
-   Header 'Server · Session' -> switcher (mode=switch) -> tapped 'tmux session second on 10.0.2.2'
-   -> Ready on 'second' (header '10.0.2.2 · second', window 'work'). Marker+input round-trip on NEW
-   session: typed session_marker_command -> host file got 'marker:40355' == pane %4 pid of 'second'.
-   Old session survives: list-sessions = {meeterm, second}, panes %0-%3 alive.
-   Evidence: issue27-switcher-open.png, issue27-ws-meeterm.png, issue27-ws-second.png,
-             issue27-term-second.png.
+On ed43536 (last passing candidate), the same serverRow rendered the legacy
+server target PLUS <ConnectionStatus> inline (git show ed43536:App.tsx:2456).
+The unified-switcher header refactor dropped that chip from the list header.
+=> The app's Ready landing is correct; the suite's 'Connected' observation
+   contract is structurally unsatisfiable on this surface. Every stage that
+   waits for text='Connected' on the workspace surface (initial connect,
+   saved-profile reconnect, post-transport-loss recovery) hits the same wall
+   deterministically — this is not a flake.
 
-2. CROSS-SERVER SWITCH — VERIFIED.
-   Saved fx2 as profile 'Android daily second' via switcher 'Manage servers' -> 'Add server'
-   (host 10.0.2.2, port 35201, saved creds). In switcher expanded 'Server Android daily second'
-   -> runtimeBrowseStartProfile ran -> host-key prompt 'Trust this SSH host?' with matching
-   fingerprint SHA256:1Ea/...KLc -> TRUST AND CONTINUE -> 'tmux session other on Android daily
-   second' listed -> tapped row -> switcher committed candidate; app then showed Saved-servers
-   sheet (intermediate hop) -> 'Connect saved server Android daily second' -> SSH connect with
-   saved creds -> Ready on 'Android daily second · other' (window 'ops'). Marker+input on NEW
-   server: 'marker:45114' == 'other' pane pid on fx2. fx1 sessions still alive: {meeterm, second}.
-   Note: the commit lands on the servers sheet requiring one extra explicit 'Connect saved server'
-   tap — observed UX, selection carried through.
-   Evidence: issue27-switcher-two-servers.png, issue27-switcher-fx2-browsed.png,
-             issue27-ws-fx2.png.
-   Also observed: expanding a credential-less profile inside the switcher opens an in-sheet
-   credential form ('Back to sessions' / Host/Port/Username/key) — the 'credentials entered through
-   the switcher' path (issue27-switcher-browse-fx1.png).
+Manual verification on the same APK (fresh connect to live fixture fx1):
+picker rendered 'tmux runtime meeterm' + 'tmux runtime second' (Running),
+tap -> app reached Ready on '10.0.2.2 · second' workspaces — the connection
+itself is fine. Candidate fix options: restore a 'Connected' status node on
+the workspace-list header (e.g. beside/inside the switcher target), or move
+the suite's Ready signal to the workspaces landing contract.
 
-3. CANCEL / NO-DESTRUCTION — VERIFIED.
-   Open switcher -> 'Close session switcher' -> workspace binding untouched; same after starting a
-   browse of another server and dismissing mid-way. Remote sessions on both fixtures survive.
-   OBSERVED QUIRK (2x reproducible): 'Close session switcher' lands on the Saved-servers sheet, not
-   back on the workspace — one extra 'Close sheet' tap returns to the workspace. No destruction,
-   but the dismiss destination is the servers sheet rather than the originating workspace.
+Screen-fixture results (51 routes)
+----------------------------------
+49/51 captured — all previously unavailable routes now pass:
+empty, runtime-empty, layout-restore-unconfirmed,
+runtime-layout-restore-unconfirmed, connection-error, and all
+session-switcher-* except the host-key pair (including -loading,
+-credentials, -current, -failure, -stopped-herdr, light+dark).
 
-4. CLOSE-WITHOUT-DISCONNECT + FRESH EXPLICIT SELECTION — VERIFIED; recovery cases pass.
-   am force-stop while connected -> fx2 'other' session survives on remote (pane pid 45114 kept).
-   Relaunch -> Workspaces home, no auto-attach -> 'Connect saved server Android daily second' ->
-   picker -> explicit 'tmux session other' tap -> Ready on same pane (pid 45114).
-   Foreground cycle (HOME -> relaunch): returns to Connected terminal on same workspace — PASS.
-   Transport loss (fixture sshd control stop while in terminal): app shows fail-closed stale
-   read-only surface ('Reconnecting… Waiting for the server.', 'Last received output · Input
-   paused', 'Terminal, cached output, read only') -> sshd start -> recovers to Connected on the
-   same runtime/pane — PASS.
-   Caveat: the committed suite's transport-loss/foreground stages could not run to completion
-   because it halts at the picker-label timeout above; these cases were verified manually.
+Still unavailable (2): session-switcher-host-key{,-dark}
+  checker missing: switch_heading, host_key_guidance, host_key_fingerprint,
+  host_key_reject_action, host_key_trust_action
+  Root cause (verified live): the seeded host-key state fires RN Alert.alert
+  (App.tsx ~2850) = an Android-native AlertDialog in its own window.
+  Compressed uiautomator dumps only include the focused window, so the
+  switcher sheet behind it (heading + inline guidance) is absent from the
+  tree; the dialog buttons are platform-forced ALL-CAPS (CANCEL / TRUST AND
+  CONTINUE) vs the checker's title-case literals; and the fingerprint is
+  embedded in one multi-line message node so normalized exact-match can't
+  isolate it. Only host_key_prompt matches.
+  => needs either an in-sheet host-key UI (restores heading/guidance/
+     standalone fingerprint + label case) or a checker that accepts the
+     native dialog (case-insensitive + substring + no behind-dialog signals).
 
-5. SWITCHER SCREENSHOTS — real-state captures taken (files listed above); seeded
-   session-switcher-* fixture captures partially available (12/20 captured; 8 unavailable with
-   deterministic checker/renderer contract gaps documented above).
+Issue #27 items — re-verified live on ad91680 (two real fixtures)
+------------------------------------------------------------------
+fx1: 10.0.2.2:34379, tmux socket 1vf_e7vk (sessions meeterm $0, second $2)
+fx2: 10.0.2.2:42933, tmux socket _i7lc3kw (sessions meeterm, other @2)
 
-Cleanup
--------
-adb pm clear dev.meeterm.app after run; both fixture instances left running during evidence
-collection (fixture.py --env-file mode); no credentials/keys/APK in bundle (app-release.apk
-removed before push; marker/key material never captured in screenshots — form screens captured
-only before secret entry where applicable, and credential-containing dumps not persisted).
+1. Actual same-server switch: VERIFIED.
+   Fresh connect -> picker -> 'tmux runtime second' -> Ready on
+   '10.0.2.2 · second'. Marker + real input round-trip on the new session:
+   file /tmp/i27-second-marker.txt = 'i27-ad91680-second:37448' written by
+   `second` pane %6 (pane_pid 37448). `meeterm $0` still alive afterwards.
+2. Actual cross-server switch: VERIFIED, including the direct-to-Ready fix.
+   Added fx2 as saved profile 'Android daily second' via Manage servers;
+   expanded its switcher row -> browse -> in-switcher host-key prompt with
+   the CORRECT fingerprint (SHA256:e9BZCgD39lImtcgP9QlkmqzqWqfHaHzqArricbzzbaY);
+   selected 'tmux session other' -> app committed and landed DIRECTLY on
+   'Android daily second · other' — no saved-servers-sheet hop (8835e03
+   quirk fixed). Marker 'i27-ad91680-other-fx2:37458' round-tripped on fx2
+   `other` pane %6 (pid 37458). fx1 sessions {meeterm $0, second $2} survive.
+3. Cancel/no-destruction: VERIFIED, including the Close-returns fix.
+   'Close session switcher' now returns to the originating workspace
+   ('10.0.2.2 · meeterm' workspaces; on 8835e03 it landed on the servers
+   sheet). Binding + remote sessions untouched.
+4. Close-without-disconnect + fresh explicit selection: VERIFIED.
+   force-stop -> relaunch -> saved-servers home, no auto-attach; explicit
+   'Connect saved server Android daily second' -> picker -> select 'other'
+   -> Ready again on the same fx2 pane %6 (pid 37458 unchanged — remote
+   process survived app death).
+   Foreground/transport-loss recovery: carried over from 8835e03 (native
+   layer unchanged since then); additionally re-observed live this run —
+   after the bound session was destroyed underneath it the app fail-closed
+   into 'Connection failed / Retry recovery / Change… / Last received
+   output · Input paused' — correct recovery surface.
+5. Switcher captures:
+   - live drive: issue27-switcher-open.png,
+     issue27-switcher-two-servers.png, issue27-switcher-fx2-browsed.png
+   - seeded manifest: 18/20 session-switcher-* routes captured (light+dark);
+     host-key pair unavailable per diagnosis above.
 
-Files
------
-ssh-validation.txt / ssh-failure-state.txt — suite failure record
-transport-loss-validation.txt — not_run (suite never reached that stage; manual verification above)
-issue27-*.png — live switcher/workspace/terminal evidence
-session-switcher-*.png / *-unavailable.txt — seeded fixture manifest
-gradle-build.log, logcat.txt, ssh-logcat.txt, run-record.txt, metadata.txt
+Commands (verbatim)
+-------------------
+git fetch origin && git reset --hard ad91680f49f663fec9d856d9060d5d0d80f2e4f3
+rm -rf android artifacts/android-emulator-observability && npm ci
+npx expo prebuild --platform android --non-interactive --no-install
+(cd android) NODE_ENV=production EXPO_PUBLIC_MEETERM_SMOKE=1 RUSTUP_TOOLCHAIN=1.96.0 \
+  ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 \
+  -PmeetermRustProfile=release --no-daemon --stacktrace
+emulator -avd meeterm_api36 -no-window -gpu swiftshader_indirect -no-snapshot \
+  -noaudio -no-boot-anim -camera-back none -cores 4 -memory 4096
+GITHUB_WORKSPACE=$PWD GITHUB_ACTIONS=true scripts/ci/android-smoke.sh
+python3 scripts/ci/android-screen-fixtures.py --artifact-dir artifacts/android-emulator-observability
+adb shell pm clear dev.meeterm.app
+python3 scripts/ssh/fixture.py -- python3 scripts/ssh/android-smoke.py \
+  --artifact-dir artifacts/android-emulator-observability   # FAIL picker->connected
+# Issue-27 manual drive: two fixture.py --env-file instances (34379/42933),
+# uiautomator + tmux + marker files via /home/ubuntu/issue27_connect.py
+GITHUB_WORKSPACE=$PWD scripts/ci/finalize-evidence.sh android-emulator-observability
+
+Evidence policy
+---------------
+Sanitized bundle: no credentials, private keys, auth material, or APK.
+-unavailable.txt markers record deterministic gaps; no fake captures.
+Environment left intact: emulator running, both fixtures alive, checkout at
+ad91680, /home/ubuntu/issue27_connect.py driver retained.

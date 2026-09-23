@@ -1,3 +1,0 @@
-screen=session-switcher-current-dark
-result=unavailable
-reason=missing_current_tmux_row_selected,new_session_action,manage_servers_action,disconnect_action
