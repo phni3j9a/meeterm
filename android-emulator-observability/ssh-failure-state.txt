@@ -1,2 +1,6 @@
-connection_state=unavailable
-capture=credential_ui_may_be_visible
+connection_state=ready
+runtime_picker=no
+workspace_row=yes
+saved_servers_sheet=no
+switch_confirmation=no
+profile_connect_error=no

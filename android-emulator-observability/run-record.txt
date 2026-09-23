@@ -1,113 +1,146 @@
-meeterm Android smoke validation run record
-=============================================
+meeterm Android emulator validation — Issue #27 unified session switcher
+========================================================================
+commit           = 047af49 (issue-27-session-switcher; on top of 21f8b28)
+run started      = 2026-09-23 ~18:10 UTC
+builder          = devin-vm (Linux x86_64)
+emulator         = emulator-5554 / AVD meeterm_api36 (headless, API 36, x86_64)
+toolchain        = node v24.19.0 / npm 10.8.3 (blueprint pins 22.22.2 — known deviation, already reported)
+                   rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN), NDK 27.1.12297006, build-tools 36.0.0
+                   python 3.12.13, tmux 3.2a, gradle 9.3.1
+fresh artifacts  = YES — checkout reset to 047af49; npm ci; expo prebuild --clean; no reuse
 
-Candidate: 21f8b28720b4b5c57ef25a66afd1067d39ae7c78
-Branch: issue-27-session-switcher
-Suite: Android full validation (build + gates + 51-route screen manifest + real OpenSSH/tmux SSH flow) + Issue #27 switch-path re-verification
-VM: Devin Cloud Android validation box (persistent session)
-Date: 2026-09-23 UTC
-Result: FAIL — suite dies at daily_profile_management_open (ui_timeout),
-        a third latent contract break in the same unified-switcher family.
-        Both claimed fixes verified working; switch path re-verified.
+RESULT: FAIL — deterministic suite failure at daily_profile_switch_second_boundary
+                (session_switcher_timeout). Android-only platform gap:
+                deferred post-sheet actions are dispatched inside React Native
+                <Modal> onDismiss, which is iOS-only and never fires on Android.
 
-Environment / toolchain
------------------------
-- OS: Linux x86_64
-- Node: v24.19.0, npm 10.8.3 (DEVIATION: blueprint pins node 22.22.2 — same as prior runs)
-- Rust: 1.96.0 (ac68faa20 2026-05-25), RUSTUP_TOOLCHAIN=1.96.0
-- Android SDK: ANDROID_HOME=/home/ubuntu/android-sdk, NDK 27.1.12297006, build-tools 36.0.0
-- AVD: meeterm_api36, API 36, x86_64 (emulator-5554), headless, animation scales 0.0
-- tmux on fixture host: 3.2a
-- Fresh/reuse: FULLY FRESH — reset --hard, rm -rf android + artifacts, npm ci, expo prebuild, full assembleRelease.
-- Delta vs ad91680: 3 files, 11+/8- — App.tsx +1 line (ConnectionStatus restored in
-  workspaces serverRow), android-screen-fixtures.py host-key checker aligned to
-  native Alert dialog, test file.
+PER-STAGE RESULTS
+-----------------
+npm ci + expo prebuild --clean                 PASS  (~1m10s)
+:app:assembleRelease (arm64-v8a + x86_64,
+  Rust release)                                PASS  — BUILD SUCCESSFUL in 2m16s
+scripts/ci/android-smoke.sh (install, launch,
+  NATIVE_READY, FIRST_FRAME, same-PID,
+  no-ANR/no-crash)                             PASS
+android-screen-fixtures.py (51-route
+  observational manifest)                      51/51 captured — incl. all 20
+                                               session-switcher-* routes
+fixture.py + android-smoke.py (real OpenSSH
+  fixture SSH/tmux flow)                       FAIL  — stage
+                                               daily_profile_switch_second_boundary,
+                                               reason session_switcher_timeout
+                                               (run ~25min; suite reached the
+                                               second-profile switch stage)
 
-Stage results
--------------
-1. npm ci + expo prebuild: PASS
-2. assembleRelease (arm64-v8a,x86_64, Rust release): PASS — BUILD SUCCESSFUL 2m19s
-3. android-smoke.sh gates: PASS
-4. android-screen-fixtures.py — 51 routes: **51/51 captured** (host-key pair now passes
-   with the Alert-dialog-aligned checker; verified: 'Trust this SSH host?' title,
-   SHA256 fingerprint inside the multi-line message, CANCEL/TRUST AND CONTINUE)
-5. fixture.py + android-smoke.py real SSH/tmux flow: FAIL
-   stage=daily_profile_management_open, reason=ui_timeout
-   completed=...host_key_verified, initial_runtime_selection_runtime_picker_ready,
-             initial_runtime_selection_runtime_picker_selected,
-             initial_runtime_selection_runtime_connected, connected
-   => 'Connected' chip fix confirmed: runtime_connected now passes and the suite
-      reached `connected`; it then died at the NEXT surface contract.
+What WORKED (new this commit, verified by the suite reaching the stage)
+- daily_profile_management_open: PASS — the restored "Saved servers" row in
+  the Server connection menu sheet opens the profile-management sheet
+  (tap_action "Saved servers" now resolves; menu row confirmed live).
+- daily_profile_edited + daily_second_profile_saved: PASS — profile
+  edit/rename + second profile save completed.
+- Host-key fixture pair + all switcher fixture routes still pass (51/51).
+- Connected chip restored (suite passed runtime_connected → connected).
 
-Suite failure root cause (verified in source + live surfaces)
--------------------------------------------------------------
-exercise_saved_profile_management (android_smoke_impl.py:3827) opens the saved
-servers sheet via tap_action(device, "daily_profile_management_open",
-("Saved servers",)) — i.e. it taps a node whose text/content-desc is exactly
-'Saved servers'.
+FAILURE ANALYSIS (verified three ways)
+--------------------------------------
+Stage: daily_profile_switch_second_boundary / session_switcher_timeout
 
-On ed43536 the connected workspaces header's server target carried
-accessibilityLabel='Saved servers' (it opened the servers sheet directly).
-The unified-switcher refactor replaced that target with
-'Switch server and session, {srv}, {sess}' and absorbed the saved-servers
-entry point into the switcher sheet's 'Manage servers' action.
+The updated driver flow (android_smoke_impl.py:3764+): in the Saved servers
+sheet, tap the connected-surface "other" saved profile → the app is designed to
+expand that profile inside the unified session switcher → wait for switcher
+rows labeled "tmux session {sess} on {profile} ({user}@{host}:{port})" → select
+explicitly → Connected + workspace row.
 
-On 21f8b28's connected workspaces surface there is NO node matching
-'Saved servers':
-- serverRow: switcher target + ConnectionStatus + 'Server connection' menu only
-- 'Saved servers' exists only as (a) the a11y label of the 'Manage servers'
-  button inside savedHome — rendered only when !attempted (disconnected home),
-  and (b) the NativeSheet title once the sheet is already open — unreachable
-  without first opening the sheet via 'Manage servers' inside the switcher or
-  the disconnected home.
-=> Deterministic ui_timeout; the daily-profile flow (edit/switch/delete) and
-   every subsequent stage can never start. Not a flake.
+App-side mechanism (App.tsx:3222-3231): the connected profile tap sets
+  switcherProfileAfterServerSheetRef.current = profile; setSheet(null);
+and NativeSheet's onDismiss handler (App.tsx:3644-3660) then consumes the ref
+and calls openSessionSwitcher(target).
 
-Fix options for the candidate: expose a 'Saved servers' (or suite-known)
-affordance on the connected workspaces surface — e.g. restore a labeled row,
-or add a 'Saved servers' entry to the server menu sheet — or update the driver
-to navigate switcher -> 'Manage servers'.
+ROOT CAUSE — NativeSheet is an RN <Modal> (App.tsx:748) whose dismiss logic is
+wired ONLY through the Modal `onDismiss` prop. react-native's own source says:
+  node_modules/react-native/Libraries/Modal/Modal.js:318-320
+  "OnDismiss is implemented on iOS only."
+On Android the callback never fires, so the ref is never consumed and
+openSessionSwitcher is never invoked — the sheet simply closes to the plain
+workspaces list. DETERMINISTIC (not a flake, not a timing race).
 
-Issue #27 switch-path re-verification (quick pass, per request)
----------------------------------------------------------------
-Native unchanged since 8835e03; this commit's delta is the restored
-ConnectionStatus line + checker only. Verified live on fixture fx1
-(10.0.2.2:34379) with a fresh connect:
+Failure evidence:
+- ssh-failure-state.txt at timeout: connection_state=ready, workspace_row=yes,
+  saved_servers_sheet=no, runtime_picker=no — sheet closed, no switcher.
+- ssh-terminal-failure.png: clean workspaces list (Android daily fixture ·
+  meeterm + Connected), no sheet/dialog.
+- LIVE REPRO (same build, manual drive): Workspaces → Server connection →
+  "Switch session" menu row (the sibling deferred branch,
+  openSwitcherAfterServerMenuRef — same mechanism) → sheet closes → plain
+  workspaces, NO session switcher. Byte-identical dead-end.
 
-- Fresh connect -> picker ('tmux runtime meeterm'/'second' rendered,
-  Running) -> select 'meeterm' -> Ready on workspaces WITH 'Connected' chip
-  present (the restored fix, verified live).
-- Open switcher -> select 'tmux session second' -> Ready on
-  '10.0.2.2 · second', 'Connected' visible -> marker + input round-trip on
-  second's pane %6: /tmp/i27-21f8b28-marker.txt = 'i27-21f8b28-second:37448'
-  (pane_pid 37448). 'meeterm' session survives ($0 intact).
-- Items 1-5 status carried over from ad91680 (all VERIFIED there this run
-  series: same-server switch, cross-server direct-to-Ready + correct
-  fingerprint, Close-returns-to-workspace, close+explicit re-selection,
-  fail-closed recovery surface). Same-server switch + chip + marker
-  re-confirmed on this commit above; remaining items unchanged by this diff.
+Sibling latent breaks — the same iOS-only onDismiss dispatch is used for every
+deferred post-sheet action, so all of these are dead on Android:
+  * openSwitcherAfterServerMenuRef     (menu "Switch session" row)
+  * switcherProfileAfterServerSheetRef (connected saved-profile tap — the suite path)
+  * reopenSwitcherAfterManageRef       (reopen switcher after manage-servers)
+The mechanism has existed since 8233a2e (initial unified switcher) and was
+latent on Android — earlier suite stages never drove these surfaces (items 1–5
+were verified through the header `open-session-switcher` target, which calls
+openSessionSwitcher() directly and is UNAFFECTED).
 
-Screen-fixture results (51 routes)
-----------------------------------
-All 51 captured — first full-manifest pass on this branch.
-session-switcher-host-key{,-dark} now pass against the native dialog.
+Fix direction: dispatch deferred actions where the sheet actually closes —
+e.g. call openSessionSwitcher(profile) directly after setSheet(null) at the
+connectSavedProfile call-site (pending-modal ordering), or move dispatch to a
+useEffect keyed on `sheet` transition / into a shared closeSheet() wrapper or
+Modal onRequestClose — anything but Modal.onDismiss.
 
-Commands (verbatim)
--------------------
-git fetch origin && git reset --hard 21f8b28720b4b5c57ef25a66afd1067d39ae7c78
+ISSUE #27 MANUAL RE-VERIFICATION (quick, per request — items verified on
+ad91680; this commit touches serverRow + checker + smoke driver only, native
+unchanged since 8835e03)
+---------------------------------------------------------------------------------
+Setup: persistent fixtures (env-file mode) —
+  fx1 10.0.2.2:35061  socket .../meeterm-ssh-fixture-gjef5yun/...  sessions
+      meeterm $0 + second $1 (sh panes %4/%5)
+  fx2 10.0.2.2:33781  socket .../meeterm-ssh-fixture-3izrasas/...  sessions
+      meeterm + other
+
+Item 1 — same-server switch: VERIFIED
+  Connected fresh to fx1 → selected `tmux runtime meeterm` → Ready + Connected
+  chip → opened switcher via header target `Switch server and session` →
+  TMUX section listed `tmux session meeterm on 10.0.2.2` AND
+  `tmux session second on 10.0.2.2` → selected `second` → app returned Ready:
+  `10.0.2.2 · second` + Connected chip → remote marker via real input
+  `i27-047af49-second` executed on second's pane (%4, sh) → `meeterm $0`
+  remains alive on the server (list-sessions: $0 meeterm, $1 second).
+Item 2 — cross-server switch: carried over VERIFIED from ad91680 run
+  (this diff is serverRow + checker + driver only; switcher/native unchanged).
+  The servers-sheet expansion path is the one broken on Android (see root
+  cause) — noted as the same defect, not a regression of item 2.
+Item 3 — cancel/no-destruction: carried over VERIFIED (unchanged surface).
+Item 4 — close + fresh explicit selection / recovery: carried over VERIFIED
+  (native unchanged since 8835e03; pm-clear → no auto-attach → explicit select).
+Item 5 — switcher captures: seeded session-switcher-* 20/20 present in bundle;
+  live switcher state captured during item 1 drive.
+
+SUITE MARKER VOCABULARY OBSERVED
+  completed=...,daily_profile_edited,daily_second_profile_saved
+  stage=daily_profile_switch_second_boundary reason=session_switcher_timeout
+  (expected boundary markers daily_profile_switch_{second,primary}_boundary_
+  session_switcher never emitted — boundary never reached)
+
+Commands run (exact)
+--------------------
+git fetch origin && git reset --hard 047af49
 rm -rf android artifacts/android-emulator-observability && npm ci
-npx expo prebuild --platform android --non-interactive --no-install
+npx expo prebuild --platform android --clean --non-interactive --no-install
 (cd android) NODE_ENV=production EXPO_PUBLIC_MEETERM_SMOKE=1 RUSTUP_TOOLCHAIN=1.96.0 \
   ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 \
-  -PmeetermRustProfile=release --no-daemon --stacktrace
+  -PmeetermRustProfile=release --no-daemon --stacktrace   # 2m16s
+emulator -avd meeterm_api36 -no-window -gpu swiftshader_indirect -no-snapshot \
+  -noaudio -no-boot-anim -camera-back none -cores 4 -memory 4096
 GITHUB_WORKSPACE=$PWD GITHUB_ACTIONS=true scripts/ci/android-smoke.sh
 python3 scripts/ci/android-screen-fixtures.py --artifact-dir artifacts/android-emulator-observability
 adb shell pm clear dev.meeterm.app
 python3 scripts/ssh/fixture.py -- python3 scripts/ssh/android-smoke.py \
-  --artifact-dir artifacts/android-emulator-observability   # FAIL: daily_profile_management_open ui_timeout
-GITHUB_WORKSPACE=$PWD scripts/ci/finalize-evidence.sh android-emulator-observability
+  --artifact-dir artifacts/android-emulator-observability   # FAIL ~25min
+# Issue-27 re-verify: uiautomator + tmux markers on persistent fixtures
+#   fx1 :35061 (meetterm+second), fx2 :33781 (meetterm+other)
 
-Evidence policy
----------------
-Sanitized bundle: no credentials, private keys, auth material, or APK.
-Environment intact: emulator running, both fixtures alive, checkout at 21f8b28.
+Environment left intact: emulator running; checkout at 047af49; artifacts/
+preserved; persistent fixtures fx1/fx2 alive with sessions for follow-up.
