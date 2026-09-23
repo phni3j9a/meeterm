@@ -230,7 +230,8 @@ pub(crate) fn restore_remote_display_and_ready(
         .map_err(|_| TerminalError::RegistryPoisoned)?;
     terminal.preflight_remote_display(generation, columns, rows)?;
     terminal.restore_remote_display_after_preflight(generation, columns, rows, bytes);
-    terminal.mark_transport_ready_after_preflight(generation);
+    let was_suspended = terminal.prepare_transport_ready_after_preflight(generation)?;
+    terminal.mark_transport_ready_after_preflight(generation, was_suspended);
     Ok(())
 }
 
@@ -242,10 +243,10 @@ pub(crate) fn terminal_dimensions(id: TerminalId) -> Result<(u16, u16), Terminal
     with_terminal(id, |terminal| Ok(terminal.dimensions()))
 }
 
-/// Read the per-terminal operation epoch used to reject delayed native input
-/// after a transport/controller binding has been revoked and reacquired.
+/// Read the current opaque token used to reject delayed native input after a
+/// transport/controller binding has been revoked and reacquired.
 pub(crate) fn operation_epoch(id: TerminalId) -> Result<u64, TerminalError> {
-    with_terminal(id, |terminal| Ok(terminal.operation_epoch()))
+    with_terminal(id, |terminal| terminal.operation_epoch())
 }
 
 pub fn resize_terminal(id: TerminalId, columns: u16, rows: u16) -> Result<(), TerminalError> {
@@ -367,11 +368,14 @@ pub(crate) fn restore_strict_capture_batch(
         );
     }
 
-    // The gate transition is the final part of the native batch. It cannot
-    // fail after the matching Attached binding was preflighted while the same
-    // Terminal lock was held.
-    for terminal in &mut locked {
-        terminal.mark_transport_ready_after_preflight(generation);
+    // Reserve every required token before publishing any Ready gate. Token
+    // exhaustion therefore leaves the entire batch input-closed.
+    let readiness = locked
+        .iter_mut()
+        .map(|terminal| terminal.prepare_transport_ready_after_preflight(generation))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (terminal, was_suspended) in locked.iter_mut().zip(readiness) {
+        terminal.mark_transport_ready_after_preflight(generation, was_suspended);
     }
     Ok(())
 }

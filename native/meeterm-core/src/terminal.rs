@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -15,6 +15,28 @@ use crate::input::{
     KeyCode, Modifiers, SpecialKey, encode_key, encode_special_key_for_mode, encode_text,
 };
 use crate::snapshot::{Snapshot, Theme};
+
+static NEXT_OPERATION_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+fn issue_operation_token_from(next_token: &AtomicU64) -> Option<u64> {
+    loop {
+        let token = next_token.load(Ordering::Relaxed);
+        if token == 0 {
+            return None;
+        }
+        let next = token.checked_add(1).unwrap_or(0);
+        if next_token
+            .compare_exchange_weak(token, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(token);
+        }
+    }
+}
+
+fn issue_operation_token() -> Option<u64> {
+    issue_operation_token_from(&NEXT_OPERATION_TOKEN)
+}
 
 /// The fixed byte stream used by the first native vertical slice.
 ///
@@ -291,13 +313,13 @@ pub struct Terminal {
     content_revision: u64,
     remote_mode: bool,
     remote_generation: Option<u64>,
-    /// Nonzero token for the currently usable native operation boundary.
+    /// Opaque token for the currently usable native operation boundary.
     ///
     /// This is deliberately separate from the SSH connection generation.  A
     /// controller can be revoked and reacquired within one SSH generation, so
     /// delayed native input must carry this token and be checked again when it
     /// completes.
-    operation_epoch: u64,
+    operation_epoch: Option<u64>,
     transport_overloaded: Arc<AtomicBool>,
     outbound: TransportSlot,
     /// A generation change on an already remote terminal is a same-process
@@ -318,6 +340,8 @@ pub struct Terminal {
 impl Terminal {
     pub fn new(columns: u16, rows: u16) -> Result<Self, TerminalError> {
         validate_dimensions(columns, rows)?;
+        let operation_epoch =
+            issue_operation_token().ok_or(TerminalError::RemoteGenerationMismatch)?;
 
         let dimensions = TerminalDimensions {
             columns: usize::from(columns),
@@ -341,7 +365,7 @@ impl Terminal {
             content_revision: 0,
             remote_mode: false,
             remote_generation: None,
-            operation_epoch: 1,
+            operation_epoch: Some(operation_epoch),
             transport_overloaded,
             outbound,
             preserve_history_on_capture: false,
@@ -438,11 +462,11 @@ impl Terminal {
         self.resize_validated(columns, rows, None);
     }
 
-    fn advance_operation_epoch(&mut self) {
-        // Exhausting a u64 epoch is not reachable through the bounded native
-        // lifecycle.  Saturation nevertheless keeps the public invariant that
-        // the value is never zero and never moves backwards.
-        self.operation_epoch = self.operation_epoch.saturating_add(1).max(1);
+    fn advance_operation_epoch(&mut self) -> Result<(), TerminalError> {
+        self.operation_epoch = issue_operation_token();
+        self.operation_epoch
+            .map(|_| ())
+            .ok_or(TerminalError::RemoteGenerationMismatch)
     }
 
     fn revoke_transport(&mut self) -> Result<(), TerminalError> {
@@ -455,8 +479,7 @@ impl Terminal {
         gate.suspended_from = None;
         drop(gate);
         self.transport_overloaded.store(false, Ordering::Release);
-        self.advance_operation_epoch();
-        Ok(())
+        self.advance_operation_epoch()
     }
 
     /// Switch this terminal to the SSH data path.
@@ -542,6 +565,7 @@ impl Terminal {
     }
 
     fn replace_term(&mut self, columns: u16, rows: u16) {
+        self.operation_epoch = issue_operation_token();
         let dimensions = TerminalDimensions {
             columns: usize::from(columns),
             screen_lines: usize::from(rows),
@@ -555,6 +579,16 @@ impl Terminal {
             },
         );
         self.processor = Processor::new();
+        if self.operation_epoch.is_none() {
+            // A replacement Term without an operation token must never keep
+            // using the old transport as an input target.
+            if let Ok(mut gate) = self.outbound.lock() {
+                gate.binding = None;
+                gate.readiness = TransportReadiness::Revoked;
+                gate.suspended_from = None;
+            }
+            self.transport_overloaded.store(false, Ordering::Release);
+        }
     }
 
     pub(crate) fn attach_transport(
@@ -581,8 +615,7 @@ impl Terminal {
         self.transport_overloaded.store(false, Ordering::Release);
         // Attaching a fresh sender is a new operation boundary even when the
         // SSH connection generation is unchanged.
-        self.advance_operation_epoch();
-        Ok(())
+        self.advance_operation_epoch()
     }
 
     pub(crate) fn attach_semantic_transport(
@@ -609,8 +642,7 @@ impl Terminal {
         self.transport_overloaded.store(false, Ordering::Release);
         // Attaching a fresh sender is a new operation boundary even when the
         // SSH connection generation is unchanged.
-        self.advance_operation_epoch();
-        Ok(())
+        self.advance_operation_epoch()
     }
 
     pub(crate) fn restore_screen(
@@ -907,7 +939,7 @@ impl Terminal {
         };
         if revoked {
             self.transport_overloaded.store(false, Ordering::Release);
-            self.advance_operation_epoch();
+            let _ = self.advance_operation_epoch();
         }
     }
 
@@ -933,14 +965,31 @@ impl Terminal {
             gate.suspended_from = Some(TransportReadiness::Ready);
             return true;
         }
-        if gate.readiness != TransportReadiness::Ready {
-            gate.readiness = TransportReadiness::Ready;
-            drop(gate);
-            // Ready is a distinct boundary from merely having a sender.  A
-            // callback that captured the attached epoch cannot become valid
-            // just because its completion races with the first frame.
-            self.advance_operation_epoch();
+        if gate.readiness == TransportReadiness::Ready {
+            return true;
         }
+        drop(gate);
+
+        // Ready is a distinct boundary from merely having a sender. A
+        // callback that captured the attached token cannot become valid just
+        // because its completion races with the first frame. Keep the gate
+        // Attached if the process-wide allocator has been exhausted.
+        if self.advance_operation_epoch().is_err() {
+            return false;
+        }
+        let Ok(mut gate) = self.outbound.lock() else {
+            self.operation_epoch = None;
+            return false;
+        };
+        let binding_matches = gate
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.generation() == generation);
+        if !binding_matches || gate.readiness != TransportReadiness::Attached {
+            self.operation_epoch = None;
+            return false;
+        }
+        gate.readiness = TransportReadiness::Ready;
         true
     }
 
@@ -952,7 +1001,7 @@ impl Terminal {
         if !self.remote_mode || self.remote_generation != Some(generation) {
             return false;
         }
-        let Ok(mut gate) = self.outbound.lock() else {
+        let Ok(gate) = self.outbound.lock() else {
             return false;
         };
         let Some(binding) = gate.binding.as_ref() else {
@@ -967,11 +1016,24 @@ impl Terminal {
         ) {
             return true;
         }
-        gate.suspended_from = Some(gate.readiness);
-        gate.readiness = TransportReadiness::Suspended;
+        let previous = gate.readiness;
         drop(gate);
-        self.advance_operation_epoch();
-        true
+        self.operation_epoch = issue_operation_token();
+        let Ok(mut gate) = self.outbound.lock() else {
+            self.operation_epoch = None;
+            return false;
+        };
+        let binding_matches = gate
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.generation() == generation);
+        if !binding_matches || gate.readiness != previous {
+            self.operation_epoch = None;
+            return false;
+        }
+        gate.suspended_from = Some(previous);
+        gate.readiness = TransportReadiness::Suspended;
+        self.operation_epoch.is_some()
     }
 
     /// Re-arm a matching transport after the app returns to the foreground.
@@ -982,7 +1044,7 @@ impl Terminal {
         if !self.remote_mode || self.remote_generation != Some(generation) {
             return false;
         }
-        let Ok(mut gate) = self.outbound.lock() else {
+        let Ok(gate) = self.outbound.lock() else {
             return false;
         };
         let Some(binding) = gate.binding.as_ref() else {
@@ -996,15 +1058,33 @@ impl Terminal {
         }
         let previous = gate
             .suspended_from
-            .take()
+            .as_ref()
+            .copied()
             .unwrap_or(TransportReadiness::Ready);
         debug_assert!(matches!(
             previous,
             TransportReadiness::Attached | TransportReadiness::Ready
         ));
-        gate.readiness = previous;
         drop(gate);
-        self.advance_operation_epoch();
+
+        self.operation_epoch = issue_operation_token();
+        if self.operation_epoch.is_none() {
+            return false;
+        }
+        let Ok(mut gate) = self.outbound.lock() else {
+            self.operation_epoch = None;
+            return false;
+        };
+        let binding_matches = gate
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.generation() == generation);
+        if !binding_matches || gate.readiness != TransportReadiness::Suspended {
+            self.operation_epoch = None;
+            return false;
+        }
+        gate.suspended_from = None;
+        gate.readiness = previous;
         true
     }
 
@@ -1012,7 +1092,43 @@ impl Terminal {
     /// has already checked the binding while holding this Terminal mutex, and
     /// no code invoked by capture replay can mutate the gate, so this helper is
     /// intentionally infallible.
-    pub(crate) fn mark_transport_ready_after_preflight(&mut self, generation: u64) {
+    pub(crate) fn prepare_transport_ready_after_preflight(
+        &mut self,
+        generation: u64,
+    ) -> Result<bool, TerminalError> {
+        if !self.remote_mode || self.remote_generation != Some(generation) {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        let gate = self
+            .outbound
+            .lock()
+            .map_err(|_| TerminalError::RegistryPoisoned)?;
+        if gate
+            .binding
+            .as_ref()
+            .is_none_or(|binding| binding.generation() != generation)
+        {
+            return Err(TerminalError::RemoteGenerationMismatch);
+        }
+        if !matches!(
+            gate.readiness,
+            TransportReadiness::Attached | TransportReadiness::Suspended
+        ) {
+            return Err(TerminalError::InputNotReady);
+        }
+        let was_suspended = gate.readiness == TransportReadiness::Suspended;
+        drop(gate);
+        if !was_suspended {
+            self.advance_operation_epoch()?;
+        }
+        Ok(was_suspended)
+    }
+
+    pub(crate) fn mark_transport_ready_after_preflight(
+        &mut self,
+        generation: u64,
+        was_suspended: bool,
+    ) {
         debug_assert!(self.remote_mode && self.remote_generation == Some(generation));
         // A poisoned gate is recoverable here: the preflight already proved
         // that the binding exists, and this is the final non-fallible state
@@ -1031,7 +1147,6 @@ impl Terminal {
                 .as_ref()
                 .is_some_and(|binding| binding.generation() == generation)
         );
-        let was_suspended = gate.readiness == TransportReadiness::Suspended;
         if was_suspended {
             // The full capture is the first-frame proof even while the app is
             // hidden. Keep the gate Suspended, but let the later actor wake
@@ -1041,9 +1156,6 @@ impl Terminal {
             gate.readiness = TransportReadiness::Ready;
         }
         drop(gate);
-        if !was_suspended {
-            self.advance_operation_epoch();
-        }
     }
 
     pub(crate) fn feed_remote(&mut self, generation: u64, bytes: &[u8]) -> bool {
@@ -1087,7 +1199,7 @@ impl Terminal {
     }
 
     fn require_operation_epoch(&self, expected_epoch: u64) -> Result<(), TerminalError> {
-        if expected_epoch == 0 || self.operation_epoch != expected_epoch {
+        if expected_epoch == 0 || self.operation_epoch != Some(expected_epoch) {
             return Err(TerminalError::RemoteGenerationMismatch);
         }
         Ok(())
@@ -1548,9 +1660,10 @@ impl Terminal {
         self.input_commit_count
     }
 
-    /// Return the current nonzero operation epoch for delayed native input.
-    pub(crate) fn operation_epoch(&self) -> u64 {
+    /// Return the current operation token for delayed native input.
+    pub(crate) fn operation_epoch(&self) -> Result<u64, TerminalError> {
         self.operation_epoch
+            .ok_or(TerminalError::RemoteGenerationMismatch)
     }
 
     pub(crate) fn content_revision(&self) -> u64 {
@@ -1637,4 +1750,34 @@ fn validate_dimensions(columns: u16, rows: u16) -> Result<(), TerminalError> {
         return Err(TerminalError::InvalidDimensions);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod operation_token_allocator_tests {
+    use super::{Terminal, TerminalError, issue_operation_token_from};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn operation_token_allocator_fails_closed_at_u64_exhaustion() {
+        let allocator = AtomicU64::new(u64::MAX);
+        assert_eq!(issue_operation_token_from(&allocator), Some(u64::MAX));
+        assert_eq!(issue_operation_token_from(&allocator), None);
+        assert_eq!(issue_operation_token_from(&allocator), None);
+        assert_eq!(allocator.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn terminal_without_a_token_rejects_delayed_operations() {
+        let mut terminal = Terminal::new(24, 4).expect("valid terminal");
+        terminal.operation_epoch = None;
+
+        assert_eq!(
+            terminal.operation_epoch(),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+        assert_eq!(
+            terminal.commit_utf8_at_epoch(1, b"must not be accepted"),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+    }
 }

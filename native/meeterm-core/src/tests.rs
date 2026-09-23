@@ -434,14 +434,17 @@ fn stale_operation_epoch_cannot_write_after_detach_and_fresh_ready() {
         .attach_transport(47, input_sender, resize_sender)
         .unwrap();
     terminal.mark_transport_ready(47);
-    let stale_epoch = terminal.operation_epoch();
+    let stale_epoch = terminal.operation_epoch().expect("ready operation token");
     assert_ne!(stale_epoch, 0);
 
     assert_eq!(terminal.commit_utf8_at_epoch(stale_epoch, b"before"), Ok(1));
     assert_eq!(input_receiver.try_recv().unwrap(), b"before");
 
     terminal.detach_transport(47);
-    assert!(terminal.operation_epoch() > stale_epoch);
+    assert_ne!(
+        terminal.operation_epoch().expect("revoked operation token"),
+        stale_epoch
+    );
     assert_eq!(
         terminal.commit_utf8_at_epoch(stale_epoch, b"stale commit"),
         Err(TerminalError::RemoteGenerationMismatch)
@@ -458,8 +461,8 @@ fn stale_operation_epoch_cannot_write_after_detach_and_fresh_ready() {
         .attach_transport(47, fresh_sender, fresh_resize)
         .unwrap();
     terminal.mark_transport_ready(47);
-    let fresh_epoch = terminal.operation_epoch();
-    assert!(fresh_epoch > stale_epoch);
+    let fresh_epoch = terminal.operation_epoch().expect("fresh operation token");
+    assert_ne!(fresh_epoch, stale_epoch);
 
     // The old completion remains stale even though the new binding is Ready.
     assert_eq!(
@@ -523,10 +526,10 @@ fn registry_exposes_and_enforces_terminal_operation_epoch() {
     let (resize_sender, _) = watch::channel((24, 4));
     crate::registry::prepare_pane_transport(id, 48, (24, 4), input_sender, resize_sender).unwrap();
     let attached = crate::registry::operation_epoch(id).unwrap();
-    assert!(attached > initial);
+    assert_ne!(attached, initial);
     assert!(crate::registry::mark_transport_ready(id, 48));
     let ready = crate::registry::operation_epoch(id).unwrap();
-    assert!(ready > attached);
+    assert_ne!(ready, attached);
     assert_eq!(
         crate::registry::commit_utf8_at_epoch(id, ready, b"one"),
         Ok(1)
@@ -534,13 +537,170 @@ fn registry_exposes_and_enforces_terminal_operation_epoch() {
     assert_eq!(input_receiver.try_recv().unwrap(), b"one");
 
     crate::registry::detach_transport(id, 48);
-    assert!(crate::registry::operation_epoch(id).unwrap() > ready);
+    assert_ne!(crate::registry::operation_epoch(id).unwrap(), ready);
     assert_eq!(
         crate::registry::commit_utf8_at_epoch(id, ready, b"stale"),
         Err(TerminalError::RemoteGenerationMismatch)
     );
     assert!(input_receiver.try_recv().is_err());
     assert!(destroy_terminal(id));
+}
+
+#[test]
+fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
+    let prepare_ready_terminal = |generation| {
+        let id = create_terminal(80, 24).expect("promotion test terminal");
+        let (input_sender, input_receiver) = mpsc::channel(16);
+        let (resize_sender, resize_receiver) = watch::channel((80, 24));
+        crate::registry::prepare_pane_transport(
+            id,
+            generation,
+            (80, 24),
+            input_sender,
+            resize_sender,
+        )
+        .expect("attach promotion test transport");
+        assert!(crate::registry::mark_transport_ready(id, generation));
+        (id, input_receiver, resize_receiver)
+    };
+
+    let (public_id, _source_input, _source_resize) = prepare_ready_terminal(10_001);
+    let token_a = crate::registry::operation_epoch(public_id).expect("source token A");
+    crate::registry::detach_transport(public_id, 10_001);
+
+    let (first_provisional, mut first_input, _first_resize) = prepare_ready_terminal(10_002);
+    let first_root = crate::registry::shared_terminal(first_provisional).expect("first new root");
+    let token_b = crate::registry::operation_epoch(first_provisional).expect("candidate token B");
+    assert_ne!(
+        token_a, token_b,
+        "independent Terms must not issue the same operation token"
+    );
+    crate::registry::promote_terminal(first_provisional, public_id).expect("first root promotion");
+    assert!(std::sync::Arc::ptr_eq(
+        &first_root,
+        &crate::registry::shared_terminal(public_id).expect("same public root after switch")
+    ));
+    assert_eq!(crate::registry::operation_epoch(public_id), Ok(token_b));
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(public_id, token_a, b"old source"),
+        Err(TerminalError::RemoteGenerationMismatch)
+    );
+    assert!(first_input.try_recv().is_err());
+
+    crate::registry::detach_transport(public_id, 10_002);
+    let (second_provisional, mut current_input, mut current_resize) =
+        prepare_ready_terminal(10_003);
+    let second_root = crate::registry::shared_terminal(second_provisional).expect("second root");
+    let token_c = crate::registry::operation_epoch(second_provisional).expect("candidate token C");
+    crate::registry::promote_terminal(second_provisional, public_id)
+        .expect("second root promotion");
+    assert!(std::sync::Arc::ptr_eq(
+        &second_root,
+        &crate::registry::shared_terminal(public_id).expect("same public root after second switch")
+    ));
+    assert_ne!(token_a, token_c);
+    assert_ne!(token_b, token_c);
+    assert_eq!(crate::registry::operation_epoch(public_id), Ok(token_c));
+
+    for stale_token in [token_a, token_b] {
+        assert_eq!(
+            crate::registry::commit_utf8_at_epoch(public_id, stale_token, b"stale commit"),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+        assert_eq!(
+            crate::registry::paste_utf8_at_epoch(public_id, stale_token, b"stale paste"),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+        assert_eq!(
+            crate::registry::send_special_key_at_epoch(public_id, stale_token, SpecialKey::Up),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+        assert_eq!(
+            crate::registry::send_key_at_epoch(
+                public_id,
+                stale_token,
+                KeyCode::Up as u32,
+                Modifiers::CTRL.bits()
+            ),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+        assert_eq!(
+            crate::registry::commit_modified_utf8_at_epoch(
+                public_id,
+                stale_token,
+                b"stale modified text",
+                Modifiers::ALT.bits()
+            ),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+        assert_eq!(
+            crate::registry::resize_terminal_at_epoch(public_id, stale_token, 100, 30),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+    }
+    assert!(current_input.try_recv().is_err());
+    assert!(
+        !current_resize
+            .has_changed()
+            .expect("resize watch remains open")
+    );
+
+    assert_eq!(
+        crate::registry::commit_utf8_at_epoch(public_id, token_c, b"current"),
+        Ok(1)
+    );
+    assert_eq!(current_input.try_recv().expect("current input"), b"current");
+    assert_eq!(
+        crate::registry::paste_utf8_at_epoch(public_id, token_c, b"paste"),
+        Ok(5)
+    );
+    assert_eq!(current_input.try_recv().expect("current paste"), b"paste");
+    assert!(crate::registry::send_special_key_at_epoch(public_id, token_c, SpecialKey::Up).is_ok());
+    assert_eq!(
+        current_input.try_recv().expect("current special key"),
+        encode_special_key(SpecialKey::Up)
+    );
+    assert!(
+        crate::registry::send_key_at_epoch(
+            public_id,
+            token_c,
+            KeyCode::Up as u32,
+            Modifiers::CTRL.bits()
+        )
+        .is_ok()
+    );
+    assert!(
+        !current_input
+            .try_recv()
+            .expect("current modified key")
+            .is_empty()
+    );
+    assert!(
+        crate::registry::commit_modified_utf8_at_epoch(
+            public_id,
+            token_c,
+            b"modified text",
+            Modifiers::ALT.bits()
+        )
+        .is_ok()
+    );
+    assert!(
+        !current_input
+            .try_recv()
+            .expect("current modified text")
+            .is_empty()
+    );
+    crate::registry::resize_terminal_at_epoch(public_id, token_c, 100, 30)
+        .expect("current token resize");
+    assert!(
+        current_resize
+            .has_changed()
+            .expect("resize watch remains open")
+    );
+    assert_eq!(*current_resize.borrow_and_update(), (100, 30));
+    assert!(current_input.try_recv().is_err());
+
+    assert!(destroy_terminal(public_id));
 }
 
 #[test]
@@ -559,29 +719,21 @@ fn suspended_transport_retains_binding_and_requires_a_fresh_operation_epoch() {
     // the later foreground transition look like a completed frame proof.
     assert!(crate::registry::suspend_transport(id, 48));
     let suspended_attached_epoch = crate::registry::operation_epoch(id).expect("suspended epoch");
-    assert_eq!(
-        suspended_attached_epoch,
-        attached_epoch.saturating_add(1),
-        "Attached -> Suspended advances exactly once"
-    );
+    assert_ne!(suspended_attached_epoch, attached_epoch);
     assert!(!crate::registry::transport_ready(id, 48));
     assert!(crate::registry::resume_transport(id, 48));
     let resumed_attached_epoch = crate::registry::operation_epoch(id).expect("resumed epoch");
-    assert_eq!(
-        resumed_attached_epoch,
-        suspended_attached_epoch.saturating_add(1),
-        "Suspended -> Attached advances exactly once"
-    );
+    assert_ne!(resumed_attached_epoch, suspended_attached_epoch);
     assert!(!crate::registry::transport_ready(id, 48));
     assert!(crate::registry::mark_transport_ready(id, 48));
     let ready_epoch = crate::registry::operation_epoch(id).expect("ready epoch");
-    assert_eq!(ready_epoch, resumed_attached_epoch.saturating_add(1));
+    assert_ne!(ready_epoch, resumed_attached_epoch);
     assert!(crate::registry::transport_ready(id, 48));
 
     let before_snapshot = crate::registry::snapshot(id).expect("snapshot before suspend");
     assert!(crate::registry::suspend_transport(id, 48));
     let suspended_epoch = crate::registry::operation_epoch(id).expect("ready suspended epoch");
-    assert_eq!(suspended_epoch, ready_epoch.saturating_add(1));
+    assert_ne!(suspended_epoch, ready_epoch);
     assert!(crate::registry::suspend_transport(id, 48));
     assert_eq!(
         crate::registry::operation_epoch(id).expect("repeated suspended epoch"),
@@ -656,7 +808,7 @@ fn suspended_transport_retains_binding_and_requires_a_fresh_operation_epoch() {
     assert!(!crate::registry::transport_ready(id, 48));
     assert!(crate::registry::resume_transport(id, 48));
     let fresh_epoch = crate::registry::operation_epoch(id).expect("fresh epoch");
-    assert_eq!(fresh_epoch, suspended_epoch.saturating_add(1));
+    assert_ne!(fresh_epoch, suspended_epoch);
     assert!(crate::registry::transport_ready(id, 48));
     assert_eq!(
         crate::registry::commit_utf8_at_epoch(id, fresh_epoch, b"fresh"),

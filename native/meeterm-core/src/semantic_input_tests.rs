@@ -121,7 +121,9 @@ fn semantic_transport_rejects_stale_generation_and_detach() {
 #[test]
 fn semantic_paste_epoch_stays_stale_after_rebind() {
     let (mut terminal, mut receiver) = semantic_terminal(78, 4);
-    let stale_epoch = terminal.operation_epoch();
+    let stale_epoch = terminal
+        .operation_epoch()
+        .expect("semantic operation token");
 
     assert_eq!(
         terminal.paste_utf8_at_epoch(stale_epoch, b"before"),
@@ -144,8 +146,8 @@ fn semantic_paste_epoch_stays_stale_after_rebind() {
         .attach_semantic_transport(78, sender, resize)
         .expect("fresh semantic transport");
     terminal.mark_transport_ready(78);
-    let fresh_epoch = terminal.operation_epoch();
-    assert!(fresh_epoch > stale_epoch);
+    let fresh_epoch = terminal.operation_epoch().expect("fresh semantic token");
+    assert_ne!(fresh_epoch, stale_epoch);
 
     assert_eq!(
         terminal.paste_utf8_at_epoch(stale_epoch, b"still stale"),

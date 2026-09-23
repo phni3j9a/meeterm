@@ -9253,9 +9253,9 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                         fixture.owner,
                         fixture.generation
                     ));
-                    assert!(
-                        registry::operation_epoch(fixture.owner).expect("Herdr hidden epoch")
-                            > before_epoch
+                    assert_ne!(
+                        registry::operation_epoch(fixture.owner).expect("Herdr hidden token"),
+                        before_epoch
                     );
                 }
             }
@@ -14071,7 +14071,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         assert_eq!(shared.operation_epoch(), initial_epoch);
         let suspended_terminal_epoch =
             registry::operation_epoch(owner).expect("suspended terminal epoch");
-        assert!(suspended_terminal_epoch > initial_terminal_epoch);
+        assert_ne!(suspended_terminal_epoch, initial_terminal_epoch);
         assert!(!registry::transport_ready(owner, shared.generation));
         assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
         assert!(!shared.current_terminal_input_is_ready(initial_epoch));
@@ -14089,7 +14089,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         assert_eq!(shared.operation_epoch(), initial_epoch);
         let foreground_terminal_epoch =
             registry::operation_epoch(owner).expect("foreground terminal epoch");
-        assert!(foreground_terminal_epoch > suspended_terminal_epoch);
+        assert_ne!(foreground_terminal_epoch, suspended_terminal_epoch);
         assert!(registry::transport_ready(owner, shared.generation));
         assert!(shared.current_terminal_input_is_ready(initial_epoch));
         registry::send_bytes(owner, b"foreground-input").expect("fresh foreground input");
