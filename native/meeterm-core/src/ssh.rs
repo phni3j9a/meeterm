@@ -2325,6 +2325,30 @@ static RUNTIME_BROWSE: OnceLock<Mutex<Option<RuntimeBrowseEntry>>> = OnceLock::n
 static NEXT_BROWSE_TOKEN: AtomicU64 = AtomicU64::new(1);
 static RUNTIME_BROWSE_SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[cfg(test)]
+#[derive(Clone)]
+struct StartBrowseCancellationPause {
+    cancelled: Arc<std::sync::Barrier>,
+    resume: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static START_BROWSE_CANCELLATION_PAUSE: OnceLock<Mutex<Option<StartBrowseCancellationPause>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+fn pause_after_start_browse_cancellation() {
+    let pause = START_BROWSE_CANCELLATION_PAUSE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("start browse cancellation test hook")
+        .take();
+    if let Some(pause) = pause {
+        pause.cancelled.wait();
+        pause.resume.wait();
+    }
+}
+
 fn runtime() -> Result<&'static Runtime, ConnectionError> {
     RUNTIME
         .get_or_init(|| {
@@ -3535,16 +3559,6 @@ fn cancel_active_runtime_browse() {
     if let Some((generation, stale_terminals)) = retired {
         destroy_stale_terminals(generation, stale_terminals);
     }
-}
-
-fn cancel_runtime_browse_for_source(source_owner: TerminalId) {
-    let retired = {
-        let Ok(_serial) = runtime_browse_serial().lock() else {
-            return;
-        };
-        take_runtime_browse_for_source_locked(source_owner)
-    };
-    destroy_retired_browse_target(retired);
 }
 
 /// Remove and locally retire a source browse while the caller owns
@@ -5241,35 +5255,89 @@ fn start_connection(
     start: ConnectionStart,
 ) -> Result<(), ConnectionError> {
     let provisional = start.is_provisional();
-    if !provisional {
-        // A manual replacement/disconnect is an explicit source-owner
-        // disposal boundary. Any uncommitted browse must be fenced before a
-        // new actor can be installed for that owner.
-        cancel_runtime_browse_for_source(terminal_id);
-        clear_retired_browse_source(terminal_id);
-    }
-    let runtime = runtime()?;
-    let owner = owner_transition(terminal_id)?;
-    let (_serial, ticket) = owner.begin()?;
+    let mut retired_browse = None;
+    let result = (|| {
+        let runtime = runtime()?;
+        let owner = owner_transition(terminal_id)?;
+        let transition = if provisional {
+            let (serial, ticket) = owner.begin()?;
+            OwnerStartTransition {
+                owner: owner.as_ref(),
+                _serial: serial,
+                ticket,
+                old: None,
+            }
+        } else {
+            // Browse retirement and source invalidation share one serial
+            // transaction. A browse that captured the old live or retired
+            // source before this point must revalidate only after both the
+            // browse record and its source authority have been revoked.
+            let browse_serial = runtime_browse_serial()
+                .lock()
+                .map_err(|_| ConnectionError::Internal)?;
+            let (owner_serial, ticket) = owner.begin()?;
+            retired_browse = take_runtime_browse_for_source_locked(terminal_id);
+            #[cfg(test)]
+            pause_after_start_browse_cancellation();
+            clear_retired_browse_source(terminal_id);
+            let old = {
+                let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+                connections()
+                    .lock()
+                    .map_err(|_| ConnectionError::Internal)?
+                    .remove(&terminal_id)
+            };
+            if let Some(old) = &old {
+                // Removing the entry invalidates both fresh captures and
+                // captures already queued behind `runtime_browse_serial`.
+                // Revoke its operation gates before releasing that serial.
+                old.shared.invalidate_explicitly("runtime_replaced");
+            }
+            drop(browse_serial);
+            OwnerStartTransition {
+                owner: owner.as_ref(),
+                _serial: owner_serial,
+                ticket,
+                old,
+            }
+        };
+        start_connection_after_transition(terminal_id, start, provisional, runtime, transition)
+    })();
+    // Retired browse children are destroyed only after both the browse serial
+    // and owner transition have been released. Retirement itself remains
+    // inside the serial transaction so stale callbacks cannot publish.
+    destroy_retired_browse_target(retired_browse);
+    result
+}
+
+struct OwnerStartTransition<'a> {
+    owner: &'a OwnerTransition,
+    _serial: std::sync::MutexGuard<'a, ()>,
+    ticket: u64,
+    old: Option<ConnectionEntry>,
+}
+
+fn start_connection_after_transition(
+    terminal_id: TerminalId,
+    start: ConnectionStart,
+    provisional: bool,
+    runtime: &'static Runtime,
+    transition: OwnerStartTransition<'_>,
+) -> Result<(), ConnectionError> {
+    let OwnerStartTransition {
+        owner,
+        _serial,
+        ticket,
+        old,
+    } = transition;
     let generation = next_generation();
     let reconnecting = start.is_automatic_reconnect();
     let manual_reconnect = start.is_manual_reconnect();
 
     let (host, port, _username, known_hosts_path) = start.endpoint();
 
-    let old = {
-        let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
-        if !owner.install_allowed(ticket) {
-            return Err(ConnectionError::RecoveryUnavailable);
-        }
-        connections()
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?
-            .remove(&terminal_id)
-    };
     if let Some(old) = old {
         let old_shared = Arc::clone(&old.shared);
-        old.shared.invalidate_explicitly("runtime_replaced");
         // A controller/transport that never acknowledges the explicit
         // cleanup cannot safely retain the old generation. The shared helper
         // forces both cancellation and task abort before the new generation
@@ -5424,7 +5492,7 @@ fn start_connection(
             );
         owner.finish(ticket);
         // Keep the gate closed until both the map install and ticket finish
-        // are committed.  Disconnect cannot interleave while this lock is
+        // are committed. Disconnect cannot interleave while this lock is
         // held; if it wins later, the actor is already the map owner and its
         // shared cancellation flag stops it at the next lifecycle boundary.
         let _ = start_gate_sender.send(());
@@ -8039,6 +8107,73 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         (owner, shared, profile, recovery)
     }
 
+    fn seed_live_browse_source(
+        host: &str,
+        port: u16,
+    ) -> (
+        TerminalId,
+        Arc<ConnectionShared>,
+        ConnectionProfile,
+        tokio::task::AbortHandle,
+    ) {
+        let owner = registry::create_terminal(80, 24).expect("live browse source terminal");
+        let generation = next_generation();
+        let password = Arc::new(Zeroizing::new("retired-browse-secret".to_owned()));
+        let profile = ConnectionProfile {
+            host: host.to_owned(),
+            port,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from(format!("/tmp/live-browse-{owner}")),
+            credentials: StoredCredentials::Password { password },
+            backend: Backend::Tmux,
+            runtime: Some("live".to_owned()),
+            tmux_identity: Some(tmux::SessionIdentity {
+                session_id: "$41".to_owned(),
+                name: "live".to_owned(),
+                server_pid: 41,
+                server_start_time: 1_700_000_041,
+            }),
+            herdr_executable: None,
+        };
+        let shared = Arc::new(ConnectionShared::new(
+            owner,
+            generation,
+            profile.host.clone(),
+            profile.port,
+            profile.known_hosts_path.clone(),
+        ));
+        {
+            let mut state = shared.session.lock().expect("live browse source state");
+            state.generation = generation;
+            state.operation_epoch = 23;
+            state.endpoint = Some(SessionEndpoint::from_profile(&profile));
+            state.profile = Some(profile.clone());
+            state.runtime_operations_ready = true;
+            state.terminal_input_ready = true;
+            state.foreground = true;
+        }
+        {
+            let mut info = shared.info.lock().expect("finished live source info");
+            info.state = ConnectionState::Ready;
+            info.finished = true;
+        }
+        let actor_abort = runtime()
+            .expect("live source runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections()
+            .lock()
+            .expect("live source connection map")
+            .insert(
+                owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&shared),
+                    abort: actor_abort.clone(),
+                },
+            );
+        (owner, shared, profile, actor_abort)
+    }
+
     fn provisional_start_for_profile(profile: &ConnectionProfile) -> ConnectionStart {
         let mut profile = profile.clone();
         profile.backend = Backend::Tmux;
@@ -8046,6 +8181,200 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         profile.tmux_identity = None;
         profile.herdr_executable = None;
         ConnectionStart::ProvisionalProfile(profile)
+    }
+
+    #[test]
+    fn replacement_serializes_captured_browse_invalidation_for_live_and_retired_sources() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::replacement_serializes_captured_browse_invalidation_for_live_and_retired_sources",
+            "MEETERM_TEST_BROWSE_REPLACEMENT_SOURCE_CHILD",
+        ) {
+            return;
+        }
+
+        let (port, server_handle, server_join, auth_attempts) = start_auth_attempt_server();
+        for retired_source in [false, true] {
+            let (owner, source_shared, profile, source_abort) = if retired_source {
+                let (owner, shared, profile, _) = seed_retired_browse_source("127.0.0.1", port);
+                (owner, shared, profile, None)
+            } else {
+                let (owner, shared, profile, abort) = seed_live_browse_source("127.0.0.1", port);
+                (owner, shared, profile, Some(abort))
+            };
+            write_rejecting_host_key(port, &profile.known_hosts_path);
+            let captured = browse_source_profile(owner).expect("capture browse source");
+            let cancel_complete = Arc::new(std::sync::Barrier::new(2));
+            let resume_replacement = Arc::new(std::sync::Barrier::new(2));
+            *START_BROWSE_CANCELLATION_PAUSE
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .expect("install replacement barrier") = Some(StartBrowseCancellationPause {
+                cancelled: Arc::clone(&cancel_complete),
+                resume: Arc::clone(&resume_replacement),
+            });
+
+            let replacement_options = ConnectOptions {
+                host: "127.0.0.1".to_owned(),
+                port,
+                username: "replacement-user".to_owned(),
+                credentials: AuthOptions::password("replacement-secret".to_owned()),
+                known_hosts_path: profile.known_hosts_path.clone(),
+                backend: Backend::Tmux,
+                runtime: None,
+            };
+            let replacement =
+                std::thread::spawn(move || connect_terminal(owner, replacement_options));
+            cancel_complete.wait();
+
+            let (attempted_sender, attempted_receiver) = std::sync::mpsc::channel();
+            let browse_profile = profile.clone();
+            let browse_attempt = std::thread::spawn(move || {
+                let serial_is_held = runtime_browse_serial().try_lock().is_err();
+                attempted_sender
+                    .send(serial_is_held)
+                    .expect("publish captured browse attempt");
+                runtime_browse_start(
+                    owner,
+                    provisional_start_for_profile(&browse_profile),
+                    captured,
+                )
+            });
+            assert!(
+                attempted_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("captured browse reaches replacement boundary"),
+                "the browse attempt must observe the replacement holding the serial"
+            );
+            let terminals_before_release = registry::terminal_count();
+            resume_replacement.wait();
+
+            replacement
+                .join()
+                .expect("replacement worker")
+                .expect("authorized replacement starts");
+            assert!(
+                matches!(
+                    browse_attempt.join().expect("captured browse worker"),
+                    Err(ConnectionError::BrowseStale)
+                ),
+                "the captured {source_kind} source is invalidated before the serial is released",
+                source_kind = if retired_source { "retired" } else { "live" },
+            );
+            assert_eq!(registry::terminal_count(), terminals_before_release);
+            assert!(
+                runtime_browse()
+                    .lock()
+                    .expect("browse slot after replacement")
+                    .is_none(),
+                "stale capture must not publish a browse token"
+            );
+            {
+                let entries = connections().lock().expect("replacement connection map");
+                assert_eq!(entries.len(), 1, "no provisional connection remains");
+                let replacement = entries.get(&owner).expect("replacement owner entry");
+                assert!(!replacement.shared.is_provisional());
+                assert!(!Arc::ptr_eq(&replacement.shared, &source_shared));
+            }
+
+            let observed = auth_attempts
+                .recv_timeout(Duration::from_secs(4))
+                .expect("replacement reaches SSH authentication");
+            assert_eq!(observed.0, "replacement-user");
+            assert!(
+                !observed.1,
+                "the listener must not receive source credentials"
+            );
+            match auth_attempts.recv_timeout(Duration::from_millis(350)) {
+                Ok((user, true)) => {
+                    panic!("stale browse attempted source authentication for {user}")
+                }
+                Ok((user, false)) => {
+                    panic!("unexpected additional SSH authentication attempt for {user}")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("auth observer disconnected before checking stale attempts")
+                }
+            }
+
+            // Once the replacement has its own Ready authority, it may open
+            // a fresh browse. Seed that low-frequency state on the failed
+            // observer actor so the check covers the new generation rather
+            // than requiring a second remote runtime fixture here.
+            let replacement_shared = current_connection(owner).expect("replacement source");
+            let replacement_profile = {
+                let mut state = replacement_shared
+                    .session
+                    .lock()
+                    .expect("replacement source session");
+                let profile = state.profile.clone().expect("replacement source profile");
+                state.generation = replacement_shared.generation;
+                state.operation_epoch = 31;
+                state.recovery = RecoverySnapshot::default();
+                state.runtime_operations_ready = true;
+                state.terminal_input_ready = true;
+                state.foreground = true;
+                state.endpoint = Some(SessionEndpoint::from_profile(&profile));
+                profile
+            };
+            {
+                let mut info = replacement_shared
+                    .info
+                    .lock()
+                    .expect("replacement source info");
+                info.state = ConnectionState::Ready;
+                info.finished = false;
+            }
+            replacement_shared.set_foreground(true);
+            let terminals_before_authorized_browse = registry::terminal_count();
+            let authorized_browse = runtime_browse_start_current(owner)
+                .expect("the replacement's current credentials can start a fresh browse");
+            assert!(runtime_browse_snapshot(&authorized_browse.token).is_ok());
+            assert_eq!(
+                registry::terminal_count(),
+                terminals_before_authorized_browse + 1,
+                "a fresh browse owns exactly one provisional root"
+            );
+            let observed_browse = auth_attempts
+                .recv_timeout(Duration::from_secs(4))
+                .expect("authorized browse reaches SSH authentication");
+            assert_eq!(observed_browse.0, "replacement-user");
+            assert!(!observed_browse.1);
+            let provisional_owner = runtime_browse()
+                .lock()
+                .expect("authorized browse record")
+                .as_ref()
+                .expect("authorized browse remains active")
+                .provisional_owner;
+            runtime_browse_cancel(&authorized_browse.token).expect("cancel authorized browse");
+            assert!(matches!(
+                runtime_browse_snapshot(&authorized_browse.token),
+                Err(ConnectionError::BrowseStale)
+            ));
+            assert!(registry::shared_terminal(provisional_owner).is_err());
+            assert_eq!(
+                registry::terminal_count(),
+                terminals_before_authorized_browse,
+                "cancelling the fresh browse releases its provisional root and children"
+            );
+            {
+                let entries = connections()
+                    .lock()
+                    .expect("connection map after authorized browse cancel");
+                assert_eq!(entries.len(), 1);
+                assert!(entries.contains_key(&owner));
+            }
+            drop(replacement_profile);
+
+            if let Some(source_abort) = source_abort {
+                source_abort.abort();
+            }
+            terminal_destroyed(owner);
+            registry::destroy_terminal(owner);
+            let _ = fs::remove_file(profile.known_hosts_path);
+        }
+        server_handle.shutdown("replacement source race test complete".to_owned());
+        server_join.join().expect("auth-attempt observer server");
     }
 
     #[test]
@@ -8477,6 +8806,100 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             .recv_timeout(Duration::from_secs(2))
             .expect("rejecting SSH server startup");
         (port, handle, join)
+    }
+
+    #[derive(Clone)]
+    struct AuthAttemptHandler {
+        sender: std::sync::mpsc::Sender<(String, bool)>,
+    }
+
+    struct AuthAttemptServer {
+        sender: std::sync::mpsc::Sender<(String, bool)>,
+    }
+
+    impl RusshServer for AuthAttemptServer {
+        type Handler = AuthAttemptHandler;
+
+        fn new_client(&mut self, _peer_addr: Option<std::net::SocketAddr>) -> Self::Handler {
+            AuthAttemptHandler {
+                sender: self.sender.clone(),
+            }
+        }
+    }
+
+    impl server::Handler for AuthAttemptHandler {
+        type Error = russh::Error;
+
+        fn auth_password(
+            &mut self,
+            user: &str,
+            password: &str,
+        ) -> impl Future<Output = Result<server::Auth, Self::Error>> + Send {
+            let sender = self.sender.clone();
+            let user = user.to_owned();
+            let is_source_credential = password == "retired-browse-secret";
+            async move {
+                let _ = sender.send((user, is_source_credential));
+                Ok(server::Auth::reject())
+            }
+        }
+    }
+
+    fn start_auth_attempt_server() -> (
+        u16,
+        server::RunningServerHandle,
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<(String, bool)>,
+    ) {
+        let (attempt_sender, attempt_receiver) = std::sync::mpsc::channel();
+        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
+        let join = std::thread::spawn(move || {
+            let runtime = Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+                .expect("auth-attempt observer runtime");
+            runtime.block_on(async move {
+                let listener = TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .expect("bind auth-attempt observer");
+                let host_key = keys::decode_secret_key(REJECTING_SERVER_KEY, None)
+                    .expect("decode observer host key");
+                let config = Arc::new(server::Config {
+                    keys: vec![host_key],
+                    auth_rejection_time: Duration::ZERO,
+                    auth_rejection_time_initial: Some(Duration::ZERO),
+                    ..Default::default()
+                });
+                let mut server = AuthAttemptServer {
+                    sender: attempt_sender,
+                };
+                let running = server.run_on_socket(config, &listener);
+                let handle = running.handle();
+                ready_sender
+                    .send((
+                        listener.local_addr().expect("observer address").port(),
+                        handle,
+                    ))
+                    .expect("publish observer address");
+                let _ = running.await;
+            });
+        });
+        let (port, handle) = ready_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("auth-attempt observer startup");
+        (port, handle, join, attempt_receiver)
+    }
+
+    fn write_rejecting_host_key(port: u16, path: &Path) {
+        let host_key =
+            keys::decode_secret_key(REJECTING_SERVER_KEY, None).expect("decode rejecting host key");
+        let public_key = host_key
+            .public_key()
+            .to_openssh()
+            .expect("encode rejecting host key");
+        fs::write(path, format!("[127.0.0.1]:{port} {public_key}\n"))
+            .expect("write rejecting host key");
     }
 
     enum FixtureInputReceiver {
