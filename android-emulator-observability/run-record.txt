@@ -1,113 +1,64 @@
-meeterm Android emulator validation — Issue #27 unified session switcher
-========================================================================
-commit           = d765594 (issue-27-session-switcher; on top of 83575b9)
-run started      = 2026-09-23 ~19:55 UTC
-builder          = devin-vm (Linux x86_64)
-emulator         = emulator-5554 / AVD meeterm_api36 (headless, API 36, x86_64)
-toolchain        = node v24.19.0 / npm 10.8.3 (blueprint pins 22.22.2 — known deviation, already reported)
-                   rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN), NDK 27.1.12297006, build-tools 36.0.0
-                   python 3.12.13, tmux 3.2a, gradle 9.3.1
-fresh artifacts  = YES — checkout reset to d765594; npm ci; expo prebuild --clean; no reuse
+meeterm Android emulator observability run record
+===================================================
 
-RESULT: PASS — full SSH fixture suite green end-to-end on the clean run;
-                both prior contract fixes hold; new Manage-servers stacking
-                path verified live.
+Candidate under test : a066f796fac31cf5c05d9a88693c6cb8023975b4 (issue-27-session-switcher)
+Result               : PASS — full pipeline green end-to-end
+Run finished         : 2026-09-23T23:37Z (suite wall clock ~30 min)
 
-PER-STAGE RESULTS
------------------
-npm ci + expo prebuild --clean                 PASS  (~1m10s)
-:app:assembleRelease (arm64-v8a + x86_64,
-  Rust release)                                PASS  — BUILD SUCCESSFUL in 2m19s
-scripts/ci/android-smoke.sh (install, launch,
-  NATIVE_READY, FIRST_FRAME, same-PID,
-  no-ANR/no-crash)                             PASS
-android-screen-fixtures.py (51-route
-  observational manifest)                      51/51 captured — all 20
-                                               session-switcher-* present
-fixture.py + android-smoke.py (real OpenSSH
-  fixture SSH/tmux flow)                       PASS — result=passed,
-                                               stage=disconnect_after_resume,
-                                               reason=ok  (~30min)
+Delta vs prior commit (d765594): ssh-driver contract alignment ONLY —
+3 test files (android_smoke_impl.py / test_android_smoke.py / test_ios_smoke.py),
+RUNTIME_PICKER_HEADING_PREFIX "Choose a runtime for " -> "Choose a session".
+Zero product/native change.
 
-SUITE NOTES — transient ANR flakes before the clean pass
--------------------------------------------------------
-Two earlier attempts of this same commit failed at
-daily_profile_add_credential / app_anr_window (real system ANR window during
-the heavy multiline key-paste stage; anr-trace.txt showed the window cleared
-itself — app_anr_window_not_present). Attempt 2 was then corrupted by an
-accidental pm clear under it (operator error while launching a retry).
-The clean third attempt passed the entire suite end-to-end. The ANR-class
-failure did not recur on the clean run and is recorded here as a host-load
-flake, not a commit regression: the stage and code path are identical to
-047af49's pass and untouched by this diff.
+Environment
+-----------
+Host        : Linux x86_64 (Devin Cloud VM; restarted mid-campaign, filesystem preserved)
+Emulator    : emulator-5554, AVD meeterm_api36, -no-window swiftshader, cold boot this run
+Toolchains  : rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN), NDK 27.1.12297006,
+              node v24.19.0/npm 10.8.3 (blueprint pins 22.22.2 — known deviation, reported),
+              python 3.12.13, gradle 9.3.1
+Build       : fresh npm ci + expo prebuild --clean + :app:assembleRelease
+              (arm64-v8a,x86_64, Rust release) — BUILD SUCCESSFUL in 2m32s; no reuse
 
-New-contract markers observed in this pass (ssh-validation.txt):
-  daily_profile_switch_second_boundary_session_switcher   (new boundary marker)
-  daily_profile_switched
-  daily_profile_switch_primary_boundary_session_switcher  (switch back)
-  daily_profile_switch_restored
-  daily_profile_delete_cancelled, daily_second_profile_deleted
-  daily_transport_loss_* (injected/stale_read_only/restored/authoritative_ready/
-                          post_marker_once/remote_ack/complete) — all passed
-  daily_process_restarted, daily_profile_and_credential_restored,
-  daily_saved_profile_connected  (cold-start → saved profile → picker → ready)
-  workspaces/panes/selection/CJK/copy/handoff/disconnect/reconnect — all passed
+Gates
+-----
+android-smoke.sh          : PASS (install, launch, NATIVE_READY + FIRST_FRAME, no ANR/crash)
+android-screen-fixtures   : 51/51 routes captured incl. all 20 session-switcher-* light/dark
+SSH fixture suite         : result=passed, stage=disconnect_after_resume, reason=ok
+                            all stages completed incl.
+                            daily_profile_switch_second_boundary_session_switcher,
+                            daily_profile_switched,
+                            daily_profile_switch_primary_boundary_session_switcher,
+                            daily_profile_switch_restored,
+                            transport_loss_* evidence=passed,
+                            cold-start -> saved profile -> picker -> connected,
+                            workspaces/panes/selection/CJK/handoff + both disconnects
 
-FIX VERIFICATION (the d765594 change under test)
------------------------------------------------
-047af49 defect: deferred post-sheet dispatches lived only in RN <Modal>
-onDismiss (iOS-only) → dead on Android (proven last run: connected
-saved-profile tap closed the sheet and no switcher ever opened).
-83575b9: shared consumeSheetDismissal + Android-only effect on sheet→null.
-d765594 (this commit): openManageServers now setSheet('servers') — stacks
-Saved servers on top of the still-presented switcher instead of
-dismiss-then-present; reopenSwitcherAfterManageRef reopen flows through the
-same Android effect.
+Attempts: 1 — suite passed on first attempt this run.
 
-Verified live on this build:
-  * suite emitted daily_profile_switch_{second,primary}_boundary_session_switcher
-    — connected saved-profile tap → switcher expanded → explicit
-    `tmux session meeterm on {profile} (ubuntu@host:port)` select → Connected →
-    workspace row → switch back → both directions pass.
-  * switcher → Manage servers → Saved servers sheet opened (stacked) →
-    Close sheet → session switcher reappeared with Current server + candidates —
-    the manage/reopen deferred path now works on Android.
-  * 'Switch session' menu row (sibling branch) consumed by the same effect —
-    covered implicitly by the same code path.
+Issue #27 quick re-verification (manual, live fixtures fx1:45087 / fx2:45123)
+--------------------------------------------------------------------------
+Item 1 (same-server switch)      : VERIFIED — connect fx1 -> picker -> meeterm ->
+                                   header switcher -> "tmux session second" -> Ready
+                                   10.0.2.2 · second + Connected; real input
+                                   round-trip marker i27-a066f79-second-3886 on
+                                   second pane %0 (pid 3886); meeterm $0 survives
+Item 2 (cross-server switch)     : carried over VERIFIED from ad91680 — path
+                                   unchanged; this commit is driver-contract only
+Item 3 (cancel / no-destruction) : VERIFIED — switcher open on second (meeterm
+                                   listed), Close session switcher -> workspaces,
+                                   second still authoritative, sessions survive
+Item 4 (close+fresh select / recovery): carried over VERIFIED + suite cold-start
+                                   and transport-loss stages all passed this run
+Item 5 (captures)                : 51/51 seeded routes + issue27-a066f79-switcher.png
 
-ISSUE #27 RE-VERIFICATION (quick — persistent fixtures fx1:35061 meetterm+second,
-fx2:33781 meetterm+other)
--------------------------------------------------------------------------------
-Item 1 — same-server switch: VERIFIED
-  fresh connect fx1 → `tmux runtime meeterm` → Ready+Connected → header
-  switcher → `tmux session second on 10.0.2.2` → Ready `10.0.2.2 · second` +
-  Connected → remote marker via real input `i27-d765594-second` executed on
-  second's pane → `meeterm $0` still alive ($0 meeterm, $1 second).
-Item 2 — cross-server switch: carried over VERIFIED from ad91680 (switcher/
-  native path unchanged since then; this diff is manage-servers + effect only).
-Item 3 — cancel / no-destruction: VERIFIED — switcher opened + closed via
-  'Close session switcher' → workspaces list, `second` still authoritative,
-  no remote teardown.
-Item 4 — close + fresh explicit selection / recovery: carried over VERIFIED
-  (native unchanged since 8835e03); suite cold-start + transport-loss stages
-  passed in this run.
-Item 5 — captures: 20/20 seeded session-switcher-* in bundle + live switcher
-  and stacked Saved servers states driven during verification.
+Supersedure note (added post-run)
+--------------------------------
+Branch tip advanced to d5113e8 (a066f79 + ONE #[cfg(test)]-only commit, ssh.rs
+test deadlines 3s/2s -> 30s; zero release/product code). Per requester, this
+a066f79 run was completed fully anyway; see follow-up commit on this evidence
+branch for the d5113e8 parity record (product binary identical — no suite re-run).
 
-Commands run (exact)
---------------------
-git fetch origin && git reset --hard d765594
-rm -rf android artifacts/android-emulator-observability && npm ci
-npx expo prebuild --platform android --clean --non-interactive --no-install
-(cd android) NODE_ENV=production EXPO_PUBLIC_MEETERM_SMOKE=1 RUSTUP_TOOLCHAIN=1.96.0 \
-  ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 \
-  -PmeetermRustProfile=release --no-daemon --stacktrace   # 2m19s
-GITHUB_WORKSPACE=$PWD GITHUB_ACTIONS=true scripts/ci/android-smoke.sh
-python3 scripts/ci/android-screen-fixtures.py --artifact-dir artifacts/android-emulator-observability
-adb shell pm clear dev.meeterm.app
-python3 scripts/ssh/fixture.py -- python3 scripts/ssh/android-smoke.py \
-  --artifact-dir artifacts/android-emulator-observability   # PASS ~30min (clean run)
-# items re-verify: uiautomator + tmux markers on fixtures fx1:35061 / fx2:33781
-
-Environment left intact: emulator running; checkout at d765594; artifacts/
-preserved; persistent fixtures fx1/fx2 alive.
+Sanitization
+------------
+No credentials, private keys, auth material, or app-release.apk in this bundle.

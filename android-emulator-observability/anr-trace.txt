@@ -1,0 +1,2 @@
+capture=not_requested
+reason=app_anr_window_not_present
