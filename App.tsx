@@ -2824,6 +2824,37 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSessionSwitcherOpen(false);
   }, []);
 
+  const consumeSheetDismissal = useCallback(() => {
+    setHostPromptDeferred(false);
+    setModalPending(false);
+    const show = pendingModal.current;
+    pendingModal.current = null;
+    show?.();
+    if (returnToServersAfterForm.current) return;
+    const target = switcherProfileAfterServerSheetRef.current;
+    if (target) {
+      switcherProfileAfterServerSheetRef.current = null;
+      reopenSwitcherAfterManageRef.current = false;
+      openSwitcherAfterServerMenuRef.current = false;
+      openSessionSwitcher(target);
+    } else if (openSwitcherAfterServerMenuRef.current) {
+      openSwitcherAfterServerMenuRef.current = false;
+      openSessionSwitcher();
+    } else if (reopenSwitcherAfterManageRef.current) {
+      reopenSwitcherAfterManageRef.current = false;
+      openSessionSwitcher();
+    }
+  }, [openSessionSwitcher]);
+
+  const previousSheetRef = useRef(sheet);
+  useEffect(() => {
+    const previous = previousSheetRef.current;
+    previousSheetRef.current = sheet;
+    // Modal onDismiss is iOS-only; Android consumes the same deferred
+    // post-sheet actions when the sheet state transitions to closed.
+    if (Platform.OS === 'android' && previous !== null && sheet === null) consumeSheetDismissal();
+  }, [sheet, consumeSheetDismissal]);
+
   useEffect(() => {
     const hostKeyFixture = smokeScreen === 'session-switcher-host-key'
       || smokeScreen === 'session-switcher-host-key-dark';
@@ -3641,27 +3672,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={() => {
-      setHostPromptDeferred(false);
-      setModalPending(false);
-      const show = pendingModal.current;
-      pendingModal.current = null;
-      show?.();
-      if (returnToServersAfterForm.current) return;
-      const target = switcherProfileAfterServerSheetRef.current;
-      if (target) {
-        switcherProfileAfterServerSheetRef.current = null;
-        reopenSwitcherAfterManageRef.current = false;
-        openSwitcherAfterServerMenuRef.current = false;
-        openSessionSwitcher(target);
-      } else if (openSwitcherAfterServerMenuRef.current) {
-        openSwitcherAfterServerMenuRef.current = false;
-        openSessionSwitcher();
-      } else if (reopenSwitcherAfterManageRef.current) {
-        reopenSwitcherAfterManageRef.current = false;
-        openSessionSwitcher();
-      }
-    }} colors={homeColors}>
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={consumeSheetDismissal} colors={homeColors}>
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'recovery' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
