@@ -1,0 +1,3 @@
+screen=session-switcher-pending
+result=unavailable
+reason=missing_pending_copy,pending_tmux_row_disabled

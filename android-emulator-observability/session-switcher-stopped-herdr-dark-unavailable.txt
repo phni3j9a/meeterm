@@ -1,0 +1,3 @@
+screen=session-switcher-stopped-herdr-dark
+result=unavailable
+reason=missing_stopped_state,stopped_herdr_disabled

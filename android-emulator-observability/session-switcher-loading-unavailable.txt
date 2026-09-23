@@ -1,0 +1,3 @@
+screen=session-switcher-loading
+result=unavailable
+reason=missing_tmux_section,herdr_section

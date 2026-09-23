@@ -1,67 +1,122 @@
-# Android Emulator Validation Run Record
-#
-# Issue #27 unified session switcher — FINAL candidate
-# Commit: 8d9a20a71f994d11ac38626511be75ef359c3177 (branch issue-27-session-switcher)
-# Result: FAIL — candidate does not compile for Android (hard rustc E0308)
+meeterm Android validation — run record
+=======================================
+commit=8835e03b69f66f9c00b721b0ea31e1196221e08a
+branch=issue-27-session-switcher
+run_type=full (fresh checkout, npm ci, expo prebuild, native rebuild; no artifact reuse)
+verdict=FAIL (deterministic acceptance-suite break; Issue #27 items verified manually — see below)
 
-## Verdict
+Environment
+-----------
+runner=devin-vm os=Linux arch=x86_64
+avd=meeterm_api36 (emulator-5554, headless: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -cores 4 -memory 4096)
+toolchains: node v24.19.0, npm 10.8.3 (blueprint pins 22.22.2 — DEVIATION, already reported; PATH deviation from /opt/.devin/envrc)
+            rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN=1.96.0), NDK 27.1.12297006, build-tools 36.0.0
+            tmux 3.2a on VM, python 3.12.13
+gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release
 
-FAIL at build stage. `:meeterm-terminal:buildRustAndroid` (arm64-v8a) aborts with:
+Stage results
+-------------
+1. checkout+deps+prebuild: PASS (~1m10s)
+2. assembleRelease: PASS — BUILD SUCCESSFUL in ~2m18s (previous 8d9a20a E0308 jni bool→u8 defect fixed by u8::from(accept) at jni.rs:1007)
+3. android-smoke.sh (install/launch, NATIVE_READY+FIRST_FRAME, same-PID, no-ANR): PASS (~35s)
+4. android-screen-fixtures.py (51-route manifest): 38 captured / 12 unavailable + 1 known gap
+5. fixture.py + android-smoke.py (real OpenSSH/tmux suite): **FAIL** — stage=initial_runtime_selection_runtime_picker, reason=runtime_picker_ui_timeout, after host_key_verified
+6. Issue #27 items 1–5: driven manually against two live fixtures — ALL VERIFIED (evidence below)
 
-    error[E0308]: mismatched types
-        --> src/jni.rs:1007:17
-         |
-    1002 |             crate::ffi::meeterm_runtime_browse_respond_host_key(
-         |             --------------------------------------------------- arguments to this function are incorrect
-    ...
-    1007 |                 accept,
-         |                 ^^^^^^ expected `u8`, found `bool`
-    note: function defined here
-        --> src/ffi.rs:1260:26
-         |
-    1260 | pub unsafe extern "C" fn meeterm_runtime_browse_respond_host_key(
-    ...
-    1265 |     accept: u8,
+SSH suite failure analysis (deterministic, not a flake)
+--------------------------------------------------------
+The unified SessionSwitcher now renders runtime rows (fresh picker AND switch mode) with
+accessibilityLabel "tmux session {name} on {server} ({user}@{host}:{port})" (app/SessionSwitcher.tsx:148).
+scripts/ssh/android_smoke_impl.py TMUX_RUNTIME_LABELS still expects "tmux runtime {name}" —
+unchanged on this branch (no main..HEAD commits touch it). Live uiautomator dump confirms the real
+picker row: 'tmux session meeterm on 10.0.2.2 (ubuntu@10.0.2.2:35213)' — the suite can never match
+=> runtime_picker_ui_timeout before any session can be selected. The legacy App.tsx RuntimePicker
+component carrying the old label is dead code (no <RuntimePicker> instantiation).
+Candidate-side break: either preserve the "tmux runtime {name}" label contract in fresh mode or
+update TMUX_RUNTIME_LABELS/RUNTIME_PICKER_ROW_PREFIXES in the same change.
 
-Defect (verified against `git show HEAD` on a clean tree — no local edits):
-`Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseRespondHostKey`
-(native/meeterm-core/src/jni.rs ~L990-1013) declares `accept: jboolean` and
-passes it verbatim into `meeterm_runtime_browse_respond_host_key`
-(native/meeterm-core/src/ffi.rs L1260), whose signature takes `accept: u8`
-(`if accept > 1 → InvalidArgument`; then `runtime_browse_respond_to_host_key(.., accept != 0)`).
-jni crate pin is `jni = "=0.22.4"` where `jboolean` resolves to `bool`,
-so the call is a type mismatch.
+Screen-fixture unavailable routes (deterministic candidate-side contract gaps)
+------------------------------------------------------------------------------
+10/20 session-switcher-* routes + runtime-layout-restore-unconfirmed + runtime-empty unavailable:
+- Row testID is runtime-row-{backend}-{candidate.id} (e.g. runtime-row-tmux-smoke-tmux-meeterm);
+  checker expects runtime-row-{id} (runtime-row-smoke-tmux-meeterm). Row itself renders selected=true.
+- Aux labels render as composites "{backend} · Stopped" / "{backend} · Switching…"; checker wants
+  standalone "Stopped"/"Switching…" literals => stopped-herdr, runtime-empty, pending.
+- *-loading: seed sets state='loading' with empty candidates -> only TMUX/HERDR headers render;
+  required lowercase 'tmux'/'Herdr' aux labels unsatisfiable as seeded.
+- *-host-key: hostKey pending renders inline guidance + bare 'Trust this SSH host?' alert;
+  no heading/fingerprint/Trust-Cancel inside the sheet as checker expects.
+- cleanup-warning-dismiss IconButton only exists in workspace listHeader/terminalFeedback contexts;
+  SessionSwitcher receives cleanupWarning as a plain text prop -> runtime-layout-restore-unconfirmed
+  regression (dismiss control present in ed43536's runtime picker context is gone in picker context).
+- *-current footer (switcher-new-tmux/manage-servers/disconnect) is present in DOM but below the
+  viewport fold — excluded from compressed a11y dump; scrape limitation, verified via screencap.
 
-Why it slipped through: `mod jni` is `#[cfg(target_os = "android")]` in
-src/lib.rs, so host `cargo check` / `cargo test` never compile the JNI layer.
-Verified: `cargo check` on host PASSES on this commit (10.9s). The break is
-exclusive to Android target compilation (`cargo ndk` / gradle buildRustAndroid).
+Issue #27 items (manually verified with live fixtures + uiautomator)
+-------------------------------------------------------------------
+Fixture #1: sshd port 35213, tmux socket meeterm-ssh-fixture-gcf44jr9
+Fixture #2: sshd port 35201, tmux socket meeterm-ssh-fixture-e6lt_r_v (saved profile "Android daily second", credentials stored)
 
-Sibling site is fine: `sshRespondHostKey` (jni.rs ~L1173) passes its
-`accept: jboolean` to `crate::ssh::respond_to_host_key` which accepts bool —
-only the new browse wrapper mismatches.
+1. SAME-SERVER SWITCH — VERIFIED.
+   Connected to fx1, selected 'meeterm'. Created 'second' session on same tmux socket.
+   Header 'Server · Session' -> switcher (mode=switch) -> tapped 'tmux session second on 10.0.2.2'
+   -> Ready on 'second' (header '10.0.2.2 · second', window 'work'). Marker+input round-trip on NEW
+   session: typed session_marker_command -> host file got 'marker:40355' == pane %4 pid of 'second'.
+   Old session survives: list-sessions = {meeterm, second}, panes %0-%3 alive.
+   Evidence: issue27-switcher-open.png, issue27-ws-meeterm.png, issue27-ws-second.png,
+             issue27-term-second.png.
 
-## Consequence
+2. CROSS-SERVER SWITCH — VERIFIED.
+   Saved fx2 as profile 'Android daily second' via switcher 'Manage servers' -> 'Add server'
+   (host 10.0.2.2, port 35201, saved creds). In switcher expanded 'Server Android daily second'
+   -> runtimeBrowseStartProfile ran -> host-key prompt 'Trust this SSH host?' with matching
+   fingerprint SHA256:1Ea/...KLc -> TRUST AND CONTINUE -> 'tmux session other on Android daily
+   second' listed -> tapped row -> switcher committed candidate; app then showed Saved-servers
+   sheet (intermediate hop) -> 'Connect saved server Android daily second' -> SSH connect with
+   saved creds -> Ready on 'Android daily second · other' (window 'ops'). Marker+input on NEW
+   server: 'marker:45114' == 'other' pane pid on fx2. fx1 sessions still alive: {meeterm, second}.
+   Note: the commit lands on the servers sheet requiring one extra explicit 'Connect saved server'
+   tap — observed UX, selection carried through.
+   Evidence: issue27-switcher-two-servers.png, issue27-switcher-fx2-browsed.png,
+             issue27-ws-fx2.png.
+   Also observed: expanding a credential-less profile inside the switcher opens an in-sheet
+   credential form ('Back to sessions' / Host/Port/Username/key) — the 'credentials entered through
+   the switcher' path (issue27-switcher-browse-fx1.png).
 
-No `app-release.apk` produced → install/launch/smoke/SSH stages cannot run.
-No screenshots possible (nothing to capture); none faked per policy.
-Issue #27 items 1–5: NOT VERIFIABLE on this commit — no runnable build exists.
+3. CANCEL / NO-DESTRUCTION — VERIFIED.
+   Open switcher -> 'Close session switcher' -> workspace binding untouched; same after starting a
+   browse of another server and dismissing mid-way. Remote sessions on both fixtures survive.
+   OBSERVED QUIRK (2x reproducible): 'Close session switcher' lands on the Saved-servers sheet, not
+   back on the workspace — one extra 'Close sheet' tap returns to the workspace. No destruction,
+   but the dismiss destination is the servers sheet rather than the originating workspace.
 
-## Environment
+4. CLOSE-WITHOUT-DISCONNECT + FRESH EXPLICIT SELECTION — VERIFIED; recovery cases pass.
+   am force-stop while connected -> fx2 'other' session survives on remote (pane pid 45114 kept).
+   Relaunch -> Workspaces home, no auto-attach -> 'Connect saved server Android daily second' ->
+   picker -> explicit 'tmux session other' tap -> Ready on same pane (pid 45114).
+   Foreground cycle (HOME -> relaunch): returns to Connected terminal on same workspace — PASS.
+   Transport loss (fixture sshd control stop while in terminal): app shows fail-closed stale
+   read-only surface ('Reconnecting… Waiting for the server.', 'Last received output · Input
+   paused', 'Terminal, cached output, read only') -> sshd start -> recovers to Connected on the
+   same runtime/pane — PASS.
+   Caveat: the committed suite's transport-loss/foreground stages could not run to completion
+   because it halts at the picker-label timeout above; these cases were verified manually.
 
-- runner=devin-vm, os=Linux, arch=X64
-- commit=8d9a20a71f994d11ac38626511be75ef359c3177 (clean checkout, `git status` clean)
-- fresh/reuse: FRESH (rm -rf android artifacts/…, npm ci, expo prebuild, no artifact reuse)
-- Toolchain: node v24.19.0 / npm 10.8.3 (blueprint pins 22.22.2 — /opt/.devin/envrc PATH deviation, already reported); OpenJDK 17.0.19; Gradle 9.3.1; rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN=1.96.0); NDK 27.1.12297006; build-tools 36.0.0
-- Emulator: meeterm_api36 cold-booted headless (emulator-5554); unused — no APK to install; left running for debugging.
+5. SWITCHER SCREENSHOTS — real-state captures taken (files listed above); seeded
+   session-switcher-* fixture captures partially available (12/20 captured; 8 unavailable with
+   deterministic checker/renderer contract gaps documented above).
 
-## Stage timings
+Cleanup
+-------
+adb pm clear dev.meeterm.app after run; both fixture instances left running during evidence
+collection (fixture.py --env-file mode); no credentials/keys/APK in bundle (app-release.apk
+removed before push; marker/key material never captured in screenshots — form screens captured
+only before secret entry where applicable, and credential-containing dumps not persisted).
 
-- npm ci + expo prebuild: ~1m10s — OK
-- ./gradlew :app:assembleRelease: FAILED at 58s at :meeterm-terminal:buildRustAndroid (BUILD FAILED, 297 actionable tasks)
-- All downstream stages: not reached (no APK)
-
-## Cleanup
-
-- No fixture instances spawned; emulator left running; checkout left at 8d9a20a.
-- Environment intact for follow-up debugging per procedure.
+Files
+-----
+ssh-validation.txt / ssh-failure-state.txt — suite failure record
+transport-loss-validation.txt — not_run (suite never reached that stage; manual verification above)
+issue27-*.png — live switcher/workspace/terminal evidence
+session-switcher-*.png / *-unavailable.txt — seeded fixture manifest
+gradle-build.log, logcat.txt, ssh-logcat.txt, run-record.txt, metadata.txt
