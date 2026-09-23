@@ -3472,6 +3472,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           <Text numberOfLines={2} style={[styles.serverName, { color: homeColors.text }]}>{headerServerName} · {headerSessionName}</Text>
           <Icon name="down" color={homeColors.muted} size={12} />
         </Pressable>
+        <ConnectionStatus connection={connection} colors={homeColors} />
         <IconButton icon="menu" label="Server connection" colors={homeColors} onPress={() => openSheet('server')} />
       </View> : null}
     </>}

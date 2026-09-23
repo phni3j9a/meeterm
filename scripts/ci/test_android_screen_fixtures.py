@@ -371,9 +371,8 @@ class PresentationReadinessTests(unittest.TestCase):
         )
         self.assertEqual(
             fixtures.screen_checks("session-switcher-host-key", {
-                "Switch session", "Verify the SSH host key for fixture.invalid:22 in the confirmation prompt.",
-                "Trust this SSH host?", "SHA256:fixture-switcher-host-key",
-                "Cancel", "Trust and continue",
+                "Trust this SSH host?", "CANCEL", "TRUST AND CONTINUE",
+                "Smoke server\nfixture.invalid:22\n\nAlgorithm: ssh-ed25519\nSHA256 fingerprint:\nSHA256:fixture-switcher-host-key\n\nCompare this key through another trusted channel before continuing.",
             }),
             [],
         )

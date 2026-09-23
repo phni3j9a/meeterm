@@ -353,13 +353,16 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 ("back_to_sessions", "Back to sessions" in normalized_values),
             ]
         elif screen == "session-switcher-host-key":
+            # The seeded pending host key is a platform Alert dialog, which owns
+            # the focused window in the UIAutomator dump; sheet nodes behind it
+            # are not scrapable. Verify the dialog surface itself: title, the
+            # fingerprint inside the multi-line message, and the platform's
+            # all-caps action labels.
             checks = [
-                ("switch_heading", "Switch session" in normalized_values),
-                ("host_key_guidance", "Verify the SSH host key for fixture.invalid:22 in the confirmation prompt." in normalized_values),
                 ("host_key_prompt", "Trust this SSH host?" in normalized_values),
-                ("host_key_fingerprint", "SHA256:fixture-switcher-host-key" in normalized_values),
-                ("host_key_reject_action", "Cancel" in normalized_values),
-                ("host_key_trust_action", "Trust and continue" in normalized_values),
+                ("host_key_fingerprint", any("SHA256:fixture-switcher-host-key" in value for value in normalized_values)),
+                ("host_key_reject_action", "CANCEL" in normalized_values),
+                ("host_key_trust_action", "TRUST AND CONTINUE" in normalized_values),
             ]
         elif screen == "session-switcher-create":
             checks = [
