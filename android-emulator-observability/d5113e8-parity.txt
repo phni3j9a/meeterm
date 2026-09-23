@@ -1,0 +1,10 @@
+d5113e8 parity check (post-a066f79 run)
+=======================================
+Branch tip: d5113e838e84163717e02291c4fda1a728fb0962 (= a066f79 + ONE commit).
+Delta verified: `git diff a066f79..d5113e8` touches ONLY native/meeterm-core/src/ssh.rs
+with 5 hunks: recv_timeout/deadline 2s or 3s -> 30s. Every changed line sits inside
+`#[cfg(test)] mod tests` (opens at ssh.rs:8048; no top-level items follow in the file).
+Zero release/product code changed -> the a066f79 release build is binary-equivalent
+for all product purposes; per requester instruction, no suite re-run was performed.
+The a066f79 acceptance evidence in this directory therefore stands as the hosted
+evidence for the submitted tip.
