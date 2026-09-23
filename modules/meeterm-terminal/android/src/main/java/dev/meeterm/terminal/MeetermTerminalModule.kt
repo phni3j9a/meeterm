@@ -146,6 +146,8 @@ class MeetermTerminalModule : Module() {
         KnownHostsStore.path(storageContext()), nativeOptions.authMethod, nativeOptions.password,
       ))
     }
+    // `unchanged` is a native-confirmed no-op; callers dismiss the sheet and
+    // keep the existing Ready owner instead of treating it as a switch.
     AsyncFunction("runtimeBrowseState") { token: String ->
       runtimeBrowseStateValue(MeetermNative.runtimeBrowseState(token))
     }
@@ -606,7 +608,9 @@ class MeetermTerminalModule : Module() {
     const val RUNTIME_ERROR_CODE_MAX_BYTES = 64
     const val RUNTIME_ERROR_MAX_BYTES = 256
     const val TMUX_CREATE_NAME_MAX_BYTES = 64
-    val RUNTIME_BROWSE_PHASES = setOf("starting", "discovering", "ready", "committing", "committed", "failed", "cancelled")
+    val RUNTIME_BROWSE_PHASES = setOf(
+      "starting", "discovering", "ready", "committing", "committed", "unchanged", "failed", "cancelled",
+    )
 
     fun normalizeTerminalId(value: String): String {
       val normalized = value.trim()

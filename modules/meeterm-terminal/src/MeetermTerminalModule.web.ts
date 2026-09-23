@@ -114,6 +114,7 @@ class MeetermTerminalModule extends NativeModule<{}> {
   async runtimeBrowseRefresh(_token: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async runtimeBrowseCancel(_token: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async runtimeBrowseRespondToHostKey(_token: string, _fingerprint: string, _accept: boolean): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  /** Native platforms report the commit outcome through runtimeBrowseState. */
   async runtimeBrowseCommit(
     _token: string,
     _browseGeneration: string,

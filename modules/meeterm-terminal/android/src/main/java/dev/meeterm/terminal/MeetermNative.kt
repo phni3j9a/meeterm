@@ -146,6 +146,7 @@ internal object MeetermNative {
     authMethod: String,
     password: String,
   ): String?
+  /** Snapshot JSON phase may be `unchanged` when native confirms the live binding. */
   external fun runtimeBrowseState(token: String): String?
   external fun runtimeBrowseRefresh(token: String): Int
   external fun runtimeBrowseCancel(token: String): Int

@@ -296,6 +296,7 @@ export type RuntimeBrowsePhase =
   | 'ready'
   | 'committing'
   | 'committed'
+  | 'unchanged'
   | 'failed'
   | 'cancelled';
 
@@ -319,7 +320,7 @@ export type RuntimeBrowseState = {
   errorMessage: string;
   hostKey: RuntimeBrowseHostKey;
   cleanupWarning: WorkspaceCleanupWarning | null;
-  /** Set only after the provisional root has been promoted. */
+  /** Promoted target owner for `committed`; existing owner for `unchanged`. */
   activeTerminalId: string | null;
 };
 

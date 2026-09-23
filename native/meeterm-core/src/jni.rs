@@ -926,6 +926,8 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseStar
 }
 
 #[unsafe(no_mangle)]
+/// Return bounded browse JSON. Its phase may be `unchanged` to confirm that
+/// the selected row is already the source's live tmux binding.
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseState<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _this: JObject<'caller>,

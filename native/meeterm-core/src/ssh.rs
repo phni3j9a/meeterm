@@ -336,6 +336,9 @@ pub enum RuntimeBrowsePhase {
     Ready,
     Committing,
     Committed,
+    /// The requested candidate was positively confirmed as the current live
+    /// tmux binding, so the browse can close without changing its owner.
+    Unchanged,
     Failed,
     Cancelled,
 }
@@ -348,6 +351,7 @@ impl RuntimeBrowsePhase {
             Self::Ready => "ready",
             Self::Committing => "committing",
             Self::Committed => "committed",
+            Self::Unchanged => "unchanged",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
         }
@@ -1663,13 +1667,22 @@ impl ConnectionShared {
     /// source generation and operation epoch are checked while the same
     /// `info -> session` boundary that revokes input/resize/mutation is held,
     /// so a delayed callback cannot pass a check and then publish live state.
-    fn fence_for_runtime_switch(&self, expected_epoch: u64) -> Result<(), ConnectionError> {
+    fn fence_for_runtime_switch(
+        &self,
+        expected_epoch: u64,
+        expected_recovery: &RecoverySnapshot,
+    ) -> Result<(), ConnectionError> {
         let mut info = self.info.lock().map_err(|_| ConnectionError::Internal)?;
-        if self.is_cancelled() || info.finished {
+        if self.is_cancelled() {
             return Err(ConnectionError::BrowseStale);
         }
         let mut state = self.session.lock().map_err(|_| ConnectionError::Internal)?;
-        if state.generation != self.generation || state.operation_epoch != expected_epoch {
+        if state.generation != self.generation
+            || state.operation_epoch != expected_epoch
+            || &state.recovery != expected_recovery
+            || state.runtime_operations_ready != (expected_recovery.phase == RecoveryPhase::None)
+            || (expected_recovery.phase != RecoveryPhase::None && !state.has_retained_work())
+        {
             return Err(ConnectionError::BrowseStale);
         }
         // Keep normal input/resize/mutation fail-closed while the source map
@@ -1684,7 +1697,9 @@ impl ConnectionShared {
         state.pending_confirmation_token = None;
         state.runtime_operations_ready = false;
         state.terminal_input_ready = false;
-        info.state = ConnectionState::Closing;
+        if !info.finished {
+            info.state = ConnectionState::Closing;
+        }
         info.pending = None;
         self.explicit_cleanup_notify.notify_waiters();
         Ok(())
@@ -2108,6 +2123,7 @@ struct ConnectionEntry {
     abort: tokio::task::AbortHandle,
 }
 
+#[derive(Clone)]
 enum RuntimeBrowseTarget {
     Candidate(String),
     CreateTmux(String),
@@ -2117,11 +2133,14 @@ enum RuntimeBrowseTarget {
 /// Arc and target actor rather than comparing bare generation/epoch integers
 /// from late callbacks.  Credentials remain owned by the target actor's
 /// `ConnectionProfile`; this record never clones or serializes them.
+#[derive(Clone)]
 struct RuntimeBrowseEntry {
     token: u64,
     source_owner: TerminalId,
     source_generation: u64,
     source_epoch: u64,
+    source_recovery: RecoverySnapshot,
+    source_runtime_operations_ready: bool,
     source_shared: Arc<ConnectionShared>,
     provisional_owner: TerminalId,
     provisional_generation: u64,
@@ -2508,7 +2527,8 @@ pub fn runtime_browse_start_current(
     source_owner: TerminalId,
 ) -> Result<RuntimeBrowseSnapshot, ConnectionError> {
     cancel_active_runtime_browse();
-    let (source_shared, profile) = browse_source_profile(source_owner)?;
+    let (source_shared, profile, source_epoch, source_recovery, source_runtime_operations_ready) =
+        browse_source_profile(source_owner)?;
     let mut profile = profile;
     profile.backend = Backend::Tmux;
     profile.runtime = None;
@@ -2518,6 +2538,9 @@ pub fn runtime_browse_start_current(
         source_owner,
         ConnectionStart::ProvisionalProfile(profile),
         source_shared,
+        source_epoch,
+        source_recovery,
+        source_runtime_operations_ready,
     )
 }
 
@@ -2530,7 +2553,8 @@ pub fn runtime_browse_start_with_options(
     mut options: ConnectOptions,
 ) -> Result<RuntimeBrowseSnapshot, ConnectionError> {
     cancel_active_runtime_browse();
-    let (source_shared, _) = browse_source_profile(source_owner)?;
+    let (source_shared, _, source_epoch, source_recovery, source_runtime_operations_ready) =
+        browse_source_profile(source_owner)?;
     options.backend = Backend::Tmux;
     options.runtime = None;
     let options = options.validate()?;
@@ -2538,6 +2562,9 @@ pub fn runtime_browse_start_with_options(
         source_owner,
         ConnectionStart::ProvisionalHost(options),
         source_shared,
+        source_epoch,
+        source_recovery,
+        source_runtime_operations_ready,
     )
 }
 
@@ -2706,12 +2733,21 @@ pub fn runtime_browse_commit(
         .map_err(|_| ConnectionError::Internal)?;
     let token_value = parse_browse_token(token)?;
 
-    let (source_owner, source_shared, source_epoch, provisional_owner, provisional_shared, target) = {
-        let mut browse = runtime_browse()
+    let (
+        source_owner,
+        source_shared,
+        source_epoch,
+        source_recovery,
+        provisional_owner,
+        provisional_shared,
+        target,
+        entry_snapshot,
+    ) = {
+        let browse = runtime_browse()
             .lock()
             .map_err(|_| ConnectionError::Internal)?;
         let entry = browse
-            .as_mut()
+            .as_ref()
             .filter(|entry| entry.token == token_value)
             .ok_or(ConnectionError::BrowseStale)?;
         if !matches!(
@@ -2779,11 +2815,7 @@ pub fn runtime_browse_commit(
             .session
             .lock()
             .map_err(|_| ConnectionError::Internal)?;
-        if source_state.generation != entry.source_generation
-            || source_state.operation_epoch != entry.source_epoch
-            || !source_state.runtime_operations_ready
-            || source_state.recovery.phase != RecoveryPhase::None
-        {
+        if !browse_source_state_matches(entry, &source_state) {
             return Err(ConnectionError::BrowseStale);
         }
         drop(source_state);
@@ -2812,23 +2844,69 @@ pub fn runtime_browse_commit(
             return Err(ConnectionError::BrowseStale);
         }
         drop(provisional_state);
-
-        entry.phase = RuntimeBrowsePhase::Committing;
-        entry.target = Some(match &target {
-            RuntimeBrowseTarget::Candidate(candidate) => {
-                RuntimeBrowseTarget::Candidate(candidate.clone())
-            }
-            RuntimeBrowseTarget::CreateTmux(name) => RuntimeBrowseTarget::CreateTmux(name.clone()),
-        });
         (
             entry.source_owner,
             source,
             entry.source_epoch,
+            entry.source_recovery.clone(),
             entry.provisional_owner,
             provisional,
             target,
+            entry.clone(),
         )
     };
+
+    if runtime_browse_noop_is_confirmed(
+        &entry_snapshot,
+        &source_shared,
+        &provisional_shared,
+        discovery_revision,
+        &target,
+    )? {
+        let mut browse = runtime_browse()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        let entry = browse
+            .as_mut()
+            .filter(|entry| entry.token == token_value)
+            .ok_or(ConnectionError::BrowseStale)?;
+        if entry.browse_generation != browse_generation
+            || !matches!(
+                entry.phase,
+                RuntimeBrowsePhase::Discovering | RuntimeBrowsePhase::Ready
+            )
+            || !Arc::ptr_eq(&entry.source_shared, &source_shared)
+            || !Arc::ptr_eq(&entry.provisional_shared, &provisional_shared)
+        {
+            return Err(ConnectionError::BrowseStale);
+        }
+        entry.phase = RuntimeBrowsePhase::Unchanged;
+        entry.target = Some(target);
+        entry.active_terminal_id = Some(source_owner);
+        return Ok(());
+    }
+
+    {
+        let mut browse = runtime_browse()
+            .lock()
+            .map_err(|_| ConnectionError::Internal)?;
+        let entry = browse
+            .as_mut()
+            .filter(|entry| entry.token == token_value)
+            .ok_or(ConnectionError::BrowseStale)?;
+        if entry.browse_generation != browse_generation
+            || !matches!(
+                entry.phase,
+                RuntimeBrowsePhase::Discovering | RuntimeBrowsePhase::Ready
+            )
+            || !Arc::ptr_eq(&entry.source_shared, &source_shared)
+            || !Arc::ptr_eq(&entry.provisional_shared, &provisional_shared)
+        {
+            return Err(ConnectionError::BrowseStale);
+        }
+        entry.phase = RuntimeBrowsePhase::Committing;
+        entry.target = Some(target.clone());
+    }
 
     // Keep the source owner's serial/commit boundary across the fence, map
     // retirement, and bounded explicit shutdown. A concurrent reconnect or
@@ -2866,7 +2944,7 @@ pub fn runtime_browse_commit(
             ));
         }
     };
-    if let Err(error) = source_shared.fence_for_runtime_switch(source_epoch) {
+    if let Err(error) = source_shared.fence_for_runtime_switch(source_epoch, &source_recovery) {
         return Err(fail_runtime_browse_commit(
             token_value,
             provisional_owner,
@@ -2976,7 +3054,16 @@ fn next_browse_token() -> u64 {
 
 fn browse_source_profile(
     source_owner: TerminalId,
-) -> Result<(Arc<ConnectionShared>, ConnectionProfile), ConnectionError> {
+) -> Result<
+    (
+        Arc<ConnectionShared>,
+        ConnectionProfile,
+        u64,
+        RecoverySnapshot,
+        bool,
+    ),
+    ConnectionError,
+> {
     registry::shared_terminal(source_owner).map_err(map_terminal_error)?;
     let shared =
         current_connection(source_owner).map_err(|_| ConnectionError::BrowseUnavailable)?;
@@ -2991,14 +3078,178 @@ fn browse_source_profile(
         .profile
         .clone()
         .ok_or(ConnectionError::BrowseUnavailable)?;
-    if state.generation != shared.generation
-        || state.recovery.phase != RecoveryPhase::None
-        || !state.runtime_operations_ready
-    {
+    let source_is_ready =
+        state.recovery.phase == RecoveryPhase::None && state.runtime_operations_ready;
+    let source_is_retained_recovery = state.recovery.phase != RecoveryPhase::None
+        && !state.runtime_operations_ready
+        && state.has_retained_work();
+    if state.generation != shared.generation || (!source_is_ready && !source_is_retained_recovery) {
         return Err(ConnectionError::BrowseUnavailable);
     }
+    let source_epoch = state.operation_epoch;
+    let source_recovery = state.recovery.clone();
+    let source_runtime_operations_ready = state.runtime_operations_ready;
     drop(state);
-    Ok((shared, profile))
+    Ok((
+        shared,
+        profile,
+        source_epoch,
+        source_recovery,
+        source_runtime_operations_ready,
+    ))
+}
+
+fn browse_source_state_matches(entry: &RuntimeBrowseEntry, state: &SessionState) -> bool {
+    let was_ready =
+        entry.source_runtime_operations_ready && entry.source_recovery.phase == RecoveryPhase::None;
+    let was_retained_recovery = !entry.source_runtime_operations_ready
+        && entry.source_recovery.phase != RecoveryPhase::None;
+    state.generation == entry.source_generation
+        && state.operation_epoch == entry.source_epoch
+        && state.recovery == entry.source_recovery
+        && state.runtime_operations_ready == entry.source_runtime_operations_ready
+        && (was_ready || (was_retained_recovery && state.has_retained_work()))
+}
+
+fn stored_credentials_share_identity(left: &StoredCredentials, right: &StoredCredentials) -> bool {
+    match (left, right) {
+        (
+            StoredCredentials::PublicKey { key: left },
+            StoredCredentials::PublicKey { key: right },
+        ) => Arc::ptr_eq(left, right),
+        (
+            StoredCredentials::Password { password: left },
+            StoredCredentials::Password { password: right },
+        ) => Arc::ptr_eq(left, right),
+        _ => false,
+    }
+}
+
+fn same_ssh_endpoint(left: &ConnectionProfile, right: &ConnectionProfile) -> bool {
+    left.host == right.host
+        && left.port == right.port
+        && left.username == right.username
+        && left.known_hosts_path == right.known_hosts_path
+}
+
+/// Confirm only the identity that the current read-only discovery can prove:
+/// an exact tmux session ID within the exact server PID/start-time epoch. The
+/// provisional connection must use the same native credential object as the
+/// source. Herdr's browse rows contain a running session name but not its
+/// stable terminal ID, so they intentionally cannot satisfy this predicate.
+fn runtime_browse_noop_is_confirmed(
+    entry: &RuntimeBrowseEntry,
+    source_shared: &Arc<ConnectionShared>,
+    provisional_shared: &Arc<ConnectionShared>,
+    discovery_revision: u64,
+    target: &RuntimeBrowseTarget,
+) -> Result<bool, ConnectionError> {
+    let RuntimeBrowseTarget::Candidate(candidate_id) = target else {
+        return Ok(false);
+    };
+    if entry.source_owner != source_shared.terminal_id()
+        || entry.source_generation != source_shared.generation
+        || entry.provisional_owner != provisional_shared.terminal_id()
+        || entry.provisional_generation != provisional_shared.generation
+        || !Arc::ptr_eq(&entry.source_shared, source_shared)
+        || !Arc::ptr_eq(&entry.provisional_shared, provisional_shared)
+        || entry.source_shared.is_cancelled()
+        || provisional_shared.is_cancelled()
+    {
+        return Ok(false);
+    }
+
+    // Explicit owner replacement/disconnect is serialized against this
+    // identity check. Recovery itself is checked under the source session
+    // lock below; if it advances before that check, the normal commit path
+    // will reject the stale browse.
+    let owner = owner_transition(entry.source_owner)?;
+    let _owner_serial = owner.serial.lock().map_err(|_| ConnectionError::Internal)?;
+    let _owner_commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+    let current_source = connections()
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .get(&entry.source_owner)
+        .is_some_and(|connection| Arc::ptr_eq(&connection.shared, source_shared));
+    let current_target = connections()
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .get(&entry.provisional_owner)
+        .is_some_and(|connection| Arc::ptr_eq(&connection.shared, provisional_shared));
+    if !current_source || !current_target || !provisional_shared.is_provisional() {
+        return Ok(false);
+    }
+
+    let source_info = source_shared
+        .info
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
+    if source_info.finished || source_info.state != ConnectionState::Ready {
+        return Ok(false);
+    }
+    let source_state = source_shared
+        .session
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
+    if !browse_source_state_matches(entry, &source_state)
+        || !entry.source_runtime_operations_ready
+        || entry.source_recovery.phase != RecoveryPhase::None
+    {
+        return Ok(false);
+    }
+    let Some(source_profile) = source_state.profile.as_ref() else {
+        return Ok(false);
+    };
+    if source_profile.backend != Backend::Tmux
+        || source_state.endpoint.as_ref() != Some(&SessionEndpoint::from_profile(source_profile))
+        || source_shared.host != source_profile.host
+        || source_shared.port != source_profile.port
+        || source_shared.known_hosts_path != source_profile.known_hosts_path
+    {
+        return Ok(false);
+    }
+    let Some(source_identity) = source_profile.tmux_identity.as_ref() else {
+        return Ok(false);
+    };
+
+    let provisional_state = provisional_shared
+        .session
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?;
+    if provisional_state.generation != entry.provisional_generation
+        || provisional_state.runtime_discovery.connection_generation != entry.provisional_generation
+        || provisional_state.runtime_discovery.discovery_revision != discovery_revision
+        || provisional_state.endpoint.as_ref() != Some(&entry.target_endpoint)
+    {
+        return Ok(false);
+    }
+    let selectable = provisional_state
+        .runtime_discovery
+        .tmux
+        .candidates
+        .iter()
+        .find(|candidate| candidate.id == *candidate_id)
+        .is_some_and(|candidate| candidate.selectable);
+    let Some(RuntimeBinding::Tmux(target_identity)) =
+        provisional_state.runtime_candidates.get(candidate_id)
+    else {
+        return Ok(false);
+    };
+    let Some(target_profile) = provisional_state.profile.as_ref() else {
+        return Ok(false);
+    };
+    selectable
+        .then_some(
+            target_profile.backend == Backend::Tmux
+                && target_profile.runtime.is_none()
+                && target_identity == source_identity
+                && same_ssh_endpoint(source_profile, target_profile)
+                && stored_credentials_share_identity(
+                    &source_profile.credentials,
+                    &target_profile.credentials,
+                ),
+        )
+        .ok_or(ConnectionError::RuntimeSelectionUnavailable)
 }
 
 fn cancel_active_runtime_browse() {
@@ -3037,6 +3288,9 @@ fn runtime_browse_start(
     source_owner: TerminalId,
     start: ConnectionStart,
     source_shared: Arc<ConnectionShared>,
+    source_epoch: u64,
+    source_recovery: RecoverySnapshot,
+    source_runtime_operations_ready: bool,
 ) -> Result<RuntimeBrowseSnapshot, ConnectionError> {
     let _serial = runtime_browse_serial()
         .lock()
@@ -3054,7 +3308,6 @@ fn runtime_browse_start(
     }
 
     let source_generation = source_shared.generation;
-    let source_epoch = source_shared.operation_epoch();
     let dimensions = registry::terminal_dimensions(source_owner).unwrap_or((80, 24));
     let provisional_owner =
         registry::create_terminal(dimensions.0, dimensions.1).map_err(map_terminal_error)?;
@@ -3082,6 +3335,8 @@ fn runtime_browse_start(
         source_owner,
         source_generation,
         source_epoch,
+        source_recovery,
+        source_runtime_operations_ready,
         source_shared,
         provisional_owner,
         provisional_generation: provisional_shared.generation,
@@ -6376,6 +6631,13 @@ async fn run_authenticated_session(
 ) -> Result<(), FlowFailure> {
     authenticate_session(shared, profile, session).await?;
     if picker {
+        // A host-only browse needs to prove that a later re-tap is the same
+        // live tmux binding without returning credentials to the platform.
+        // Keep its already parsed credential identity in the native owner;
+        // cancellation retires this provisional owner and releases it.
+        if shared.is_provisional() {
+            shared.set_profile(profile.clone());
+        }
         return run_runtime_picker(shared, profile, session, commands).await;
     }
     shared.set_profile(profile.clone());
@@ -7902,6 +8164,8 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             source_owner: 70_001,
             source_generation: 11,
             source_epoch: 17,
+            source_recovery: RecoverySnapshot::default(),
+            source_runtime_operations_ready: true,
             source_shared: Arc::clone(&source),
             provisional_owner: 70_002,
             provisional_generation: 12,
@@ -7932,6 +8196,443 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         assert!(entry.provisional_identity_matches(70_002, 12, &provisional));
         assert!(!entry.provisional_identity_matches(70_002, 13, &provisional));
         assert_eq!(entry.target_endpoint, target_endpoint);
+    }
+
+    #[test]
+    fn browse_source_allows_retained_recovery_without_changing_work_state() {
+        let source = registry::create_terminal(80, 24).expect("recovery browse source");
+        let generation = next_generation();
+        let password = Arc::new(Zeroizing::new("recovery-browse-secret".to_owned()));
+        let profile = ConnectionProfile {
+            host: "recovery.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from(format!("/tmp/recovery-browse-{source}")),
+            credentials: StoredCredentials::Password {
+                password: Arc::clone(&password),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("retained".to_owned()),
+            tmux_identity: Some(tmux::SessionIdentity {
+                session_id: "$31".to_owned(),
+                name: "retained".to_owned(),
+                server_pid: 31,
+                server_start_time: 1_700_000_031,
+            }),
+            herdr_executable: None,
+        };
+        let shared = Arc::new(ConnectionShared::new(
+            source,
+            generation,
+            profile.host.clone(),
+            profile.port,
+            profile.known_hosts_path.clone(),
+        ));
+        let retained_topology = SessionSnapshot {
+            windows: vec![WindowSnapshot {
+                window_id: 4,
+                name: "editor".to_owned(),
+                panes: Vec::new(),
+                selected: true,
+                zoomed: false,
+            }],
+            panes: vec![PaneSnapshot {
+                window_id: 4,
+                pane_id: 12,
+                terminal_id: source,
+                window_name: "editor".to_owned(),
+                active: true,
+                selected: true,
+                index: 0,
+                columns: 80,
+                rows: 24,
+                pane_name: "shell".to_owned(),
+                title: "shell".to_owned(),
+            }],
+            selected_pane: Some(12),
+        };
+        let retained_recovery = RecoverySnapshot {
+            phase: RecoveryPhase::Stopped,
+            reason: "runtime_identity_uncertain".to_owned(),
+            attempt: 6,
+            max_attempts: 6,
+            confirmation_token: String::new(),
+        };
+        {
+            let mut state = shared.session.lock().expect("recovery browse state");
+            state.generation = generation;
+            state.operation_epoch = 27;
+            state.endpoint = Some(SessionEndpoint::from_profile(&profile));
+            state.profile = Some(profile.clone());
+            state.snapshot = retained_topology.clone();
+            state.selected_pane = Some(12);
+            state.pane_terminals.insert(12, source);
+            state.recovery = retained_recovery.clone();
+            state.runtime_operations_ready = false;
+            state.terminal_input_ready = false;
+        }
+        registry::begin_remote(source, generation).expect("begin retained native Term");
+        assert!(registry::feed_remote(
+            source,
+            generation,
+            b"retained-work-screen"
+        ));
+        let retained_term = registry::snapshot(source).expect("retained Term snapshot");
+        shared.set_state(ConnectionState::Failed);
+        shared.finish(Err(FlowFailure::Network));
+        let abort = runtime()
+            .expect("recovery browse runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections()
+            .lock()
+            .expect("recovery browse connection map")
+            .insert(
+                source,
+                ConnectionEntry {
+                    shared: Arc::clone(&shared),
+                    abort,
+                },
+            );
+
+        let (browsed_source, browsed_profile, epoch, recovery, ready) =
+            browse_source_profile(source).expect("explicit Change can browse retained work");
+        assert!(Arc::ptr_eq(&browsed_source, &shared));
+        assert!(stored_credentials_share_identity(
+            &browsed_profile.credentials,
+            &profile.credentials
+        ));
+        assert_eq!(epoch, 27);
+        assert_eq!(recovery, retained_recovery);
+        assert!(!ready);
+        let state = shared
+            .session
+            .lock()
+            .expect("source after browse inspection");
+        assert_eq!(state.snapshot, retained_topology);
+        assert_eq!(state.selected_pane, Some(12));
+        assert_eq!(state.recovery, recovery);
+        assert_eq!(state.operation_epoch, 27);
+        assert!(!state.runtime_operations_ready);
+        drop(state);
+        assert_eq!(
+            registry::snapshot(source).expect("Term after browse inspection"),
+            retained_term
+        );
+
+        let entry = connections()
+            .lock()
+            .expect("recovery browse cleanup map")
+            .remove(&source)
+            .expect("recovery browse source entry");
+        entry.shared.cancel();
+        entry.abort.abort();
+        registry::destroy_terminal(source);
+    }
+
+    #[test]
+    fn browse_source_state_match_rejects_epoch_or_recovery_change() {
+        let source = Arc::new(ConnectionShared::new(
+            70_101,
+            21,
+            "recovery.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/browse-stale-source"),
+        ));
+        let provisional = Arc::new(ConnectionShared::new_with_provisional(
+            70_102,
+            22,
+            "target.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/browse-stale-target"),
+            true,
+        ));
+        let recovery = RecoverySnapshot {
+            phase: RecoveryPhase::Reconnecting,
+            reason: "reconnecting".to_owned(),
+            attempt: 2,
+            max_attempts: 6,
+            confirmation_token: String::new(),
+        };
+        let entry = RuntimeBrowseEntry {
+            token: 501,
+            source_owner: 70_101,
+            source_generation: 21,
+            source_epoch: 17,
+            source_recovery: recovery.clone(),
+            source_runtime_operations_ready: false,
+            source_shared: source,
+            provisional_owner: 70_102,
+            provisional_generation: 22,
+            provisional_shared: provisional,
+            target_endpoint: SessionEndpoint {
+                host: "target.example.test".to_owned(),
+                port: 22,
+                username: "fixture".to_owned(),
+                known_hosts_path: PathBuf::from("/tmp/browse-stale-target"),
+                backend: Backend::Tmux,
+                runtime: None,
+            },
+            browse_generation: 502,
+            phase: RuntimeBrowsePhase::Ready,
+            target: None,
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        };
+        let retained = SessionState {
+            generation: 21,
+            operation_epoch: 17,
+            snapshot: SessionSnapshot {
+                windows: vec![WindowSnapshot {
+                    window_id: 1,
+                    name: "retained".to_owned(),
+                    panes: Vec::new(),
+                    selected: true,
+                    zoomed: false,
+                }],
+                ..SessionSnapshot::default()
+            },
+            recovery: recovery.clone(),
+            runtime_operations_ready: false,
+            ..SessionState::default()
+        };
+        assert!(browse_source_state_matches(&entry, &retained));
+
+        let mut advanced_epoch = SessionState {
+            generation: 21,
+            operation_epoch: 18,
+            snapshot: retained.snapshot.clone(),
+            recovery: recovery.clone(),
+            runtime_operations_ready: false,
+            ..SessionState::default()
+        };
+        assert!(!browse_source_state_matches(&entry, &advanced_epoch));
+        advanced_epoch.operation_epoch = 17;
+        advanced_epoch.recovery.phase = RecoveryPhase::Stopped;
+        advanced_epoch.recovery.reason = "runtime_identity_uncertain".to_owned();
+        assert!(!browse_source_state_matches(&entry, &advanced_epoch));
+    }
+
+    #[test]
+    fn browse_noop_requires_exact_live_tmux_identity_and_preserves_source() {
+        let source = registry::create_terminal(80, 24).expect("no-op source terminal");
+        let provisional = registry::create_terminal(80, 24).expect("no-op provisional terminal");
+        let source_generation = next_generation();
+        let provisional_generation = next_generation();
+        let secret = Arc::new(Zeroizing::new("same-native-credential".to_owned()));
+        let identity = tmux::SessionIdentity {
+            session_id: "$41".to_owned(),
+            name: "live".to_owned(),
+            server_pid: 41,
+            server_start_time: 1_700_000_041,
+        };
+        let source_profile = ConnectionProfile {
+            host: "same.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/noop-known-hosts"),
+            credentials: StoredCredentials::Password {
+                password: Arc::clone(&secret),
+            },
+            backend: Backend::Tmux,
+            runtime: Some("live".to_owned()),
+            tmux_identity: Some(identity.clone()),
+            herdr_executable: None,
+        };
+        let target_profile = ConnectionProfile {
+            runtime: None,
+            tmux_identity: None,
+            ..source_profile.clone()
+        };
+        let source_shared = Arc::new(ConnectionShared::new(
+            source,
+            source_generation,
+            source_profile.host.clone(),
+            source_profile.port,
+            source_profile.known_hosts_path.clone(),
+        ));
+        let provisional_shared = Arc::new(ConnectionShared::new_with_provisional(
+            provisional,
+            provisional_generation,
+            target_profile.host.clone(),
+            target_profile.port,
+            target_profile.known_hosts_path.clone(),
+            true,
+        ));
+        {
+            let mut state = source_shared.session.lock().expect("no-op source state");
+            state.generation = source_generation;
+            state.operation_epoch = 4;
+            state.endpoint = Some(SessionEndpoint::from_profile(&source_profile));
+            state.profile = Some(source_profile.clone());
+            state.runtime_operations_ready = true;
+        }
+        source_shared.set_state(ConnectionState::Ready);
+        let candidate = RuntimeCandidate {
+            id: "candidate-exact".to_owned(),
+            backend: Backend::Tmux,
+            name: "live".to_owned(),
+            state: RuntimeState::Running,
+            selectable: true,
+            suggested: false,
+            error_code: None,
+            error_message: None,
+        };
+        let target_endpoint = SessionEndpoint::from_profile(&target_profile);
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("no-op provisional state");
+            state.generation = provisional_generation;
+            state.endpoint = Some(target_endpoint.clone());
+            state.profile = Some(target_profile.clone());
+            state.runtime_discovery = RuntimeDiscoverySnapshot {
+                connection_generation: provisional_generation,
+                discovery_revision: 8,
+                tmux: RuntimeSection {
+                    state: RuntimeSectionState::Success,
+                    candidates: vec![candidate],
+                    ..RuntimeSection::default()
+                },
+                ..RuntimeDiscoverySnapshot::default()
+            };
+            state.runtime_candidates.insert(
+                "candidate-exact".to_owned(),
+                RuntimeBinding::Tmux(identity.clone()),
+            );
+        }
+        provisional_shared.set_state(ConnectionState::AwaitingRuntimeSelection);
+        let source_abort = runtime()
+            .expect("no-op runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let target_abort = runtime()
+            .expect("no-op runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("no-op connection map").extend([
+            (
+                source,
+                ConnectionEntry {
+                    shared: Arc::clone(&source_shared),
+                    abort: source_abort,
+                },
+            ),
+            (
+                provisional,
+                ConnectionEntry {
+                    shared: Arc::clone(&provisional_shared),
+                    abort: target_abort,
+                },
+            ),
+        ]);
+        let entry = RuntimeBrowseEntry {
+            token: 601,
+            source_owner: source,
+            source_generation,
+            source_epoch: 4,
+            source_recovery: RecoverySnapshot::default(),
+            source_runtime_operations_ready: true,
+            source_shared: Arc::clone(&source_shared),
+            provisional_owner: provisional,
+            provisional_generation,
+            provisional_shared: Arc::clone(&provisional_shared),
+            target_endpoint,
+            browse_generation: 602,
+            phase: RuntimeBrowsePhase::Ready,
+            target: None,
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        };
+        let target = RuntimeBrowseTarget::Candidate("candidate-exact".to_owned());
+        let before_term = registry::snapshot(source).expect("source Term before no-op");
+
+        assert!(
+            runtime_browse_noop_is_confirmed(
+                &entry,
+                &source_shared,
+                &provisional_shared,
+                8,
+                &target,
+            )
+            .expect("exact candidate check")
+        );
+        {
+            let info = source_shared.info.lock().expect("source info after no-op");
+            assert_eq!(info.state, ConnectionState::Ready);
+            assert!(!info.finished);
+        }
+        {
+            let state = source_shared
+                .session
+                .lock()
+                .expect("source session after no-op");
+            assert_eq!(state.operation_epoch, 4);
+            assert!(state.runtime_operations_ready);
+            assert_eq!(state.recovery.phase, RecoveryPhase::None);
+        }
+        assert!(!source_shared.is_cancelled());
+        assert!(!source_shared.explicit_cleanup_requested());
+        assert!(
+            !fenced_terminals()
+                .lock()
+                .expect("no-op terminal fence set")
+                .contains(&source)
+        );
+        assert_eq!(
+            registry::snapshot(source).expect("source Term after no-op"),
+            before_term
+        );
+
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("candidate mismatch state");
+            state.runtime_candidates.insert(
+                "candidate-exact".to_owned(),
+                RuntimeBinding::Tmux(tmux::SessionIdentity {
+                    session_id: "$42".to_owned(),
+                    name: "live".to_owned(),
+                    server_pid: 41,
+                    server_start_time: 1_700_000_041,
+                }),
+            );
+        }
+        assert!(
+            !runtime_browse_noop_is_confirmed(
+                &entry,
+                &source_shared,
+                &provisional_shared,
+                8,
+                &target,
+            )
+            .expect("nonmatching candidate check")
+        );
+        assert_eq!(
+            registry::snapshot(source).expect("source Term after mismatch"),
+            before_term
+        );
+
+        let entries = {
+            let mut connections = connections().lock().expect("no-op cleanup map");
+            vec![
+                connections.remove(&source),
+                connections.remove(&provisional),
+            ]
+        };
+        for entry in entries.into_iter().flatten() {
+            entry.shared.cancel();
+            entry.abort.abort();
+        }
+        registry::destroy_terminal(source);
+        registry::destroy_terminal(provisional);
+        drop(secret);
     }
 
     #[test]
@@ -7989,8 +8690,9 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             state.recovery.phase = RecoveryPhase::None;
         }
 
+        let expected_recovery = RecoverySnapshot::default();
         assert_eq!(
-            shared.fence_for_runtime_switch(8),
+            shared.fence_for_runtime_switch(8, &expected_recovery),
             Err(ConnectionError::BrowseStale)
         );
         {
@@ -8003,7 +8705,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         assert!(!shared.explicit_cleanup_requested());
 
         shared
-            .fence_for_runtime_switch(9)
+            .fence_for_runtime_switch(9, &expected_recovery)
             .expect("exact source fence");
         {
             let state = shared.session.lock().expect("state after source fence");
@@ -8031,6 +8733,92 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 .expect("cleared fence set")
                 .contains(&source)
         );
+    }
+
+    #[test]
+    fn recovery_switch_fences_retained_state_before_bounded_shutdown_even_if_finished() {
+        let source = registry::create_terminal(80, 24).expect("recovery commit source");
+        let generation = next_generation();
+        let shared = Arc::new(ConnectionShared::new(
+            source,
+            generation,
+            "recovery-commit.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/recovery-commit-known-hosts"),
+        ));
+        let topology = SessionSnapshot {
+            windows: vec![WindowSnapshot {
+                window_id: 8,
+                name: "retained".to_owned(),
+                panes: Vec::new(),
+                selected: true,
+                zoomed: false,
+            }],
+            selected_pane: Some(19),
+            ..SessionSnapshot::default()
+        };
+        let recovery = RecoverySnapshot {
+            phase: RecoveryPhase::Stopped,
+            reason: "runtime_identity_uncertain".to_owned(),
+            attempt: 6,
+            max_attempts: 6,
+            confirmation_token: String::new(),
+        };
+        {
+            let mut state = shared.session.lock().expect("recovery commit state");
+            state.generation = generation;
+            state.operation_epoch = 9;
+            state.snapshot = topology.clone();
+            state.selected_pane = Some(19);
+            state.recovery = recovery.clone();
+            state.runtime_operations_ready = false;
+            state.terminal_input_ready = false;
+        }
+        registry::begin_remote(source, generation).expect("begin recovery source Term");
+        assert!(registry::feed_remote(
+            source,
+            generation,
+            b"stale retained screen"
+        ));
+        let retained_term = registry::snapshot(source).expect("retained screen before switch");
+        shared.set_state(ConnectionState::Failed);
+        shared.finish(Err(FlowFailure::Network));
+        let abort = runtime()
+            .expect("recovery commit runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+
+        // The ordered commit's first boundary is the local fence. A stopped,
+        // already-finished recovery actor still has a retained owner that can
+        // be explicitly retired without waiting for a new shutdown event.
+        shared
+            .fence_for_runtime_switch(9, &recovery)
+            .expect("fence a finished retained source");
+        {
+            let state = shared.session.lock().expect("state after recovery fence");
+            assert_eq!(state.operation_epoch, 10);
+            assert_eq!(state.snapshot, topology);
+            assert_eq!(state.selected_pane, Some(19));
+            assert_eq!(state.recovery.phase, RecoveryPhase::Stopped);
+            assert_eq!(state.recovery.reason, "runtime_changed");
+            assert!(!state.runtime_operations_ready);
+            assert!(!state.terminal_input_ready);
+        }
+        assert_eq!(
+            registry::snapshot(source).expect("Term after recovery fence"),
+            retained_term
+        );
+        let shutdown = finish_or_force_explicit_shutdown(
+            runtime().expect("recovery commit runtime"),
+            Arc::clone(&shared),
+            abort,
+        );
+        assert!(
+            shutdown.finished,
+            "finished actor shutdown is immediately bounded"
+        );
+        assert!(!shared.is_cancelled());
+        registry::destroy_terminal(source);
     }
 
     #[test]
@@ -8151,6 +8939,15 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         assert!(registry::shared_terminal(first_owner).is_err());
         assert!(registry::shared_terminal(second_owner).is_ok());
 
+        // A confirmed no-op is still an unpromoted browse. Closing it retires
+        // the provisional SSH/root while leaving the Ready source untouched.
+        {
+            let mut browse = runtime_browse().lock().expect("unchanged browse entry");
+            let entry = browse.as_mut().expect("active browse entry");
+            entry.phase = RuntimeBrowsePhase::Unchanged;
+            entry.active_terminal_id = Some(source);
+        }
+
         runtime_browse_cancel(&second.token).expect("cancel second browse");
         assert!(registry::shared_terminal(second_owner).is_err());
         assert!(
@@ -8170,6 +8967,15 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 Some("127.0.0.1")
             );
         }
+        assert!(!source_shared.is_cancelled());
+        assert!(!source_shared.explicit_cleanup_requested());
+        assert_eq!(
+            source_shared
+                .snapshot()
+                .expect("source remains Ready")
+                .state,
+            ConnectionState::Ready as u32
+        );
 
         let source_entry = connections()
             .lock()

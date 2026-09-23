@@ -193,6 +193,7 @@ public final class MeetermTerminalModule: Module {
       }
       return try Self.runtimeBrowseRecord(value)
     }
+    // `unchanged` is a confirmed no-op outcome; preserve the existing Ready owner.
     AsyncFunction("runtimeBrowseState") { (token: String) throws -> [String: Any] in
       guard Self.validBrowseToken(token), let json = MeetermCore.runtimeBrowseState(token),
             let data = json.data(using: .utf8),
@@ -436,7 +437,7 @@ public final class MeetermTerminalModule: Module {
     guard let token = value["token"] as? String, validBrowseToken(token),
           let generation = value["browseGeneration"] as? String, UInt64(generation) != nil,
           let phase = value["phase"] as? String,
-          ["starting", "discovering", "ready", "committing", "committed", "failed", "cancelled"].contains(phase),
+          ["starting", "discovering", "ready", "committing", "committed", "unchanged", "failed", "cancelled"].contains(phase),
           let revision = integer(value["discoveryRevision"]), revision >= 0,
           let rawDiscovery = value["discovery"] as? [String: Any] else {
       throw error("The native runtime browse is invalid.")

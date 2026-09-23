@@ -217,7 +217,8 @@ int32_t meeterm_select_runtime(uint64_t terminal_id, const uint8_t *candidate_id
 int32_t meeterm_create_tmux_session(uint64_t terminal_id, const uint8_t *name, size_t name_length);
 
 /* Native provisional session switcher. The browse root is never returned;
- * phase=committed carries the promoted active terminal handle. */
+ * phase=committed carries the promoted active terminal handle, while
+ * phase=unchanged confirms the existing live binding and carries its handle. */
 size_t meeterm_runtime_browse_start_current(uint64_t terminal_id, uint8_t *output, size_t capacity);
 size_t meeterm_runtime_browse_start_profile(
   uint64_t terminal_id,

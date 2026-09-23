@@ -402,6 +402,8 @@ enum MeetermCore {
     }
   }
 
+  // Snapshot JSON carries the native browse phase, including `unchanged` for
+  // a confirmed no-op that leaves the current owner active.
   static func runtimeBrowseState(token: String) -> String? {
     readRuntimeBrowse { buffer, capacity in
       withUTF8Size(token) { pointer, length in

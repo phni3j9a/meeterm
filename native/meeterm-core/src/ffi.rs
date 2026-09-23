@@ -156,6 +156,8 @@ struct RuntimeBrowseBridge {
     token: String,
     browse_generation: String,
     discovery_revision: u64,
+    // `unchanged` means native positively confirmed the same live tmux
+    // binding; the source owner remains active and was not fenced.
     phase: &'static str,
     discovery: RuntimeDiscoveryBridge,
     error_code: String,
@@ -1277,8 +1279,9 @@ pub unsafe extern "C" fn meeterm_runtime_browse_respond_host_key(
 }
 
 /// Commit an exact candidate or an explicit tmux create action. Both target
-/// fields are empty except for the selected variant. The eventual promoted
-/// handle is returned by a later snapshot with phase `committed`.
+/// fields are empty except for the selected variant. The outcome is returned
+/// by a later snapshot as `committed` or as `unchanged` when native confirms
+/// the same live binding without fencing it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn meeterm_runtime_browse_commit(
     token: *const u8,
@@ -1749,6 +1752,26 @@ mod session_abi_tests {
         assert!(!text.contains("session_dir"));
         assert!(!text.contains("executable"));
         assert_eq!(meeterm_destroy_terminal(id), 1);
+    }
+
+    #[test]
+    fn runtime_browse_bridge_serializes_confirmed_unchanged_outcome() {
+        let bytes = runtime_browse_bytes(&RuntimeBrowseSnapshot {
+            token: "17".to_owned(),
+            browse_generation: 19,
+            discovery_revision: 23,
+            phase: crate::ssh::RuntimeBrowsePhase::Unchanged,
+            discovery: crate::workspace::RuntimeDiscoverySnapshot::default(),
+            error_code: String::new(),
+            error_message: String::new(),
+            host_key: crate::ssh::RuntimeBrowseHostKeySnapshot::default(),
+            cleanup_warning: None,
+            active_terminal_id: Some(41),
+        })
+        .expect("bounded unchanged browse JSON");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("browse JSON");
+        assert_eq!(value["phase"], "unchanged");
+        assert_eq!(value["activeTerminalId"], "41");
     }
 
     #[test]

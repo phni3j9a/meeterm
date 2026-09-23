@@ -63,6 +63,7 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   runtimeBrowseRefresh(token: string): Promise<void>;
   runtimeBrowseCancel(token: string): Promise<void>;
   runtimeBrowseRespondToHostKey(token: string, fingerprint: string, accept: boolean): Promise<void>;
+  /** Poll for `committed` or native-confirmed `unchanged` after starting a commit. */
   runtimeBrowseCommit(
     token: string,
     browseGeneration: string,
