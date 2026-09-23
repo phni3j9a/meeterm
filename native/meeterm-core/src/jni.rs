@@ -1004,7 +1004,7 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_runtimeBrowseResp
                 token.len(),
                 fingerprint.as_ptr(),
                 fingerprint.len(),
-                accept,
+                u8::from(accept),
             )
         })
     }))
