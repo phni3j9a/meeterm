@@ -1542,7 +1542,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const startRuntimeBrowse = useCallback(async (server: SessionSwitcherServer, current: boolean) => {
     if (commandPending.current || switchAttemptRef.current) return false;
-    if (!runtimeReady || recoveryPhaseActive) {
+    const recoveryBrowseAllowed = recoveryPhaseActive
+      && retainedWorkAvailable
+      && !control.runtimeOperationsReady
+      && !switchBoundaryCrossed;
+    if (!runtimeReady && !recoveryBrowseAllowed) {
       setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
       return false;
     }
@@ -1579,15 +1583,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       return true;
     } catch (error) {
       if (attempt === browseAttemptRef.current && ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current) {
-        setSessionSwitcherError(error instanceof Error && error.message
-          ? error.message
-          : 'Could not explore this server. Check its credentials and try again.');
+        setSessionSwitcherError(recoveryPhaseActive
+          ? 'Session discovery is unavailable while this workspace is recovering. Retry recovery first.'
+          : error instanceof Error && error.message
+            ? error.message
+            : 'Could not explore this server. Check its credentials and try again.');
         setBrowseTargetId(server.id);
         setExpandedServerId(server.id);
       }
       return false;
     }
-  }, [observeCleanupWarning, recoveryPhaseActive, runtimeReady, smokeFixtureActive]);
+  }, [control.runtimeOperationsReady, observeCleanupWarning, recoveryPhaseActive, retainedWorkAvailable, runtimeReady, smokeFixtureActive, switchBoundaryCrossed]);
 
   const openSessionSwitcher = useCallback((target?: SessionSwitcherServer) => {
     if (commandPending.current || switchAttemptRef.current) return;
@@ -1600,14 +1606,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setCredentialTargetId('');
     setExpandedServerId(target?.id ?? activeServer.id);
     if (mode === 'switch') {
-      if (recoveryPhaseActive) {
-        // Keep retained work mounted underneath the sheet. Native currently
-        // rejects runtime browsing while the recovery actor is active.
-        setBrowse(null);
-        setBrowseTargetId('');
-        setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
-        return;
-      }
       if (target && target.id !== activeServer.id && !target.credentialSaved) {
         setCredentialTargetId(target.id);
         setBrowseTargetId('');
@@ -2175,10 +2173,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   const submitSwitcherCredential = useCallback(async (submission: ConnectionSubmission) => {
-    if (recoveryPhaseActive) {
-      setSessionSwitcherError('Session discovery is unavailable while this workspace is recovering. Retry recovery first.');
-      return false;
-    }
     const target = profiles.find(profile => profile.id === credentialTargetId);
     if (!target || !submission.credential || commandPending.current || switchAttemptRef.current) return false;
     const ownerId = activeOwnerRef.current;
@@ -2220,7 +2214,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       return true;
     } catch (error) {
       if (attempt === browseAttemptRef.current && ownerId === activeOwnerRef.current && ownerAttempt === activeOwnerAttemptRef.current) {
-        setSessionSwitcherError(error instanceof Error && error.message ? error.message : 'Could not authenticate to this server. Check the credentials and try again.');
+        setSessionSwitcherError(recoveryPhaseActive
+          ? 'Session discovery is unavailable while this workspace is recovering. Retry recovery first.'
+          : error instanceof Error && error.message
+            ? error.message
+            : 'Could not authenticate to this server. Check the credentials and try again.');
       }
       return false;
     }
@@ -2333,6 +2331,54 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
   }, [activeServer, observeCleanupWarning, profiles, updateRuntimeBound]);
 
+  const finishUnchangedBrowse = useCallback(async (snapshot: RuntimeBrowseState, owner: BrowseOwner) => {
+    if (snapshot.phase !== 'unchanged' || !snapshot.activeTerminalId
+      || snapshot.activeTerminalId !== owner.sourceOwner
+      || handledBrowseTokenRef.current === snapshot.token
+      || finishingBrowseTokenRef.current === snapshot.token) return;
+    const attempt = switchAttemptRef.current;
+    if (activeOwnerRef.current !== owner.sourceOwner
+      || activeOwnerAttemptRef.current !== owner.ownerAttempt
+      || !attempt
+      || attempt.sourceOwner !== owner.sourceOwner
+      || attempt.ownerAttempt !== owner.ownerAttempt) return;
+
+    finishingBrowseTokenRef.current = snapshot.token;
+    handledBrowseTokenRef.current = snapshot.token;
+    browseOwnerRef.current = null;
+    try {
+      await MeetermTerminal.runtimeBrowseCancel(snapshot.token);
+    } catch {
+      setControlMessage('The current session stayed active, but temporary discovery could not be closed cleanly.');
+    }
+    if (activeOwnerRef.current !== owner.sourceOwner
+      || activeOwnerAttemptRef.current !== owner.ownerAttempt
+      || switchAttemptRef.current?.id !== attempt.id) {
+      finishingBrowseTokenRef.current = '';
+      return;
+    }
+    if (snapshot.cleanupWarning) observeCleanupWarning(snapshot.cleanupWarning);
+    switchAttemptRef.current = null;
+    switchBoundaryCrossedRef.current = false;
+    setSwitchAttempt(null);
+    setSwitchBoundaryCrossed(false);
+    setConnection(current => current.state === 'Synchronizing'
+      ? { ...current, state: 'Ready', errorCode: '', errorMessage: '' }
+      : current);
+    updateRuntimeBound(true);
+    workspaceObservationRef.current = true;
+    setBrowse(null);
+    setBrowseTargetId('');
+    setExpandedServerId('');
+    setCredentialTargetId('');
+    setSessionSwitcherSelectingId('');
+    setSessionSwitcherError('');
+    setSessionSwitcherOpen(false);
+    setCreateSessionVisible(false);
+    setCreateSessionError('');
+    finishingBrowseTokenRef.current = '';
+  }, [observeCleanupWarning, updateRuntimeBound]);
+
   const restoreSourceAfterRejectedBrowse = useCallback(async (owner: BrowseOwner) => {
     if (activeOwnerRef.current !== owner.sourceOwner || activeOwnerAttemptRef.current !== owner.ownerAttempt) return false;
     try {
@@ -2342,8 +2388,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ]);
       if (activeOwnerRef.current !== owner.sourceOwner || activeOwnerAttemptRef.current !== owner.ownerAttempt) return false;
       const sourceControl = normalizeWorkspaceControl((sourceSession as WorkspaceState & { control?: unknown }).control);
-      if (sourceConnection.state !== 'Ready' || !sourceControl.runtimeOperationsReady
-        || sourceControl.recovery.phase !== 'none') return false;
+      const sourceReady = sourceConnection.state === 'Ready'
+        && sourceControl.runtimeOperationsReady
+        && sourceControl.recovery.phase === 'none';
+      const sourceRetainedRecovery = sourceControl.hasRetainedWork
+        && !sourceControl.runtimeOperationsReady
+        && sourceControl.recovery.phase !== 'none';
+      if (!sourceReady && !sourceRetainedRecovery) return false;
       setConnection(sourceConnection);
       setSession(sourceSession);
       switchBoundaryCrossedRef.current = false;
@@ -2402,6 +2453,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setBrowse(next);
       if (next.cleanupWarning) observeCleanupWarning(next.cleanupWarning);
       if (next.phase === 'committed') await finishCommittedBrowse(next, owner);
+      else if (next.phase === 'unchanged') await finishUnchangedBrowse(next, owner);
       else if (next.phase === 'failed' || next.phase === 'cancelled') {
         setSessionSwitcherSelectingId('');
         setSessionSwitcherError(next.errorMessage || 'The selected session could not be opened. Refresh and try another session.');
@@ -2415,6 +2467,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setBrowse(next);
         if (next.phase === 'ready' && await restoreSourceAfterRejectedBrowse(owner)) {
           setSessionSwitcherError('The selection was rejected as stale. Refresh sessions before choosing again.');
+          return;
+        }
+        if (next.phase === 'unchanged') {
+          await finishUnchangedBrowse(next, owner);
           return;
         }
         if (next.phase === 'committing' || next.phase === 'committed') {
@@ -2441,7 +2497,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setConnection(current => ({ ...current, state: 'Failed' }));
       }
     }
-  }, [browse, finishCommittedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, selectRuntime, sessionSwitcherMode, updateRuntimeBound]);
+  }, [browse, finishCommittedBrowse, finishUnchangedBrowse, observeCleanupWarning, restoreSourceAfterRejectedBrowse, selectRuntime, sessionSwitcherMode, updateRuntimeBound]);
 
   const refreshSwitcherBrowse = useCallback(() => {
     const owner = browseOwnerRef.current;
@@ -2610,6 +2666,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           setConnection(current => ({ ...current, state: 'Synchronizing', errorCode: '', errorMessage: '' }));
         } else if (next.phase === 'committed') {
           await finishCommittedBrowse(next, owner);
+        } else if (next.phase === 'unchanged') {
+          await finishUnchangedBrowse(next, owner);
         } else if (next.phase === 'failed' || next.phase === 'cancelled') {
           setSessionSwitcherSelectingId('');
           setSessionSwitcherError(next.errorMessage || 'Could not open sessions from this server.');
@@ -2630,7 +2688,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     void refresh();
     const interval = setInterval(() => { void refresh(); }, 750);
     return () => { mounted = false; clearInterval(interval); };
-  }, [activeOwnerRevision, browse?.token, finishCommittedBrowse, observeCleanupWarning, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive, switchBoundaryCrossed, updateRuntimeBound]);
+  }, [activeOwnerRevision, browse?.token, finishCommittedBrowse, finishUnchangedBrowse, observeCleanupWarning, sessionSwitcherMode, sessionSwitcherOpen, smokeFixtureActive, switchBoundaryCrossed, updateRuntimeBound]);
 
   const finishConnectionForm = useCallback(() => {
     if (Platform.OS === 'ios' && returnToServersAfterForm.current) setModalPending(true);

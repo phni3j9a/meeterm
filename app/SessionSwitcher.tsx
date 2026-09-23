@@ -133,6 +133,8 @@ export function SessionSwitcher({
       && server.id === currentServer.id
       && currentBinding.backend === candidate.backend
       && currentBinding.runtime === candidate.name);
+    const sameTmuxBindingCanBeConfirmed = selected && candidate.backend === 'tmux';
+    const disabled = unavailable || busy || (selected && !sameTmuxBindingCanBeConfirmed) || hostKeyPending;
     const pending = selectingId === candidate.id;
     const errorText = candidateError(candidate) || selectionErrors[candidate.id] || '';
     const label = `${candidate.backend === 'tmux' ? 'tmux' : 'Herdr'} session ${candidate.name} on ${server.name} (${address(server)})`;
@@ -145,11 +147,8 @@ export function SessionSwitcher({
         accessibilityRole="button"
         accessibilityLabel={label}
         accessibilityHint={hint}
-        accessibilityState={{ selected, disabled: unavailable || busy || selected || hostKeyPending }}
-        // The native browse contract does not yet expose same-live-binding
-        // confirmation. Keep the current row marked and inert rather than
-        // releasing and reacquiring the active runtime by accident.
-        disabled={unavailable || busy || selected || hostKeyPending}
+        accessibilityState={{ selected, disabled }}
+        disabled={disabled}
         onPress={() => onSelect(candidate)}
         style={({ pressed }) => [styles.sessionChoice, pressed && { backgroundColor: colors.surface }, unavailable && { opacity: .62 }]}
       >

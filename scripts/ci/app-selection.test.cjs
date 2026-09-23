@@ -190,6 +190,7 @@ function startRuntimeBrowse(environment, request) {
     hostKey,
     cleanupWarning: clone(environment.runtimeBrowseCleanupWarning),
     activeTerminalId: null,
+    sourceTerminalId: request.terminalId,
     serverId,
   };
   environment.runtimeBrowseStates.set(state.token, state);
@@ -512,7 +513,13 @@ function makeNativeEnvironment() {
         || state.phase !== 'ready'
         || state.browseGeneration !== browseGeneration
         || state.discoveryRevision !== discoveryRevision) throw new Error('stale browse selection');
-      state.phase = environment.runtimeBrowseCommitMode === 'delayed' ? 'committing' : 'committed';
+      state.phase = environment.runtimeBrowseCommitMode === 'unchanged'
+        ? 'unchanged'
+        : environment.runtimeBrowseCommitMode === 'delayed' ? 'committing' : 'committed';
+      if (state.phase === 'unchanged') {
+        state.activeTerminalId = state.sourceTerminalId;
+        return;
+      }
       if (state.phase === 'committed') completeRuntimeBrowseCommit(environment, state, target);
       else environment.pendingBrowseCommit = { token, target: clone(target) };
     },
@@ -1750,7 +1757,7 @@ test('header shows the Ready binding, current check, stable server order, and la
 
   const current = findTestId(fixture.root, 'runtime-row-herdr-current-default');
   assert.equal(current.props.accessibilityState.selected, true);
-  assert.equal(current.props.accessibilityState.disabled, true, 'same-live selection stays inert until native can confirm it');
+  assert.equal(current.props.accessibilityState.disabled, true, 'Herdr cannot confirm a same-live binding from discovery');
   assert.equal(fixture.environment.runtimeBrowseStarts.filter(item => item.kind === 'current').length, 1);
   assert.equal(fixture.environment.runtimeBrowseStarts.some(item => item.kind === 'profile'), false);
   const serverRows = all(fixture.root, node => node.props?.testID?.startsWith('switcher-server-'))
@@ -1763,6 +1770,46 @@ test('header shows the Ready binding, current check, stable server order, and la
   assert.ok(findText(fixture.root, 'No tmux sessions found.'));
   assert.ok(findText(fixture.root, 'No Herdr sessions found.'));
   assert.equal(all(fixture.root, node => textContent(node).includes('legacy-hint')).length, 0, 'profile hints never become selectable sessions');
+});
+
+test('tapping the current tmux row accepts native unchanged, keeps the Ready owner, and dismisses the sheet', async t => {
+  const fixture = await mountForTest(t, {
+    ...makeSnapshot(),
+    backend: 'tmux',
+    runtime: 'prod',
+  }, environment => {
+    environment.runtimeDiscovery = pickerDiscovery(32, [runtimeCandidate('current-prod', 'tmux', 'prod')]);
+    environment.runtimeBrowseCommitMode = 'unchanged';
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  const ownerBefore = terminalViews(fixture.root)[0].props.terminalId;
+  const workspaceReadsBefore = fixture.environment.workspaceStateOwners.length;
+
+  await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Switch session'));
+  await settleAsync();
+  const current = findTestId(fixture.root, 'runtime-row-tmux-current-prod');
+  assert.equal(current.props.accessibilityState.selected, true);
+  assert.equal(current.props.accessibilityState.disabled, false, 'native can positively confirm the current tmux session');
+  const token = `browse-${fixture.environment.runtimeBrowseCounter}`;
+
+  await press(fixture.root, current);
+  await settleAsync();
+
+  assert.deepEqual(fixture.environment.runtimeBrowseCommits.map(item => item.target), [
+    { kind: 'candidate', candidateId: 'current-prod' },
+  ]);
+  assert.deepEqual(fixture.environment.runtimeBrowseCancelCalls, [token]);
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.equal(fixture.environment.snapshot.backend, 'tmux');
+  assert.equal(fixture.environment.snapshot.runtime, 'prod');
+  assert.equal(fixture.environment.workspaceStateOwners.length, workspaceReadsBefore, 'unchanged must not bind or read a promoted owner');
+  assert.equal(fixture.environment.lastUsedUpdates.length, 0);
+  assert.equal(terminalViews(fixture.root)[0].props.terminalId, ownerBefore);
+  assert.equal(workspaceTitle(fixture.root), 'Workspace One', 'closing the sheet keeps the current terminal route');
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Switch session').length, 0);
 });
 
 test('switcher keeps partial backend errors and stopped Herdr rows visible together', async t => {
@@ -2571,14 +2618,18 @@ test('recovery Change keeps the layout warning and retained work under the unifi
     terminalInputReady: false,
     cleanupWarning: { id: '115', code: 'layout_restore_unconfirmed', message: warning },
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }), 'Failed');
+  }), 'Failed', environment => {
+    environment.runtimeDiscovery = pickerDiscovery(115, [runtimeCandidate('recovery-layout-tmux', 'tmux', 'prod')]);
+  });
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
   assert.ok(findText(fixture.root, 'Switch session'));
   assert.ok(findLabel(fixture.root, 'Dismiss desktop layout warning'));
   assert.ok(all(fixture.root, node => textContent(node).includes(warning)).length > 0);
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.runtimeBrowseStarts.at(-1).kind, 'current');
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-recovery-layout-tmux'));
   assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
 });
 
@@ -2730,18 +2781,24 @@ test('recovery Change opens the unified switcher and preserves retained work on 
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }), 'Failed');
+  }), 'Failed', environment => {
+    environment.runtimeDiscovery = pickerDiscovery(81, [runtimeCandidate('recovery-prod', 'tmux', 'prod')]);
+  });
   const before = clone(fixture.environment.snapshot);
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
   assert.ok(findText(fixture.root, 'Switch session'));
-  assert.ok(all(fixture.root, node => textContent(node).includes('Session discovery is unavailable while this workspace is recovering. Retry recovery first.')).length > 0);
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-recovery-prod'));
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 1);
+  assert.equal(fixture.environment.runtimeBrowseStarts[0].kind, 'current');
   assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
 
+  const token = `browse-${fixture.environment.runtimeBrowseCounter}`;
   await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
   await settleAsync();
+  assert.ok(fixture.environment.runtimeBrowseCancelCalls.includes(token));
   assert.ok(findTestId(fixture.root, 'recovery-rail'));
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
   assert.equal(fixture.environment.snapshot.control.operationEpoch, before.control.operationEpoch);
@@ -2754,18 +2811,76 @@ test('recovery Change keeps retained state and never queues the legacy release o
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }), 'Failed');
+  }), 'Failed', environment => {
+    environment.runtimeDiscovery = pickerDiscovery(101, [runtimeCandidate('recovery-repeat-tmux', 'tmux', 'prod')]);
+  });
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
   const change = findTestId(fixture.root, 'recovery-change');
   await act(async () => { change.props.onPress(); change.props.onPress(); });
   await settleAsync();
 
-  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 2, 'reopening Change starts fresh discovery and retires the previous browse');
+  assert.ok(fixture.environment.runtimeBrowseCancelCalls.includes('browse-1'));
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-recovery-repeat-tmux'));
   assert.equal(fixture.environment.calls.filter(call => call.method === 'changeRuntime').length, 0);
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
   assert.ok(findTestId(fixture.root, 'recovery-rail'));
-  assert.ok(all(fixture.root, node => textContent(node).includes('Retry recovery first.')).length > 0);
+});
+
+test('recovery Change keeps the fail-closed explanation when native refuses discovery', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '106',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed', environment => {
+    environment.runtimeBrowseStartShouldFail = true;
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 1);
+  assert.ok(all(fixture.root, node => textContent(node).includes(
+    'Session discovery is unavailable while this workspace is recovering. Retry recovery first.',
+  )).length > 0);
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(fixture.environment.calls.filter(call => call.method === 'changeRuntime').length, 0);
+});
+
+test('a stale source during recovery browse reports the rejected selection and retains read-only work', async t => {
+  const fixture = await mountRecovering(t, workspaceControl({
+    operationEpoch: '107',
+    runtimeOperationsReady: false,
+    terminalInputReady: false,
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+  }), 'Failed', environment => {
+    environment.runtimeDiscovery = pickerDiscovery(107, [runtimeCandidate('recovery-stale-tmux', 'tmux', 'prod')]);
+  });
+
+  await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-recovery-stale-tmux'));
+
+  fixture.environment.snapshot.control.operationEpoch = '108';
+  fixture.environment.runtimeBrowseCommitShouldFail = true;
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-recovery-stale-tmux'));
+
+  assert.equal(fixture.environment.runtimeBrowseCommits.length, 1);
+  assert.ok(all(fixture.root, node => textContent(node).includes(
+    'The selection was rejected as stale. Refresh sessions before choosing again.',
+  )).length > 0);
+  assert.equal(terminalViews(fixture.root).length, 1);
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.equal(fixture.environment.snapshot.control.hasRetainedWork, true);
+  assert.equal(fixture.environment.calls.filter(call => call.method === 'changeRuntime').length, 0);
+  assert.equal(findLabel(fixture.root, 'Close session switcher').props.disabled, false);
+  await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
+  assert.ok(findTestId(fixture.root, 'recovery-rail'));
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
 });
 
 test('a late Ready poll cannot discard retained recovery when Change opens the switcher', async t => {
@@ -2774,8 +2889,12 @@ test('a late Ready poll cannot discard retained recovery when Change opens the s
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
-  }), 'Failed');
+  }), 'Failed', environment => {
+    environment.runtimeDiscovery = pickerDiscovery(131, [runtimeCandidate('recovery-late-tmux', 'tmux', 'prod')]);
+  });
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-recovery-late-tmux'));
 
   const retainedSnapshot = clone(fixture.environment.snapshot);
   let releaseSnapshot;
@@ -2801,7 +2920,7 @@ test('a late Ready poll cannot discard retained recovery when Change opens the s
   assert.ok(findText(fixture.root, 'Switch session'));
   assert.ok(findTestId(fixture.root, 'recovery-rail'));
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 1);
 });
 
 test('strong Ready restores native input and live agent status with a short recovered rail', async t => {
@@ -2951,7 +3070,9 @@ test('terminal_missing recovery offers Change through the shared switcher withou
     runtimeOperationsReady: false,
     terminalInputReady: false,
     recovery: { phase: 'stopped', reason: 'terminal_missing', attempt: 1, maxAttempts: 6 },
-  }), 'Failed');
+  }), 'Failed', environment => {
+    environment.runtimeDiscovery = pickerDiscovery(171, [runtimeCandidate('missing-terminal-tmux', 'tmux', 'prod')]);
+  });
 
   assert.equal(all(fixture.root, node => node.props?.testID === 'recovery-choose-terminal').length, 0);
   assert.ok(findTestId(fixture.root, 'recovery-change'));
@@ -2959,10 +3080,11 @@ test('terminal_missing recovery offers Change through the shared switcher withou
   assert.match(findTestId(fixture.root, 'recovery-meta').children[0], /Change/);
 
   await press(fixture.root, findTestId(fixture.root, 'recovery-change'));
+  await settleAsync();
   assert.ok(findText(fixture.root, 'Switch session'));
-  assert.ok(all(fixture.root, node => textContent(node).includes('Retry recovery first.')).length > 0);
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-missing-terminal-tmux'));
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
-  assert.equal(fixture.environment.runtimeBrowseStarts.length, 0);
+  assert.equal(fixture.environment.runtimeBrowseStarts.length, 1);
   assert.equal(fixture.environment.calls.some(call => call.method === 'changeRuntime'), false);
 
   await press(fixture.root, findLabel(fixture.root, 'Close session switcher'));
