@@ -1,7 +1,7 @@
 RUN RECORD — iOS final acceptance, source commit 2e4b3e35d3849fc4bd833257bc6e1228b0a1fb71 (2e4b3e3)
 ====================================================================================================
 
-Stages (all against one fresh build-for-testing; products manifest sha a26736fe)
+Stages (all against one fresh build-for-testing; products-archive sha256 a26736fe (field inside products-manifest.json; manifest FILE sha256 8c4a98bd))
 -------------------------------------------------------------------------------
 build-for-testing  PASSED  fresh clean CNG; EXPO_PUBLIC_MEETERM_SMOKE=1; ENABLE_TESTABILITY=YES
 standard           PASSED  13/13 UI tests + 4 storage; all 45 manifest captures incl. 20 session-switcher-* routes
@@ -69,7 +69,7 @@ VoiceOver:         ac9-2e4b3e3-voiceover.png — enabled-state capture only;
                    needs a hardware-keyboard rotor or manual run)
 dark/light:        session-switcher-*-dark + light captures in ios-simulator-observability/
                    (fixture code unchanged through 2e4b3e3; all 20 pairs present)
-formSheet+Modal constraint: CONFIRMED FOR THIS APP/DEPENDENCY SET (RN 0.83/Expo 54
+formSheet+Modal constraint: CONFIRMED FOR THIS APP/DEPENDENCY SET (RN 0.86.3/Expo ~57.0.24
                    + react-navigation native-stack on this app): an RN
                    presentationStyle="pageSheet" Modal presented over the
                    presented sessionSwitcher formSheet collapses the route and

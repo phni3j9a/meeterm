@@ -57,7 +57,7 @@ Fresh-build vs reuse correspondence
 2e4b3e3 run:  FRESH clean CNG prebuild + build-for-testing (App.tsx,
   ConnectionForm.tsx, SwitcherManage.tsx, WorkspaceNavigation.tsx changed
   vs a87996c — JS bundle input changed).
-  products package manifest sha256 = a26736fede406e87cf70179be4eabb213316a4c55fa8b2c1ee8f582abb864f6b (meeterm-products-2e4b3e3)
+  products-archive sha256 (the digest field INSIDE products-manifest.json) = a26736fede406e87cf70179be4eabb213316a4c55fa8b2c1ee8f582abb864f6b (meeterm-products-2e4b3e3); the manifest FILE itself sha256 = 8c4a98bd785f37ae94cf872561a77aa3916d9579a1e20766cd2612b8b1dd26a6
   - standard suite: ran against these products (test-without-building via
     ios-smoke.sh against the same derived-data).
   - ssh suite: same products.

@@ -1,6 +1,6 @@
 iOS validation — 2e4b3e3 (issue-27-session-switcher) — ALL PASSED (final acceptance)
 
-build-for-testing: PASSED (fresh clean CNG; EXPO_PUBLIC_MEETERM_SMOKE=1; ENABLE_TESTABILITY=YES; pack manifest sha a26736fe)
+build-for-testing: PASSED (fresh clean CNG; EXPO_PUBLIC_MEETERM_SMOKE=1; ENABLE_TESTABILITY=YES; products-archive sha256 a26736fe (value inside products-manifest.json; the manifest FILE sha256 is 8c4a98bd))
 standard suite:    PASSED (13/13; 45 manifest captures incl. all 20 session-switcher-* routes)
 ssh suite:         PASSED (transport_loss=passed + all invariants; same products)
 polish suite:      PASSED (7 presentation states + native navigation/keyboard/back; same products)
@@ -26,7 +26,7 @@ Known record artifact: ac9_manage_profile_row=no — drive check queried staticT
 
 AC9 remaining: Dynamic Type smallest+XXL on switcher captured; Reduce Motion on/off captured; VoiceOver enabled-state captured (rotor traversal unverified — needs hardware keyboard); dark/light via all 20 session-switcher-* pairs; Escape no-op recorded (XCTest keyboard-focus limitation); polish PASSED.
 
-formSheet+Modal constraint: confirmed FOR THIS APP/DEPENDENCY SET (RN 0.83/Expo 54 + react-navigation native-stack): pageSheet Modal over the presented formSheet collapses the route and never presents (3/3 on d62e43b and 6523e1e). App-specific record, not a general claim. 2e4b3e3 eliminates the class structurally (embedded panel).
+formSheet+Modal constraint: confirmed FOR THIS APP/DEPENDENCY SET (RN 0.86.3/Expo ~57.0.24 + react-navigation native-stack): pageSheet Modal over the presented formSheet collapses the route and never presents (3/3 on d62e43b and 6523e1e). App-specific record, not a general claim. 2e4b3e3 eliminates the class structurally (embedded panel).
 
 Authoritative device: iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0, all stages. Toolchain: Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2, CocoaPods 1.17.0, tmux 3.7c.
 
