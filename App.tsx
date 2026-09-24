@@ -2811,12 +2811,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   const openManageServers = useCallback(() => {
-    // Stack Saved servers on top of the still-presented switcher. Dismissing
-    // the iOS formSheet first drops a modal that appears while the sheet is
-    // mid-dismiss; Android stacks the same dialogs without a race.
+    // iOS: a react-navigation formSheet cannot host a RN <Modal> on top —
+    // presenting Saved servers over it collapses the route and drops the
+    // Modal. Dismiss the switcher route first; onSessionSwitcherDismiss then
+    // mounts the Modal on the stable presenter, and the reopen flag restores
+    // the switcher when Saved servers closes. Android stacks the same
+    // dialogs without a race, so it can present the Modal directly.
     reopenSwitcherAfterManageRef.current = true;
+    if (Platform.OS === 'ios' && sessionSwitcherOpen) {
+      setSessionSwitcherOpen(false);
+      return;
+    }
     setSheet('servers');
-  }, []);
+  }, [sessionSwitcherOpen]);
 
   const closeSessionSwitcher = useCallback(() => {
     // Dismissing the switcher returns to the workspace route that opened it.
