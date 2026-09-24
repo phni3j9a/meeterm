@@ -1,4 +1,5 @@
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import type { ReactNode } from 'react';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ServerProfile } from '../modules/meeterm-terminal';
 import type { ConnectionSubmission } from './ConnectionForm';
@@ -11,7 +12,7 @@ import type { Palette } from './ui';
  * Stacking a RN Modal over the iOS formSheet route collapses the sheet, so the
  * footer Manage servers action swaps this panel into the sheet instead of
  * presenting another surface on top of it. */
-export function SwitcherManage({ profiles, selectedId, loading, error, busy, colors, form, onBack, onClose, onRetry, onConnect, onAdd, onEdit, onDelete, onFormClose, onFormSubmit }: {
+export function SwitcherManage({ profiles, selectedId, loading, error, busy, colors, form, notice, onBack, onClose, onRetry, onConnect, onAdd, onEdit, onDelete, onFormClose, onFormSubmit }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
@@ -19,6 +20,8 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
   busy: boolean;
   colors: Palette;
   form: { visible: boolean; profile?: ServerProfile };
+  /** Shared control feedback (e.g. a failed delete) rendered like NativeSheet. */
+  notice?: ReactNode;
   onBack: () => void;
   onClose: () => void;
   onRetry: () => void;
@@ -44,6 +47,7 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
           <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>Saved servers</Text><Text style={[styles.intro, { color: colors.muted }]}>Add, edit, or remove servers, or choose one to open.</Text></View>
           <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy} onPress={onClose} />
         </View>
+        {notice}
         {form.visible ? <ConnectionForm
           visible
           embedded

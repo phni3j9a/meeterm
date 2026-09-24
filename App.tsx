@@ -3577,6 +3577,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         busy={commandBusy}
         colors={homeColors}
         form={{ visible: switcherManageForm !== null, profile: switcherManageForm?.profile }}
+        notice={feedback}
         onBack={() => { setSwitcherManageForm(null); setSwitcherManage(false); }}
         onClose={closeSessionSwitcher}
         onRetry={() => { void loadProfiles(); }}

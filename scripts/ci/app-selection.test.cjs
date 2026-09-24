@@ -310,6 +310,7 @@ function makeNativeEnvironment() {
     initialURLBehavior: 'resolve',
     profilesShouldFail: false,
     profiles: [],
+    deleteProfileShouldFail: false,
     selectRuntimeShouldFail: false,
     selectRuntimeMode: 'ready',
     pendingSelection: null,
@@ -372,6 +373,11 @@ function makeNativeEnvironment() {
       environment.nativeCalls.push('getProfiles');
       if (environment.profilesShouldFail) throw new Error('profiles unavailable');
       return clone(environment.profiles);
+    },
+    async deleteProfile(profileId) {
+      environment.nativeCalls.push({ method: 'deleteProfile', profileId });
+      if (environment.deleteProfileShouldFail) throw new Error('delete failed');
+      environment.profiles = environment.profiles.filter(item => item.id !== profileId);
     },
     async getPreferences() {
       environment.nativeCalls.push('getPreferences');
@@ -836,19 +842,25 @@ function makeFormMocks() {
         }),
       }));
   }
-  function ProfileList({ profiles = [], busy = false, onConnect }) {
+  function ProfileList({ profiles = [], busy = false, onConnect, onDelete }) {
     return React.createElement(
       'ProfileList',
       null,
       profiles.map(profile => React.createElement(
-        'Pressable',
-        {
-          key: profile.id,
+        'View',
+        { key: profile.id },
+        React.createElement('Pressable', {
           accessibilityRole: 'button',
           accessibilityLabel: `Connect saved server ${profile.name}`,
           disabled: Boolean(busy),
           onPress: () => onConnect(profile),
-        },
+        }),
+        React.createElement('Pressable', {
+          accessibilityRole: 'button',
+          accessibilityLabel: `Remove saved server ${profile.name}`,
+          disabled: Boolean(busy),
+          onPress: () => onDelete && onDelete(profile),
+        }),
       )),
     );
   }
@@ -2416,6 +2428,35 @@ test('Manage servers returns to the switcher and Disconnect releases the active 
   await settleAsync();
   assert.ok(fixture.environment.nativeCalls.includes('disconnect'));
   assert.equal(fixture.environment.connection.state, 'Disconnected');
+});
+
+test('Manage servers shows feedback when removing a saved server fails', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000034', name: 'Removal target',
+    host: 'remove.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'meeterm',
+  };
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.profiles = [profile];
+    environment.deleteProfileShouldFail = true;
+    environment.snapshot = makeSnapshot();
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Saved servers'));
+  await press(fixture.root, findLabel(fixture.root, `Remove saved server ${profile.name}`));
+  await settleAsync();
+  assert.ok(fixture.environment.alert, 'removing a saved server should ask for confirmation');
+  const remove = fixture.environment.alert.buttons.find(button => button.style === 'destructive');
+  assert.ok(remove);
+  remove.onPress();
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Could not remove this saved server. Please try again.'),
+    'the manage panel should surface the removal failure');
+  assert.ok(findText(fixture.root, 'Saved servers'), 'the manage panel should stay open');
 });
 
 test('saved-profile connection opens the unified explicit session picker', async t => {
