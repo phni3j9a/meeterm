@@ -1,0 +1,12 @@
+case=async_paste_epoch result=passed
+case=cached_read_only result=passed
+case=control_one_shot result=passed
+case=hardware_control result=passed
+case=hardware_shift_combinations result=passed
+case=scroll_gesture result=passed
+case=marked_commit result=passed
+case=multiline result=passed
+case=rebind result=passed
+case=unmount result=passed
+case=recovery_arguments result=passed
+case=live_epoch_refocus result=passed
