@@ -163,10 +163,17 @@ generation, discovery revision, and exact candidate. It closes old-owner input,
 resize, and mutation gates, drains/releases the old controller, and records any
 layout-cleanup warning. Only after release does it bind the exact candidate or
 perform an explicitly requested tmux create on that same authenticated
-provisional connection. Native promotes that connection handle, synchronizes
-authoritative workspace, topology, selected terminal, and screen state, then
-publishes `Ready` and updates the last-used hint. No selected runtime is exposed
-before synchronization finishes.
+provisional connection. At promotion, the verified provisional connection and
+its `Term` are moved onto the source owner's existing stable public root
+handle: the public `TerminalId` is preserved, but it is a local binding handle
+rather than a remote pane or runtime identity; remote identity stays scoped by
+connection, backend, runtime, and generation. The moved `Term`'s operation
+token is rotated at the promotion boundary, so input, resize, and mutation
+calls captured before the switch—on either the old source or the provisional
+binding—are rejected. Native then synchronizes authoritative workspace,
+topology, selected terminal, and screen state, publishes `Ready`, and updates
+the last-used hint. No selected runtime is exposed before synchronization
+finishes.
 
 The native `unchanged` outcome means that native confirmed the tapped tmux
 candidate is already the current live binding. It closes the sheet without
@@ -455,7 +462,9 @@ operation token invalidates delayed key, paste, resize, terminal-generated
 reply, and topology-mutation callbacks. Tokens are opaque, non-reusable values
 issued by a process-global allocator at every operation boundary (attach,
 replacement, promotion, suspend/rearm, recovery); a missing token fails
-closed. Cached native output can remain visible
+closed. This `Terminal` operation token is the data-plane input gate and is a
+distinct layer from `SessionState.operation_epoch`, which validates
+control-plane actor requests; neither substitutes for the other. Cached native output can remain visible
 while that gate is closed, but only a complete authoritative resynchronization
 sets Ready and reopens input. Explicit disconnect/change cancels retry and
 confirmation; host-key/authentication failures require user action. Rust
