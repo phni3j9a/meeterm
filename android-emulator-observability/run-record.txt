@@ -1,63 +1,63 @@
 meeterm Android emulator observability run record
 ===================================================
 
-Candidate under test : a066f796fac31cf5c05d9a88693c6cb8023975b4 (issue-27-session-switcher)
+Candidate under test : d62e43b2f87df8f48b42d57faefd462abd86a354 (issue-27-session-switcher)
 Result               : PASS — full pipeline green end-to-end
-Run finished         : 2026-09-23T23:37Z (suite wall clock ~30 min)
+Run finished         : 2026-09-24T00:57Z (suite wall clock ~24 min)
 
-Delta vs prior commit (d765594): ssh-driver contract alignment ONLY —
-3 test files (android_smoke_impl.py / test_android_smoke.py / test_ios_smoke.py),
-RUNTIME_PICKER_HEADING_PREFIX "Choose a runtime for " -> "Choose a session".
-Zero product/native change.
+Delta vs a066f79: cb6faac replaced the per-Term arithmetic operation_epoch with a
+non-reusable opaque token from a process-global allocator (PRODUCT code); ef6bb5e
+was cfg(test)-only; d62e43b additionally rotates the moved root's operation token
+in registry::promote_terminal so a browse-context provisional token can no longer
+deliver input at the stable public ID after a switch (PRODUCT code + regression
+test). This run IS the final acceptance on the post-token-fix tip.
 
 Environment
 -----------
-Host        : Linux x86_64 (Devin Cloud VM; restarted mid-campaign, filesystem preserved)
-Emulator    : emulator-5554, AVD meeterm_api36, -no-window swiftshader, cold boot this run
+Host        : Linux x86_64 (Devin Cloud VM)
+Emulator    : emulator-5554, AVD meeterm_api36, -no-window swiftshader, warm this run
 Toolchains  : rustc/cargo 1.96.0 (RUSTUP_TOOLCHAIN), NDK 27.1.12297006,
               node v24.19.0/npm 10.8.3 (blueprint pins 22.22.2 — known deviation, reported),
               python 3.12.13, gradle 9.3.1
 Build       : fresh npm ci + expo prebuild --clean + :app:assembleRelease
-              (arm64-v8a,x86_64, Rust release) — BUILD SUCCESSFUL in 2m32s; no reuse
+              (arm64-v8a,x86_64, Rust release) — BUILD SUCCESSFUL in 2m17s; no reuse
 
 Gates
 -----
 android-smoke.sh          : PASS (install, launch, NATIVE_READY + FIRST_FRAME, no ANR/crash)
 android-screen-fixtures   : 51/51 routes captured incl. all 20 session-switcher-* light/dark
 SSH fixture suite         : result=passed, stage=disconnect_after_resume, reason=ok
-                            all stages completed incl.
-                            daily_profile_switch_second_boundary_session_switcher,
-                            daily_profile_switched,
-                            daily_profile_switch_primary_boundary_session_switcher,
-                            daily_profile_switch_restored,
-                            transport_loss_* evidence=passed,
-                            cold-start -> saved profile -> picker -> connected,
-                            workspaces/panes/selection/CJK/handoff + both disconnects
+                            incl. daily_profile_switch_second_boundary_session_switcher,
+                            daily_profile_switched, daily_profile_switch_restored,
+                            transport_loss_evidence=passed, cold-start -> saved profile
+                            -> picker -> connected, workspaces/panes/selection/CJK/
+                            handoff + both disconnects
 
-Attempts: 1 — suite passed on first attempt this run.
+Attempts: 1 — suite passed on first attempt.
 
-Issue #27 quick re-verification (manual, live fixtures fx1:45087 / fx2:45123)
---------------------------------------------------------------------------
-Item 1 (same-server switch)      : VERIFIED — connect fx1 -> picker -> meeterm ->
-                                   header switcher -> "tmux session second" -> Ready
-                                   10.0.2.2 · second + Connected; real input
-                                   round-trip marker i27-a066f79-second-3886 on
-                                   second pane %0 (pid 3886); meeterm $0 survives
+Note: an ef6bb5e suite run was started (~15 min, mid credential stage) and abandoned
+per requester redirect to d62e43b; its partial artifacts were wiped before this run.
+
+Issue #27 items (live, fixtures fx1:45087 / fx2:45123)
+----------------------------------------------------
+Item 1 (same-server switch)      : VERIFIED — fx1 meeterm -> header switcher ->
+                                   "tmux session second" -> Ready 10.0.2.2 · second
+                                   + Connected; real input round-trip marker
+                                   i27-d62e43b-second-3886 on second pane %0
+                                   (pid 3886); meeterm survives
 Item 2 (cross-server switch)     : carried over VERIFIED from ad91680 — path
-                                   unchanged; this commit is driver-contract only
-Item 3 (cancel / no-destruction) : VERIFIED — switcher open on second (meeterm
+                                   unchanged since; switcher/browse flow exercised
+                                   again by suite boundary stages this run
+Item 3 (cancel / no-destruction) : VERIFIED — switcher opened on second (meeterm
                                    listed), Close session switcher -> workspaces,
                                    second still authoritative, sessions survive
-Item 4 (close+fresh select / recovery): carried over VERIFIED + suite cold-start
-                                   and transport-loss stages all passed this run
-Item 5 (captures)                : 51/51 seeded routes + issue27-a066f79-switcher.png
-
-Supersedure note (added post-run)
---------------------------------
-Branch tip advanced to d5113e8 (a066f79 + ONE #[cfg(test)]-only commit, ssh.rs
-test deadlines 3s/2s -> 30s; zero release/product code). Per requester, this
-a066f79 run was completed fully anyway; see follow-up commit on this evidence
-branch for the d5113e8 parity record (product binary identical — no suite re-run).
+Item 4 (close + fresh select / recovery): VERIFIED — force-stop -> remote sessions
+                                   {meeterm, second} survive -> relaunch: no
+                                   auto-attach -> fresh explicit selection through
+                                   connect form -> picker "Choose a session" ->
+                                   meeterm -> Ready + Connected. Foreground /
+                                   transport-loss recovery passed inside suite.
+Item 5 (captures)                : 51/51 seeded routes + issue27-d62e43b-switcher.png
 
 Sanitization
 ------------

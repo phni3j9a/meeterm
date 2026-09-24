@@ -1,8 +1,9 @@
-candidate_sha=a066f796fac31cf5c05d9a88693c6cb8023975b4
+candidate_sha=d62e43b2f87df8f48b42d57faefd462abd86a354
 branch=main
-run_started=2026-09-23T23:08:18Z
+run_started=2026-09-24T00:30:42Z
 suite=android-full
 fixture_ports=45087,45123
+note=final acceptance on d62e43b (token rotation at promote_terminal; ef6bb5e run abandoned mid-suite per redirect)
 api=36
 abi=x86_64
 device=sdk_gphone64_x86_64
