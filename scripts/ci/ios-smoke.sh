@@ -161,6 +161,14 @@ else
     MEETERM_SSH_KNOWN_HOSTS_FILE MEETERM_SSH_HOST_KEY_FILE \
     MEETERM_SSH_ALTERNATE_HOST_KEY_FILE
 fi
+# Mark the first-use "slide to type" keyboard tip as shown. Otherwise it can
+# cover the keyboard the first time XCUITest types into a field.
+if xcrun simctl spawn "${IOS_SIMULATOR_UDID}" defaults write com.apple.keyboard.preferences \
+    DidShowContinuousPathIntroduction -int 1; then
+  echo "keyboard_introduction_suppressed=1" >> "${artifact_dir}/launch.txt"
+else
+  echo "keyboard_introduction_suppressed=0" >> "${artifact_dir}/launch.txt"
+fi
 xcrun simctl uninstall "${IOS_SIMULATOR_UDID}" "${bundle_id}" 2>/dev/null || true
 xcrun simctl install "${IOS_SIMULATOR_UDID}" "${app_path}"
 if [[ "${suite}" == "standard" || "${suite}" == "polish" || "${suite}" == "polish-navigation" || "${suite}" == "ssh" || "${suite}" == "full" ]]; then
