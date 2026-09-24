@@ -62,3 +62,84 @@ Item 5 (captures)                : 51/51 seeded routes + issue27-d62e43b-switche
 Sanitization
 ------------
 No credentials, private keys, auth material, or app-release.apk in this bundle.
+
+================================================================================
+SUPPLEMENTARY FOCUSED ACCEPTANCE — same d62e43b binary (no rebuild)
+================================================================================
+Run                  : 2026-09-24T02:00-03:20Z — emulator/fixtures respawned post-VM-restart
+                       (fx1 :42393 fp RuOi..., fx2 :43923 fp Zw5B...), APK =
+                       android/app/build/outputs/apk/release/app-release.apk
+                       (the exact d62e43b artifact, reinstalled)
+
+Item A — cross-endpoint session switch: VERIFIED (exact-source, this binary)
+-----------------------------------------------------------------------------
+1. Connect fx1 :42393 -> picker -> "tmux runtime meeterm" -> Ready 10.0.2.2 · meeterm
+   + Connected (fx1 profile saved via connect form).
+2. fx2 :43923 added via Saved servers -> Add server (endpoint-only profile).
+3. Header switcher -> fx2 server row -> in-switcher Credentials form -> private key
+   -> host-key prompt, fingerprint VERIFIED == MEETERM_SSH_FINGERPRINT
+   (SHA256:Zw5B/eYcrgtIiOwmLm3m7/FP07vERpiD4qg3pErVEGo) -> TRUST AND CONTINUE
+   -> candidates "tmux session meeterm" / "tmux session other" listed for :43923
+   while still Connected to fx1 (i27-d62e43b-switcher-fx2-browsed.png).
+4. Explicit select "tmux session other" -> Ready "10.0.2.2 · other" + Connected.
+   NO Disconnect step used at any point.
+5. Native input: focus canvas -> terminal_line "echo i27-d62e43b-fx2-$$" ->
+   landed EXACTLY ONCE on fx2 other pane %1 (pid 4029): i27-d62e43b-fx2-4029
+   (capture-pane grep count = 1; i27-d62e43b-fx2-terminal-marker.png).
+6. fx1 survives: tmux list-panes fx1 = {meeterm %0 pid 4019, second %1 pid 4022},
+   shells alive; fx2 = {meeterm %0 4026, other %1 4029}.
+7. Profiles intact afterwards: Saved servers shows BOTH ubuntu@10.0.2.2:42393 and
+   ubuntu@10.0.2.2:43923 rows; current = :43923 (Ask-for-credentials mode).
+
+Diagnostic wobble (recorded, non-blocking): first fx2 browse attempt's host-key
+confirmation expired while the key-paste driver was mid-paste ("The host-key
+confirmation timed out."); the sheet's own "Retry session discovery" then
+rejected with MeetermTerminal.runtimeBrowseStartProfile ->
+java.lang.IllegalStateException ("Saved server storage is unavailable or its
+values are invalid") on the empty-credential profile — i27-d62e43b-switcher-
+fx2-browseerror.png. Re-tapping the fx2 server row re-entered the Credentials
+form and the retry leg completed normally. Minor UX wart on the retry
+affordance; the designed browse path works.
+
+Item B — AC9 focused diagnostics (switcher sheet)
+-------------------------------------------------
+open/close          : VERIFIED — header target "Switch server and session" opens;
+                      "Close session switcher" dismisses (repeated N times,
+                      animator scales 0.0 and 1.0 both)
+drag-to-dismiss     : VERIFIED — swipe down starting on the sheet top edge
+                      (~title/handle band, y≈660-700 on the 1080x2400 display)
+                      dismisses to workspaces. NOTE: a swipe starting mid-sheet
+                      scrolls the session list instead of dismissing — expected.
+hardware Back       : VERIFIED — KEYCODE_BACK dismisses switcher -> workspaces
+fontScale 0.85      : VERIFIED — sheet opens, all 4 tmux rows render
+                      (i27-d62e43b-B-fontscale-085.png)
+fontScale 1.30      : VERIFIED — sheet opens, all 4 tmux rows render, no clipping
+                      of affordances observed (i27-d62e43b-B-fontscale-130.png)
+keyboard/focus      : NOT VERIFIED — hardware-keyboard DPAD/TAB keyevents inside
+                      the open sheet produce no focused node and activate
+                      nothing (rows are touch targets; no Android focus layer).
+                      Only observable keyboard effect: DPAD_CENTER on the
+                      workspaces surface activated the focused header target
+                      and reopened the switcher. Constraint: RN sheet has no
+                      focusable row model exposed to uiautomator.
+Reduce Motion       : functional parity VERIFIED — all prior runs ran with
+                      animator/transition/window scales = 0.0; re-tested sheet
+                      open + Close-session-switcher dismissal at scales = 1.0:
+                      identical functional result. No app-level reduce-motion
+                      toggle exists to test; visual motion difference not
+                      measurable on the headless emulator.
+dark/light          : cited — seeded session-switcher-*.png + session-switcher-
+                      *-dark.png (10 states x2) captured this binary via
+                      android-screen-fixtures.py in the same bundle.
+
+Item C — switcher footer -> Manage servers -> Saved servers -> return: VERIFIED
+-----------------------------------------------------------------------------
+Switcher open (fx2 current) -> footer "Manage servers" -> Saved servers sheet
+stacked ON TOP of the open switcher (i27-d62e43b-C-savedservers-stacked.png)
+-> "Close sheet" -> switcher reappeared with full prior state (current server
+:43923, fx1 row, both session sections, footer) — i27-d62e43b-C-switcher-
+restored.png. The reopenSwitcherAfterManageRef Android sheet-transition path
+works on this binary.
+
+Item 2 status update: now VERIFIED exact-source on d62e43b (replaces the earlier
+ad91680 carry-over).
