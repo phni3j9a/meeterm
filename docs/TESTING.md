@@ -280,6 +280,14 @@ iOSのSwift事前チェック、fresh CNG build、Simulator runtimeは別段階�
 `standard`と`ssh`はそれぞれXCTest全体15分、`native`は10分、`forms`/`names`は15分、任意`full`は30分が上限です。
 Simulator起動等の時間はこのXCTest実行枠とは別です。実行時間は結果とともに記録し、短縮幅を推測で報告しません。
 
+Devin CloudのmacOSでは、`xcodebuild`が最上位の結果行（`Test Suite 'Selected tests' passed/failed`
+または `'All tests'`）を出した後に終了しないことがあります。`ios-smoke.py` はこの行を検出してから
+60秒待ち、終了しなければプロセスグループを停止して、表示された結果（passedなら0、failedなら65）を
+終了コードとして扱います。結果行が制限時間内に出ていれば、その後の終了待ちが制限時間を越えても同じ扱いです。
+runner診断には `xcodebuild_result_line`・`xcodebuild_forced_exit_after_result`・
+`xcodebuild_post_result_wait_ms` を記録します。結果行が出ないまま制限時間に達した場合は従来どおり
+`xcodebuild_timeout` の失敗で、各suiteの完了記録とcase markerの確認も変わりません。
+
 同一セッション内では `RUNNER_TEMP` のderived-dataが残るため、同一commitの別suiteや原因調査では
 ビルド済み成果物を再利用できます。再利用を依頼する場合は「同一commitの既存build-for-testing成果物を
 再利用して `MEETERM_IOS_SUITE=<suite>` を実行」と明示します。例: `ssh` の確認や
@@ -321,6 +329,9 @@ XCTest開始前の終了も調べられるよう、`xcodebuild`の通常出力�
 既知のApple/POSIX error domainの整数コードだけを公開します。失敗文・userInfo・パス・
 任意のdomain名やraw summaryはアップロードしません。診断の失敗は元の合否を変えません。
 OSの初回案内は固有の文章を確認して一度閉じ、消失後に通常操作を行います。
+キーボードの「スライドで入力」初回案内は、`ios-smoke.sh` がアプリのinstall前に
+`com.apple.keyboard.preferences` の `DidShowContinuousPathIntroduction` を1にして表示済みにします。
+設定の成否は `launch.txt` の `keyboard_introduction_suppressed` に残ります。
 端末のキー待機失敗では `ios-ui-terminal-keyboard-diagnostics.txt` を確認します。
 `simulator-log-collection.txt` はログ取得元、コマンド成否、smoke markerの有無を分けて
 記録します。失敗時も `launch.txt` の検証済みUTC開始時刻から取得し、旧成果物などで

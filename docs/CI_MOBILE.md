@@ -65,10 +65,18 @@ python3 scripts/ci/devin-cloud.py list                    # add --all for archiv
 python3 scripts/ci/devin-cloud.py new --platform macos --prompt-file prompt.md --wait 60
 python3 scripts/ci/devin-cloud.py send <session-id> --prompt-file prompt.md --wait 60
 python3 scripts/ci/devin-cloud.py status <session-id> --messages 3
+python3 scripts/ci/devin-cloud.py wait-evidence evidence/ios-<date> --timeout 5400
 ```
 
 `new` defaults to `--version devin-swe-2-max --repo phni3j9a/meeterm`. A turn
 still running when `--wait` expires is reported as detached, not failed.
+To wait for a validation run, use `wait-evidence` instead of repeated `status`
+calls or fixed sleeps. Each run pushes its observability bundle even on
+failure, so a new evidence-branch head is the completion signal; session status
+is not, because an idle session still reports `running`. It checks the branch
+with `git ls-remote` every 60 seconds by default, prints the new head and exits
+0, or exits 2 on timeout. Pass `--after <sha>` when the run may push before
+waiting starts.
 `status` replays the session's most recent Devin messages and prints its
 status, platform, `devinVersionOverride`, and URL. The helper declines any
 request the cloud agent makes to the local client, such as local file access
