@@ -914,6 +914,44 @@ function compileSessionSwitcher(rn, safeArea, ui) {
   return appModule.exports;
 }
 
+function compileSwitcherManage(rn, safeArea, ui, forms) {
+  const filename = path.join(REPO_ROOT, 'app', 'SwitcherManage.tsx');
+  const source = fs.readFileSync(filename, 'utf8');
+  const transpiled = TypeScript.transpileModule(source, {
+    compilerOptions: {
+      target: TypeScript.ScriptTarget.ES2022,
+      module: TypeScript.ModuleKind.CommonJS,
+      jsx: TypeScript.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+      sourceMap: false,
+    },
+    fileName: filename,
+  }).outputText;
+  const appModule = { exports: {} };
+  const dependencies = new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn],
+    ['react-native-safe-area-context', safeArea],
+    ['./ConnectionForm', forms],
+    ['./DailyUse', forms],
+    ['./ui', ui],
+  ]);
+  const context = {
+    require(request) {
+      if (dependencies.has(request)) return dependencies.get(request);
+      return require(request);
+    },
+    module: appModule,
+    exports: appModule.exports,
+    __filename: filename,
+    __dirname: path.dirname(filename),
+    console,
+  };
+  vm.runInNewContext(transpiled, context, { filename });
+  return appModule.exports;
+}
+
 function loadApp(environment, native, presentationOnly = false, smokeEnabled = false) {
   const source = fs.readFileSync(APP_SOURCE, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
@@ -933,6 +971,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const forms = makeFormMocks();
   const terminal = makeTerminalModule(native, environment);
   const SessionSwitcher = compileSessionSwitcher(rn, safeArea, ui);
+  const SwitcherManage = compileSwitcherManage(rn, safeArea, ui, forms);
   const scheduleTimeout = environment.fakeTimers
     ? (callback, delay) => {
       const id = environment.nextTimeoutId++;
@@ -958,12 +997,10 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     // Navigation's native view/gesture execution belongs to mobile evidence.
     // These tests retain their real App selection and registry assertions.
     ['./app/WorkspaceNavigation', {
-      WorkspaceNavigation: ({ screen, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, onSessionSwitcherDismiss, onSessionSwitcherClosed }) => {
+      WorkspaceNavigation: ({ screen, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, onSessionSwitcherDismiss }) => {
         const previousOpen = React.useRef(Boolean(sessionSwitcherOpen));
         React.useEffect(() => {
-          // Dismiss handling runs at the navigation-state update; the closed
-          // callback models the formSheet's native transitionEnd that follows.
-          if (previousOpen.current && !sessionSwitcherOpen) { onSessionSwitcherDismiss(); onSessionSwitcherClosed?.(); }
+          if (previousOpen.current && !sessionSwitcherOpen) onSessionSwitcherDismiss();
           previousOpen.current = Boolean(sessionSwitcherOpen);
         }, [sessionSwitcherOpen]);
         return React.createElement(React.Fragment, null,
@@ -972,6 +1009,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
       },
     }],
     ['./app/SessionSwitcher', SessionSwitcher],
+    ['./app/SwitcherManage', SwitcherManage],
   ]);
   function localRequire(request) {
     if (moduleMap.has(request)) return moduleMap.get(request);
@@ -2371,7 +2409,7 @@ test('Manage servers returns to the switcher and Disconnect releases the active 
   await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
   await settleAsync();
   assert.ok(findText(fixture.root, 'Saved servers'));
-  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await press(fixture.root, findLabel(fixture.root, 'Back to session switcher'));
   await settleAsync();
   assert.ok(findText(fixture.root, 'Switch session'));
   await press(fixture.root, findTestId(fixture.root, 'switcher-disconnect'));

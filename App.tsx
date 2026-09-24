@@ -28,6 +28,7 @@ import type { AgentStatus, RuntimeBackend, RuntimeBrowseState, RuntimeCandidate,
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import { SessionSwitcher } from './app/SessionSwitcher';
+import { SwitcherManage } from './app/SwitcherManage';
 import type { SessionSwitcherServer } from './app/SessionSwitcher';
 import type { ConnectionSubmission } from './app/ConnectionForm';
 import { DEFAULT_PREFERENCES, itemActions, NameForm, ProfileList, SettingsForm } from './app/DailyUse';
@@ -1191,6 +1192,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [activeServerDraft, setActiveServerDraft] = useState<SessionSwitcherServer | null>(null);
   const [activeOwnerRevision, setActiveOwnerRevision] = useState(0);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(() => fixture?.sessionSwitcherOpen ?? false);
+  const [switcherManage, setSwitcherManage] = useState(false);
+  const [switcherManageForm, setSwitcherManageForm] = useState<{ profile?: ServerProfile } | null>(null);
   const [sessionSwitcherMode, setSessionSwitcherMode] = useState<'switch' | 'fresh'>(() => fixture?.sessionSwitcherMode ?? 'fresh');
   const [browse, setBrowse] = useState<RuntimeBrowseState | null>(() => fixture?.browse ?? null);
   const [browseTargetId, setBrowseTargetId] = useState(() => fixture?.browseTargetId ?? '');
@@ -1235,7 +1238,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const switchBoundaryCrossedRef = useRef(false);
   const switchAttemptRef = useRef<SwitchAttempt | null>(null);
   const hostKeyPromptRef = useRef('');
-  const reopenSwitcherAfterManageRef = useRef(false);
   const openSwitcherAfterServerMenuRef = useRef(false);
   const switcherProfileAfterServerSheetRef = useRef<SessionSwitcherServer | null>(null);
   const afterSwitcherDismissRef = useRef<'disconnect' | null>(null);
@@ -1767,6 +1769,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSessionSwitcherOpen(true);
     setSessionSwitcherError('');
     setCreateSessionVisible(false);
+    setSwitcherManage(false);
+    setSwitcherManageForm(null);
     setCredentialTargetId('');
     setExpandedServerId(target?.id ?? activeServer.id);
     if (mode === 'switch') {
@@ -2440,7 +2444,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setSessionSwitcherMode('switch');
       // A session may have been opened from the Saved servers sheet. Once the
       // promoted owner is Ready, its pending sheet-return intent is complete.
-      reopenSwitcherAfterManageRef.current = false;
       openSwitcherAfterServerMenuRef.current = false;
       switcherProfileAfterServerSheetRef.current = null;
       setSessionSwitcherOpen(false);
@@ -2810,28 +2813,35 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setCreateSessionError('');
   }, []);
 
+  const submitManageProfile = useCallback(async (submission: ConnectionSubmission) => {
+    if (!submission.saveProfile || commandPending.current) return false;
+    const success = await runCommand(async () => {
+      const saved = await MeetermTerminal.saveProfile(
+        { ...submission.profile, id: submission.profile.id || '' },
+        submission.saveCredential ? submission.credential : null,
+        submission.keepCredential,
+      );
+      setProfiles(current => [...current.filter(item => item.id !== saved.id), saved]);
+    }, 'Could not save this server. Check the address and credentials.');
+    if (success) setSwitcherManageForm(null);
+    return success;
+  }, [runCommand]);
+
   const openManageServers = useCallback(() => {
-    // iOS: a react-navigation formSheet cannot host a RN <Modal> on top —
-    // presenting Saved servers over it collapses the route and drops the
-    // Modal. Dismiss the switcher route first; once its native transitionEnd
-    // reports the close complete, onSessionSwitcherClosed mounts the Modal on
-    // the stable presenter, and the reopen flag restores the switcher when
-    // Saved servers closes. Android stacks the same dialogs without a race,
-    // so it can present the Modal directly.
-    reopenSwitcherAfterManageRef.current = true;
-    if (Platform.OS === 'ios' && sessionSwitcherOpen) {
-      setSessionSwitcherOpen(false);
-      return;
-    }
-    setSheet('servers');
-  }, [sessionSwitcherOpen]);
+    // A RN <Modal> cannot present over the iOS formSheet route — it collapses
+    // the route and drops the Modal, and no reliable "native close finished"
+    // event exists for a popped route. Manage therefore swaps its panel into
+    // the still-presented switcher sheet on every platform.
+    setSwitcherManageForm(null);
+    setSwitcherManage(true);
+  }, []);
 
   const closeSessionSwitcher = useCallback(() => {
     // Dismissing the switcher returns to the workspace route that opened it.
-    // Do not let an earlier Manage servers transition reopen that sheet.
-    reopenSwitcherAfterManageRef.current = false;
     openSwitcherAfterServerMenuRef.current = false;
     switcherProfileAfterServerSheetRef.current = null;
+    setSwitcherManage(false);
+    setSwitcherManageForm(null);
     setSessionSwitcherOpen(false);
   }, []);
 
@@ -2845,14 +2855,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const target = switcherProfileAfterServerSheetRef.current;
     if (target) {
       switcherProfileAfterServerSheetRef.current = null;
-      reopenSwitcherAfterManageRef.current = false;
       openSwitcherAfterServerMenuRef.current = false;
       openSessionSwitcher(target);
     } else if (openSwitcherAfterServerMenuRef.current) {
       openSwitcherAfterServerMenuRef.current = false;
-      openSessionSwitcher();
-    } else if (reopenSwitcherAfterManageRef.current) {
-      reopenSwitcherAfterManageRef.current = false;
       openSessionSwitcher();
     }
   }, [openSessionSwitcher]);
@@ -3002,6 +3008,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSessionSwitcherSelectingId('');
     setCredentialTargetId('');
     setCreateSessionVisible(false);
+    setSwitcherManage(false);
+    setSwitcherManageForm(null);
     setSwitchAttempt(null);
     switchAttemptRef.current = null;
     switchBoundaryCrossedRef.current = false;
@@ -3161,18 +3169,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setBrowse(null);
     setBrowseTargetId('');
     setExpandedServerId('');
-    if (reopenSwitcherAfterManageRef.current) return;
+    setSwitcherManage(false);
+    setSwitcherManageForm(null);
     if (afterSwitcherDismissRef.current === 'disconnect') {
       afterSwitcherDismissRef.current = null;
       disconnect();
     }
   }, [cancelRuntimeSelection, disconnect, runtimePickerVisible, updateRuntimeBound]);
-
-  const onSessionSwitcherClosed = useCallback(() => {
-    // iOS fires this from the formSheet's transitionEnd, after the native
-    // dismissal completes — the only safe point to present Saved servers.
-    if (reopenSwitcherAfterManageRef.current) setSheet('servers');
-  }, []);
 
   const retainedWorkspaceId = retainedWorkAvailable && retainedPane ? retainedPane.workspaceId : '';
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
@@ -3566,8 +3569,30 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       sessionSwitcherOpen={sessionSwitcherOpen || runtimePickerVisible}
       sessionSwitcherBusy={runtimePickerVisible && (commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId))}
       onSessionSwitcherDismiss={onSessionSwitcherDismiss}
-      onSessionSwitcherClosed={onSessionSwitcherClosed}
-      sessionSwitcher={<SessionSwitcher
+      sessionSwitcher={switcherManage ? <SwitcherManage
+        profiles={profiles}
+        selectedId={profileId}
+        loading={profilesLoading}
+        error={profilesError}
+        busy={commandBusy}
+        colors={homeColors}
+        form={{ visible: switcherManageForm !== null, profile: switcherManageForm?.profile }}
+        onBack={() => { setSwitcherManageForm(null); setSwitcherManage(false); }}
+        onClose={closeSessionSwitcher}
+        onRetry={() => { void loadProfiles(); }}
+        onConnect={profile => {
+          // Choosing a server from Manage returns to the switcher targeted at
+          // it — the same browse/credential path as tapping its row.
+          setSwitcherManage(false);
+          setSwitcherManageForm(null);
+          openSessionSwitcher(profile);
+        }}
+        onAdd={() => setSwitcherManageForm({})}
+        onEdit={profile => setSwitcherManageForm({ profile })}
+        onDelete={deleteProfile}
+        onFormClose={() => setSwitcherManageForm(null)}
+        onFormSubmit={submitManageProfile}
+      /> : <SessionSwitcher
         mode={runtimePickerVisible ? 'fresh' : sessionSwitcherMode}
         currentServer={activeServer}
         profiles={profiles}
