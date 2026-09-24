@@ -1,0 +1,14 @@
+deps-expo-57-patch Android validation @ 5df2510 (5df2510b2b8bb779124e332f89f28c4c40c5b1df)
+run_kind=full-acceptance-deps-update; branch=deps-expo-57-patch
+change=dependency-only: expo 57.0.24->57.0.25, expo-build-properties 57.0.21->57.0.22; transitively expo-modules-core 57.0.19, expo-modules-jsi 57.1.1, @expo/cli 57.0.27. No app/native/test source changed.
+env=meeterm_api36 headless emulator-5554 (restarted post VM-restart); toolchain=rustc-1.96.0, ndk-27.1.12297006, node-v24.19.0 (blueprint pins 22.22.2 - standing deviation), npm-10.8.3, gradle-9.3.1
+fresh chain: git reset --hard 5df2510 -> npm ci -> expo prebuild --platform android --clean -> assembleRelease (2m35s)
+
+stages:
+- npm ci: PASS
+- expo prebuild --clean (fresh CNG): PASS
+- assembleRelease: PASS (2m35s, 668 tasks)
+- android-smoke.sh gates: PASS (native terminal smoke)
+- screen fixtures: 30/31 captured on this branch's manifest (route 'empty' reports unavailable:missing_screen_element_0,screen_element_1 = PRE-EXISTING baseline, identical on prior evidence runs). NOTE: manifest is 31 routes, not 51 - this branch predates the Issue #27 session-switcher fixtures (2e4b3e3 is not an ancestor; zero 'session-switcher' entries in its fixture script). No Issue #27 items run per instructions.
+- SSH fixture suite (fixture.py -- android-smoke.py): PASS, result=passed stage=disconnect_after_resume reason=ok; full stage chain incl. daily profile switch, transport_loss_evidence=passed, cold-start->saved-profile->picker->connected, workspaces/panes/selection/CJK/handoff, both disconnects.
+result=PASS
