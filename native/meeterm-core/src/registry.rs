@@ -82,6 +82,17 @@ pub(crate) fn promote_terminal(
         terminals.insert(provisional, terminal);
         return Err(TerminalError::UnknownTerminal);
     }
+    // Promotion is an operation boundary: the moved root keeps its transport
+    // binding but receives a fresh token, so input captured against the
+    // provisional browse token cannot be replayed at the stable public ID.
+    let rotated = match terminal.lock() {
+        Ok(mut guard) => guard.advance_operation_epoch(),
+        Err(_) => Err(TerminalError::RegistryPoisoned),
+    };
+    if let Err(err) = rotated {
+        terminals.insert(provisional, terminal);
+        return Err(err);
+    }
     terminals.insert(owner, terminal);
     Ok(())
 }

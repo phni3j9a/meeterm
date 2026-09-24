@@ -580,11 +580,17 @@ fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
         &first_root,
         &crate::registry::shared_terminal(public_id).expect("same public root after switch")
     ));
-    assert_eq!(crate::registry::operation_epoch(public_id), Ok(token_b));
-    assert_eq!(
-        crate::registry::commit_utf8_at_epoch(public_id, token_a, b"old source"),
-        Err(TerminalError::RemoteGenerationMismatch)
+    let token_b2 = crate::registry::operation_epoch(public_id).expect("promoted token B");
+    assert_ne!(
+        token_b, token_b2,
+        "promotion must rotate the operation token"
     );
+    for stale_token in [token_a, token_b] {
+        assert_eq!(
+            crate::registry::commit_utf8_at_epoch(public_id, stale_token, b"old source"),
+            Err(TerminalError::RemoteGenerationMismatch)
+        );
+    }
     assert!(first_input.try_recv().is_err());
 
     crate::registry::detach_transport(public_id, 10_002);
@@ -598,11 +604,12 @@ fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
         &second_root,
         &crate::registry::shared_terminal(public_id).expect("same public root after second switch")
     ));
-    assert_ne!(token_a, token_c);
-    assert_ne!(token_b, token_c);
-    assert_eq!(crate::registry::operation_epoch(public_id), Ok(token_c));
+    let token_c2 = crate::registry::operation_epoch(public_id).expect("promoted token C");
+    for token in [token_a, token_b, token_b2, token_c] {
+        assert_ne!(token, token_c2);
+    }
 
-    for stale_token in [token_a, token_b] {
+    for stale_token in [token_a, token_b, token_b2, token_c] {
         assert_eq!(
             crate::registry::commit_utf8_at_epoch(public_id, stale_token, b"stale commit"),
             Err(TerminalError::RemoteGenerationMismatch)
@@ -646,16 +653,18 @@ fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
     );
 
     assert_eq!(
-        crate::registry::commit_utf8_at_epoch(public_id, token_c, b"current"),
+        crate::registry::commit_utf8_at_epoch(public_id, token_c2, b"current"),
         Ok(1)
     );
     assert_eq!(current_input.try_recv().expect("current input"), b"current");
     assert_eq!(
-        crate::registry::paste_utf8_at_epoch(public_id, token_c, b"paste"),
+        crate::registry::paste_utf8_at_epoch(public_id, token_c2, b"paste"),
         Ok(5)
     );
     assert_eq!(current_input.try_recv().expect("current paste"), b"paste");
-    assert!(crate::registry::send_special_key_at_epoch(public_id, token_c, SpecialKey::Up).is_ok());
+    assert!(
+        crate::registry::send_special_key_at_epoch(public_id, token_c2, SpecialKey::Up).is_ok()
+    );
     assert_eq!(
         current_input.try_recv().expect("current special key"),
         encode_special_key(SpecialKey::Up)
@@ -663,7 +672,7 @@ fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
     assert!(
         crate::registry::send_key_at_epoch(
             public_id,
-            token_c,
+            token_c2,
             KeyCode::Up as u32,
             Modifiers::CTRL.bits()
         )
@@ -678,7 +687,7 @@ fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
     assert!(
         crate::registry::commit_modified_utf8_at_epoch(
             public_id,
-            token_c,
+            token_c2,
             b"modified text",
             Modifiers::ALT.bits()
         )
@@ -690,7 +699,7 @@ fn promoted_terminal_rejects_tokens_from_every_previous_owner() {
             .expect("current modified text")
             .is_empty()
     );
-    crate::registry::resize_terminal_at_epoch(public_id, token_c, 100, 30)
+    crate::registry::resize_terminal_at_epoch(public_id, token_c2, 100, 30)
         .expect("current token resize");
     assert!(
         current_resize

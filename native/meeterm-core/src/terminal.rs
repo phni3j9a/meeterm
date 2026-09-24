@@ -462,7 +462,7 @@ impl Terminal {
         self.resize_validated(columns, rows, None);
     }
 
-    fn advance_operation_epoch(&mut self) -> Result<(), TerminalError> {
+    pub(crate) fn advance_operation_epoch(&mut self) -> Result<(), TerminalError> {
         self.operation_epoch = issue_operation_token();
         self.operation_epoch
             .map(|_| ())

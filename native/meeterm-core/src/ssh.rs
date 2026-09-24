@@ -10750,6 +10750,211 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
+    fn runtime_browse_promotion_rejects_pre_promotion_input_tokens() {
+        if run_lock_regression_subprocess(
+            "ssh::tests::runtime_browse_promotion_rejects_pre_promotion_input_tokens",
+            "MEETERM_TEST_RUNTIME_BROWSE_PROMOTION_TOKENS_CHILD",
+        ) {
+            return;
+        }
+
+        let source_owner = registry::create_terminal(80, 24).expect("promotion source root");
+        let provisional_owner =
+            registry::create_terminal(80, 24).expect("promotion provisional root");
+        let source_generation = next_generation();
+        let provisional_generation = next_generation();
+        let source_shared = Arc::new(ConnectionShared::new(
+            source_owner,
+            source_generation,
+            "source.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/operation-token-promotion-source-known-hosts"),
+        ));
+        let provisional_shared = Arc::new(ConnectionShared::new_with_provisional(
+            provisional_owner,
+            provisional_generation,
+            "target.example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/operation-token-promotion-target-known-hosts"),
+            true,
+        ));
+
+        {
+            let mut state = source_shared
+                .session
+                .lock()
+                .expect("ready source session state");
+            *state = SessionState {
+                generation: source_generation,
+                runtime_operations_ready: true,
+                terminal_input_ready: true,
+                ..SessionState::default()
+            };
+        }
+        let (source_input, mut source_input_receiver) = mpsc::channel(8);
+        let (source_resize, _source_resize_receiver) = watch::channel((80, 24));
+        registry::prepare_pane_transport(
+            source_owner,
+            source_generation,
+            (80, 24),
+            source_input,
+            source_resize,
+        )
+        .expect("ready source transport");
+        assert!(registry::mark_transport_ready(
+            source_owner,
+            source_generation
+        ));
+        source_shared.set_state(ConnectionState::Ready);
+        source_shared.ready_once.store(true, Ordering::Release);
+
+        {
+            let mut state = provisional_shared
+                .session
+                .lock()
+                .expect("ready provisional session state");
+            *state = SessionState {
+                generation: provisional_generation,
+                runtime_operations_ready: true,
+                terminal_input_ready: true,
+                ..SessionState::default()
+            };
+        }
+        let (provisional_input, mut provisional_input_receiver) = mpsc::channel(8);
+        let (provisional_resize, _provisional_resize_receiver) = watch::channel((80, 24));
+        registry::prepare_pane_transport(
+            provisional_owner,
+            provisional_generation,
+            (80, 24),
+            provisional_input,
+            provisional_resize,
+        )
+        .expect("bind provisional candidate transport");
+        assert!(registry::mark_transport_ready(
+            provisional_owner,
+            provisional_generation
+        ));
+        provisional_shared.set_state(ConnectionState::Ready);
+        provisional_shared.ready_once.store(true, Ordering::Release);
+
+        assert!(registry::transport_ready(source_owner, source_generation));
+        assert!(registry::transport_ready(
+            provisional_owner,
+            provisional_generation
+        ));
+        let source_token = registry::operation_epoch(source_owner).expect("old owner token");
+        let provisional_token =
+            registry::operation_epoch(provisional_owner).expect("provisional token");
+
+        let target_endpoint = SessionEndpoint {
+            host: "target.example.test".to_owned(),
+            port: 22,
+            username: "fixture".to_owned(),
+            known_hosts_path: PathBuf::from("/tmp/operation-token-promotion-target-known-hosts"),
+            backend: Backend::Tmux,
+            runtime: Some("selected".to_owned()),
+        };
+        let actor = runtime()
+            .expect("promotion runtime")
+            .spawn(std::future::pending::<()>());
+        connections()
+            .lock()
+            .expect("promotion connection map")
+            .insert(
+                provisional_owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&provisional_shared),
+                    abort: actor.abort_handle(),
+                },
+            );
+        let token = next_browse_token();
+        *runtime_browse().lock().expect("promotion browse slot") = Some(RuntimeBrowseEntry {
+            token,
+            source_owner,
+            source_generation,
+            source_epoch: source_shared.operation_epoch(),
+            source_recovery: RecoverySnapshot::default(),
+            source_runtime_operations_ready: true,
+            source_retired: false,
+            source_shared: Arc::clone(&source_shared),
+            provisional_owner,
+            provisional_generation,
+            provisional_shared: Arc::clone(&provisional_shared),
+            target_endpoint,
+            browse_generation: next_browse_token(),
+            refresh_pending_from_revision: None,
+            phase: RuntimeBrowsePhase::Committing,
+            target: Some(RuntimeBrowseTarget::Candidate("candidate".to_owned())),
+            error_code: String::new(),
+            error_message: String::new(),
+            cleanup_warning: None,
+            active_terminal_id: None,
+        });
+
+        promote_runtime_browse(
+            token,
+            source_owner,
+            provisional_owner,
+            Arc::clone(&provisional_shared),
+        )
+        .expect("runtime browse promotion completes");
+
+        let current_token =
+            registry::operation_epoch(source_owner).expect("post-promotion current token");
+        let old_owner_result =
+            registry::commit_utf8_at_epoch(source_owner, source_token, b"old owner delayed");
+        let provisional_result =
+            registry::commit_utf8_at_epoch(source_owner, provisional_token, b"provisional delayed");
+        let provisional_delivery = provisional_input_receiver.try_recv().ok();
+        let current_bytes = b"current after promotion";
+        let current_result =
+            registry::commit_utf8_at_epoch(source_owner, current_token, current_bytes);
+        let current_delivery = provisional_input_receiver.try_recv().ok();
+        let extra_delivery = provisional_input_receiver.try_recv().ok();
+        let old_owner_delivery = source_input_receiver.try_recv().ok();
+
+        runtime_browse()
+            .lock()
+            .expect("promotion cleanup browse")
+            .take();
+        if let Some(entry) = connections()
+            .lock()
+            .expect("promotion cleanup connections")
+            .remove(&source_owner)
+        {
+            entry.shared.cancel();
+            entry.abort.abort();
+        }
+        session_states()
+            .lock()
+            .expect("promotion cleanup session states")
+            .remove(&source_owner);
+        registry::destroy_terminal(source_owner);
+
+        assert_eq!(
+            old_owner_result,
+            Err(crate::terminal::TerminalError::RemoteGenerationMismatch),
+            "the old source token must be rejected at the stable public TerminalId"
+        );
+        assert_eq!(
+            provisional_result,
+            Err(crate::terminal::TerminalError::RemoteGenerationMismatch),
+            "the provisional token must be stale after promotion; delivered={provisional_delivery:?}, current_result={current_result:?}, current_delivery={current_delivery:?}, extra_delivery={extra_delivery:?}"
+        );
+        assert!(provisional_delivery.is_none());
+        assert_eq!(current_result, Ok(1));
+        assert_eq!(current_delivery.as_deref(), Some(current_bytes.as_slice()));
+        assert!(
+            extra_delivery.is_none(),
+            "current input is delivered exactly once"
+        );
+        assert!(
+            old_owner_delivery.is_none(),
+            "old transport receives no input"
+        );
+    }
+
+    #[test]
     fn browse_promotion_destroys_old_children_after_releasing_locks() {
         if run_lock_regression_subprocess(
             "ssh::tests::browse_promotion_destroys_old_children_after_releasing_locks",
