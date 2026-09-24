@@ -92,3 +92,13 @@ The first-entry Manage LIST overlap is FIXED and verified on this build
 sysdiagnose: skipped — wedged collector subsystem (simctl diagnose hits the
 600s cap; watchdog terminates ~46s in). Tests complete before diagnostics;
 results unaffected.
+
+## Owner stop directive — timeline note
+
+An owner "STOP now" directive arrived AFTER every stage above had already
+completed and this bundle had been committed/pushed (commit 3cd744c). No
+suite was left mid-flight and nothing was started after the directive. The
+record therefore stands complete: standard PASSED, ssh PASSED, polish
+PASSED, testIssue27SessionSwitcherDrive PASSED, testAc9SwitcherDiagnostics
+FAILED on the verified embedded-form (0,0) defect. Issue #27 acceptance is
+paused at be7e23e per that directive — no fix or further retarget expected.
