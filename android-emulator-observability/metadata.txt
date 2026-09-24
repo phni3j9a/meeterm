@@ -1,11 +1,11 @@
-source_sha=2e4b3e35d3849fc4bd833257bc6e1228b0a1fb71
+source_sha=be7e23e0e9df5320ae0b601ba7ad96af7b019521
 suite=android-emulator-observability
 branch=issue-27-session-switcher
 run_kind=full-acceptance
 toolchains=rustc-1.96.0,ndk-27.1.12297006,node-v24.19.0,npm-10.8.3,gradle-9.3.1
 emulator=meeterm_api36-api36-headless
 fresh_build=yes-incremental-bundle-native-uptodate
-supersedes=d62e43b,6523e1e,dd7e5fa,0e7b7f8,a87996c,8c35313,ba3f657
+supersedes=461d2a7,ba707cd,2e4b3e3-and-earlier
 api=36
 abi=x86_64
 device=sdk_gphone64_x86_64

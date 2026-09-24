@@ -1,50 +1,43 @@
-run_record=android-emulator-observability
-source_sha=2e4b3e35d3849fc4bd833257bc6e1228b0a1fb71
-branch=issue-27-session-switcher
-run_kind=final-acceptance
-suite_result=passed
-build=assembleRelease incremental (bundle rebuilt; native up-to-date) BUILD SUCCESSFUL 31s
-install=adb install -r Success
-smoke_gates=android-smoke.sh PASS ("Android native terminal smoke passed.")
-route_manifest=51/51 captured (android-screen-fixtures.txt)
-ssh_suite=fixture.py -- android-smoke.py PASS ~24min; ssh-validation.txt result chain ends disconnect_after_resume; transport_loss_evidence=passed; both daily_profile_switch_*_boundary_session_switcher markers present
-fixtures=fx1 :42393 (socket meeterm-ssh-fixture-5or2oghp) fp SHA256:RuOi...; fx2 :43923 (socket meeterm-ssh-fixture-_qe4sk1p) fp SHA256:Zw5B...
+issue-27-session-switcher Android final acceptance @ be7e23e (be7e23e0e9df5320ae0b601ba7ad96af7b019521)
+run_kind=full-acceptance; env=meeterm_api36 headless emulator-5554; toolchain=rustc-1.96.0, ndk-27.1.12297006, node-v24.19.0 (blueprint pins 22.22.2 - standing deviation), npm-10.8.3, gradle-9.3.1
 
-issue27 items (live, exact source):
-1 same-server switch = VERIFIED — fx2 other -> meeterm via switcher; Ready 10.0.2.2:43923 · meeterm + Connected; marker i27-2e4b-fx2m-1790224951-4026 delivered exactly once on fx2 meeterm pane %0 (pane pid 4026); 'other' session survives
-2 cross-endpoint switch = VERIFIED — fx1 meeterm -> switcher -> Manage servers row 43923 -> retarget + Credentials browse -> key paste -> host-key trust (fp Zw5B/eYcr...) -> tmux session 'other' -> Ready 10.0.2.2:43923 · other + Connected; marker i27-2e4b-fx2-1790224667-4029 exactly once on fx2 other %1 (pane pid 4029); fx1 sessions {meeterm, second} alive; no Disconnect step; source profiles intact (Ask-for-credentials preserved)
-3 cancel/no-destruction = VERIFIED — switcher open -> Close session switcher -> Workspaces + Connected on meeterm unchanged
-4 close + fresh selection = VERIFIED — am force-stop -> fx2 sessions survive -> relaunch lands home (no auto-attach, YOUR SERVERS) -> Connect saved server row -> credentials form (port 43923 prefilled) -> key -> picker 'Choose a session' -> tmux runtime meeterm -> Ready + Connected
-5 captures = 51/51 seeded + 23 live i27-2e4b-*.png
-transport-loss/foreground recovery = covered by suite (daily_transport_loss_* all passed; daily_foreground_* all passed)
+delta vs 461d2a7: JS-only (noticeKey scroll-to-top for Manage panel failure notice; FlatList-in-SafeAreaView structure retained). Native unchanged -> incremental assembleRelease rebuilt bundle only.
 
-footer Manage path (embedded SwitcherManage panel, revised expectations):
-- switcher-manage-servers -> 'Saved servers' heading appears INSIDE still-presented switcher sheet (Back to session switcher + Close session switcher both present; no collapse, no workspaces landing) = VERIFIED (i27-2e4b-manage-list.png)
-- Add -> type host -> Back to saved servers -> 'Discard changes?' alert shown = VERIFIED; Discard -> list (i27-2e4b-manage-discard.png). 'Keep editing' is a native Alert button (source-checked, ConnectionForm.tsx:177); compressed a11y dump could not tap it deterministically — discard confirmed live.
-- hardware back during switcher = dismisses to origin VERIFIED (i27-2e4b-ac9-hwback.png); dirty-form hardware back is the same usePreventRemove path (busy->silent block is unit-covered; pending-save could not be induced on-device — save resolves instantly)
-- Add -> Save -> list returns with new row = VERIFIED (i27-2e4b-manage-saved.png shows ubuntu@10.0.2.2:43923)
-- row options -> 'EDIT SERVER' opens embedded edit form ('Edit server' title, fields populated) = VERIFIED (i27-2e4b-manage-edit.png); 'REMOVE' -> 'Remove saved server?' destructive confirm (CANCEL/REMOVE) -> row removed, other rows intact = VERIFIED (i27-2e4b-manage-options.png, -remove-confirm.png, -after-remove.png)
-- tap server row in Manage -> switcher retargets to that server and opens its credential/browse step = VERIFIED (i27-2e4b-manage-retarget.png -> Credentials form for :43923 -> completed browse)
-- Back to session switcher -> session list -> Close -> originating Workspaces = VERIFIED; binding/input target unchanged throughout manage-only flows (marker target stayed 10.0.2.2:43923 · meeterm); no stray reconnect; no delayed re-show
-- failed-removal message inside panel = unit-covered (deleteProfileShouldFail stub; cannot inject a native delete failure on-device); successful live removal verified instead
+stages:
+- assembleRelease: PASS (31s incremental; native tasks up-to-date)
+- android-smoke.sh gates: PASS
+- 51-route manifest: 51/51 captured (incl. 20 session-switcher-* light/dark)
+- SSH fixture suite (fixture.py -- android-smoke.py): PASS, result=passed stage=disconnect_after_resume, incl. daily_profile_switch_{second,primary}_boundary_session_switcher, daily_profile_switched, daily_profile_switch_restored, transport_loss_evidence=passed, cold-start->saved-profile->picker->connected, both disconnects.
+- supersedes: be7e23e; earlier same-campaign runs on 2e4b3e3/ba707cd/461d2a7 are history.
 
-ac9 focused (on this binary):
-- sheet open/close, hw Back dismissal = VERIFIED
-- drag-to-dismiss = VERIFIED (slow edge-anchored swipe from sheet top; a fast mid-sheet swipe only scrolls — same behavior as d62e43b)
-- fontScale 1.3 / 0.85 = captured (i27-2e4b-ac9-font130.png, -font085.png)
-- dark/light = 20/20 session-switcher-* seeded routes captured
-- keyboard/focus navigation = NOT VERIFIABLE (no focused nodes in a11y tree; DPAD does nothing in-sheet — same constraint as d62e43b)
-- reduce-motion = not separately re-tested (device already runs animator/window/transition scales 0.0 throughout; carries d62e43b constraint)
+issue-27 live items (exact-source, fx1=10.0.2.2:42393 fp RuOi..., fx2=10.0.2.2:43923 fp Zw5B...):
+1. same-server switch: VERIFIED - active fx1 connection browse -> 'tmux session second' -> Ready (Connected, '10.0.2.2:42393 . second'); native input marker i27-be7e-fx1s-1790236395 observed exactly once on second:0 (count=2: typed line + output); meeterm session survives. caps: i27-be7e-switcher-fx1.png, i27-be7e-fx1-second-ready.png
+2. cross-endpoint switch: VERIFIED - switcher -> Manage -> fx2 saved row tap -> switcher retarget to Credentials -> key paste -> trust (fp Zw5B... match observed in dialog) -> browse fx2 sessions -> 'tmux session other' -> Ready (Connected, other); marker i27-be7e-fx2-1790237208 exactly once on other:0; fx1 sessions {meeterm, second} still alive; no Disconnect step; profiles intact. caps: i27-be7e-manage-retarget.png, i27-be7e-fx2-browsed.png, i27-be7e-fx2-ready.png
+3. cancel / no-destruction: VERIFIED - switcher opened on fx1 'second' -> Close session switcher -> Workspaces origin, still Connected; remote sessions unharmed. cap: i27-be7e-close-origin.png
+4. close + fresh select: VERIFIED - force-stop -> all 4 remote sessions survive (fx1 {meeterm,second}, fx2 {meeterm,other}) -> relaunch lands home WITHOUT auto-attach -> saved-server row -> credentials (key paste) -> host trust remembered (no dialog; fx1 key was already trusted) -> 'Choose a session' picker -> 'tmux runtime meeterm' -> Ready + Connected. caps: i27-be7e-item4-picker.png, i27-be7e-item4-ready.png
+5. captures: 51/51 seeded routes + 32 live i27-be7e-*.png
+   transport-loss/foreground recovery: suite daily_transport_loss_* and daily_foreground_* all passed.
 
-limitations:
-- node v24.19.0/npm 10.8.3 vs blueprint pin 22.22.2 (standing deviation, previously reported)
-- iOS scope belongs to the iOS session
-- abandoned attempts on superseded commits (6523e1e/dd7e5fa/0e7b7f8/a87996c/8c35313/ba3f657) are historical only
-cleanup=app-release.apk removed before push; no credentials/keys pushed
+embedded Manage path (be7e23e final design, FlatList inside SafeAreaView):
+- switcher footer -> Manage servers -> 'Saved servers' list INSIDE the still-presented sheet (Back to session switcher affordance present). cap: i27-be7e-manage-list.png
+- dirty save form -> inner 'Back to saved servers' -> 'Discard changes?' -> KEEP EDITING (form + dirty value retained) -> Back -> DISCARD -> returns to Saved servers list. caps: i27-be7e-manage-discard-inner.png, i27-be7e-keepediting-inner.png
+- dirty save form -> HARDWARE BACK (keyevent 4) -> 'Discard changes?' -> KEEP EDITING (dirty retained, sheet presented) -> HW-BACK -> DISCARD -> ACTUAL destination = originating Workspaces screen (Connected on 10.0.2.2 . second) = route-removal redispatch, NOT the list. caps: i27-be7e-hwback-discard.png, i27-be7e-hwback-keepediting.png, i27-be7e-hwback-dest.png
+- Add -> Save -> list returns with new rows (fx1 42393 'Ask for credentials . Selected' + fx2 43923). caps: i27-be7e-manage-rows.png
+- server row options -> EDIT SERVER -> 'Edit server' form (back label 'Back to saved servers'); options -> REMOVE -> 'Remove saved server?' destructive confirm -> row gone, fx rows intact. caps: i27-be7e-manage-options.png, i27-be7e-manage-edit.png, i27-be7e-manage-remove-confirm.png, i27-be7e-manage-after-remove.png
+- Manage row tap -> switcher retargets to that server (credentials path as designed) = covered by item 2 above.
+- Back -> switcher session list; Close -> originating Workspaces; binding/input target unchanged throughout manage-only flows; no stray reconnect; no delayed re-show. cap: i27-be7e-manage-close-origin.png
+- pending-save silent block + failed-removal notice (noticeKey scroll): unit-covered only (87+ tests in app-selection suite per commit notes; pending save cannot be induced on-device; failed removal cannot be induced without server fault).
 
-focused_followup_hwback_dirty_form (exact-source, same installed build):
-1. switcher -> Manage servers -> Add server -> Host=9.9.9.9 (dirty) -> hardware BACK (keyevent 4) -> 'Discard changes?' native alert shown = VERIFIED (i27-2e4b-hwback-discard.png; buttons render KEEP EDITING / DISCARD)
-2. KEEP EDITING -> embedded form re-presented with dirty value 9.9.9.9 intact, sheet still presented = VERIFIED (i27-2e4b-hwback-keepediting.png)
-3. hardware BACK again -> 'Discard changes?' -> DISCARD -> ACTUAL destination = originating Workspaces screen with Connected on 10.0.2.2:43923 · meeterm = VERIFIED (i27-2e4b-hwback-dest.png). This is the route-removal redispatch: the whole sheet dismisses to origin — distinct from inner-form 'Back to saved servers' which returns to the list.
-4. binding/input target unchanged: 10.0.2.2:43923 · meeterm Connected after return; no stray reconnect.
-corrects_prior_record: earlier claim 'same usePreventRemove path' now has a direct native observation; KEEP EDITING is deterministically tappable as the all-caps dialog button.
+AC9 diagnostics on this binary:
+- sheet open/close: verified (multiple cycles).
+- hardware Back on plain switcher: VERIFIED -> dismisses to origin. cap: i27-be7e-ac9-hwback.png
+- drag-to-dismiss: VERIFIED with slow swipe starting at sheet top edge (540,660->540,1900 @700ms). cap: i27-be7e-ac9-dragdismiss.png
+- fontScale 1.3 and 0.85: sheet opens and renders correctly under both; NOTE: changing font_scale while the sheet is open destroys the sheet (activity recreation) - captures i27-be7e-ac9-sheet-fontscale-{1.3,0.85}.png were taken with scale applied before opening.
+- keyboard/focus navigation: NOT MEASURABLE on headless emulator without hardware keyboard; unverified (same constraint as previous runs).
+- reduce-motion: animator-duration-scale=0 path covered via suite (anims off); dedicated A/B visual comparison unmeasurable headless - unverified (same constraint).
+- dark/light: 20/20 seeded session-switcher-* routes captured in both themes.
+
+caveats/honest notes:
+- After force-stop+relaunch only the fx1 saved row was visible on home; the fx2 row saved during Manage was not shown (swipe revealed no second row; nth-match also absent). Earlier Manage list did show both rows (i27-be7e-manage-rows.png). item4 proceeded on fx1 which satisfies the fresh-select requirement; the missing fx2 row is recorded as an open observation, not understood.
+- node v24.19.0 vs blueprint pin 22.22.2 (standing, previously reported).
+- suite's own daily-fixture profile rows appear in early captures (suite leftovers); subsequent pm clear resets.
