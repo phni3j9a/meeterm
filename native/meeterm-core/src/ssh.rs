@@ -8064,6 +8064,18 @@ AAAEAKNpCN3J9WmHgxbJaAqFwXWdMgDpg1y2YYi7bhOvXHaY01tu9JjW6/TkqJ9TJMglMx
 xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
 -----END OPENSSH PRIVATE KEY-----";
 
+    fn wait_for_connection_finish(
+        shared: &ConnectionShared,
+        timeout: Duration,
+        timeout_message: &str,
+    ) {
+        let finished = runtime()
+            .expect("connection finish runtime")
+            .block_on(async { tokio::time::timeout(timeout, shared.finished()).await })
+            .is_ok();
+        assert!(finished, "{timeout_message}");
+    }
+
     fn run_lock_regression_subprocess(test_name: &str, marker: &str) -> bool {
         if std::env::var_os(marker).is_some() {
             return false;
@@ -8848,25 +8860,13 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         );
     }
 
-    struct RejectingServer;
-
-    impl RusshServer for RejectingServer {
-        type Handler = Self;
-
-        fn new_client(&mut self, _peer_addr: Option<std::net::SocketAddr>) -> Self::Handler {
-            Self
-        }
-    }
-
-    impl server::Handler for RejectingServer {
-        type Error = russh::Error;
-    }
-
     fn start_rejecting_ssh_server() -> (
         u16,
         server::RunningServerHandle,
         std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<(String, bool)>,
     ) {
+        let (attempt_sender, attempt_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
         let join = std::thread::spawn(move || {
             let runtime = Builder::new_multi_thread()
@@ -8886,7 +8886,9 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                     auth_rejection_time_initial: Some(Duration::from_millis(0)),
                     ..Default::default()
                 });
-                let mut server = RejectingServer;
+                let mut server = AuthAttemptServer {
+                    sender: attempt_sender,
+                };
                 let running = server.run_on_socket(config, &listener);
                 let handle = running.handle();
                 ready_sender
@@ -8899,9 +8901,9 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             });
         });
         let (port, handle) = ready_receiver
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(Duration::from_secs(2))
             .expect("rejecting SSH server startup");
-        (port, handle, join)
+        (port, handle, join, attempt_receiver)
     }
 
     #[derive(Clone)]
@@ -8982,7 +8984,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             });
         });
         let (port, handle) = ready_receiver
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(Duration::from_secs(2))
             .expect("auth-attempt observer startup");
         (port, handle, join, attempt_receiver)
     }
@@ -12253,7 +12255,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
 
     #[test]
     fn replacement_auth_failure_keeps_old_cleanup_warning_in_workspace_json() {
-        let (port, server_handle, server_join) = start_rejecting_ssh_server();
+        let (port, server_handle, server_join, auth_attempts) = start_rejecting_ssh_server();
         let owner = registry::create_terminal(80, 24).expect("owner transition terminal");
         let old_generation = next_generation();
         let old_shared = Arc::new(ConnectionShared::new(
@@ -12333,18 +12335,20 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             .map(|entry| Arc::clone(&entry.shared))
             .expect("replacement shared owner");
 
-        // Read the native actor directly until auth has failed. The public
-        // snapshot APIs are intentionally not read before this point, so the
-        // first published read observes both independent result channels.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let finished = replacement.info.lock().expect("replacement info").finished;
-            if finished {
-                break;
-            }
-            assert!(Instant::now() < deadline, "replacement auth did not fail");
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        // Wait for the actor's completion event before the first public
+        // snapshot. The server observation below confirms this reached password
+        // authentication; the snapshot then checks both result channels.
+        wait_for_connection_finish(
+            &replacement,
+            Duration::from_secs(3),
+            "replacement auth did not fail",
+        );
+        assert_eq!(
+            auth_attempts
+                .try_recv()
+                .expect("server observed replacement password auth"),
+            ("fixture".to_owned(), false)
+        );
         let connection = connection_snapshot(owner).expect("replacement connection snapshot");
         assert_eq!(connection.state, ConnectionState::Failed as u32);
         assert_eq!(
@@ -12421,22 +12425,11 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             .get(&owner)
             .map(|entry| Arc::clone(&entry.shared))
             .expect("credential-prep replacement shared");
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let finished = replacement
-                .info
-                .lock()
-                .expect("credential-prep info")
-                .finished;
-            if finished {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "credential preparation did not fail"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_for_connection_finish(
+            &replacement,
+            Duration::from_secs(2),
+            "credential preparation did not fail",
+        );
 
         let connection = connection_snapshot(owner).expect("credential-prep connection snapshot");
         assert_eq!(connection.state, ConnectionState::Failed as u32);
@@ -14257,15 +14250,17 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             assert!(state.lock().expect("session state").profile.is_none());
         }
 
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let snapshot = connection_snapshot(owner).expect("connection snapshot");
-            if snapshot.state == ConnectionState::Failed as u32 {
-                break;
-            }
-            assert!(Instant::now() < deadline, "malformed key did not fail");
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        let shared = connections()
+            .lock()
+            .expect("malformed key registry")
+            .get(&owner)
+            .map(|entry| Arc::clone(&entry.shared))
+            .expect("malformed key actor");
+        wait_for_connection_finish(
+            &shared,
+            Duration::from_secs(2),
+            "malformed key did not fail",
+        );
 
         // A new endpoint must compare against the retained endpoint identity,
         // even though the failed credential profile has been removed. This
