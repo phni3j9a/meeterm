@@ -2813,10 +2813,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const openManageServers = useCallback(() => {
     // iOS: a react-navigation formSheet cannot host a RN <Modal> on top —
     // presenting Saved servers over it collapses the route and drops the
-    // Modal. Dismiss the switcher route first; onSessionSwitcherDismiss then
-    // mounts the Modal on the stable presenter, and the reopen flag restores
-    // the switcher when Saved servers closes. Android stacks the same
-    // dialogs without a race, so it can present the Modal directly.
+    // Modal. Dismiss the switcher route first; once its native transitionEnd
+    // reports the close complete, onSessionSwitcherClosed mounts the Modal on
+    // the stable presenter, and the reopen flag restores the switcher when
+    // Saved servers closes. Android stacks the same dialogs without a race,
+    // so it can present the Modal directly.
     reopenSwitcherAfterManageRef.current = true;
     if (Platform.OS === 'ios' && sessionSwitcherOpen) {
       setSessionSwitcherOpen(false);
@@ -3160,15 +3161,18 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setBrowse(null);
     setBrowseTargetId('');
     setExpandedServerId('');
-    if (reopenSwitcherAfterManageRef.current) {
-      setSheet('servers');
-      return;
-    }
+    if (reopenSwitcherAfterManageRef.current) return;
     if (afterSwitcherDismissRef.current === 'disconnect') {
       afterSwitcherDismissRef.current = null;
       disconnect();
     }
   }, [cancelRuntimeSelection, disconnect, runtimePickerVisible, updateRuntimeBound]);
+
+  const onSessionSwitcherClosed = useCallback(() => {
+    // iOS fires this from the formSheet's transitionEnd, after the native
+    // dismissal completes — the only safe point to present Saved servers.
+    if (reopenSwitcherAfterManageRef.current) setSheet('servers');
+  }, []);
 
   const retainedWorkspaceId = retainedWorkAvailable && retainedPane ? retainedPane.workspaceId : '';
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
@@ -3562,6 +3566,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       sessionSwitcherOpen={sessionSwitcherOpen || runtimePickerVisible}
       sessionSwitcherBusy={runtimePickerVisible && (commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId))}
       onSessionSwitcherDismiss={onSessionSwitcherDismiss}
+      onSessionSwitcherClosed={onSessionSwitcherClosed}
       sessionSwitcher={<SessionSwitcher
         mode={runtimePickerVisible ? 'fresh' : sessionSwitcherMode}
         currentServer={activeServer}

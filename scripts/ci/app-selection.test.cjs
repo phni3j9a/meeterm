@@ -958,10 +958,12 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     // Navigation's native view/gesture execution belongs to mobile evidence.
     // These tests retain their real App selection and registry assertions.
     ['./app/WorkspaceNavigation', {
-      WorkspaceNavigation: ({ screen, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, onSessionSwitcherDismiss }) => {
+      WorkspaceNavigation: ({ screen, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, onSessionSwitcherDismiss, onSessionSwitcherClosed }) => {
         const previousOpen = React.useRef(Boolean(sessionSwitcherOpen));
         React.useEffect(() => {
-          if (previousOpen.current && !sessionSwitcherOpen) onSessionSwitcherDismiss();
+          // Dismiss handling runs at the navigation-state update; the closed
+          // callback models the formSheet's native transitionEnd that follows.
+          if (previousOpen.current && !sessionSwitcherOpen) { onSessionSwitcherDismiss(); onSessionSwitcherClosed?.(); }
           previousOpen.current = Boolean(sessionSwitcherOpen);
         }, [sessionSwitcherOpen]);
         return React.createElement(React.Fragment, null,

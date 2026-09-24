@@ -12,7 +12,7 @@ const Stack = createNativeStackNavigator<Routes>();
 /** Two native screens; the App still owns selection and the remote workspace.
  * Switching panes/workspaces in the terminal never pushes another route.
  */
-export function WorkspaceNavigation({ screen, onScreenChange, colors, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, sessionSwitcherBusy, onSessionSwitcherDismiss }: {
+export function WorkspaceNavigation({ screen, onScreenChange, colors, workspaces, terminal, sessionSwitcherOpen, sessionSwitcher, sessionSwitcherBusy, onSessionSwitcherDismiss, onSessionSwitcherClosed }: {
   screen: Destination;
   onScreenChange: (screen: Destination) => void;
   colors: Palette;
@@ -22,6 +22,7 @@ export function WorkspaceNavigation({ screen, onScreenChange, colors, workspaces
   sessionSwitcher: ReactNode;
   sessionSwitcherBusy: boolean;
   onSessionSwitcherDismiss: () => void;
+  onSessionSwitcherClosed: () => void;
 }) {
   const navigation = useNavigationContainerRef<Routes>();
   const [ready, setReady] = useState(false);
@@ -90,6 +91,8 @@ export function WorkspaceNavigation({ screen, onScreenChange, colors, workspaces
         contentStyle: { backgroundColor: colors.background },
         statusBarStyle: colors === DARK ? 'light' : 'dark',
         gestureEnabled: !sessionSwitcherBusy,
+      }} listeners={{
+        transitionEnd: event => { if (event.data.closing) onSessionSwitcherClosed(); },
       }}>{() => sessionSwitcher}</Stack.Screen>
     </Stack.Navigator>
   </NavigationContainer>;
