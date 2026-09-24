@@ -1,0 +1,5 @@
+result=passed
+suite=polish
+stage=complete
+reason=none
+ui_last_stage=complete

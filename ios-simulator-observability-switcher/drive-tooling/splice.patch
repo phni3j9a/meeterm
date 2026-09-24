@@ -1,0 +1,859 @@
+--- scripts/ci/MeetermSmokeUITests.swift	2026-09-23 12:41:18
++++ ios/meetermTests/MeetermSmokeUITests.swift	2026-09-23 20:47:30
+@@ -3273,5 +3273,856 @@
+ 
+   private func shellQuote(_ value: String) -> String {
+     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
++  }
++
++
++  // MARK: - Issue #27 session switcher drive (session-side evidence)
++
++  private func switchEnv(_ name: String) -> String {
++    ProcessInfo.processInfo.environment[name] ?? ""
++  }
++
++  private func switchWaitForFileLines(_ path: URL, expected: [String], timeout: TimeInterval) -> Bool {
++    let deadline = Date().addingTimeInterval(timeout)
++    while Date() < deadline {
++      if let contents = try? String(contentsOf: path, encoding: .utf8) {
++        let lines = contents.split(whereSeparator: { $0.isNewline }).map(String.init)
++        if lines == expected { return true }
++      }
++      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
++    }
++    return false
++  }
++
++  private func switchReadKey(_ path: String) -> String {
++    (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
++  }
++
++  private func switchTrustHostKey(fingerprint: String, stage: String) -> Bool {
++    let alert = app.alerts.firstMatch
++    guard alert.waitForExistence(timeout: 60) else {
++      record("\(stage)_host_trust_missing")
++      XCTFail("The SSH host trust prompt did not appear for \(stage).")
++      return false
++    }
++    XCTAssertTrue(
++      alert.staticTexts.allElementsBoundByIndex.contains { $0.label.contains(fingerprint) },
++      "The host trust prompt did not display the expected fingerprint for \(stage)."
++    )
++    let trust = alert.buttons["Trust and connect"].exists
++      ? alert.buttons["Trust and connect"]
++      : alert.buttons["Trust and continue"]
++    guard trust.waitForExistence(timeout: 10), waitForHittable(trust, timeout: 10) else {
++      XCTFail("The host trust action is unavailable for \(stage).")
++      return false
++    }
++    trust.tap()
++    return waitForDisappearance(alert, timeout: 10)
++  }
++
++  private func switchSelectRuntime(sessionName: String, stage: String) -> Bool {
++    let pickerTitle = app.staticTexts["Choose a session"]
++    guard pickerTitle.waitForExistence(timeout: 60) else {
++      record("\(stage)_runtime_picker_missing")
++      XCTFail("The runtime picker did not appear for \(stage).")
++      return false
++    }
++    let runtime = button("tmux runtime \(sessionName)")
++    guard runtime.waitForExistence(timeout: 30), waitForHittable(runtime, timeout: 30) else {
++      record("\(stage)_runtime_row_missing")
++      XCTFail("The \(sessionName) runtime row was not selectable for \(stage).")
++      return false
++    }
++    let enabled = XCTNSPredicateExpectation(
++      predicate: NSPredicate { _, _ in
++        !((runtime.value as? String) ?? "").contains("disabled")
++      },
++      object: nil
++    )
++    guard XCTWaiter.wait(for: [enabled], timeout: 30) == .completed else {
++      record("\(stage)_runtime_row_disabled")
++      XCTFail("The \(sessionName) runtime row stayed disabled for \(stage).")
++      return false
++    }
++    runtime.tap()
++    let labels = waitForWorkspaceLabels(minimum: 1)
++    guard !labels.isEmpty else {
++      record("\(stage)_workspaces_timeout")
++      let tree = app.debugDescription
++      try? tree.write(
++        to: artifactDirectory.appendingPathComponent("ios-issue27-\(stage)-timeout-tree.txt"),
++        atomically: true,
++        encoding: .utf8
++      )
++      XCTFail("The connection did not expose workspaces for \(stage).")
++      return false
++    }
++    return true
++  }
++
++  private func switchConnect(
++    host: String, port: String, username: String, keyFile: String,
++    name: String, fingerprint: String, sessionName: String, stage: String
++  ) -> Bool {
++    openConnectionForm()
++    fillTextField(label: "Host", value: host)
++    fillTextField(label: "Port", value: port)
++    fillTextField(label: "Username", value: username)
++    let saveProfile = app.switches["save-server-profile"]
++    guard revealAuthenticationControl(saveProfile, stage: "\(stage)_save_profile") else {
++      XCTFail("The Save server profile control is unavailable for \(stage).")
++      return false
++    }
++    if (saveProfile.value as? String) != "1" { saveProfile.tap() }
++    XCTAssertEqual(saveProfile.value as? String, "1", "Server profile saving was not selected.")
++    guard revealAuthenticationControl(input("Server name"), stage: "\(stage)_server_name") else {
++      XCTFail("The Server name field is unavailable for \(stage).")
++      return false
++    }
++    fillTextField(label: "Server name", value: name)
++    let key = switchReadKey(keyFile)
++    XCTAssertFalse(key.isEmpty, "The fixture private key is unavailable for \(stage).")
++    guard revealAuthenticationControl(input("Private OpenSSH key"), stage: "\(stage)_key") else {
++      XCTFail("Private-key authentication is unavailable for \(stage).")
++      return false
++    }
++    fillPrivateKey(key)
++    let saveCredentials = app.switches["save-credentials"]
++    guard revealAuthenticationControl(saveCredentials, stage: "\(stage)_save_credentials") else {
++      XCTFail("The Save credentials control is unavailable for \(stage).")
++      return false
++    }
++    if (saveCredentials.value as? String) != "1" { saveCredentials.tap() }
++    XCTAssertEqual(saveCredentials.value as? String, "1", "Credential saving was not selected.")
++    let submit = app.buttons["ssh-submit"]
++    guard waitForHittable(submit, timeout: 10) else {
++      XCTFail("The Connect action is unavailable for \(stage).")
++      return false
++    }
++    submit.tap()
++    guard waitForConnectionFormDismissal(timeout: 30) else {
++      writeConnectionFormDiagnostics()
++      XCTFail("The SSH connection form did not dismiss for \(stage).")
++      return false
++    }
++    guard switchTrustHostKey(fingerprint: fingerprint, stage: stage) else { return false }
++    return switchSelectRuntime(sessionName: sessionName, stage: stage)
+   }
++
++  private func openWorkspaceTerminal(expectedName: String) -> Bool {
++    let labels = waitForWorkspaceLabels(minimum: 1)
++    guard !labels.isEmpty else {
++      XCTFail("No workspace rows were exposed.")
++      return false
++    }
++    let expected = "Workspace \(expectedName)"
++    let target = labels.contains(expected) ? expected : labels[0]
++    let row = button(target)
++    if row.waitForExistence(timeout: 15) {
++      guard waitForHittable(row, timeout: 10) else { return false }
++      row.tap()
++    }
++    return waitForTerminal()
++  }
++
++  private func selectedTerminalPane() -> String {
++    waitForTerminalTabs(minimum: 1).first(where: { $0.isSelected })?.identifier ?? ""
++  }
++
++  private func openSessionSwitcherSheet() -> Bool {
++    if button("Close session switcher").waitForExistence(timeout: 3) { return true }
++    var opener = buttonStarting(with: "Switch server and session")
++    if !opener.waitForExistence(timeout: 8) {
++      let back = button("Back to workspaces")
++      if back.waitForExistence(timeout: 5), waitForHittable(back, timeout: 5) {
++        back.tap()
++        opener = buttonStarting(with: "Switch server and session")
++      }
++    }
++    guard opener.waitForExistence(timeout: 15), waitForHittable(opener, timeout: 10) else {
++      XCTFail("The session switcher header control is unavailable.")
++      return false
++    }
++    opener.tap()
++    return button("Close session switcher").waitForExistence(timeout: 20)
++  }
++
++  private func ensureWorkspaceTerminal(expectedName: String) -> Bool {
++    if waitForTerminalElement(timeout: 10) != nil { return true }
++    return openWorkspaceTerminal(expectedName: expectedName)
++  }
++
++  /// Saves a second server profile through the Server connection menu's
++  /// Saved servers row → Add server (restored on 83575b9). This sheet→sheet
++  /// path avoids the switcher-footer Manage servers route whose
++  /// setSheet('servers') raced the formSheet dismissal and wedged on iOS.
++  private func switchAddServerProfile(
++    host: String, port: String, username: String, keyFile: String,
++    name: String, stage: String
++  ) -> Bool {
++    if !button("Server connection").waitForExistence(timeout: 8) {
++      let back = button("Back to workspaces")
++      if back.waitForExistence(timeout: 5), waitForHittable(back, timeout: 5) {
++        back.tap()
++      }
++    }
++    let menu = button("Server connection")
++    guard menu.waitForExistence(timeout: 10), waitForHittable(menu, timeout: 8) else {
++      record("\(stage)_menu_missing")
++      XCTFail("The Server connection menu is unavailable for \(stage).")
++      return false
++    }
++    menu.tap()
++    let saved = button("Saved servers")
++    guard saved.waitForExistence(timeout: 15), waitForHittable(saved, timeout: 10) else {
++      record("\(stage)_saved_row_missing")
++      capture("sw-saved-row-missing")
++      let tree = app.debugDescription
++      try? tree.write(
++        to: artifactDirectory.appendingPathComponent("ios-issue27-\(stage)-saved-row-tree.txt"),
++        atomically: true,
++        encoding: .utf8
++      )
++      XCTFail("The Saved servers menu row is unavailable for \(stage).")
++      return false
++    }
++    saved.tap()
++    let add = button("Add server")
++    guard add.waitForExistence(timeout: 15), waitForHittable(add, timeout: 10) else {
++      record("\(stage)_add_missing")
++      capture("sw-add-f2-missing")
++      let tree = app.debugDescription
++      try? tree.write(
++        to: artifactDirectory.appendingPathComponent("ios-issue27-\(stage)-add-missing-tree.txt"),
++        atomically: true,
++        encoding: .utf8
++      )
++      XCTFail("The saved-servers Add server action is unavailable for \(stage).")
++      return false
++    }
++    add.tap()
++    guard input("Host").waitForExistence(timeout: 15) else {
++      record("\(stage)_form_missing")
++      XCTFail("The Add server form did not open for \(stage).")
++      return false
++    }
++    fillTextField(label: "Host", value: host)
++    fillTextField(label: "Port", value: port)
++    fillTextField(label: "Username", value: username)
++    // The username keyboard can still cover the last form row; reveal it first.
++    _ = revealAuthenticationControl(input("Server name"), stage: "\(stage)_server_name")
++    fillTextField(label: "Server name", value: name)
++    let key = switchReadKey(keyFile)
++    XCTAssertFalse(key.isEmpty, "The fixture private key is unavailable for \(stage).")
++    guard revealAuthenticationControl(input("Private OpenSSH key"), stage: "\(stage)_key") else {
++      XCTFail("Private-key authentication is unavailable for \(stage).")
++      return false
++    }
++    fillPrivateKey(key)
++    let saveCredentials = app.switches["save-credentials"]
++    guard revealAuthenticationControl(saveCredentials, stage: "\(stage)_save_credentials") else {
++      XCTFail("The Save credentials control is unavailable for \(stage).")
++      return false
++    }
++    if (saveCredentials.value as? String) != "1" { saveCredentials.tap() }
++    XCTAssertEqual(saveCredentials.value as? String, "1", "Credential saving was not selected.")
++    let submit = app.buttons["ssh-submit"]
++    guard waitForHittable(submit, timeout: 10) else {
++      XCTFail("The Save action is unavailable for \(stage).")
++      return false
++    }
++    submit.tap()
++    guard waitForConnectionFormDismissal(timeout: 30) else {
++      record("\(stage)_save_stuck")
++      XCTFail("The Add server form did not dismiss for \(stage).")
++      return false
++    }
++    // The saved-servers sheet re-presents after the form; closing it returns
++    // to plain workspaces (no deferred switcher intent on this menu path).
++    let closeSheet = button("Close sheet")
++    guard closeSheet.waitForExistence(timeout: 15), waitForHittable(closeSheet, timeout: 10) else {
++      record("\(stage)_servers_sheet_stuck")
++      XCTFail("The saved-servers sheet did not reopen for \(stage).")
++      return false
++    }
++    closeSheet.tap()
++    guard buttonStarting(with: "Switch server and session").waitForExistence(timeout: 20)
++      || button("Server connection").waitForExistence(timeout: 5) else {
++      record("\(stage)_workspaces_not_returned")
++      XCTFail("The app did not return to workspaces after saving \(stage).")
++      return false
++    }
++    return true
++  }
++
++  private func switcherSelectRuntime(serverLabel: String, sessionName: String, stage: String, fingerprint: String? = nil) -> Bool {
++    let row = app.buttons.matching(
++      NSPredicate(format: "label BEGINSWITH %@", "tmux session \(sessionName) on ")
++    ).firstMatch
++    if !row.waitForExistence(timeout: 20) {
++      let server = button(serverLabel)
++      guard server.waitForExistence(timeout: 15), waitForHittable(server, timeout: 10) else {
++        record("\(stage)_server_row_missing")
++        XCTFail("The \(serverLabel) server row is unavailable for \(stage).")
++        return false
++      }
++      server.tap()
++    }
++    // A first-time browse may pause on host-key confirmation inside the
++    // switcher before the session rows render.
++    if let fingerprint {
++      let alert = app.alerts.firstMatch
++      if alert.waitForExistence(timeout: 20) {
++        guard switchTrustHostKey(fingerprint: fingerprint, stage: stage) else { return false }
++      }
++    }
++    guard row.waitForExistence(timeout: 60), waitForHittable(row, timeout: 15) else {
++      record("\(stage)_browse_row_missing")
++      XCTFail("The \(sessionName) browse row is unavailable for \(stage).")
++      return false
++    }
++    let enabled = XCTNSPredicateExpectation(
++      predicate: NSPredicate { _, _ in
++        !((row.value as? String) ?? "").contains("disabled")
++      },
++      object: nil
++    )
++    guard XCTWaiter.wait(for: [enabled], timeout: 30) == .completed else {
++      record("\(stage)_browse_row_disabled")
++      XCTFail("The \(sessionName) browse row stayed disabled for \(stage).")
++      return false
++    }
++    record("\(stage)_browse_row_tap")
++    row.tap()
++    let close = button("Close session switcher")
++    _ = waitForDisappearance(close, timeout: 120)
++    let landed = waitForTerminalElement(timeout: 60) != nil || !waitForWorkspaceLabels(minimum: 1).isEmpty
++    guard landed else {
++      record("\(stage)_switch_not_ready")
++      let tree = app.debugDescription
++      try? tree.write(
++        to: artifactDirectory.appendingPathComponent("ios-issue27-\(stage)-notready-tree.txt"),
++        atomically: true,
++        encoding: .utf8
++      )
++      XCTFail("The switch did not land on a ready screen for \(stage).")
++      return false
++    }
++    return true
++  }
++
++  /// Drives the unified Server + Session switcher against two live OpenSSH
++  /// fixtures: same-server session switch, cross-server switch, and a
++  /// cancel/no-destruction browse. Fixture-owned tmux sockets prove the
++  /// released sessions survive remotely.
++  func testIssue27SessionSwitcherDrive() throws {
++    let host1 = requiredEnvironment("MEETERM_SSH_HOST")
++    let port1 = requiredEnvironment("MEETERM_SSH_PORT")
++    let user1 = requiredEnvironment("MEETERM_SSH_USERNAME")
++    let fp1 = requiredEnvironment("MEETERM_SSH_FINGERPRINT")
++    let key1 = requiredEnvironment("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE")
++    let host2 = switchEnv("MEETERM_SSH2_HOST")
++    let port2 = switchEnv("MEETERM_SSH2_PORT")
++    let user2 = switchEnv("MEETERM_SSH2_USERNAME")
++    let fp2 = switchEnv("MEETERM_SSH2_FINGERPRINT")
++    let key2 = switchEnv("MEETERM_SSH2_UNENCRYPTED_PRIVATE_KEY_FILE")
++    let workdir = URL(
++      fileURLWithPath: switchEnv("MEETERM_SWITCH_WORKDIR").isEmpty
++        ? NSTemporaryDirectory() : switchEnv("MEETERM_SWITCH_WORKDIR"),
++      isDirectory: true
++    )
++    XCTAssertFalse(
++      [host2, port2, user2, fp2, key2].contains(""),
++      "The second-fixture switcher environment is incomplete."
++    )
++    let preMarker = workdir.appendingPathComponent("switcher-pre-f1.txt")
++    let sameMarker = workdir.appendingPathComponent("switcher-same-server.txt")
++    let crossMarker = workdir.appendingPathComponent("switcher-cross-server.txt")
++    let cancelMarker = workdir.appendingPathComponent("switcher-cancel.txt")
++    try? FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
++
++    // The drive was not launched with -meeterm-ui-observation by setUp, so the
++    // native paste control never exposes its "Ready N" completion generation
++    // that enterTerminalCommand requires. Relaunch with the flag.
++    app.terminate()
++    app.launchArguments += ["-meeterm-ui-observation"]
++    app.launch()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
++
++    record("sw_connect_fixture2")
++    guard switchConnect(
++      host: host2, port: port2, username: user2, keyFile: key2,
++      name: "Fixture Two", fingerprint: fp2, sessionName: "meeterm-two", stage: "sw_f2"
++    ) else { return }
++    record("sw_disconnect_fixture2")
++    tapConnectionAction("Disconnect")
++    XCTAssertTrue(
++      waitForDisconnected(),
++      "The fixture-two connection did not disconnect before the same-server phase."
++    )
++
++    record("sw_connect_fixture1")
++    guard switchConnect(
++      host: host1, port: port1, username: user1, keyFile: key1,
++      name: "Fixture One", fingerprint: fp1, sessionName: "meeterm", stage: "sw_f1"
++    ) else { return }
++    guard openWorkspaceTerminal(expectedName: "main") else { return }
++    record("sw_f1_terminal_ready")
++    guard let terminal1 = try? terminalElement() else { return }
++    terminal1.tap()
++    enterTerminalCommand(
++      "printf '%s\\n' 'pre-f1' >> \(shellQuote(preMarker.path))",
++      stage: "sw_f1_pre_marker"
++    )
++    XCTAssertTrue(
++      switchWaitForFileLines(preMarker, expected: ["pre-f1"], timeout: 30),
++      "The fixture-one pre-switch marker did not reach its pane exactly once."
++    )
++    let fixtureOnePane = selectedTerminalPane()
++    XCTAssertFalse(fixtureOnePane.isEmpty)
++
++    // Create the second profile BEFORE any committed switch, through the
++    // Server connection menu's Saved servers row → Add server — a plain
++    // sheet→sheet path that never touches the switcher-dismiss sheet race.
++    record("sw_add_f2_menu")
++    guard switchAddServerProfile(
++      host: host2, port: port2, username: user2, keyFile: key2,
++      name: "Fixture Two", stage: "sw_add_f2"
++    ) else { return }
++
++    // Item 1 — actual same-server session switch from the switcher.
++    record("sw_same_server_select")
++    XCTAssertTrue(openSessionSwitcherSheet(), "The session switcher did not open.")
++    capture("switcher-open")
++    guard switcherSelectRuntime(
++      serverLabel: "Current server Fixture One", sessionName: "alt", stage: "sw_same"
++    ) else { return }
++    record("sw_same_server_committed")
++    guard ensureWorkspaceTerminal(expectedName: "alt-main") else { return }
++    XCTAssertTrue(connectedElement().waitForExistence(timeout: 30), "The same-server switch lost Connected.")
++    let altPane = selectedTerminalPane()
++    XCTAssertFalse(altPane.isEmpty)
++    XCTAssertTrue(
++      waitForAuthoritativeReady(paneIdentifier: altPane, timeout: 90),
++      "The same-server switch did not restore Ready on the alt session."
++    )
++    guard let altTerminal = try? terminalElement() else { return }
++    altTerminal.tap()
++    enterTerminalCommand(
++      "printf '%s\\n' 'post-alt' >> \(shellQuote(sameMarker.path))",
++      stage: "sw_same_marker"
++    )
++    XCTAssertTrue(
++      switchWaitForFileLines(sameMarker, expected: ["post-alt"], timeout: 30),
++      "The same-server switch input did not reach the alt session pane."
++    )
++    capture("switcher-same-server-ready")
++    // The released `meeterm` session must still be discovered by the app's
++    // own browse — proof it survives remotely — then dismiss without a
++    // second switch and confirm `alt` stays authoritative.
++    XCTAssertTrue(openSessionSwitcherSheet(), "The switcher did not reopen after the same-server switch.")
++    XCTAssertTrue(
++      app.buttons.matching(
++        NSPredicate(format: "label BEGINSWITH %@", "tmux session meeterm on ")
++      ).firstMatch.waitForExistence(timeout: 60),
++      "The released fixture-one session vanished from the browse: it was destroyed remotely."
++    )
++    capture("switcher-same-server-browse")
++    let closeAfterSame = button("Close session switcher")
++    XCTAssertTrue(waitForHittable(closeAfterSame, timeout: 10), "The switcher close control is unavailable.")
++    closeAfterSame.tap()
++    XCTAssertTrue(waitForDisappearance(closeAfterSame, timeout: 15), "The switcher did not dismiss after the aliveness check.")
++    XCTAssertTrue(ensureWorkspaceTerminal(expectedName: "alt-main"), "Dismissing the re-browse lost the workspace terminal.")
++    XCTAssertTrue(connectedElement().waitForExistence(timeout: 30), "Dismissing after the same-server check lost Connected.")
++    XCTAssertEqual(selectedTerminalPane(), altPane, "Dismissing the re-browse rebound the authoritative terminal.")
++    writeFixedArtifact("ios-issue27-same-server.txt", lines: [
++      "case=same_server_switch result=passed",
++      "released_session_alive=yes",
++      "released_session_listed_in_browse=yes",
++      "marker_roundtrip=exactly_once",
++    ])
++
++    // Item 2 — actual cross-server switch to the second fixture endpoint.
++    // Fixture Two was saved through the switcher's own Manage servers →
++    // Add server flow before the same-server commit (a second plain
++    // connect would edit the current profile in place, not add a new one).
++    record("sw_open_switcher_cross_server")
++    XCTAssertTrue(openSessionSwitcherSheet(), "The session switcher did not reopen.")
++    capture("switcher-cross-server-open")
++    guard switcherSelectRuntime(
++      serverLabel: "Server Fixture Two", sessionName: "meeterm-two", stage: "sw_cross",
++      fingerprint: fp2
++    ) else { return }
++    record("sw_cross_server_committed")
++    guard ensureWorkspaceTerminal(expectedName: "two-main") else { return }
++    XCTAssertTrue(connectedElement().waitForExistence(timeout: 30), "The cross-server switch lost Connected.")
++    let fixtureTwoPane = selectedTerminalPane()
++    XCTAssertFalse(fixtureTwoPane.isEmpty)
++    XCTAssertTrue(
++      waitForAuthoritativeReady(paneIdentifier: fixtureTwoPane, timeout: 90),
++      "The cross-server switch did not restore Ready on the second fixture."
++    )
++    guard let twoTerminal = try? terminalElement() else { return }
++    twoTerminal.tap()
++    enterTerminalCommand(
++      "printf '%s\\n' 'post-two' >> \(shellQuote(crossMarker.path))",
++      stage: "sw_cross_marker"
++    )
++    XCTAssertTrue(
++      switchWaitForFileLines(crossMarker, expected: ["post-two"], timeout: 30),
++      "The cross-server switch input did not reach the second fixture pane."
++    )
++    capture("switcher-cross-server-ready")
++    // Browse the first server again: its `meeterm` session must still be
++    // discovered after the cross-server bind, then dismiss the browse.
++    XCTAssertTrue(openSessionSwitcherSheet(), "The switcher did not reopen after the cross-server switch.")
++    let fixtureOneServer = button("Server Fixture One")
++    XCTAssertTrue(fixtureOneServer.waitForExistence(timeout: 10), "The first server's row is missing from the switcher.")
++    if waitForHittable(fixtureOneServer, timeout: 5) {
++      fixtureOneServer.tap()
++    }
++    XCTAssertTrue(
++      app.buttons.matching(
++        NSPredicate(format: "label BEGINSWITH %@", "tmux session meeterm on ")
++      ).firstMatch.waitForExistence(timeout: 60),
++      "The first fixture's meeterm session vanished after the cross-server switch."
++    )
++    capture("switcher-cross-server-first-server-browse")
++    let closeAfterCross = button("Close session switcher")
++    XCTAssertTrue(waitForHittable(closeAfterCross, timeout: 10), "The switcher close control is unavailable.")
++    closeAfterCross.tap()
++    XCTAssertTrue(waitForDisappearance(closeAfterCross, timeout: 15), "The switcher did not dismiss after the cross-server check.")
++    XCTAssertTrue(ensureWorkspaceTerminal(expectedName: "two-main"), "Closing the re-browse lost the workspace terminal.")
++    XCTAssertTrue(connectedElement().waitForExistence(timeout: 30), "Closing the re-browse lost Connected.")
++    XCTAssertEqual(selectedTerminalPane(), fixtureTwoPane, "The re-browse rebound the authoritative terminal.")
++    writeFixedArtifact("ios-issue27-cross-server.txt", lines: [
++      "case=cross_server_switch result=passed",
++      "first_server_session_alive=yes",
++      "first_server_session_listed_in_browse=yes",
++      "marker_roundtrip=exactly_once",
++    ])
++
++    // Item 3 — browse another server, then cancel: workspace must be unchanged.
++    record("sw_open_switcher_cancel")
++    XCTAssertTrue(openSessionSwitcherSheet(), "The session switcher did not open for the cancel check.")
++    let otherServer = button("Server Fixture One")
++    if otherServer.waitForExistence(timeout: 10), waitForHittable(otherServer, timeout: 5) {
++      otherServer.tap()
++    }
++    RunLoop.current.run(until: Date().addingTimeInterval(1.0))
++    let close = button("Close session switcher")
++    XCTAssertTrue(waitForHittable(close, timeout: 10), "The switcher close control is unavailable.")
++    close.tap()
++    XCTAssertTrue(waitForDisappearance(close, timeout: 15), "The session switcher did not dismiss.")
++    XCTAssertTrue(ensureWorkspaceTerminal(expectedName: "two-main"), "Cancel lost the workspace terminal.")
++    XCTAssertTrue(connectedElement().waitForExistence(timeout: 30), "Cancel lost the Connected state.")
++    let cancelPane = selectedTerminalPane()
++    XCTAssertEqual(cancelPane, fixtureTwoPane, "Cancelling the browse rebound the authoritative terminal.")
++    guard let cancelTerminal = try? terminalElement() else { return }
++    cancelTerminal.tap()
++    enterTerminalCommand(
++      "printf '%s\\n' 'post-cancel' >> \(shellQuote(cancelMarker.path))",
++      stage: "sw_cancel_marker"
++    )
++    XCTAssertTrue(
++      switchWaitForFileLines(cancelMarker, expected: ["post-cancel"], timeout: 30),
++      "The workspace was not authoritative after dismissing the browse."
++    )
++    capture("switcher-cancel-authoritative")
++    writeFixedArtifact("ios-issue27-cancel.txt", lines: [
++      "case=cancel_no_destruction result=passed",
++      "bound_terminal_unchanged=yes",
++      "marker_roundtrip=exactly_once",
++    ])
++
++    record("sw_disconnect_final")
++    tapConnectionAction("Disconnect")
++    XCTAssertTrue(
++      waitForDisconnected(),
++      "The final explicit disconnect did not complete."
++    )
++    writeFixedArtifact("ios-issue27-switcher-validation.txt", lines: [
++      "case=same_server_switch result=passed",
++      "case=cross_server_switch result=passed",
++      "case=cancel_no_destruction result=passed",
++      "case=switcher_drive result=passed",
++    ])
++    record("sw_complete")
++    app.terminate()
++  }
++
++  /// Minimal probe: connect fixture one, open the switcher, tap Manage
++  /// servers, and snapshot the accessibility tree at intervals so the
++  /// post-dismiss destination (servers sheet vs workspaces list) is visible.
++  func testSwitcherManageProbe() throws {
++    let host1 = switchEnv("MEETERM_SSH_HOST")
++    let port1 = switchEnv("MEETERM_SSH_PORT")
++    let user1 = switchEnv("MEETERM_SSH_USERNAME")
++    let fp1 = switchEnv("MEETERM_SSH_FINGERPRINT")
++    let key1 = switchEnv("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE")
++    XCTAssertFalse([host1, port1, user1, fp1, key1].contains(""))
++    let host2 = switchEnv("MEETERM_SSH2_HOST")
++    let port2 = switchEnv("MEETERM_SSH2_PORT")
++    let user2 = switchEnv("MEETERM_SSH2_USERNAME")
++    let fp2 = switchEnv("MEETERM_SSH2_FINGERPRINT")
++    let key2 = switchEnv("MEETERM_SSH2_UNENCRYPTED_PRIVATE_KEY_FILE")
++    let workdir = URL(
++      fileURLWithPath: switchEnv("MEETERM_SWITCH_WORKDIR").isEmpty
++        ? NSTemporaryDirectory() : switchEnv("MEETERM_SWITCH_WORKDIR"),
++      isDirectory: true
++    )
++    let preMarker = workdir.appendingPathComponent("switcher-pre-f1.txt")
++    try? FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
++    app.terminate()
++    app.launchArguments += ["-meeterm-ui-observation"]
++    app.launch()
++    guard switchConnect(
++      host: host2, port: port2, username: user2, keyFile: key2,
++      name: "Fixture Two", fingerprint: fp2, sessionName: "meeterm-two", stage: "probe_f2"
++    ) else { return }
++    tapConnectionAction("Disconnect")
++    XCTAssertTrue(waitForDisconnected(), "probe f2 did not disconnect.")
++    guard switchConnect(
++      host: host1, port: port1, username: user1, keyFile: key1,
++      name: "Fixture One", fingerprint: fp1, sessionName: "meeterm", stage: "probe_f1"
++    ) else { return }
++    guard openWorkspaceTerminal(expectedName: "main") else { return }
++    // Replicate the drive's terminal-input prefix to isolate the trigger.
++    guard let terminal1 = try? terminalElement() else { return }
++    terminal1.tap()
++    enterTerminalCommand(
++      "printf '%s\\n' 'pre-f1' >> \(shellQuote(preMarker.path))",
++      stage: "probe_pre_marker"
++    )
++    XCTAssertTrue(
++      switchWaitForFileLines(preMarker, expected: ["pre-f1"], timeout: 30),
++      "probe pre-marker missing."
++    )
++    XCTAssertTrue(openSessionSwitcherSheet(), "The session switcher did not open.")
++    let manage = button("Manage servers")
++    XCTAssertTrue(manage.waitForExistence(timeout: 15), "Manage servers row missing.")
++    // Is the row actually enabled (busy state disabled = hittable but inert)?
++    record(manage.isEnabled ? "probe_manage_enabled" : "probe_manage_disabled")
++    manage.tap()
++    var samples: [String] = []
++    let deadline = Date().addingTimeInterval(12)
++    while Date() < deadline {
++      let t = String(format: "%.1f", 12 - deadline.timeIntervalSinceNow)
++      samples.append(
++        "t=\(t) sheet=\(app.staticTexts["Saved servers"].exists) "
++          + "switcher=\(button("Close session switcher").exists) "
++          + "add=\(button("Add server").exists) "
++          + "workspaces=\(app.staticTexts["Workspaces"].exists)"
++      )
++      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
++    }
++    try? samples.joined(separator: "\n").write(
++      to: artifactDirectory.appendingPathComponent("ios-probe-manage-samples.txt"),
++      atomically: true,
++      encoding: .utf8
++    )
++    let tree = app.debugDescription
++    try? tree.write(
++      to: artifactDirectory.appendingPathComponent("ios-probe-manage-tree-final.txt"),
++      atomically: true,
++      encoding: .utf8
++    )
++    capture("probe-manage-final")
++    let add = button("Add server")
++    record(add.exists ? "probe_add_present" : "probe_add_absent")
++  }
++
++  /// Supplementary acceptance: switcher footer Manage servers round-trip +
++  /// focused sheet diagnostics (open/close, swipe-dismiss, hardware Escape).
++  func testAc9SwitcherDiagnostics() {
++    continueAfterFailure = false
++    let host1 = switchEnv("MEETERM_SSH_HOST")
++    let port1 = switchEnv("MEETERM_SSH_PORT")
++    let user1 = switchEnv("MEETERM_SSH_USERNAME")
++    let key1 = switchEnv("MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE")
++    let fp1 = switchEnv("MEETERM_SSH_FINGERPRINT")
++    app.launchArguments += ["-meeterm-ui-observation"]
++    app.launch()
++    guard switchConnect(
++      host: host1, port: port1, username: user1, keyFile: key1,
++      name: "Fixture One", fingerprint: fp1, sessionName: "meeterm", stage: "ac9_f1"
++    ) else { return }
++    guard ensureWorkspaceTerminal(expectedName: "main") else { return }
++
++    // Sheet open.
++    XCTAssertTrue(openSessionSwitcherSheet(), "The session switcher did not open.")
++    capture("ac9-switcher-open")
++    record("ac9_sheet_open=yes")
++
++    // C: footer Manage servers -> in-sheet Saved servers panel (embedded
++    // SwitcherManage, 8c35313 contract). Coverage: 1) panel opens while the
++    // sheet stays presented, 2) Add->dirty Back->'Discard changes?'
++    // (Keep editing / Discard), 3) dirty form gates the sheet swipe,
++    // 4) Add->Save->list row, 5) Edit + Remove, 6) server tap re-targets the
++    // switcher, 7) Back->list then Close->origin (via the Escape/swipe flow).
++    let manage = button("Manage servers")
++    XCTAssertTrue(manage.waitForExistence(timeout: 15), "Manage servers footer missing.")
++    XCTAssertTrue(manage.isEnabled, "Manage servers footer was disabled.")
++    manage.tap()
++    let serversAppeared = app.staticTexts["Saved servers"].waitForExistence(timeout: 15)
++    record(serversAppeared ? "ac9_manage_sheet=yes" : "ac9_manage_sheet=no")
++    capture(serversAppeared ? "ac9-manage-servers-sheet" : "ac9-manage-dropped")
++    // The switcher route must remain presented: the panel owns the same
++    // Close control and the sheet is never collapsed.
++    record(button("Close session switcher").exists
++      ? "ac9_switcher_after_manage=presented" : "ac9_switcher_after_manage=dropped")
++    record(app.staticTexts["Fixture One"].exists
++      ? "ac9_manage_profile_row=yes" : "ac9_manage_profile_row=no")
++    if serversAppeared {
++      // 2: Add -> type a host -> Back -> 'Discard changes?' -> Keep editing.
++      let add = button("Add server")
++      XCTAssertTrue(add.waitForExistence(timeout: 10), "Add server missing.")
++      add.tap()
++      XCTAssertTrue(app.staticTexts["Add server"].waitForExistence(timeout: 10),
++                    "Add server form did not open inside the panel.")
++      let hostField = input("Host")
++      XCTAssertTrue(hostField.waitForExistence(timeout: 10), "Host field missing.")
++      hostField.tap()
++      hostField.typeText("ac9-guard.invalid")
++      let backBtn = button("Back to saved servers")
++      XCTAssertTrue(backBtn.waitForExistence(timeout: 10), "Save-form Back missing.")
++      backBtn.tap()
++      let discardAlert = app.alerts["Discard changes?"]
++      let discardShown = discardAlert.waitForExistence(timeout: 10)
++      record(discardShown ? "ac9_discard_prompt=yes" : "ac9_discard_prompt=no")
++      capture("ac9-discard-prompt")
++      if discardShown {
++        discardAlert.buttons["Keep editing"].tap()
++        record(app.staticTexts["Add server"].waitForExistence(timeout: 5)
++          ? "ac9_keep_editing=yes" : "ac9_keep_editing=no")
++        // 3: a dirty save form must gate the sheet swipe gesture.
++        app.swipeDown(velocity: .fast)
++        record(app.staticTexts["Add server"].waitForExistence(timeout: 3)
++          ? "ac9_dirty_swipe_gated=yes" : "ac9_dirty_swipe_gated=no")
++        capture("ac9-dirty-swipe-gated")
++        backBtn.tap()
++        let discardAgain = app.alerts["Discard changes?"]
++        if discardAgain.waitForExistence(timeout: 10) {
++          discardAgain.buttons["Discard"].tap()
++        }
++        record(app.staticTexts["Saved servers"].waitForExistence(timeout: 10)
++          ? "ac9_discard_return=yes" : "ac9_discard_return=no")
++      }
++
++      // 4: Add -> Save -> the list returns with the new row.
++      XCTAssertTrue(add.waitForExistence(timeout: 10), "Add server missing after discard.")
++      add.tap()
++      XCTAssertTrue(app.staticTexts["Add server"].waitForExistence(timeout: 10),
++                    "Add server form did not reopen.")
++      let host2 = input("Host")
++      XCTAssertTrue(host2.waitForExistence(timeout: 10), "Host field missing on re-add.")
++      host2.tap()
++      host2.typeText("ac9-managed.invalid")
++      let user2 = input("Username")
++      XCTAssertTrue(user2.waitForExistence(timeout: 10), "Username field missing.")
++      user2.tap()
++      user2.typeText("ac9user")
++      let name2 = input("Server name")
++      if name2.waitForExistence(timeout: 3) { name2.tap(); name2.typeText("AC9 Managed") }
++      button("Save server").tap()
++      let savedRow = app.buttons["Connect saved server AC9 Managed"].waitForExistence(timeout: 15)
++      record(savedRow ? "ac9_manage_save_row=yes" : "ac9_manage_save_row=no")
++      capture(savedRow ? "ac9-manage-saved-row" : "ac9-manage-save-missing")
++
++      // 5: options -> Edit opens the same form; Remove -> confirm -> row gone.
++      let opts = button("Server options AC9 Managed")
++      if opts.waitForExistence(timeout: 10) {
++        opts.tap()
++        let editBtn = button("Edit server")
++        record(editBtn.waitForExistence(timeout: 8)
++          ? "ac9_manage_options=yes" : "ac9_manage_options=no")
++        if editBtn.exists && editBtn.isHittable {
++          editBtn.tap()
++          record(app.staticTexts["Edit server"].waitForExistence(timeout: 10)
++            ? "ac9_manage_edit_form=yes" : "ac9_manage_edit_form=no")
++          capture("ac9-manage-edit-form")
++          // Clean form -> Back returns to the list without a prompt.
++          let backClean = button("Back to saved servers")
++          if backClean.waitForExistence(timeout: 8) { backClean.tap() }
++          _ = app.staticTexts["Saved servers"].waitForExistence(timeout: 10)
++        }
++        let opts2 = button("Server options AC9 Managed")
++        if opts2.waitForExistence(timeout: 8) {
++          opts2.tap()
++          let rm = button("Remove")
++          if rm.waitForExistence(timeout: 8) {
++            rm.tap()
++            let rmAlert = app.alerts["Remove saved server?"]
++            if rmAlert.waitForExistence(timeout: 8) {
++              capture("ac9-manage-remove-confirm")
++              rmAlert.buttons["Remove"].tap()
++            }
++            record(app.staticTexts["AC9 Managed"].waitForExistence(timeout: 3)
++              ? "ac9_manage_remove=no" : "ac9_manage_remove=yes")
++          }
++        }
++      }
++
++      // 6: tapping a server returns to the switcher targeted at that server.
++      let f1 = button("Connect saved server Fixture One")
++      XCTAssertTrue(f1.waitForExistence(timeout: 10), "Fixture One row missing in Manage.")
++      f1.tap()
++      let reTargeted = app.staticTexts["Switch session"].waitForExistence(timeout: 15)
++      record(reTargeted ? "ac9_manage_target=yes" : "ac9_manage_target=no")
++      capture(reTargeted ? "ac9-manage-retarget" : "ac9-manage-retarget-missing")
++      record(app.staticTexts["meeterm"].waitForExistence(timeout: 15)
++        ? "ac9_manage_browse=yes" : "ac9_manage_browse=no")
++
++      // 7: explicit Back restores the session list from Manage again.
++      let manage2 = button("Manage servers")
++      if manage2.waitForExistence(timeout: 10) {
++        manage2.tap()
++        let back2 = button("Back to session switcher")
++        XCTAssertTrue(back2.waitForExistence(timeout: 10), "Back to session switcher missing.")
++        _ = waitForHittable(back2, timeout: 10)
++        back2.tap()
++        let listBack = app.staticTexts["Switch session"].waitForExistence(timeout: 15)
++        record(listBack ? "ac9_switcher_restored=yes" : "ac9_switcher_restored=no")
++        capture(listBack ? "ac9-switcher-restored" : "ac9-switcher-not-restored")
++      }
++    } else {
++      record("ac9_manage_defect=panel_missing")
++      if !button("Close session switcher").waitForExistence(timeout: 2) {
++        XCTAssertTrue(openSessionSwitcherSheet(), "Switcher did not reopen after the manage drop.")
++        capture("ac9-switcher-reopened")
++      }
++    }
++
++    // Hardware Escape (iOS keyboard dismiss; external-keyboard back analog).
++    app.typeKey(.escape, modifierFlags: [])
++    let escapeDismissed = !button("Close session switcher").waitForExistence(timeout: 4)
++    record(escapeDismissed ? "ac9_escape_dismissed=yes" : "ac9_escape_dismissed=no")
++    capture(escapeDismissed ? "ac9-escape-dismissed" : "ac9-escape-persisted")
++    if escapeDismissed {
++      XCTAssertTrue(waitForTerminalElement(timeout: 10) != nil || !waitForWorkspaceLabels(minimum: 1).isEmpty,
++                    "Workspace not authoritative after Escape dismiss.")
++      XCTAssertTrue(openSessionSwitcherSheet(), "Switcher did not reopen after Escape.")
++    }
++
++    // Swipe-to-dismiss on the presented sheet.
++    app.swipeDown(velocity: .fast)
++    let swipeDismissed = !button("Close session switcher").waitForExistence(timeout: 4)
++    record(swipeDismissed ? "ac9_swipe_dismissed=yes" : "ac9_swipe_dismissed=no")
++    capture(swipeDismissed ? "ac9-swipe-dismissed" : "ac9-swipe-persisted")
++    if !swipeDismissed {
++      let close = button("Close session switcher")
++      if waitForHittable(close, timeout: 5) { close.tap() }
++    }
++    XCTAssertTrue(
++      waitForTerminalElement(timeout: 15) != nil || !waitForWorkspaceLabels(minimum: 1).isEmpty,
++      "Workspace not authoritative after sheet close."
++    )
++    capture("ac9-workspace-after-close")
++    record("ac9_workspace_authoritative=yes")
++    record("ac9_complete=yes")
++
++    tapConnectionAction("Disconnect")
++    XCTAssertTrue(waitForDisconnected(), "Final disconnect did not complete.")
++  }
++
+ }

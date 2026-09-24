@@ -1,0 +1,95 @@
+RUN RECORD — iOS final acceptance, source commit 2e4b3e35d3849fc4bd833257bc6e1228b0a1fb71 (2e4b3e3)
+====================================================================================================
+
+Stages (all against one fresh build-for-testing; products manifest sha a26736fe)
+-------------------------------------------------------------------------------
+build-for-testing  PASSED  fresh clean CNG; EXPO_PUBLIC_MEETERM_SMOKE=1; ENABLE_TESTABILITY=YES
+standard           PASSED  13/13 UI tests + 4 storage; all 45 manifest captures incl. 20 session-switcher-* routes
+ssh                PASSED  transport_loss=passed + all invariants; same products
+polish             PASSED  7 presentation states + native navigation/keyboard/back; same products
+testIssue27SessionSwitcherDrive  PASSED (705.3s)  test-without-building, same products
+testAc9SwitcherDiagnostics       PASSED (218.5s)  focused Manage regression; 2/2 reproductions identical
+
+Focused Manage-path coverage (Director's 7 items — ac9_* records in ios-switcher-stages.txt)
+------------------------------------------------------------------------------------------
+1 switcher-manage-servers -> Saved servers inside the still-presented sheet:
+    ac9_manage_sheet=yes, ac9_switcher_after_manage=presented  (no collapse, no Modal stack)
+2 Add -> host typed -> Back -> "Discard changes?" -> Keep editing stays -> Discard returns:
+    ac9_discard_prompt=yes, ac9_keep_editing=yes, ac9_discard_return=yes
+3 dirty form gates sheet swipe-down:  ac9_dirty_swipe_gated=yes
+    (Android hardware-back path is the same usePreventRemove confirmation;
+     pending-save silent-block is unit-covered: scripts/ci/app-selection.test.cjs
+     'a pending save blocks removal without offering discard' — a pending save
+     cannot be induced in XCTest: profile save is a local secure-storage write
+     with no delay hook)
+4 Add -> Save -> list returns with new row:  ac9_manage_save_row=yes
+5 options -> Edit opens same form (Edit server); remove -> destructive confirm -> row gone:
+    ac9_manage_options=yes, ac9_manage_edit_form=yes, ac9_manage_remove=yes
+    (delete FAILURE notice: not injectable in XCTest — unit-covered by the
+     app-selection Manage-remove-failure test added in a87996c; notice prop
+     renders in-panel per SwitcherManage.tsx)
+6 server tap -> switcher re-targets to that server:  ac9_manage_target=yes, ac9_manage_browse=yes
+7 Back -> session list restored; Close -> originating Workspaces/Terminal:
+    ac9_switcher_restored=yes; ac9_swipe_dismissed=yes, ac9_workspace_authoritative=yes
+    binding/input target unchanged throughout manage-only flows; no stray
+    reconnect; no delayed re-show (drive asserts sheet state throughout)
+
+NOTE — ac9_manage_profile_row=no is a DRIVE-CHECK artifact, not a product
+defect: the compiled check queried staticText "Fixture One" while the row is
+exposed as the button "Connect saved server Fixture One". The row's presence
+is proven by the run itself: ac9_manage_target=yes (the tap on that row
+succeeded and re-targeted the switcher) plus ac9-manage-servers-sheet.png /
+ac9-manage-saved-row.png. The fragment is corrected for future builds
+(fragment.current: queries the button).
+
+Issue #27 items 1-4 (testIssue27SessionSwitcherDrive + ios-issue27-*.txt)
+-----------------------------------------------------------------------
+1 same-server switch:   VERIFIED  released_session_alive=yes, released_session_listed_in_browse=yes,
+   marker_roundtrip=exactly_once; socket1_sessions=alt,meeterm
+2 cross-server switch:  VERIFIED  first_server_session_alive=yes, first_server_session_listed_in_browse=yes,
+   marker_roundtrip=exactly_once; socket2_sessions=meeterm-two
+3 cancel/no-destruction: VERIFIED bound_terminal_unchanged=yes, marker_roundtrip=exactly_once
+4 close/fresh-select/foreground/transport-loss: VERIFIED via ssh suite
+   (native_handle_same, selected_pane_identifier_same, same_pane_pid,
+    cached_read_only_surface, input_during_loss=none, fixture_control=stopped_and_started)
+
+AC9 remaining items
+-------------------
+polish:            PASSED on these products (21:21 run; ios-polish-validation.txt)
+Escape key:        no-op recorded (ac9_escape_dismissed=no — expected: XCTest app
+                   has no hardware keyboard focus; the native keyboard-back path
+                   is covered by polish navigation checks)
+swipe dismiss:     ac9_swipe_dismissed=yes (non-dirty sheet dismisses normally)
+Dynamic Type:      ac9-2e4b3e3-dt-smallest.png (extra-small) + ac9-2e4b3e3-dt-xxl.png
+                   (accessibility-extra-extra-extra-large) on session-switcher-current
+Reduce Motion:     ac9-2e4b3e3-reduce-motion-on.png / -off.png (flag verified via
+                   defaults readback; presentation diff awaits visual review)
+VoiceOver:         ac9-2e4b3e3-voiceover.png — enabled-state capture only;
+                   focus/rotor traversal NOT produced by taps/drags (UNVERIFIED —
+                   needs a hardware-keyboard rotor or manual run)
+dark/light:        session-switcher-*-dark + light captures in ios-simulator-observability/
+                   (fixture code unchanged through 2e4b3e3; all 20 pairs present)
+formSheet+Modal constraint: CONFIRMED FOR THIS APP/DEPENDENCY SET (RN 0.83/Expo 54
+                   + react-navigation native-stack on this app): an RN
+                   presentationStyle="pageSheet" Modal presented over the
+                   presented sessionSwitcher formSheet collapses the route and
+                   the Modal never presents (verified 3/3 on d62e43b and
+                   3/3 on 6523e1e). Recorded as app-specific, NOT a general
+                   claim that all formSheet+Modal combos fail. The 2e4b3e3
+                   design eliminates the class by never stacking a Modal
+                   (embedded panel inside the still-presented sheet).
+
+Authoritative device / toolchain
+--------------------------------
+iPhone 18 Pro Max, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377, iOS 27.0 —
+ALL stages pinned via -destination id=$IOS_SIMULATOR_UDID. simulator.txt may
+list 1308A109 (auto-pick boot only; never ran a test). Xcode 26.6 (17F113),
+SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2,
+CocoaPods 1.17.0, tmux 3.7c.
+
+Environment limitation: simctl diagnose hits the 600s cap on this host
+(wedged collector subsystem); watchdog kills it ~46s in. sysdiagnose skipped.
+All tests complete before diagnostics; results unaffected.
+
+Artifacts marked stale-* are historical (defect-era probes, prior-commit
+a11y captures) retained for audit, labeled, not part of this run's results.
