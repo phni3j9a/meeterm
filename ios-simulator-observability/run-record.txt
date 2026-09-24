@@ -1,14 +1,10 @@
-source_sha=a066f796fac31cf5c05d9a88693c6cb8023975b4
+source_sha=d62e43b2f87df8f48b42d57faefd462abd86a354
 suites=standard,ssh,switcher-drive
 toolchain=Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c
-build=fresh CNG build-for-testing; ssh + drive reused same-commit products (pack manifest SHA a066f79 verified)
+build=fresh CNG build-for-testing; ssh + drive reused same-commit products (pack manifest d62e43b verified)
 simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0
-simulator_note=ALL stages (standard, ssh, drive) targeted this device: ios-smoke.py passes -destination platform=iOS Simulator,id=$IOS_SIMULATOR_UDID and the drive script uses id=$UDID; app install/test/log capture all ran against 7EE2EBC1.
-metadata_discrepancy=simulator.txt/metadata.txt record iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7): ios-select-simulator.sh independently auto-picks the first available 'iPhone * Pro' device in simctl list and boots it; it does NOT determine the test destination. 1308A109 is booted but was not used for testing.
-xctest_elapsed=standard UI+storage per ios-*-validation.txt; ssh per ios-transport-loss-validation.txt; drive 723.0s
-sysdiagnose=skipped: wedged collector subsystem (simctl diagnose runs to 600s cap on this host; killed ~46s in by session watchdog). All tests complete before diagnostics; results unaffected.
-
-# d5113e8 parity append (2026-09-23)
-parity_source_sha=d5113e838e84163717e02291c4fda1a728fb0962
-parity_delta=a066f79..d5113e8 is 1 file, 5 changed lines: native/meeterm-core/src/ssh.rs recv_timeout/deadline bumps 2s/3s -> 30s inside #[cfg(test)] scope (test module starts line 8047; hunks at 8902/8985/12339/12424 are test helpers + test bodies). Zero product-code change.
-parity_suites=NOT re-run per instruction; a066f79 evidence above applies to d5113e8 (compiled products identical for product code).
+simulator_note=ALL stages targeted this device: ios-smoke.py -destination platform=iOS Simulator,id=$IOS_SIMULATOR_UDID; drive script id=$UDID; app install/test/log capture on 7EE2EBC1.
+metadata_discrepancy=simulator.txt/metadata.txt may record iPhone 18 Pro (1308A109): ios-select-simulator.sh auto-picks the first 'iPhone * Pro' device for boot; it does NOT determine the test destination.
+xctest_elapsed=drive 715.5s; standard/ssh per ios-*-validation.txt
+delta_vs_ef6bb5e=d62e43b adds promote_terminal operation-token rotation at promotion boundary (product code) — full fresh acceptance, no reuse shortcuts.
+sysdiagnose=skipped: wedged collector subsystem (simctl diagnose hits 600s cap; killed ~46s in by session watchdog). Tests complete before diagnostics; results unaffected.

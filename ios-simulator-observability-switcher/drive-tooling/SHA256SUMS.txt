@@ -1,0 +1,8 @@
+2de3beaa50da22a015c66f948f8dd76b164a6e9d2b5c9c5b2d4cf95384a2d886  testIssue27SessionSwitcherDrive.swift.fragment
+44154fdcc28f2f606a046eb61e7d524a900858a5adb0f8e2b2dd483ef89a2add  ios-switcher-drive.sh
+
+# Session-authored drive tooling (untracked, under /Users/devin/runner-temp/).
+# ios-switcher-drive.sh splices the fragment into ios/meetermTests/
+# MeetermSmokeUITests.swift (ios-inject-ui-test.sh injection path) before
+# build-for-testing; runs via test-without-building -only-testing.
+# Compiled and executed against the d62e43b build-for-testing products.
