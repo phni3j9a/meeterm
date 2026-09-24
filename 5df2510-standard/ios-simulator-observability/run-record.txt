@@ -20,3 +20,4 @@ simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377)
 simulator_note=metadata.txt/simulator.txt may record iPhone 18 Pro (1308A109): ios-select-simulator.sh auto-picks the first 'iPhone * Pro' device to boot; it does NOT determine the test destination.
 note_45_vs_25=the 45-screen manifest (20 session-switcher-* states) belongs to the Issue-27 branch; this main-line source has the 25-screen standard manifest — all 25 captured.
 sanitization=no credentials/private keys/xcresult bundles/auth material included.
+removed_stale_files=pre-run leftovers excluded: ios-polish/ios-ssh-xctest-runner-diagnostics.txt (be7e23e-era), ios-ui-auth-control-diagnostics.txt, fixture-validation.txt, daily-recording.txt, boot-request.txt, bootstatus.log, simulator.txt — all older than this run's start.
