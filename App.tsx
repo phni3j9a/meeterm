@@ -3482,7 +3482,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     </View>
   </View> : null;
 
-  const feedbackColors = sheet ? homeColors : colors;
+  const feedbackColors = sheet || switcherManage ? homeColors : colors;
   const cleanupWarningNotice = cleanupWarning ? <View testID="cleanup-warning" accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
     <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{cleanupWarning.message}</Text>
     <IconButton icon="close" label="Dismiss desktop layout warning" testID="cleanup-warning-dismiss" colors={feedbackColors} onPress={dismissCleanupWarning} />
