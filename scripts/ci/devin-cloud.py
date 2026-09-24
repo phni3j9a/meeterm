@@ -175,6 +175,38 @@ def read_prompt(args):
     raise SystemExit('--prompt or --prompt-file is required')
 
 
+def remote_head(cwd, branch):
+    """Return the evidence branch head on origin, or '' when it does not exist yet."""
+    completed = subprocess.run(['git', 'ls-remote', 'origin', f'refs/heads/{branch}'], cwd=cwd,
+                               capture_output=True, text=True, timeout=60)
+    if completed.returncode != 0:
+        raise AcpError(f'git ls-remote failed for {branch}: {completed.stderr.strip()}')
+    return completed.stdout.split('\t', 1)[0].strip()
+
+
+def wait_evidence(cwd, branch, after, timeout, interval, head=remote_head, sleep=time.sleep, clock=time.monotonic):
+    """Block until the session pushes a new evidence commit.
+
+    Validation runs push their observability bundle even on failure, so a new
+    head is the completion signal. Session status is not: an idle cloud session
+    still reports 'running'.
+    """
+    baseline = head(cwd, branch) if after is None else after
+    end = clock() + timeout
+    while True:
+        try:
+            current = head(cwd, branch)
+        except (AcpError, subprocess.TimeoutExpired) as error:
+            print('warning:', error, file=sys.stderr)
+            current = baseline
+        if current and current != baseline:
+            return current
+        remaining = end - clock()
+        if remaining <= 0:
+            return None
+        sleep(min(interval, remaining))
+
+
 def report_turn(client, session_id, result):
     if result is None:
         print('turn: still running (detached; the cloud session continues)')
@@ -206,7 +238,24 @@ def main(argv=None):
     commands.choices['new'].add_argument('--version', default=DEFAULT_VERSION)
     commands.choices['new'].add_argument('--repo', default=DEFAULT_REPO)
     commands.choices['send'].add_argument('session_id')
+    evidence = commands.add_parser('wait-evidence', help='wait until an evidence branch receives a new commit')
+    evidence.add_argument('branch', help='for example evidence/ios-20260923')
+    evidence.add_argument('--after', help='head to wait past (default: the head when waiting starts)')
+    evidence.add_argument('--timeout', type=float, default=3600)
+    evidence.add_argument('--interval', type=float, default=60)
     args = parser.parse_args(argv)
+
+    if args.command == 'wait-evidence':
+        try:
+            new_head = wait_evidence(args.cwd, args.branch, args.after, args.timeout, args.interval)
+        except AcpError as error:
+            print('error:', error, file=sys.stderr)
+            return 1
+        if new_head is None:
+            print(f'timeout: {args.branch} did not move within {args.timeout:g}s', file=sys.stderr)
+            return 2
+        print(f'evidence: {args.branch} {new_head}')
+        return 0
 
     client = Client(args.cwd)
     try:
