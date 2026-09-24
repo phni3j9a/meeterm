@@ -55,7 +55,7 @@ function Field({ label, error, optional, action, children, colors }: {
   </View>;
 }
 
-export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialProfile, mode = 'connect', colors, embedded = false }: {
+export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialProfile, mode = 'connect', colors, embedded = false, onGuardedChange }: {
   visible: boolean;
   onClose: () => void;
   onDismiss?: () => void;
@@ -65,6 +65,8 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   colors: Palette;
   /** Render the existing authentication fields inside the session sheet. */
   embedded?: boolean;
+  /** Reports `busy || dirty` so an embedding parent can gate sheet dismissal. */
+  onGuardedChange?: (guarded: boolean) => void;
 }) {
   const reducedMotion = useReducedMotion();
   const [name, setName] = useState('');
@@ -166,13 +168,21 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
       || !saveServer || saveCredential !== Boolean(initialProfile?.credentialSaved);
   const close = useCallback(() => {
     if (submitting.current) return;
-    if (embedded) { discard(); return; }
+    // The embedded credential step closes instantly, but an embedded save
+    // form keeps the same unsaved-changes confirmation as the modal.
+    if (embedded && mode !== 'save') { discard(); return; }
     if (!dirty) { discard(); return; }
     Alert.alert('Discard changes?', 'Your changes have not been saved.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: discard },
     ]);
-  }, [dirty, discard, embedded]);
+  }, [dirty, discard, embedded, mode]);
+
+  const guarded = busy || dirty;
+  useEffect(() => {
+    onGuardedChange?.(guarded);
+  }, [guarded, onGuardedChange]);
+  useEffect(() => () => onGuardedChange?.(false), [onGuardedChange]);
 
   const changeAuthMethod = useCallback((next: AuthMethod) => {
     if (next === authMethod) return;
@@ -242,13 +252,15 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
 
   const inputStyle = [styles.input, { color: colors.text, backgroundColor: colors.elevated, borderColor: colors.border }];
   const inputDefaults = { autoCapitalize: 'none' as const, autoComplete: 'off' as const, autoCorrect: false, spellCheck: false, placeholderTextColor: colors.placeholder, selectionColor: colors.accent };
+  const embeddedBackLabel = mode === 'save' ? 'Back to saved servers' : 'Back to sessions';
+  const embeddedTitle = mode === 'save' ? (initialProfile ? 'Edit server' : 'Add server') : 'Credentials';
 
   const content = <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.root, { backgroundColor: colors.background }]}>
         {Platform.OS === 'android' ? <StatusBar hidden={false} barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} /> : null}
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.root}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel={embedded ? 'Back to sessions' : 'Cancel'} disabled={busy} onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed, busy && { opacity: .45 }]}><Text style={[styles.headerActionText, { color: colors.accent }]}>{embedded ? 'Back' : 'Cancel'}</Text></Pressable>
-            <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>{embedded ? 'Credentials' : mode === 'save' ? initialProfile ? 'Edit server' : 'Add server' : 'Connect to server'}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={embedded ? embeddedBackLabel : 'Cancel'} disabled={busy} onPress={close} style={({ pressed }) => [styles.headerAction, pressed && styles.pressed, busy && { opacity: .45 }]}><Text style={[styles.headerActionText, { color: colors.accent }]}>{embedded ? 'Back' : 'Cancel'}</Text></Pressable>
+            <Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }]}>{embedded ? embeddedTitle : mode === 'save' ? initialProfile ? 'Edit server' : 'Add server' : 'Connect to server'}</Text>
             <Pressable accessibilityRole="button" accessibilityLabel={mode === 'save' ? 'Save server' : 'Connect'} accessibilityState={{ disabled: busy, busy }} disabled={busy} testID="ssh-submit" onPress={submit} style={({ pressed }) => [styles.headerAction, styles.headerActionEnd, pressed && styles.pressed]}>{busy ? <ActivityIndicator color={colors.accent} /> : <Text style={[styles.headerActionText, { color: colors.accent, fontWeight: '600' }]}>{mode === 'save' ? 'Save' : 'Connect'}</Text>}</Pressable>
           </View>
           <ScrollView ref={scrollRef} pointerEvents={busy ? 'none' : 'auto'} onLayout={scrollPasswordIntoView} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} contentContainerStyle={styles.content}>

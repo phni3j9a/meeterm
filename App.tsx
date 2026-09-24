@@ -1194,6 +1194,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(() => fixture?.sessionSwitcherOpen ?? false);
   const [switcherManage, setSwitcherManage] = useState(false);
   const [switcherManageForm, setSwitcherManageForm] = useState<{ profile?: ServerProfile } | null>(null);
+  const [switcherFormGuarded, setSwitcherFormGuarded] = useState(false);
   const [sessionSwitcherMode, setSessionSwitcherMode] = useState<'switch' | 'fresh'>(() => fixture?.sessionSwitcherMode ?? 'fresh');
   const [browse, setBrowse] = useState<RuntimeBrowseState | null>(() => fixture?.browse ?? null);
   const [browseTargetId, setBrowseTargetId] = useState(() => fixture?.browseTargetId ?? '');
@@ -1771,6 +1772,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setCreateSessionVisible(false);
     setSwitcherManage(false);
     setSwitcherManageForm(null);
+    setSwitcherFormGuarded(false);
     setCredentialTargetId('');
     setExpandedServerId(target?.id ?? activeServer.id);
     if (mode === 'switch') {
@@ -2823,7 +2825,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       );
       setProfiles(current => [...current.filter(item => item.id !== saved.id), saved]);
     }, 'Could not save this server. Check the address and credentials.');
-    if (success) setSwitcherManageForm(null);
+    if (success) { setSwitcherManageForm(null); setSwitcherFormGuarded(false); }
     return success;
   }, [runCommand]);
 
@@ -2833,6 +2835,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // event exists for a popped route. Manage therefore swaps its panel into
     // the still-presented switcher sheet on every platform.
     setSwitcherManageForm(null);
+    setSwitcherFormGuarded(false);
     setSwitcherManage(true);
   }, []);
 
@@ -2842,6 +2845,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     switcherProfileAfterServerSheetRef.current = null;
     setSwitcherManage(false);
     setSwitcherManageForm(null);
+    setSwitcherFormGuarded(false);
     setSessionSwitcherOpen(false);
   }, []);
 
@@ -3010,6 +3014,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setCreateSessionVisible(false);
     setSwitcherManage(false);
     setSwitcherManageForm(null);
+    setSwitcherFormGuarded(false);
     setSwitchAttempt(null);
     switchAttemptRef.current = null;
     switchBoundaryCrossedRef.current = false;
@@ -3171,6 +3176,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setExpandedServerId('');
     setSwitcherManage(false);
     setSwitcherManageForm(null);
+    setSwitcherFormGuarded(false);
     if (afterSwitcherDismissRef.current === 'disconnect') {
       afterSwitcherDismissRef.current = null;
       disconnect();
@@ -3568,6 +3574,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <WorkspaceNavigation screen={screen} colors={homeColors} onScreenChange={next => { if (next === 'workspaces') Keyboard.dismiss(); setScreen(next); }}
       sessionSwitcherOpen={sessionSwitcherOpen || runtimePickerVisible}
       sessionSwitcherBusy={runtimePickerVisible && (commandBusy || runtimeActionBusy || runtimeBusy || Boolean(runtimeSelectingId))}
+      sessionSwitcherGuarded={switcherFormGuarded}
       onSessionSwitcherDismiss={onSessionSwitcherDismiss}
       sessionSwitcher={switcherManage ? <SwitcherManage
         profiles={profiles}
@@ -3578,7 +3585,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         colors={homeColors}
         form={{ visible: switcherManageForm !== null, profile: switcherManageForm?.profile }}
         notice={feedback}
-        onBack={() => { setSwitcherManageForm(null); setSwitcherManage(false); }}
+        onBack={() => { setSwitcherManageForm(null); setSwitcherFormGuarded(false); setSwitcherManage(false); }}
         onClose={closeSessionSwitcher}
         onRetry={() => { void loadProfiles(); }}
         onConnect={profile => {
@@ -3586,13 +3593,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           // it — the same browse/credential path as tapping its row.
           setSwitcherManage(false);
           setSwitcherManageForm(null);
+          setSwitcherFormGuarded(false);
           openSessionSwitcher(profile);
         }}
         onAdd={() => setSwitcherManageForm({})}
         onEdit={profile => setSwitcherManageForm({ profile })}
         onDelete={deleteProfile}
-        onFormClose={() => setSwitcherManageForm(null)}
+        onFormClose={() => { setSwitcherManageForm(null); setSwitcherFormGuarded(false); }}
         onFormSubmit={submitManageProfile}
+        onFormGuardedChange={setSwitcherFormGuarded}
       /> : <SessionSwitcher
         mode={runtimePickerVisible ? 'fresh' : sessionSwitcherMode}
         currentServer={activeServer}

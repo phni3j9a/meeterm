@@ -1,6 +1,8 @@
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 import type { ReactNode } from 'react';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useCallback, useState } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation, usePreventRemove } from '@react-navigation/native';
 import type { ServerProfile } from '../modules/meeterm-terminal';
 import type { ConnectionSubmission } from './ConnectionForm';
 import { ConnectionForm } from './ConnectionForm';
@@ -12,7 +14,7 @@ import type { Palette } from './ui';
  * Stacking a RN Modal over the iOS formSheet route collapses the sheet, so the
  * footer Manage servers action swaps this panel into the sheet instead of
  * presenting another surface on top of it. */
-export function SwitcherManage({ profiles, selectedId, loading, error, busy, colors, form, notice, onBack, onClose, onRetry, onConnect, onAdd, onEdit, onDelete, onFormClose, onFormSubmit }: {
+export function SwitcherManage({ profiles, selectedId, loading, error, busy, colors, form, notice, onBack, onClose, onRetry, onConnect, onAdd, onEdit, onDelete, onFormClose, onFormSubmit, onFormGuardedChange }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
@@ -31,54 +33,71 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
   onDelete: (profile: ServerProfile) => void;
   onFormClose: () => void;
   onFormSubmit: (submission: ConnectionSubmission) => Promise<boolean>;
+  /** Forwards the save form's busy/dirty state so the sheet can gate dismissal. */
+  onFormGuardedChange: (guarded: boolean) => void;
 }) {
-  const insets = useSafeAreaInsets();
+  const [formGuarded, setFormGuarded] = useState(false);
+  const navigation = useNavigation();
+  const formGuardedChange = useCallback((guarded: boolean) => {
+    setFormGuarded(guarded);
+    onFormGuardedChange(guarded);
+  }, [onFormGuardedChange]);
+
+  // The swipe gesture is gated by the route's gestureEnabled flag; hardware
+  // back and programmatic pops reach here instead. A dirty or submitting save
+  // form asks before its unsaved changes are destroyed with the sheet.
+  usePreventRemove(form.visible && formGuarded, ({ data }) => {
+    Alert.alert('Discard changes?', 'Your changes have not been saved.', [
+      { text: 'Keep editing', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: () => navigation.dispatch(data.action) },
+    ]);
+  });
+
+  if (form.visible) {
+    // The save form owns its header, ScrollView, and keyboard handling —
+    // nesting another scroll/keyboard container splits that ownership.
+    return <ConnectionForm
+      visible
+      embedded
+      mode="save"
+      initialProfile={form.profile}
+      colors={colors}
+      onClose={onFormClose}
+      onSubmit={onFormSubmit}
+      onGuardedChange={formGuardedChange}
+    />;
+  }
+
+  // The list owns vertical scrolling; this panel adds no scroll container.
   return <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.safeArea, { backgroundColor: colors.background }]}>
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        automaticallyAdjustKeyboardInsets
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 24) }]}
-      >
-        <View style={styles.titleRow}>
-          <IconButton icon="back" label="Back to session switcher" colors={colors} disabled={busy} onPress={onBack} />
-          <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>Saved servers</Text><Text style={[styles.intro, { color: colors.muted }]}>Add, edit, or remove servers, or choose one to open.</Text></View>
-          <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy} onPress={onClose} />
-        </View>
-        {notice}
-        {form.visible ? <ConnectionForm
-          visible
-          embedded
-          mode="save"
-          initialProfile={form.profile}
-          colors={colors}
-          onClose={onFormClose}
-          onSubmit={onFormSubmit}
-        /> : <ProfileList
-          profiles={profiles}
-          selectedId={selectedId}
-          loading={loading}
-          error={error}
-          busy={busy}
-          colors={colors}
-          onRetry={onRetry}
-          onAdd={onAdd}
-          onConnect={onConnect}
-          onEdit={onEdit}
-          onDelete={onDelete}
-        />}
-      </ScrollView>
-    </KeyboardAvoidingView>
+    <View style={styles.titleRow}>
+      <IconButton icon="back" label="Back to session switcher" colors={colors} disabled={busy} onPress={onBack} />
+      <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>Saved servers</Text><Text style={[styles.intro, { color: colors.muted }]}>Add, edit, or remove servers, or choose one to open.</Text></View>
+      <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy} onPress={onClose} />
+    </View>
+    {notice}
+    <View style={styles.flex}>
+      <ProfileList
+        profiles={profiles}
+        selectedId={selectedId}
+        loading={loading}
+        error={error}
+        busy={busy}
+        colors={colors}
+        onRetry={onRetry}
+        onAdd={onAdd}
+        onConnect={onConnect}
+        onEdit={onEdit}
+        onDelete={onDelete}
+      />
+    </View>
   </SafeAreaView>;
 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   safeArea: { flex: 1 },
-  content: { paddingHorizontal: 20, paddingTop: 8, gap: 12 },
-  titleRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 8 },
+  titleRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 },
   heading: { fontSize: 20, lineHeight: 28, fontWeight: '600' },
   intro: { fontSize: 13, lineHeight: 20, marginTop: 2 },
 });

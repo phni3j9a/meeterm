@@ -88,6 +88,18 @@ tmux session is a distinct detached operation; it does not replace an existing
 session. Normal session selection is an explicit row tap and does not add a
 second server-switch confirmation.
 
+`Manage servers` swaps a Saved servers panel into the same sheet rather than
+presenting another surface — a React Native `Modal` over the iOS formSheet
+route proved unreliable in this app, so no nested presentation is used. Add
+and Edit replace the panel with the embedded save form; its Back returns to
+the list, and the sheet's Close returns to the originating screen. The
+embedded save form keeps the same discard confirmation as the standalone
+form: unsaved changes ask before they are thrown away, and a dirty or
+submitting form also gates the sheet's swipe dismissal and back navigation.
+Choosing a server row in Manage returns to the switcher targeted at that
+server — the same browse/credential path as expanding its row. Managing or
+cancelling never alters the active remote binding.
+
 From connected workspaces, the `Server connection` menu opens `Saved servers`
 directly for profile management. Switching to another saved profile expands
 that profile in the session switcher; selecting one of its listed runtimes is

@@ -311,6 +311,9 @@ function makeNativeEnvironment() {
     profilesShouldFail: false,
     profiles: [],
     deleteProfileShouldFail: false,
+    saveProfileShouldFail: false,
+    navDispatches: [],
+    preventRemove: null,
     selectRuntimeShouldFail: false,
     selectRuntimeMode: 'ready',
     pendingSelection: null,
@@ -378,6 +381,13 @@ function makeNativeEnvironment() {
       environment.nativeCalls.push({ method: 'deleteProfile', profileId });
       if (environment.deleteProfileShouldFail) throw new Error('delete failed');
       environment.profiles = environment.profiles.filter(item => item.id !== profileId);
+    },
+    async saveProfile(profile, credential, keepCredential) {
+      environment.nativeCalls.push({ method: 'saveProfile', profile: clone(profile), keepCredential });
+      if (environment.saveProfileShouldFail) throw new Error('save failed');
+      const saved = { ...profile, id: profile.id || '00000000-0000-4000-8000-000000000099' };
+      environment.profiles = [...environment.profiles.filter(item => item.id !== saved.id), clone(saved)];
+      return clone(saved);
     },
     async getPreferences() {
       environment.nativeCalls.push('getPreferences');
@@ -726,7 +736,10 @@ function makeReactNativeMocks(environment) {
   const BackHandler = {
     addEventListener() { return noOpSubscription; },
   };
-  const Keyboard = { dismiss() {} };
+  const Keyboard = {
+    dismiss() {},
+    addListener() { return noOpSubscription; },
+  };
   const Linking = {
     async getInitialURL() {
       if (environment.initialURLBehavior === 'pending') return new Promise(() => {});
@@ -826,6 +839,21 @@ function makeFormMocks() {
   function ConnectionForm(props) {
     if (!props.embedded) return null;
     const profile = props.initialProfile || {};
+    if (props.mode === 'save') {
+      return React.createElement('ConnectionForm', { testID: 'switcher-save-form' },
+        React.createElement('Text', null, props.initialProfile ? 'Edit server' : 'Add server'),
+        React.createElement('Pressable', {
+          accessibilityRole: 'button', accessibilityLabel: 'Back to saved servers', onPress: props.onClose,
+        }),
+        React.createElement('Pressable', {
+          accessibilityRole: 'button', accessibilityLabel: 'Save server',
+          onPress: () => props.onSubmit({
+            profile: { ...profile, name: profile.name || 'Saved fixture', host: profile.host || 'saved.example', port: profile.port || 22, username: profile.username || 'developer', authMethod: profile.authMethod || 'publicKey' },
+            credential: null, saveProfile: true,
+            saveCredential: false, keepCredential: false, connect: false,
+          }),
+        }));
+    }
     const credential = profile.authMethod === 'password'
       ? { authMethod: 'password', password: 'fixture-password' }
       : { authMethod: 'publicKey', privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n-----END OPENSSH PRIVATE KEY-----', passphrase: '' };
@@ -842,10 +870,16 @@ function makeFormMocks() {
         }),
       }));
   }
-  function ProfileList({ profiles = [], busy = false, onConnect, onDelete }) {
+  function ProfileList({ profiles = [], busy = false, onConnect, onDelete, onAdd }) {
     return React.createElement(
       'ProfileList',
       null,
+      React.createElement('Pressable', {
+        accessibilityRole: 'button',
+        accessibilityLabel: 'Add server',
+        disabled: Boolean(busy),
+        onPress: () => onAdd && onAdd(),
+      }),
       profiles.map(profile => React.createElement(
         'View',
         { key: profile.id },
@@ -926,7 +960,56 @@ function compileSessionSwitcher(rn, safeArea, ui) {
   return appModule.exports;
 }
 
-function compileSwitcherManage(rn, safeArea, ui, forms) {
+function makeNavigationMocks(environment) {
+  return {
+    useNavigation() {
+      return {
+        dispatch(action) { environment.navDispatches.push(action); },
+      };
+    },
+    usePreventRemove(prevented, callback) {
+      environment.preventRemove = { prevented, callback };
+    },
+  };
+}
+
+function compileConnectionForm(rn, safeArea, ui) {
+  const filename = path.join(REPO_ROOT, 'app', 'ConnectionForm.tsx');
+  const source = fs.readFileSync(filename, 'utf8');
+  const transpiled = TypeScript.transpileModule(source, {
+    compilerOptions: {
+      target: TypeScript.ScriptTarget.ES2022,
+      module: TypeScript.ModuleKind.CommonJS,
+      jsx: TypeScript.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+      sourceMap: false,
+    },
+    fileName: filename,
+  }).outputText;
+  const appModule = { exports: {} };
+  const dependencies = new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn],
+    ['react-native-safe-area-context', safeArea],
+    ['./ui', ui],
+  ]);
+  const context = {
+    require(request) {
+      if (dependencies.has(request)) return dependencies.get(request);
+      return require(request);
+    },
+    module: appModule,
+    exports: appModule.exports,
+    __filename: filename,
+    __dirname: path.dirname(filename),
+    console,
+  };
+  vm.runInNewContext(transpiled, context, { filename });
+  return appModule.exports;
+}
+
+function compileSwitcherManage(rn, safeArea, ui, forms, navigation) {
   const filename = path.join(REPO_ROOT, 'app', 'SwitcherManage.tsx');
   const source = fs.readFileSync(filename, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
@@ -945,6 +1028,7 @@ function compileSwitcherManage(rn, safeArea, ui, forms) {
     ['react/jsx-runtime', require('react/jsx-runtime')],
     ['react-native', rn],
     ['react-native-safe-area-context', safeArea],
+    ['@react-navigation/native', navigation],
     ['./ConnectionForm', forms],
     ['./DailyUse', forms],
     ['./ui', ui],
@@ -983,7 +1067,8 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const forms = makeFormMocks();
   const terminal = makeTerminalModule(native, environment);
   const SessionSwitcher = compileSessionSwitcher(rn, safeArea, ui);
-  const SwitcherManage = compileSwitcherManage(rn, safeArea, ui, forms);
+  const navigation = makeNavigationMocks(environment);
+  const SwitcherManage = compileSwitcherManage(rn, safeArea, ui, forms, navigation);
   const scheduleTimeout = environment.fakeTimers
     ? (callback, delay) => {
       const id = environment.nextTimeoutId++;
@@ -2457,6 +2542,83 @@ test('Manage servers shows feedback when removing a saved server fails', async t
   assert.ok(findText(fixture.root, 'Could not remove this saved server. Please try again.'),
     'the manage panel should surface the removal failure');
   assert.ok(findText(fixture.root, 'Saved servers'), 'the manage panel should stay open');
+});
+
+test('Manage Add server saves through the native boundary and returns to the list', async t => {
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.snapshot = makeSnapshot();
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'open-session-switcher'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Add server'));
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Add server'), 'the save form should take over the panel');
+  await press(fixture.root, findLabel(fixture.root, 'Save server'));
+  await settleAsync();
+  const saveCall = fixture.environment.nativeCalls.find(call => call.method === 'saveProfile');
+  assert.ok(saveCall, 'the save submission should reach the native profile boundary');
+  assert.equal(saveCall.profile.host, 'saved.example');
+  assert.ok(findText(fixture.root, 'Saved servers'), 'saving should return to the manage list');
+  assert.ok(findLabel(fixture.root, 'Connect saved server Saved fixture'));
+});
+
+function mountManageWithRealForm(t, { profiles = [] } = {}) {
+  const { environment } = makeNativeEnvironment();
+  const rn = { ...makeReactNativeMocks(environment), Switch: 'Switch' };
+  const safeArea = makeSafeAreaMocks();
+  const ui = makeUiMocks();
+  const navigation = makeNavigationMocks(environment);
+  const forms = { ...makeFormMocks(), ConnectionForm: compileConnectionForm(rn, safeArea, ui).ConnectionForm };
+  const { SwitcherManage } = compileSwitcherManage(rn, safeArea, ui, forms, navigation);
+  const root = createRoot();
+  const calls = { closed: 0, guarded: [], submissions: [] };
+  const manageProps = visible => ({
+    profiles, selectedId: '', loading: false, error: false, busy: false,
+    colors: LIGHT, form: { visible },
+    onBack() {}, onClose() {}, onRetry() {}, onConnect() {}, onAdd() {}, onEdit() {}, onDelete() {},
+    onFormClose() { calls.closed += 1; },
+    async onFormSubmit(submission) { calls.submissions.push(submission); return true; },
+    onFormGuardedChange(guarded) { calls.guarded.push(guarded); },
+  });
+  t.after(async () => { await act(async () => { root.unmount(); }); });
+  return { environment, root, calls, manageProps, SwitcherManage };
+}
+
+test('the real embedded save form asks before discarding unsaved changes', async t => {
+  const { environment, root, calls, manageProps, SwitcherManage } = mountManageWithRealForm(t);
+  await act(async () => { root.render(React.createElement(SwitcherManage, manageProps(true))); });
+  assert.ok(findText(root, 'Add server'), 'the embedded save form should show its own title');
+  assert.equal(environment.preventRemove?.prevented, false, 'a pristine form must not block dismissal');
+  await act(async () => { findTestId(root, 'ssh-host').props.onChangeText('dirty.example'); });
+  assert.equal(environment.preventRemove?.prevented, true, 'a dirty save form should arm removal prevention');
+  assert.ok(calls.guarded.includes(true), 'the form should report its guarded state');
+  // Hardware back / a programmatic pop reaches the preventRemove boundary.
+  await act(async () => { environment.preventRemove.callback({ data: { action: { type: 'POP' } } }); });
+  assert.equal(environment.alert?.title, 'Discard changes?');
+  await act(async () => { environment.alert.buttons.find(button => button.style === 'destructive').onPress(); });
+  assert.deepEqual(environment.navDispatches, [{ type: 'POP' }], 'confirming discard honors the original removal action');
+  // The in-form Back must confirm too rather than closing instantly.
+  await press(root, findLabel(root, 'Back to saved servers'));
+  assert.equal(environment.alert?.title, 'Discard changes?');
+  assert.equal(calls.closed, 0, 'dirty Back must confirm instead of closing instantly');
+  await act(async () => { environment.alert.buttons.find(button => button.style === 'destructive').onPress(); });
+  assert.equal(calls.closed, 1, 'confirming discard closes the form');
+});
+
+test('the real embedded save form submits a save-only submission', async t => {
+  const { root, calls, manageProps, SwitcherManage } = mountManageWithRealForm(t);
+  await act(async () => { root.render(React.createElement(SwitcherManage, manageProps(true))); });
+  await act(async () => { findTestId(root, 'ssh-host').props.onChangeText('saved.example'); });
+  await act(async () => { findTestId(root, 'ssh-username').props.onChangeText('developer'); });
+  await press(root, findTestId(root, 'ssh-submit'));
+  assert.equal(calls.submissions.length, 1);
+  assert.equal(calls.submissions[0].saveProfile, true);
+  assert.equal(calls.submissions[0].connect, false);
+  assert.equal(calls.submissions[0].credential, null);
+  assert.equal(calls.submissions[0].profile.host, 'saved.example');
 });
 
 test('saved-profile connection opens the unified explicit session picker', async t => {

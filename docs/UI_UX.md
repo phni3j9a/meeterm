@@ -51,7 +51,10 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   Keys scroll horizontally; Paste and Copy stay fixed. The toolbar remains
   48 dp tall, preserving its terminal sizing and native input contract.
 - Server management, naming, connection details, and settings have explicit
-  close/cancel boundaries. Unsaved forms ask before discarding changes.
+  close/cancel boundaries. Unsaved forms ask before discarding changes. The
+  switcher's embedded Manage panel reuses that save form, which keeps the
+  same confirmation and also gates the sheet's swipe and back dismissal
+  while the form is dirty or submitting.
 - The same session sheet handles fresh selection and Ready-state switching. It
   shows the current server first, expands server rows in place, and lists
   tmux/Herdr sessions only after bounded discovery. A last-used hint never
@@ -62,9 +65,12 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   in that flow. Herdr stopped rows explain the external-client refresh path and
   do not offer a meeterm start/create promise or fallback to tmux.
 - The sheet footer offers `New tmux session`, `Manage servers`, and a separate
-  `Disconnect` action while switching. The create form names its target server
-  and preserves existing sessions. Fresh selection retains its explicit
-  candidate choice and uses a cancel-connection action in the footer.
+  `Disconnect` action while switching. Manage opens Saved servers inside the
+  same sheet — list, add/edit form, and back/close layers stay in one
+  presentation instead of stacking another surface on top of the sheet. The
+  create form names its target server and preserves existing sessions.
+  Fresh selection retains its explicit candidate choice and uses a
+  cancel-connection action in the footer.
 - Tapping the currently selected tmux row is a native-confirmed `unchanged`
   no-op that closes the sheet without releasing and reacquiring the runtime.
   The current Herdr row stays inert because its public 0.9.0 interface cannot
