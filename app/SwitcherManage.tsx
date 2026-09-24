@@ -70,39 +70,39 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
     />;
   }
 
-  // The list owns vertical scrolling; this panel adds no scroll container.
+  // The list is the panel's only child and owns all vertical scrolling —
+  // including the title row. react-native-screens only corrects the Fabric
+  // (0,0) scroll-view placement for direct children of the formSheet's
+  // content wrapper, so a fixed sibling header gets painted over.
   return <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={[styles.safeArea, { backgroundColor: colors.background }]}>
-    <View style={styles.titleRow}>
-      <IconButton icon="back" label="Back to session switcher" colors={colors} disabled={busy} onPress={onBack} />
-      <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>Saved servers</Text><Text style={[styles.intro, { color: colors.muted }]}>Add, edit, or remove servers, or choose one to open.</Text></View>
-      <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy} onPress={onClose} />
-    </View>
-    {notice}
-    <View style={styles.flex}>
-      <ProfileList
-        profiles={profiles}
-        selectedId={selectedId}
-        loading={loading}
-        error={error}
-        busy={busy}
-        colors={colors}
-        // The SafeAreaView above owns insets; automatic adjustment inside the
-        // already-presented formSheet paints the header over the title row.
-        insetAdjustment="never"
-        onRetry={onRetry}
-        onAdd={onAdd}
-        onConnect={onConnect}
-        onEdit={onEdit}
-        onDelete={onDelete}
-      />
-    </View>
+    <ProfileList
+      profiles={profiles}
+      selectedId={selectedId}
+      loading={loading}
+      error={error}
+      busy={busy}
+      colors={colors}
+      header={<>
+        <View style={styles.titleRow}>
+          <IconButton icon="back" label="Back to session switcher" colors={colors} disabled={busy} onPress={onBack} />
+          <View style={styles.flex}><Text accessibilityRole="header" style={[styles.heading, { color: colors.text }]}>Saved servers</Text><Text style={[styles.intro, { color: colors.muted }]}>Add, edit, or remove servers, or choose one to open.</Text></View>
+          <IconButton icon="close" label="Close session switcher" colors={colors} disabled={busy} onPress={onClose} />
+        </View>
+        {notice}
+      </>}
+      onRetry={onRetry}
+      onAdd={onAdd}
+      onConnect={onConnect}
+      onEdit={onEdit}
+      onDelete={onDelete}
+    />
   </SafeAreaView>;
 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   safeArea: { flex: 1 },
-  titleRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 },
+  titleRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 8, paddingBottom: 8 },
   heading: { fontSize: 20, lineHeight: 28, fontWeight: '600' },
   intro: { fontSize: 13, lineHeight: 20, marginTop: 2 },
 });

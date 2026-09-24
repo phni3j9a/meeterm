@@ -32,25 +32,27 @@ export function itemActions(title: string, edit: () => void, remove: () => void,
   }
 }
 
-export function ProfileList({ profiles, selectedId, loading, error, busy, colors, insetAdjustment = 'automatic', onRetry, onAdd, onConnect, onEdit, onDelete }: {
+export function ProfileList({ profiles, selectedId, loading, error, busy, colors, header, onRetry, onAdd, onConnect, onEdit, onDelete }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
   error: boolean;
   busy: boolean;
   colors: Palette;
-  /** Hosts that own safe-area insets (e.g. the switcher sheet) pass `never`;
-   * `automatic` inside an already-presented formSheet can resolve a stale
-   * ancestor inset and paint the list header over the panel title. */
-  insetAdjustment?: 'automatic' | 'never' | 'scrollableAxes' | 'always';
+  /** Optional panel header rendered inside the scroll content. Hosts embedded
+   * in a formSheet keep every sibling inside the list: a fixed header sibling
+   * before the scroll view is painted over by the Fabric (0,0) placement bug
+   * that RNSScreenContentWrapper only corrects for direct children. */
+  header?: ReactNode;
   onRetry: () => void;
   onAdd: () => void;
   onConnect: (profile: ServerProfile) => void;
   onEdit: (profile: ServerProfile) => void;
   onDelete: (profile: ServerProfile) => void;
 }) {
-  return <FlatList data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior={insetAdjustment} contentContainerStyle={styles.list}
+  return <FlatList data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.list}
     ListHeaderComponent={<View style={styles.listHeader}>
+      {header}
       <Text style={[styles.helper, { color: colors.muted }]}>Your servers, saved on this device.</Text>
       <Button label="Add server" colors={colors} onPress={onAdd} disabled={busy}>Add server</Button>
       {error ? <View style={styles.errorBlock}><Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>Could not load saved servers.</Text><Button label="Reload saved servers" colors={colors} secondary onPress={onRetry} disabled={loading}>Reload</Button></View> : null}

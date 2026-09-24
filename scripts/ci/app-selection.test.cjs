@@ -870,10 +870,11 @@ function makeFormMocks() {
         }),
       }));
   }
-  function ProfileList({ profiles = [], busy = false, onConnect, onDelete, onAdd }) {
+  function ProfileList({ profiles = [], busy = false, header, onConnect, onDelete, onAdd }) {
     return React.createElement(
       'ProfileList',
       null,
+      header || null,
       React.createElement('Pressable', {
         accessibilityRole: 'button',
         accessibilityLabel: 'Add server',
