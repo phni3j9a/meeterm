@@ -41,3 +41,10 @@ limitations:
 - iOS scope belongs to the iOS session
 - abandoned attempts on superseded commits (6523e1e/dd7e5fa/0e7b7f8/a87996c/8c35313/ba3f657) are historical only
 cleanup=app-release.apk removed before push; no credentials/keys pushed
+
+focused_followup_hwback_dirty_form (exact-source, same installed build):
+1. switcher -> Manage servers -> Add server -> Host=9.9.9.9 (dirty) -> hardware BACK (keyevent 4) -> 'Discard changes?' native alert shown = VERIFIED (i27-2e4b-hwback-discard.png; buttons render KEEP EDITING / DISCARD)
+2. KEEP EDITING -> embedded form re-presented with dirty value 9.9.9.9 intact, sheet still presented = VERIFIED (i27-2e4b-hwback-keepediting.png)
+3. hardware BACK again -> 'Discard changes?' -> DISCARD -> ACTUAL destination = originating Workspaces screen with Connected on 10.0.2.2:43923 · meeterm = VERIFIED (i27-2e4b-hwback-dest.png). This is the route-removal redispatch: the whole sheet dismisses to origin — distinct from inner-form 'Back to saved servers' which returns to the list.
+4. binding/input target unchanged: 10.0.2.2:43923 · meeterm Connected after return; no stray reconnect.
+corrects_prior_record: earlier claim 'same usePreventRemove path' now has a direct native observation; KEEP EDITING is deterministically tappable as the all-caps dialog button.
