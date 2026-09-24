@@ -246,13 +246,19 @@ function Modal({ visible, children, onDismiss }) {
   return visible ? React.createElement(React.Fragment, null, children) : null;
 }
 
-function FlatList({
+const flatListScrollCalls = [];
+
+const FlatList = React.forwardRef(function FlatList({
   data = [],
   renderItem,
   ListHeaderComponent,
   ListEmptyComponent,
   ...props
-}) {
+}, forwardedRef) {
+  React.useImperativeHandle(forwardedRef, () => ({
+    scrollToOffset: options => { flatListScrollCalls.push(options); },
+    scrollToIndex: options => { flatListScrollCalls.push(options); },
+  }), []);
   const header = ListHeaderComponent
     ? (React.isValidElement(ListHeaderComponent)
       ? ListHeaderComponent
@@ -269,7 +275,7 @@ function FlatList({
       return React.createElement(React.Fragment, { key: item.id || index }, rendered);
     });
   return React.createElement('FlatList', props, header, rows);
-}
+});
 
 function makeNativeEnvironment() {
   const environment = {
@@ -870,7 +876,15 @@ function makeFormMocks() {
         }),
       }));
   }
-  function ProfileList({ profiles = [], busy = false, header, onConnect, onDelete, onAdd }) {
+  function ProfileList({ profiles = [], busy = false, header, listRef, onConnect, onDelete, onAdd }) {
+    React.useEffect(() => {
+      if (!listRef) return undefined;
+      listRef.current = {
+        scrollToOffset: options => { flatListScrollCalls.push(options); },
+        scrollToIndex: options => { flatListScrollCalls.push(options); },
+      };
+      return () => { listRef.current = null; };
+    }, [listRef]);
     return React.createElement(
       'ProfileList',
       null,
@@ -2538,11 +2552,14 @@ test('Manage servers shows feedback when removing a saved server fails', async t
   assert.ok(fixture.environment.alert, 'removing a saved server should ask for confirmation');
   const remove = fixture.environment.alert.buttons.find(button => button.style === 'destructive');
   assert.ok(remove);
+  flatListScrollCalls.length = 0;
   remove.onPress();
   await settleAsync();
   assert.ok(findText(fixture.root, 'Could not remove this saved server. Please try again.'),
     'the manage panel should surface the removal failure');
   assert.ok(findText(fixture.root, 'Saved servers'), 'the manage panel should stay open');
+  assert.ok(flatListScrollCalls.some(call => call && call.offset === 0),
+    'a new failure notice should scroll the list header into view');
 });
 
 test('Manage Add server saves through the native boundary and returns to the list', async t => {

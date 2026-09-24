@@ -3585,6 +3585,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         colors={homeColors}
         form={{ visible: switcherManageForm !== null, profile: switcherManageForm?.profile }}
         notice={feedback}
+        noticeKey={controlMessage || (pollProblem ? 'poll-problem' : '')}
         onBack={() => { setSwitcherManageForm(null); setSwitcherFormGuarded(false); setSwitcherManage(false); }}
         onClose={closeSessionSwitcher}
         onRetry={() => { void loadProfiles(); }}

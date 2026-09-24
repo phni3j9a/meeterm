@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import {
   ActionSheetIOS, ActivityIndicator, Alert, FlatList, Keyboard,
   KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView,
@@ -32,7 +32,7 @@ export function itemActions(title: string, edit: () => void, remove: () => void,
   }
 }
 
-export function ProfileList({ profiles, selectedId, loading, error, busy, colors, header, onRetry, onAdd, onConnect, onEdit, onDelete }: {
+export function ProfileList({ profiles, selectedId, loading, error, busy, colors, header, listRef, onRetry, onAdd, onConnect, onEdit, onDelete }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
@@ -44,13 +44,15 @@ export function ProfileList({ profiles, selectedId, loading, error, busy, colors
    * before the scroll view is painted over by the Fabric (0,0) placement bug
    * that RNSScreenContentWrapper only corrects for direct children. */
   header?: ReactNode;
+  /** Lets the host bring new header content (e.g. an error notice) into view. */
+  listRef?: RefObject<FlatList<ServerProfile> | null>;
   onRetry: () => void;
   onAdd: () => void;
   onConnect: (profile: ServerProfile) => void;
   onEdit: (profile: ServerProfile) => void;
   onDelete: (profile: ServerProfile) => void;
 }) {
-  return <FlatList data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.list}
+  return <FlatList ref={listRef} data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.list}
     ListHeaderComponent={<View style={styles.listHeader}>
       {header}
       <Text style={[styles.helper, { color: colors.muted }]}>Your servers, saved on this device.</Text>

@@ -1,6 +1,7 @@
 import { Alert, StyleSheet, Text, View } from 'react-native';
+import type { FlatList } from 'react-native';
 import type { ReactNode } from 'react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, usePreventRemove } from '@react-navigation/native';
 import type { ServerProfile } from '../modules/meeterm-terminal';
@@ -14,7 +15,7 @@ import type { Palette } from './ui';
  * Stacking a RN Modal over the iOS formSheet route collapses the sheet, so the
  * footer Manage servers action swaps this panel into the sheet instead of
  * presenting another surface on top of it. */
-export function SwitcherManage({ profiles, selectedId, loading, error, busy, colors, form, notice, onBack, onClose, onRetry, onConnect, onAdd, onEdit, onDelete, onFormClose, onFormSubmit, onFormGuardedChange }: {
+export function SwitcherManage({ profiles, selectedId, loading, error, busy, colors, form, notice, noticeKey = '', onBack, onClose, onRetry, onConnect, onAdd, onEdit, onDelete, onFormClose, onFormSubmit, onFormGuardedChange }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
@@ -24,6 +25,8 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
   form: { visible: boolean; profile?: ServerProfile };
   /** Shared control feedback (e.g. a failed delete) rendered like NativeSheet. */
   notice?: ReactNode;
+  /** Identifies the current notice; a new value scrolls it into view. */
+  noticeKey?: string;
   onBack: () => void;
   onClose: () => void;
   onRetry: () => void;
@@ -38,6 +41,13 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
 }) {
   const [formGuard, setFormGuard] = useState({ busy: false, dirty: false });
   const navigation = useNavigation();
+  const listRef = useRef<FlatList<ServerProfile>>(null);
+
+  // The notice lives inside the list header, so a fresh message must be
+  // scrolled into view for users who are partway down a longer list.
+  useEffect(() => {
+    if (noticeKey) listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  }, [noticeKey]);
   const formGuardedChange = useCallback(({ busy, dirty }: { busy: boolean; dirty: boolean }) => {
     setFormGuard({ busy, dirty });
     onFormGuardedChange(busy || dirty);
@@ -82,6 +92,7 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
       error={error}
       busy={busy}
       colors={colors}
+      listRef={listRef}
       header={<>
         <View style={styles.titleRow}>
           <IconButton icon="back" label="Back to session switcher" colors={colors} disabled={busy} onPress={onBack} />
