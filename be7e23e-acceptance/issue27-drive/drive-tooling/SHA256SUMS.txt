@@ -1,0 +1,23 @@
+drive-tooling archive — source commit 2e4b3e35d3849fc4bd833257bc6e1228b0a1fb71 (2e4b3e3)
+
+Injection mechanism: scripts/ci/ios-inject-ui-test.sh generates
+ios/meetermTests/MeetermSmokeUITests.swift from scripts/ci/MeetermSmokeUITests.swift;
+the session then splices the drive fragment with the recorded formula
+  generated = checker.rstrip()[:-1].rstrip() + "\n\n" + fragment + "\n}\n"
+and the meetermTests scheme builds it into the test bundle via the exact
+recorded build-for-testing invocation (ENABLE_TESTABILITY=YES, ARCHS=arm64).
+
+9c94b1555ab65f5edfba8c6fb2e6714e821dcca6eb5ac2848117dd6678950706  scripts/ci/MeetermSmokeUITests.swift (checker source, unchanged across this run)
+fb1505428c2ef05fe218a22dfa60486b81c73f440386f8ad5225a52b698b8e65  switcher-drive-test.swift.fragment (AS COMPILED into 2e4b3e3 products)
+a31cc7281a12b0aa059916cb53960fc08cde111d492702f5b34d3a2edec8aa41  switcher-drive-test.swift.fragment.current (post-run check-type fix: ac9_manage_profile_row now queries the button, not staticText; NOT compiled into these products)
+607dcc7f16f013f9d77702a4651f2cc07e9c65028ba2e185aa68bf42a7641f07  MeetermSmokeUITests.generated.swift (post-splice generated file as built)
+a26736fede406e87cf70179be4eabb213316a4c55fa8b2c1ee8f582abb864f6b  products-manifest.json (meeterm-products-2e4b3e3 package digest)
+0e15caf775ecde55859f7fa0898d504aea71b7c07f22df327767415f335ec304  ios-ac9-drive.sh (runs testAc9SwitcherDiagnostics via test-without-building)
+44154fdcc28f2f606a046eb61e7d524a900858a5adb0f8e2b2dd483ef89a2add  ios-switcher-drive.sh (runs testIssue27SessionSwitcherDrive via test-without-building)
+
+Fresh-vs-reuse correspondence:
+- build-for-testing: fresh on 2e4b3e3 (clean CNG prebuild; EXPO_PUBLIC_MEETERM_SMOKE=1 exported; ENABLE_TESTABILITY=YES).
+- standard + ssh suites: ran against the same pristine products package (sha a26736fe).
+- testIssue27SessionSwitcherDrive / testAc9SwitcherDiagnostics: test-without-building against the same products (drive copies of the single .xctestrun, env-injected).
+- xctestrun/product mapping: Products held exactly one meeterm_iphonesimulator26.5-arm64.xctestrun; drive copies meeterm-{switcher,ac9}-drive.xctestrun are env-injected clones of it.
+- ac9_drive raw XCTest log: session-side shared-log was overwritten by a later run; AC9 was re-run after to recover the raw log (identical compiled test, same products).

@@ -1,0 +1,4 @@
+case=same_server_switch result=passed
+released_session_alive=yes
+released_session_listed_in_browse=yes
+marker_roundtrip=exactly_once

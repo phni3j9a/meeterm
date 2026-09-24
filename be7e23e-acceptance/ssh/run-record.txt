@@ -1,0 +1,6 @@
+RUN RECORD — iOS acceptance, source commit be7e23e0e9df5320ae0b601ba7ad96af7b019521 (be7e23e)
+Toolchain: Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c. RN 0.86.3 / Expo ~57.0.24.
+Products: products-archive sha256 db7f772bcd549482e489d2a78bed49ba63bd2224b2456c3c000377c5f8ef29af (inside products-manifest.json); manifest FILE sha256 4624a9102f9538200c9124122e6e7b23935d63f03c0a28fdef4988005fe59d05.
+Simulator: iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0.
+Result for this suite: see ../ACCEPTANCE.md and the per-suite validation files in this directory.
+NOTE: suite snapshots taken from the shared artifact dir at the moment this suite finished; ac9-* / stale-* naming conventions apply per ../ACCEPTANCE.md.
