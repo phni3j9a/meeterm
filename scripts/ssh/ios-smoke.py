@@ -41,6 +41,16 @@ SUITE_TIMEOUT_SECONDS = {
     "native": 600.0,
     "names": 900.0,
 }
+# xcodebuild can print the top-level XCTest result and then fail to exit on
+# the Devin Cloud macOS VM. After that line, wait this long for a normal exit
+# before stopping the runner and using the printed result as its outcome.
+XCODEBUILD_POST_RESULT_EXIT_SECONDS = 60.0
+XCODEBUILD_POLL_SECONDS = 0.5
+XCODEBUILD_STOP_SECONDS = 10.0
+XCODEBUILD_FAILED_EXIT_CODE = 65
+XCODEBUILD_RESULT_LINE = re.compile(
+    r"^Test Suite '(?:All tests|Selected tests)' (passed|failed) at ", re.MULTILINE
+)
 STANDARD_TEST_SELECTOR = (
     "-only-testing:meetermTests/"
     "MeetermSmokeUITests/testStandardSeededScreensAndFoundation"
@@ -1042,6 +1052,7 @@ def write_xcuitest_diagnostics(
     xcodebuild_elapsed_seconds: float | None = None,
     xcodebuild_timeout_seconds: float | None = None,
     result_bundle: Path | None = None,
+    xcodebuild_outcome: subprocess.CompletedProcess | None = None,
 ) -> None:
     """Keep runner failures observable without copying XCTest's credential text."""
     try:
@@ -1113,6 +1124,13 @@ def write_xcuitest_diagnostics(
                 f"xcodebuild_timeout_ms={int(max(0.0, xcodebuild_timeout_seconds or 0.0) * 1000)}",
             )
         )
+    if isinstance(xcodebuild_outcome, XcodebuildCompleted):
+        lines.append(f"xcodebuild_result_line={xcodebuild_outcome.result or 'unavailable'}")
+        lines.append(f"xcodebuild_forced_exit_after_result={int(xcodebuild_outcome.forced_exit)}")
+        if xcodebuild_outcome.post_result_wait_seconds is not None:
+            lines.append(
+                f"xcodebuild_post_result_wait_ms={int(xcodebuild_outcome.post_result_wait_seconds * 1000)}"
+            )
     try:
         write_text(destination, "\n".join(lines) + "\n")
     except OSError:
@@ -1188,6 +1206,89 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
     finally:
         stopped.set()
         thread.join(timeout=25)
+
+
+class XcodebuildCompleted(subprocess.CompletedProcess):
+    """An xcodebuild outcome that also records how the process ended."""
+
+    def __init__(self, args, returncode: int, *, result: str | None, forced_exit: bool,
+                 post_result_wait_seconds: float | None) -> None:
+        super().__init__(args, returncode)
+        self.result = result
+        self.forced_exit = forced_exit
+        self.post_result_wait_seconds = post_result_wait_seconds
+
+
+def _stop_process_group(process: subprocess.Popen) -> None:
+    for sent in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sent)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=XCODEBUILD_STOP_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_xcodebuild(command: list[str], *, stdout, timeout: float, **popen_arguments) -> XcodebuildCompleted:
+    """Run xcodebuild and stop it once its printed top-level result goes stale.
+
+    The printed result is used only after that line appears and the process then
+    stays alive past the post-result window. Callers still require their own
+    fresh completion records, so this never turns a missing result into a pass.
+    """
+
+    log_path = Path(stdout.name)
+    started = time.monotonic()
+    process = subprocess.Popen(command, stdout=stdout, start_new_session=True, **popen_arguments)
+    offset = 0
+    pending = ""
+    result: str | None = None
+    result_seen_at: float | None = None
+    try:
+        while True:
+            try:
+                returncode = process.wait(timeout=XCODEBUILD_POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                returncode = None
+            now = time.monotonic()
+            if result is None:
+                try:
+                    with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+                        stream.seek(offset)
+                        chunk = stream.read()
+                        offset = stream.tell()
+                except OSError:
+                    chunk = ""
+                pending += chunk
+                complete, _, pending = pending.rpartition("\n")
+                match = XCODEBUILD_RESULT_LINE.search(complete)
+                if match is not None:
+                    result = match.group(1)
+                    result_seen_at = now
+            waited = None if result_seen_at is None else now - result_seen_at
+            if returncode is not None:
+                return XcodebuildCompleted(
+                    command, returncode, result=result, forced_exit=False, post_result_wait_seconds=waited
+                )
+            if waited is not None and (waited >= XCODEBUILD_POST_RESULT_EXIT_SECONDS or now - started >= timeout):
+                _stop_process_group(process)
+                return XcodebuildCompleted(
+                    command,
+                    0 if result == "passed" else XCODEBUILD_FAILED_EXIT_CODE,
+                    result=result,
+                    forced_exit=True,
+                    post_result_wait_seconds=waited,
+                )
+            if now - started >= timeout:
+                _stop_process_group(process)
+                raise subprocess.TimeoutExpired(command, timeout)
+    except BaseException:
+        if process.poll() is None:
+            _stop_process_group(process)
+        raise
 
 
 def _copy_xctestrun(source: Path) -> Path:
@@ -1412,6 +1513,7 @@ def run_xcuitest(
             xcodebuild_started_at = None
             xcodebuild_elapsed_seconds = None
             xcodebuild_timeout_seconds = None
+            completed = None
             try:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1419,14 +1521,13 @@ def run_xcuitest(
                 xcodebuild_started_at = time.time()
                 xcodebuild_timeout_seconds = remaining
                 with log_path.open("w", encoding="utf-8") as stream:
-                    completed = subprocess.run(
+                    completed = run_xcodebuild(
                         [*command, *selections, "-resultBundlePath", str(bundle)],
                         env=runner_environment,
                         stdin=subprocess.DEVNULL,
                         stdout=stream,
                         stderr=subprocess.STDOUT,
                         timeout=remaining,
-                        check=False,
                     )
                     exit_code = completed.returncode
             except subprocess.TimeoutExpired as error:
@@ -1444,6 +1545,7 @@ def run_xcuitest(
                     xcodebuild_elapsed_seconds=xcodebuild_elapsed_seconds,
                     xcodebuild_timeout_seconds=xcodebuild_timeout_seconds,
                     result_bundle=bundle,
+                    xcodebuild_outcome=completed,
                 )
             if exit_code != 0:
                 reason = {

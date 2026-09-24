@@ -782,7 +782,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
                 with mock.patch.object(smoke, "inject_test_environment"), \
                      mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                     mock.patch.object(smoke.subprocess, "run", side_effect=successful_process) as run, \
+                     mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_process) as run, \
                      mock.patch.dict(smoke.os.environ, {"MEETERM_SSH_HOST": "must-not-leak"}, clear=False):
                     arguments = dict(derived_data=root, simulator_udid="fixture", result_bundle=root / "result.xcresult",
                                      raw_log=root / "raw.log", diagnostics_path=root / "diagnostics.txt", suite="polish")
@@ -877,7 +877,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run, \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
                 status = smoke.run_xcuitest(
                     derived_data=root,
@@ -943,7 +943,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
                 with mock.patch.object(smoke, "inject_test_environment"), \
                      mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                     mock.patch.object(smoke.subprocess, "run", side_effect=incomplete_run):
+                     mock.patch.object(smoke, "run_xcodebuild", side_effect=incomplete_run):
                     with self.assertRaises(smoke.SmokeFailure) as failure:
                         smoke.run_xcuitest(
                             derived_data=root,
@@ -974,7 +974,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=no_new_case_run):
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=no_new_case_run):
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1005,7 +1005,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=timed_out_run) as run, \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
@@ -1106,7 +1106,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run, \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25, 100.5]):
                 status = smoke.run_xcuitest(
                     derived_data=root,
@@ -1161,7 +1161,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=incomplete_run):
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=incomplete_run):
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1194,7 +1194,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run, \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
                 status = smoke.run_xcuitest(
                     derived_data=root,
@@ -1235,7 +1235,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=timed_out_run) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1371,7 +1371,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             (products / "fixture.xctestrun").touch()
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=subprocess.TimeoutExpired("xcodebuild", 1800)):
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=subprocess.TimeoutExpired("xcodebuild", 1800)):
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1401,7 +1401,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100, 105, 165]), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run:
                 status = smoke.run_xcuitest(
                     derived_data=root,
                     simulator_udid="fixture-simulator",
@@ -1433,7 +1433,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             (products / "fixture.xctestrun").touch()
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 65)) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", return_value=subprocess.CompletedProcess([], 65)) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1461,7 +1461,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                 mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run, \
                  mock.patch.dict(smoke.os.environ, {
                      "MEETERM_SSH_HOST": "fixture-secret-host",
                      "MEETERM_SSH_PRIVATE_KEY_FILE": "fixture-secret-key",
@@ -1505,7 +1505,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=timed_out_run) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1544,7 +1544,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run, \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25]):
                 status = smoke.run_xcuitest(
                     derived_data=root,
@@ -1577,7 +1577,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.write_names_stages(root)
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", return_value=subprocess.CompletedProcess([], 0)) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1608,7 +1608,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=timed_out_run) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=timed_out_run) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1681,7 +1681,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run) as run, \
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run) as run, \
                  mock.patch.object(smoke.time, "monotonic", side_effect=[100.0, 100.25, 100.5]):
                 status = smoke.run_xcuitest(
                     derived_data=root,
@@ -1710,7 +1710,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             (root / "ios-ui-stages.txt").write_text("forms_complete\n")
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", return_value=subprocess.CompletedProcess([], 0)) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1751,7 +1751,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=incomplete_run) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=incomplete_run) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1784,7 +1784,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
 
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=missing_native_run) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=missing_native_run) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -1824,7 +1824,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0)
 
             with mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", side_effect=successful_run):
+                 mock.patch.object(smoke, "run_xcodebuild", side_effect=successful_run):
                 status = smoke.run_xcuitest(
                     derived_data=root,
                     simulator_udid="fixture-simulator",
@@ -1847,7 +1847,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.write_storage_success(root)
             with mock.patch.object(smoke, "inject_test_environment"), \
                  mock.patch.object(smoke.shutil, "which", return_value="/bin/xcodebuild"), \
-                 mock.patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                 mock.patch.object(smoke, "run_xcodebuild", return_value=subprocess.CompletedProcess([], 0)) as run:
                 with self.assertRaises(smoke.SmokeFailure) as failure:
                     smoke.run_xcuitest(
                         derived_data=root,
@@ -2350,6 +2350,110 @@ class ShortSshInputDiagnosticsTests(unittest.TestCase):
                     self.assertTrue(all(call.args[0] == socket for call in run.call_args_list))
                     self.assertTrue(all(call.args[1][0] in ("list-panes", "capture-pane")
                                         for call in run.call_args_list))
+
+
+class XcodebuildExitTests(unittest.TestCase):
+    """Run a fake xcodebuild process to cover the post-result exit window."""
+
+    RESULT_LINES = (
+        "Test Case '-[meetermTests.MeetermSmokeUITests testFixture]' passed (1.000 seconds).\n"
+        "Test Suite 'Selected tests' {result} at 2026-09-24 02:27:39.543.\n"
+        "\t Executed 1 test, with {failures} failures (0 unexpected) in 1.000 (1.001) seconds\n"
+    )
+
+    def run_fake(self, root: Path, body: str, *, timeout: float = 20.0, grace: float = 0.5):
+        script = root / "fake-xcodebuild"
+        script.write_text("#!/bin/sh\n" + body)
+        script.chmod(0o755)
+        with (root / "raw.log").open("w", encoding="utf-8") as stream, \
+             mock.patch.object(smoke, "XCODEBUILD_POST_RESULT_EXIT_SECONDS", grace), \
+             mock.patch.object(smoke, "XCODEBUILD_POLL_SECONDS", 0.05), \
+             mock.patch.object(smoke, "XCODEBUILD_STOP_SECONDS", 2.0):
+            return smoke.run_xcodebuild(
+                [str(script)],
+                stdin=subprocess.DEVNULL,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+            )
+
+    def lines(self, result: str, failures: int) -> str:
+        text = self.RESULT_LINES.format(result=result, failures=failures)
+        return "".join(f"printf '%s\\n' \"{line}\"\n" for line in text.splitlines())
+
+    def assert_dead(self, pid_file: Path) -> None:
+        pid = int(pid_file.read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_natural_exit_keeps_the_real_exit_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outcome = self.run_fake(root, self.lines("failed", 1) + "exit 65\n")
+            self.assertEqual(outcome.returncode, 65)
+            self.assertEqual(outcome.result, "failed")
+            self.assertFalse(outcome.forced_exit)
+
+    def test_passed_result_then_hang_is_stopped_after_the_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_file = root / "child.pid"
+            outcome = self.run_fake(
+                root,
+                self.lines("passed", 0) + f"sleep 30 &\necho $! > '{pid_file}'\nwait\n",
+            )
+            self.assertEqual(outcome.returncode, 0)
+            self.assertEqual(outcome.result, "passed")
+            self.assertTrue(outcome.forced_exit)
+            self.assertGreaterEqual(outcome.post_result_wait_seconds, 0.5)
+            self.assert_dead(pid_file)
+
+    def test_failed_result_then_hang_stays_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outcome = self.run_fake(root, self.lines("failed", 1) + "sleep 30\n")
+            self.assertEqual(outcome.returncode, smoke.XCODEBUILD_FAILED_EXIT_CODE)
+            self.assertEqual(outcome.result, "failed")
+            self.assertTrue(outcome.forced_exit)
+
+    def test_hang_without_top_level_result_is_still_a_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_file = root / "child.pid"
+            body = (
+                "printf '%s\\n' \"Test Suite 'MeetermSmokeUITests' passed at 2026-09-24.\"\n"
+                f"sleep 30 &\necho $! > '{pid_file}'\nwait\n"
+            )
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.run_fake(root, body, timeout=1.0)
+            self.assert_dead(pid_file)
+
+    def test_result_split_across_writes_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body = (
+                "printf \"Test Suite 'Selected tests' pas\"\n"
+                "sleep 0.3\n"
+                "printf \"sed at 2026-09-24 02:27:39.543.\\n\"\n"
+                "sleep 30\n"
+            )
+            outcome = self.run_fake(root, body)
+            self.assertEqual(outcome.result, "passed")
+            self.assertTrue(outcome.forced_exit)
+
+    def test_forced_exit_is_recorded_in_runner_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "raw.log").write_text("Test Suite 'Selected tests' passed at 2026.\n")
+            outcome = smoke.XcodebuildCompleted(
+                ["xcodebuild"], 0, result="passed", forced_exit=True, post_result_wait_seconds=60.25
+            )
+            smoke.write_xcuitest_diagnostics(root / "raw.log", root / "diagnostics.txt", 0,
+                                             xcodebuild_outcome=outcome)
+            diagnostics = (root / "diagnostics.txt").read_text()
+            self.assertIn("xcodebuild_result_line=passed\n", diagnostics)
+            self.assertIn("xcodebuild_forced_exit_after_result=1\n", diagnostics)
+            self.assertIn("xcodebuild_post_result_wait_ms=60250\n", diagnostics)
 
 
 if __name__ == "__main__":
