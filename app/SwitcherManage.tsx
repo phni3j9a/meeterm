@@ -33,20 +33,22 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
   onDelete: (profile: ServerProfile) => void;
   onFormClose: () => void;
   onFormSubmit: (submission: ConnectionSubmission) => Promise<boolean>;
-  /** Forwards the save form's busy/dirty state so the sheet can gate dismissal. */
+  /** Forwards the save form's guarded state so the sheet can gate dismissal. */
   onFormGuardedChange: (guarded: boolean) => void;
 }) {
-  const [formGuarded, setFormGuarded] = useState(false);
+  const [formGuard, setFormGuard] = useState({ busy: false, dirty: false });
   const navigation = useNavigation();
-  const formGuardedChange = useCallback((guarded: boolean) => {
-    setFormGuarded(guarded);
-    onFormGuardedChange(guarded);
+  const formGuardedChange = useCallback(({ busy, dirty }: { busy: boolean; dirty: boolean }) => {
+    setFormGuard({ busy, dirty });
+    onFormGuardedChange(busy || dirty);
   }, [onFormGuardedChange]);
 
   // The swipe gesture is gated by the route's gestureEnabled flag; hardware
-  // back and programmatic pops reach here instead. A dirty or submitting save
-  // form asks before its unsaved changes are destroyed with the sheet.
-  usePreventRemove(form.visible && formGuarded, ({ data }) => {
+  // back and programmatic pops reach here instead. A submitting form blocks
+  // removal outright — the in-flight save is never offered as discardable —
+  // while unsaved edits ask before they are destroyed with the sheet.
+  usePreventRemove(form.visible && (formGuard.busy || formGuard.dirty), ({ data }) => {
+    if (formGuard.busy) return;
     Alert.alert('Discard changes?', 'Your changes have not been saved.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: () => navigation.dispatch(data.action) },

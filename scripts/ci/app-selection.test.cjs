@@ -2580,7 +2580,7 @@ function mountManageWithRealForm(t, { profiles = [] } = {}) {
     colors: LIGHT, form: { visible },
     onBack() {}, onClose() {}, onRetry() {}, onConnect() {}, onAdd() {}, onEdit() {}, onDelete() {},
     onFormClose() { calls.closed += 1; },
-    async onFormSubmit(submission) { calls.submissions.push(submission); return true; },
+    async onFormSubmit(submission) { calls.submissions.push(submission); return calls.submitImpl ? calls.submitImpl() : true; },
     onFormGuardedChange(guarded) { calls.guarded.push(guarded); },
   });
   t.after(async () => { await act(async () => { root.unmount(); }); });
@@ -2619,6 +2619,25 @@ test('the real embedded save form submits a save-only submission', async t => {
   assert.equal(calls.submissions[0].connect, false);
   assert.equal(calls.submissions[0].credential, null);
   assert.equal(calls.submissions[0].profile.host, 'saved.example');
+});
+
+test('a pending save blocks removal without offering discard', async t => {
+  const { environment, root, calls, manageProps, SwitcherManage } = mountManageWithRealForm(t);
+  let resolveSubmit;
+  calls.submitImpl = () => new Promise(resolve => { resolveSubmit = resolve; });
+  await act(async () => { root.render(React.createElement(SwitcherManage, manageProps(true))); });
+  await act(async () => { findTestId(root, 'ssh-host').props.onChangeText('saved.example'); });
+  await act(async () => { findTestId(root, 'ssh-username').props.onChangeText('developer'); });
+  await act(async () => { findTestId(root, 'ssh-submit').props.onPress(); });
+  assert.equal(environment.preventRemove?.prevented, true, 'a submitting form stays guarded');
+  environment.alert = null;
+  await act(async () => { environment.preventRemove.callback({ data: { action: { type: 'POP' } } }); });
+  assert.equal(environment.alert, null, 'a submitting form must not offer discard');
+  assert.deepEqual(environment.navDispatches, [], 'the removal stays blocked while saving');
+  await act(async () => { resolveSubmit(true); });
+  await settleAsync();
+  await act(async () => { environment.preventRemove.callback({ data: { action: { type: 'POP' } } }); });
+  assert.equal(environment.alert?.title, 'Discard changes?', 'unsaved edits confirm once the save settles');
 });
 
 test('saved-profile connection opens the unified explicit session picker', async t => {

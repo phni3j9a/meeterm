@@ -65,8 +65,9 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   colors: Palette;
   /** Render the existing authentication fields inside the session sheet. */
   embedded?: boolean;
-  /** Reports `busy || dirty` so an embedding parent can gate sheet dismissal. */
-  onGuardedChange?: (guarded: boolean) => void;
+  /** Reports the busy/dirty split so an embedding parent can gate dismissal:
+   * a submission blocks removal outright; unsaved edits ask before discard. */
+  onGuardedChange?: (state: { busy: boolean; dirty: boolean }) => void;
 }) {
   const reducedMotion = useReducedMotion();
   const [name, setName] = useState('');
@@ -178,11 +179,10 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
     ]);
   }, [dirty, discard, embedded, mode]);
 
-  const guarded = busy || dirty;
   useEffect(() => {
-    onGuardedChange?.(guarded);
-  }, [guarded, onGuardedChange]);
-  useEffect(() => () => onGuardedChange?.(false), [onGuardedChange]);
+    onGuardedChange?.({ busy, dirty });
+  }, [busy, dirty, onGuardedChange]);
+  useEffect(() => () => onGuardedChange?.({ busy: false, dirty: false }), [onGuardedChange]);
 
   const changeAuthMethod = useCallback((next: AuthMethod) => {
     if (next === authMethod) return;
