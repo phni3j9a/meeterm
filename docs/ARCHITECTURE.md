@@ -450,9 +450,12 @@ pane changes. View unmount does not disconnect or destroy the remote pane.
 Rust owns bounded automatic retry after transient transport loss and foreground
 return. The public recovery control plane distinguishes Retry of the same
 retained intent, one-use Herdr confirmation, and explicit Change to the shared
-session switcher. A connection generation scopes the actor; a separate monotonic
-operation epoch invalidates delayed key, paste, resize, terminal-generated
-reply, and topology-mutation callbacks. Cached native output can remain visible
+session switcher. A connection generation scopes the actor; a separate
+operation token invalidates delayed key, paste, resize, terminal-generated
+reply, and topology-mutation callbacks. Tokens are opaque, non-reusable values
+issued by a process-global allocator at every operation boundary (attach,
+replacement, promotion, suspend/rearm, recovery); a missing token fails
+closed. Cached native output can remain visible
 while that gate is closed, but only a complete authoritative resynchronization
 sets Ready and reopens input. Explicit disconnect/change cancels retry and
 confirmation; host-key/authentication failures require user action. Rust
