@@ -32,20 +32,24 @@ export function itemActions(title: string, edit: () => void, remove: () => void,
   }
 }
 
-export function ProfileList({ profiles, selectedId, loading, error, busy, colors, onRetry, onAdd, onConnect, onEdit, onDelete }: {
+export function ProfileList({ profiles, selectedId, loading, error, busy, colors, insetAdjustment = 'automatic', onRetry, onAdd, onConnect, onEdit, onDelete }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
   error: boolean;
   busy: boolean;
   colors: Palette;
+  /** Hosts that own safe-area insets (e.g. the switcher sheet) pass `never`;
+   * `automatic` inside an already-presented formSheet can resolve a stale
+   * ancestor inset and paint the list header over the panel title. */
+  insetAdjustment?: 'automatic' | 'never' | 'scrollableAxes' | 'always';
   onRetry: () => void;
   onAdd: () => void;
   onConnect: (profile: ServerProfile) => void;
   onEdit: (profile: ServerProfile) => void;
   onDelete: (profile: ServerProfile) => void;
 }) {
-  return <FlatList data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.list}
+  return <FlatList data={profiles} keyExtractor={profile => profile.id} contentInsetAdjustmentBehavior={insetAdjustment} contentContainerStyle={styles.list}
     ListHeaderComponent={<View style={styles.listHeader}>
       <Text style={[styles.helper, { color: colors.muted }]}>Your servers, saved on this device.</Text>
       <Button label="Add server" colors={colors} onPress={onAdd} disabled={busy}>Add server</Button>

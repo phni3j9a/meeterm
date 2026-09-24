@@ -86,6 +86,9 @@ export function SwitcherManage({ profiles, selectedId, loading, error, busy, col
         error={error}
         busy={busy}
         colors={colors}
+        // The SafeAreaView above owns insets; automatic adjustment inside the
+        // already-presented formSheet paints the header over the title row.
+        insetAdjustment="never"
         onRetry={onRetry}
         onAdd={onAdd}
         onConnect={onConnect}
