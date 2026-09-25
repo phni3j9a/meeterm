@@ -185,14 +185,28 @@ the first authoritative full frame. The absence of comparable Herdr
 server-instance identity alone does not stop recovery. A changed host key,
 authentication failure, missing runtime/session or terminal, incompatibility,
 actual identity mismatch, controller conflict, or failed required
-resynchronization stops on the cached work screen with Retry and Change;
-recovery never retargets or falls back to another runtime/backend.
+resynchronization stops on the cached work screen. The available action follows
+the reason: `runtimeMismatch`, controller conflict, and retry-exhaustion/unknown
+stops allow Retry and Change; `runtimeMissing`, `terminalMissing`, and
+`incompatible` allow Change only; host-key stops require Review key and
+authentication stops require Connection details. Security failures take
+precedence over a backend-staged reason. Recovery never retargets or falls back
+to another runtime/backend.
 
-When retained work exists, Workspaces **Reconnect** and recovery **Retry** use
-the same-intent `retryRecovery(id, operationEpoch)` entry. It restarts stopped
-or exhausted recovery with a fresh retry budget, wakes a sleeping backoff
-immediately, and accepts an in-flight request as a no-op. It rejects after
-explicit Disconnect/Change or with a stale operation epoch. `reconnect(id)` /
+When retained work exists, **Reconnect** in the Workspaces list and Server
+sheet, and recovery **Retry**, use the same-intent
+`retryRecovery(id, operationEpoch)` entry. Both **Reconnect** controls are shown
+while recovery is reconnecting or stopped with a retry-eligible reason; they
+are hidden during resynchronization and for Change-only or security stops. A
+failure revokes the epoch, input/operation gates, and transport immediately,
+but publishes `stopped` only when the old actor finishes.
+A stopped Retry first publishes `reconnecting` with `manual_retry` while
+handing off the retained owner; duplicate current-epoch calls are no-ops and do
+not publish `runtime_replaced`. Retry restarts stopped or exhausted recovery
+with a fresh retry budget, wakes a sleeping backoff immediately, and accepts an
+in-flight request as a no-op. Explicit Disconnect/Change revoke the retry
+intent even after the old actor has finished; stale epochs are rejected.
+`reconnect(id)` /
 `ManualReconnect` and the runtime picker are reserved for cold/fresh selection,
 explicit server or Session changes, and **Change** after the target is lost.
 The first automatic attempt is immediate; bounded exponential backoff applies
@@ -253,10 +267,14 @@ Do not route IME composition through a JavaScript `TextInput` merely because it 
   selected ordinary session; Herdr uses its selected running `default` or
   named session. `meeterm` is only a suggested new-session name and legacy
   hint.
-- Each backend owns reconnect and resynchronization in the Rust core. Herdr
-  release closes/EOFs the direct controller stream before a later stable-ID
-  reacquire, while the remote process remains alive. With retained work,
-  Workspaces Reconnect and recovery Retry use `retryRecovery`; `reconnect` /
+- Each backend owns reconnect and resynchronization in the Rust core. Explicit
+  Herdr Disconnect/Change/handoff drains the direct controller stream through
+  closed/EOF before a later stable-ID reacquire, while the remote process
+  remains alive. A non-explicit network/channel/transport/remote-close failure
+  abandons the dead controller locally without waiting for a release ACK. With
+  retained work,
+  Workspaces-list and Server-sheet Reconnect and recovery Retry use
+  `retryRecovery`; `reconnect` /
   `ManualReconnect` remains the fresh-selection entry without retained work.
 - Connection/reconnect behavior belongs in the Rust core, not scattered React hooks/timers.
 - A React Native view unmount must not imply pane destruction.

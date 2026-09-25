@@ -237,9 +237,14 @@ Input, resize, and remote mutations stay closed until host authentication,
 backend capability, selected runtime, topology, selected terminal, and an
 authoritative screen have been verified and committed together. Recovery stops
 in that work screen on a concrete mismatch, conflict, authentication failure,
-or required synchronization failure, and offers **Retry** and **Change**. It
-does not open the picker, create a replacement, silently retarget, or fall back
-to the other backend.
+missing target, incompatibility, or required synchronization failure.
+`runtimeMismatch`, controller conflict, and retry-exhaustion/unknown
+stops offer **Retry** and **Change**; `runtimeMissing`, `terminalMissing`, and
+`incompatible` offer **Change** only. A changed host key offers **Review key**;
+authentication failure offers **Connection details**. The staged backend
+reason is retained unless a host-key or authentication failure takes precedence.
+Recovery does not open the picker,
+create a replacement, silently retarget, or fall back to the other backend.
 
 tmux verifies the previously selected session identity and pane ID. Herdr
 recovery checks the same approved SSH host/key, compatible Herdr 0.9.0
@@ -253,8 +258,14 @@ controller conflict, or failed full-frame/resynchronization check stops
 recovery on the retained screen. These checks do not permit fallback to another
 runtime or backend.
 
-When retained work exists, **Reconnect** in Workspaces and **Retry** both call
-the same-intent recovery path. The first automatic attempt starts immediately;
+When retained work exists, **Reconnect** in the Workspaces list or Server sheet
+is available while recovery is reconnecting or stopped for a retry-eligible
+reason; both controls are hidden during resynchronization and for Change-only
+or security stops. These controls and recovery **Retry** call the same-intent
+recovery path. A stopped Retry publishes
+`reconnecting`/`manual_retry` before replacement; duplicate current-epoch calls
+are no-ops, and explicit Disconnect/Change revoke the intent even if the old
+actor has finished. The first automatic attempt starts immediately;
 bounded exponential backoff applies only after a failed attempt. Foreground
 return and a network-change notification wake a sleeping retry when automatic
 reconnect is enabled. `reconnect`/`ManualReconnect` and the picker are reserved

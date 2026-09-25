@@ -84,8 +84,16 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   and the terminal without dimming or covering cells. Recovery progresses
   without a tap for tmux and Herdr when the selected target, required
   capability/lease, and authoritative frame checks succeed. A concrete
-  mismatch, conflict, authentication failure, or resynchronization failure
-  leaves Retry and Change actions in place. No Herdr Review/confirmation step,
+  mismatch, conflict, authentication failure, missing target, incompatibility,
+  or resynchronization failure leaves the cached work read-only. Retry and
+  Change are offered for `runtimeMismatch`, controller conflict, and
+  retry-exhaustion/unknown stops; `runtimeMissing`, `terminalMissing`, and
+  `incompatible` offer Change only. A changed host key offers Review key, while
+  authentication failure offers Connection details. Workspaces-list and
+  Server-sheet Reconnect controls appear during reconnecting or for a stopped
+  retry-eligible reason, not during
+  resynchronization or for Change-only/security stops. No Herdr
+  Review/confirmation step,
   takeover, compatibility override, or tmux fallback is implied. Workspaces
   Reconnect and recovery Retry share same-intent recovery while work is
   retained; fresh/cold connection discovery uses the picker.

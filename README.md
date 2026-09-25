@@ -51,12 +51,19 @@ authentication, compatible Herdr capability, selected runtime, original
 stable terminal ID, ordinary controller lease without takeover, and an
 authoritative full frame. Herdr 0.9.0 does not expose a comparable
 server-instance identity; that missing proof alone does not block recovery.
-Recovery stops on an actual mismatch, authentication or synchronization
-failure, missing runtime/terminal, or controller conflict, and keeps the stale
-screen available for **Retry** or **Change**.
+Recovery stops on a concrete mismatch, authentication or synchronization
+failure, missing runtime/terminal, incompatibility, or controller conflict,
+and keeps the stale screen read-only. `runtimeMismatch`, controller conflict,
+and retry-exhaustion/unknown stops offer **Retry** and **Change**; the
+`runtimeMissing`, `terminalMissing`, and `incompatible` reasons offer **Change**
+only. A changed host key offers **Review key**, and authentication failure
+offers **Connection details**. Reconnect in Workspaces or the Server
+sheet is available while retained recovery is reconnecting or stopped for a
+retry-eligible reason, and uses the same-intent path; both controls are hidden
+during resynchronization and for Change-only or security stops.
 
-When retained work exists, **Reconnect** in Workspaces and **Retry** both use
-the same-intent `retryRecovery` path. Its first automatic attempt is immediate;
+When retained work exists, **Reconnect** in Workspaces and the Server sheet,
+and **Retry**, all use the same-intent `retryRecovery` path. Its first automatic attempt is immediate;
 bounded exponential backoff applies after failures, and foreground return or a
 network-change notification wakes a sleeping retry. `reconnect` and the
 runtime picker remain the fresh-selection path for cold start, explicit

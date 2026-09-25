@@ -62,12 +62,20 @@ runtime, original stable `terminal_id`, ordinary controller lease without
 takeover, and authoritative full frame. Herdr 0.9.0 has no comparable public
 server-instance identity, but lack of that proof alone does not stop recovery.
 An actual mismatch, authentication or synchronization failure, missing runtime
-or terminal, or controller conflict keeps the cached screen with Retry/Change.
+or terminal, incompatibility, or controller conflict keeps the cached screen
+read-only. `runtimeMismatch`, controller conflict, and retry exhaustion/unknown
+offer Retry and Change; `runtimeMissing`, `terminalMissing`, and `incompatible`
+offer Change only. A changed host key offers Review key, and authentication
+failure offers Connection details.
 
-When retained work exists, Workspaces **Reconnect** and recovery **Retry** use
-the same-intent `retryRecovery` path. Its first automatic attempt is immediate;
+When retained work exists, **Reconnect** in the Workspaces list or Server sheet
+and recovery **Retry** use the same-intent `retryRecovery` path. Its first
+automatic attempt is immediate;
 bounded exponential backoff applies after failed attempts, and foreground
-return or network-change notification wakes a sleeping retry. `reconnect` /
+return or network-change notification wakes a sleeping retry. Both Reconnect
+controls are shown while recovery is reconnecting or stopped for a
+retry-eligible reason, and hidden during resynchronization or for
+Change-only/security stops. `reconnect` /
 `ManualReconnect` and the picker are reserved for cold/fresh connection,
 explicit server/Session change, or **Change** after target loss.
 Switching server/runtime releases the current controller before acquiring the

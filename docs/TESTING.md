@@ -13,8 +13,8 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
-| Android | full smoke（healthy foreground と fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker）と画像の実見。source-levelのobservational `SCREEN_NAMES` は33 route（従来25 route＋switcher 2 route＋recovery 4 route＋layout-restore warning 2 route） | Androidの自動操作とnative境界。transport-lossの実証はremote emulator実行に限り、fixtureは表示確認だけの代替ではない |
-| iOS `standard` | production保存4件、native入力／復旧bridge 12件＋scroll gesture 1件、source-level 27画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| Android | full smoke（healthy foreground と fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker）と画像の実見。source-levelのobservational `SCREEN_NAMES` は32 route（従来25 route＋switcher 2 route＋recovery 3 route＋layout-restore warning 2 route） | Androidの自動操作とnative境界。transport-lossの実証はremote emulator実行に限り、fixtureは表示確認だけの代替ではない |
+| iOS `standard` | production保存4件、native入力／復旧bridge 12件＋scroll gesture 1件、source-level 26画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
 | iOS `ssh` | 接続、ホスト鍵確認、runtime picker/選択、healthy foreground復帰、fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker、切断 | iOSの実SSH、runtime選択、native端末入力とtransport-loss接続境界 |
@@ -52,11 +52,15 @@ backend 境界を確認します。少なくとも次を、実装された sourc
   runtime identity、compatibility を再検証すること。Herdr は同じ承認済み SSH host/key、
   compatible Herdr、選択中の同じ runtime、元の stable `terminal_id`、takeover なしの通常
   controller lease、authoritative full frame を確認します。Herdr 0.9.0 に比較可能な public
-  server-instance identity がないことだけでは停止しません。host key/authentication failure、
-  runtime/terminal missing、incompatibility、実際の identity mismatch、controller conflict、
-  full-frame/resynchronization failure は cached work screen 内で止まり、Retry/Change を示します。
-  Workspaces の Reconnect と画面内 Retry は retained work の `retryRecovery` same-intent path
-  を使い、picker を開きません。linked/shared tmux topology では workspace close
+  server-instance identity がないことだけでは停止しません。host-key または authentication failure は
+  backend-staged reason より優先します。runtime/session missing、terminal missing、incompatibility、実際の
+  identity mismatch、controller conflict、full-frame/resynchronization failure は cached work screen 内で
+  reason-specific action を示します。`runtimeMismatch`/controller conflict/retry exhaustion は Retry と
+  Change、`runtimeMissing`/`terminalMissing`/`incompatible` は Change のみ、host-key は Review key、authentication は
+  Connection details です。failure 検出時には epoch/gates/transport を直ちに閉じますが、`stopped` は
+  actor finish 後に公開し、stopped Retry は `reconnecting`/`manual_retry` を先に公開します。
+  Workspaces list と Server sheet の Reconnect、および画面内 Retry は retained work の
+  `retryRecovery` same-intent path を使い、picker を開きません。linked/shared tmux topology では workspace close
   と final-pane close を実行直前に同じ Rust actor/control queue で確認し、安全を証明
   できなければ fail closed にすること。
 
@@ -160,8 +164,11 @@ bindingとは別に実際のstale/recovered handle比較を表す
   authoritative full frameを検証してReadyへ戻ります。takeover、別terminal、tmux fallbackは
   行わず、instance continuity proofがないことだけでは停止しません。
 - retry枯渇、actual identity mismatch、terminal/runtime missing、authentication failure、controller
-  conflict、必須同期失敗はcached画面内で停止しRetryとChangeを提示します。明示disconnect/changeは
-  retained recoveryを取消し、fresh manual/cold connectだけが従来どおりpickerを通ります。
+  conflict、必須同期失敗はcached画面内で停止し、reason-specific actionを提示します。
+  `runtimeMissing`/`terminalMissing`/`incompatible`はChangeのみ、host-key/authenticationはReview key/Connection detailsです。
+  epoch/gates/transportはfailure検出時に閉じ、`stopped`はactor終了時に出ます。Stopped Retryは
+  `reconnecting`/`manual_retry`を先に出し、同じepochの重複要求はno-opです。明示disconnect/changeは
+  actor終了後でもretained recoveryを取消し、fresh manual/cold connectだけが従来どおりpickerを通ります。
 
 focused Rust/App/native adapter testsの後、exact candidate commitで実OpenSSH/tmux、公式Herdr
 0.9.0 ignored integration、Android full、iOS `standard`、iOS `ssh`を実行します。Android fullと

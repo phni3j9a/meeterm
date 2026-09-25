@@ -32,10 +32,15 @@ start, attach, or mutate anything.
    controller lease without takeover, and authoritative full frame. Missing
    server-instance identity by itself does not require confirmation. An actual
    mismatch, authentication/synchronization failure, missing runtime/terminal,
-   or controller conflict keeps the stale work screen with **Retry** and
-   **Change connection or runtime**; it does not open the picker automatically.
-   **Reconnect** in Workspaces and **Retry** use `retryRecovery` for retained
-   work. The first automatic retry is immediate, subsequent failures use
+   incompatibility, or controller conflict keeps the stale work screen
+   read-only. Identity mismatch, controller conflict, and retry-exhaustion/
+   unknown stops offer **Retry** and **Change connection or runtime**;
+   `runtimeMissing`, `terminalMissing`, and `incompatible` offer Change only.
+   A changed host key offers **Review key**, and authentication failure offers
+   **Connection details**. **Reconnect** in the
+   Workspaces list and Server sheet appears while recovery is reconnecting or
+   stopped with a retry-eligible reason, and uses `retryRecovery` for retained
+   work. The first automatic retry is immediate; subsequent failures use
    bounded exponential backoff, and foreground/network-change events wake a
    sleeping retry. After the app process exits, open **サーバーに接続**
    (**Connect**) and authenticate again; a fresh manual/cold connection always

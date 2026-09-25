@@ -145,9 +145,17 @@ keeps the last authoritative native terminal/workspace mounted but revokes its
 operation epoch. Retained recovery verifies host-key/authentication, backend
 capability, selected runtime, selected terminal, topology, and authoritative
 screen resynchronization before returning to Ready. A concrete mismatch,
-conflict, authentication failure, or failed required synchronization keeps the
-cached read-only screen available for Retry or explicit Change. An unsupported
-server-instance continuity proof is not itself a conflict.
+conflict, authentication failure, missing target, incompatibility, or failed
+required synchronization keeps the cached read-only screen.
+`runtimeMismatch`, controller conflict, and retry-exhaustion/unknown stops allow
+Retry and Change; `runtimeMissing`, `terminalMissing`, and `incompatible` allow
+Change only. A changed host key requires Review key and authentication failure
+requires Connection details. An unsupported server-instance continuity proof
+is not itself a conflict.
+Failure detection immediately advances the operation epoch, closes readiness
+gates, and detaches transport; the `stopped` phase is committed when the actor
+finishes. The specific backend-staged reason is kept through that boundary,
+unless a host-key or authentication failure takes precedence.
 
 tmux supplies a server PID/start-time epoch that can prove an unchanged server
 for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
@@ -480,18 +488,28 @@ native view binds a `native:<id>` borrowed Rust terminal handle when the selecte
 pane changes. View unmount does not disconnect or destroy the remote pane.
 
 Rust owns bounded automatic retry after transient transport loss. When retained
-work exists, Workspaces **Reconnect** and recovery **Retry** both call
-`retryRecovery(id, operationEpoch)`: stopped/exhausted recovery restarts the
-same intent with a fresh retry budget, sleeping backoff wakes immediately, and
-an in-flight attempt accepts a no-op request. An explicit Disconnect/Change
-or stale operation epoch rejects the request. `reconnect(id)` /
+work exists, Workspaces-list and Server-sheet **Reconnect** and recovery
+**Retry** both call `retryRecovery(id, operationEpoch)`. Both **Reconnect**
+controls are shown during reconnecting or for a stopped retry-eligible reason,
+but not while resynchronizing or for Change-only/security stops.
+Stopped/exhausted recovery
+restarts the same intent with a fresh retry budget, sleeping backoff wakes
+immediately, and an in-flight attempt accepts a no-op request. When a stopped
+actor is retried, `reconnecting`/`manual_retry` is published before replacement;
+duplicate current-epoch calls do not create another actor or report
+`runtime_replaced`. Explicit Disconnect/Change revokes intent even after actor
+finish; a stale operation epoch rejects the request. `reconnect(id)` /
 `ManualReconnect` is only the fresh-selection boundary when there is no retained
 work. The first automatic attempt starts immediately; bounded exponential
 backoff applies only after a failed attempt. Foreground return and
 `network_changed()` wake retained recovery sleeping in backoff when automatic
 reconnect is enabled and the app is foregrounded. This wake never interrupts a
-healthy connection or resets the retry budget. A connection generation scopes
-the actor; a separate monotonic operation epoch invalidates delayed key, paste,
+healthy connection or resets the retry budget. On non-explicit Herdr
+network/channel/transport/remote-close failures, the dead controller is
+abandoned locally without waiting for a release ACK; explicit Disconnect,
+Change, and hidden-view handoff drain release through closed/EOF before a later
+acquire. A connection generation scopes the actor; a separate monotonic
+operation epoch invalidates delayed key, paste,
 resize, terminal-generated reply, and topology-mutation callbacks. Cached
 native output can remain visible while that gate is closed, but only a complete
 authoritative resynchronization sets Ready and reopens input. Explicit

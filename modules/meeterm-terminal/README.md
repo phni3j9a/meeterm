@@ -7,16 +7,22 @@ not release the remote runtime.
 
 ## Retained recovery
 
-When the connection has retained work, Workspaces **Reconnect** and the
-recovery screen's **Retry** call `retryRecovery(terminalId, operationEpoch)`.
+When the connection has retained work, Workspaces-list and Server-sheet
+**Reconnect** controls and the recovery screen's **Retry** call
+`retryRecovery(terminalId, operationEpoch)`.
 The native core restarts stopped or exhausted recovery with a fresh retry
 budget, wakes a sleeping backoff immediately, and accepts a request during an
 active attempt as a no-op. Explicit Disconnect/Change and a stale operation
-epoch reject the request.
+epoch reject the request, including when the old actor has already finished.
+Failure detection closes the epoch, input/operation gates, and transport
+immediately; the public `stopped` phase is published only after actor finish.
+A stopped Retry first publishes `reconnecting`/`manual_retry`; duplicate
+current-epoch requests are no-ops.
 
 `reconnect(terminalId)` is reserved for a fresh selection flow with no retained
-work, such as cold start or an explicit server/Session change. Recovery never
-uses it to reopen the picker.
+work, such as cold start or an explicit server/Session change; it starts fresh
+connection recovery and opens the runtime picker. Retained recovery never uses
+it to reopen the picker.
 
 The first automatic attempt after transport loss starts immediately. Bounded
 exponential backoff applies after failures. `setForeground(true)` and the
@@ -34,4 +40,10 @@ compatible Herdr capability, the selected running runtime, the original stable
 authoritative full frame. A missing Herdr server-instance continuity proof by
 itself is not a stop condition. Actual target mismatch, conflict, missing
 runtime/terminal, authentication failure, incompatibility, or failed required
-resynchronization keeps the retained work read-only for Retry or Change.
+resynchronization keeps retained work read-only. `runtimeMismatch`, controller
+conflict, and retry exhaustion/unknown offer Retry and Change; `runtimeMissing`,
+`terminalMissing`, and `incompatible` offer Change only. A changed host key
+offers Review key, and authentication failure offers Connection details.
+Both Reconnect controls are shown during reconnecting or for a stopped
+retry-eligible reason, but hidden during resynchronization and for Change-only/
+security stops.

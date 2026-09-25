@@ -209,6 +209,9 @@ drain してから終えます。foreground では stable `terminal_id` を使�
 process を終了させずに snapshot/frame を resync します。background の transport loss は
 Rust が bounded reconnect します。別の server profile または runtime へ切り替える場合も、
 先に現在の controller を release してから新しい actor/binding を取得します。
+ただし、明示操作ではない network/channel/transport/remote-close failure の場合は、dead
+controller をローカルで abandon し、届かない release ACK を待ちません。明示 Disconnect/Change
+と hidden-view handoff は従来どおり release/EOF を drain してから次の acquire に進みます。
 
 Herdr 0.9.0 の公開 API は transport loss の前後で同じ server instance だと比較できる
 identity を公開しません。この不足だけでは通常 recovery を止めません。一度 `Ready` に
@@ -220,16 +223,26 @@ controller lease を takeover なしで取得し、最初の authoritative full 
 
 host key 変更、認証失敗、選択 runtime/session または stable terminal の欠落、互換性不一致、
 実際の identity mismatch、controller conflict、authoritative frame または必要な再同期の失敗は
-具体的な停止条件です。古い画面内で Retry は同じ recovery intent を再試行し、Change は対象を
-破棄して fresh picker へ進みます。別 runtime や tmux へ暗黙 fallback しません。保持対象が
-ない cold/fresh connection、明示的な server/Session change、および target loss 後にユーザーが
-Change を選んだ時だけ fresh-selection picker を使います。
+具体的な停止条件です。failure 検出時に epoch、入力/操作 gate、transport を直ちに閉じますが、
+`stopped` は旧 actor の終了時に公開します。backend が stage した停止理由は維持し、host-key または
+authentication failure がある場合はその security reason を優先します。画面内では
+`runtimeMismatch`、controller conflict、retry exhaustion/unknown に **Retry** と **Change**、
+`runtimeMissing`、`terminalMissing`、`incompatible` に **Change** のみを出します。host key 変更は
+**Review key**、認証失敗は **Connection details** を要求します。Workspaces list と Server sheet の
+**Reconnect** は reconnecting 中または Retry 可能な stopped reason の時だけ表示し、resynchronizing
+中・Change-only・security stop では隠します。
+Retry は同じ recovery intent を再試行し、Change は対象を破棄して fresh picker へ進みます。別 runtime
+や tmux へ暗黙 fallback しません。保持対象がない cold/fresh connection、明示的な server/Session
+change、および target loss 後にユーザーが Change を選んだ時だけ fresh-selection picker を使います。
 
-保持対象がある時の Workspaces の **Reconnect** と recovery 画面の **Retry** は、同じ
-`retryRecovery(id, operationEpoch)` fast path を使います。初回 automatic retry は即時で、
+保持対象がある時の Workspaces list / Server sheet の **Reconnect** と recovery 画面の **Retry** は、
+同じ `retryRecovery(id, operationEpoch)` fast path を使います。初回 automatic retry は即時で、
 bounded exponential backoff は失敗後だけに適用します。foreground 復帰と network-change 通知は、
 foreground かつ automatic reconnect が有効な間、backoff 中の retry を起こします。健康な接続を
 切らず、retry budget も reset しません。
+stopped owner の Retry は `reconnecting`/`manual_retry` を先に公開してから同じ owner を引き継ぎ、
+同じ epoch の重複呼び出しは no-op です。Disconnect/Change は旧 actor 終了後でも recovery intent を
+取り消し、遅れて届いた Retry から再開させません。
 
 tmux は選択した通常の session を PC から `tmux attach -t <selected-session>` で開き、同じ
 window/pane layout を使えます。Herdr は選択した session を通常の Herdr client から開けます。
