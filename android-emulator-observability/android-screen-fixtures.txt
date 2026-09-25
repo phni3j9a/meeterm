@@ -23,7 +23,6 @@ herdr-workspaces=captured
 recovery-progress=captured
 recovery-exhausted=captured
 recovery-mismatch=captured
-herdr-recovery-confirm=captured
 layout-restore-unconfirmed=captured
 runtime-layout-restore-unconfirmed=captured
 welcome=captured

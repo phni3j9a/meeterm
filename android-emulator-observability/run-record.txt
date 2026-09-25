@@ -1,24 +1,22 @@
-issue-27-sequential-switcher Android acceptance @ 1f219d9 (1f219d94eb17942338df835fb88a4accb9e568ec)
-run_kind=full-acceptance; branch=issue-27-sequential-switcher
-final candidate: iOS sheet-transition fix (fix(ios): 切替シートのManage serversはシートを閉じてから既存のSaved serversを開く) + App.tsx changed -> fresh build
+PR #42 / Issue #41 (issue-41-fast-recovery) Android final acceptance @ 6818d43 (6818d431f7e5c8b08a6cf518467a6d532c2acfb4)
+run_kind=full-acceptance; branch=issue-41-fast-recovery
+change: Herdr recovery-confirm route removed (Android SCREEN_NAMES now 32); retained recovery is zero-tap - transport loss must return Ready to the same pane/native handle with no picker and no confirmation.
 env=meeterm_api36 headless emulator-5554; toolchain=rustc-1.96.0, ndk-27.1.12297006, node-v24.19.0 (blueprint pins 22.22.2 - standing deviation), npm-10.8.3, gradle-9.3.1
-fresh chain: git fetch -> git reset --hard 1f219d9 -> npm ci -> expo prebuild --platform android --clean (fresh CNG) -> assembleRelease (3m11s)
-suite duration: ~27 min
+fresh chain: git fetch -> git reset --hard 6818d43 -> npm ci -> expo prebuild --platform android --clean (fresh CNG) -> assembleRelease (3m20s, 668 tasks)
+suite duration: ~34 min
 
 stages:
 - npm ci: PASS
 - expo prebuild --clean: PASS
-- assembleRelease: PASS (fresh build, 668 tasks)
-- android-smoke.sh gates: PASS (native terminal smoke)
-- screen fixtures: 32/33 captured - both session-switcher + session-switcher-sessions captured; route 'empty' reports unavailable:missing_screen_element_0,screen_element_1 = PRE-EXISTING baseline identical on prior evidence runs. Manifest on this branch is 33 routes.
+- assembleRelease: PASS (fresh build)
+- android-smoke.sh gates (machine gates 1-6): PASS - device ready, emulator host loopback, host alias reachable, adb reverse preflight empty, native terminal smoke, artifact capture
+- screen fixtures: 31/32 captured - manifest is 32 routes on this commit (herdr-recovery-confirm REMOVED, correctly absent); 'empty' reports unavailable:missing_screen_element_0,screen_element_1 = PRE-EXISTING baseline
 - SSH fixture suite (fixture.py -- android-smoke.py): PASS, result=passed stage=disconnect_after_resume reason=ok
 
-added-scope verification (all in-suite, completed= markers):
-- daily_same_server_session_switched: PASS - same-server session switch via switcher
-- daily_same_server_old_shell_survived: PASS - original shell PID survived the same-server switch
-- daily_cross_endpoint_destination_input: PASS - switch to alternate SSH endpoint (fixture alternate port, switcher-alternate-destination), destination input marker delivered
-- daily_cross_endpoint_old_shell_survived: PASS - original shell PID survived the cross-endpoint switch
-- host_key_verified: PASS - host key confirmation during initial connect (alternate endpoint saved via daily_second_profile_saved)
-- also green: transport_loss_evidence=passed, daily foreground recovery chain, cold-start->saved-profile->picker->connected, workspaces/panes/selection/CJK/handoff, manual reconnect, both disconnects
+transport-loss zero-tap verification (Issue #41):
+- daily_transport_loss_injected -> stale_read_only -> restored -> authoritative_ready -> post_marker_once -> remote_ack -> complete
+- NO picker and NO confirmation stage between transport-loss restore and Ready - recovery is zero-tap to the same pane/native handle (remote_ack = marker echoed on the same remote pane)
+- transport_loss_evidence=passed
+- picker stages only appear where intended: initial_runtime_selection_*, daily_saved_profile_connect_*, manual_reconnect_* (explicit fresh connects still show the picker per AGENTS.md)
 
 result=PASS

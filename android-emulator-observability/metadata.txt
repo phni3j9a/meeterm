@@ -1,17 +1,3 @@
-source_sha=376164e182a71a0393590b114814ef22d7da9a4a
-suite=android-emulator-observability
-branch=issue-27-sequential-switcher
-run_kind=full-acceptance
-fresh_build=yes-npm-ci+cng-clean+assembleRelease
-toolchains=rustc-1.96.0,ndk-27.1.12297006,node-v24.19.0,npm-10.8.3,gradle-9.3.1
-emulator=meeterm_api36-api36-headless
-api=36
-abi=x86_64
-device=sdk_gphone64_x86_64
-launcher_stabilizer=forced_stop_before_launch
-launcher_anr_recovery=not_observed
-app_pid_identity=captured
-smoke_exit=0
 api=36
 abi=x86_64
 device=sdk_gphone64_x86_64
