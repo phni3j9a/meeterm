@@ -269,8 +269,10 @@ function makeNativeEnvironment() {
     recoveryConfirmShouldFail: false,
     pendingRecoveryConfirm: null,
     changeRuntimeShouldFail: false,
+    changeRuntimeFailureAfterRelease: false,
     changeRuntimeMode: 'ready',
     pendingChangeRuntime: null,
+    hostKeyPendingProfileId: '',
     disconnectRelease: null,
     changeRuntimeRelease: null,
   };
@@ -305,9 +307,19 @@ function makeNativeEnvironment() {
       const profile = environment.profiles.find(item => item.id === profileId);
       environment.connection = {
         ...environment.connection,
-        state: 'DiscoveringRuntimes',
+        state: environment.hostKeyPendingProfileId === profileId ? 'HostKeyPending' : 'DiscoveringRuntimes',
         host: profile?.host ?? environment.connection.host,
         port: profile?.port ?? environment.connection.port,
+        fingerprint: environment.hostKeyPendingProfileId === profileId ? 'SHA256:unknownFixtureHost' : '',
+        algorithm: environment.hostKeyPendingProfileId === profileId ? 'ssh-ed25519' : '',
+      };
+    },
+    async respondToHostKey(_connectionId, fingerprint, accept) {
+      environment.nativeCalls.push({ method: 'respondToHostKey', fingerprint, accept });
+      environment.connection = {
+        ...environment.connection,
+        state: accept ? 'DiscoveringRuntimes' : 'Failed',
+        fingerprint: '',
       };
     },
     async getRuntimeDiscovery() {
@@ -413,6 +425,15 @@ function makeNativeEnvironment() {
     async changeRuntime(_connectionId, operationEpoch) {
       environment.calls.push({ method: 'changeRuntime', operationEpoch });
       if (environment.changeRuntimeShouldFail) throw new Error('runtime change rejected');
+      if (environment.changeRuntimeFailureAfterRelease) {
+        environment.connection = { ...environment.connection, state: 'Disconnected' };
+        environment.snapshot.control = workspaceControl({
+          ...environment.snapshot.control,
+          runtimeOperationsReady: false,
+          terminalInputReady: false,
+        });
+        throw new Error('runtime recovery unavailable after release');
+      }
       if (environment.changeRuntimeMode === 'pending') {
         await new Promise((resolve, reject) => {
           environment.pendingChangeRuntime = { operationEpoch, resolve, reject };
@@ -1545,6 +1566,47 @@ test('switcher opens without native work and an explicit saved-server choice rep
   assert.equal(fixture.environment.profiles[0].credentialSaved, true, 'switching preserves secure credential ownership');
 });
 
+test('iOS switcher verifies an unknown cross-endpoint host before showing its Session list', async t => {
+  const current = pickerProfile('trusted-old.example');
+  current.name = 'Trusted source';
+  const target = {
+    ...pickerProfile('untrusted-target.example'),
+    id: '00000000-0000-4000-8000-000000000046',
+    name: 'Untrusted target',
+    port: 2224,
+  };
+  const fixture = await connectSavedProfileToRuntime(
+    t,
+    current,
+    runtimeCandidate('trusted-source', 'tmux', 'source-session', 'running'),
+    [target],
+  );
+  fixture.environment.hostKeyPendingProfileId = target.id;
+  fixture.environment.runtimeDiscovery = pickerDiscovery(2, [
+    runtimeCandidate('untrusted-destination', 'tmux', 'destination-session', 'running'),
+  ]);
+
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${target.id}`));
+  await poll(fixture.environment);
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'HostKeyPending');
+  assert.equal(fixture.environment.alert?.title, 'Trust this SSH host?');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'runtime-row-tmux-untrusted-destination').length, 0,
+    'candidate rows must wait until the user approves the host identity');
+  const trust = fixture.environment.alert.buttons.find(button => button.text === 'Trust and connect');
+  assert.equal(typeof trust?.onPress, 'function');
+  await act(async () => { trust.onPress(); });
+  await poll(fixture.environment);
+  await settleAsync();
+
+  assert.ok(findText(fixture.root, 'Choose a Session'),
+    'the switcher should continue into the Session list after host approval');
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-untrusted-destination'));
+  assert.equal(fixture.environment.connection.port, target.port);
+});
+
 test('closing the untouched switcher keeps the selected owner and workspace intact', async t => {
   const profile = {
     id: '00000000-0000-4000-8000-000000000044', name: 'Close check',
@@ -1615,6 +1677,50 @@ test('same-server switch releases through changeRuntime and does not mark the la
   ]);
 });
 
+test('same-server changeRuntime failure after release clears the stale workspace', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000047', name: 'Release failure',
+    host: 'release-failure.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'initial',
+  };
+  const fixture = await connectSavedProfileToRuntime(t, profile,
+    runtimeCandidate('release-failure-runtime', 'tmux', 'initial', 'running'));
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await settleAsync();
+  fixture.environment.changeRuntimeFailureAfterRelease = true;
+
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0,
+    'a rejected setup after native release must not preserve the old workspace');
+  const screenText = all(fixture.root, node => node.type === 'Text').map(textContent).join(' ');
+  assert.match(screenText, /The current session is disconnected/);
+  assert.doesNotMatch(screenText, /current session is unchanged/);
+});
+
+test('same-server changeRuntime rejection keeps the workspace only while the native owner stays Ready', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000048', name: 'Pre-release failure',
+    host: 'pre-release-failure.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'initial',
+  };
+  const fixture = await connectSavedProfileToRuntime(t, profile,
+    runtimeCandidate('pre-release-runtime', 'tmux', 'initial', 'running'));
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await settleAsync();
+  fixture.environment.changeRuntimeShouldFail = true;
+
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+  const screenText = all(fixture.root, node => node.type === 'Text').map(textContent).join(' ');
+  assert.match(screenText, /current session is unchanged/);
+});
+
 test('cancel after a cross-server switch releases the provisional host and ignores a late Ready selection', async t => {
   const current = pickerProfile('old.example');
   current.name = 'Old server';
@@ -1645,8 +1751,14 @@ test('cancel after a cross-server switch releases the provisional host and ignor
   fixture.environment.resolvePendingSelection('ready');
   await poll(fixture.environment);
   await settleAsync();
-  assert.equal(fixture.environment.connection.state, 'Ready', 'the mock delivered a deliberately late selection result');
+  assert.equal(fixture.environment.connection.state, 'Disconnected', 'a late native Ready is released after cancellation');
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length, 0,
+    'the canceled generation must never be shown as Connected');
   assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0, 'the late old generation cannot bind a workspace');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'switcher-server-__current_connection__').length, 0,
+    'a canceled generation cannot be shown as the current Session');
+  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect').length >= 4,
+    'the app disconnects again after observing the late native Ready');
   assert.equal(fixture.environment.lastUsedUpdates.length, 1, 'cancel does not save a hint for an uncommitted target');
 });
 

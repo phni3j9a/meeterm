@@ -1095,6 +1095,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const runtimeHintRef = useRef<RuntimeHint | null>(null);
   const switcherOperation = useRef(false);
   const switcherBoundary = useRef(Boolean(fixture?.switcherStarted));
+  const switcherCancelFence = useRef(false);
+  const switcherCancelReleaseIssued = useRef(false);
   const returnToSwitcherAfterForm = useRef(false);
   const switcherFormConnected = useRef(false);
   const controlRef = useRef(control);
@@ -1225,7 +1227,24 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const pendingRefreshAtStart = pendingRuntimeRefresh.current;
       const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart || pendingRefreshAtStart);
       try {
-        const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        let next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        if (switcherCancelFence.current && next.state === 'Ready'
+          && !commandPending.current && version === commandVersion.current) {
+          // A native runtime-selection request may finish after the user
+          // canceled the switch. Keep the canceled UI fail-closed and release
+          // that late owner once; the next explicit connection clears this
+          // intent fence.
+          if (!switcherCancelReleaseIssued.current) {
+            switcherCancelReleaseIssued.current = true;
+            try {
+              await MeetermTerminal.disconnect(CONNECTION_ID);
+              next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+            } catch {
+              next = { ...next, state: 'Disconnected' };
+            }
+          }
+          if (next.state === 'Ready') next = { ...next, state: 'Disconnected' };
+        }
         // Host authentication and fresh runtime discovery do not have
         // workspace metadata yet. A retained-work recovery is the exception:
         // keep polling its coherent cached snapshot so the existing native
@@ -2102,7 +2121,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, []);
 
   const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>, keepSwitcher = false) => {
-    if (Platform.OS === 'ios' && (formVisible || sheet !== null)) setHostPromptDeferred(true);
+    if (Platform.OS === 'ios' && (formVisible || (sheet !== null && !keepSwitcher))) setHostPromptDeferred(true);
+    switcherCancelFence.current = false;
+    switcherCancelReleaseIssued.current = false;
     recoveryInvalidatedRef.current = false;
     setRecoveryInvalidated(false);
     setRecoveredEpoch('');
@@ -2333,6 +2354,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const beginSwitcherTarget = useCallback(async (target: SwitcherTarget) => {
     if (commandPending.current || switcherOperation.current) return false;
+    switcherCancelFence.current = false;
+    switcherCancelReleaseIssued.current = false;
     switcherOperation.current = true;
     commandPending.current = true;
     commandVersion.current += 1;
@@ -2344,6 +2367,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     let boundaryAccepted = false;
     const profile = target.profile;
     const selectedProfileId = target.isCurrent ? profileId : profile.id;
+    const originalConnection = connection;
+    const originalSession = session;
+    const originalControl = control;
+
+    const originalRuntimeIsStillReady = async () => {
+      try {
+        const [observedConnection, observedSession] = await Promise.all([
+          MeetermTerminal.getConnectionState(CONNECTION_ID),
+          MeetermTerminal.getWorkspaceState(CONNECTION_ID),
+        ]);
+        const observedControl = normalizeWorkspaceControl((observedSession as WorkspaceState & { control?: unknown }).control);
+        return observedConnection.state === 'Ready'
+          && observedConnection.host === originalConnection.host
+          && observedConnection.port === originalConnection.port
+          && observedSession.backend === originalSession.backend
+          && observedSession.runtime === originalSession.runtime
+          && observedControl.operationEpoch === originalControl.operationEpoch
+          && observedControl.runtimeOperationsReady
+          && observedControl.terminalInputReady;
+      } catch {
+        return false;
+      }
+    };
 
     const publishBoundary = (state: 'Connecting' | 'Disconnected') => {
       // Do not let a poll which began against the old connection restore its
@@ -2405,6 +2451,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       }
       return true;
     } catch {
+      if (!boundaryAccepted && !(await originalRuntimeIsStillReady())) {
+        // Native changeRuntime/disconnect may release the old actor before a
+        // later setup step rejects. Only preserve the old screen when the
+        // exact original runtime is still authoritatively Ready.
+        boundaryAccepted = true;
+        publishBoundary('Disconnected');
+      }
       if (boundaryAccepted) {
         switcherBoundary.current = true;
         setSwitcherStarted(true);
@@ -2422,7 +2475,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       commandPending.current = false;
       setCommandBusy(false);
     }
-  }, [connection.state, control.operationEpoch, observeCleanupWarning, preferences, preferencesLoaded, profileId, resetForConnection]);
+  }, [connection, control, observeCleanupWarning, preferences, preferencesLoaded, profileId, resetForConnection, session]);
 
   const startSwitcherTarget = useCallback(async (target: SwitcherTarget) => {
     const needsForm = !target.profile.credentialSaved && !(target.isCurrent
@@ -2494,6 +2547,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       ? 'The previous attempt was canceled. Its remote session remains available; choose a server to continue.'
       : '');
     switcherBoundary.current = false;
+    switcherCancelFence.current = true;
+    switcherCancelReleaseIssued.current = false;
     recoveryInvalidatedRef.current = true;
     setRecoveryInvalidated(true);
     workspaceObservationRef.current = false;
