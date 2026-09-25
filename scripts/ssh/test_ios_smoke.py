@@ -184,10 +184,122 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         helper_end = source.index("private func selectSwitcherSession", helper_start)
         helper = source[helper_start:helper_end]
 
-        self.assertIn('button("Switch server or session").tap()', helper)
-        self.assertIn('button("Manage servers").tap()', helper)
+        self.assertIn('let open = button("Switch server or session")', helper)
+        self.assertIn("waitForHittable(open, timeout: 20)", helper)
+        self.assertIn('let manage = button("Manage servers")', helper)
+        self.assertIn("waitForHittable(manage, timeout: 20)", helper)
         self.assertIn('app.staticTexts["Saved servers"].waitForExistence(timeout: 15)', helper)
+        self.assertIn("waitForHittable(add, timeout: 15)", helper)
+        self.assertIn('verifyPasswordForm(stagePrefix: "switcher_alternate")', helper)
+        self.assertIn(
+            'profileName: "Alternate endpoint",\n      stagePrefix: "switcher_alternate"',
+            helper,
+        )
+        self.assertLess(
+            helper.index('fillTextField(label: "Username", value: username)'),
+            helper.index('verifyPasswordForm(stagePrefix: "switcher_alternate")'),
+        )
+        self.assertLess(
+            helper.index('verifyPasswordForm(stagePrefix: "switcher_alternate")'),
+            helper.index('profileName: "Alternate endpoint"'),
+        )
+        self.assertLess(
+            helper.index('profileName: "Alternate endpoint"'),
+            helper.index("fillPrivateKey(key)"),
+        )
+        self.assertIn("waitForHittable(save, timeout: 10)", helper)
+        self.assertIn("waitForConnectionFormDismissal(timeout: 30)", helper)
+        self.assertIn("waitForHittable(alternateProfile, timeout: 15)", helper)
+        self.assertIn("waitForHittable(close, timeout: 10)", helper)
+        self.assertIn("waitForHittable(switcher, timeout: 15)", helper)
         self.assertNotIn('button("Server connection").tap()', helper)
+        self.assertNotIn('fillTextField(label: "Server name"', helper)
+
+        profile_start = source.index("private func configureSavedFixtureProfile(")
+        profile_end = source.index("private func saveAlternateFixtureProfile", profile_start)
+        profile_helper = source[profile_start:profile_end]
+        reveal_name = profile_helper.index('revealAuthenticationControl(name, stage: "\\(prefix)profile_name")')
+        fill_name = profile_helper.index('fillTextField(label: "Server name", value: profileName)')
+        reveal_credentials = profile_helper.index('revealAuthenticationControl(save, stage: "\\(prefix)save_credentials")')
+        reveal_key = profile_helper.index('revealAuthenticationControl(key, stage: "\\(prefix)return_to_key")')
+        self.assertLess(reveal_name, fill_name)
+        self.assertLess(fill_name, reveal_credentials)
+        self.assertLess(reveal_credentials, reveal_key)
+
+        workflow_start = source.index("private func runRealSshWorkflow")
+        workflow_end = source.index("func testConnectionFormControlsWithoutSecrets", workflow_start)
+        workflow = source[workflow_start:workflow_end]
+        self.assertLess(workflow.index("verifyPasswordForm()"), workflow.index("configureSavedFixtureProfile()"))
+        self.assertLess(workflow.index("configureSavedFixtureProfile()"), workflow.index("fillPrivateKey(key)"))
+
+    def test_ssh_alternate_endpoint_flow_checks_endpoint_session_workspace_and_old_shell(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index('    let alternatePort = requiredEnvironment("MEETERM_SSH_ALTERNATE_PORT")')
+        end = source.index('record("ssh_switcher_cross_endpoint_old_shell_survived")', start)
+        flow = source[start:end]
+
+        steps = (
+            "saveAlternateFixtureProfile(",
+            'serverName: "Alternate endpoint"',
+            'sessionName: "switcher-alternate-destination"',
+            'expectedHostPort: "\\(host):\\(alternatePort)"',
+            'sessionName: "switcher-alternate-destination",\n      marker:',
+            'serverName: "Daily fixture"',
+            'sessionName: "meeterm"',
+            'let returnedWorkspace = button("Workspace ios-main")',
+            'tapNativeTerminal(stage: "ssh_switcher_cross_old_shell_check")',
+            "test \\\"$$\\\" = '\\(oldShellPid)'",
+            'waitForExactMarker(crossReturnMarker, at: crossReturnPath)',
+            'tapBackToWorkspaces(stage: "ssh_switcher_cross_old_shell_check")',
+        )
+        positions = [flow.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("trustHostKey: true", flow)
+
+        switcher_start = source.index("private func selectSwitcherSession(")
+        marker_start = source.index("private func sendSwitcherMarker(", switcher_start)
+        switcher_helper = source[switcher_start:marker_start]
+        self.assertIn('button("Browse sessions on \\(serverName)")', switcher_helper)
+        self.assertIn("waitForHittable(server, timeout: 20)", switcher_helper)
+        self.assertIn("guard let expectedHostPort else", switcher_helper)
+        self.assertIn("expectedHostPort: expectedHostPort", switcher_helper)
+        self.assertIn('button("tmux session \\(sessionName)")', switcher_helper)
+        self.assertIn("waitForHittable(session, timeout: 90)", switcher_helper)
+        self.assertIn("connectedElement().waitForExistence(timeout: 90)", switcher_helper)
+
+        marker_end = source.index("private func waitForExactMarker", marker_start)
+        marker_helper = source[marker_start:marker_end]
+        self.assertIn('case "switcher-alternate-destination": workspaceName = "switcher-alternate-main"', marker_helper)
+        self.assertIn("waitForHittable(workspace, timeout: 20)", marker_helper)
+        self.assertIn("tapNativeTerminal(stage: stage)", marker_helper)
+        self.assertIn("waitForExactMarker(marker, at: path)", marker_helper)
+        self.assertIn("tapBackToWorkspaces(stage: stage)", marker_helper)
+
+        host_key_start = source.index("private func acceptFixtureHostKey(")
+        host_key_end = source.index("private func selectFixtureTmuxRuntimeAndWaitForConnected", host_key_start)
+        host_key_helper = source[host_key_start:host_key_end]
+        self.assertIn("expectedHostPort: String? = nil", host_key_helper)
+        self.assertIn("$0.label.contains(expectedHostPort)", host_key_helper)
+        self.assertIn("$0.label.contains(expectedFingerprint)", host_key_helper)
+        self.assertIn("waitForDisappearance(alert, timeout: 10)", host_key_helper)
+
+        app_source = (REPOSITORY_ROOT / "App.tsx").read_text(encoding="utf-8")
+        profile_list_source = (REPOSITORY_ROOT / "app" / "DailyUse.tsx").read_text(encoding="utf-8")
+        self.assertIn("accessibilityLabel={`Browse sessions on ${profile.name}`}", app_source)
+        self.assertIn("switcherTarget ? 'session' : 'runtime'", app_source)
+        self.assertIn("const accessibilityLabel = `Workspace ${workspace.name}", app_source)
+        self.assertIn("Alert.alert('Trust this SSH host?'", app_source)
+        self.assertIn("`${connection.host}:${connection.port}", app_source)
+        self.assertIn("'Trust and connect'", app_source)
+        self.assertIn('accessibilityLabel={`Connect saved server ${item.name}`}', profile_list_source)
+        self.assertIn('label="Back to workspaces"', app_source)
+
+        terminal_tap_start = source.index("private func tapNativeTerminal(stage: String)")
+        back_tap_start = source.index("private func tapBackToWorkspaces(stage: String)", terminal_tap_start)
+        marker_wait_start = source.index("private func waitForExactMarker", back_tap_start)
+        navigation_helpers = source[terminal_tap_start:marker_wait_start]
+        self.assertIn("waitForHittable(terminal, timeout: 10)", navigation_helpers)
+        self.assertIn("waitForHittable(back, timeout: 10)", navigation_helpers)
 
     def test_text_input_lookup_uses_editable_accessibility_types_and_stable_identifiers(self):
         source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")

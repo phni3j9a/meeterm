@@ -883,12 +883,13 @@ final class MeetermSmokeUITests: XCTestCase {
       stage: "ssh_switcher_same_old_shell_check"
     )
     XCTAssertTrue(waitForExactMarker(sameReturnMarker, at: sameReturnPath), "The old shell did not survive a same-server Session switch.")
-    button("Back to workspaces").tap()
+    guard tapBackToWorkspaces(stage: "ssh_switcher_same_old_shell_check") else { return }
     record("ssh_switcher_same_server_old_shell_survived")
 
+    let alternatePort = requiredEnvironment("MEETERM_SSH_ALTERNATE_PORT")
     saveAlternateFixtureProfile(
       host: host,
-      port: requiredEnvironment("MEETERM_SSH_ALTERNATE_PORT"),
+      port: alternatePort,
       username: username,
       key: key
     )
@@ -897,7 +898,8 @@ final class MeetermSmokeUITests: XCTestCase {
       serverName: "Alternate endpoint",
       sessionName: "switcher-alternate-destination",
       stage: "ssh_switcher_cross_endpoint",
-      trustHostKey: true
+      trustHostKey: true,
+      expectedHostPort: "\(host):\(alternatePort)"
     ) else { return }
     guard sendSwitcherMarker(
       sessionName: "switcher-alternate-destination",
@@ -918,14 +920,14 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     returnedWorkspace.tap()
     guard waitForTerminal() else { XCTFail("The original Session did not reopen after endpoint switching."); return }
-    try terminalElement().tap()
+    guard tapNativeTerminal(stage: "ssh_switcher_cross_old_shell_check") else { return }
     let crossReturnMarker = "\(markerValue)-cross-return"
     enterTerminalCommand(
       "test \"$$\" = '\(oldShellPid)' && printf '%s\\n' '\(crossReturnMarker)' > \(shellQuote(crossReturnPath.path))",
       stage: "ssh_switcher_cross_old_shell_check"
     )
     XCTAssertTrue(waitForExactMarker(crossReturnMarker, at: crossReturnPath), "The old shell did not survive switching to another SSH endpoint.")
-    button("Back to workspaces").tap()
+    guard tapBackToWorkspaces(stage: "ssh_switcher_cross_old_shell_check") else { return }
     record("ssh_switcher_cross_endpoint_old_shell_survived")
 
     // This is a separate, deterministic transport-loss branch. The fixture
@@ -1522,7 +1524,10 @@ final class MeetermSmokeUITests: XCTestCase {
       && terminal.identifier == terminalIdentifier
   }
 
-  private func acceptFixtureHostKey(selectRuntime: Bool = true) -> Bool {
+  private func acceptFixtureHostKey(
+    selectRuntime: Bool = true,
+    expectedHostPort: String? = nil
+  ) -> Bool {
     record("ssh_await_host_trust_prompt")
     let alert = app.alerts.firstMatch
     guard alert.waitForExistence(timeout: 60) else {
@@ -1531,10 +1536,21 @@ final class MeetermSmokeUITests: XCTestCase {
       return false
     }
     let expectedFingerprint = requiredEnvironment("MEETERM_SSH_FINGERPRINT")
-    XCTAssertTrue(
-      alert.staticTexts.allElementsBoundByIndex.contains { $0.label.contains(expectedFingerprint) },
-      "The host trust prompt did not display the fixture fingerprint."
-    )
+    guard alert.staticTexts.allElementsBoundByIndex.contains(
+      where: { $0.label.contains(expectedFingerprint) }
+    ) else {
+      XCTFail("The host trust prompt did not display the fixture fingerprint.")
+      return false
+    }
+    if let expectedHostPort {
+      let endpointMatches = alert.staticTexts.allElementsBoundByIndex.contains {
+        $0.label.contains(expectedHostPort)
+      }
+      guard endpointMatches else {
+        XCTFail("The host trust prompt did not identify the expected endpoint.")
+        return false
+      }
+    }
     let trust = alert.buttons["Trust and connect"]
     guard trust.waitForExistence(timeout: 10), waitForHittable(trust, timeout: 10) else {
       writePostTrustDiagnostics(phase: .buttonNotHittable, alert: alert, trust: trust)
@@ -1677,56 +1693,86 @@ final class MeetermSmokeUITests: XCTestCase {
     writeFixedArtifact("ios-ui-forms-validation.txt", lines: ["case=forms result=passed"])
   }
 
-  private func configureSavedFixtureProfile() {
-    record("daily_save_credential_opt_in")
+  private func configureSavedFixtureProfile(
+    profileName: String = "Daily fixture",
+    stagePrefix: String = ""
+  ) {
+    let prefix = stagePrefix.isEmpty ? "" : "\(stagePrefix)_"
+    let saveStage = stagePrefix.isEmpty
+      ? "daily_save_credential_opt_in"
+      : "\(stagePrefix)_save_credential_opt_in"
+    record(saveStage)
     let name = input("Server name")
-    XCTAssertTrue(revealAuthenticationControl(name, stage: "profile_name"))
-    fillTextField(label: "Server name", value: "Daily fixture")
+    XCTAssertTrue(revealAuthenticationControl(name, stage: "\(prefix)profile_name"))
+    fillTextField(label: "Server name", value: profileName)
     let save = app.switches["save-credentials"]
-    XCTAssertTrue(revealAuthenticationControl(save, stage: "save_credentials"))
+    XCTAssertTrue(revealAuthenticationControl(save, stage: "\(prefix)save_credentials"))
     if save.value as? String != "1" { save.tap() }
     XCTAssertEqual(save.value as? String, "1", "Credential saving was not selected.")
     let key = input("Private OpenSSH key")
-    XCTAssertTrue(revealAuthenticationControl(key, stage: "return_to_key"))
+    XCTAssertTrue(revealAuthenticationControl(key, stage: "\(prefix)return_to_key"))
   }
 
   private func saveAlternateFixtureProfile(host: String, port: String, username: String, key: String) {
     record("switcher_open_profile_manager")
-    button("Switch server or session").tap()
-    XCTAssertTrue(button("Manage servers").waitForExistence(timeout: 10))
-    button("Manage servers").tap()
+    let open = button("Switch server or session")
+    guard waitForHittable(open, timeout: 20) else {
+      XCTFail("The Server / Session switcher was unavailable before adding the alternate profile.")
+      return
+    }
+    open.tap()
+    let manage = button("Manage servers")
+    guard waitForHittable(manage, timeout: 20) else {
+      XCTFail("Manage servers was not available in the switcher.")
+      return
+    }
+    manage.tap()
     XCTAssertTrue(app.staticTexts["Saved servers"].waitForExistence(timeout: 15), "The switcher did not hand off to the existing saved-server screen.")
-    XCTAssertTrue(button("Add server").waitForExistence(timeout: 15))
-    button("Add server").tap()
+    let add = button("Add server")
+    guard waitForHittable(add, timeout: 15) else {
+      XCTFail("Add server was not available in the saved-server sheet.")
+      return
+    }
+    add.tap()
     fillTextField(label: "Host", value: host)
     fillTextField(label: "Port", value: port)
     fillTextField(label: "Username", value: username)
-    fillTextField(label: "Server name", value: "Alternate endpoint")
-    let remember = app.switches["save-credentials"]
-    XCTAssertTrue(revealAuthenticationControl(remember, stage: "switcher_alternate_credentials"))
-    if remember.value as? String != "1" { remember.tap() }
-    XCTAssertEqual(remember.value as? String, "1", "The alternate fixture credential was not selected for secure storage.")
-    let keyInput = input("Private OpenSSH key")
-    XCTAssertTrue(revealAuthenticationControl(keyInput, stage: "switcher_alternate_key"))
+    verifyPasswordForm(stagePrefix: "switcher_alternate")
+    configureSavedFixtureProfile(
+      profileName: "Alternate endpoint",
+      stagePrefix: "switcher_alternate"
+    )
     fillPrivateKey(key)
     let save = app.buttons["ssh-submit"]
     XCTAssertTrue(save.waitForExistence(timeout: 10))
     XCTAssertTrue(waitForHittable(save, timeout: 10))
     save.tap()
     XCTAssertTrue(waitForConnectionFormDismissal(timeout: 30), "The alternate server profile did not save.")
-    XCTAssertTrue(button("Connect saved server Alternate endpoint").waitForExistence(timeout: 15))
+    let alternateProfile = button("Connect saved server Alternate endpoint")
+    guard waitForHittable(alternateProfile, timeout: 15) else {
+      XCTFail("The saved alternate server profile was unavailable after saving.")
+      return
+    }
     record("switcher_alternate_profile_saved")
     let close = button("Close sheet")
-    XCTAssertTrue(close.waitForExistence(timeout: 10))
+    guard waitForHittable(close, timeout: 10) else {
+      XCTFail("The saved-server sheet could not be dismissed after saving the alternate profile.")
+      return
+    }
     close.tap()
-    XCTAssertTrue(button("Switch server or session").waitForExistence(timeout: 10))
+    let switcher = button("Switch server or session")
+    guard waitForHittable(switcher, timeout: 15) else {
+      XCTFail("The switcher entry point did not return after closing saved servers.")
+      return
+    }
   }
 
   private func selectSwitcherSession(
     serverName: String,
     sessionName: String,
     stage: String,
-    trustHostKey: Bool = false
+    trustHostKey: Bool = false,
+    expectedHostPort: String? = nil
   ) -> Bool {
     let open = button("Switch server or session")
     guard waitForHittable(open, timeout: 20) else {
@@ -1740,7 +1786,16 @@ final class MeetermSmokeUITests: XCTestCase {
       return false
     }
     server.tap()
-    if trustHostKey && !acceptFixtureHostKey(selectRuntime: false) { return false }
+    if trustHostKey {
+      guard let expectedHostPort else {
+        XCTFail("The expected host and port are required before accepting a switcher host key.")
+        return false
+      }
+      guard acceptFixtureHostKey(
+        selectRuntime: false,
+        expectedHostPort: expectedHostPort
+      ) else { return false }
+    }
 
     let session = button("tmux session \(sessionName)")
     guard waitForHittable(session, timeout: 90) else {
@@ -1773,21 +1828,40 @@ final class MeetermSmokeUITests: XCTestCase {
       XCTFail("The selected Session terminal did not open at \(stage).")
       return false
     }
-    do {
-      let terminal = try terminalElement()
-      terminal.tap()
-    } catch {
-      XCTFail("The selected Session native terminal was unavailable at \(stage).")
-      return false
-    }
+    guard tapNativeTerminal(stage: stage) else { return false }
     enterTerminalCommand(
       "printf '%s\\n' '\(marker)' > \(shellQuote(path.path))",
       stage: stage
     )
     let reached = waitForExactMarker(marker, at: path)
     XCTAssertTrue(reached, "The selected Session did not receive the native input marker at \(stage).")
-    button("Back to workspaces").tap()
+    guard tapBackToWorkspaces(stage: stage) else { return false }
     return reached
+  }
+
+  private func tapNativeTerminal(stage: String) -> Bool {
+    do {
+      let terminal = try terminalElement()
+      guard waitForHittable(terminal, timeout: 10) else {
+        XCTFail("The native terminal was not hittable at \(stage).")
+        return false
+      }
+      terminal.tap()
+      return true
+    } catch {
+      XCTFail("The native terminal was unavailable at \(stage).")
+      return false
+    }
+  }
+
+  private func tapBackToWorkspaces(stage: String) -> Bool {
+    let back = button("Back to workspaces")
+    guard waitForHittable(back, timeout: 10) else {
+      XCTFail("Back to workspaces was not available at \(stage).")
+      return false
+    }
+    back.tap()
+    return true
   }
 
   private func waitForExactMarker(_ marker: String, at path: URL, timeout: TimeInterval = 30) -> Bool {
@@ -2018,24 +2092,25 @@ final class MeetermSmokeUITests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 20), .completed)
   }
 
-  private func verifyPasswordForm() {
-    record("password_form")
+  private func verifyPasswordForm(stagePrefix: String = "") {
+    let prefix = stagePrefix.isEmpty ? "" : "\(stagePrefix)_"
+    record("\(prefix)password_form")
     let passwordChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-password").firstMatch
     XCTAssertTrue(passwordChoice.waitForExistence(timeout: 10), "Password authentication is unavailable.")
-    XCTAssertTrue(revealAuthenticationControl(passwordChoice, stage: "password_choice"), "Password authentication cannot be selected.")
+    XCTAssertTrue(revealAuthenticationControl(passwordChoice, stage: "\(prefix)password_choice"), "Password authentication cannot be selected.")
     passwordChoice.tap()
     let password = app.secureTextFields["SSH password"]
     XCTAssertTrue(password.waitForExistence(timeout: 10), "The password field is not a secure text field.")
-    XCTAssertTrue(revealAuthenticationControl(password, stage: "password_field"), "The password field is not hittable.")
+    XCTAssertTrue(revealAuthenticationControl(password, stage: "\(prefix)password_field"), "The password field is not hittable.")
     password.tap()
     // Capture only the empty password field, before real credentials are entered.
-    capture("password-form-keyboard")
+    capture("\(prefix)password-form-keyboard")
     let keyChoice = app.descendants(matching: .any).matching(identifier: "ssh-auth-public-key").firstMatch
     XCTAssertTrue(keyChoice.waitForExistence(timeout: 10), "Private key authentication is unavailable.")
-    XCTAssertTrue(revealAuthenticationControl(keyChoice, stage: "key_choice"), "Private key authentication cannot be selected.")
+    XCTAssertTrue(revealAuthenticationControl(keyChoice, stage: "\(prefix)key_choice"), "Private key authentication cannot be selected.")
     keyChoice.tap()
     XCTAssertFalse(password.exists, "The unselected password field is still exposed.")
-    record("authentication_selector_verified")
+    record("\(prefix)authentication_selector_verified")
   }
 
   private func effectiveScrollViewport(_ scroll: XCUIElement) -> CGRect? {
