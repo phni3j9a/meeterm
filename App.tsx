@@ -2236,6 +2236,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (commandPending.current) return;
     // This legacy action is the fresh-picker-compatible reconnect path. It is
     // intentionally distinct from the retained-work Retry rail action.
+    // A deliberate reconnect starts a new native connection generation, so a
+    // canceled switcher's Ready fence must not hide the new generation or
+    // admit a stale workspace before its explicit runtime selection.
+    switcherCancelFence.current = false;
+    switcherCancelReleaseIssued.current = false;
+    ignoreReadyUntilNewConnection.current = false;
     if (recoveryPhaseActive) {
       recoveryInvalidatedRef.current = true;
       setRecoveryInvalidated(true);
@@ -2369,7 +2375,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const selectedProfileId = target.isCurrent ? profileId : profile.id;
     const originalConnection = connection;
     const originalSession = session;
-    const originalControl = control;
 
     const originalRuntimeIsStillReady = async () => {
       try {
@@ -2377,15 +2382,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           MeetermTerminal.getConnectionState(CONNECTION_ID),
           MeetermTerminal.getWorkspaceState(CONNECTION_ID),
         ]);
-        const observedControl = normalizeWorkspaceControl((observedSession as WorkspaceState & { control?: unknown }).control);
         return observedConnection.state === 'Ready'
           && observedConnection.host === originalConnection.host
           && observedConnection.port === originalConnection.port
           && observedSession.backend === originalSession.backend
-          && observedSession.runtime === originalSession.runtime
-          && observedControl.operationEpoch === originalControl.operationEpoch
-          && observedControl.runtimeOperationsReady
-          && observedControl.terminalInputReady;
+          && observedSession.runtime === originalSession.runtime;
       } catch {
         return false;
       }
@@ -2528,6 +2529,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       return;
     }
 
+    // The switch boundary retired the previous UI binding, but the selected
+    // server profile remains reconnectable and its remote work is durable.
+    setHasConnected(true);
     switcherOperation.current = true;
     commandPending.current = true;
     commandVersion.current += 1;

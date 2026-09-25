@@ -1700,7 +1700,7 @@ test('same-server changeRuntime failure after release clears the stale workspace
   assert.doesNotMatch(screenText, /current session is unchanged/);
 });
 
-test('same-server changeRuntime rejection keeps the workspace only while the native owner stays Ready', async t => {
+test('same-server stale-epoch rejection keeps the Ready workspace behind a closed input gate', async t => {
   const profile = {
     id: '00000000-0000-4000-8000-000000000048', name: 'Pre-release failure',
     host: 'pre-release-failure.example', port: 22, username: 'developer', authMethod: 'password',
@@ -1710,11 +1710,22 @@ test('same-server changeRuntime rejection keeps the workspace only while the nat
     runtimeCandidate('pre-release-runtime', 'tmux', 'initial', 'running'));
   await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
   await settleAsync();
+  // Opening the switcher hides the terminal view. A concurrent native epoch
+  // change makes the captured changeRuntime epoch stale while its old actor is
+  // still Ready; this must not be confused with release of that owner.
+  fixture.environment.snapshot.control = workspaceControl({
+    ...fixture.environment.snapshot.control,
+    operationEpoch: '2',
+    terminalInputReady: false,
+  });
   fixture.environment.changeRuntimeShouldFail = true;
 
   await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
   await settleAsync();
 
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'changeRuntime'), [
+    { method: 'changeRuntime', operationEpoch: '1' },
+  ]);
   assert.equal(fixture.environment.connection.state, 'Ready');
   assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
   const screenText = all(fixture.root, node => node.type === 'Text').map(textContent).join(' ');
@@ -1760,6 +1771,66 @@ test('cancel after a cross-server switch releases the provisional host and ignor
   assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect').length >= 4,
     'the app disconnects again after observing the late native Ready');
   assert.equal(fixture.environment.lastUsedUpdates.length, 1, 'cancel does not save a hint for an uncommitted target');
+});
+
+test('Reconnect after cancel starts a fresh Session picker and reaches Ready only after selection', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000049', name: 'Reconnect after cancel',
+    host: 'reconnect-after-cancel.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'initial',
+  };
+  const fixture = await connectSavedProfileToRuntime(t, profile,
+    runtimeCandidate('reconnect-cancel-source', 'tmux', 'initial', 'running'));
+  const destination = runtimeCandidate('reconnect-cancel-destination', 'tmux', 'fresh-session', 'running', {
+    isDefault: true,
+    lastUsed: true,
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-reconnect-cancel-source'),
+    'the same-server change must cross into the explicit Session picker first');
+
+  await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+
+  fixture.native.reconnect = async () => {
+    fixture.environment.nativeCalls.push('reconnect');
+    fixture.environment.runtimeDiscovery = pickerDiscovery(4, [destination]);
+    fixture.environment.runtimeDiscovery.connectionGeneration = '2';
+    fixture.environment.connection = {
+      ...fixture.environment.connection,
+      state: 'AwaitingRuntimeSelection',
+    };
+  };
+  await press(fixture.root, findLabel(fixture.root, 'Reconnect'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'AwaitingRuntimeSelection');
+  assert.equal(fixture.environment.nativeCalls.filter(call => call === 'reconnect').length, 1);
+  assert.ok(findText(fixture.root, 'Choose a runtime for Reconnect after cancel'));
+  const destinationRow = findTestId(fixture.root, 'runtime-row-tmux-reconnect-cancel-destination');
+  assert.ok(destinationRow, 'the fresh generation presents its candidate for an explicit choice');
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length, 0,
+    'reconnect must not treat the canceled generation as Ready');
+
+  await press(fixture.root, destinationRow);
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+  assert.ok(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length > 0,
+    'the explicitly selected new generation is shown as Connected');
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'selectRuntime').at(-1), {
+    method: 'selectRuntime',
+    candidateId: 'reconnect-cancel-destination',
+  });
 });
 
 test('Android Back cancels an in-progress switcher selection and closes its sheet', async t => {
