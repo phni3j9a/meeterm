@@ -776,12 +776,30 @@ class Fixture:
             request_stat = self.control_request_path.lstat()
             if not request_stat or not self.control_request_path.is_file():
                 return None
-            if request_stat.st_uid != os.getuid() or request_stat.st_mode & 0o077:
-                return None
             contents = self.control_request_path.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError, UnicodeError):
             return None
-        if not contents.endswith("\n") or contents.count("\n") != 1:
+        # A partial write is left for the sender to finish.
+        if not contents.endswith("\n"):
+            return None
+        request = self._parse_control_request(request_stat, contents)
+        if request is None:
+            # A malformed complete request is removed so it cannot be retried
+            # indefinitely; valid requests always use the exact one-line
+            # protocol below.  Decide from this single read: reading again
+            # could observe a sender that finished writing after the first
+            # read and delete its valid request unprocessed.
+            try:
+                self.control_request_path.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+        return request
+
+    @staticmethod
+    def _parse_control_request(request_stat: os.stat_result, contents: str) -> tuple[str, str] | None:
+        if request_stat.st_uid != os.getuid() or request_stat.st_mode & 0o077:
+            return None
+        if contents.count("\n") != 1:
             return None
         fields = contents[:-1].split("\t")
         if len(fields) != 2 or not CONTROL_TOKEN_RE.fullmatch(fields[0]):
@@ -796,19 +814,6 @@ class Fixture:
                 continue
             request = self._read_control_request()
             if request is None:
-                # A partial write is left for the sender to finish.  A
-                # malformed complete request is removed so it cannot be
-                # retried indefinitely; valid requests always use the exact
-                # one-line protocol above.
-                try:
-                    contents = self.control_request_path.read_text(encoding="utf-8")
-                except (FileNotFoundError, OSError, UnicodeError):
-                    continue
-                if contents.endswith("\n"):
-                    try:
-                        self.control_request_path.unlink()
-                    except (FileNotFoundError, OSError):
-                        pass
                 continue
             token, action = request
             try:
