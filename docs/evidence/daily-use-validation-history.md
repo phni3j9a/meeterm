@@ -1,9 +1,40 @@
 # Daily-use validation history
 
-This is the historical investigation record for earlier daily-use candidates.
-Pending and in-progress statements below describe those earlier runs, not the
-current milestone status. See [the current daily-use record](../DAILY_USE.md)
-for the latest acceptance result and user-facing behavior.
+This file preserves evidence from earlier daily-use candidates and the Issue
+#27 switcher acceptance. Pending and in-progress statements in the historical
+candidate record describe those earlier runs, not the current milestone status.
+See [the current daily-use record](../DAILY_USE.md) for the latest acceptance
+result and user-facing behavior.
+
+## Issue #27 sequential Server / Session switcher acceptance
+
+Final candidate `e13a523` passed GitHub CI on its branch push: Rust unit tests
+(184 passed, 1 ignored), Herdr tests (4 passed, 1 ignored), real OpenSSH PTY
+integration (1 passed), and real Herdr 0.9.0 integration (1 passed with pinned
+SHA-256 `4fa1a011…` verified), plus iOS driver fast typecheck, JavaScript/Expo
+checks and Android native build.
+
+| Run | Result and evidence |
+| --- | --- |
+| Android full, `1f219d9` | Fresh CNG/build in Devin session `9429c00e…`: PASS. Gates passed; screen fixtures 32/33 (`empty` is the pre-existing unavailable baseline). SSH passed `daily_same_server_session_switched`, `daily_same_server_old_shell_survived`, `daily_cross_endpoint_destination_input`, `daily_cross_endpoint_old_shell_survived`, `host_key_verified`, and `transport_loss_evidence=passed`. Evidence branch `evidence/android-20260925` at [`4c9ac51`](https://github.com/phni3j9a/meeterm/commit/4c9ac51). |
+| iOS standard and `ssh`, `e13a523` | Devin session `7a32a4e6…`: standard fresh build PASS with 29 captures; `ssh` PASS with same-commit reuse and HEAD/xctestrun verified. Same-server switch, destination marker and old-shell PID survival; alternate-endpoint switch, host-key confirmation, cross-return and old-shell survival; transport-loss observations were `native_handle_same=yes`, `native_terminal_identifier_same=yes`, `selected_pane_identifier_same=yes`, `cached_read_only_surface=yes`, `picker_visible_during_loss=no`; explicit disconnect passed. Evidence branch `evidence/ios-20260925` at [`07f10a2`](https://github.com/phni3j9a/meeterm/commit/07f10a2). |
+
+The final HEAD differs from Android candidate `1f219d9` only in
+`scripts/ci/MeetermSmokeUITests.swift` and `scripts/ssh/test_ios_smoke.py`, which
+are not Android build/test inputs. Earlier Android full at `376164e` also passed
+(evidence `73d2adb`). Main viewed Android `session-switcher` and
+`session-switcher-sessions` screenshots from `1f219d9`, and iOS
+`standard-session-switcher`, `standard-session-switcher-sessions`,
+`switcher_alternate_password-form-keyboard`, and `ssh-terminal-input` screenshots
+from `e13a523`. Non-blocking visual notes: the stopped Herdr row keeps a chevron;
+the Session list repeats the server-selection disconnect explanation. Physical
+devices were not verified; these results are from emulator/Simulator runs.
+
+Earlier iOS attempts in this sequence failed on harness defects (native case
+registration, `list-panes -a`, Host label shadowing, off-viewport Server name,
+pane-view ordering and live-label race). One product defect was also found:
+Manage servers replaced sheet content in place on iOS; it was fixed in
+`1f219d9`. The final passing iOS runs above include the subsequent harness fixes.
 
 ## Testing-method candidates: `cb69a17` through `b94ef2b`
 

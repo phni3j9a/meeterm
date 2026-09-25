@@ -31,9 +31,10 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 
 ## Navigation and state
 
-- Workspaces are the main destination. A server name opens the saved-server
-  selector; the adjacent menu opens connection actions. Settings is a helper
-  opened from the top toolbar or terminal menu.
+- Workspaces are the main destination. Its selected-server/session row opens
+  the same Server → Session switcher as the Terminal header; the adjacent menu
+  opens connection actions. Settings is a helper opened from the top toolbar or
+  terminal menu.
 - Workspace rows show their terminal names. Selecting a workspace opens its
   selected pane. Pane tabs and Herdr groups retain the remote hierarchy.
 - Search and its list offset survive opening and leaving a workspace.
