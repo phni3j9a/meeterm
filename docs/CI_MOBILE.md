@@ -197,6 +197,19 @@ auth-warning coexistence fixture, while `herdr-connection` is
 the repurposed picker state described above. These are source-level scopes only;
 this document does not claim remote CI or visual review.
 
+Issue #27 uses Android `full` and iOS `standard` plus `ssh`. The `standard`
+switcher routes are seeded presentation captures only; they do not start the
+SSH fixture or prove switch actions. Android `full`'s daily-use extension and
+iOS `ssh` perform same-server Session switching and cross-endpoint switching.
+The fixture sshd listens on distinct ports; `Match LocalPort` sets a different
+`TMUX_TMPDIR` for each port, and the alternate endpoint owns the separate
+ordinary tmux Session `switcher-alternate-destination`. The switch tests verify
+destination input markers, explicit host-key confirmation for the alternate
+profile, and the original shell PID after returning. These are suite scopes,
+not remote-run results; Main records exact-source builds/runs and reviews the
+final Android/iOS evidence separately. See [TESTING.md](TESTING.md) for the
+focused App/native boundary and cancel cases.
+
 Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
 forms/names have 15, and optional full retains its 30-minute storage/UI budget.
 Session-side build and Simulator setup time is outside those budgets and is

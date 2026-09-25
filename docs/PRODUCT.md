@@ -105,9 +105,19 @@ native runtime/controller before reconnecting to that same server or another
 SSH endpoint, then lists its tmux and running Herdr sessions in the same sheet.
 The user explicitly chooses a Session, and the app returns to Workspaces only
 after native reports `Ready`. Authentication and changed-host-key verification
-remain explicit. A cancel or failure after the release boundary leaves the
-phone disconnected from the old Session; returning requires another explicit
-server and Session choice. Disconnect remains a secondary action in the sheet.
+remain explicit inside the switcher before destination Sessions are shown.
+A rejection before the native release boundary keeps the current or retained
+work screen; normal polling can continue updating transport-recovery state, and
+the app says it could not start the switch. If the boundary is accepted but
+replacement startup fails, the old view is retired and is not restored as
+connected. Disconnect remains a secondary action in the sheet.
+
+After canceling a switch that crossed the release boundary, the app does not
+offer Reconnect for the canceled connection. The user starts again through a
+saved server profile or the existing credential form, then explicitly chooses
+a Session from fresh discovery. A late `Ready` from the canceled generation is
+ignored; only the selected candidate reaching `Ready` opens Workspaces. Cancel
+or failure after release leaves remote sessions and processes running.
 
 Releasing or canceling a mobile connection does not stop or close remote
 sessions or their processes. Local terminal history is not promised across an

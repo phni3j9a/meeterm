@@ -77,21 +77,36 @@ fixtureを加えます。これらは source scope であり、remote CI や vis
 ## Issue #27 sequential Server / Session switcher の確認項目
 
 Issue #27 の切替UIは同じプロセス内の単一 native owner を順に切り替えます。
-focused App 回帰では、シートの開閉のみでは native 呼び出しが発生しないこと、
-同一サーバーでは `changeRuntime` が一度だけ受理されること、別サーバーでは
-owner release 後に認証・discovery へ進むこと、explicit Session selection 後の
-Ready と last-used hint 更新を確認します。開始後 cancel / auth failure / retry、
-遅れて届く selection、独立 runtime picker の非表示、current と Last used の区別、
-profile ID/credential を書き換えない経路も focused test の範囲に含めます。
+focused App/native 回帰では、シートを開閉するだけなら native 呼び出しがないこと、
+同一サーバーの `changeRuntime` と cross-server の `disconnect_for_switch` が返す
+境界結果を確認します。`not_invoked` / `rejected_before_boundary` は画面・recovery
+所有権を保ち、Readyかつinput gate閉鎖の場合と Reconnecting/Failed の retained work
+の両方で確認します。`accepted_after_failure` は旧 view を退役させ、unknown/throw は
+snapshotから境界を推定せず fail closed にします。recovery の `Change` も同じ結果型を
+消費すること、別サーバーでは release 後に認証・discoveryへ進むこと、Sessionの明示
+選択後だけReadyとlast-used hint更新が行われることを含めます。
 
-Android full と iOS `ssh` の fixture は、同一 SSH host 上の別 tmux Session と
-異なる SSH port の profile を用意します。ドライバは階層 sheet で Session を
-明示選択し、宛先 terminal への marker input と、切替前 Session の shell PID
-維持を検証します。iOS `standard` と Android observational screenshot routes は
-`session-switcher` と `session-switcher-sessions` の seeded 表示を加えます。
-seeded image は表示確認、SSH suite は実操作の証拠です。Android full と iOS
-`standard`/`ssh` を exact source で Main が実行し、各suiteの画像を取得・実見する
-までは hosted acceptance や visual success と報告しません。
+cancel回帰は、nativeのin-memory profileが選択前に消える実装を模擬します。キャンセル後に
+保存profileから `connectProfileHost` または既存credential formで新規接続し、fresh pickerで
+明示Session選択すること、旧generationの遅延Readyを無視すること、Reconnectやin-memory
+`reconnect` に依存しないことを確認します。開始後cancel、auth failure、retry、遅れて届く
+selection、switcher内のhost-key確認、独立runtime pickerの非表示、CurrentとLast usedの区別、
+profile ID/credentialの維持もfocused testの範囲です。
+
+Android full と iOS `ssh` の OpenSSH fixture は、同じ host の異なる SSH port にそれぞれ
+異なる通常 tmux server を割り当てます。fixtureのsshd設定は `Match LocalPort` ごとに
+別の `TMUX_TMPDIR` を `SetEnv` し、alternate endpointに
+`switcher-alternate-destination` Sessionを作ります。接続先をportで分けるため、cross-endpoint
+switchが元のtmux serverに戻ってしまう実装では試験を通過できません。
+
+Android full の daily-use 経路と iOS `ssh` は、同一host/portの別Sessionへのswitchと元Session
+へのreturn、alternate portへのswitch、switcher内の明示host-key確認、宛先へのmarker input、
+元Sessionへ戻った後の同じshell PIDを検証します。iOS `standard` は
+`session-switcher` / `session-switcher-sessions` の seeded 画面を撮影する表示確認で、SSH fixture
+を起動せず実際のswitch操作を証明しません。`ssh` が実操作の証拠です。Android full と iOS
+`standard`/`ssh` のsource-level対象とsuiteの役割を示しており、未実行のhosted runや画像reviewの
+結果は主張しません。Mainは候補sourceで実行し、最終suiteの両OS画像を取得・実見してから受入と
+visual successを報告します。
 
 ## Issue #26 retained-work recovery の確認項目
 

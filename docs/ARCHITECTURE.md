@@ -194,6 +194,37 @@ both identities stable; only `lastUsedRuntime` changes after `Ready`. An unsaved
 current endpoint remains visible as a temporary server row and can use the
 existing credential form when selected again.
 
+### Synchronous switch-boundary result
+
+`change_runtime` and the cross-server `disconnect_for_switch` return a
+`RuntimeBoundaryOutcome` classified in `native/meeterm-core/src/ssh.rs` at the
+actual owner transition. `native/meeterm-core/src/ffi.rs` and `jni.rs`, the
+Android and iOS `MeetermTerminalModule` adapters, and
+`modules/meeterm-terminal/src/MeetermTerminal.types.ts` preserve the result;
+`App.tsx`'s `changeRecoveryDestination` consumes the same contract.
+
+| Result | Native code | Meaning |
+| --- | --- | --- |
+| `rejected_before_boundary` | existing `ConnectionError` codes `-1..-14` | This call did not retire the old binding. |
+| `accepted` | `0` | Replacement connection processing started, or the owner release was accepted. It does not mean authenticated or `Ready`. |
+| `accepted_after_failure` | `-15` | The old binding boundary was crossed, then a later operation failed. For `change_runtime`, this includes replacement startup failure. |
+| `not_invoked` | bridge validation result | Arguments failed validation before native invocation (`errorCode: "invalid_argument"`). |
+
+On the JS bridge, `accepted_after_failure` carries
+`errorCode: "boundary_accepted_failure"`; the `rejected_before_boundary`
+result retains the specific `ConnectionError` name.
+
+Rust classifies by control flow rather than error code: the same underlying
+error, including `RecoveryUnavailable`, can be a rejection before the boundary
+or a failure after it. A thrown, malformed, or otherwise unknown bridge result
+stays unknown and fails closed. App snapshots can continue updating visible
+connection state, but never decide whether the boundary was crossed. A
+pre-boundary rejection keeps the current or retained screen and recovery
+ownership while normal snapshots can advance transport-recovery state. An
+accepted-after-failure retires the old view and never restores the old owner as
+`Ready`. Acceptance is a synchronous ownership decision, not a claim that
+physical shutdown has completed.
+
 Before any topology mutation that could affect another tmux session, the same
 Rust actor/control queue must check the current linked/shared topology
 immediately before execution. Workspace close and terminal close that could

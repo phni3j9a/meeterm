@@ -59,9 +59,16 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   candidates, and selection-in-progress in context, and it never overlays the
   standalone picker. `Current` describes the actually selected Session;
   `Last used` remains a non-current hint. Cancel after switching starts leaves
-  the phone without the old binding while remote work keeps running. Disconnect
-  is a secondary sheet action, and Manage servers opens the existing profile
-  manager and forms.
+  the phone without the old binding while remote work keeps running. A
+  pre-boundary rejection keeps the current or retained work screen while normal
+  polling continues, and says “Could not start the switch. Check the connection
+  and try again.” An accepted release followed by startup failure retires the
+  old view. After canceling an accepted switch, the old connection
+  has no Reconnect action: choose a saved server or use the existing credential
+  form, then select a Session from fresh discovery. Late Ready updates from the
+  canceled generation stay fenced until an explicitly selected candidate is
+  Ready. Disconnect is a secondary sheet action, and Manage servers opens the
+  existing profile manager and forms.
 - After SSH host-key verification and authentication, a runtime picker presents
   independent tmux and Herdr sections. It highlights a last-used hint without
   auto-selecting it, keeps loading/mixed/empty/partial-error and stale-selection
