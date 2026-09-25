@@ -1,22 +1,21 @@
-PR #42 / Issue #41 (issue-41-fast-recovery) Android final acceptance @ 6818d43 (6818d431f7e5c8b08a6cf518467a6d532c2acfb4)
+PR #42 / Issue #41 (issue-41-fast-recovery) Android final acceptance @ 1f2670c (1f2670cf050a6e63c6df497b339c0cf566808ab8)
 run_kind=full-acceptance; branch=issue-41-fast-recovery
-change: Herdr recovery-confirm route removed (Android SCREEN_NAMES now 32); retained recovery is zero-tap - transport loss must return Ready to the same pane/native handle with no picker and no confirmation.
+context: re-run after review fix 1f2670c (Rust reconnect wake race + unreachable branch removal) on accepted 6818d43
 env=meeterm_api36 headless emulator-5554; toolchain=rustc-1.96.0, ndk-27.1.12297006, node-v24.19.0 (blueprint pins 22.22.2 - standing deviation), npm-10.8.3, gradle-9.3.1
-fresh chain: git fetch -> git reset --hard 6818d43 -> npm ci -> expo prebuild --platform android --clean (fresh CNG) -> assembleRelease (3m20s, 668 tasks)
-suite duration: ~34 min
+fresh chain: git fetch -> git reset --hard 1f2670c -> npm ci -> expo prebuild --platform android --clean (fresh CNG) -> assembleRelease (3m10s, 668 tasks, Rust recompiled both ABIs)
+suite duration: ~35 min
 
 stages:
 - npm ci: PASS
 - expo prebuild --clean: PASS
 - assembleRelease: PASS (fresh build)
-- android-smoke.sh gates (machine gates 1-6): PASS - device ready, emulator host loopback, host alias reachable, adb reverse preflight empty, native terminal smoke, artifact capture
-- screen fixtures: 31/32 captured - manifest is 32 routes on this commit (herdr-recovery-confirm REMOVED, correctly absent); 'empty' reports unavailable:missing_screen_element_0,screen_element_1 = PRE-EXISTING baseline
+- android-smoke.sh gates (machine gates 1-6): PASS
+- screen fixtures: 31/32 captured - manifest 32 routes (herdr-recovery-confirm absent per this change); 'empty' unavailable = PRE-EXISTING baseline
 - SSH fixture suite (fixture.py -- android-smoke.py): PASS, result=passed stage=disconnect_after_resume reason=ok
 
 transport-loss zero-tap verification (Issue #41):
-- daily_transport_loss_injected -> stale_read_only -> restored -> authoritative_ready -> post_marker_once -> remote_ack -> complete
-- NO picker and NO confirmation stage between transport-loss restore and Ready - recovery is zero-tap to the same pane/native handle (remote_ack = marker echoed on the same remote pane)
-- transport_loss_evidence=passed
-- picker stages only appear where intended: initial_runtime_selection_*, daily_saved_profile_connect_*, manual_reconnect_* (explicit fresh connects still show the picker per AGENTS.md)
+- transport-loss-validation.txt: transport_loss=passed, fixture_control=stopped_and_started (deterministic sshd stop/start), recovery_surface=cached_read_only, native_handle_same=yes, pane_identity_same=yes, pre/post_marker_exactly_once=yes, other_panes_clean=yes, input_during_loss=none
+- completed chain: injected -> stale_read_only -> restored -> authoritative_ready -> post_marker_once -> remote_ack -> complete; NO picker and NO confirmation between restore and Ready - zero-tap return to the same pane/native handle
+- transport_loss_evidence=passed; picker only at intended initial/saved-profile/manual-reconnect selections
 
 result=PASS
