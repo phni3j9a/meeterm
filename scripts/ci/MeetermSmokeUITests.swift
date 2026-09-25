@@ -1692,9 +1692,10 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private func saveAlternateFixtureProfile(host: String, port: String, username: String, key: String) {
     record("switcher_open_profile_manager")
-    button("Server connection").tap()
+    button("Switch server or session").tap()
     XCTAssertTrue(button("Manage servers").waitForExistence(timeout: 10))
     button("Manage servers").tap()
+    XCTAssertTrue(app.staticTexts["Saved servers"].waitForExistence(timeout: 15), "The switcher did not hand off to the existing saved-server screen.")
     XCTAssertTrue(button("Add server").waitForExistence(timeout: 15))
     button("Add server").tap()
     fillTextField(label: "Host", value: host)

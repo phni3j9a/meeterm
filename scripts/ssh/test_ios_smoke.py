@@ -178,6 +178,17 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         seeded_end = source.index("/// Additional states and native navigation", seeded_start)
         self.assertNotIn("selectFixtureTmuxRuntimeAndWaitForConnected", source[seeded_start:seeded_end])
 
+    def test_ssh_alternate_profile_setup_uses_switcher_and_waits_for_saved_servers_handoff(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        helper_start = source.index("private func saveAlternateFixtureProfile")
+        helper_end = source.index("private func selectSwitcherSession", helper_start)
+        helper = source[helper_start:helper_end]
+
+        self.assertIn('button("Switch server or session").tap()', helper)
+        self.assertIn('button("Manage servers").tap()', helper)
+        self.assertIn('app.staticTexts["Saved servers"].waitForExistence(timeout: 15)', helper)
+        self.assertNotIn('button("Server connection").tap()', helper)
+
     def test_new_suite_is_exposed_without_changing_the_standard_default(self):
         # The hosted mobile-smoke workflow was retired; suite selection now
         # lives in the smoke driver itself so any session applies the same gate.

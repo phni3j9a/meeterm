@@ -2420,6 +2420,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setPickerQuery('');
     setSheet(kind);
   }, [runtimeReady]);
+  const presentSheetAfterCurrentDismissal = useCallback((kind: Exclude<SheetKind, null>) => {
+    Keyboard.dismiss();
+    if (Platform.OS === 'ios' && sheet !== null) {
+      // A saved-server manager is its own existing page sheet. Finish closing
+      // the current server/session sheet before presenting that manager so a
+      // later Add/Edit form can use the same ordered modal handoff.
+      setModalPending(true);
+      pendingModal.current = () => setSheet(kind);
+      setSheet(null);
+      return;
+    }
+    setSheet(kind);
+  }, [sheet]);
   const showModal = useCallback((show: () => void) => {
     // iOS must finish dismissing its page sheet before another native modal
     // is presented. Android owns a separate dialog window for each modal.
@@ -2662,7 +2675,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setSwitcherStarted(false);
       setSwitcherMessage('');
       setSwitcherAccepting(false);
-      setSheet(destination === 'servers' ? 'servers' : destination === 'switcher' ? 'switcher' : null);
+      if (destination === 'servers') presentSheetAfterCurrentDismissal('servers');
+      else setSheet(destination === 'switcher' ? 'switcher' : null);
       return;
     }
 
@@ -2703,7 +2717,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setScreen('workspaces');
     updateRuntimeBound(false);
     setConnection(current => ({ ...current, state: 'Closing' }));
-    setSheet(destination === 'servers' ? 'servers' : destination === 'switcher' ? 'switcher' : null);
+    if (destination === 'servers') presentSheetAfterCurrentDismissal('servers');
+    else setSheet(destination === 'switcher' ? 'switcher' : null);
     try {
       await MeetermTerminal.disconnect(CONNECTION_ID);
       const disconnected = await MeetermTerminal.getConnectionState(CONNECTION_ID);
@@ -2722,7 +2737,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       commandPending.current = false;
       setCommandBusy(false);
     }
-  }, [invalidateRuntimeDiscovery, observeCleanupWarning, updateRuntimeBound]);
+  }, [invalidateRuntimeDiscovery, observeCleanupWarning, presentSheetAfterCurrentDismissal, updateRuntimeBound]);
 
   const closeSwitcher = useCallback(() => {
     if (switcherAccepting) return;
@@ -2745,9 +2760,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     else {
       setSwitcherTarget(null);
       setSwitcherMessage('');
-      setSheet('servers');
+      presentSheetAfterCurrentDismissal('servers');
     }
-  }, [cancelSwitcher]);
+  }, [cancelSwitcher, presentSheetAfterCurrentDismissal]);
 
   const chooseAnotherSwitcherServer = useCallback(() => {
     if (switcherBoundary.current) void cancelSwitcher('switcher');
@@ -3233,7 +3248,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {!active && !closing ? <Button label="Connect" colors={homeColors} secondary onPress={openForm}>Connection details</Button> : null}
         {active ? <Button label="Disconnect" colors={homeColors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? 'Disconnect' : 'Cancel connection'}</Button> : null}
         <Pressable accessibilityRole="button" accessibilityLabel="Switch server or session" disabled={commandBusy} onPress={openSwitcher} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server or session</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Manage servers" disabled={commandBusy} onPress={() => setSheet('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Manage servers</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Manage servers" disabled={commandBusy} onPress={() => presentSheetAfterCurrentDismissal('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Manage servers</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Settings</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
           <Text numberOfLines={2} style={[styles.sectionLabel, { color: homeColors.muted }]}>{selectedPane.name || selectedPane.id}</Text>

@@ -173,10 +173,6 @@ function SafeAreaView(props) {
   return React.createElement('SafeAreaView', props, props.children);
 }
 
-function Modal({ visible, children }) {
-  return visible ? React.createElement(React.Fragment, null, children) : null;
-}
-
 function FlatList({
   data = [],
   renderItem,
@@ -278,6 +274,13 @@ function makeNativeEnvironment() {
     hostKeyPendingProfileId: '',
     disconnectRelease: null,
     changeRuntimeRelease: null,
+    presentedModalDismissal: null,
+  };
+  environment.dismissPresentedModal = () => {
+    const dismiss = environment.presentedModalDismissal;
+    environment.presentedModalDismissal = null;
+    assert.equal(typeof dismiss, 'function', 'an iOS page sheet should be awaiting dismissal');
+    dismiss();
   };
 
   const native = {
@@ -616,6 +619,10 @@ function makeReactNativeMocks(environment) {
     },
   };
   const Platform = { OS: environment.platform || 'ios' };
+  function Modal({ visible, children, onDismiss }) {
+    if (visible && typeof onDismiss === 'function') environment.presentedModalDismissal = onDismiss;
+    return visible ? React.createElement(React.Fragment, null, children) : null;
+  }
   function StatusBar(props) { return React.createElement('StatusBar', props); }
   StatusBar.setBarStyle = () => {};
   const StyleSheet = {
@@ -719,10 +726,17 @@ function makeFormMocks() {
       }),
     );
   }
-  function ProfileList({ profiles = [], busy = false, onConnect }) {
+  function ProfileList({ profiles = [], busy = false, onAdd, onConnect }) {
     return React.createElement(
       'ProfileList',
       null,
+      React.createElement('Pressable', {
+        testID: 'profile-list-add',
+        accessibilityRole: 'button',
+        accessibilityLabel: 'Add server',
+        disabled: Boolean(busy),
+        onPress: onAdd,
+      }),
       profiles.map(profile => React.createElement(
         'Pressable',
         {
@@ -1617,6 +1631,34 @@ test('switcher opens without native work and an explicit saved-server choice rep
   ]);
   assert.equal(fixture.environment.profiles[0].id, target.id, 'runtime updates preserve the saved profile identity');
   assert.equal(fixture.environment.profiles[0].credentialSaved, true, 'switching preserves secure credential ownership');
+});
+
+test('iOS switcher closes before the existing saved-server and add-server sheets are presented', async t => {
+  const current = pickerProfile('switcher-handoff.example');
+  current.name = 'Switcher handoff';
+  const fixture = await connectSavedProfileToRuntime(t, current,
+    runtimeCandidate('switcher-handoff-runtime', 'tmux', 'meeterm', 'running'));
+  const savedServersTitle = () => all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Saved servers').length;
+
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  assert.ok(findTestId(fixture.root, 'switcher-manage-servers'));
+  await press(fixture.root, findTestId(fixture.root, 'switcher-manage-servers'));
+
+  assert.equal(savedServersTitle(), 0, 'the current switcher page sheet must dismiss before the saved-server manager is presented');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'connection-form-visible').length, 0,
+    'the add form must not appear above the still-presented switcher');
+  await act(async () => { fixture.environment.dismissPresentedModal(); });
+  assert.equal(savedServersTitle(), 1, 'the existing Saved servers screen should appear after the switcher dismisses');
+  assert.ok(findLabel(fixture.root, 'Add server'));
+
+  await press(fixture.root, findLabel(fixture.root, 'Add server'));
+  assert.equal(savedServersTitle(), 0, 'the manager page sheet must dismiss before the add form is presented');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'connection-form-visible').length, 0,
+    'the add form must wait for the manager dismissal callback');
+  await act(async () => { fixture.environment.dismissPresentedModal(); });
+
+  assert.equal(savedServersTitle(), 0);
+  assert.ok(findTestId(fixture.root, 'connection-form-visible'), 'the existing ConnectionForm should appear after the manager dismisses');
 });
 
 test('iOS switcher verifies an unknown cross-endpoint host before showing its Session list', async t => {
