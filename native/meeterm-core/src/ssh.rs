@@ -698,9 +698,9 @@ struct ConnectionShared {
     /// Marks only the bounded delay between automatic attempts. This lets
     /// explicit Retry, foreground return, and network changes wake that wait
     /// without creating a parallel attempt or leaving a stale wake for a later
-    /// backoff.
+    /// backoff. A waker clears it to record the wake; the waiter treats a
+    /// cleared flag during its wait as woken.
     reconnect_waiting: AtomicBool,
-    reconnect_wake_epoch: AtomicU64,
     /// Serializes foreground transitions with backend wake handling. The
     /// guard is held only across synchronous session/gate updates; no network
     /// await occurs while it is held.
@@ -755,7 +755,6 @@ impl ConnectionShared {
             finished_notify: Arc::new(Notify::new()),
             retry_notify: Arc::new(Notify::new()),
             reconnect_waiting: AtomicBool::new(false),
-            reconnect_wake_epoch: AtomicU64::new(0),
             foreground_transition: Mutex::new(()),
             foreground: AtomicBool::new(foreground),
             automatic_reconnect: AtomicBool::new(automatic_reconnect),
@@ -1650,8 +1649,9 @@ impl ConnectionShared {
     }
 
     /// Wake only an actor that is already inside the automatic retry wait.
-    /// The epoch makes a notification that races waiter registration visible
-    /// without leaving a permit that could skip a later attempt's backoff.
+    /// Consuming the waiter's registration records the wake even if the
+    /// waiter has not reached its next check yet, and a wake outside a wait
+    /// leaves no permit that could skip a later attempt's backoff.
     fn wake_reconnect_wait(&self) -> bool {
         if self.is_cancelled()
             || self.explicit_cleanup_requested()
@@ -1670,10 +1670,14 @@ impl ConnectionShared {
                     && state.has_retained_work()
             })
             .unwrap_or(false);
-        if !recovering_retained_work || !self.reconnect_waiting.load(Ordering::Acquire) {
+        if !recovering_retained_work
+            || self
+                .reconnect_waiting
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
             return false;
         }
-        self.reconnect_wake_epoch.fetch_add(1, Ordering::AcqRel);
         self.retry_notify.notify_waiters();
         true
     }
@@ -3198,13 +3202,10 @@ fn start_connection(
         // forces both cancellation and task abort before the new generation
         // is allowed to touch SessionState.
         let shutdown = finish_or_force_explicit_shutdown(runtime, old.shared, old.abort);
-        if !reconnecting {
-            // An explicit binding retirement is the last point at which the
-            // old generation may decide what to do with its detailed cleanup
-            // target. Automatic same-runtime recovery deliberately keeps a
-            // surviving record for post-identity-verification reconciliation.
-            let _ = retire_explicit_cleanup_result(&old_shared, shutdown, reconnecting);
-        }
+        // Only an explicit binding retirement removes the old entry here, and
+        // it is the last point at which the old generation may decide what to
+        // do with its detailed cleanup target.
+        let _ = retire_explicit_cleanup_result(&old_shared, shutdown, false);
     }
 
     if !owner.install_allowed(ticket) {
@@ -3267,28 +3268,13 @@ fn start_connection(
         // Abort completion is asynchronous. Install the new generation and
         // discard the old actor's local cleanup authority in one operation.
         state.generation = generation;
-        if reconnecting
-            && let ConnectionStart::AutomaticReconnect(profile) = &start
-            && let Some(identity) = profile.tmux_identity.as_ref()
-            && let Some(record) = state.zoom_cleanup_record.as_mut()
-            && record.endpoint == SessionEndpoint::from_profile(profile)
-            && record.runtime == identity.epoch()
-        {
-            // The connection-scoped record is intentionally retained across
-            // this same-runtime actor replacement, but its generation gate
-            // moves atomically with the replacement. An old actor still
-            // fails its state-generation checks and cannot clear it later.
-            record.generation = generation;
-        }
-        if !reconnecting {
-            state.meeterm_zoomed = false;
-            state.meeterm_zoomed_window = None;
-            state.meeterm_zoomed_pane = None;
-            // A manual/fresh binding is never allowed to inherit a cleanup
-            // target from another host, backend, or runtime. The old shared
-            // actor already had its bounded cleanup opportunity above.
-            state.zoom_cleanup_record = None;
-        }
+        state.meeterm_zoomed = false;
+        state.meeterm_zoomed_window = None;
+        state.meeterm_zoomed_pane = None;
+        // A manual/fresh binding is never allowed to inherit a cleanup
+        // target from another host, backend, or runtime. The old shared
+        // actor already had its bounded cleanup opportunity above.
+        state.zoom_cleanup_record = None;
         // Candidate IDs are scoped to the connection generation. A reconnect
         // must not expose or accept the previous generation's picker IDs
         // before a fresh discovery pass publishes replacements.
@@ -4719,9 +4705,15 @@ fn reconnect_delay(retry: u32) -> Duration {
 }
 
 async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool {
-    let deadline = tokio::time::Instant::now() + delay;
-    let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+    // Registration is the first step: any wake after it clears the flag, so
+    // it stays visible until the loop below observes it.
     shared.reconnect_waiting.store(true, Ordering::Release);
+    wait_for_registered_reconnect(shared, delay).await
+}
+
+async fn wait_for_registered_reconnect(shared: &ConnectionShared, delay: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + delay;
+    let woken = || !shared.reconnect_waiting.load(Ordering::Acquire);
     loop {
         if shared.is_cancelled()
             || shared.explicit_cleanup_requested()
@@ -4757,8 +4749,7 @@ async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool 
             }
             continue;
         }
-        if shared.reconnect_wake_epoch.load(Ordering::Acquire) != wake_epoch {
-            shared.reconnect_waiting.store(false, Ordering::Release);
+        if woken() {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -4778,8 +4769,7 @@ async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool 
         if !shared.is_foreground() {
             continue;
         }
-        if shared.reconnect_wake_epoch.load(Ordering::Acquire) != wake_epoch {
-            shared.reconnect_waiting.store(false, Ordering::Release);
+        if woken() {
             return true;
         }
         tokio::select! {
@@ -8110,7 +8100,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
             });
             wait_for_reconnect_waiter(&shared).await;
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             network_changed();
             assert!(
                 tokio::time::timeout(Duration::from_secs(1), waiting)
@@ -8118,7 +8107,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                     .expect("network change wakes current retry")
                     .expect("retry task joined")
             );
-            assert!(shared.reconnect_wake_epoch.load(Ordering::Acquire) > wake_epoch);
             assert_eq!(shared.generation, generation);
             let state = shared.session.lock().expect("retained recovery state");
             assert_eq!(state.operation_epoch, epoch);
@@ -8139,6 +8127,42 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
+    fn wake_between_waiter_registration_and_its_first_check_is_not_lost() {
+        let test_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        test_runtime.block_on(async {
+            let (owner, shared) = recovery_fixture();
+            shared
+                .begin_recovery("transport", 1)
+                .expect("retained recovery");
+            register_recovery_test_connection(&shared);
+
+            // No wait is registered yet: the wake leaves no permit behind.
+            assert!(!shared.wake_reconnect_wait());
+
+            // Reproduce the interleaving where the wake lands after
+            // registration but before the waiter has checked anything.
+            shared.reconnect_waiting.store(true, Ordering::Release);
+            network_changed();
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    wait_for_registered_reconnect(&shared, Duration::from_secs(30)),
+                )
+                .await
+                .expect("the recorded wake ends the 30s backoff immediately")
+            );
+            // The consumed wake leaves nothing behind: outside a wait a wake
+            // is refused, so it cannot skip the next attempt's backoff.
+            assert!(!shared.reconnect_waiting.load(Ordering::Acquire));
+            assert!(!shared.wake_reconnect_wait());
+            unregister_recovery_test_connection(owner);
+        });
+    }
+
+    #[test]
     fn retry_recovery_wakes_backoff_and_is_a_noop_during_an_attempt() {
         let test_runtime = Builder::new_current_thread()
             .enable_all()
@@ -8150,12 +8174,14 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 .begin_recovery("transport", 1)
                 .expect("retained recovery");
             register_recovery_test_connection(&shared);
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             assert_eq!(retry_recovery(owner, epoch), Ok(()));
-            assert_eq!(
-                shared.reconnect_wake_epoch.load(Ordering::Acquire),
-                wake_epoch,
+            assert!(
+                !shared.reconnect_waiting.load(Ordering::Acquire),
                 "an in-progress attempt is an accepted no-op"
+            );
+            assert!(
+                !shared.wake_reconnect_wait(),
+                "no wake permit is left for the next backoff"
             );
 
             let waiting = tokio::spawn({
@@ -8167,7 +8193,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 retry_recovery(owner, epoch.saturating_add(1)),
                 Err(ConnectionError::RecoveryStale)
             );
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             assert_eq!(retry_recovery(owner, epoch), Ok(()));
             assert!(
                 tokio::time::timeout(Duration::from_secs(1), waiting)
@@ -8175,7 +8200,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                     .expect("manual Retry wakes current backoff")
                     .expect("retry task joined")
             );
-            assert!(shared.reconnect_wake_epoch.load(Ordering::Acquire) > wake_epoch);
             let state = shared.session.lock().expect("retained recovery state");
             assert_eq!(state.recovery.attempt, 1);
             assert_eq!(state.operation_epoch, epoch);
@@ -8202,16 +8226,15 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
             });
             wait_for_reconnect_waiter(&shared).await;
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             network_changed();
             tokio::time::sleep(Duration::from_millis(10)).await;
             assert!(
                 !waiting.is_finished(),
                 "background network changes do not retry"
             );
-            assert_eq!(
-                shared.reconnect_wake_epoch.load(Ordering::Acquire),
-                wake_epoch
+            assert!(
+                shared.reconnect_waiting.load(Ordering::Acquire),
+                "a background wake is not recorded"
             );
             set_foreground(owner, true).expect("foreground resumes recovery");
             assert!(
@@ -8232,14 +8255,10 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
             });
             wait_for_reconnect_waiter(&shared).await;
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             shared.set_automatic_reconnect(false);
             assert!(!waiting.await.expect("disabled retry task joined"));
             network_changed();
-            assert_eq!(
-                shared.reconnect_wake_epoch.load(Ordering::Acquire),
-                wake_epoch
-            );
+            assert!(!shared.wake_reconnect_wait());
             unregister_recovery_test_connection(owner);
 
             let (owner, shared) = recovery_fixture();
@@ -8252,14 +8271,10 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
             });
             wait_for_reconnect_waiter(&shared).await;
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             shared.cancel();
             network_changed();
             assert!(!waiting.await.expect("cancelled retry task joined"));
-            assert_eq!(
-                shared.reconnect_wake_epoch.load(Ordering::Acquire),
-                wake_epoch
-            );
+            assert!(!shared.wake_reconnect_wait());
             assert_eq!(
                 retry_recovery(owner, epoch),
                 Err(ConnectionError::RecoveryUnavailable)
@@ -8594,7 +8609,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             })
             .await
             .expect("retry actor entered backoff wait");
-            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
             set_foreground(owner, true).expect("foreground wakes retry");
             assert!(
                 tokio::time::timeout(Duration::from_secs(1), waiting)
@@ -8602,7 +8616,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                     .expect("foreground returned retry immediately")
                     .expect("retry task joined")
             );
-            assert!(shared.reconnect_wake_epoch.load(Ordering::Acquire) > wake_epoch);
             let state = shared.session.lock().expect("retained recovery state");
             assert_eq!(state.recovery.attempt, 1);
             assert_eq!(state.recovery.phase, RecoveryPhase::Reconnecting);
@@ -9426,13 +9439,9 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             },
         );
         let generation = shared.generation;
-        let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
         assert_eq!(retry_recovery(owner, epoch), Ok(()));
         assert_eq!(shared.generation, generation);
-        assert_eq!(
-            shared.reconnect_wake_epoch.load(Ordering::Acquire),
-            wake_epoch
-        );
+        assert!(!shared.reconnect_waiting.load(Ordering::Acquire));
         assert!(Arc::ptr_eq(
             &shared,
             &connections()
