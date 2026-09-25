@@ -237,6 +237,26 @@ impl JsonChannel {
     }
 }
 
+async fn release_after_controller_failure(
+    failure: FlowFailure,
+    explicit_shutdown: bool,
+    release: impl std::future::Future<Output = Result<(), FlowFailure>>,
+) -> bool {
+    if !explicit_shutdown
+        && matches!(
+            failure,
+            FlowFailure::Network
+                | FlowFailure::Channel
+                | FlowFailure::Transport
+                | FlowFailure::RemoteClosed
+        )
+    {
+        return false;
+    }
+    let _ = release.await;
+    true
+}
+
 struct Controller {
     pane: u64,
     native: u64,
@@ -715,7 +735,19 @@ async fn run_impl(
             } => {
                 match frame {
                     Ok(value) => client.frame(value)?,
-                    Err(error) => { let _ = client.release().await; return Err(error); },
+                    Err(error) => {
+                        let explicit_shutdown = shared.explicit_cleanup_requested();
+                        if !release_after_controller_failure(
+                            error,
+                            explicit_shutdown,
+                            client.release(),
+                        )
+                        .await
+                        {
+                            client.abandon_controller();
+                        }
+                        return Err(error);
+                    },
                 }
             },
             event = client.subscription.next() => {
@@ -1797,6 +1829,18 @@ impl HerdrClient<'_> {
         .and_then(|result| result);
         controller.stream.close().await;
         released
+    }
+
+    /// A dead transport cannot acknowledge controller.release. Revoke local
+    /// terminal access and drop the SSH channel immediately; waiting for a
+    /// remote lease acknowledgement here would delay the first retained retry.
+    fn abandon_controller(&mut self) {
+        let Some(mut controller) = self.controller.take() else {
+            return;
+        };
+        registry::detach_transport(controller.native, self.shared.generation);
+        controller.input.close();
+        drop(controller);
     }
 
     async fn activate_selected(&mut self) -> Result<(), FlowFailure> {
@@ -3246,5 +3290,60 @@ mod tests {
         assert_eq!(projection.flat.len(), 2);
         assert_eq!(projected.backend, Backend::Herdr);
         assert_eq!(projected.runtime, "default");
+    }
+
+    #[test]
+    fn transport_controller_failure_does_not_wait_for_remote_release() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("controller teardown test runtime");
+        runtime.block_on(async {
+            for failure in [
+                FlowFailure::Network,
+                FlowFailure::Channel,
+                FlowFailure::Transport,
+                FlowFailure::RemoteClosed,
+            ] {
+                let release_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let release_started = Arc::clone(&release_polled);
+                let release = async move {
+                    release_started.store(true, std::sync::atomic::Ordering::Release);
+                    std::future::pending::<Result<(), FlowFailure>>().await
+                };
+
+                assert!(
+                    !release_after_controller_failure(failure, false, release).await,
+                    "transport failures abandon the controller"
+                );
+                assert!(
+                    !release_polled.load(std::sync::atomic::Ordering::Acquire),
+                    "transport failure must not poll the bounded remote release future"
+                );
+            }
+
+            let release_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release_started = Arc::clone(&release_polled);
+            let release = async move {
+                release_started.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            };
+            assert!(
+                release_after_controller_failure(FlowFailure::HerdrOperation, false, release).await
+            );
+            assert!(release_polled.load(std::sync::atomic::Ordering::Acquire));
+
+            let release_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release_started = Arc::clone(&release_polled);
+            let release = async move {
+                release_started.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            };
+            assert!(
+                release_after_controller_failure(FlowFailure::Transport, true, release).await,
+                "explicit shutdown keeps the ordered controller release even during loss"
+            );
+            assert!(release_polled.load(std::sync::atomic::Ordering::Acquire));
+        });
     }
 }

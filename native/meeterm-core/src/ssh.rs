@@ -2234,10 +2234,10 @@ pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<()
         return Ok(());
     }
     if !finished {
-        // The actor has committed Stopped but is still unwinding its final
-        // flow. Treat Retry as an accepted in-progress no-op; the same screen
-        // will expose a fresh operation epoch once the actor has finished.
-        return Ok(());
+        // Stopped is committed before the flow actor publishes `finished`.
+        // Do not acknowledge Retry in that interval: no replacement exists
+        // yet, and the UI would otherwise wait forever for a state change.
+        return Err(ConnectionError::RecoveryUnavailable);
     }
 
     let profile = profile.ok_or(ConnectionError::ReconnectUnavailable)?;
@@ -8660,6 +8660,62 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         );
 
         registry::destroy_terminal(owner);
+    }
+
+    #[test]
+    fn stopped_retry_is_rejected_until_the_old_actor_finishes() {
+        let (owner, shared) = recovery_fixture();
+        shared.set_profile(retry_profile());
+        shared.stop_recovery("transport");
+        let stopped_epoch = shared.operation_epoch();
+        let old_generation = shared.generation;
+        let old_abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let previous = connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort: old_abort.clone(),
+            },
+        );
+        assert!(previous.is_none(), "test owner should not be registered");
+
+        assert_eq!(
+            retry_recovery(owner, stopped_epoch),
+            Err(ConnectionError::RecoveryUnavailable),
+            "Retry must not be acknowledged while the old flow is still unwinding"
+        );
+        assert!(!shared.info.lock().expect("old connection info").finished);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
+        assert_eq!(shared.operation_epoch(), stopped_epoch);
+        assert!(Arc::ptr_eq(
+            &shared,
+            &connections()
+                .lock()
+                .expect("connection registry")
+                .get(&owner)
+                .expect("old actor remains installed")
+                .shared
+        ));
+
+        // Once the actor has published completion, the existing stopped
+        // replacement path accepts the same still-current intent.
+        shared.finish(Err(FlowFailure::Transport));
+        assert_eq!(retry_recovery(owner, stopped_epoch), Ok(()));
+        let replacement = connections()
+            .lock()
+            .expect("connection registry")
+            .get(&owner)
+            .expect("replacement actor")
+            .shared
+            .clone();
+        assert_ne!(replacement.generation, old_generation);
+        assert_eq!(replacement.recovery_phase(), RecoveryPhase::Reconnecting);
+
+        old_abort.abort();
+        unregister_recovery_test_connection(owner);
     }
 
     #[test]
