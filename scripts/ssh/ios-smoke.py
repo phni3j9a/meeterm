@@ -100,6 +100,7 @@ NATIVE_INPUT_CASES = (
     "async_paste_epoch",
     "cached_read_only",
     "recovery_arguments",
+    "runtime_boundary_result",
     "live_epoch_refocus",
 )
 RUNTIME_ENVIRONMENT_NAMES = (
@@ -307,7 +308,7 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
     ).stdout.splitlines()
     panes = run_tmux(
         socket_path,
-        ("list-panes", "-t", "=meeterm", "-a", "-F", "#{pane_id}"),
+        ("list-panes", "-s", "-t", "=meeterm", "-F", "#{pane_id}"),
         "tmux_fixture",
     ).stdout.splitlines()
     if set(workspaces) != {"ios-main", "ios-side"} or len(panes) != 3:

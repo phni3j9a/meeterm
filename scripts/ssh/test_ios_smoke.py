@@ -66,6 +66,15 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn("guard isFirstResponder else", source)
         self.assertIn("recordPasteDrop(.provider)", source)
 
+    def test_native_input_validation_markers_match_runner_allowlist(self):
+        source = (REPOSITORY_ROOT / "scripts" / "ci" / "TerminalInputViewTests.swift").read_text(
+            encoding="utf-8"
+        )
+        markers = re.findall(r'appendValidation\("case=([a-z0-9_]+) result=passed"\)', source)
+
+        self.assertEqual(len(markers), len(set(markers)))
+        self.assertEqual(set(markers), set(smoke.NATIVE_INPUT_CASES))
+
     def test_collector_separates_command_and_marker_outcomes(self):
         source = ARTIFACT_COLLECTOR_SOURCE.read_text(encoding="utf-8")
         self.assertIn('log_command_status="not_run"', source)
@@ -241,6 +250,59 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('"ssh_resumed_native_input_await_remote_marker"', driver)
         self.assertIn('"marker_line_count": len(marker_lines)', driver)
         self.assertIn('"marker_exactly_once": marker_matches', driver)
+
+
+class TopologyPreparationTests(unittest.TestCase):
+    @staticmethod
+    def prepare_with_target_pane_count(target_pane_count):
+        def fake_run_tmux(_socket_path, command, _stage, allow_failure=False):
+            if command[0] == "list-sessions":
+                return subprocess.CompletedProcess(command, 1, "", "no server")
+            if command[0] == "list-windows":
+                return subprocess.CompletedProcess(command, 0, "ios-main\nios-side\n", "")
+            if command[0] == "list-panes":
+                if "=meeterm:ios-main" in command:
+                    return subprocess.CompletedProcess(command, 0, "%1\n", "")
+                if "=meeterm" in command:
+                    # A whole-server query also sees the pane in the
+                    # switcher-destination Session created above.
+                    count = target_pane_count + (1 if "-a" in command else 0)
+                    panes = "".join(f"%{index}\n" for index in range(1, count + 1))
+                    return subprocess.CompletedProcess(command, 0, panes, "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        outcome = None
+        pane_count_query = None
+        with mock.patch.object(smoke, "run_tmux", side_effect=fake_run_tmux) as run:
+            try:
+                outcome = smoke.prepare_topology(Path("fixture.sock"))
+            except smoke.SmokeFailure as error:
+                outcome = error
+            queries = [
+                call.args[1]
+                for call in run.call_args_list
+                if call.args[1][0] == "list-panes" and "=meeterm" in call.args[1]
+            ]
+            if queries:
+                pane_count_query = queries[-1]
+        return outcome, pane_count_query
+
+    def test_prepare_topology_counts_only_the_target_session_and_stays_strict(self):
+        for target_pane_count in (2, 3, 4):
+            with self.subTest(target_pane_count=target_pane_count):
+                outcome, query = self.prepare_with_target_pane_count(target_pane_count)
+                self.assertEqual(
+                    query,
+                    ("list-panes", "-s", "-t", "=meeterm", "-F", "#{pane_id}"),
+                )
+                if target_pane_count == 3:
+                    self.assertEqual(outcome, (2, 3))
+                else:
+                    self.assertIsInstance(outcome, smoke.SmokeFailure)
+                    self.assertEqual(
+                        (outcome.stage, outcome.reason),
+                        ("tmux_fixture", "topology_invalid"),
+                    )
 
 
 class TransportLossContractTests(unittest.TestCase):

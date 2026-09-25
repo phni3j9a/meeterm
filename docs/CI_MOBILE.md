@@ -143,7 +143,7 @@ accessibility diagnostic simulator profile (SE-class layout, extra-large
 content size); report it separately from normal Pro-class results and never
 substitute a large device for a small one.
 
-- `standard`: four production storage cases, eleven native input/recovery-bridge
+- `standard`: four production storage cases, twelve native input/recovery-bridge
   cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
   has 27 routes: the previous 18 plus `session-switcher`,
