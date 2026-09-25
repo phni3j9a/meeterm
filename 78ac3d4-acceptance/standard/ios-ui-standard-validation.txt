@@ -1,0 +1,1 @@
+case=standard result=passed

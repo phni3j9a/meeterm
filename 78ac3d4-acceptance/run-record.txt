@@ -1,0 +1,94 @@
+78ac3d43 acceptance run record — iOS Simulator (Issue #27 sequential switcher, final candidate)
+===============================================================================================
+
+commit: 78ac3d436f87d2f50447a4fc4026e0358b5bebd7 (issue-27-sequential-switcher)
+prior head: 1f219d94eb17942338df835fb88a4accb9e568ec
+delta vs prior: scripts/ci/MeetermSmokeUITests.swift — input() rewritten to bind
+  typed editable elements only (textField/textView/secureTextField by stable
+  identifier; default to textFields matching label firstMatch); no .any
+  fallback. Plus scripts/ssh/test_ios_smoke.py harness-test updates.
+  Verified: git diff 1f219d9..78ac3d43 touches only those 2 files.
+date: 2026-09-25 UTC
+host toolchain: Xcode 26.6 (17F113), iphonesimulator26.5 SDK, arm64, RN 0.86.3,
+  Expo ~57.0.25 (locked: expo 57.0.25, ExpoModulesCore 57.0.19, ExpoModulesJSI 57.1.1),
+  Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c.
+simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+env: EXPO_PUBLIC_MEETERM_SMOKE=1 at build time; IOS_SIMULATOR_UDID exported per suite.
+
+pipeline (per docs/CI_MOBILE.md + docs/TESTING.md):
+  git fetch && git reset --hard 78ac3d436f87d2f50447a4fc4026e0358b5bebd7
+  npm ci
+  rm -rf ios && npx expo prebuild --platform ios --non-interactive --no-install   (fresh CNG)
+  bash scripts/ci/ios-inject-ui-test.sh
+  (cd ios && pod install)
+  python3 scripts/ci/ios-strip-storage-rust-link.py
+  xcodebuild -workspace ios/meeterm.xcworkspace -scheme meeterm -configuration Release
+    -sdk iphonesimulator -destination "generic/platform=iOS Simulator"
+    -derivedDataPath <RUNNER_TEMP>/meeterm-derived-data
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_TESTABILITY=YES
+    ONLY_ACTIVE_ARCH=YES ARCHS=arm64 COMPILER_INDEX_STORE_ENABLE=NO build-for-testing
+  -> TEST BUILD SUCCEEDED. build wall time 149s.
+
+suite 1: MEETERM_IOS_SUITE=standard (fresh build)
+  result: PASSED
+  wall time: 291s
+  diagnostics: xcodebuild_result_line=passed
+    xcodebuild_forced_exit_after_result=1
+    xcodebuild_post_result_wait_ms=60406
+    xcodebuild_elapsed_ms=276497
+    keyboard_introduction_suppressed=1
+    exit_code=0
+  captures: 28 seeded-screen captures incl. standard-session-switcher +
+    standard-session-switcher-sessions; foundation=passed (metal).
+  artifact dir preserved BEFORE ssh cleaned the shared dir -> standard/
+
+suite 2: MEETERM_IOS_SUITE=ssh (REUSE of same-commit build-for-testing products)
+  reuse recorded: same derived-data products as standard; commit re-verified
+    (git rev-parse HEAD == 78ac3d436f87...) and exactly one .xctestrun present
+    before run. Fresh stale .xcresult dirs removed.
+  result: FAILED at xcuitest_ssh (ui_test_failed, exit 65)
+  wall time: 275s
+  diagnostics: xcodebuild_result_line=failed
+    xcodebuild_forced_exit_after_result=1
+    xcodebuild_post_result_wait_ms=60303
+    xcodebuild_elapsed_ms=261292
+    exit_code=65
+  first failure: MeetermSmokeUITests.swift:2453
+    "The short field is not hittable" during fill("Server name")
+    (stage fill_server_name_focus) inside saveAlternateFixtureProfile
+    (switcher -> Manage servers -> Add server -> fill Host/Port/Username/Server name).
+
+verified BEFORE failure (stage log):
+  fixture topology ok, same-server Session switch, destination-input markers,
+  return to origin, original shell PID survival.
+blocked / NOT verified:
+  alternate SSH endpoint switch (switcher-alternate-destination), host-key
+  confirmation for second endpoint, cross-destination return.
+
+ROOT CAUSE (investigated; see ssh/server-name-frame-evidence.txt):
+  HARNESS defect — second one in the same fill path, unmasked by the 78ac3d43 fix.
+  * The input() fix WORKS: Host, Port, Username fields were bound to typed
+    editable elements and fill_*_verified stages all passed.
+  * "Server name" now correctly binds TextField identifier "server-profile-name"
+    — but its frame is {x:25, y:974, w:390, h:50} on a 956pt-tall viewport and
+    XC_kAXXCAttributeVisiblePoint = (-1,-1): it is the LAST field of the 2-page
+    form, rendered OFF-VIEWPORT.
+  * fillTextField resolves the element then waits waitForHittable(10s) with NO
+    scroll/reveal step -> permanent not-hittable -> XCTFail. The harness has
+    scrollToVisible (used by revealAuthenticationControl) but the fill path
+    never calls it.
+  * Interactive check on the same build (seeded servers -> Add server -> drag
+    scroll): the field scrolls into view, taps, and accepts keyboard input —
+    product behavior is normal scrollable-form UX, not a defect.
+    Captures: repro2-saved-servers.png, repro2-form-scrolled-display-name.png,
+    repro2-display-name-focused.png.
+  * Note: this gap existed on bccef28/1f219d9 too but was masked — the run died
+    earlier at the Host label-shadowing defect before reaching Server name.
+
+assertions loosened: none. source modified: none.
+
+evidence layout:
+  run-record.txt          (this file)
+  standard/               full observability bundle incl. 28 captures + runner log
+  ssh/                    full observability bundle incl. stage/failure logs,
+                          raw xcodebuild log, frame evidence, repro captures

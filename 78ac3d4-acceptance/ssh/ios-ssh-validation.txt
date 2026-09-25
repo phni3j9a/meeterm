@@ -1,0 +1,5 @@
+result=failed
+suite=ssh
+stage=xcuitest_ssh
+reason=ui_test_failed
+ui_last_stage=teardown_complete
