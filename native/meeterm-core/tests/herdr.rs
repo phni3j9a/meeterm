@@ -1154,14 +1154,18 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
-fn wait_recovery_ready(id: u64, label: &str) -> Value {
+fn wait_recovery_ready_after_epoch(id: u64, previous_epoch: &str, label: &str) -> Value {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
         let state = connection_snapshot(id).expect("connection snapshot");
         let value: Value =
             serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
                 .expect("workspace snapshot JSON");
-        if value["control"]["recovery"]["phase"] == "none"
+        let epoch_advanced = value["control"]["operationEpoch"]
+            .as_str()
+            .is_some_and(|epoch| epoch != previous_epoch);
+        if epoch_advanced
+            && value["control"]["recovery"]["phase"] == "none"
             && value["control"]["runtimeOperationsReady"] == true
             && value["control"]["terminalInputReady"] == true
             && state.state == ConnectionState::Ready as u32
@@ -1175,7 +1179,12 @@ fn wait_recovery_ready(id: u64, label: &str) -> Value {
                 field(&state.error_message, state.error_message_len)
             );
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label}; operation epoch {} → {}",
+            previous_epoch,
+            value["control"]["operationEpoch"]
+        );
         thread::sleep(POLL_INTERVAL);
     }
 }
@@ -2246,13 +2255,21 @@ fn real_herdr_native_backend_over_russh_fixture() {
         herdr_lists_before_transport_loss > 0,
         "initial picker listed Herdr sessions"
     );
+    let before_transport_epoch = workspace_snapshot_json(default_id)
+        .ok()
+        .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+        .and_then(|value| {
+            value["control"]["operationEpoch"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .expect("operation epoch before Herdr transport loss");
     ssh.lose_connections();
-    wait_state(
+    let _transport_json = wait_recovery_ready_after_epoch(
         default_id,
-        ConnectionState::Reconnecting,
-        "server-side SSH connection loss",
+        &before_transport_epoch,
+        "automatic Herdr transport recovery after server-side SSH connection loss",
     );
-    let _transport_json = wait_recovery_ready(default_id, "automatic Herdr transport recovery");
     assert_eq!(
         ssh.herdr_session_list_count(),
         herdr_lists_before_transport_loss,

@@ -1559,6 +1559,29 @@ async function mountRecovering(t, control, connectionState = 'Reconnecting', con
   return fixture;
 }
 
+async function mountWorkspaceRecovery(t, { phase, reason, operationEpoch, connectionState, errorCode = '' }) {
+  const fixture = await mountForTest(t, makeSnapshot());
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+  fixture.environment.connection = {
+    ...fixture.environment.connection,
+    state: connectionState,
+    errorCode,
+    errorMessage: '',
+  };
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    control: workspaceControl({
+      operationEpoch,
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      recovery: { phase, reason, attempt: phase === 'stopped' ? 6 : 0, maxAttempts: 6 },
+    }),
+  }));
+  await settleAsync();
+  return fixture;
+}
+
 async function closeCurrentPane(root, environment) {
   await press(root, findLabel(root, 'Terminal menu'));
   const close = findLabel(root, 'Close terminal');
@@ -2620,18 +2643,18 @@ test('Workspaces Reconnect retries retained work with its current epoch and keep
     operationEpoch: '181',
     runtimeOperationsReady: false,
     terminalInputReady: false,
-    recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6 },
+    recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
   });
   fixture.environment.connection.state = 'Failed';
   await updateSnapshot(fixture.environment, makeSnapshot({ control }));
   await settleAsync();
   fixture.environment.recoveryRetryMode = 'pending';
-  const reconnect = findLabel(fixture.root, 'Reconnect');
+  const reconnect = findTestId(fixture.root, 'workspaces-reconnect');
   assert.ok(reconnect);
   await press(fixture.root, reconnect);
   await settleAsync();
-  assert.equal(findLabel(fixture.root, 'Reconnect').props.disabled, true);
-  await press(fixture.root, findLabel(fixture.root, 'Reconnect'));
+  assert.equal(findTestId(fixture.root, 'workspaces-reconnect').props.disabled, true);
+  await press(fixture.root, findTestId(fixture.root, 'workspaces-reconnect'));
 
   assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
     { method: 'retryRecovery', operationEpoch: '181' },
@@ -2639,6 +2662,7 @@ test('Workspaces Reconnect retries retained work with its current epoch and keep
   assert.equal(fixture.environment.nativeCalls.includes('reconnect'), false);
   assert.equal(fixture.environment.calls.some(call => call.method === 'selectRuntime'), false);
   assert.equal(all(fixture.root, node => typeof node.props?.testID === 'string' && node.props.testID.startsWith('runtime-row-')).length, 0);
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Choose a runtime for fixture.example').length, 0);
 
   fixture.environment.resolvePendingRecoveryRetry();
   fixture.environment.connection.state = 'Reconnecting';
@@ -2655,6 +2679,70 @@ test('Workspaces Reconnect retries retained work with its current epoch and keep
   await press(fixture.root, findTestId(fixture.root, 'workspace-row-W1'));
   assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
   assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly');
+});
+
+test('Workspaces and server-sheet Reconnect retry reconnecting or retry-eligible retained work', async t => {
+  const cases = [
+    { location: 'workspaces', phase: 'reconnecting', reason: 'manual_retry', epoch: '201', state: 'Reconnecting' },
+    { location: 'server', phase: 'reconnecting', reason: 'manual_retry', epoch: '202', state: 'Reconnecting' },
+    { location: 'server', phase: 'stopped', reason: 'retry_exhausted', epoch: '203', state: 'Failed' },
+  ];
+  for (const item of cases) {
+    const fixture = await mountWorkspaceRecovery(t, {
+      phase: item.phase,
+      reason: item.reason,
+      operationEpoch: item.epoch,
+      connectionState: item.state,
+    });
+    fixture.environment.recoveryRetryMode = 'pending';
+    assert.ok(findTestId(fixture.root, 'recovery-rail'));
+
+    if (item.location === 'server') {
+      await press(fixture.root, findLabel(fixture.root, 'Server connection'));
+    }
+    const reconnectId = item.location === 'server' ? 'server-reconnect' : 'workspaces-reconnect';
+    assert.ok(findTestId(fixture.root, reconnectId), `${item.location} Reconnect should be visible`);
+    await press(fixture.root, findTestId(fixture.root, reconnectId));
+    await settleAsync();
+    assert.equal(findTestId(fixture.root, reconnectId).props.disabled, true);
+    await press(fixture.root, findTestId(fixture.root, reconnectId));
+    await settleAsync();
+
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
+      { method: 'retryRecovery', operationEpoch: item.epoch },
+    ]);
+    assert.equal(fixture.environment.nativeCalls.includes('reconnect'), false);
+    assert.equal(fixture.environment.calls.some(call => call.method === 'selectRuntime'), false);
+    assert.equal(all(fixture.root, node => typeof node.props?.testID === 'string' && node.props.testID.startsWith('runtime-row-')).length, 0);
+    assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Choose a runtime for fixture.example').length, 0);
+    fixture.environment.resolvePendingRecoveryRetry();
+  }
+});
+
+test('retained Reconnect is hidden while resynchronizing or stopped without rail Retry', async t => {
+  const cases = [
+    { phase: 'resynchronizing', reason: 'screen_resync', state: 'Reconnecting' },
+    { phase: 'stopped', reason: 'runtime_missing', state: 'Failed' },
+    { phase: 'stopped', reason: 'terminal_missing', state: 'Failed' },
+    { phase: 'stopped', reason: 'incompatible', state: 'Failed' },
+    { phase: 'stopped', reason: 'authentication_failed', state: 'Failed' },
+    { phase: 'stopped', reason: 'host_key_changed', state: 'Failed', errorCode: 'host_key_changed' },
+  ];
+  for (const item of cases) {
+    const fixture = await mountWorkspaceRecovery(t, {
+      phase: item.phase,
+      reason: item.reason,
+      operationEpoch: '220',
+      connectionState: item.state,
+      errorCode: item.errorCode,
+    });
+    assert.ok(findTestId(fixture.root, 'recovery-rail'));
+    assert.equal(all(fixture.root, node => node.props?.testID === 'workspaces-reconnect').length, 0, item.reason);
+    await press(fixture.root, findLabel(fixture.root, 'Server connection'));
+    assert.equal(all(fixture.root, node => node.props?.testID === 'server-reconnect').length, 0, item.reason);
+    assert.equal(fixture.environment.calls.some(call => call.method === 'retryRecovery'), false);
+    assert.equal(fixture.environment.nativeCalls.includes('reconnect'), false);
+  }
 });
 
 test('Workspaces Reconnect without retained work starts the fresh picker path', async t => {
@@ -2674,7 +2762,7 @@ test('Workspaces Reconnect without retained work starts the fresh picker path', 
     }),
   }));
   await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Reconnect'));
+  await press(fixture.root, findTestId(fixture.root, 'workspaces-reconnect'));
   await settleAsync();
 
   assert.deepEqual(fixture.environment.nativeCalls.filter(call => call === 'reconnect'), ['reconnect']);

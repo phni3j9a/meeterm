@@ -1666,8 +1666,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       : []),
   ];
   const switcherSessionServerName = switcherTarget?.profile.name ?? currentProfile?.name ?? endpoint(connection);
-  const canReconnect = !recoveryPhaseActive && !boundaryFailureFence.current
+  const canReconnect = !recoveryPhaseActive && !retainedWorkAvailable && !boundaryFailureFence.current
     && hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
+  const canRetryRetainedFromList = retainedWorkAvailable && !boundaryFailureFence.current
+    && (control.recovery.phase === 'reconnecting'
+      || (control.recovery.phase === 'stopped' && recoveryCopy?.retry === true));
+  const canShowReconnect = canReconnect || canRetryRetainedFromList;
   const filteredWorkspaces = useMemo(() => searching ? workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(query))) : workspaces, [query, searching, workspaces]);
   const pickerWorkspaces = useMemo(() => workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(pickerQuery))), [pickerQuery, workspaces]);
 
@@ -1745,10 +1749,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRecoveryPending(value => ({ ...value, [kind]: false }));
   }, []);
 
-  const requestRetainedRecovery = useCallback((allowInFlight: boolean) => {
+  const requestRetainedRecovery = useCallback((allowReconnecting: boolean) => {
     const current = controlRef.current;
-    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
-      || (!allowInFlight && current.recovery.phase !== 'stopped')) return false;
+    if (recoveryInvalidatedRef.current || !current.hasRetainedWork) return false;
+    if (current.recovery.phase === 'stopped') {
+      const copy = recoveryRailCopy(current, session.backend, session.runtime, recoveryServerLabel);
+      if (!copy?.retry) return false;
+    } else if (current.recovery.phase !== 'reconnecting' || !allowReconnecting) {
+      return false;
+    }
     const identity: RecoveryActionIdentity = {
       epoch: current.operationEpoch,
       phase: current.recovery.phase,
@@ -1761,7 +1770,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setControlMessage('Recovery could not be started. Try again or change the destination.');
       });
     return true;
-  }, [clearRecoveryAction, startRecoveryAction]);
+  }, [clearRecoveryAction, recoveryServerLabel, session.backend, session.runtime, startRecoveryAction]);
 
   const retryRecovery = useCallback(() => {
     const current = controlRef.current;
@@ -2903,11 +2912,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [connection, removedHostKeyId, runCommand]);
 
   const showRecoveryRail = Boolean(recoveryPhaseActive && retainedWorkAvailable && surfaceAvailable && recoveryCopy);
-  const statusNotice = attempted && !ready && !showRecoveryRail ? <View style={[styles.notice, { backgroundColor: colors.surface }]}>
+  const statusNotice = attempted && !ready && (!showRecoveryRail || canRetryRetainedFromList) ? <View style={[styles.notice, { backgroundColor: colors.surface }]}>
     <Text style={[styles.noticeTitle, { color: colors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'Verify this server' : connection.state === 'Disconnected' ? 'Disconnected' : presentation.label}</Text>
     <Text style={[styles.noticeBody, { color: colors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'Your work is still running on the server. Reconnect to pick up where you left off.' : 'Enter your connection details to get started.' : closing ? hasConnected ? 'Disconnecting. Your work will keep running on the server.' : 'Canceling the connection.' : 'Checking your remote workspaces.'}</Text>
     <View style={styles.noticeActions}>
-      {canReconnect ? <Button label="Reconnect" colors={colors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
+      {canShowReconnect ? <Button testID="workspaces-reconnect" label="Reconnect" colors={colors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
       {!active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={openForm} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Connection details</Text></Pressable> : null}
       {active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel connection" disabled={commandBusy} onPress={disconnect} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Cancel</Text></Pressable> : null}
       {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Review key change</Text></Pressable> : null}
@@ -3203,7 +3212,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           <ConnectionStatus connection={connection} colors={homeColors} />
         </View>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Your work lives on this server. Disconnecting leaves it running.</Text>
-        {canReconnect ? <Button label="Reconnect" colors={homeColors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
+        {canShowReconnect ? <Button testID="server-reconnect" label="Reconnect" colors={homeColors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
         {!active && !closing ? <Button label="Connect" colors={homeColors} secondary onPress={openForm}>Connection details</Button> : null}
         {active ? <Button label="Disconnect" colors={homeColors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? 'Disconnect' : 'Cancel connection'}</Button> : null}
         <Pressable accessibilityRole="button" accessibilityLabel="Switch server or session" disabled={commandBusy} onPress={openSwitcher} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server or session</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
