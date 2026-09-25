@@ -50,6 +50,17 @@ fn code_from_outcome(outcome: jni::EnvOutcome<'_, jint, JniError>) -> jint {
     }
 }
 
+/// Sentinel outside the published ConnectionError range. The switch bridge
+/// maps it to an unknown result, never to a pre-boundary rejection.
+const JNI_BOUNDARY_RESULT_UNKNOWN: jint = i32::MIN;
+
+fn boundary_code_from_outcome(outcome: jni::EnvOutcome<'_, jint, JniError>) -> jint {
+    match outcome.into_outcome() {
+        Outcome::Ok(code) => code,
+        Outcome::Err(_) | Outcome::Panic(_) => JNI_BOUNDARY_RESULT_UNKNOWN,
+    }
+}
+
 fn count_from_outcome(outcome: jni::EnvOutcome<'_, jlong, JniError>) -> jlong {
     match outcome.into_outcome() {
         Outcome::Ok(count) => count,
@@ -847,6 +858,19 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_sshDisconnect(
         .unwrap_or(-1)
 }
 
+/// Release the current owner for an explicitly selected cross-server switch.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_disconnectForSwitcher(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jint {
+    let Some(handle) = handle_from_jlong(handle) else {
+        return JNI_BOUNDARY_RESULT_UNKNOWN;
+    };
+    crate::ffi::meeterm_disconnect_for_switch(handle)
+}
+
 /// Return the fixed eight-field connection state array used by the Android
 /// adapter.  Field order is state, host, port, fingerprint, algorithm,
 /// knownFingerprint, errorCode, and errorMessage.
@@ -1232,9 +1256,9 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_changeRuntime(
     operation_epoch: JString<'_>,
 ) -> jint {
     let Some(handle) = handle_from_jlong(handle) else {
-        return -1;
+        return JNI_BOUNDARY_RESULT_UNKNOWN;
     };
-    code_from_outcome(unowned_env.with_env(|env| {
+    boundary_code_from_outcome(unowned_env.with_env(|env| {
         let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
         Ok(crate::ffi::meeterm_change_runtime(handle, operation_epoch))
     }))

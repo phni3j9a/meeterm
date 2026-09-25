@@ -90,6 +90,14 @@ class MeetermTerminalModule : Module() {
       }
     }
 
+    AsyncFunction("disconnectForSwitcher") { terminalId: String ->
+      val normalizedId = validatedBoundaryTerminalId(terminalId)
+        ?: return@AsyncFunction RuntimeBoundaryBridgeResult.notInvoked()
+      RuntimeBoundaryBridgeResult.fromNativeCode(
+        MeetermNative.disconnectForSwitcher(ensureHandle(normalizedId)),
+      )
+    }
+
     AsyncFunction("getConnectionState") { terminalId: String ->
       val normalizedId = normalizeTerminalId(terminalId)
       val handle = ensureHandle(normalizedId)
@@ -147,10 +155,11 @@ class MeetermTerminalModule : Module() {
     }
 
     AsyncFunction("changeRuntime") { terminalId: String, operationEpoch: String ->
-      val epoch = parseOperationEpoch(operationEpoch)
-      check(MeetermNative.changeRuntime(ensureHandle(normalizeTerminalId(terminalId)), epoch) == 0) {
-        "The runtime could not be changed."
-      }
+      val arguments = validatedBoundaryArguments(terminalId, operationEpoch)
+        ?: return@AsyncFunction RuntimeBoundaryBridgeResult.notInvoked()
+      RuntimeBoundaryBridgeResult.fromNativeCode(
+        MeetermNative.changeRuntime(ensureHandle(arguments.first), arguments.second),
+      )
     }
 
     AsyncFunction("selectPane") { terminalId: String, paneId: String ->
@@ -239,6 +248,22 @@ class MeetermTerminalModule : Module() {
 
   private fun parseOperationEpoch(value: String): String {
     return RecoveryBridgeValidation.parseOperationEpoch(value)
+  }
+
+  private fun validatedBoundaryTerminalId(value: String): String? = try {
+    normalizeTerminalId(value)
+  } catch (_: IllegalArgumentException) {
+    null
+  }
+
+  private fun validatedBoundaryArguments(terminalId: String, operationEpoch: String): Pair<String, String>? {
+    val normalizedId = validatedBoundaryTerminalId(terminalId) ?: return null
+    val epoch = try {
+      parseOperationEpoch(operationEpoch)
+    } catch (_: IllegalArgumentException) {
+      return null
+    }
+    return normalizedId to epoch
   }
 
   private fun validRecoveryToken(value: String): Boolean =

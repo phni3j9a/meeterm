@@ -180,6 +180,10 @@ enum MeetermCore {
     meeterm_disconnect(terminalId)
   }
 
+  static func disconnectForSwitcher(terminalId: UInt64) -> Int32 {
+    meeterm_disconnect_for_switch(terminalId)
+  }
+
   static func reconnect(terminalId: UInt64) -> Int32 {
     meeterm_reconnect(terminalId)
   }
