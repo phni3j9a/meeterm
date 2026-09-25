@@ -24,7 +24,7 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
-import type { AgentStatus, RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
+import type { AgentStatus, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -44,6 +44,21 @@ type StartupPhase =
   | 'profiles_requested'
   | 'profiles_succeeded'
   | 'profiles_failed';
+
+function readRuntimeBoundaryResult(value: unknown): RuntimeBoundaryResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const result = value as Record<string, unknown>;
+  if (result.status === 'accepted') return { status: 'accepted' };
+  if ((result.status === 'not_invoked' || result.status === 'rejected_before_boundary')
+    && typeof result.errorCode === 'string' && result.errorCode.length > 0) {
+    return { status: result.status, errorCode: result.errorCode };
+  }
+  if (result.status === 'accepted_after_failure'
+    && result.errorCode === 'boundary_accepted_failure') {
+    return { status: 'accepted_after_failure', errorCode: 'boundary_accepted_failure' };
+  }
+  return null;
+}
 
 const SMOKE_BUILD = process.env.EXPO_PUBLIC_MEETERM_SMOKE === '1';
 
@@ -1097,6 +1112,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const switcherBoundary = useRef(Boolean(fixture?.switcherStarted));
   const switcherCancelFence = useRef(false);
   const switcherCancelReleaseIssued = useRef(false);
+  const boundaryFailureFence = useRef<{ errorCode: string; errorMessage: string } | null>(null);
   const returnToSwitcherAfterForm = useRef(false);
   const switcherFormConnected = useRef(false);
   const controlRef = useRef(control);
@@ -1120,6 +1136,25 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     runtimeBoundRef.current = value;
     setRuntimeBound(value);
   }, []);
+
+  const failClosedForBoundaryResult = useCallback((errorCode: string, errorMessage: string) => {
+    boundaryFailureFence.current = { errorCode, errorMessage };
+    recoveryInvalidatedRef.current = true;
+    workspaceObservationRef.current = false;
+    setRecoveryInvalidated(true);
+    setRecoveredEpoch('');
+    ignoreReadyUntilNewConnection.current = true;
+    runtimeSelectionRequired.current = true;
+    updateRuntimeBound(false);
+    setHasConnected(false);
+    setConnection(current => ({
+      ...current,
+      state: 'Failed',
+      errorCode,
+      errorMessage,
+    }));
+    setControlMessage(errorMessage);
+  }, [updateRuntimeBound]);
 
   const observeCleanupWarning = useCallback((candidate: WorkspaceControl['cleanupWarning']) => {
     if (!candidate) return;
@@ -1228,12 +1263,22 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart || pendingRefreshAtStart);
       try {
         let next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        if (switcherCancelFence.current && next.state === 'Ready'
+        const forcedBoundaryFailure = boundaryFailureFence.current;
+        if (forcedBoundaryFailure) {
+          next = {
+            ...next,
+            state: 'Failed',
+            errorCode: forcedBoundaryFailure.errorCode,
+            errorMessage: forcedBoundaryFailure.errorMessage,
+          };
+        }
+        if (!forcedBoundaryFailure && switcherCancelFence.current && next.state === 'Ready'
+          && !pendingSelectionAtStart
           && !commandPending.current && version === commandVersion.current) {
           // A native runtime-selection request may finish after the user
           // canceled the switch. Keep the canceled UI fail-closed and release
-          // that late owner once; the next explicit connection clears this
-          // intent fence.
+          // that late owner once. It stays fenced until a candidate from the
+          // new discovery generation is explicitly selected and reaches Ready.
           if (!switcherCancelReleaseIssued.current) {
             switcherCancelReleaseIssued.current = true;
             try {
@@ -1630,7 +1675,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       : []),
   ];
   const switcherSessionServerName = switcherTarget?.profile.name ?? currentProfile?.name ?? endpoint(connection);
-  const canReconnect = !recoveryPhaseActive && hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
+  const canReconnect = !recoveryPhaseActive && !boundaryFailureFence.current
+    && hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
   const filteredWorkspaces = useMemo(() => searching ? workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(query))) : workspaces, [query, searching, workspaces]);
   const pickerWorkspaces = useMemo(() => workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(pickerQuery))), [pickerQuery, workspaces]);
 
@@ -1783,24 +1829,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     };
     if (!startRecoveryAction('change', identity)) return;
 
-    try {
-      if (!smokeFixtureActive) {
-        await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
-        const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        try {
-          const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
-          const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
-          observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
-        } catch {
-          observeCleanupWarning(legacyCleanupWarning(released));
-        }
-      }
-
-      // Native acceptance is the one-way boundary. Keep the exact retained
-      // surface mounted while the request is pending or rejected; only after
-      // acceptance may a picker/server destination bind and release the old
-      // recovery cache. Bump the observation version first so an old Ready
-      // poll already in flight cannot restore the retired session afterward.
+    let boundaryAttempted = false;
+    let boundaryOutcomeObserved = false;
+    let boundaryUiCleared = false;
+    let acceptedAfterFailure = false;
+    const clearRecoveryBinding = () => {
       commandVersion.current += 1;
       recoveryInvalidatedRef.current = true;
       workspaceObservationRef.current = false;
@@ -1819,6 +1852,60 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setRuntimeCreateVisible(false);
       setRuntimeMessage('');
       updateRuntimeBound(false);
+      boundaryUiCleared = true;
+    };
+
+    try {
+      if (!smokeFixtureActive) {
+        boundaryAttempted = true;
+        const outcome = readRuntimeBoundaryResult(
+          await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch),
+        );
+        if (!outcome) {
+          const message = 'The switch result could not be confirmed. Start a new connection before continuing.';
+          setSheet(null);
+          failClosedForBoundaryResult('switch_outcome_unknown', message);
+          return;
+        }
+        boundaryOutcomeObserved = true;
+        if (outcome.status === 'not_invoked' || outcome.status === 'rejected_before_boundary') {
+          setControlMessage('Could not start the destination change. Check the connection and try again.');
+          return;
+        }
+        acceptedAfterFailure = outcome.status === 'accepted_after_failure';
+        if (!acceptedAfterFailure) {
+          // These snapshots refresh ordinary state and cleanup notices only;
+          // the typed return value above is the boundary authority.
+          try {
+            const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+            try {
+              const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+              const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
+              observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
+            } catch {
+              observeCleanupWarning(legacyCleanupWarning(released));
+            }
+          } catch {
+            // The accepted boundary remains authoritative even if a later
+            // low-frequency display snapshot cannot be read.
+          }
+        }
+      }
+
+      // Native acceptance is the one-way boundary. Keep the exact retained
+      // surface mounted while the request is pending or rejected; only after
+      // acceptance may a picker/server destination bind and release the old
+      // recovery cache. Bump the observation version first so an old Ready
+      // poll already in flight cannot restore the retired session afterward.
+      clearRecoveryBinding();
+
+      if (acceptedAfterFailure) {
+        const message = 'Could not start the new connection. Choose a server and Session, then try again.';
+        failClosedForBoundaryResult('runtime_switch_start_failed', message);
+        invalidateRuntimeDiscovery(false);
+        setSheet('servers');
+        return;
+      }
 
       if (destination === 'runtime') {
         invalidateRuntimeDiscovery(true);
@@ -1827,14 +1914,23 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setSheet('servers');
       }
     } catch {
-      // A stale/error rejection means native recovery is still authoritative.
-      // Do not clear the retained pane/session or move the user away from the
-      // exact cached route; the pending action is released in finally below.
-      setControlMessage('Could not change the destination. Choose Connection details to continue.');
+      if (boundaryAttempted && !boundaryOutcomeObserved) {
+        const message = 'The switch result could not be confirmed. Start a new connection before continuing.';
+        setSheet(null);
+        failClosedForBoundaryResult('switch_outcome_unknown', message);
+      } else if (boundaryOutcomeObserved) {
+        if (!boundaryUiCleared) clearRecoveryBinding();
+        const message = 'Could not start the new connection. Choose a server and Session, then try again.';
+        failClosedForBoundaryResult('runtime_switch_start_failed', message);
+        invalidateRuntimeDiscovery(false);
+        setSheet('servers');
+      } else {
+        setControlMessage('Could not start the destination change. Check the connection and try again.');
+      }
     } finally {
       clearRecoveryAction('change', identity);
     }
-  }, [clearRecoveryAction, invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
+  }, [clearRecoveryAction, failClosedForBoundaryResult, invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
 
   useEffect(() => {
     if (recoveryInvalidatedRef.current) {
@@ -1887,8 +1983,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setPickerQuery('');
 
     // A picker cancellation deliberately ignores the old Ready snapshot.
-    // Once this explicit candidate has reached Ready, subsequent polls may
-    // observe the new binding again.
+    // Clear the cancel fence only after an explicit candidate from the new
+    // discovery generation reaches Ready.
+    switcherCancelFence.current = false;
+    switcherCancelReleaseIssued.current = false;
     ignoreReadyUntilNewConnection.current = false;
     const profileIdForHint = profileId;
     if (!smokeFixtureActive && profileIdForHint) {
@@ -2122,8 +2220,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>, keepSwitcher = false) => {
     if (Platform.OS === 'ios' && (formVisible || (sheet !== null && !keepSwitcher))) setHostPromptDeferred(true);
-    switcherCancelFence.current = false;
     switcherCancelReleaseIssued.current = false;
+    boundaryFailureFence.current = null;
     recoveryInvalidatedRef.current = false;
     setRecoveryInvalidated(false);
     setRecoveredEpoch('');
@@ -2360,7 +2458,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const beginSwitcherTarget = useCallback(async (target: SwitcherTarget) => {
     if (commandPending.current || switcherOperation.current) return false;
-    switcherCancelFence.current = false;
     switcherCancelReleaseIssued.current = false;
     switcherOperation.current = true;
     commandPending.current = true;
@@ -2371,26 +2468,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setSwitcherStarted(false);
     setSwitcherAccepting(true);
     let boundaryAccepted = false;
+    let boundaryAttempted = false;
+    let boundaryOutcomeObserved = false;
     const profile = target.profile;
     const selectedProfileId = target.isCurrent ? profileId : profile.id;
-    const originalConnection = connection;
-    const originalSession = session;
-
-    const originalRuntimeIsStillReady = async () => {
-      try {
-        const [observedConnection, observedSession] = await Promise.all([
-          MeetermTerminal.getConnectionState(CONNECTION_ID),
-          MeetermTerminal.getWorkspaceState(CONNECTION_ID),
-        ]);
-        return observedConnection.state === 'Ready'
-          && observedConnection.host === originalConnection.host
-          && observedConnection.port === originalConnection.port
-          && observedSession.backend === originalSession.backend
-          && observedSession.runtime === originalSession.runtime;
-      } catch {
-        return false;
-      }
-    };
 
     const publishBoundary = (state: 'Connecting' | 'Disconnected') => {
       // Do not let a poll which began against the old connection restore its
@@ -2405,6 +2486,32 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       }
     };
 
+    const rejectBeforeBoundary = () => {
+      setSwitcherTarget(null);
+      setSwitcherStarted(false);
+      setSwitcherMessage('Could not start the switch. Check the connection and try again.');
+    };
+
+    const unknownBoundaryResult = () => {
+      const message = 'The switch result could not be confirmed. Start a new connection before continuing.';
+      setSwitcherTarget(null);
+      setSwitcherStarted(false);
+      setSwitcherMessage('The switch result could not be confirmed. Choose a server or Session to reconnect.');
+      failClosedForBoundaryResult('switch_outcome_unknown', message);
+    };
+
+    const finishBoundaryResult = (rawResult: unknown): 'accepted' | 'rejected' | 'failed' | 'unknown' => {
+      const outcome = readRuntimeBoundaryResult(rawResult);
+      if (!outcome) return 'unknown';
+      boundaryOutcomeObserved = true;
+      if (outcome.status === 'not_invoked' || outcome.status === 'rejected_before_boundary') {
+        return 'rejected';
+      }
+      boundaryAccepted = true;
+      if (outcome.status === 'accepted_after_failure') return 'failed';
+      return 'accepted';
+    };
+
     try {
       const currentOwnerCanChangeInPlace = target.isCurrent
         && !['Disconnected', 'Failed', 'Closing'].includes(connection.state)
@@ -2414,9 +2521,27 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         // fresh authenticated discovery generation for the same SSH profile.
         // Its synchronous acceptance is the one-way boundary for the old
         // selected runtime.
-        await MeetermTerminal.changeRuntime(CONNECTION_ID, control.operationEpoch);
-        boundaryAccepted = true;
+        boundaryAttempted = true;
+        const result = finishBoundaryResult(
+          await MeetermTerminal.changeRuntime(CONNECTION_ID, control.operationEpoch),
+        );
+        if (result === 'rejected') {
+          rejectBeforeBoundary();
+          return false;
+        }
+        if (result === 'unknown') {
+          unknownBoundaryResult();
+          return false;
+        }
         publishBoundary('Connecting');
+        if (result === 'failed') {
+          const message = 'Could not start the new connection. Choose a server or Session and try again.';
+          switcherBoundary.current = true;
+          setSwitcherStarted(true);
+          setSwitcherMessage(message);
+          failClosedForBoundaryResult('runtime_switch_start_failed', message);
+          return false;
+        }
       } else {
         const currentPreferences = preferencesLoaded ? preferences : await MeetermTerminal.getPreferences();
         await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, currentPreferences.automaticReconnect);
@@ -2424,9 +2549,27 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         await MeetermTerminal.setForeground(CONNECTION_ID, foreground.current);
         // One selected actor per native connection: explicitly release it
         // before connecting to the next SSH endpoint.
-        await MeetermTerminal.disconnect(CONNECTION_ID);
-        boundaryAccepted = true;
+        boundaryAttempted = true;
+        const result = finishBoundaryResult(
+          await MeetermTerminal.disconnectForSwitcher(CONNECTION_ID),
+        );
+        if (result === 'rejected') {
+          rejectBeforeBoundary();
+          return false;
+        }
+        if (result === 'unknown') {
+          unknownBoundaryResult();
+          return false;
+        }
         publishBoundary('Disconnected');
+        if (result === 'failed') {
+          const message = 'Could not release the current connection cleanly. Choose a server or Session and try again.';
+          switcherBoundary.current = true;
+          setSwitcherStarted(true);
+          setSwitcherMessage(message);
+          failClosedForBoundaryResult('switch_release_failed', message);
+          return false;
+        }
 
         let released: SshConnectionState | null = null;
         try { released = await MeetermTerminal.getConnectionState(CONNECTION_ID); } catch { /* The release already crossed the boundary. */ }
@@ -2452,22 +2595,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       }
       return true;
     } catch {
-      if (!boundaryAccepted && !(await originalRuntimeIsStillReady())) {
-        // Native changeRuntime/disconnect may release the old actor before a
-        // later setup step rejects. Only preserve the old screen when the
-        // exact original runtime is still authoritatively Ready.
-        boundaryAccepted = true;
-        publishBoundary('Disconnected');
-      }
       if (boundaryAccepted) {
         switcherBoundary.current = true;
         setSwitcherStarted(true);
-        setSwitcherMessage('The current session is disconnected. Reconnect to this server or choose another server or session.');
-        setConnection({ ...INITIAL_CONNECTION, state: 'Disconnected', host: profile.host, port: profile.port });
+        const message = 'Could not start the new connection. Choose a server or Session and try again.';
+        setSwitcherMessage(message);
+        failClosedForBoundaryResult('runtime_switch_start_failed', message);
+      } else if (boundaryAttempted && !boundaryOutcomeObserved) {
+        unknownBoundaryResult();
       } else {
-        setSwitcherTarget(null);
-        setSwitcherStarted(false);
-        setSwitcherMessage('Could not start the switch. The current session is unchanged. Try again.');
+        rejectBeforeBoundary();
       }
       return false;
     } finally {
@@ -2476,7 +2613,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       commandPending.current = false;
       setCommandBusy(false);
     }
-  }, [connection, control, observeCleanupWarning, preferences, preferencesLoaded, profileId, resetForConnection, session]);
+  }, [control, failClosedForBoundaryResult, observeCleanupWarning, preferences, preferencesLoaded, profileId, resetForConnection]);
 
   const startSwitcherTarget = useCallback(async (target: SwitcherTarget) => {
     const needsForm = !target.profile.credentialSaved && !(target.isCurrent
@@ -2529,9 +2666,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       return;
     }
 
-    // The switch boundary retired the previous UI binding, but the selected
-    // server profile remains reconnectable and its remote work is durable.
-    setHasConnected(true);
+    // The switch boundary retired the previous UI binding. Route any later
+    // connection through a saved profile or credential form; the native
+    // ManualReconnect profile was intentionally cleared before selection.
     switcherOperation.current = true;
     commandPending.current = true;
     commandVersion.current += 1;

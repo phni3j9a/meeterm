@@ -238,6 +238,7 @@ function makeNativeEnvironment() {
     startupPhaseShouldFail: false,
     initialAppState: 'active',
     initialURL: null,
+    platform: 'ios',
     initialURLBehavior: 'resolve',
     profilesShouldFail: false,
     profiles: [],
@@ -270,8 +271,10 @@ function makeNativeEnvironment() {
     pendingRecoveryConfirm: null,
     changeRuntimeShouldFail: false,
     changeRuntimeFailureAfterRelease: false,
+    changeRuntimeThrowUnknown: false,
     changeRuntimeMode: 'ready',
     pendingChangeRuntime: null,
+    disconnectForSwitcherResult: 'accepted',
     hostKeyPendingProfileId: '',
     disconnectRelease: null,
     changeRuntimeRelease: null,
@@ -387,6 +390,25 @@ function makeNativeEnvironment() {
         ...(environment.disconnectRelease || {}),
       };
     },
+    async disconnectForSwitcher() {
+      environment.nativeCalls.push('disconnectForSwitcher');
+      if (environment.disconnectForSwitcherResult === 'rejected_before_boundary') {
+        return { status: 'rejected_before_boundary', errorCode: 'internal_error' };
+      }
+      if (environment.disconnectForSwitcherResult === 'not_invoked') {
+        return { status: 'not_invoked', errorCode: 'invalid_argument' };
+      }
+      environment.connection = { ...environment.connection, state: 'Disconnected' };
+      if (environment.disconnectForSwitcherResult === 'accepted_after_failure') {
+        environment.snapshot.control = workspaceControl({
+          ...environment.snapshot.control,
+          runtimeOperationsReady: false,
+          terminalInputReady: false,
+        });
+        return { status: 'accepted_after_failure', errorCode: 'boundary_accepted_failure' };
+      }
+      return { status: 'accepted' };
+    },
     async refreshTerminal() {
       environment.nativeCalls.push('refreshTerminal');
       throw new Error('terminal refresh rejected');
@@ -424,7 +446,10 @@ function makeNativeEnvironment() {
     },
     async changeRuntime(_connectionId, operationEpoch) {
       environment.calls.push({ method: 'changeRuntime', operationEpoch });
-      if (environment.changeRuntimeShouldFail) throw new Error('runtime change rejected');
+      if (environment.changeRuntimeThrowUnknown) throw new Error('unclassified bridge failure');
+      if (environment.changeRuntimeShouldFail) {
+        return { status: 'rejected_before_boundary', errorCode: 'recovery_stale' };
+      }
       if (environment.changeRuntimeFailureAfterRelease) {
         environment.connection = { ...environment.connection, state: 'Disconnected' };
         environment.snapshot.control = workspaceControl({
@@ -432,12 +457,15 @@ function makeNativeEnvironment() {
           runtimeOperationsReady: false,
           terminalInputReady: false,
         });
-        throw new Error('runtime recovery unavailable after release');
+        return { status: 'accepted_after_failure', errorCode: 'boundary_accepted_failure' };
       }
       if (environment.changeRuntimeMode === 'pending') {
-        await new Promise((resolve, reject) => {
-          environment.pendingChangeRuntime = { operationEpoch, resolve, reject };
+        const pendingOutcome = await new Promise(resolve => {
+          environment.pendingChangeRuntime = { operationEpoch, resolve };
         });
+        if (pendingOutcome === 'reject') {
+          return { status: 'rejected_before_boundary', errorCode: 'recovery_stale' };
+        }
       }
       environment.connection = {
         ...environment.connection,
@@ -450,6 +478,7 @@ function makeNativeEnvironment() {
         runtimeOperationsReady: false,
         terminalInputReady: false,
       });
+      return { status: 'accepted' };
     },
     async setTerminalVisible(_connectionId, visible) {
       environment.visibility.push(visible);
@@ -510,11 +539,7 @@ function makeNativeEnvironment() {
     assert.ok(environment.pendingChangeRuntime, 'a runtime change should be pending');
     const pending = environment.pendingChangeRuntime;
     environment.pendingChangeRuntime = null;
-    if (outcome === 'reject') {
-      pending.reject(new Error('runtime change rejected as stale'));
-    } else {
-      pending.resolve();
-    }
+    pending.resolve(outcome);
   };
   environment.runFakeTimers = (maxDelay = Infinity) => {
     const due = environment.timeoutCallbacks.filter(timer => !timer.canceled && timer.delay <= maxDelay);
@@ -590,7 +615,7 @@ function makeReactNativeMocks(environment) {
       return Promise.resolve();
     },
   };
-  const Platform = { OS: 'ios' };
+  const Platform = { OS: environment.platform || 'ios' };
   function StatusBar(props) { return React.createElement('StatusBar', props); }
   StatusBar.setBarStyle = () => {};
   const StyleSheet = {
@@ -666,6 +691,34 @@ function makeUiMocks() {
 
 function makeFormMocks() {
   const hidden = () => null;
+  function ConnectionForm({ visible, initialProfile, onSubmit }) {
+    if (!visible) return null;
+    const profile = initialProfile || {
+      id: '',
+      name: 'Manual server',
+      host: 'manual.example',
+      port: 22,
+      username: 'developer',
+      authMethod: 'password',
+    };
+    return React.createElement(
+      'ConnectionForm',
+      { testID: 'connection-form-visible' },
+      React.createElement('Pressable', {
+        testID: 'connection-form-test-submit',
+        accessibilityRole: 'button',
+        accessibilityLabel: 'Submit test connection form',
+        onPress: () => onSubmit({
+          profile: { ...profile, username: profile.username || 'developer' },
+          credential: { authMethod: 'password', password: 'fixture-only' },
+          saveProfile: false,
+          saveCredential: false,
+          keepCredential: false,
+          connect: true,
+        }),
+      }),
+    );
+  }
   function ProfileList({ profiles = [], busy = false, onConnect }) {
     return React.createElement(
       'ProfileList',
@@ -684,7 +737,7 @@ function makeFormMocks() {
   }
   return {
     __esModule: true,
-    ConnectionForm: hidden,
+    ConnectionForm,
     DEFAULT_PREFERENCES: { ...PREFERENCES },
     itemActions() {},
     NameForm: hidden,
@@ -1546,7 +1599,7 @@ test('switcher opens without native work and an explicit saved-server choice rep
   await settleAsync();
 
   assert.equal(fixture.environment.alert, null);
-  const releasedAt = fixture.environment.nativeCalls.indexOf('disconnect');
+  const releasedAt = fixture.environment.nativeCalls.indexOf('disconnectForSwitcher');
   const connectedAt = fixture.environment.nativeCalls.findIndex(call => call?.method === 'connectProfileHost' && call.profileId === target.id);
   assert.ok(releasedAt >= 0 && connectedAt > releasedAt, 'the old owner must be released before the new host starts');
   assert.ok(findText(fixture.root, 'Choose a Session'));
@@ -1692,12 +1745,12 @@ test('same-server changeRuntime failure after release clears the stale workspace
   await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
   await settleAsync();
 
-  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(fixture.environment.connection.state, 'Disconnected', 'the fake native start failure has no replacement state');
   assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0,
     'a rejected setup after native release must not preserve the old workspace');
   const screenText = all(fixture.root, node => node.type === 'Text').map(textContent).join(' ');
-  assert.match(screenText, /The current session is disconnected/);
-  assert.doesNotMatch(screenText, /current session is unchanged/);
+  assert.match(screenText, /Could not start the new connection/);
+  assert.doesNotMatch(screenText, /Connected/);
 });
 
 test('same-server stale-epoch rejection keeps the Ready workspace behind a closed input gate', async t => {
@@ -1729,7 +1782,89 @@ test('same-server stale-epoch rejection keeps the Ready workspace behind a close
   assert.equal(fixture.environment.connection.state, 'Ready');
   assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
   const screenText = all(fixture.root, node => node.type === 'Text').map(textContent).join(' ');
-  assert.match(screenText, /current session is unchanged/);
+  assert.match(screenText, /Could not start the switch/);
+});
+
+test('stale switch rejection preserves retained recovery for Reconnecting and Failed owners', async t => {
+  for (const connectionState of ['Reconnecting', 'Failed']) {
+    await t.test(connectionState, async subtest => {
+      const profile = {
+        id: `00000000-0000-4000-8000-00000000005${connectionState === 'Failed' ? '1' : '0'}`,
+        name: `${connectionState} retained owner`,
+        host: `${connectionState.toLowerCase()}-retained.example`, port: 22, username: 'developer',
+        authMethod: 'password', credentialSaved: true, backend: 'tmux', runtime: 'initial',
+      };
+      const fixture = await connectSavedProfileToRuntime(subtest, profile,
+        runtimeCandidate(`${connectionState.toLowerCase()}-retained`, 'tmux', 'initial', 'running'));
+      await openWorkspace(fixture.root, 'W1');
+      fixture.environment.connection.state = connectionState;
+      fixture.environment.snapshot.control = workspaceControl({
+        hasRetainedWork: true,
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+        recovery: {
+          phase: connectionState === 'Failed' ? 'stopped' : 'reconnecting',
+          reason: connectionState === 'Failed' ? 'retry_exhausted' : 'transport',
+          attempt: 2,
+          maxAttempts: 6,
+        },
+      });
+      await poll(fixture.environment);
+      await settleAsync();
+      const recoveryTitle = findTestId(fixture.root, 'recovery-title');
+      assert.ok(recoveryTitle, `${connectionState} state should show its retained recovery route`);
+      const retainedTerminalIds = fixture.environment.renderedTerminalIds.slice();
+
+      await press(fixture.root, findTestId(fixture.root, 'switch-server-session'));
+      await settleAsync();
+      if (connectionState === 'Failed') {
+        fixture.environment.disconnectForSwitcherResult = 'rejected_before_boundary';
+      } else {
+        fixture.environment.changeRuntimeShouldFail = true;
+      }
+      await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+      await settleAsync();
+      assert.equal(fixture.environment.connection.state, connectionState,
+        'a before-boundary rejection leaves concurrent transport recovery untouched');
+      assert.match(all(fixture.root, node => node.type === 'Text').map(textContent).join(' '), /Could not start the switch/);
+
+      await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
+      await settleAsync();
+      assert.equal(findTestId(fixture.root, 'recovery-title').children[0], recoveryTitle.children[0]);
+      assert.ok(fixture.environment.renderedTerminalIds.some(id => retainedTerminalIds.includes(id)),
+        'the cached Term view remains bound to its original native terminal');
+      assert.equal(fixture.environment.snapshot.control.hasRetainedWork, true);
+      assert.equal(fixture.environment.snapshot.control.terminalInputReady, false);
+    });
+  }
+});
+
+test('unknown switch bridge failure is never inferred as pre-boundary or restored to Ready', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000052', name: 'Unknown switch result',
+    host: 'unknown-switch.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'initial',
+  };
+  const fixture = await connectSavedProfileToRuntime(t, profile,
+    runtimeCandidate('unknown-switch-runtime', 'tmux', 'initial', 'running'));
+  await press(fixture.root, findTestId(fixture.root, 'switch-server-session'));
+  await settleAsync();
+  fixture.environment.changeRuntimeThrowUnknown = true;
+
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Ready', 'the fake native owner remains unchanged');
+  assert.match(all(fixture.root, node => node.type === 'Text').map(textContent).join(' '), /switch result could not be confirmed/i);
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length, 0,
+    'the App must not report an unverified owner as Ready');
+
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Ready', 'polling still observes the fake native state');
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length, 0,
+    'an unknown bridge result fences late Ready snapshots until an explicit new connection');
+  assert.equal(fixture.environment.snapshot.control.runtimeOperationsReady, true,
+    'the UI fence does not invent a native lifecycle mutation');
 });
 
 test('cancel after a cross-server switch releases the provisional host and ignores a late Ready selection', async t => {
@@ -1757,7 +1892,7 @@ test('cancel after a cross-server switch releases the provisional host and ignor
   assert.equal(fixture.environment.connection.state, 'Disconnected');
   assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0, 'the old Ready workspace is not restored');
   assert.equal(fixture.environment.calls.some(call => ['closePane', 'closeWorkspace', 'createTmuxSession'].includes(call.method)), false, 'cancel releases the connection without closing remote work');
-  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect').length >= 3);
+  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect' || call === 'disconnectForSwitcher').length >= 3);
 
   fixture.environment.resolvePendingSelection('ready');
   await poll(fixture.environment);
@@ -1768,12 +1903,12 @@ test('cancel after a cross-server switch releases the provisional host and ignor
   assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0, 'the late old generation cannot bind a workspace');
   assert.equal(all(fixture.root, node => node.props?.testID === 'switcher-server-__current_connection__').length, 0,
     'a canceled generation cannot be shown as the current Session');
-  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect').length >= 4,
+  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect' || call === 'disconnectForSwitcher').length >= 4,
     'the app disconnects again after observing the late native Ready');
   assert.equal(fixture.environment.lastUsedUpdates.length, 1, 'cancel does not save a hint for an uncommitted target');
 });
 
-test('Reconnect after cancel starts a fresh Session picker and reaches Ready only after selection', async t => {
+test('cancel after same-server switch routes saved-profile reconnection through a fresh explicit picker', async t => {
   const profile = {
     id: '00000000-0000-4000-8000-000000000049', name: 'Reconnect after cancel',
     host: 'reconnect-after-cancel.example', port: 22, username: 'developer', authMethod: 'password',
@@ -1797,26 +1932,32 @@ test('Reconnect after cancel starts a fresh Session picker and reaches Ready onl
   await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
   await settleAsync();
   assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Reconnect').length, 0,
+    'the in-memory native profile was cleared, so the unavailable reconnect action is hidden');
 
-  fixture.native.reconnect = async () => {
-    fixture.environment.nativeCalls.push('reconnect');
-    fixture.environment.runtimeDiscovery = pickerDiscovery(4, [destination]);
-    fixture.environment.runtimeDiscovery.connectionGeneration = '2';
-    fixture.environment.connection = {
-      ...fixture.environment.connection,
-      state: 'AwaitingRuntimeSelection',
-    };
-  };
-  await press(fixture.root, findLabel(fixture.root, 'Reconnect'));
+  // A late Ready from the canceled generation remains fenced even after the
+  // user opens the server/session chooser.
+  fixture.environment.connection = { ...fixture.environment.connection, state: 'Ready' };
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+
+  fixture.environment.runtimeDiscovery = pickerDiscovery(4, [destination]);
+  await press(fixture.root, findTestId(fixture.root, 'switch-server-session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
   await settleAsync();
 
-  assert.equal(fixture.environment.connection.state, 'AwaitingRuntimeSelection');
-  assert.equal(fixture.environment.nativeCalls.filter(call => call === 'reconnect').length, 1);
-  assert.ok(findText(fixture.root, 'Choose a runtime for Reconnect after cancel'));
+  assert.equal(fixture.environment.connection.state, 'DiscoveringRuntimes');
+  assert.equal(fixture.environment.nativeCalls.filter(call => call?.method === 'connectProfileHost' && call.profileId === profile.id).length, 2,
+    'the saved profile path authenticates a fresh connection instead of using the cleared in-memory profile');
+  assert.equal(fixture.environment.nativeCalls.filter(call => call === 'reconnect').length, 0);
   const destinationRow = findTestId(fixture.root, 'runtime-row-tmux-reconnect-cancel-destination');
   assert.ok(destinationRow, 'the fresh generation presents its candidate for an explicit choice');
   assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length, 0,
-    'reconnect must not treat the canceled generation as Ready');
+    'saved-profile authentication must not treat the canceled generation as Ready');
 
   await press(fixture.root, destinationRow);
   await settleAsync();
@@ -1831,6 +1972,70 @@ test('Reconnect after cancel starts a fresh Session picker and reaches Ready onl
     method: 'selectRuntime',
     candidateId: 'reconnect-cancel-destination',
   });
+});
+
+test('cancel after same-server switch opens the credential form when the profile has no saved credential', async t => {
+  const source = runtimeCandidate('manual-source', 'tmux', 'manual-initial', 'running');
+  const destination = runtimeCandidate('manual-destination', 'tmux', 'manual-fresh', 'running');
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.platform = 'android';
+    environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+    environment.profiles = [];
+    environment.runtimeDiscovery = pickerDiscovery(1, [source]);
+    environment.snapshot = makeSnapshot();
+  });
+
+  await press(fixture.root, findLabel(fixture.root, 'Connect'));
+  await press(fixture.root, findTestId(fixture.root, 'connection-form-test-submit'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-manual-source'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Ready');
+
+  await press(fixture.root, findTestId(fixture.root, 'switch-server-session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-__current_connection__'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-manual-source'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(all(fixture.root, node => node.props?.accessibilityLabel === 'Reconnect').length, 0);
+
+  fixture.environment.runtimeDiscovery = pickerDiscovery(3, [destination]);
+  await press(fixture.root, findTestId(fixture.root, 'switch-server-session'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'switcher-server-__current_connection__'));
+  await settleAsync();
+  assert.ok(all(fixture.root, node => node.props?.testID === 'connection-form-visible').length > 0,
+    `an unsaved profile returns to the existing credential form after owner release: ${JSON.stringify({
+      connection: fixture.environment.connection,
+      nativeCalls: fixture.environment.nativeCalls,
+      text: all(fixture.root, node => node.type === 'Text').map(textContent),
+    })}`);
+  assert.equal(fixture.environment.nativeCalls.some(call => call?.method === 'connectProfileHost'), false);
+
+  await press(fixture.root, findTestId(fixture.root, 'connection-form-test-submit'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-manual-destination'));
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Connected').length, 0,
+    'the credential form starts fresh host discovery but not a selected runtime');
+
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-manual-destination'));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'));
+  assert.equal(fixture.environment.nativeCalls.filter(call => call === 'reconnect').length, 0);
 });
 
 test('Android Back cancels an in-progress switcher selection and closes its sheet', async t => {
@@ -2735,7 +2940,7 @@ test('stale recovery Change rejection retains the latest cached snapshot and cle
   assert.equal(findTestId(fixture.root, 'recovery-change-runtime').props.accessibilityState.disabled, false);
   assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Latest agent, Agent status unavailable');
   assert.equal(fixture.environment.snapshot.control.operationEpoch, '112');
-  assert.ok(all(fixture.root, node => textContent(node).includes('Could not change the destination. Choose Connection details to continue.')).length > 0);
+  assert.ok(all(fixture.root, node => textContent(node).includes('Could not start the destination change. Check the connection and try again.')).length > 0);
 });
 
 test('rapid repeated recovery Change taps enqueue only one native request', async t => {
