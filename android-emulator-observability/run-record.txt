@@ -1,23 +1,24 @@
-issue-27-sequential-switcher Android acceptance @ 376164e (376164e182a71a0393590b114814ef22d7da9a4a)
+issue-27-sequential-switcher Android acceptance @ 1f219d9 (1f219d94eb17942338df835fb88a4accb9e568ec)
 run_kind=full-acceptance; branch=issue-27-sequential-switcher
+final candidate: iOS sheet-transition fix (fix(ios): 切替シートのManage serversはシートを閉じてから既存のSaved serversを開く) + App.tsx changed -> fresh build
 env=meeterm_api36 headless emulator-5554; toolchain=rustc-1.96.0, ndk-27.1.12297006, node-v24.19.0 (blueprint pins 22.22.2 - standing deviation), npm-10.8.3, gradle-9.3.1
-fresh chain: git fetch -> git reset --hard 376164e -> npm ci -> expo prebuild --platform android --clean (fresh CNG) -> assembleRelease (3m22s)
-suite duration: ~22 min
+fresh chain: git fetch -> git reset --hard 1f219d9 -> npm ci -> expo prebuild --platform android --clean (fresh CNG) -> assembleRelease (3m11s)
+suite duration: ~27 min
 
 stages:
 - npm ci: PASS
 - expo prebuild --clean: PASS
 - assembleRelease: PASS (fresh build, 668 tasks)
 - android-smoke.sh gates: PASS (native terminal smoke)
-- screen fixtures: 32/33 captured - both NEW routes session-switcher + session-switcher-sessions captured; route 'empty' reports unavailable:missing_screen_element_0,screen_element_1 = PRE-EXISTING baseline identical on prior evidence runs. Manifest on this branch is 33 routes.
+- screen fixtures: 32/33 captured - both session-switcher + session-switcher-sessions captured; route 'empty' reports unavailable:missing_screen_element_0,screen_element_1 = PRE-EXISTING baseline identical on prior evidence runs. Manifest on this branch is 33 routes.
 - SSH fixture suite (fixture.py -- android-smoke.py): PASS, result=passed stage=disconnect_after_resume reason=ok
 
 added-scope verification (all in-suite, completed= markers):
 - daily_same_server_session_switched: PASS - same-server session switch via switcher
-- daily_same_server_old_shell_survived: PASS - original shell PID survived the same-server switch (printf $$ > file, verified equal after return)
-- daily_cross_endpoint_destination_input: PASS - switch to alternate SSH endpoint (fixture alternate port), destination input marker delivered
+- daily_same_server_old_shell_survived: PASS - original shell PID survived the same-server switch
+- daily_cross_endpoint_destination_input: PASS - switch to alternate SSH endpoint (fixture alternate port, switcher-alternate-destination), destination input marker delivered
 - daily_cross_endpoint_old_shell_survived: PASS - original shell PID survived the cross-endpoint switch
-- host_key_verified: PASS - host key confirmation during initial connect (and alternate endpoint profile add via daily_second_profile_saved)
+- host_key_verified: PASS - host key confirmation during initial connect (alternate endpoint saved via daily_second_profile_saved)
 - also green: transport_loss_evidence=passed, daily foreground recovery chain, cold-start->saved-profile->picker->connected, workspaces/panes/selection/CJK/handoff, manual reconnect, both disconnects
 
 result=PASS

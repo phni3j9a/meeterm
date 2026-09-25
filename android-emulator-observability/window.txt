@@ -4,16 +4,16 @@
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=SYSTEM_ALERT_WINDOW
-  Window #8 Window{b49e080 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
+  Window #8 Window{1d842a u0 dev.meeterm.app/dev.meeterm.app.MainActivity}:
     mOwnerUid=10216 showForAllUsers=false package=dev.meeterm.app appop=NONE
-    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{161867156 u0 dev.meeterm.app/.MainActivity t981}
-    mActivityRecord=ActivityRecord{161867156 u0 dev.meeterm.app/.MainActivity t981}
-    WindowStateAnimator{ecd1b1b dev.meeterm.app/dev.meeterm.app.MainActivity}:
-      mSurface=Surface(name=dev.meeterm.app/dev.meeterm.app.MainActivity)/@0xd78f4b8
+    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{242277114 u0 dev.meeterm.app/.MainActivity t1018}
+    mActivityRecord=ActivityRecord{242277114 u0 dev.meeterm.app/.MainActivity t1018}
+    WindowStateAnimator{50c2466 dev.meeterm.app/dev.meeterm.app.MainActivity}:
+      mSurface=Surface(name=dev.meeterm.app/dev.meeterm.app.MainActivity)/@0x626c3a7
   Window #10 Window{d6de1cd u0 com.android.systemui.wallpapers.ImageWallpaper}:
     mOwnerUid=10183 showForAllUsers=true package=com.android.systemui appop=NONE
     WindowStateAnimator{a1f25f6 com.android.systemui.wallpapers.ImageWallpaper}:
       mSurface=Surface(name=com.android.systemui.wallpapers.ImageWallpaper)/@0xf184df7
-  imeLayeringTarget in display# 0 Window{b49e080 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-  imeInputTarget in display# 0 Window{b49e080 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
-  imeControlTarget in display# 0 Window{b49e080 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeLayeringTarget in display# 0 Window{1d842a u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeInputTarget in display# 0 Window{1d842a u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
+  imeControlTarget in display# 0 Window{1d842a u0 dev.meeterm.app/dev.meeterm.app.MainActivity}
