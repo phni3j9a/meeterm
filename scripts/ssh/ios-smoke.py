@@ -105,6 +105,7 @@ NATIVE_INPUT_CASES = (
 RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
     "MEETERM_SSH_PORT",
+    "MEETERM_SSH_ALTERNATE_PORT",
     "MEETERM_SSH_USERNAME",
     "MEETERM_SSH_FINGERPRINT",
     "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
@@ -151,6 +152,7 @@ NAMES_TEST_ENVIRONMENT_NAMES = (
 )
 SSH_TEST_ENVIRONMENT_NAMES = (
     *NAMES_TEST_ENVIRONMENT_NAMES,
+    "MEETERM_SSH_ALTERNATE_PORT",
     "MEETERM_IOS_MARKER_VALUE",
     "MEETERM_SSH_FIXTURE_CONTROL_REQUEST",
     "MEETERM_SSH_FIXTURE_CONTROL_STATUS",
@@ -278,6 +280,11 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
     run_tmux(
         socket_path,
         ("select-pane", "-t", first_pane),
+        "tmux_fixture",
+    )
+    run_tmux(
+        socket_path,
+        ("new-session", "-d", "-s", "switcher-destination", "-n", "switcher-main", "/bin/sh", "-i"),
         "tmux_fixture",
     )
     workspaces = run_tmux(

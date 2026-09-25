@@ -128,16 +128,20 @@ def _fingerprint(public_key: Path) -> str:
     raise FixtureError("ssh-keygen returned no SHA-256 host-key fingerprint")
 
 
-def _choose_port() -> int:
+def _choose_port(excluded: set[int] | None = None) -> int:
     """Ask the kernel for a high loopback port before launching sshd."""
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind((HOST, 0))
-        port = int(probe.getsockname()[1])
-    if port <= 1024:
-        raise FixtureError("kernel returned a privileged fixture port")
-    return port
+    excluded = excluded or set()
+    for _ in range(8):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((HOST, 0))
+            port = int(probe.getsockname()[1])
+        if port <= 1024:
+            raise FixtureError("kernel returned a privileged fixture port")
+        if port not in excluded:
+            return port
+    raise FixtureError("kernel did not provide distinct fixture endpoints")
 
 
 class Fixture:
@@ -146,6 +150,7 @@ class Fixture:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.port = _choose_port()
+        self.alternate_port = _choose_port({self.port})
         self.user = getpass.getuser()
         if not self.user or any(character.isspace() for character in self.user):
             raise FixtureError("current account has no safe SSH username")
@@ -228,6 +233,7 @@ class Fixture:
             "\n".join(
                 (
                     f"Port {self.port}",
+                    f"Port {self.alternate_port}",
                     f"ListenAddress {HOST}",
                     f"HostKey {self.host_key}",
                     f"PidFile {self.pid_file}",
@@ -323,22 +329,17 @@ class Fixture:
                 if self.process.poll() is not None:
                     self._raise_start_failure()
                 try:
-                    with socket.create_connection((HOST, self.port), timeout=0.2):
+                    with socket.create_connection((HOST, self.port), timeout=0.2), \
+                         socket.create_connection((HOST, self.alternate_port), timeout=0.2):
                         listener_identity = self._process_identity(self.process.pid)
                         if listener_identity is None:
                             raise FixtureError(
                                 "OpenSSH fixture listener identity is unavailable"
                             )
-                        linux_owners = self._linux_local_port_sshd_process_ids(
-                            self.port
-                        )
-                        if (
-                            linux_owners is not None
-                            and self.process.pid not in linux_owners
-                        ):
-                            raise FixtureError(
-                                "OpenSSH fixture listener socket ownership is uncertain"
-                            )
+                        for port in (self.port, self.alternate_port):
+                            linux_owners = self._linux_local_port_sshd_process_ids(port)
+                            if linux_owners is not None and self.process.pid not in linux_owners:
+                                raise FixtureError("OpenSSH fixture listener socket ownership is uncertain")
                         self.sshd_listener_identity = listener_identity
                         return
                 except OSError:
@@ -659,9 +660,10 @@ class Fixture:
             if not self.sshd_descendants:
                 owned_process_ids = set(self._process_group_member_ids(process.pid))
                 owned_process_ids.update(self._descendant_process_ids(process.pid))
-                linux_owners = self._linux_local_port_sshd_process_ids(self.port)
-                if linux_owners is not None:
-                    owned_process_ids.update(linux_owners)
+                for port in (self.port, self.alternate_port):
+                    linux_owners = self._linux_local_port_sshd_process_ids(port)
+                    if linux_owners is not None:
+                        owned_process_ids.update(linux_owners)
                 owned_process_ids.discard(process.pid)
                 self.sshd_descendants = self._capture_process_identities(
                     sorted(owned_process_ids)
@@ -698,12 +700,13 @@ class Fixture:
             if not parent_exited or remaining:
                 raise FixtureError("OpenSSH fixture process tree did not stop")
 
-            linux_owners = self._linux_local_port_sshd_process_ids(self.port)
-            if linux_owners:
-                # Do not capture or signal a process discovered only after
-                # the verified listener exited: the port may already have
-                # been reused by another identity. Refuse the stop ACK.
-                raise FixtureError("OpenSSH fixture socket owners did not stop")
+            for port in (self.port, self.alternate_port):
+                linux_owners = self._linux_local_port_sshd_process_ids(port)
+                if linux_owners:
+                    # Do not capture or signal a process discovered only after
+                    # the verified listener exited: the port may already have
+                    # been reused by another identity. Refuse the stop ACK.
+                    raise FixtureError("OpenSSH fixture socket owners did not stop")
             self.process = None
             self.sshd_listener_identity = None
             self.sshd_descendants = {}
@@ -838,19 +841,23 @@ class Fixture:
         raise FixtureError("OpenSSH fixture exited before listening")
 
     def check_ssh_tmux(self) -> None:
-        """Prove authentication and remote tmux resolution before a mobile build."""
+        """Prove both authenticated fixture endpoints reach the same tmux server."""
         public_key = self.host_key.with_name(self.host_key.name + ".pub").read_text().strip()
-        self.trust_store.write_text(f"[{HOST}]:{self.port} {public_key}\n")
-        _run_quietly([
-            "ssh", "-F", "/dev/null",
-            "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-            "-o", "IdentityAgent=none", "-o", "ConnectTimeout=5",
-            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1",
-            "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", f"UserKnownHostsFile={self.trust_store}",
-            "-i", str(self.client_key), "-p", str(self.port),
-            f"{self.user}@{HOST}", "tmux -V",
-        ], timeout=20)
+        self.trust_store.write_text(
+            f"[{HOST}]:{self.port} {public_key}\n"
+            f"[{HOST}]:{self.alternate_port} {public_key}\n"
+        )
+        for port in (self.port, self.alternate_port):
+            _run_quietly([
+                "ssh", "-F", "/dev/null",
+                "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+                "-o", "IdentityAgent=none", "-o", "ConnectTimeout=5",
+                "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1",
+                "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null",
+                "-o", f"UserKnownHostsFile={self.trust_store}",
+                "-i", str(self.client_key), "-p", str(port),
+                f"{self.user}@{HOST}", "tmux -V",
+            ], timeout=20)
 
     def environment(self) -> dict[str, str]:
         host_public_key = self.host_key.with_name(f"{self.host_key.name}.pub")
@@ -866,6 +873,7 @@ class Fixture:
             # provided for the OpenSSH CLI smoke, which must stay unattended.
             "MEETERM_SSH_HOST": HOST,
             "MEETERM_SSH_PORT": str(self.port),
+            "MEETERM_SSH_ALTERNATE_PORT": str(self.alternate_port),
             "MEETERM_SSH_USERNAME": self.user,
             "MEETERM_SSH_PRIVATE_KEY_FILE": str(self.encrypted_client_key),
             "MEETERM_SSH_PASSPHRASE": self.encrypted_passphrase,

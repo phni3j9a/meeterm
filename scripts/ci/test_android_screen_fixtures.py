@@ -16,17 +16,19 @@ APP_SOURCE = Path(__file__).parents[2] / "App.tsx"
 
 
 class PresentationReadinessTests(unittest.TestCase):
-    def test_all_thirty_one_routes_require_visible_content(self):
-        self.assertEqual(len(fixtures.SCREEN_NAMES), 31)
-        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 31)
+    def test_all_thirty_three_routes_require_visible_content(self):
+        self.assertEqual(len(fixtures.SCREEN_NAMES), 33)
+        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 33)
         for screen in fixtures.SCREEN_NAMES:
             with self.subTest(screen=screen):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
 
-    def test_recovery_routes_are_stably_ordered_after_runtime_routes(self):
+    def test_switcher_and_recovery_routes_are_stably_ordered_after_runtime_routes(self):
         self.assertEqual(
-            fixtures.SCREEN_NAMES[14:24],
+            fixtures.SCREEN_NAMES[14:26],
             (
+                "session-switcher",
+                "session-switcher-sessions",
                 "herdr-connection",
                 "herdr-groups",
                 "herdr-terminal",
@@ -39,6 +41,24 @@ class PresentationReadinessTests(unittest.TestCase):
                 "runtime-layout-restore-unconfirmed",
             ),
         )
+
+    def test_switcher_screens_require_the_session_hierarchy_and_no_old_picker(self):
+        server = {
+            "Switch server or session",
+            "Browse sessions on Smoke server",
+            "Manage servers",
+        }
+        self.assertEqual(fixtures.screen_checks("session-switcher", server), [])
+        sessions = {
+            "Sessions on Smoke server",
+            "tmux session meeterm",
+            "Herdr session default",
+            "Herdr session paused",
+            "Last used",
+        }
+        self.assertEqual(fixtures.screen_checks("session-switcher-sessions", sessions), [])
+        sessions.add("Choose a runtime for Smoke server")
+        self.assertIn("runtime_picker_hidden", fixtures.screen_checks("session-switcher-sessions", sessions))
 
     def test_recovery_routes_and_ids_match_the_app_smoke_contract(self):
         source = APP_SOURCE.read_text(encoding="utf-8")

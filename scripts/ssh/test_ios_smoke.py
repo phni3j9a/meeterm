@@ -182,13 +182,14 @@ class DiagnosticSourceContractTests(unittest.TestCase):
                 "home", "servers", "connection", "password", "workspaces", "terminal",
                 "settings", "workspace-name", "terminal-name", "handoff",
                 "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
+                "session-switcher", "session-switcher-sessions",
                 "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
                 "recovery-progress", "recovery-exhausted", "recovery-mismatch",
                 "herdr-recovery-confirm", "layout-restore-unconfirmed",
                 "runtime-layout-restore-unconfirmed", "connection-error",
             ],
         )
-        self.assertEqual(len(manifest), 25)
+        self.assertEqual(len(manifest), 27)
         for identifier in (
             "recovery-rail", "recovery-title", "recovery-detail", "recovery-meta",
             "recovery-retry", "recovery-review", "recovery-change",

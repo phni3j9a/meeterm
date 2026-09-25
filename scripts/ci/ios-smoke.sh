@@ -78,6 +78,8 @@ rm -f \
   "${artifact_dir}/standard-workspace-name.png" \
   "${artifact_dir}/standard-terminal-name.png" \
   "${artifact_dir}/standard-handoff.png" \
+  "${artifact_dir}/standard-session-switcher.png" \
+  "${artifact_dir}/standard-session-switcher-sessions.png" \
   "${artifact_dir}/standard-runtime-picker.png" \
   "${artifact_dir}/standard-runtime-partial-error.png" \
   "${artifact_dir}/standard-runtime-empty.png" \
@@ -155,7 +157,7 @@ if [[ "${suite}" == "ssh" || "${suite}" == "full" || "${suite}" == "names" ]]; t
 else
   # Standard/forms/native suites are deliberately independent of the disposable SSH fixture.
   # Remove any inherited fixture contract before xcodebuild can pass it on.
-  unset MEETERM_SSH_HOST MEETERM_SSH_PORT MEETERM_SSH_USERNAME \
+  unset MEETERM_SSH_HOST MEETERM_SSH_PORT MEETERM_SSH_ALTERNATE_PORT MEETERM_SSH_USERNAME \
     MEETERM_SSH_FINGERPRINT MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE \
     MEETERM_SSH_PRIVATE_KEY_FILE MEETERM_SSH_PASSPHRASE \
     MEETERM_SSH_KNOWN_HOSTS_FILE MEETERM_SSH_HOST_KEY_FILE \
