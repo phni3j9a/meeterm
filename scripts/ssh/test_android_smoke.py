@@ -642,7 +642,7 @@ class DailyAcceptanceFlowTests(unittest.TestCase):
             [
                 (smoke.DAILY_PROFILE_NAME, "daily_profile_switch_same_session", "switcher-destination"),
                 (smoke.DAILY_PROFILE_NAME, "daily_profile_switch_same_back", "meeterm"),
-                (smoke.DAILY_SECOND_PROFILE_NAME, "daily_profile_switch_cross_endpoint", "switcher-destination"),
+                (smoke.DAILY_SECOND_PROFILE_NAME, "daily_profile_switch_cross_endpoint", "switcher-alternate-destination"),
                 (smoke.DAILY_PROFILE_NAME, "daily_profile_switch_cross_back", "meeterm"),
             ],
         )
@@ -1032,7 +1032,7 @@ class SessionSwitcherDriverTests(unittest.TestCase):
                 device,
                 "Alternate endpoint",
                 "daily_switcher_cross_endpoint",
-                "switcher-destination",
+                "switcher-alternate-destination",
                 expected_fingerprint="SHA256:fixtureFingerprint",
             )
 
@@ -1043,10 +1043,10 @@ class SessionSwitcherDriverTests(unittest.TestCase):
             [
                 ("tap", "daily_switcher_cross_endpoint_open_switcher", "Switch server or session"),
                 ("tap", "daily_switcher_cross_endpoint_choose_server", "Browse sessions on Alternate endpoint"),
-                ("tap", "daily_switcher_cross_endpoint_choose_session", "tmux session switcher-destination"),
+                ("tap", "daily_switcher_cross_endpoint_choose_session", "tmux session switcher-alternate-destination"),
             ],
         )
-        self.assertLess(events.index(("trust", "SHA256:fixtureFingerprint")), events.index(("tap", "daily_switcher_cross_endpoint_choose_session", "tmux session switcher-destination")))
+        self.assertLess(events.index(("trust", "SHA256:fixtureFingerprint")), events.index(("tap", "daily_switcher_cross_endpoint_choose_session", "tmux session switcher-alternate-destination")))
         self.assertEqual(events[-1], ("ready", "daily_switcher_cross_endpoint_workspace_ready"))
 
 
@@ -2394,14 +2394,43 @@ class UiDriverTests(unittest.TestCase):
                     self.assertIsNone(process.poll())
                     time.sleep(0.01)
                 self.assertTrue(socket_path.exists())
-                panes = smoke.prepare_tmux_fixture(socket_path)
-                self.assertEqual(len(panes), smoke.FIXTURE_PANE_COUNT)
-                self.assertEqual(
-                    len({record.window_id for record in panes}),
-                    len(smoke.FIXTURE_WINDOW_NAMES),
+                alternate_socket_path = (
+                    Path(root) / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
                 )
+                alternate_socket_path.parent.mkdir(mode=0o700, parents=True)
+                alternate_process = subprocess.Popen(
+                    ["tmux", "-D", "-f", "/dev/null", "-S", str(alternate_socket_path)],
+                    env=smoke._tmux_environment(alternate_socket_path),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                try:
+                    deadline = time.monotonic() + 5
+                    while not alternate_socket_path.exists() and time.monotonic() < deadline:
+                        self.assertIsNone(alternate_process.poll())
+                        time.sleep(0.01)
+                    self.assertTrue(alternate_socket_path.exists())
+                    panes = smoke.prepare_tmux_fixture(socket_path, alternate_socket_path)
+                    self.assertEqual(len(panes), smoke.FIXTURE_PANE_COUNT)
+                    self.assertEqual(
+                        len({record.window_id for record in panes}),
+                        len(smoke.FIXTURE_WINDOW_NAMES),
+                    )
+                    alternate_sessions = smoke.run_tmux_command(
+                        alternate_socket_path,
+                        ("list-sessions", "-F", "#{session_name}"),
+                        "test_tmux_alternate",
+                    ).stdout.splitlines()
+                    self.assertEqual(alternate_sessions, [b"switcher-alternate-destination"])
+                finally:
+                    subprocess.run(["tmux", "-S", str(alternate_socket_path), "kill-server"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    try:
+                        alternate_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        alternate_process.kill()
+                        alternate_process.wait()
                 with self.assertRaises(smoke.SmokeFailure) as error:
-                    smoke.prepare_tmux_fixture(socket_path)
+                    smoke.prepare_tmux_fixture(socket_path, alternate_socket_path)
                 self.assertEqual(error.exception.reason, "session_already_exists")
                 self.assertEqual(smoke.list_tmux_panes(socket_path, "test"), panes)
             finally:
@@ -3129,6 +3158,45 @@ UI dumped to: /dev/tty"""
                 with self.assertRaises(smoke.SmokeFailure) as error:
                     smoke.tmux_socket_from_fixture(key_path)
             self.assertEqual(error.exception.reason, "socket_path_outside_fixture")
+
+    def test_alternate_tmux_socket_must_use_its_own_fixture_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as root_text:
+            root = Path(root_text)
+            key_path = root / "client_ed25519"
+            key_path.write_text("placeholder", encoding="utf-8")
+            socket = root / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+            with mock.patch.dict(
+                os.environ,
+                {"MEETERM_TMUX_ALTERNATE_SOCKET": str(socket)},
+                clear=False,
+            ):
+                self.assertEqual(smoke.alternate_tmux_socket_from_fixture(key_path), socket)
+
+            with mock.patch.dict(
+                os.environ,
+                {"MEETERM_TMUX_ALTERNATE_SOCKET": str(root / "tmux" / f"tmux-{os.getuid()}" / "default")},
+                clear=False,
+            ):
+                with self.assertRaises(smoke.SmokeFailure) as error:
+                    smoke.alternate_tmux_socket_from_fixture(key_path)
+            self.assertEqual(error.exception.reason, "socket_path_invalid")
+
+    def test_alternate_endpoint_seeds_its_distinct_tmux_session(self) -> None:
+        socket = Path("fixture") / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+        with mock.patch.object(
+            smoke,
+            "run_tmux_command",
+            side_effect=[
+                subprocess.CompletedProcess([], 1, "", "no server"),
+                subprocess.CompletedProcess([], 0, "", ""),
+            ],
+        ) as run:
+            smoke.prepare_alternate_tmux_session(socket)
+        self.assertEqual(run.call_args_list[0].args[1], ("list-sessions", "-F", "#{session_name}"))
+        self.assertEqual(run.call_args_list[1].args[1], (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ))
 
     def test_tmux_commands_use_only_the_explicit_fixture_socket(self) -> None:
         socket = (

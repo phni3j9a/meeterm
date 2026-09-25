@@ -52,7 +52,7 @@ class FixtureControlTests(unittest.TestCase):
         self.assertIn(f"[127.0.0.1]:{instance.port} ssh-ed25519 AAAA-fixture fixture", trust_store)
         self.assertIn(f"[127.0.0.1]:{instance.alternate_port} ssh-ed25519 AAAA-fixture fixture", trust_store)
 
-    def test_environment_publishes_only_the_alternate_port_not_a_second_credential(self) -> None:
+    def test_environment_publishes_distinct_alternate_tmux_fixture_paths(self) -> None:
         directory, instance = self.make_fixture()
         self.addCleanup(directory.cleanup)
         for key_path in (
@@ -67,6 +67,11 @@ class FixtureControlTests(unittest.TestCase):
         self.assertEqual(environment["MEETERM_SSH_ALTERNATE_PORT"], str(instance.alternate_port))
         self.assertEqual(environment["MEETERM_SSH_FINGERPRINT"], "SHA256:fixture")
         self.assertEqual(environment["MEETERM_SSH_ALTERNATE_HOST_KEY_FILE"], str(instance.alternate_host_key.with_name(instance.alternate_host_key.name + ".pub")))
+        self.assertEqual(environment["MEETERM_TMUX_TMPDIR"], str(instance.tmux_tmpdir))
+        self.assertEqual(environment["MEETERM_TMUX_SOCKET"], str(instance.tmux_socket))
+        self.assertEqual(environment["MEETERM_TMUX_ALTERNATE_TMPDIR"], str(instance.alternate_tmux_tmpdir))
+        self.assertEqual(environment["MEETERM_TMUX_ALTERNATE_SOCKET"], str(instance.alternate_tmux_socket))
+        self.assertNotEqual(environment["MEETERM_TMUX_SOCKET"], environment["MEETERM_TMUX_ALTERNATE_SOCKET"])
 
     def test_stop_and_start_use_one_fixture_owned_control_channel(self) -> None:
         directory, instance = self.make_fixture()

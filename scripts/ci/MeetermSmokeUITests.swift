@@ -895,12 +895,12 @@ final class MeetermSmokeUITests: XCTestCase {
     record("ssh_switcher_alternate_endpoint")
     guard selectSwitcherSession(
       serverName: "Alternate endpoint",
-      sessionName: "switcher-destination",
+      sessionName: "switcher-alternate-destination",
       stage: "ssh_switcher_cross_endpoint",
       trustHostKey: true
     ) else { return }
     guard sendSwitcherMarker(
-      sessionName: "switcher-destination",
+      sessionName: "switcher-alternate-destination",
       marker: "\(markerValue)-cross-endpoint",
       path: crossDestinationPath,
       stage: "ssh_switcher_cross_destination_input"
@@ -1756,7 +1756,12 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func sendSwitcherMarker(sessionName: String, marker: String, path: URL, stage: String) -> Bool {
-    let workspaceName = sessionName == "meeterm" ? "ios-main" : "switcher-main"
+    let workspaceName: String
+    switch sessionName {
+    case "meeterm": workspaceName = "ios-main"
+    case "switcher-alternate-destination": workspaceName = "switcher-alternate-main"
+    default: workspaceName = "switcher-main"
+    }
     let workspace = button("Workspace \(workspaceName)")
     guard waitForHittable(workspace, timeout: 20) else {
       XCTFail("The selected Session workspace was not available at \(stage).")

@@ -167,20 +167,28 @@ class Fixture:
         self.config = root / "sshd_config"
         self.pid_file = root / "sshd.pid"
         # tmux uses $TMUX_TMPDIR/default as its ordinary socket path.  Keep
-        # that directory inside this fixture so every remote shell and every
-        # local helper wrapped by the fixture sees an isolated default server.
+        # that directory inside this fixture so the primary remote endpoint
+        # and its local helper see an isolated default server.
         # The product itself still uses ordinary tmux; this is only test
         # isolation, and cleanup below addresses this exact socket.
         self.tmux_tmpdir = root / "tmux"
+        # The alternate SSH endpoint intentionally owns a separate ordinary
+        # tmux server so the endpoint-switch smoke cannot pass by reconnecting
+        # to the primary port.
+        self.alternate_tmux_tmpdir = root / "tmux-alternate"
         # tmux appends tmux-$UID below TMUX_TMPDIR before creating its
         # default socket. Keep the fully resolved path so cleanup never has
         # to ask tmux for (or guess at) the caller's ordinary socket.
         self.tmux_socket = self.tmux_tmpdir / f"tmux-{os.getuid()}" / "default"
+        self.alternate_tmux_socket = (
+            self.alternate_tmux_tmpdir / f"tmux-{os.getuid()}" / "default"
+        )
         self.encrypted_passphrase = secrets.token_urlsafe(32)
         self.process: subprocess.Popen[str] | None = None
         self.sshd_listener_identity: str | None = None
         self.sshd_descendants: dict[int, str] = {}
         self.tmux_process: subprocess.Popen[str] | None = None
+        self.alternate_tmux_process: subprocess.Popen[str] | None = None
         self.env_file: Path | None = None
         self.control_request_path = root / CONTROL_REQUEST_NAME
         self.control_status_path = root / CONTROL_STATUS_NAME
@@ -207,6 +215,8 @@ class Fixture:
         self.root.chmod(0o700)
         self.tmux_tmpdir.mkdir(mode=0o700)
         self.tmux_tmpdir.chmod(0o700)
+        self.alternate_tmux_tmpdir.mkdir(mode=0o700)
+        self.alternate_tmux_tmpdir.chmod(mode=0o700)
         _generate_ed25519_key(self.client_key, "")
         _generate_ed25519_key(self.encrypted_client_key, self.encrypted_passphrase)
         _generate_ed25519_key(self.host_key, "")
@@ -239,11 +249,9 @@ class Fixture:
                     f"PidFile {self.pid_file}",
                     f"AuthorizedKeysFile {self.authorized_keys}",
                     f"AllowUsers {self.user}",
-                    # OpenSSH SetEnv applies to every session created by this
-                    # fixture, including commands run through the ordinary
-                    # desktop ssh/tmux smoke.  It does not alter the user's
-                    # account environment or any system sshd configuration.
-                    f"SetEnv TMUX_TMPDIR={self.tmux_tmpdir}",
+                    # Route each SSH listener to a separate ordinary tmux
+                    # server in the fixture so the alternate-endpoint smoke
+                    # must connect to its selected port.
                     f'SetEnv "PATH={fixture_path}"',
                     "PubkeyAuthentication yes",
                     "AuthenticationMethods publickey",
@@ -263,6 +271,11 @@ class Fixture:
                     "PermitTunnel no",
                     "PermitUserEnvironment no",
                     "LogLevel QUIET",
+                    f"Match LocalPort {self.port}",
+                    f"SetEnv TMUX_TMPDIR={self.tmux_tmpdir}",
+                    f"Match LocalPort {self.alternate_port}",
+                    f"SetEnv TMUX_TMPDIR={self.alternate_tmux_tmpdir}",
+                    "Match all",
                 )
             )
             + "\n",
@@ -271,33 +284,45 @@ class Fixture:
         self.config.chmod(0o600)
         _run_quietly([SSHD, "-t", "-f", str(self.config)])
 
-    def _start_tmux(self) -> None:
+    def _start_tmux_server(
+        self, tmux_tmpdir: Path, tmux_socket: Path
+    ) -> subprocess.Popen[str]:
         # Start an empty private server without loading ~/.tmux.conf. -D
-        # keeps the empty server alive; the application still creates the
-        # managed session itself through its ordinary production command.
-        self.tmux_socket.parent.mkdir(mode=0o700, exist_ok=True)
+        # keeps the server alive; the smoke driver seeds its Sessions.
+        tmux_socket.parent.mkdir(mode=0o700, exist_ok=True)
         tmux_environment = dict(os.environ)
         tmux_environment.pop("TMUX", None)
         tmux_environment.pop("TMUX_PANE", None)
-        tmux_environment["TMUX_TMPDIR"] = str(self.tmux_tmpdir)
-        self.tmux_process = subprocess.Popen(
-            [TMUX, "-D", "-f", "/dev/null", "-S", str(self.tmux_socket)],
+        tmux_environment["TMUX_TMPDIR"] = str(tmux_tmpdir)
+        process = subprocess.Popen(
+            [TMUX, "-D", "-f", "/dev/null", "-S", str(tmux_socket)],
             env=tmux_environment, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
         )
         deadline = time.monotonic() + READY_TIMEOUT_SECONDS
-        while not self.tmux_socket.exists():
-            if self.tmux_process.poll() is not None or time.monotonic() >= deadline:
+        while not tmux_socket.exists():
+            if process.poll() is not None or time.monotonic() >= deadline:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
                 raise FixtureError("isolated tmux fixture did not start")
             time.sleep(0.05)
         # Keep disposable panes independent of the developer's interactive
         # shell startup (for example an oh-my-zsh update prompt). These options
         # affect only the absolute fixture socket, never the ordinary server.
         _run_quietly([
-            TMUX, "-S", str(self.tmux_socket),
+            TMUX, "-S", str(tmux_socket),
             "set-option", "-g", "default-shell", "/bin/sh", ";",
             "set-option", "-g", "default-command", "exec /bin/sh -i",
         ])
+
+        return process
+
+    def _start_tmux(self) -> None:
+        self.tmux_process = self._start_tmux_server(self.tmux_tmpdir, self.tmux_socket)
+        self.alternate_tmux_process = self._start_tmux_server(
+            self.alternate_tmux_tmpdir, self.alternate_tmux_socket
+        )
 
     def start_sshd(self) -> None:
         """Start only this fixture's sshd on its original endpoint."""
@@ -884,9 +909,11 @@ class Fixture:
             "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE": str(alternate_host_public_key),
             # These are useful to shell-level integration checks and make the
             # isolation contract explicit.  The SSH server receives the same
-            # path through SetEnv above.
+            # endpoint-specific path through Match/SetEnv above.
             "MEETERM_TMUX_TMPDIR": str(self.tmux_tmpdir),
             "MEETERM_TMUX_SOCKET": str(self.tmux_socket),
+            "MEETERM_TMUX_ALTERNATE_TMPDIR": str(self.alternate_tmux_tmpdir),
+            "MEETERM_TMUX_ALTERNATE_SOCKET": str(self.alternate_tmux_socket),
             "TMUX_TMPDIR": str(self.tmux_tmpdir),
             # The persistent fixture exposes only these two opaque, fixture
             # owned paths to the mobile smoke driver.  They are not remote
@@ -960,29 +987,31 @@ class Fixture:
         # the socket directory; never invoke the default client without -S,
         # because that could reach the developer's ordinary tmux server.
         tmux = shutil.which(TMUX)
-        if tmux is not None:
-            try:
-                subprocess.run(
-                    [tmux, "-S", str(self.tmux_socket), "kill-server"],
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=3,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                # The fixture is already on its cleanup path.  A missing
-                # socket or an exited server is harmless; the enclosing
-                # temporary directory remains the ownership boundary.
-                pass
-        tmux_process = self.tmux_process
-        self.tmux_process = None
-        if tmux_process is not None:
-            try:
-                tmux_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                tmux_process.kill()
-                tmux_process.wait()
+        for socket_path, process_name in (
+            (self.tmux_socket, "tmux_process"),
+            (self.alternate_tmux_socket, "alternate_tmux_process"),
+        ):
+            if tmux is not None:
+                try:
+                    subprocess.run(
+                        [tmux, "-S", str(socket_path), "kill-server"],
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=3,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    # Missing sockets or exited servers are harmless on cleanup.
+                    pass
+            tmux_process = getattr(self, process_name)
+            setattr(self, process_name, None)
+            if tmux_process is not None:
+                try:
+                    tmux_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    tmux_process.kill()
+                    tmux_process.wait()
         if self.env_file is not None:
             try:
                 self.env_file.unlink()

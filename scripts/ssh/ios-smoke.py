@@ -200,6 +200,19 @@ def fixture_socket() -> Path:
     return value
 
 
+def alternate_fixture_socket(primary_socket: Path | None = None) -> Path:
+    primary = primary_socket or fixture_socket()
+    root = primary.parent.parent.parent
+    if (
+        primary.name != "default"
+        or primary.parent.name != f"tmux-{os.getuid()}"
+        or primary.parent.parent.name != "tmux"
+        or not root.name.startswith("meeterm-ssh-fixture-")
+    ):
+        raise SmokeFailure("fixture_environment", "socket_path_invalid")
+    return root / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+
+
 def sanitized_environment(socket_path: Path) -> dict[str, str]:
     environment = dict(os.environ)
     environment.pop("TMUX", None)
@@ -300,6 +313,27 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
     if set(workspaces) != {"ios-main", "ios-side"} or len(panes) != 3:
         raise SmokeFailure("tmux_fixture", "topology_invalid")
     return len(workspaces), len(panes)
+
+
+def prepare_alternate_topology(socket_path: Path) -> None:
+    """Seed a Session available only through the alternate SSH endpoint."""
+
+    existing = run_tmux(
+        socket_path,
+        ("list-sessions", "-F", "#{session_name}"),
+        "tmux_alternate_fixture",
+        allow_failure=True,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise SmokeFailure("tmux_alternate_fixture", "session_already_exists")
+    run_tmux(
+        socket_path,
+        (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ),
+        "tmux_alternate_fixture",
+    )
 
 
 def fixture_pane_processes(socket_path: Path, stage: str) -> list[tuple[str, int]]:
@@ -1784,6 +1818,7 @@ def main() -> int:
                     os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
 
             stage = "tmux_fixture"
+            prepare_alternate_topology(alternate_fixture_socket(socket_path))
             workspaces, panes = prepare_topology(socket_path)
             write_text(
                 args.artifact_dir / "fixture-validation.txt",

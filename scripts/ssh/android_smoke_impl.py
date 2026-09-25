@@ -962,6 +962,33 @@ def tmux_socket_from_fixture(key_path: Path) -> Path:
     return resolved
 
 
+def alternate_tmux_socket_from_fixture(key_path: Path) -> Path:
+    """Resolve the alternate-endpoint tmux socket inside the same fixture."""
+
+    root = key_path.parent.resolve()
+    if not root.is_dir() or not root.name.startswith("meeterm-ssh-fixture-"):
+        raise SmokeFailure("tmux_fixture", "fixture_root_unavailable")
+    raw_socket = required_environment("MEETERM_TMUX_ALTERNATE_SOCKET")
+    socket_path = Path(raw_socket)
+    if not socket_path.is_absolute():
+        raise SmokeFailure("tmux_fixture", "socket_path_invalid")
+    try:
+        resolved = socket_path.resolve(strict=False)
+        relative = resolved.relative_to(root)
+    except (OSError, ValueError) as error:
+        raise SmokeFailure("tmux_fixture", "socket_path_outside_fixture") from error
+    if (
+        len(relative.parts) != 3
+        or relative.parts[0] != "tmux-alternate"
+        or relative.parts[1] != f"tmux-{os.getuid()}"
+        or resolved.name != "default"
+    ):
+        raise SmokeFailure("tmux_fixture", "socket_path_invalid")
+    if socket_path.is_symlink():
+        raise SmokeFailure("tmux_fixture", "socket_path_invalid")
+    return resolved
+
+
 def _tmux_environment(socket_path: Path) -> dict[str, str]:
     """Build a scrubbed environment for local fixture-side tmux commands."""
 
@@ -1258,7 +1285,9 @@ def wait_for_tmux_selection(
     raise SmokeFailure(stage, "tmux_selection_timeout")
 
 
-def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
+def prepare_tmux_fixture(
+    socket_path: Path, alternate_socket_path: Path | None = None
+) -> list[TmuxPaneRecord]:
     """Create two windows with two panes each and select the first pane."""
 
     stage = "tmux_fixture"
@@ -1357,7 +1386,31 @@ def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
         ("new-session", "-d", "-s", "switcher-destination", "-n", "switcher-main", "/bin/sh", "-i"),
         stage,
     )
+    if alternate_socket_path is not None:
+        prepare_alternate_tmux_session(alternate_socket_path)
     return selected
+
+
+def prepare_alternate_tmux_session(socket_path: Path) -> None:
+    """Seed the uniquely named Session exposed through the alternate port."""
+
+    stage = "tmux_alternate_fixture"
+    existing = run_tmux_command(
+        socket_path,
+        ("list-sessions", "-F", "#{session_name}"),
+        stage,
+        allow_failure=True,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise SmokeFailure(stage, "alternate_session_already_exists")
+    run_tmux_command(
+        socket_path,
+        (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ),
+        stage,
+    )
 
 
 def find_node(
@@ -3865,13 +3918,13 @@ def exercise_saved_profile_management(
         device,
         DAILY_SECOND_PROFILE_NAME,
         "daily_profile_switch_cross_endpoint",
-        "switcher-destination",
+        "switcher-alternate-destination",
         expected_fingerprint=expected_fingerprint,
     )
     destination = wait_for_workspace(
         device,
         "daily_profile_switch_cross_destination",
-        label="Workspace switcher-main",
+        label="Workspace switcher-alternate-main",
         timeout=RECONNECT_TIMEOUT,
     )
     tap_node(device, destination, "daily_profile_switch_cross_destination")
@@ -4902,7 +4955,8 @@ def main(argv: list[str] | None = None) -> int:
         if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]+={0,2}", expected_fingerprint):
             raise SmokeFailure("fixture_environment", "invalid_fingerprint")
         tmux_socket = tmux_socket_from_fixture(key_path)
-        fixture_layout = prepare_tmux_fixture(tmux_socket)
+        alternate_tmux_socket = alternate_tmux_socket_from_fixture(key_path)
+        fixture_layout = prepare_tmux_fixture(tmux_socket, alternate_tmux_socket)
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
         foreground_marker_path, foreground_marker_value = make_marker_file(key_path)

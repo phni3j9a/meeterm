@@ -93,6 +93,28 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('suite in ("polish", "polish-navigation")', source)
         self.assertIn('"polish_navigation_open"', source)
 
+    def test_alternate_endpoint_fixture_has_a_private_session(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-test-") as root_text:
+            root = Path(root_text)
+            primary = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            alternate = smoke.alternate_fixture_socket(primary)
+            self.assertEqual(
+                alternate,
+                root / "tmux-alternate" / f"tmux-{os.getuid()}" / "default",
+            )
+
+        alternate = Path("fixture") / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+        calls = [
+            subprocess.CompletedProcess([], 1, "", "no server"),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with mock.patch.object(smoke, "run_tmux", side_effect=calls) as run:
+            smoke.prepare_alternate_topology(alternate)
+        self.assertEqual(run.call_args_list[1].args[1], (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ))
+
     def test_real_ssh_connects_require_an_explicit_fixture_runtime_selection(self):
         source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
         self.assertIn("private func selectFixtureTmuxRuntimeAndWaitForConnected", source)
@@ -1883,6 +1905,10 @@ class InputDiagnosticsFailureTests(unittest.TestCase):
                 "MEETERM_SSH_HOST_KEY_FILE": str(host_key),
                 "RUNNER_TEMP": str(root / "runner"),
             }
+            alternate_socket = (
+                fixture_socket.parent.parent.parent
+                / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+            )
 
             with mock.patch.dict(smoke.os.environ, environment, clear=False), \
                  mock.patch.object(sys, "argv", [
@@ -1897,6 +1923,8 @@ class InputDiagnosticsFailureTests(unittest.TestCase):
                      "ssh",
                  ]), \
                  mock.patch.object(smoke, "fixture_socket", return_value=fixture_socket), \
+                 mock.patch.object(smoke, "alternate_fixture_socket", return_value=alternate_socket), \
+                 mock.patch.object(smoke, "prepare_alternate_topology"), \
                  mock.patch.object(smoke, "prepare_topology", return_value=(2, 3)), \
                  mock.patch.object(
                      smoke,
@@ -2207,6 +2235,8 @@ class ConnectionFailureDiagnosticsTests(unittest.TestCase):
                      "names",
                  ]), \
                  mock.patch.object(smoke, "fixture_socket", return_value=Path("fixture-socket")), \
+                 mock.patch.object(smoke, "alternate_fixture_socket", return_value=Path("alternate-fixture-socket")), \
+                 mock.patch.object(smoke, "prepare_alternate_topology"), \
                  mock.patch.object(smoke, "prepare_topology", return_value=(2, 3)), \
                  mock.patch.object(smoke, "record_daily_interactions", return_value=contextlib.nullcontext()), \
                  mock.patch.object(
