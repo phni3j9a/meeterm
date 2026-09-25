@@ -1,0 +1,5 @@
+mode=xcuitest-ssh
+bundle_id=dev.meeterm.app
+test_result_bundle=RUNNER_TEMP
+keyboard_introduction_suppressed=1
+smoke_started_at_utc=2026-09-25 05:10:51Z

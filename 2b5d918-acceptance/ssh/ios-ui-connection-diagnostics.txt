@@ -1,0 +1,14 @@
+suite=ssh
+metadata_container=passed
+metadata_file=present
+metadata_json=valid
+metadata_profile_count=2
+metadata_profile_count_match=0
+metadata_profile_host_match=0
+metadata_profile_port_match=0
+metadata_profile_username_match=0
+metadata_profile_name_match=0
+metadata_profile_auth_method_match=0
+metadata_profile_credential_saved_match=0
+metadata_profile_match=0
+ssh_probe=passed
