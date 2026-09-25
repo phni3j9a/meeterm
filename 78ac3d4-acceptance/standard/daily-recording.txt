@@ -1,2 +1,0 @@
-recording=unavailable
-reason=capture_failed

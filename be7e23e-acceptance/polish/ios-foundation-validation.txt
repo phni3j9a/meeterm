@@ -1,3 +1,0 @@
-result=passed
-reason=none
-renderer_backend=metal

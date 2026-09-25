@@ -1,5 +1,0 @@
-result=failed
-suite=standard
-stage=xcuitest_standard
-reason=native_cases_incomplete
-ui_last_stage=teardown_complete

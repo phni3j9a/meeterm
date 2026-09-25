@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "source_sha": "2e4b3e35d3849fc4bd833257bc6e1228b0a1fb71",
-  "xcode": "Xcode 26.6\nBuild version 17F113",
-  "architecture": "arm64",
-  "sha256": "a26736fede406e87cf70179be4eabb213316a4c55fa8b2c1ee8f582abb864f6b",
-  "scope": "pristine-build-products",
-  "configuration": "Release-iphonesimulator"
-}

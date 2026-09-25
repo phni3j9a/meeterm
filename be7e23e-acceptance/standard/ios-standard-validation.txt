@@ -1,5 +1,0 @@
-result=failed
-suite=standard
-stage=xcuitest_standard
-reason=xcodebuild_timeout
-ui_last_stage=teardown_complete

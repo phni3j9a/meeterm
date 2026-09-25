@@ -1,3 +1,0 @@
-case=cancel_no_destruction result=passed
-bound_terminal_unchanged=yes
-marker_roundtrip=exactly_once

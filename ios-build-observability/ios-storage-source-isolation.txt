@@ -1,3 +1,0 @@
-storage xcconfigs meeterm_core count: 0
-app xcconfig: Pods-meeterm.release.xcconfig contains -l"meeterm_core"
-storage Sources phase: ClientStoreTests.swift only

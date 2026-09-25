@@ -1,6 +1,0 @@
-source_line=0
-category=unknown
-source_line=0
-category=unknown
-source_line=2453
-category=hittability

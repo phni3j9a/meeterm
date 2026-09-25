@@ -1,0 +1,62 @@
+6818d431 acceptance run record — iOS Simulator (PR #42 / Issue #41 fast-recovery)
+================================================================================
+
+commit: 6818d431f7e5c8b08a6cf518467a6d532c2acfb4 (issue-41-fast-recovery)
+base: origin/main 83c954f (branch head verified after fetch + reset --hard)
+date: 2026-09-25 UTC
+host toolchain: Xcode 26.6 (17F113), iphonesimulator26.5 SDK, arm64, RN 0.86.3,
+  Expo ~57.0.25, Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c.
+simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+env: EXPO_PUBLIC_MEETERM_SMOKE=1 at build time; IOS_SIMULATOR_UDID exported per suite.
+No source/test patching; assertions, deadlines, fixtures untouched.
+
+pipeline (per docs/CI_MOBILE.md + docs/TESTING.md at this commit):
+  git fetch origin && git reset --hard 6818d431... -> npm ci ->
+  rm -rf ios -> expo prebuild (fresh CNG) -> ios-inject-ui-test.sh ->
+  pod install -> ios-strip-storage-rust-link.py -> scripts/ci/ios-typecheck.sh
+  preflight -> PASSED (2 warnings only: unused resignFirstResponder result,
+  var->let suggestion; TerminalInputView.swift) -> build-for-testing ->
+  TEST BUILD SUCCEEDED. build wall 255s.
+
+suite 1: MEETERM_IOS_SUITE=standard (fresh build-for-testing products)
+  result: PASSED. wall 403s (incl. sim re-boot after VM restart; first attempt
+    hit a stale CoreSimulator session, device booted via bootstatus, re-run).
+  diagnostics: xcodebuild_result_line=passed, forced_exit_after_result=1,
+    post_result_wait_ms=60338, elapsed_ms=353420,
+    keyboard_introduction_suppressed=1, exit_code=0.
+  machine gates: boot=ok, install=ok, launch=ok, xcuitest_standard=passed,
+    native_cases=13/13, xcuitest_storage=passed -> 6/6.
+  screens: 26-route manifest (herdr-recovery-confirm removed); 28 captures
+    (26 routes + foundation captures).
+  renderer: renderer_backend=metal (NO CoreGraphics fallback markers anywhere).
+
+suite 2: MEETERM_IOS_SUITE=ssh (REUSE run — same-commit test products from the
+  suite-1 fresh build above; verified HEAD==6818d431..., exactly one .xctestrun,
+  no rebuild between suites, stale .xcresult dirs removed before run)
+  result: PASSED. wall 489s.
+  diagnostics: xcodebuild_result_line=passed, forced_exit_after_result=1,
+    post_result_wait_ms=60125, elapsed_ms=454522, exit_code=0.
+  machine gates: openssh_fixture=ready, tmux_fixture=ready, native_openssh_test
+    =ok, launch=ok, xcuitest_ssh=passed, disconnect+teardown=ok -> 6/6.
+  transport-loss: transport_loss=passed — pre/post markers exactly-once,
+    same_pane=yes, same_pane_pid=yes, native_terminal_identifier_same=yes,
+    native_handle_same=yes, selected_pane_identifier_same=yes,
+    cached_read_only_surface=yes during loss, picker_visible_during_loss=no,
+    input_during_loss=none, fixture_control=stopped_and_started,
+    other_panes_clean=yes -> returns Ready to the SAME pane/native handle with
+    NO picker and NO confirmation (Issue #41 contract verified).
+  renderer: renderer_backend=metal AND ssh_renderer_backend=metal.
+
+renderer markers (reported separately as requested):
+  standard suite: metal (ssh_renderer_backend=metal also present in metadata).
+  ssh suite: metal + ssh_renderer_backend=metal.
+  Simulator CoreGraphics fallback: NO occurrences of coregraphics/fallback
+  markers in either suite's metadata or validation files.
+
+OFFICIAL VERDICT for 6818d431: standard PASS / ssh PASS.
+
+evidence layout (branch head cleaned — prior-run dirs removed):
+  run-record.txt
+  xcodebuild-build-for-testing.log
+  standard/               full observability bundle
+  ssh/                    full observability bundle

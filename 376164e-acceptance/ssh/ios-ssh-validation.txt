@@ -1,5 +1,0 @@
-result=failed
-suite=ssh
-stage=tmux_fixture
-reason=topology_invalid
-ui_last_stage=unavailable

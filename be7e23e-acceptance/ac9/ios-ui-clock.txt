@@ -1,2 +1,0 @@
-setup_epoch_ms=1790242578568
-setup_elapsed_ms=45

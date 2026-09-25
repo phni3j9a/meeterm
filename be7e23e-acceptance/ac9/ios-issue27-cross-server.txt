@@ -1,4 +1,0 @@
-case=cross_server_switch result=passed
-first_server_session_alive=yes
-first_server_session_listed_in_browse=yes
-marker_roundtrip=exactly_once

@@ -1,4 +1,0 @@
-== Devices ==
--- iOS 26.5 --
--- iOS 27.0 --
-    iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7) (Booted) 

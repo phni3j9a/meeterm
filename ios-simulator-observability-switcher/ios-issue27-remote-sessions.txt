@@ -1,2 +1,0 @@
-socket1_sessions=alt,meeterm
-socket2_sessions=meeterm-two
