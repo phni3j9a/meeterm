@@ -100,6 +100,52 @@ class FixtureControlTests(unittest.TestCase):
         self.assertFalse(instance.control_request_path.exists())
         self.assertTrue(instance.control_status_path.exists())
 
+    def test_request_completed_right_after_a_partial_read_is_still_processed(self) -> None:
+        directory, instance = self.make_fixture()
+        self.addCleanup(directory.cleanup)
+        token = "partial-write-token"
+        request_path = instance.control_request_path
+        descriptor = os.open(request_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(f"{token}\tsta")
+        sender_finished = threading.Event()
+
+        class SenderFinishesAfterFirstRead(type(request_path)):
+            def read_text(self, *args: object, **kwargs: object) -> str:
+                contents = super().read_text(*args, **kwargs)
+                if not sender_finished.is_set():
+                    # The controller has observed the partial request; the
+                    # sender completes its single line before the next read.
+                    with open(request_path, "a", encoding="utf-8") as stream:
+                        stream.write("rt\n")
+                    sender_finished.set()
+                return contents
+
+        instance.control_request_path = SenderFinishesAfterFirstRead(request_path)
+        starts: list[None] = []
+
+        with (
+            mock.patch.object(instance, "stop_sshd"),
+            mock.patch.object(instance, "start_sshd", side_effect=lambda: starts.append(None)),
+        ):
+            instance.start_control()
+            self.addCleanup(instance.stop_control)
+            deadline = time.monotonic() + 5
+            status = ""
+            while time.monotonic() < deadline:
+                try:
+                    status = instance.control_status_path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    status = ""
+                if status:
+                    break
+                time.sleep(fixture.CONTROL_POLL_SECONDS)
+
+        self.assertTrue(sender_finished.is_set())
+        self.assertEqual(status, f"{token}\tok\tstarted\n")
+        self.assertEqual(len(starts), 1)
+        self.assertFalse(request_path.exists())
+
     def test_stop_waits_for_accepted_session_children_before_acknowledging(self) -> None:
         directory, instance = self.make_fixture()
         self.addCleanup(directory.cleanup)
