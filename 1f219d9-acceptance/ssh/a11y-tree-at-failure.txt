@@ -1,0 +1,113 @@
+                                    Other, 0x1193108c0, label: 'Horizontal scroll bar, 1 page', value: 0% <AX element pid: 18955, elementOrHash.elementID: 4467411968.26>
+                                      Other, 0x119313340 <AX element pid: 18955, elementOrHash.elementID: 4468911040.29>
+                    Toolbar, 0x119311540, identifier: 'Toolbar', label: 'Toolbar' <AX element pid: 18955, elementOrHash.elementID: 4467420160.15>
+                      Other, 0x119312d00 <AX element pid: 18955, elementOrHash.elementID: 4467420672.17>
+    Other, 0x1193130c0 <AX element pid: 18955, elementOrHash.elementID: 5001818624.888>
+      Other, 0x10a417340 <AX element pid: 18955, elementOrHash.elementID: 4739075840.889>
+      Other, 0x10a416bc0 <AX element pid: 18955, elementOrHash.elementID: 4739075200.890>
+        Other, 0x10a4143c0 <AX element pid: 18955, elementOrHash.elementID: 4764307392.892>
+          Other, 0x10a417ac0 <AX element pid: 18955, elementOrHash.elementID: 4764306496.893>
+            Other, 0x10a414280 <AX element pid: 18955, elementOrHash.elementID: 4751647744.423>
+              Other, 0x10a415680 <AX element pid: 18955, elementOrHash.elementID: 4418891136.49>
+                Other, 0x10a414640 <AX element pid: 18955, elementOrHash.elementID: 4418892928.51>
+                  Other, 0x10a415e00 <AX element pid: 18955, elementOrHash.elementID: 4751645440.421>
+                  Button, 0x10a416300, label: 'Cancel' <AX element pid: 18955, elementOrHash.elementID: 4751646976.422>
+                  Button, 0x10a417e80, identifier: 'ssh-submit', label: 'Save server' <AX element pid: 18955, elementOrHash.elementID: 4751653120.750>
+                  StaticText, 0x10a417d40, label: 'Add server' <AX element pid: 18955, elementOrHash.elementID: 4418888448.32>
+                    StaticText, 0x10a416800, label: 'Add server' <AX element pid: 18955, elementOrHash.elementID: 5046539424.894>
+                  Other, 0x10a417840 <AX element pid: 18955, elementOrHash.elementID: 4419016704.56>
+                    ScrollView, 0x10a415f40 <AX element pid: 18955, elementOrHash.elementID: 4468476416.58>
+                      Other, 0x10a416e40 <AX element pid: 18955, elementOrHash.elementID: 4542382080.59>
+                        Other, 0x10a415180 <AX element pid: 18955, elementOrHash.elementID: 4751648512.424>
+                          StaticText, 0x10a416440, label: 'Save a server on this device. You can add credentials now or when you connect.' <AX element pid: 18955, elementOrHash.elementID: 4694489984.85>
+                            StaticText, 0x10a415040, label: 'Save a server on this device. You can add credentials now or when you connect.' <AX element pid: 18955, elementOrHash.elementID: 5046537344.896>
+                          StaticText, 0x10a416580, label: 'Server' <AX element pid: 18955, elementOrHash.elementID: 4694484608.79>
+                            StaticText, 0x10a414780, label: 'Server' <AX element pid: 18955, elementOrHash.elementID: 5046537664.897>
+                          StaticText, 0x10a414a00, label: 'Host' <AX element pid: 18955, elementOrHash.elementID: 4694488192.84>
+                            StaticText, 0x10a415a40, label: 'Host' <AX element pid: 18955, elementOrHash.elementID: 5046534784.898>
+                          StaticText, 0x10a415b80, label: 'Port' <AX element pid: 18955, elementOrHash.elementID: 4418893824.55>
+                            StaticText, 0x10a417980, label: 'Port' <AX element pid: 18955, elementOrHash.elementID: 5046534544.899>
+                          Other, 0x10a414c80 <AX element pid: 18955, elementOrHash.elementID: 4694654976.86>
+                            TextField, 0x10a416d00, identifier: 'ssh-host', label: 'Host', placeholderValue: 'server.example.com' <AX element pid: 18955, elementOrHash.elementID: 4418988032.110>
+                          Other, 0x10a416940 <AX element pid: 18955, elementOrHash.elementID: 4694485504.80>
+                            TextField, 0x10a415540, identifier: 'ssh-port', label: 'Port', value: 22 <AX element pid: 18955, elementOrHash.elementID: 4418986752.104>
+                          StaticText, 0x10a414b40, label: 'Username' <AX element pid: 18955, elementOrHash.elementID: 4694487296.82>
+                            StaticText, 0x10a4166c0, label: 'Username' <AX element pid: 18955, elementOrHash.elementID: 5046538464.900>
+                          Other, 0x10a416f80 <AX element pid: 18955, elementOrHash.elementID: 4694481920.72>
+                            TextField, 0x10a416080, identifier: 'ssh-username', label: 'Username', placeholderValue: 'developer' <AX element pid: 18955, elementOrHash.elementID: 4418985472.97>
+                          StaticText, 0x1191af0c0, label: 'Authentication' <AX element pid: 18955, elementOrHash.elementID: 4694479232.68>
+                            StaticText, 0x1191ac000, label: 'Authentication' <AX element pid: 18955, elementOrHash.elementID: 5046539584.901>
+                          Other, 0x1191acf00, label: 'Authentication method' <AX element pid: 18955, elementOrHash.elementID: 4694459904.62>
+                            Other, 0x1191ada40, identifier: 'ssh-auth-public-key', label: 'Private key authentication', value: radio button, chec..., Selected <AX element pid: 18955, elementOrHash.elementID: 4694760192.605>
+                            Other, 0x1191af700, identifier: 'ssh-auth-password', label: 'Password authentication', value: radio button, unch... <AX element pid: 18955, elementOrHash.elementID: 4715982848.351>
+                          Button, 0x1191ad400, label: 'Show private key' <AX element pid: 18955, elementOrHash.elementID: 4694467584.77>
+                          StaticText, 0x1191ad900, label: 'OpenSSH private key' <AX element pid: 18955, elementOrHash.elementID: 4694659456.594>
+                            StaticText, 0x1191ae940, label: 'OpenSSH private key' <AX element pid: 18955, elementOrHash.elementID: 5046539664.902>
+                          Other, 0x1191acb40 <AX element pid: 18955, elementOrHash.elementID: 4694469120.78>
+                            Other, 0x1191aee40 <AX element pid: 18955, elementOrHash.elementID: 4694661248.102>
+                              TextView, 0x1191af980, identifier: 'ssh-private-key', label: 'Private OpenSSH key', value: Empty <AX element pid: 18955, elementOrHash.elementID: 4418639872.114>
+                                Other, 0x1191ae300, identifier: '_UITextSelectionRangeAdjustmentContainerView' <AX element pid: 18955, elementOrHash.elementID: 4715381376.333>
+                                  Other, 0x1191ad540, identifier: 'com.apple.text.grabber.leading' <AX element pid: 18955, elementOrHash.elementID: 4739064832.334>
+                                    Other, 0x1191aea80 <AX element pid: 18955, elementOrHash.elementID: 4717184320.336>
+                                    Other, 0x1191ac640 <AX element pid: 18955, elementOrHash.elementID: 4717183424.337>
+                                  Other, 0x1191ad040, identifier: 'com.apple.text.grabber.leading' <AX element pid: 18955, elementOrHash.elementID: 4739063296.335>
+                                    Other, 0x1191afac0 <AX element pid: 18955, elementOrHash.elementID: 4717184768.338>
+                                    Other, 0x1191ad180 <AX element pid: 18955, elementOrHash.elementID: 4717185664.339>
+                                Other, 0x119342d00, label: 'Vertical scroll bar, 1 page', value: 0% <AX element pid: 18955, elementOrHash.elementID: 4696060928.115>
+                                  Other, 0x119340140 <AX element pid: 18955, elementOrHash.elementID: 4696248256.117>
+                                Other, 0x119343980, label: 'Horizontal scroll bar, 1 page', value: 0% <AX element pid: 18955, elementOrHash.elementID: 4696059904.116>
+                                  Other, 0x119341040 <AX element pid: 18955, elementOrHash.elementID: 4696247808.118>
+                          Button, 0x119341b80, label: 'Show passphrase' <AX element pid: 18955, elementOrHash.elementID: 4751650048.604>
+                          StaticText, 0x119340000, label: 'Key passphrase · Optional' <AX element pid: 18955, elementOrHash.elementID: 4694663040.895>
+                            StaticText, 0x119341a40, label: 'Key passphrase · Optional' <AX element pid: 18955, elementOrHash.elementID: 5046537104.903>
+                          Other, 0x119343700 <AX element pid: 18955, elementOrHash.elementID: 4694480128.70>
+                            SecureTextField, 0x1193435c0, identifier: 'ssh-passphrase', label: 'Key passphrase, optional', placeholderValue: 'For encrypted keys only' <AX element pid: 18955, elementOrHash.elementID: 4418984192.95>
+                          StaticText, 0x1193412c0, label: 'You can leave credentials blank and enter them when you connect.' <AX element pid: 18955, elementOrHash.elementID: 4694475648.65>
+                            StaticText, 0x119340280, label: 'You can leave credentials blank and enter them when you connect.' <AX element pid: 18955, elementOrHash.elementID: 5046539904.904>
+                          StaticText, 0x11a733c00, label: 'Save on this device' <AX element pid: 18955, elementOrHash.elementID: 4694476544.66>
+                            StaticText, 0x11a733980, label: 'Save on this device' <AX element pid: 18955, elementOrHash.elementID: 5046539984.905>
+                          StaticText, 0x11a733480, label: 'Display name · Optional' <AX element pid: 18955, elementOrHash.elementID: 4694477440.67>
+                            StaticText, 0x11a732300, label: 'Display name · Optional' <AX element pid: 18955, elementOrHash.elementID: 5046540064.906>
+                          Other, 0x11a730500 <AX element pid: 18955, elementOrHash.elementID: 4694478336.69>
+                            TextField, 0x11a7312c0, identifier: 'server-profile-name', label: 'Server name', placeholderValue: 'Home server' <AX element pid: 18955, elementOrHash.elementID: 4418982912.94>
+                          Other, 0x11a732bc0 <AX element pid: 18955, elementOrHash.elementID: 4694656768.87>
+                            Switch, 0x11a730a00, identifier: 'save-credentials', label: 'Save credentials securely', value: 0 <AX element pid: 18955, elementOrHash.elementID: 4694630528.111>
+                          StaticText, 0x11a733700, label: 'Remember credentials' <AX element pid: 18955, elementOrHash.elementID: 4694655872.88>
+                            StaticText, 0x11a731b80, label: 'Remember credentials' <AX element pid: 18955, elementOrHash.elementID: 5046540144.907>
+                          StaticText, 0x11a7330c0, label: 'Credentials will not be saved. Enter them again after restarting the app.' <AX element pid: 18955, elementOrHash.elementID: 4694481024.71>
+                            StaticText, 0x11a733d40, label: 'Credentials will not be saved. Enter them again after restarting the app.' <AX element pid: 18955, elementOrHash.elementID: 5046540224.908>
+                      Other, 0x11a732940, label: 'Vertical scroll bar, 2 pages', value: 0% <AX element pid: 18955, elementOrHash.elementID: 4697100288.454>
+                        Other, 0x11a731a40 <AX element pid: 18955, elementOrHash.elementID: 4738564544.455>
+                      Other, 0x11a731180, label: 'Horizontal scroll bar, 1 page', value: 0% <AX element pid: 18955, elementOrHash.elementID: 5001808384.873>
+                        Other, 0x11a730b40 <AX element pid: 18955, elementOrHash.elementID: 4764303808.874>
+                      Other, 0x11a732d00, label: 'Vertical scroll bar, 2 pages', value: 0% <AX element pid: 18955, elementOrHash.elementID: 4697100288.454>
+                        Other, 0x11a730000 <AX element pid: 18955, elementOrHash.elementID: 4738564544.455>
+                      Other, 0x11a732580, label: 'Horizontal scroll bar, 1 page', value: 0% <AX element pid: 18955, elementOrHash.elementID: 5001808384.873>
+                        Other, 0x11a732e40 <AX element pid: 18955, elementOrHash.elementID: 4764303808.874>
+  Window, 0x11a730140 <AX element pid: 18955, elementOrHash.elementID: 4418990592.39>
+    Other, 0x11a730280 <AX element pid: 18955, elementOrHash.elementID: 4694600704.41>
+      Other, 0x11a731cc0 <AX element pid: 18955, elementOrHash.elementID: 4694742720.44>
+2026-09-24 20:52:53.190688-0700 meeterm[18955:149365] [Default] Query ↪︎ Descendants matching type Any
+    ↪︎ Elements matching predicate '"Host" IN identifiers' found matching snapshots: {(
+    StaticText, label: 'Host',
+    StaticText, label: 'Host',
+    TextField, identifier: 'ssh-host', label: 'Host', placeholderValue: 'server.example.com'
+)} (error: (null))
+2026-09-24 20:52:53.190955-0700 meeterm[18955:149365] [Default] Replying to query ↪︎ Descendants matching type Any
+    ↪︎ Elements matching predicate '"Host" IN identifiers' with results: <XCTElementQueryResults: 0x12a05a0d0> (error: (null))
+2026-09-24 20:52:53.193544-0700 meeterm[18955:149365] [Default] Received request to fetch matches for query: ↪︎ Descendants matching type Any
+    ↪︎ Elements matching predicate '"Host" IN identifiers'
+2026-09-24 20:52:53.193683-0700 meeterm[18955:149196] [Default] Evaluating query:
+ ↪︎ Descendants matching type Any
+    ↪︎ Elements matching predicate '"Host" IN identifiers'
+2026-09-24 20:52:53.193764-0700 meeterm[18955:149196] [Default] Getting root element snapshot
+2026-09-24 20:52:53.193851-0700 meeterm[18955:149196] [Default] Getting snapshot for App element pid: 18955 for query ↪︎ Descendants matching type Any
+    ↪︎ Elements matching predicate '"Host" IN identifiers'
+2026-09-24 20:52:53.193914-0700 meeterm[18955:149196] [Default] Query requires iOS snapshot attributes XC_kAXXCAttributeElementType, XC_kAXXCAttributeElementBaseType, XC_kAXXCAttributeLabel, XC_kAXXCAttributeValue, XC_kAXXCAttributeIdentifier, XC_kAXXCAttributePlaceholderValue, XC_kAXXCAttributeTraits.
+    ↪︎ Elements matching predicate '"Host" IN identifiers' found matching snapshots: {(
+    StaticText, label: 'Host',
+    StaticText, label: 'Host',
+    TextField, identifier: 'ssh-host', label: 'Host', placeholderValue: 'server.example.com'
+)} (error: (null))
+2026-09-24 20:52:53.228091-0700 meeterm[18955:149196] [Default] Replying to query ↪︎ Descendants matching type Any
+    ↪︎ Elements matching predicate '"Host" IN identifiers' with results: <XCTElementQueryResults: 0x12a05bba0> (error: (null))
