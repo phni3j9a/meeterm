@@ -267,14 +267,16 @@ topology の安全性は、Herdr の既存 close contract と混同せず、tmux
 モバイルでは Android full、iOS `standard`、接続・認証・native input を含む短い iOS `ssh` を
 影響範囲に応じて実行します。runtime picker の loading、mixed、empty、partial error、重複名、
 明示的作成、stale selection の画面は fixture で確認します。iOS `standard` の source-level
-manifest は25画面で、Issue #21の18画面に `recovery-progress`、
+manifest は27画面で、Issue #21の18画面に `session-switcher`、
+`session-switcher-sessions`、`recovery-progress`、
 `recovery-exhausted`、`recovery-mismatch`、`herdr-recovery-confirm`、
 `connection-error`を加えたものです。
 `layout-restore-unconfirmed` と `runtime-layout-restore-unconfirmed` の warning fixture も含みます。
 既存の `herdr-connection` は、
 Herdr `default` candidate に non-authoritative な `Last used` hint を表示する picker state
-です。Android の observational `SCREEN_NAMES` は31 routeで、Issue #21の25 routeに4
-recovery routeと2つの layout-restore warning fixtureを加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
+です。Android の observational `SCREEN_NAMES` は33 routeで、Issue #21の25
+routeに2つの switcher route、4つの recovery route、2つの layout-restore
+warning fixtureを加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
 しません。seeded presentation は remote 操作の成功や pixel-diff の gate ではなく、iOS/Android
 の画像を実際に review するまで visual success と報告しません。
 

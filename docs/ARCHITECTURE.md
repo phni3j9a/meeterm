@@ -166,6 +166,34 @@ Legacy backend/runtime fields represent a non-authoritative logical
 credential identity is not changed by the hint migration, and the hint is
 written only after the selected runtime reaches `Ready`.
 
+## Issue #27 sequential Server / Session switcher
+
+The React Native Workspaces and Terminal headers show the selected server and
+session. Opening the hierarchical switcher sheet is presentation only; it uses
+the current snapshot and saved profile metadata and starts no SSH request or
+runtime discovery. A server row is the explicit switch boundary. For the current
+authenticated owner, the app reuses `changeRuntime` with its operation epoch,
+which drains that actor and starts fresh authenticated discovery. For another
+server, the app releases the existing owner before calling the saved-profile or
+credential-form connection path. It does not retain two owners or start
+discovery for every saved profile.
+
+The sheet renders the existing native runtime-discovery snapshots and explicit
+runtime-selection commands in its Session page; it hides the standalone picker
+while a switch is active. Candidate summaries remain low-frequency JS state.
+The existing native generation, revision, candidate identity, stale-selection,
+and Ready gates remain authoritative. Only `finishRuntimeSelection` after
+Ready commits the UI to Workspaces and writes `lastUsedRuntime`. Cancel after
+owner release invalidates pending discovery/selection and disconnects the
+provisional owner without restoring the old screen. Controller release does not
+close the remote tmux/Herdr Session or its processes. Ordinary transport loss
+continues through the retained-work recovery state machine.
+
+The switcher uses the saved profile ID and secure credential identity. It keeps
+both identities stable; only `lastUsedRuntime` changes after `Ready`. An unsaved
+current endpoint remains visible as a temporary server row and can use the
+existing credential form when selected again.
+
 Before any topology mutation that could affect another tmux session, the same
 Rust actor/control queue must check the current linked/shared topology
 immediately before execution. Workspace close and terminal close that could
@@ -749,14 +777,16 @@ terminal data plane native. Continue to verify:
    linked/shared tmux topology-mutation tests.
 10. Android full and iOS `standard` plus the short `ssh` suite cover the
     applicable mobile connection lifecycle. The iOS `standard` source-level
-    manifest has 25 screens: the previous 18 plus `recovery-progress`,
+    manifest has 27 screens: the previous 18 plus `session-switcher`,
+    `session-switcher-sessions`, `recovery-progress`,
     `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
     `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
     `connection-error`; its
     `herdr-connection` route is the picker with the Herdr `default` candidate's
     non-authoritative `Last used` hint. Android's observational `SCREEN_NAMES`
-    has 31 routes: the previous 25 plus those four recovery routes and the two
-    layout-restore warning fixtures. These counts define source scope only; they
+    has 33 routes: the previous 25 plus the two switcher routes, those four
+    recovery routes, and the two layout-restore warning fixtures. These counts
+    define source scope only; they
     do not claim remote CI or visual
     review. Both platform screenshots must be downloaded and actually viewed
     before visual success is reported.
