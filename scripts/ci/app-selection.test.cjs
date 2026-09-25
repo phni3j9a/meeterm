@@ -254,6 +254,7 @@ function makeNativeEnvironment() {
     createdRuntime: null,
     lastUsedUpdates: [],
     appStateListeners: new Set(),
+    hardwareBackHandler: null,
     visibility: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
@@ -292,11 +293,22 @@ function makeNativeEnvironment() {
     async setAutomaticReconnect() {},
     async connectHost(_connectionId, options) {
       environment.nativeCalls.push({ method: 'connectHost', options });
-      environment.connection.state = 'DiscoveringRuntimes';
+      environment.connection = {
+        ...environment.connection,
+        state: 'DiscoveringRuntimes',
+        host: options.host,
+        port: options.port,
+      };
     },
     async connectProfileHost(_connectionId, profileId) {
       environment.nativeCalls.push({ method: 'connectProfileHost', profileId });
-      environment.connection.state = 'DiscoveringRuntimes';
+      const profile = environment.profiles.find(item => item.id === profileId);
+      environment.connection = {
+        ...environment.connection,
+        state: 'DiscoveringRuntimes',
+        host: profile?.host ?? environment.connection.host,
+        port: profile?.port ?? environment.connection.port,
+      };
     },
     async getRuntimeDiscovery() {
       environment.nativeCalls.push('getRuntimeDiscovery');
@@ -494,6 +506,13 @@ function makeNativeEnvironment() {
 function completeSelection(environment, candidate) {
   environment.snapshot.backend = candidate.backend;
   environment.snapshot.runtime = candidate.name;
+  environment.snapshot.control = workspaceControl({
+    ...environment.snapshot.control,
+    hasRetainedWork: false,
+    runtimeOperationsReady: true,
+    terminalInputReady: true,
+    recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6, confirmationToken: '' },
+  });
   environment.connection.state = 'Ready';
 }
 
@@ -525,7 +544,10 @@ function makeReactNativeMocks(environment) {
     for (const listener of environment.appStateListeners) listener(state);
   };
   const BackHandler = {
-    addEventListener() { return noOpSubscription; },
+    addEventListener(_event, listener) {
+      environment.hardwareBackHandler = listener;
+      return { remove() { if (environment.hardwareBackHandler === listener) environment.hardwareBackHandler = null; } };
+    },
   };
   const Keyboard = { dismiss() {} };
   const Linking = {
@@ -749,6 +771,7 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   const smoke = loadApp(environment, native, true, true);
   for (const screen of ['welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
+    'session-switcher', 'session-switcher-sessions',
     'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
     'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
@@ -767,6 +790,9 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('runtime-partial-error').runtimeDiscovery.backends[1].state, 'error');
   assert.equal(smoke.smokeFixture('runtime-empty').runtimeDiscovery.backends[0].candidates.length, 0);
   assert.equal(smoke.smokeFixture('runtime-create').runtimeCreateVisible, true);
+  assert.equal(smoke.smokeFixture('session-switcher').sheet, 'switcher');
+  assert.equal(smoke.smokeFixture('session-switcher-sessions').switcherStarted, true);
+  assert.equal(smoke.smokeFixture('session-switcher-sessions').runtimePickerVisible, true);
   const layoutWarning = smoke.smokeFixture('layout-restore-unconfirmed');
   assert.equal(layoutWarning.connection.errorCode, 'layout_restore_unconfirmed');
   assert.equal(layoutWarning.control.cleanupWarning.code, 'layout_restore_unconfirmed');
@@ -1399,6 +1425,23 @@ async function mountSavedPicker(t, configure) {
   return { fixture, profile };
 }
 
+async function connectSavedProfileToRuntime(t, profile, candidate, extraProfiles = []) {
+  const fixture = await mountConfiguredForTest(t, environment => {
+    environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+    environment.profiles = [profile, ...extraProfiles];
+    environment.runtimeDiscovery = pickerDiscovery(1, [candidate]);
+    environment.snapshot = makeSnapshot();
+  });
+  await press(fixture.root, findLabel(fixture.root, `Connect saved server ${profile.name}`));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, `runtime-row-${candidate.backend}-${candidate.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'), 'the saved runtime should be Ready before testing a switch');
+  return fixture;
+}
+
 async function poll(env) {
   assert.equal(env.intervalCallbacks.length, 1, 'App should register one metadata polling interval');
   await act(async () => {
@@ -1454,7 +1497,7 @@ async function closeCurrentPane(root, environment) {
   });
 }
 
-test('active saved-profile switch waits for confirmation before starting the target host', async t => {
+test('switcher opens without native work and an explicit saved-server choice replaces the current owner', async t => {
   const target = {
     id: '00000000-0000-4000-8000-000000000031', name: 'Active target',
     host: 'target.example', port: 22, username: 'developer', authMethod: 'password',
@@ -1466,29 +1509,200 @@ test('active saved-profile switch waits for confirmation before starting the tar
     environment.snapshot = makeSnapshot();
   });
 
-  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  const callsBeforeOpen = fixture.environment.nativeCalls.length;
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
   await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Active target'));
-  assert.equal(fixture.environment.alert?.title, 'Switch servers?');
-  assert.equal(
-    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
-    0,
-    'the target host must not start before confirmation',
-  );
+  assert.equal(fixture.environment.nativeCalls.length, callsBeforeOpen, 'opening the switcher must not connect or discover');
+  const currentServerRow = findTestId(fixture.root, 'switcher-server-__current_connection__');
+  assert.match(textContent(currentServerRow), /Current · Herdr · default/,
+    'Current must reflect the selected native snapshot, alongside the endpoint');
+  assert.doesNotMatch(textContent(findTestId(fixture.root, `switcher-server-${target.id}`)), /Current/,
+    'the other saved server is a destination, not the current Session');
 
-  const confirm = fixture.environment.alert.buttons.find(button => button.text === 'Switch server');
-  assert.ok(confirm);
-  fixture.environment.alert = null;
-  await act(async () => {
-    confirm.onPress();
-  });
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${target.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
   await settleAsync();
 
-  assert.equal(
-    fixture.environment.nativeCalls.filter(call => call.method === 'connectProfileHost').length,
-    1,
-  );
-  assert.ok(findText(fixture.root, 'Choose a runtime for Active target'));
+  assert.equal(fixture.environment.alert, null);
+  const releasedAt = fixture.environment.nativeCalls.indexOf('disconnect');
+  const connectedAt = fixture.environment.nativeCalls.findIndex(call => call?.method === 'connectProfileHost' && call.profileId === target.id);
+  assert.ok(releasedAt >= 0 && connectedAt > releasedAt, 'the old owner must be released before the new host starts');
+  assert.ok(findText(fixture.root, 'Choose a Session'));
+  const destinationSession = findTestId(fixture.root, 'runtime-row-tmux-active-tmux');
+  assert.ok(destinationSession);
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Choose a runtime for Active target').length, 0, 'the standalone runtime picker must stay hidden');
+
+  await press(fixture.root, destinationSession);
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'), 'the cross-server switch lands in Workspace only after Ready');
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [
+    { profileId: target.id, backend: 'tmux', runtime: 'meeterm' },
+  ]);
+  assert.equal(fixture.environment.profiles[0].id, target.id, 'runtime updates preserve the saved profile identity');
+  assert.equal(fixture.environment.profiles[0].credentialSaved, true, 'switching preserves secure credential ownership');
+});
+
+test('closing the untouched switcher keeps the selected owner and workspace intact', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000044', name: 'Close check',
+    host: 'close-check.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'kept-session',
+  };
+  const fixture = await connectSavedProfileToRuntime(t, profile,
+    runtimeCandidate('close-check', 'tmux', 'kept-session', 'running'));
+  const nativeCallsBefore = fixture.environment.nativeCalls.length;
+  const oldWorkspace = findTestId(fixture.root, 'workspace-row-W1');
+
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  assert.match(textContent(findTestId(fixture.root, `switcher-server-${profile.id}`)), /Current · tmux · kept-session/);
+  await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.equal(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, oldWorkspace.props.accessibilityLabel);
+  assert.equal(fixture.environment.nativeCalls.slice(nativeCallsBefore).some(call => call === 'disconnect'
+    || call?.method === 'changeRuntime' || call?.method === 'connectProfileHost'), false);
+});
+
+test('same-server switch releases through changeRuntime and does not mark the last-used hint current', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000041', name: 'Same server',
+    host: 'same.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'initial',
+  };
+  const initial = runtimeCandidate('same-initial', 'tmux', 'initial', 'running', { isDefault: true });
+  const fixture = await connectSavedProfileToRuntime(t, profile, initial);
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [{ profileId: profile.id, backend: 'tmux', runtime: 'initial' }]);
+
+  const callsBeforeOpen = fixture.environment.nativeCalls.length;
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await settleAsync();
+  assert.equal(fixture.environment.nativeCalls.length, callsBeforeOpen, 'opening the switcher must leave the Ready owner alone');
+  assert.match(textContent(findTestId(fixture.root, `switcher-server-${profile.id}`)), /Current · tmux · initial/);
+
+  fixture.environment.runtimeDiscovery = pickerDiscovery(2, [initial]);
+  fixture.environment.changeRuntimeMode = 'pending';
+  const serverRow = findTestId(fixture.root, `switcher-server-${profile.id}`);
+  await act(async () => { serverRow.props.onPress(); serverRow.props.onPress(); });
+  await settleAsync();
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'changeRuntime'), [
+    { method: 'changeRuntime', operationEpoch: '1' },
+  ], 'two taps should enqueue one sequential native change');
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'), 'the old screen remains until native accepts the change');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'runtime-row-tmux-same-initial').length, 0);
+
+  fixture.environment.resolvePendingChangeRuntime('accept');
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0);
+  await poll(fixture.environment);
+  await settleAsync();
+  const hintRow = findTestId(fixture.root, 'runtime-row-tmux-same-initial');
+  assert.match(textContent(hintRow), /Last used/);
+  assert.doesNotMatch(textContent(hintRow), /Current/);
+  assert.equal(fixture.environment.lastUsedUpdates.length, 1, 're-discovery alone must not update last-used metadata');
+
+  await press(fixture.root, hintRow);
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'workspace-row-W1'), 'an explicit Session selection reaches Ready');
+  assert.deepEqual(fixture.environment.lastUsedUpdates, [
+    { profileId: profile.id, backend: 'tmux', runtime: 'initial' },
+    { profileId: profile.id, backend: 'tmux', runtime: 'initial' },
+  ]);
+});
+
+test('cancel after a cross-server switch releases the provisional host and ignores a late Ready selection', async t => {
+  const current = pickerProfile('old.example');
+  current.name = 'Old server';
+  const target = { ...pickerProfile('new.example'), id: '00000000-0000-4000-8000-000000000042', name: 'New server' };
+  const oldCandidate = runtimeCandidate('old-tmux', 'tmux', 'old-session', 'running');
+  const fixture = await connectSavedProfileToRuntime(t, current, oldCandidate, [target]);
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await settleAsync();
+
+  fixture.environment.runtimeDiscovery = pickerDiscovery(2, [runtimeCandidate('new-tmux', 'tmux', 'destination', 'running')]);
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${target.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-new-tmux'));
+  fixture.environment.selectRuntimeMode = 'delayed-ready';
+  await press(fixture.root, findTestId(fixture.root, 'runtime-row-tmux-new-tmux'));
+  await settleAsync();
+  assert.ok(fixture.environment.pendingSelection);
+
+  await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0, 'the old Ready workspace is not restored');
+  assert.equal(fixture.environment.calls.some(call => ['closePane', 'closeWorkspace', 'createTmuxSession'].includes(call.method)), false, 'cancel releases the connection without closing remote work');
+  assert.ok(fixture.environment.nativeCalls.filter(call => call === 'disconnect').length >= 3);
+
+  fixture.environment.resolvePendingSelection('ready');
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.equal(fixture.environment.connection.state, 'Ready', 'the mock delivered a deliberately late selection result');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0, 'the late old generation cannot bind a workspace');
+  assert.equal(fixture.environment.lastUsedUpdates.length, 1, 'cancel does not save a hint for an uncommitted target');
+});
+
+test('Android Back cancels an in-progress switcher selection and closes its sheet', async t => {
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000045', name: 'Back check',
+    host: 'back-check.example', port: 22, username: 'developer', authMethod: 'password',
+    credentialSaved: true, backend: 'tmux', runtime: 'initial',
+  };
+  const fixture = await connectSavedProfileToRuntime(t, profile,
+    runtimeCandidate('back-initial', 'tmux', 'initial', 'running'));
+
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'runtime-row-tmux-back-initial'));
+  assert.equal(typeof fixture.environment.hardwareBackHandler, 'function');
+
+  await act(async () => { fixture.environment.hardwareBackHandler(); });
+  await settleAsync();
+
+  assert.equal(fixture.environment.connection.state, 'Disconnected');
+  assert.equal(all(fixture.root, node => node.props?.testID?.startsWith('switcher-server-')).length, 0,
+    'Back should close the switcher after its one-way boundary');
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0,
+    'Back must not restore the former Ready workspace');
+});
+
+test('switcher keeps auth failure in context and retries without restoring the former runtime', async t => {
+  const current = pickerProfile('old-auth.example');
+  current.name = 'Old auth server';
+  const target = { ...pickerProfile('auth-target.example'), id: '00000000-0000-4000-8000-000000000043', name: 'Auth target' };
+  const fixture = await connectSavedProfileToRuntime(t, current, runtimeCandidate('auth-old', 'tmux', 'old', 'running'), [target]);
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  fixture.environment.runtimeDiscovery = pickerDiscovery(2, [runtimeCandidate('auth-target-runtime', 'tmux', 'target', 'running')]);
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${target.id}`));
+  await settleAsync();
+
+  fixture.environment.connection = {
+    ...fixture.environment.connection,
+    state: 'Failed',
+    errorCode: 'auth_failed',
+    errorMessage: 'SSH authentication failed.',
+  };
+  await poll(fixture.environment);
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Authentication failed. Check your username and the password or private key for your chosen sign-in method.'));
+  assert.ok(findTestId(fixture.root, 'switcher-retry'));
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-row-W1').length, 0);
+
+  await press(fixture.root, findTestId(fixture.root, 'switcher-retry'));
+  await settleAsync();
+  assert.ok(fixture.environment.nativeCalls.filter(call => call?.method === 'connectProfileHost' && call.profileId === target.id).length >= 2);
+  assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Choose a runtime for Auth target').length, 0);
 });
 
 test('failed saved-profile connection skips switch confirmation but still opens target picker', async t => {
@@ -1504,14 +1718,16 @@ test('failed saved-profile connection skips switch confirmation but still opens 
     environment.snapshot = makeSnapshot();
   });
 
-  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
   await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Connect saved server Failed picker'));
+  await press(fixture.root, findTestId(fixture.root, `switcher-server-${profile.id}`));
+  await settleAsync();
+  await poll(fixture.environment);
   await settleAsync();
 
   assert.equal(fixture.environment.alert, null);
   assert.ok(fixture.environment.nativeCalls.some(call => call.method === 'connectProfileHost'));
-  assert.ok(findText(fixture.root, 'Choose a runtime for Failed picker'));
+  assert.ok(findText(fixture.root, 'Choose a Session'));
   assert.ok(findTestId(fixture.root, 'runtime-row-tmux-failed-tmux'));
 });
 
@@ -2495,8 +2711,8 @@ test('healthy visibility and foreground cycles never announce Back online', asyn
   await openWorkspace(fixture.root, 'W1');
   await act(async () => { fixture.environment.emitAppState('background'); fixture.environment.emitAppState('active'); });
   await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
-  await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
-  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await press(fixture.root, findLabel(fixture.root, 'Switch server or session'));
+  await press(fixture.root, findLabel(fixture.root, 'Cancel server or session switch'));
   await act(async () => { fixture.environment.emitAppState('inactive'); fixture.environment.emitAppState('active'); });
 
   const gatesClosed = workspaceControl({
