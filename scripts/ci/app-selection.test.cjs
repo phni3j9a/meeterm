@@ -258,6 +258,7 @@ function makeNativeEnvironment() {
     alert: null,
     accessibilityAnnouncements: [],
     recoveryRetryMode: 'ready',
+    recoveryRetryAttempt: 0,
     recoveryRetryShouldFail: false,
     pendingRecoveryRetry: null,
     changeRuntimeShouldFail: false,
@@ -421,6 +422,7 @@ function makeNativeEnvironment() {
     async retryRecovery(_connectionId, operationEpoch) {
       environment.calls.push({ method: 'retryRecovery', operationEpoch });
       if (environment.recoveryRetryShouldFail) throw new Error('recovery retry rejected');
+      if (environment.recoveryRetryMode === 'noop') return;
       if (environment.recoveryRetryMode === 'pending') {
         await new Promise(resolve => { environment.pendingRecoveryRetry = { operationEpoch, resolve }; });
         return;
@@ -430,7 +432,7 @@ function makeNativeEnvironment() {
         operationEpoch: String(Number(operationEpoch) + 1),
         runtimeOperationsReady: false,
         terminalInputReady: false,
-        recovery: { phase: 'reconnecting', reason: 'manual_retry', attempt: 0, maxAttempts: 6 },
+        recovery: { phase: 'reconnecting', reason: 'manual_retry', attempt: environment.recoveryRetryAttempt, maxAttempts: 6 },
       });
       environment.connection.state = 'Reconnecting';
     },
@@ -2717,6 +2719,119 @@ test('Workspaces and server-sheet Reconnect retry reconnecting or retry-eligible
     assert.equal(all(fixture.root, node => node.type === 'Text' && textContent(node) === 'Choose a runtime for fixture.example').length, 0);
     fixture.environment.resolvePendingRecoveryRetry();
   }
+});
+
+test('Workspaces and server-sheet Reconnect tolerate a same-intent no-op retry through Ready', async t => {
+  for (const location of ['workspaces', 'server']) {
+    const initialEpoch = location === 'workspaces' ? '231' : '241';
+    const reconnectingEpoch = String(Number(initialEpoch) + 1);
+    const fixture = await mountWorkspaceRecovery(t, {
+      phase: 'stopped',
+      reason: 'retry_exhausted',
+      operationEpoch: initialEpoch,
+      connectionState: 'Failed',
+    });
+    if (location === 'server') {
+      await press(fixture.root, findLabel(fixture.root, 'Server connection'));
+    }
+
+    const reconnectId = location === 'server' ? 'server-reconnect' : 'workspaces-reconnect';
+    fixture.environment.recoveryRetryAttempt = 1;
+    await press(fixture.root, findTestId(fixture.root, reconnectId));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
+      { method: 'retryRecovery', operationEpoch: initialEpoch },
+    ]);
+    assert.equal(fixture.environment.connection.state, 'Reconnecting');
+    assert.equal(fixture.environment.snapshot.control.operationEpoch, reconnectingEpoch);
+    assert.equal(fixture.environment.snapshot.control.recovery.phase, 'reconnecting');
+    assert.equal(fixture.environment.snapshot.control.recovery.attempt, 1);
+
+    // Observe the accepted retry snapshot before the next real button press.
+    await poll(fixture.environment);
+    await settleAsync();
+    assert.equal(findTestId(fixture.root, reconnectId).props.disabled, false,
+      'the accepted epoch/phase/attempt change releases the previous pending guard');
+    fixture.environment.recoveryRetryMode = 'noop';
+    await press(fixture.root, findTestId(fixture.root, reconnectId));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
+      { method: 'retryRecovery', operationEpoch: initialEpoch },
+      { method: 'retryRecovery', operationEpoch: reconnectingEpoch },
+    ]);
+    assert.equal(fixture.environment.snapshot.control.operationEpoch, reconnectingEpoch,
+      'a same-epoch no-op leaves native recovery state unchanged');
+    assert.equal(fixture.environment.snapshot.control.recovery.phase, 'reconnecting');
+    await poll(fixture.environment);
+    await settleAsync();
+    assert.equal(findTestId(fixture.root, reconnectId).props.disabled, true,
+      'the no-op remains pending until a later authoritative snapshot');
+
+    fixture.environment.connection.state = 'Ready';
+    await updateSnapshot(fixture.environment, makeSnapshot({
+      control: workspaceControl({
+        operationEpoch: reconnectingEpoch,
+        runtimeOperationsReady: true,
+        terminalInputReady: true,
+        recovery: { phase: 'none', reason: '', attempt: 0, maxAttempts: 6 },
+      }),
+    }));
+    await settleAsync();
+    assert.equal(all(fixture.root, node => node.type === 'Text'
+      && textContent(node).includes('Recovery could not be started')).length, 0,
+    'a native Ok no-op must not show a retry failure notice');
+    assert.equal(all(fixture.root, node => typeof node.props?.testID === 'string'
+      && node.props.testID.startsWith('runtime-row-')).length, 0,
+    'retained recovery must not open the runtime picker');
+    assert.equal(all(fixture.root, node => node.type === 'Text'
+      && textContent(node) === 'Choose a runtime for fixture.example').length, 0);
+    assert.equal(fixture.environment.nativeCalls.includes('reconnect'), false);
+    assert.equal(fixture.environment.calls.some(call => call.method === 'selectRuntime'), false);
+
+    // A later retry-eligible snapshot makes a stuck pending/disabled action
+    // observable even though the reconnect button is correctly hidden at Ready.
+    const postReadyEpoch = String(Number(reconnectingEpoch) + 1);
+    fixture.environment.connection.state = 'Failed';
+    await updateSnapshot(fixture.environment, makeSnapshot({
+      control: workspaceControl({
+        operationEpoch: postReadyEpoch,
+        runtimeOperationsReady: false,
+        terminalInputReady: false,
+        recovery: { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 },
+      }),
+    }));
+    await settleAsync();
+    assert.equal(findTestId(fixture.root, reconnectId).props.disabled, false,
+      'Ready must release the no-op request pending guard');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
+      { method: 'retryRecovery', operationEpoch: initialEpoch },
+      { method: 'retryRecovery', operationEpoch: reconnectingEpoch },
+    ], 'the no-op path must not create extra retries');
+  }
+});
+
+test('a rejected Workspaces Reconnect shows its failure notice and becomes usable again', async t => {
+  const fixture = await mountWorkspaceRecovery(t, {
+    phase: 'stopped',
+    reason: 'retry_exhausted',
+    operationEpoch: '251',
+    connectionState: 'Failed',
+  });
+  fixture.environment.recoveryRetryShouldFail = true;
+
+  await press(fixture.root, findTestId(fixture.root, 'workspaces-reconnect'));
+  await settleAsync();
+
+  assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'retryRecovery'), [
+    { method: 'retryRecovery', operationEpoch: '251' },
+  ]);
+  assert.ok(all(fixture.root, node => node.type === 'Text'
+    && textContent(node).includes('Recovery could not be started. Try again or change the destination.')).length > 0,
+  'a genuine native rejection should be surfaced');
+  assert.equal(findTestId(fixture.root, 'workspaces-reconnect').props.disabled, false,
+    'a rejected native call clears pending so the retry button can be used again');
+  assert.equal(fixture.environment.nativeCalls.includes('reconnect'), false);
+  assert.equal(fixture.environment.calls.some(call => call.method === 'selectRuntime'), false);
 });
 
 test('retained Reconnect is hidden while resynchronizing or stopped without rail Retry', async t => {
