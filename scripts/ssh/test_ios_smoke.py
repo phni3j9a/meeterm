@@ -250,11 +250,17 @@ class DiagnosticSourceContractTests(unittest.TestCase):
             'tapNativeTerminal(stage: "ssh_switcher_cross_old_shell_check")',
             "test \\\"$$\\\" = '\\(oldShellPid)'",
             'waitForExactMarker(crossReturnMarker, at: crossReturnPath)',
-            'tapBackToWorkspaces(stage: "ssh_switcher_cross_old_shell_check")',
         )
         positions = [flow.index(step) for step in steps]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("trustHostKey: true", flow)
+        self.assertNotIn(
+            'tapBackToWorkspaces(stage: "ssh_switcher_cross_old_shell_check")',
+            flow,
+        )
+        observation_start = source.index("let nativeHandleBeforeLoss", end)
+        self.assertNotIn("tapBackToWorkspaces", source[end:observation_start])
+        self.assertLess(end, observation_start)
 
         switcher_start = source.index("private func selectSwitcherSession(")
         marker_start = source.index("private func sendSwitcherMarker(", switcher_start)
@@ -300,6 +306,62 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         navigation_helpers = source[terminal_tap_start:marker_wait_start]
         self.assertIn("waitForHittable(terminal, timeout: 10)", navigation_helpers)
         self.assertIn("waitForHittable(back, timeout: 10)", navigation_helpers)
+
+    def test_ssh_terminal_focus_waits_for_live_label_without_weakening_stale_loss_check(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        live_start = source.index("private func waitForLiveTerminalLabel(")
+        tap_start = source.index("private func tapNativeTerminal(", live_start)
+        live_helper = source[live_start:tap_start]
+        self.assertIn("timeout: TimeInterval = 30", live_helper)
+        self.assertIn('NSPredicate(format: "label == %@", "Terminal")', live_helper)
+        self.assertIn("live.waitForExistence(timeout: timeout)", live_helper)
+        self.assertIn('XCTFail("The native terminal stayed read-only at \\(stage).")', live_helper)
+        self.assertIn("return nil", live_helper)
+
+        back_start = source.index("private func tapBackToWorkspaces(", tap_start)
+        tap_helper = source[tap_start:back_start]
+        self.assertLess(
+            tap_helper.index("waitForLiveTerminalLabel(stage: stage)"),
+            tap_helper.index("waitForHittable(terminal, timeout: 10)"),
+        )
+        self.assertIn("terminal.tap()", tap_helper)
+
+        same_return_start = source.index(
+            'guard let originalLiveTerminal = waitForLiveTerminalLabel(',
+            source.index('record("ssh_switcher_same_server_return")'),
+        )
+        same_return_end = source.index("let sameReturnMarker", same_return_start)
+        same_return = source[same_return_start:same_return_end]
+        self.assertIn('stage: "ssh_switcher_same_old_shell_check"', same_return)
+        self.assertIn("waitForHittable(originalLiveTerminal, timeout: 10)", same_return)
+        self.assertIn("originalLiveTerminal.tap()", same_return)
+
+        stale_start = source.index("private func waitForTransportLossStale(")
+        stale_end = source.index("private func acceptFixtureHostKey(", stale_start)
+        stale_check = source[stale_start:stale_end]
+        self.assertIn('terminal.label == "Terminal, cached output, read only"', stale_check)
+        self.assertNotIn("waitForLiveTerminalLabel", stale_check)
+
+        workflow_start = source.index("func testShortSshInputAndDisconnect")
+        stop = source.index('guard requestFixtureTransport("stop")', workflow_start)
+        start = source.index('guard requestFixtureTransport("start")', stop)
+        transport_loss = source[stop:start]
+        self.assertNotIn("waitForLiveTerminalLabel", transport_loss)
+        self.assertNotIn("enterTerminalCommand", transport_loss)
+        self.assertNotIn(".tap()", transport_loss)
+
+    def test_ios_generated_ui_test_copies_authoritative_swift_source(self):
+        shell_source = (REPOSITORY_ROOT / "scripts" / "ci" / "ios-inject-ui-test.sh").read_text(
+            encoding="utf-8"
+        )
+        injector_source = (REPOSITORY_ROOT / "scripts" / "ci" / "ios-inject-ui-test.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'readonly source_path="${GITHUB_WORKSPACE}/scripts/ci/MeetermSmokeUITests.swift"',
+            shell_source,
+        )
+        self.assertIn("shutil.copyfile(source_path, generated_tests_dir / source_path.name)", injector_source)
 
     def test_text_input_lookup_uses_editable_accessibility_types_and_stable_identifiers(self):
         source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")

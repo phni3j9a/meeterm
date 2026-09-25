@@ -876,7 +876,14 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     originalWorkspace.tap()
     guard waitForTerminal() else { XCTFail("The original Session did not reopen."); return }
-    try terminalElement().tap()
+    guard let originalLiveTerminal = waitForLiveTerminalLabel(
+      stage: "ssh_switcher_same_old_shell_check"
+    ) else { return }
+    guard waitForHittable(originalLiveTerminal, timeout: 10) else {
+      XCTFail("The original Session terminal was not hittable after same-server switching.")
+      return
+    }
+    originalLiveTerminal.tap()
     let sameReturnMarker = "\(markerValue)-same-return"
     enterTerminalCommand(
       "test \"$$\" = '\(oldShellPid)' && printf '%s\\n' '\(sameReturnMarker)' > \(shellQuote(sameReturnPath.path))",
@@ -927,7 +934,6 @@ final class MeetermSmokeUITests: XCTestCase {
       stage: "ssh_switcher_cross_old_shell_check"
     )
     XCTAssertTrue(waitForExactMarker(crossReturnMarker, at: crossReturnPath), "The old shell did not survive switching to another SSH endpoint.")
-    guard tapBackToWorkspaces(stage: "ssh_switcher_cross_old_shell_check") else { return }
     record("ssh_switcher_cross_endpoint_old_shell_survived")
 
     // This is a separate, deterministic transport-loss branch. The fixture
@@ -1839,19 +1845,32 @@ final class MeetermSmokeUITests: XCTestCase {
     return reached
   }
 
+  private func waitForLiveTerminalLabel(
+    stage: String,
+    timeout: TimeInterval = 30
+  ) -> XCUIElement? {
+    // terminalQuery intentionally also accepts the cached read-only surface.
+    // Interactive input must wait for the exact live label after a Session
+    // switch, while the transport-loss assertions continue to inspect stale
+    // output directly without using this input-only wait.
+    let live = app.descendants(matching: .any).matching(
+      NSPredicate(format: "label == %@", "Terminal")
+    ).firstMatch
+    guard live.waitForExistence(timeout: timeout) else {
+      XCTFail("The native terminal stayed read-only at \(stage).")
+      return nil
+    }
+    return live
+  }
+
   private func tapNativeTerminal(stage: String) -> Bool {
-    do {
-      let terminal = try terminalElement()
-      guard waitForHittable(terminal, timeout: 10) else {
-        XCTFail("The native terminal was not hittable at \(stage).")
-        return false
-      }
-      terminal.tap()
-      return true
-    } catch {
-      XCTFail("The native terminal was unavailable at \(stage).")
+    guard let terminal = waitForLiveTerminalLabel(stage: stage) else { return false }
+    guard waitForHittable(terminal, timeout: 10) else {
+      XCTFail("The native terminal was not hittable at \(stage).")
       return false
     }
+    terminal.tap()
+    return true
   }
 
   private func tapBackToWorkspaces(stage: String) -> Bool {
