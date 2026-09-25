@@ -1,0 +1,60 @@
+1f2670cf acceptance run record — iOS Simulator (PR #42 / Issue #41 fast-recovery)
+================================================================================
+
+commit: 1f2670cf050a6e63c6df497b339c0cf566808ab8 (issue-41-fast-recovery)
+delta vs previously accepted 6818d43: native/meeterm-core/src/ssh.rs ONLY
+  (reconnect wake-miss race fix + unreachable start_connection branch removal;
+  verified: git diff --stat 6818d43..1f2670c touches only that file).
+date: 2026-09-25 UTC
+host toolchain: Xcode 26.6 (17F113), iphonesimulator26.5 SDK, arm64, RN 0.86.3,
+  Expo ~57.0.25, Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c.
+simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+  (manually booted via simctl boot+bootstatus after VM restart; only iPhone Air
+  was booted by default).
+env: EXPO_PUBLIC_MEETERM_SMOKE=1 at build time; IOS_SIMULATOR_UDID exported per suite.
+No source/test patching; assertions, deadlines, fixtures untouched.
+
+pipeline (per docs/CI_MOBILE.md + docs/TESTING.md at this commit):
+  git fetch origin && git reset --hard 1f2670cf... (HEAD verified) -> npm ci ->
+  rm -rf ios -> expo prebuild (fresh CNG) -> ios-inject-ui-test.sh ->
+  pod install -> ios-strip-storage-rust-link.py -> scripts/ci/ios-typecheck.sh
+  preflight PASSED (2 non-blocking warnings: unused resignFirstResponder
+  result, var->let suggestion — TerminalInputView.swift) ->
+  build-for-testing -> TEST BUILD SUCCEEDED. build wall 255s.
+
+suite 1: MEETERM_IOS_SUITE=standard (fresh build-for-testing products)
+  result: PASSED. wall 311s.
+  diagnostics: xcodebuild_result_line=passed, forced_exit_after_result=1,
+    post_result_wait_ms=60478, elapsed_ms=289089,
+    keyboard_introduction_suppressed=1, exit_code=0.
+  machine gates: boot=ok, install=ok, launch=ok, xcuitest_standard=passed,
+    native_cases=13/13, xcuitest_storage=passed -> 6/6.
+  screens: 26-route manifest (herdr-recovery-confirm removed); 28 captures.
+  renderer: metal (31 renderer_backend=metal markers; 0 coregraphics/fallback).
+
+suite 2: MEETERM_IOS_SUITE=ssh (REUSE run — same-commit test products from the
+  suite-1 fresh build; verified HEAD==1f2670cf..., exactly one .xctestrun,
+  no rebuild between suites, stale .xcresult dirs removed before run)
+  result: PASSED. wall 480s.
+  diagnostics: xcodebuild_result_line=passed, forced_exit_after_result=1,
+    post_result_wait_ms=60381, elapsed_ms=454911, exit_code=0.
+  machine gates: openssh_fixture=ready, tmux_fixture=ready, native_openssh_test
+    =ok, launch=ok, xcuitest_ssh=passed, disconnect+teardown=ok -> 6/6.
+  transport-loss: transport_loss=passed — pre/post markers exactly-once,
+    same_pane=yes, same_pane_pid=yes, native_terminal_identifier_same=yes,
+    native_handle_same=yes, selected_pane_identifier_same=yes,
+    cached_read_only_surface=yes, picker_visible_during_loss=no,
+    input_during_loss=none, fixture_control=stopped_and_started,
+    other_panes_clean=yes -> Ready on the SAME pane/native handle with NO
+    picker and NO confirmation (Issue #41 contract verified on the
+    reconnect-race fix).
+  renderer: metal (32 renderer_backend=metal markers incl. ssh_renderer_backend;
+    0 coregraphics/fallback).
+
+OFFICIAL VERDICT for 1f2670cf: standard PASS / ssh PASS.
+
+evidence layout (branch head cleaned — only this run remains):
+  run-record.txt
+  xcodebuild-build-for-testing.log
+  standard/               full observability bundle
+  ssh/                    full observability bundle
