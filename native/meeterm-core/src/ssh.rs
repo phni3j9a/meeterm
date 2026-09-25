@@ -1446,7 +1446,7 @@ impl ConnectionShared {
         self.mark_ready_at_epoch(expected_epoch)
     }
 
-    fn stop_recovery(&self, reason: &'static str) {
+    fn stop_recovery(&self, reason: &str) {
         let Ok(mut info) = self.info.lock() else {
             return;
         };
@@ -4051,17 +4051,36 @@ fn preserved_recovery_reason_from_error_code(code: &str) -> Option<&'static str>
     }
 }
 
-/// Keep a callback-published host/auth failure authoritative when the SSH
-/// transport returns a less specific error (for example Network). The
-/// recovery snapshot uses the canonical authentication spelling while the
+/// Keep an already-published reason authoritative when the enclosing SSH
+/// flow returns a less specific failure. Host/auth callback errors have
+/// priority; otherwise a local backend recovery classification staged by
+/// `stop_recovery` must survive the outer `run_connection` disposition. The
 /// fixed connection snapshot keeps its existing `auth_failed` compatibility
 /// code when that is what the callback published.
-fn preserved_recovery_reason(shared: &ConnectionShared) -> Option<&'static str> {
+fn preserved_recovery_reason(shared: &ConnectionShared) -> Option<String> {
     let info = shared.info.lock().ok()?;
-    if info.state != ConnectionState::Failed {
+    if info.state != ConnectionState::Failed || info.finished {
         return None;
     }
-    preserved_recovery_reason_from_error_code(&info.error_code)
+    if let Some(reason) = preserved_recovery_reason_from_error_code(&info.error_code) {
+        return Some(reason.to_owned());
+    }
+
+    let state = shared.session.lock().ok()?;
+    if state.generation == shared.generation
+        && matches!(
+            state.recovery.phase,
+            RecoveryPhase::Reconnecting | RecoveryPhase::Resynchronizing
+        )
+        && !state.runtime_operations_ready
+        && !state.terminal_input_ready
+        && !state.recovery.reason.is_empty()
+        && state.recovery.reason == info.error_code
+    {
+        Some(state.recovery.reason.clone())
+    } else {
+        None
+    }
 }
 
 fn recovery_reason_for_failure(failure: FlowFailure) -> &'static str {
@@ -4551,7 +4570,7 @@ async fn run_connection(
             Ok(()) => None,
             Err(failure) => Some(retry_disposition(&shared, failure)),
         };
-        if let Some(RetryDisposition::Retry) = disposition
+        if matches!(disposition.as_ref(), Some(RetryDisposition::Retry))
             && shared.has_been_ready()
             && !shared.is_cancelled()
             && !shared.explicit_cleanup_requested()
@@ -4584,16 +4603,7 @@ async fn run_connection(
         let disposition = disposition.expect("failed flow has a retry disposition");
         if !matches!(disposition, RetryDisposition::Retry) || retries >= AUTO_RECONNECT_MAX_ATTEMPTS
         {
-            if shared.has_been_ready()
-                && !shared.is_cancelled()
-                && shared.recovery_phase() != RecoveryPhase::Stopped
-            {
-                let reason = match disposition {
-                    RetryDisposition::Stop(reason) => reason,
-                    RetryDisposition::Retry => "retry_exhausted",
-                };
-                shared.stop_recovery(reason);
-            }
+            stop_recovery_for_disposition(&shared, disposition);
             shared.clear_owned_zoom();
             break Err(failure);
         }
@@ -4637,10 +4647,10 @@ fn retained_profile(shared: &ConnectionShared) -> Option<ConnectionProfile> {
         .and_then(|state| state.profile.clone())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum RetryDisposition {
     Retry,
-    Stop(&'static str),
+    Stop(String),
 }
 
 fn retry_disposition(shared: &ConnectionShared, failure: FlowFailure) -> RetryDisposition {
@@ -4649,8 +4659,21 @@ fn retry_disposition(shared: &ConnectionShared, failure: FlowFailure) -> RetryDi
     } else {
         RetryDisposition::Stop(
             preserved_recovery_reason(shared)
-                .unwrap_or_else(|| recovery_reason_for_failure(failure)),
+                .unwrap_or_else(|| recovery_reason_for_failure(failure).to_owned()),
         )
+    }
+}
+
+fn stop_recovery_for_disposition(shared: &ConnectionShared, disposition: RetryDisposition) {
+    if shared.has_been_ready()
+        && !shared.is_cancelled()
+        && shared.recovery_phase() != RecoveryPhase::Stopped
+    {
+        let reason = match disposition {
+            RetryDisposition::Stop(reason) => reason,
+            RetryDisposition::Retry => "retry_exhausted".to_owned(),
+        };
+        shared.stop_recovery(&reason);
     }
 }
 
@@ -8698,14 +8721,14 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         let old_generation = shared.generation;
         shared.set_automatic_reconnect(false);
         let disposition = retry_disposition(&shared, FlowFailure::Transport);
-        assert_eq!(disposition, RetryDisposition::Stop("transport"));
+        assert_eq!(disposition, RetryDisposition::Stop("transport".to_owned()));
         // This is the native boundary used when Ready work is lost while the
         // setting is disabled: retain the selected target, gate input, and
         // expose a stopped recovery that can still be retried explicitly.
         let RetryDisposition::Stop(reason) = disposition else {
             panic!("disabled automatic recovery must stop");
         };
-        shared.stop_recovery(reason);
+        shared.stop_recovery(&reason);
         shared.finish(Err(FlowFailure::Transport));
         assert!(shared.info.lock().expect("old connection info").finished);
         assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
@@ -8849,8 +8872,11 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     #[test]
     fn finish_boundary_preserves_specific_stopped_recovery_reasons() {
         for reason in [
+            "herdr_session_missing",
             "herdr_terminal_missing",
             "controller_conflict",
+            "herdr_incompatible",
+            "runtime_identity_uncertain",
             "retry_exhausted",
             "automatic_reconnect_disabled",
         ] {
@@ -8860,6 +8886,9 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 .expect("recovery starts");
             shared.stop_recovery(reason);
             assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
+            let disposition = retry_disposition(&shared, FlowFailure::Transport);
+            assert_eq!(disposition, RetryDisposition::Stop(reason.to_owned()));
+            stop_recovery_for_disposition(&shared, disposition);
             shared.finish(Err(FlowFailure::Transport));
             let value: serde_json::Value = serde_json::from_str(
                 &workspace_snapshot_json(owner).expect("finished reason snapshot"),
@@ -8869,6 +8898,131 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             assert_eq!(value["control"]["recovery"]["reason"], reason);
             registry::destroy_terminal(owner);
         }
+    }
+
+    #[test]
+    fn local_recovery_classification_survives_outer_disposition_and_finish() {
+        // A stopped selected Herdr runtime is classified inside recover()
+        // before its FlowFailure reaches the enclosing SSH actor.
+        let (owner, shared) = recovery_fixture();
+        shared
+            .begin_recovery("transport", 1)
+            .expect("transport recovery starts");
+        shared
+            .session
+            .lock()
+            .expect("recovery session")
+            .recovery
+            .phase = RecoveryPhase::Resynchronizing;
+        assert!(herdr_control::stage_local_recovery_failure(
+            &shared,
+            FlowFailure::HerdrSessionMissing
+        ));
+        let disposition = retry_disposition(&shared, FlowFailure::HerdrSessionMissing);
+        assert_eq!(
+            disposition,
+            RetryDisposition::Stop("herdr_session_missing".to_owned())
+        );
+        stop_recovery_for_disposition(&shared, disposition);
+        shared.finish(Err(FlowFailure::HerdrSessionMissing));
+        assert_public_stopped_recovery(&shared, "herdr_session_missing");
+        registry::destroy_terminal(owner);
+
+        // If the retained stable terminal is already absent from a still-live
+        // group, target classification stages the more specific terminal
+        // reason before returning the same broad FlowFailure variant.
+        let (owner, shared) = recovery_fixture();
+        shared
+            .begin_recovery("transport", 1)
+            .expect("transport recovery starts");
+        {
+            let mut state = shared.session.lock().expect("recovery session");
+            state.recovery_terminal_id = None;
+            state.recovery_group_id = Some(7);
+            state.herdr.snapshot.groups.push(workspace::TerminalGroup {
+                id: "7".to_owned(),
+                workspace_id: "3".to_owned(),
+                name: "retained group".to_owned(),
+                selected: true,
+                agent_status: None,
+            });
+            state.herdr.panes.insert(
+                701,
+                herdr_control::RemotePane {
+                    pane_id: "pane-other".to_owned(),
+                    terminal_id: "terminal-other".to_owned(),
+                    workspace: 3,
+                    group: 7,
+                },
+            );
+        }
+        assert!(matches!(
+            herdr_control::recovery_target_or_stop(&shared),
+            Err(FlowFailure::HerdrSessionMissing)
+        ));
+        let disposition = retry_disposition(&shared, FlowFailure::HerdrSessionMissing);
+        assert_eq!(
+            disposition,
+            RetryDisposition::Stop("herdr_terminal_missing".to_owned())
+        );
+        stop_recovery_for_disposition(&shared, disposition);
+        shared.finish(Err(FlowFailure::HerdrSessionMissing));
+        assert_public_stopped_recovery(&shared, "herdr_terminal_missing");
+        registry::destroy_terminal(owner);
+
+        // A host-key callback remains higher priority than a previously
+        // staged local reason, including in the public recovery snapshot.
+        let (owner, shared) = recovery_fixture();
+        shared
+            .begin_recovery("transport", 1)
+            .expect("transport recovery starts");
+        shared
+            .session
+            .lock()
+            .expect("recovery session")
+            .recovery
+            .phase = RecoveryPhase::Resynchronizing;
+        assert!(herdr_control::stage_local_recovery_failure(
+            &shared,
+            FlowFailure::HerdrSessionMissing
+        ));
+        shared.set_changed_key(
+            "SHA256/presented".to_owned(),
+            "ssh-ed25519".to_owned(),
+            "SHA256/known".to_owned(),
+        );
+        let disposition = retry_disposition(&shared, FlowFailure::Network);
+        assert_eq!(
+            disposition,
+            RetryDisposition::Stop("host_key_changed".to_owned())
+        );
+        stop_recovery_for_disposition(&shared, disposition);
+        shared.finish(Err(FlowFailure::Network));
+        assert_public_stopped_recovery(&shared, "host_key_changed");
+        let connection = shared.snapshot().expect("changed-key snapshot");
+        assert_eq!(
+            &connection.fingerprint[..usize::from(connection.fingerprint_len)],
+            b"SHA256/presented"
+        );
+        registry::destroy_terminal(owner);
+    }
+
+    fn assert_public_stopped_recovery(shared: &ConnectionShared, reason: &str) {
+        let value: serde_json::Value = serde_json::from_str(
+            &workspace_snapshot_json(shared.terminal_id).expect("public recovery snapshot"),
+        )
+        .expect("public recovery JSON");
+        assert_eq!(value["control"]["recovery"]["phase"], "stopped");
+        assert_eq!(value["control"]["recovery"]["reason"], reason);
+        assert_eq!(value["control"]["terminalInputReady"], false);
+        assert_eq!(value["control"]["runtimeOperationsReady"], false);
+
+        let connection = shared.snapshot().expect("public connection snapshot");
+        assert_eq!(connection.state, ConnectionState::Failed as u32);
+        assert_eq!(
+            &connection.error_code[..usize::from(connection.error_code_len)],
+            reason.as_bytes()
+        );
     }
 
     #[test]
@@ -9329,7 +9483,10 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         // Classify before begin_recovery can clear the Failed state. A
         // generic Network result from russh must not enter the retry wait.
         let disposition = retry_disposition(&shared, FlowFailure::Network);
-        assert_eq!(disposition, RetryDisposition::Stop("host_key_changed"));
+        assert_eq!(
+            disposition,
+            RetryDisposition::Stop("host_key_changed".to_owned())
+        );
         assert!(!automatic_retry_allowed(&shared, FlowFailure::Network));
         assert_eq!(shared.operation_epoch(), before_epoch);
         assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
@@ -9346,7 +9503,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         );
 
         if let RetryDisposition::Stop(reason) = disposition {
-            shared.stop_recovery(reason);
+            shared.stop_recovery(&reason);
         } else {
             panic!("changed host key must not be retried");
         }
@@ -9419,7 +9576,10 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         );
 
         let disposition = retry_disposition(&shared, FlowFailure::Network);
-        assert_eq!(disposition, RetryDisposition::Stop("authentication_failed"));
+        assert_eq!(
+            disposition,
+            RetryDisposition::Stop("authentication_failed".to_owned())
+        );
         assert!(!automatic_retry_allowed(&shared, FlowFailure::Network));
         assert_eq!(shared.operation_epoch(), before_epoch);
         assert_eq!(shared.recovery_phase(), RecoveryPhase::None);
@@ -9436,7 +9596,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         );
 
         if let RetryDisposition::Stop(reason) = disposition {
-            shared.stop_recovery(reason);
+            shared.stop_recovery(&reason);
         } else {
             panic!("authentication failure must not be retried");
         }

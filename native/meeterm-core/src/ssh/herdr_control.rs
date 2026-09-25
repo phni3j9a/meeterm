@@ -342,6 +342,26 @@ fn recovery_target(state: &SessionState) -> RecoveryTarget {
     }
 }
 
+/// Resolve the retained Herdr identity before opening the recovered
+/// controller. A missing identity is a terminal-local recovery result and is
+/// staged here so the enclosing SSH actor can preserve its specific reason.
+pub(super) fn recovery_target_or_stop(
+    shared: &ConnectionShared,
+) -> Result<Option<String>, FlowFailure> {
+    let target = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        recovery_target(&state)
+    };
+    match target {
+        RecoveryTarget::Terminal(terminal) => Ok(Some(terminal)),
+        RecoveryTarget::EmptyGroup(_) => Ok(None),
+        RecoveryTarget::Missing => {
+            shared.stop_recovery("herdr_terminal_missing");
+            Err(FlowFailure::HerdrSessionMissing)
+        }
+    }
+}
+
 fn is_recovery_local_failure(failure: FlowFailure) -> bool {
     matches!(
         failure,
@@ -375,6 +395,21 @@ fn recovery_reason_for_failure(failure: FlowFailure) -> &'static str {
         FlowFailure::HerdrMissing | FlowFailure::HerdrForwarding => "herdr_session_missing",
         _ => "runtime_identity_uncertain",
     }
+}
+
+/// Stage a recovery-local failure before it leaves the backend flow. The
+/// outer SSH actor will still decide whether to retry or stop, but this local
+/// classification carries distinctions such as a stopped runtime versus a
+/// missing stable terminal.
+pub(super) fn stage_local_recovery_failure(
+    shared: &ConnectionShared,
+    failure: FlowFailure,
+) -> bool {
+    if !is_recovery_local_failure(failure) {
+        return false;
+    }
+    shared.stop_recovery(recovery_reason_for_failure(failure));
+    true
 }
 
 /// Resolve and list all Herdr sessions without opening, starting, stopping,
@@ -545,19 +580,7 @@ pub(super) async fn recover(
     // transition. An empty selected group is a valid metadata-only target; a
     // group with panes but no selected stable terminal means the previously
     // selected terminal disappeared.
-    let target = {
-        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        recovery_target(&state)
-    };
-    let (expected_terminal, empty_group) = match target {
-        RecoveryTarget::Terminal(terminal) => (Some(terminal), None),
-        RecoveryTarget::EmptyGroup(group) => (None, Some(group)),
-        RecoveryTarget::Missing => (None, None),
-    };
-    if expected_terminal.is_none() && empty_group.is_none() {
-        shared.stop_recovery("herdr_terminal_missing");
-        return Err(FlowFailure::HerdrSessionMissing);
-    }
+    let expected_terminal = recovery_target_or_stop(shared)?;
 
     let epoch = shared.operation_epoch();
     if !shared.current_request_epoch(epoch) {
@@ -575,9 +598,7 @@ pub(super) async fn recover(
     {
         Ok(()) => Ok(()),
         Err(failure) => {
-            if is_recovery_local_failure(failure) {
-                shared.stop_recovery(recovery_reason_for_failure(failure));
-            }
+            stage_local_recovery_failure(shared, failure);
             Err(failure)
         }
     }
