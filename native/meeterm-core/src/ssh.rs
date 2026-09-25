@@ -1271,15 +1271,15 @@ impl ConnectionShared {
         Some(state.operation_epoch)
     }
 
-    /// Re-open a stopped recovery after its actor has finished.  This is a
-    /// deliberate handoff boundary rather than a normal loss transition:
-    /// `begin_recovery` rejects finished actors so late transport callbacks
-    /// cannot mutate their state.  An explicit Retry, however, is allowed to
-    /// create one replacement generation, provided the caller still owns the
-    /// displayed epoch and the old actor is genuinely finished.
+    /// Re-open a stopped recovery at the displayed epoch. This is a deliberate
+    /// handoff boundary rather than a normal loss transition: `begin_recovery`
+    /// rejects finished actors so late transport callbacks cannot mutate
+    /// their state. An explicit Retry may begin while the old actor is still
+    /// finishing; `start_connection` drains or force-cancels that generation
+    /// before installing the same-intent replacement.
     fn begin_stopped_recovery(&self, expected_epoch: u64) -> Result<u64, ConnectionError> {
         let mut info = self.info.lock().map_err(|_| ConnectionError::Internal)?;
-        if self.is_cancelled() || !info.finished {
+        if self.is_cancelled() || self.explicit_cleanup_requested() {
             return Err(ConnectionError::RecoveryUnavailable);
         }
         let mut state = self.session.lock().map_err(|_| ConnectionError::Internal)?;
@@ -2205,11 +2205,6 @@ pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<()
         // the cancelled actor; a fresh connect is required instead.
         return Err(ConnectionError::RecoveryUnavailable);
     }
-    let finished = shared
-        .info
-        .lock()
-        .map_err(|_| ConnectionError::Internal)?
-        .finished;
     let (phase, profile, epoch, has_retained_work) = {
         let state = shared
             .session
@@ -2233,28 +2228,20 @@ pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<()
         shared.wake_reconnect_wait();
         return Ok(());
     }
-    if !finished {
-        // Stopped is committed before the flow actor publishes `finished`.
-        // Do not acknowledge Retry in that interval: no replacement exists
-        // yet, and the UI would otherwise wait forever for a state change.
-        return Err(ConnectionError::RecoveryUnavailable);
-    }
-
     let profile = profile.ok_or(ConnectionError::ReconnectUnavailable)?;
-    // The old actor is left in the map until start_connection performs its
-    // bounded cancellation/drain.  The retained SessionState and native Term
-    // are intentionally not cleared by this automatic-recovery path.
+    // The old entry remains current until start_connection takes it, then its
+    // bounded cancellation/drain completes before installing the replacement.
+    // Retained SessionState and the native Term are intentionally preserved.
     if shared.recovery_starting.swap(true, Ordering::AcqRel) {
         // A second Retry arriving while the first replacement is draining is
         // already represented by that in-flight operation. Do not replace
         // the replacement actor with another parallel generation.
         return Ok(());
     }
-    // The stopped actor has already committed `finished=true`, so the normal
-    // loss transition intentionally cannot be reused here.  Commit the
-    // explicit handoff while the old generation is still the map owner; this
-    // both makes the fresh epoch visible before the replacement starts and
-    // prevents a duplicate Retry from observing another Stopped boundary.
+    // A stopped actor may still be unwinding its bounded cleanup. Commit the
+    // explicit handoff while it remains the map owner; start_connection will
+    // drain it before installing the replacement, while this fresh epoch
+    // prevents a duplicate Retry from starting a parallel generation.
     if let Err(error) = shared.begin_stopped_recovery(expected_epoch) {
         shared.recovery_starting.store(false, Ordering::Release);
         return Err(error);
@@ -8663,47 +8650,41 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn stopped_retry_is_rejected_until_the_old_actor_finishes() {
+    fn stopped_retry_starts_one_replacement_while_the_old_actor_finishes() {
         let (owner, shared) = recovery_fixture();
         shared.set_profile(retry_profile());
         shared.stop_recovery("transport");
         let stopped_epoch = shared.operation_epoch();
         let old_generation = shared.generation;
-        let old_abort = runtime()
-            .expect("native runtime")
-            .spawn(std::future::pending::<()>())
-            .abort_handle();
+        let actor_shared = Arc::clone(&shared);
+        let (actor_ready_sender, actor_ready_receiver) = std::sync::mpsc::channel();
+        let old_actor = runtime().expect("native runtime").spawn(async move {
+            actor_ready_sender
+                .send(())
+                .expect("test observes old actor readiness");
+            actor_shared.explicit_cleanup().await;
+            actor_shared.finish(Err(FlowFailure::Transport));
+        });
+        actor_ready_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old actor reached its final cleanup wait");
         let previous = connections().lock().expect("connection registry").insert(
             owner,
             ConnectionEntry {
                 shared: Arc::clone(&shared),
-                abort: old_abort.clone(),
+                abort: old_actor.abort_handle(),
             },
         );
         assert!(previous.is_none(), "test owner should not be registered");
-
-        assert_eq!(
-            retry_recovery(owner, stopped_epoch),
-            Err(ConnectionError::RecoveryUnavailable),
-            "Retry must not be acknowledged while the old flow is still unwinding"
-        );
         assert!(!shared.info.lock().expect("old connection info").finished);
         assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
-        assert_eq!(shared.operation_epoch(), stopped_epoch);
-        assert!(Arc::ptr_eq(
-            &shared,
-            &connections()
-                .lock()
-                .expect("connection registry")
-                .get(&owner)
-                .expect("old actor remains installed")
-                .shared
-        ));
 
-        // Once the actor has published completion, the existing stopped
-        // replacement path accepts the same still-current intent.
-        shared.finish(Err(FlowFailure::Transport));
-        assert_eq!(retry_recovery(owner, stopped_epoch), Ok(()));
+        // One Retry requests the old actor's final cleanup and waits for the
+        // existing generation drain; no second call is needed to install the
+        // same-intent replacement.
+        retry_recovery(owner, stopped_epoch)
+            .expect("Retry starts replacement without a second tap");
+        assert!(shared.info.lock().expect("old connection info").finished);
         let replacement = connections()
             .lock()
             .expect("connection registry")
@@ -8713,9 +8694,37 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             .clone();
         assert_ne!(replacement.generation, old_generation);
         assert_eq!(replacement.recovery_phase(), RecoveryPhase::Reconnecting);
+        assert_eq!(
+            session_state(owner)
+                .lock()
+                .expect("replacement session state")
+                .generation,
+            replacement.generation,
+            "the new generation is installed only after the old actor finished"
+        );
 
-        old_abort.abort();
+        old_actor.abort();
         unregister_recovery_test_connection(owner);
+    }
+
+    #[test]
+    fn stopped_retry_stays_rejected_after_disconnect_or_change() {
+        for boundary in ["explicit_disconnect", "runtime_changed"] {
+            let (owner, shared) = recovery_fixture();
+            shared.set_profile(retry_profile());
+            shared.stop_recovery("transport");
+            register_recovery_test_connection(&shared);
+
+            shared.invalidate_explicitly(boundary);
+            let current_epoch = shared.operation_epoch();
+            assert_eq!(
+                retry_recovery(owner, current_epoch),
+                Err(ConnectionError::RecoveryUnavailable),
+                "Retry must not reopen an explicit {boundary} boundary"
+            );
+
+            unregister_recovery_test_connection(owner);
+        }
     }
 
     #[test]
