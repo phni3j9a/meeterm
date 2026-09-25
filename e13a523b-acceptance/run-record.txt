@@ -1,0 +1,57 @@
+e13a523b acceptance run record — iOS Simulator (Issue #27 sequential switcher, final candidate)
+=============================================================================================
+
+commit: e13a523be9fbc16253f8cf75ce3846afd3078f82 (issue-27-sequential-switcher)
+prior head: 2b5d918d5637590a2429c2d318ca62521a673309
+delta vs prior: scripts/ci/MeetermSmokeUITests.swift + scripts/ssh/test_ios_smoke.py
+  ONLY — the formal versions of the two harness fixes isolated as temp patches
+  on 2b5d918 (observation on pane view; live-label wait before typing).
+  Verified: git diff --stat touches only those 2 files.
+date: 2026-09-25 UTC
+host toolchain: Xcode 26.6 (17F113), iphonesimulator26.5 SDK, arm64, RN 0.86.3,
+  Expo ~57.0.25 (locked: expo 57.0.25, ExpoModulesCore 57.0.19, ExpoModulesJSI 57.1.1),
+  Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c.
+simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+env: EXPO_PUBLIC_MEETERM_SMOKE=1 at build time; IOS_SIMULATOR_UDID exported per suite.
+No temporary harness patches this run — official test bundle only.
+
+pipeline (per docs/CI_MOBILE.md + docs/TESTING.md):
+  git fetch && git reset --hard e13a523be9fbc16253f8cf75ce3846afd3078f82
+  npm ci -> rm -rf ios -> expo prebuild (fresh CNG) -> ios-inject-ui-test.sh ->
+  pod install -> ios-strip-storage-rust-link.py -> build-for-testing (same
+  invocation as all prior runs) -> TEST BUILD SUCCEEDED. build wall 144s.
+
+suite 1: MEETERM_IOS_SUITE=standard (fresh build)
+  result: PASSED. wall 298s.
+  diagnostics: xcodebuild_result_line=passed, forced_exit_after_result=1,
+    post_result_wait_ms=60074, elapsed_ms=281504,
+    keyboard_introduction_suppressed=1, exit_code=0.
+  29 captures incl. standard-session-switcher + standard-session-switcher-sessions;
+  foundation=passed (metal). Artifacts -> standard/
+
+suite 2: MEETERM_IOS_SUITE=ssh (REUSE of same-commit build-for-testing products;
+  HEAD re-verified == e13a523b..., exactly one .xctestrun, stale .xcresult dirs
+  removed before run)
+  result: PASSED. wall 451s. (first official PASS of this branch — the two
+    formal harness fixes verified working)
+  diagnostics: xcodebuild_result_line=passed, forced_exit_after_result=1,
+    post_result_wait_ms=60003, elapsed_ms=437101, exit_code=0.
+  all scope verified: fixture topology; same-server Session switch + marker +
+    return + old-shell survival (ssh_switcher_same_server_old_shell_survived);
+    alternate-profile save via reveal path; alternate SSH endpoint switch +
+    host-key confirmation (ssh_trust_host_key x2); destination-input markers
+    both directions; cross return + old-shell survival
+    (ssh_switcher_cross_endpoint_old_shell_survived); full transport-loss
+    segment — native_handle_same=yes, native_terminal_identifier_same=yes,
+    selected_pane_identifier_same=yes, cached_read_only_surface=yes,
+    picker_visible_during_loss=no, input_during_loss=none; disconnect; complete.
+  Artifacts -> ssh/
+
+OFFICIAL VERDICT for e13a523b: standard PASS / ssh PASS.
+  assertions loosened: none. source modified: none.
+
+evidence layout:
+  run-record.txt
+  xcodebuild-build-for-testing.log
+  standard/               full observability bundle
+  ssh/                    full observability bundle
