@@ -5,7 +5,8 @@ use crate::input::SpecialKey;
 use crate::registry;
 use crate::ssh::{
     AuthOptions, ConnectOptions, ConnectionError, ConnectionSnapshot, connection_snapshot,
-    disconnect_terminal, forget_host_key, respond_to_host_key, terminal_revision,
+    disconnect_for_switch, disconnect_terminal, forget_host_key, respond_to_host_key,
+    terminal_revision,
 };
 use crate::workspace::{
     Backend, RuntimeCandidate, RuntimeSection, RuntimeSectionState, RuntimeState,
@@ -989,6 +990,14 @@ pub extern "C" fn meeterm_disconnect(id: u64) -> i32 {
         .unwrap_or_else(connection_error_code)
 }
 
+/// Release the selected owner for a cross-server switch. A negative result
+/// from -1 through -14 is a pre-boundary rejection; -15 means the owner
+/// boundary was accepted but a later native release step failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_disconnect_for_switch(id: u64) -> i32 {
+    disconnect_for_switch(id).bridge_code()
+}
+
 /// Retry the Rust-owned connection using process-local credentials.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_reconnect(id: u64) -> i32 {
@@ -1031,9 +1040,7 @@ pub unsafe extern "C" fn meeterm_confirm_recovery(
 /// the exact epoch observed by the caller.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_change_runtime(id: u64, expected_epoch: u64) -> i32 {
-    crate::ssh::change_runtime(id, expected_epoch)
-        .map(|()| 0)
-        .unwrap_or_else(connection_error_code)
+    crate::ssh::change_runtime(id, expected_epoch).bridge_code()
 }
 
 /// Select an existing tmux pane using its numeric runtime identity.

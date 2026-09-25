@@ -31,9 +31,10 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 
 ## Navigation and state
 
-- Workspaces are the main destination. A server name opens the saved-server
-  selector; the adjacent menu opens connection actions. Settings is a helper
-  opened from the top toolbar or terminal menu.
+- Workspaces are the main destination. Its selected-server/session row opens
+  the same Server → Session switcher as the Terminal header; the adjacent menu
+  opens connection actions. Settings is a helper opened from the top toolbar or
+  terminal menu.
 - Workspace rows show their terminal names. Selecting a workspace opens its
   selected pane. Pane tabs and Herdr groups retain the remote hierarchy.
 - Search and its list offset survive opening and leaving a workspace.
@@ -50,6 +51,25 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   48 dp tall, preserving its terminal sizing and native input contract.
 - Server management, naming, connection details, and settings have explicit
   close/cancel boundaries. Unsaved forms ask before discarding changes.
+- The Workspaces and Terminal headers show the selected server and Session.
+  Tapping either opens a single hierarchical Server → Session sheet. Opening it
+  does not connect or scan. Selecting a server says that the phone will release
+  its current Session and reconnect before listing the destination's Sessions.
+  Same-server switches use the same path. The sheet keeps authentication,
+  host-key confirmation, loading, per-backend errors, empty results, stale
+  candidates, and selection-in-progress in context, and it never overlays the
+  standalone picker. `Current` describes the actually selected Session;
+  `Last used` remains a non-current hint. Cancel after switching starts leaves
+  the phone without the old binding while remote work keeps running. A
+  pre-boundary rejection keeps the current or retained work screen while normal
+  polling continues, and says “Could not start the switch. Check the connection
+  and try again.” An accepted release followed by startup failure retires the
+  old view. After canceling an accepted switch, the old connection
+  has no Reconnect action: choose a saved server or use the existing credential
+  form, then select a Session from fresh discovery. Late Ready updates from the
+  canceled generation stay fenced until an explicitly selected candidate is
+  Ready. Disconnect is a secondary sheet action, and Manage servers opens the
+  existing profile manager and forms.
 - After SSH host-key verification and authentication, a runtime picker presents
   independent tmux and Herdr sections. It highlights a last-used hint without
   auto-selecting it, keeps loading/mixed/empty/partial-error and stale-selection
@@ -229,14 +249,15 @@ new fixed input diagnostics; local revalidation identified Metal without
 overwriting their artifacts. The complete sequence is retained in
 [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The current iOS `standard` source-level manifest has 25 screens: the previous
-18 plus `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
-`runtime-layout-restore-unconfirmed`, plus `connection-error`. The existing `herdr-connection` route remains the
-picker state whose Herdr `default` candidate carries the non-authoritative
-`Last used` hint. Android's observational `SCREEN_NAMES` has 31 routes: the
-previous 25 plus those four recovery routes and the two layout-restore warning
-fixtures. These counts describe source scope only; the
+The current iOS `standard` source-level manifest has 27 screens: the previous
+18 plus `session-switcher`, `session-switcher-sessions`, `recovery-progress`,
+`recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
+`layout-restore-unconfirmed`, and `runtime-layout-restore-unconfirmed`, plus
+`connection-error`. The existing `herdr-connection` route remains the picker
+state whose Herdr `default` candidate carries the non-authoritative
+`Last used` hint. Android's observational `SCREEN_NAMES` has 33 routes: the
+previous 25 plus the two switcher routes, those four recovery routes, and the
+two layout-restore warning fixtures. These counts describe source scope only; the
 historical run table above remains historical and does not establish new remote
 CI or visual-review results. The seven extra states and navigation belong to
 the separate `polish` diagnostic with independent completion markers and the

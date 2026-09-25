@@ -21,6 +21,39 @@ enum RecoveryBridgeValidation {
   }
 }
 
+/// Stable JavaScript result shape for native owner-boundary operations.
+enum RuntimeBoundaryBridgeResult {
+  static func notInvoked() -> [String: String] {
+    ["status": "not_invoked", "errorCode": "invalid_argument"]
+  }
+
+  static func fromNativeCode(_ code: Int32) -> [String: String]? {
+    if code == 0 { return ["status": "accepted"] }
+    if code == -15 {
+      return ["status": "accepted_after_failure", "errorCode": "boundary_accepted_failure"]
+    }
+    let errorCode: String
+    switch code {
+    case -1: errorCode = "invalid_argument"
+    case -2: errorCode = "unknown_terminal"
+    case -3: errorCode = "runtime_unavailable"
+    case -4: errorCode = "internal_error"
+    case -5: errorCode = "host_key_response"
+    case -6: errorCode = "trust_store"
+    case -7: errorCode = "reconnect_unavailable"
+    case -8: errorCode = "runtime_selection_unavailable"
+    case -9: errorCode = "runtime_stale"
+    case -10: errorCode = "runtime_create_collision"
+    case -11: errorCode = "runtime_create_unknown"
+    case -12: errorCode = "tmux_topology_unsafe"
+    case -13: errorCode = "recovery_unavailable"
+    case -14: errorCode = "recovery_stale"
+    default: return nil
+    }
+    return ["status": "rejected_before_boundary", "errorCode": errorCode]
+  }
+}
+
 /// Native UITextInput implementation supplied by UITextView. Marked/preedit
 /// text remains in this view and is sent only to the native renderer. Rust is
 /// called exactly once when UIKit commits the text.

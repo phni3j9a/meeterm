@@ -25,6 +25,7 @@ SCREEN_NAMES = (
     "home", "servers", "connection", "password", "workspaces", "terminal",
     "settings", "workspace-name", "terminal-name", "handoff",
     "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
+    "session-switcher", "session-switcher-sessions",
     "herdr-connection",
     "herdr-groups",
     "herdr-terminal",
@@ -267,6 +268,22 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             ("tmux_meeterm", "tmux runtime meeterm" in normalized_values),
             ("herdr_default", "Herdr runtime default" in normalized_values),
             ("herdr_paused", "Herdr runtime paused" in normalized_values),
+        ]
+    elif screen == "session-switcher":
+        checks = [
+            ("switcher_heading", "Switch server or session" in normalized_values),
+            ("saved_server", "Browse sessions on Smoke server" in normalized_values),
+            ("manage_servers", "Manage servers" in normalized_values),
+        ]
+    elif screen == "session-switcher-sessions":
+        checks = [
+            ("session_heading", "Sessions on Smoke server" in normalized_values),
+            ("tmux_session", "tmux session meeterm" in normalized_values),
+            ("herdr_session", "Herdr session default" in normalized_values),
+            ("herdr_stopped", "Herdr session paused" in normalized_values),
+            ("last_used_hint", "Last used" in normalized_values),
+            ("runtime_picker_hidden", "Choose a runtime for Smoke server" not in normalized_values),
+            ("current_is_not_hint", "Current" not in normalized_values),
         ]
     elif screen == "runtime-partial-error":
         checks = [

@@ -66,6 +66,15 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn("guard isFirstResponder else", source)
         self.assertIn("recordPasteDrop(.provider)", source)
 
+    def test_native_input_validation_markers_match_runner_allowlist(self):
+        source = (REPOSITORY_ROOT / "scripts" / "ci" / "TerminalInputViewTests.swift").read_text(
+            encoding="utf-8"
+        )
+        markers = re.findall(r'appendValidation\("case=([a-z0-9_]+) result=passed"\)', source)
+
+        self.assertEqual(len(markers), len(set(markers)))
+        self.assertEqual(set(markers), set(smoke.NATIVE_INPUT_CASES))
+
     def test_collector_separates_command_and_marker_outcomes(self):
         source = ARTIFACT_COLLECTOR_SOURCE.read_text(encoding="utf-8")
         self.assertIn('log_command_status="not_run"', source)
@@ -92,6 +101,28 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         source = (Path(__file__).with_name("ios-smoke.py")).read_text(encoding="utf-8")
         self.assertIn('suite in ("polish", "polish-navigation")', source)
         self.assertIn('"polish_navigation_open"', source)
+
+    def test_alternate_endpoint_fixture_has_a_private_session(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-test-") as root_text:
+            root = Path(root_text)
+            primary = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            alternate = smoke.alternate_fixture_socket(primary)
+            self.assertEqual(
+                alternate,
+                root / "tmux-alternate" / f"tmux-{os.getuid()}" / "default",
+            )
+
+        alternate = Path("fixture") / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+        calls = [
+            subprocess.CompletedProcess([], 1, "", "no server"),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with mock.patch.object(smoke, "run_tmux", side_effect=calls) as run:
+            smoke.prepare_alternate_topology(alternate)
+        self.assertEqual(run.call_args_list[1].args[1], (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ))
 
     def test_real_ssh_connects_require_an_explicit_fixture_runtime_selection(self):
         source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
@@ -147,6 +178,222 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         seeded_end = source.index("/// Additional states and native navigation", seeded_start)
         self.assertNotIn("selectFixtureTmuxRuntimeAndWaitForConnected", source[seeded_start:seeded_end])
 
+    def test_ssh_alternate_profile_setup_uses_switcher_and_waits_for_saved_servers_handoff(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        helper_start = source.index("private func saveAlternateFixtureProfile")
+        helper_end = source.index("private func selectSwitcherSession", helper_start)
+        helper = source[helper_start:helper_end]
+
+        self.assertIn('let open = button("Switch server or session")', helper)
+        self.assertIn("waitForHittable(open, timeout: 20)", helper)
+        self.assertIn('let manage = button("Manage servers")', helper)
+        self.assertIn("waitForHittable(manage, timeout: 20)", helper)
+        self.assertIn('app.staticTexts["Saved servers"].waitForExistence(timeout: 15)', helper)
+        self.assertIn("waitForHittable(add, timeout: 15)", helper)
+        self.assertIn('verifyPasswordForm(stagePrefix: "switcher_alternate")', helper)
+        self.assertIn(
+            'profileName: "Alternate endpoint",\n      stagePrefix: "switcher_alternate"',
+            helper,
+        )
+        self.assertLess(
+            helper.index('fillTextField(label: "Username", value: username)'),
+            helper.index('verifyPasswordForm(stagePrefix: "switcher_alternate")'),
+        )
+        self.assertLess(
+            helper.index('verifyPasswordForm(stagePrefix: "switcher_alternate")'),
+            helper.index('profileName: "Alternate endpoint"'),
+        )
+        self.assertLess(
+            helper.index('profileName: "Alternate endpoint"'),
+            helper.index("fillPrivateKey(key)"),
+        )
+        self.assertIn("waitForHittable(save, timeout: 10)", helper)
+        self.assertIn("waitForConnectionFormDismissal(timeout: 30)", helper)
+        self.assertIn("waitForHittable(alternateProfile, timeout: 15)", helper)
+        self.assertIn("waitForHittable(close, timeout: 10)", helper)
+        self.assertIn("waitForHittable(switcher, timeout: 15)", helper)
+        self.assertNotIn('button("Server connection").tap()', helper)
+        self.assertNotIn('fillTextField(label: "Server name"', helper)
+
+        profile_start = source.index("private func configureSavedFixtureProfile(")
+        profile_end = source.index("private func saveAlternateFixtureProfile", profile_start)
+        profile_helper = source[profile_start:profile_end]
+        reveal_name = profile_helper.index('revealAuthenticationControl(name, stage: "\\(prefix)profile_name")')
+        fill_name = profile_helper.index('fillTextField(label: "Server name", value: profileName)')
+        reveal_credentials = profile_helper.index('revealAuthenticationControl(save, stage: "\\(prefix)save_credentials")')
+        reveal_key = profile_helper.index('revealAuthenticationControl(key, stage: "\\(prefix)return_to_key")')
+        self.assertLess(reveal_name, fill_name)
+        self.assertLess(fill_name, reveal_credentials)
+        self.assertLess(reveal_credentials, reveal_key)
+
+        workflow_start = source.index("private func runRealSshWorkflow")
+        workflow_end = source.index("func testConnectionFormControlsWithoutSecrets", workflow_start)
+        workflow = source[workflow_start:workflow_end]
+        self.assertLess(workflow.index("verifyPasswordForm()"), workflow.index("configureSavedFixtureProfile()"))
+        self.assertLess(workflow.index("configureSavedFixtureProfile()"), workflow.index("fillPrivateKey(key)"))
+
+    def test_ssh_alternate_endpoint_flow_checks_endpoint_session_workspace_and_old_shell(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        start = source.index('    let alternatePort = requiredEnvironment("MEETERM_SSH_ALTERNATE_PORT")')
+        end = source.index('record("ssh_switcher_cross_endpoint_old_shell_survived")', start)
+        flow = source[start:end]
+
+        steps = (
+            "saveAlternateFixtureProfile(",
+            'serverName: "Alternate endpoint"',
+            'sessionName: "switcher-alternate-destination"',
+            'expectedHostPort: "\\(host):\\(alternatePort)"',
+            'sessionName: "switcher-alternate-destination",\n      marker:',
+            'serverName: "Daily fixture"',
+            'sessionName: "meeterm"',
+            'let returnedWorkspace = button("Workspace ios-main")',
+            'tapNativeTerminal(stage: "ssh_switcher_cross_old_shell_check")',
+            "test \\\"$$\\\" = '\\(oldShellPid)'",
+            'waitForExactMarker(crossReturnMarker, at: crossReturnPath)',
+        )
+        positions = [flow.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("trustHostKey: true", flow)
+        self.assertNotIn(
+            'tapBackToWorkspaces(stage: "ssh_switcher_cross_old_shell_check")',
+            flow,
+        )
+        observation_start = source.index("let nativeHandleBeforeLoss", end)
+        self.assertNotIn("tapBackToWorkspaces", source[end:observation_start])
+        self.assertLess(end, observation_start)
+
+        switcher_start = source.index("private func selectSwitcherSession(")
+        marker_start = source.index("private func sendSwitcherMarker(", switcher_start)
+        switcher_helper = source[switcher_start:marker_start]
+        self.assertIn('button("Browse sessions on \\(serverName)")', switcher_helper)
+        self.assertIn("waitForHittable(server, timeout: 20)", switcher_helper)
+        self.assertIn("guard let expectedHostPort else", switcher_helper)
+        self.assertIn("expectedHostPort: expectedHostPort", switcher_helper)
+        self.assertIn('button("tmux session \\(sessionName)")', switcher_helper)
+        self.assertIn("waitForHittable(session, timeout: 90)", switcher_helper)
+        self.assertIn("connectedElement().waitForExistence(timeout: 90)", switcher_helper)
+
+        marker_end = source.index("private func waitForExactMarker", marker_start)
+        marker_helper = source[marker_start:marker_end]
+        self.assertIn('case "switcher-alternate-destination": workspaceName = "switcher-alternate-main"', marker_helper)
+        self.assertIn("waitForHittable(workspace, timeout: 20)", marker_helper)
+        self.assertIn("tapNativeTerminal(stage: stage)", marker_helper)
+        self.assertIn("waitForExactMarker(marker, at: path)", marker_helper)
+        self.assertIn("tapBackToWorkspaces(stage: stage)", marker_helper)
+
+        host_key_start = source.index("private func acceptFixtureHostKey(")
+        host_key_end = source.index("private func selectFixtureTmuxRuntimeAndWaitForConnected", host_key_start)
+        host_key_helper = source[host_key_start:host_key_end]
+        self.assertIn("expectedHostPort: String? = nil", host_key_helper)
+        self.assertIn("$0.label.contains(expectedHostPort)", host_key_helper)
+        self.assertIn("$0.label.contains(expectedFingerprint)", host_key_helper)
+        self.assertIn("waitForDisappearance(alert, timeout: 10)", host_key_helper)
+
+        app_source = (REPOSITORY_ROOT / "App.tsx").read_text(encoding="utf-8")
+        profile_list_source = (REPOSITORY_ROOT / "app" / "DailyUse.tsx").read_text(encoding="utf-8")
+        self.assertIn("accessibilityLabel={`Browse sessions on ${profile.name}`}", app_source)
+        self.assertIn("switcherTarget ? 'session' : 'runtime'", app_source)
+        self.assertIn("const accessibilityLabel = `Workspace ${workspace.name}", app_source)
+        self.assertIn("Alert.alert('Trust this SSH host?'", app_source)
+        self.assertIn("`${connection.host}:${connection.port}", app_source)
+        self.assertIn("'Trust and connect'", app_source)
+        self.assertIn('accessibilityLabel={`Connect saved server ${item.name}`}', profile_list_source)
+        self.assertIn('label="Back to workspaces"', app_source)
+
+        terminal_tap_start = source.index("private func tapNativeTerminal(stage: String)")
+        back_tap_start = source.index("private func tapBackToWorkspaces(stage: String)", terminal_tap_start)
+        marker_wait_start = source.index("private func waitForExactMarker", back_tap_start)
+        navigation_helpers = source[terminal_tap_start:marker_wait_start]
+        self.assertIn("waitForHittable(terminal, timeout: 10)", navigation_helpers)
+        self.assertIn("waitForHittable(back, timeout: 10)", navigation_helpers)
+
+    def test_ssh_terminal_focus_waits_for_live_label_without_weakening_stale_loss_check(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        live_start = source.index("private func waitForLiveTerminalLabel(")
+        tap_start = source.index("private func tapNativeTerminal(", live_start)
+        live_helper = source[live_start:tap_start]
+        self.assertIn("timeout: TimeInterval = 30", live_helper)
+        self.assertIn('NSPredicate(format: "label == %@", "Terminal")', live_helper)
+        self.assertIn("live.waitForExistence(timeout: timeout)", live_helper)
+        self.assertIn('XCTFail("The native terminal stayed read-only at \\(stage).")', live_helper)
+        self.assertIn("return nil", live_helper)
+
+        back_start = source.index("private func tapBackToWorkspaces(", tap_start)
+        tap_helper = source[tap_start:back_start]
+        self.assertLess(
+            tap_helper.index("waitForLiveTerminalLabel(stage: stage)"),
+            tap_helper.index("waitForHittable(terminal, timeout: 10)"),
+        )
+        self.assertIn("terminal.tap()", tap_helper)
+
+        same_return_start = source.index(
+            'guard let originalLiveTerminal = waitForLiveTerminalLabel(',
+            source.index('record("ssh_switcher_same_server_return")'),
+        )
+        same_return_end = source.index("let sameReturnMarker", same_return_start)
+        same_return = source[same_return_start:same_return_end]
+        self.assertIn('stage: "ssh_switcher_same_old_shell_check"', same_return)
+        self.assertIn("waitForHittable(originalLiveTerminal, timeout: 10)", same_return)
+        self.assertIn("originalLiveTerminal.tap()", same_return)
+
+        stale_start = source.index("private func waitForTransportLossStale(")
+        stale_end = source.index("private func acceptFixtureHostKey(", stale_start)
+        stale_check = source[stale_start:stale_end]
+        self.assertIn('terminal.label == "Terminal, cached output, read only"', stale_check)
+        self.assertNotIn("waitForLiveTerminalLabel", stale_check)
+
+        workflow_start = source.index("func testShortSshInputAndDisconnect")
+        stop = source.index('guard requestFixtureTransport("stop")', workflow_start)
+        start = source.index('guard requestFixtureTransport("start")', stop)
+        transport_loss = source[stop:start]
+        self.assertNotIn("waitForLiveTerminalLabel", transport_loss)
+        self.assertNotIn("enterTerminalCommand", transport_loss)
+        self.assertNotIn(".tap()", transport_loss)
+
+    def test_ios_generated_ui_test_copies_authoritative_swift_source(self):
+        shell_source = (REPOSITORY_ROOT / "scripts" / "ci" / "ios-inject-ui-test.sh").read_text(
+            encoding="utf-8"
+        )
+        injector_source = (REPOSITORY_ROOT / "scripts" / "ci" / "ios-inject-ui-test.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'readonly source_path="${GITHUB_WORKSPACE}/scripts/ci/MeetermSmokeUITests.swift"',
+            shell_source,
+        )
+        self.assertIn("shutil.copyfile(source_path, generated_tests_dir / source_path.name)", injector_source)
+
+    def test_text_input_lookup_uses_editable_accessibility_types_and_stable_identifiers(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        helper_start = source.index("private func input(_ label: String)")
+        helper_end = source.index("private func button(", helper_start)
+        helper = source[helper_start:helper_end]
+
+        for mapping in (
+            'case "Host": return textField(label, identifier: "ssh-host")',
+            'case "Port": return textField(label, identifier: "ssh-port")',
+            'case "Username": return textField(label, identifier: "ssh-username")',
+            'case "Server name": return textField(label, identifier: "server-profile-name")',
+            'case "Private OpenSSH key": return textView(label, identifier: "ssh-private-key")',
+            'case "SSH password": return secureTextField(label, identifier: "ssh-password")',
+        ):
+            self.assertIn(mapping, helper)
+        self.assertIn(
+            'NSPredicate(format: "label == %@ OR identifier == %@", label, identifier)',
+            helper,
+        )
+        self.assertIn("app.textFields.matching(", helper)
+        self.assertIn("app.textViews.matching(", helper)
+        self.assertIn("app.secureTextFields.matching(", helper)
+        self.assertNotIn("app.staticTexts", helper)
+        self.assertNotIn("app.descendants(matching: .any)", helper)
+
+        fill_start = source.index("private func fillTextField(label: String, value: String)")
+        fill_end = source.index("private func fillPrivateKey", fill_start)
+        fill_helper = source[fill_start:fill_end]
+        self.assertIn("guard waitForHittable(field, timeout: 10) else", fill_helper)
+        self.assertIn('XCTFail("The short field is not hittable.")', fill_helper)
+
     def test_new_suite_is_exposed_without_changing_the_standard_default(self):
         # The hosted mobile-smoke workflow was retired; suite selection now
         # lives in the smoke driver itself so any session applies the same gate.
@@ -182,13 +429,14 @@ class DiagnosticSourceContractTests(unittest.TestCase):
                 "home", "servers", "connection", "password", "workspaces", "terminal",
                 "settings", "workspace-name", "terminal-name", "handoff",
                 "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
+                "session-switcher", "session-switcher-sessions",
                 "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
                 "recovery-progress", "recovery-exhausted", "recovery-mismatch",
                 "herdr-recovery-confirm", "layout-restore-unconfirmed",
                 "runtime-layout-restore-unconfirmed", "connection-error",
             ],
         )
-        self.assertEqual(len(manifest), 25)
+        self.assertEqual(len(manifest), 27)
         for identifier in (
             "recovery-rail", "recovery-title", "recovery-detail", "recovery-meta",
             "recovery-retry", "recovery-review", "recovery-change",
@@ -218,6 +466,59 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('"ssh_resumed_native_input_await_remote_marker"', driver)
         self.assertIn('"marker_line_count": len(marker_lines)', driver)
         self.assertIn('"marker_exactly_once": marker_matches', driver)
+
+
+class TopologyPreparationTests(unittest.TestCase):
+    @staticmethod
+    def prepare_with_target_pane_count(target_pane_count):
+        def fake_run_tmux(_socket_path, command, _stage, allow_failure=False):
+            if command[0] == "list-sessions":
+                return subprocess.CompletedProcess(command, 1, "", "no server")
+            if command[0] == "list-windows":
+                return subprocess.CompletedProcess(command, 0, "ios-main\nios-side\n", "")
+            if command[0] == "list-panes":
+                if "=meeterm:ios-main" in command:
+                    return subprocess.CompletedProcess(command, 0, "%1\n", "")
+                if "=meeterm" in command:
+                    # A whole-server query also sees the pane in the
+                    # switcher-destination Session created above.
+                    count = target_pane_count + (1 if "-a" in command else 0)
+                    panes = "".join(f"%{index}\n" for index in range(1, count + 1))
+                    return subprocess.CompletedProcess(command, 0, panes, "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        outcome = None
+        pane_count_query = None
+        with mock.patch.object(smoke, "run_tmux", side_effect=fake_run_tmux) as run:
+            try:
+                outcome = smoke.prepare_topology(Path("fixture.sock"))
+            except smoke.SmokeFailure as error:
+                outcome = error
+            queries = [
+                call.args[1]
+                for call in run.call_args_list
+                if call.args[1][0] == "list-panes" and "=meeterm" in call.args[1]
+            ]
+            if queries:
+                pane_count_query = queries[-1]
+        return outcome, pane_count_query
+
+    def test_prepare_topology_counts_only_the_target_session_and_stays_strict(self):
+        for target_pane_count in (2, 3, 4):
+            with self.subTest(target_pane_count=target_pane_count):
+                outcome, query = self.prepare_with_target_pane_count(target_pane_count)
+                self.assertEqual(
+                    query,
+                    ("list-panes", "-s", "-t", "=meeterm", "-F", "#{pane_id}"),
+                )
+                if target_pane_count == 3:
+                    self.assertEqual(outcome, (2, 3))
+                else:
+                    self.assertIsInstance(outcome, smoke.SmokeFailure)
+                    self.assertEqual(
+                        (outcome.stage, outcome.reason),
+                        ("tmux_fixture", "topology_invalid"),
+                    )
 
 
 class TransportLossContractTests(unittest.TestCase):
@@ -1882,6 +2183,10 @@ class InputDiagnosticsFailureTests(unittest.TestCase):
                 "MEETERM_SSH_HOST_KEY_FILE": str(host_key),
                 "RUNNER_TEMP": str(root / "runner"),
             }
+            alternate_socket = (
+                fixture_socket.parent.parent.parent
+                / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
+            )
 
             with mock.patch.dict(smoke.os.environ, environment, clear=False), \
                  mock.patch.object(sys, "argv", [
@@ -1896,6 +2201,8 @@ class InputDiagnosticsFailureTests(unittest.TestCase):
                      "ssh",
                  ]), \
                  mock.patch.object(smoke, "fixture_socket", return_value=fixture_socket), \
+                 mock.patch.object(smoke, "alternate_fixture_socket", return_value=alternate_socket), \
+                 mock.patch.object(smoke, "prepare_alternate_topology"), \
                  mock.patch.object(smoke, "prepare_topology", return_value=(2, 3)), \
                  mock.patch.object(
                      smoke,
@@ -2206,6 +2513,8 @@ class ConnectionFailureDiagnosticsTests(unittest.TestCase):
                      "names",
                  ]), \
                  mock.patch.object(smoke, "fixture_socket", return_value=Path("fixture-socket")), \
+                 mock.patch.object(smoke, "alternate_fixture_socket", return_value=Path("alternate-fixture-socket")), \
+                 mock.patch.object(smoke, "prepare_alternate_topology"), \
                  mock.patch.object(smoke, "prepare_topology", return_value=(2, 3)), \
                  mock.patch.object(smoke, "record_daily_interactions", return_value=contextlib.nullcontext()), \
                  mock.patch.object(

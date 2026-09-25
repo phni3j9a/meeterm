@@ -24,7 +24,7 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
-import type { AgentStatus, RuntimeBackend, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
+import type { AgentStatus, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -44,6 +44,21 @@ type StartupPhase =
   | 'profiles_requested'
   | 'profiles_succeeded'
   | 'profiles_failed';
+
+function readRuntimeBoundaryResult(value: unknown): RuntimeBoundaryResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const result = value as Record<string, unknown>;
+  if (result.status === 'accepted') return { status: 'accepted' };
+  if ((result.status === 'not_invoked' || result.status === 'rejected_before_boundary')
+    && typeof result.errorCode === 'string' && result.errorCode.length > 0) {
+    return { status: result.status, errorCode: result.errorCode };
+  }
+  if (result.status === 'accepted_after_failure'
+    && result.errorCode === 'boundary_accepted_failure') {
+    return { status: 'accepted_after_failure', errorCode: 'boundary_accepted_failure' };
+  }
+  return null;
+}
 
 const SMOKE_BUILD = process.env.EXPO_PUBLIC_MEETERM_SMOKE === '1';
 
@@ -70,9 +85,10 @@ const INITIAL_CONNECTION: SshConnectionState = {
   knownFingerprint: '', errorCode: '', errorMessage: '',
 };
 type Workspace = RemoteWorkspace & { panes: RemoteTerminal[] };
-type SheetKind = 'server' | 'servers' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | null;
+type SheetKind = 'server' | 'servers' | 'switcher' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | null;
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
+type SwitcherTarget = { profile: ServerProfile; isCurrent: boolean };
 type RecoveryActionIdentity = {
   epoch: string;
   phase: WorkspaceControl['recovery']['phase'];
@@ -90,7 +106,7 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 // This is the native message published after an explicit disconnect cannot
@@ -165,6 +181,8 @@ type SmokeFixtureState = {
   runtimeDiscovery?: RuntimeDiscovery;
   runtimePickerVisible?: boolean;
   runtimeCreateVisible?: boolean;
+  switcherTarget?: SwitcherTarget | null;
+  switcherStarted?: boolean;
   runtimeMessage?: string;
   controlMessage?: string;
   control?: WorkspaceControl;
@@ -257,6 +275,22 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.runtimeMessage = screen === 'runtime-empty'
       ? 'No running runtime is available yet. Stopped Herdr sessions need to be opened on your computer.'
       : '';
+    return base;
+  }
+  if (screen === 'session-switcher' || screen === 'session-switcher-sessions') {
+    const base = smokeFixture('workspaces');
+    base.sheet = 'switcher';
+    if (screen === 'session-switcher-sessions') {
+      base.connection = { ...base.connection, state: 'AwaitingRuntimeSelection' };
+      base.panes = [];
+      base.screen = 'workspaces';
+      base.workspaceId = '';
+      base.hasConnected = false;
+      base.runtimeDiscovery = smokeRuntimeDiscovery('runtime-picker');
+      base.runtimePickerVisible = true;
+      base.switcherTarget = { profile: { ...SMOKE_PROFILE }, isCurrent: false };
+      base.switcherStarted = true;
+    }
     return base;
   }
   if (screen === 'herdr-connection') {
@@ -388,6 +422,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
+  'session-switcher', 'session-switcher-sessions',
   'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
   'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
@@ -585,16 +620,16 @@ function WorkspaceRow({ workspace, selected, colors, onPress, onOptions, picker 
   </Pressable>{onOptions ? <IconButton icon="menu" label={`Workspace options ${workspace.name}`} onPress={onOptions} disabled={disabled || optionsDisabled} colors={colors} /> : null}</View>;
 }
 
-function NativeSheet({ title, visible, onClose, onDismiss, busy, colors, closeLabel = 'Close sheet', children }: { title: string; visible: boolean; onClose: () => void; onDismiss: () => void; busy: boolean; closeLabel?: string; colors: Palette; children: ReactNode }) {
+function NativeSheet({ title, visible, onClose, onDismiss, busy, allowDismissWhileBusy = false, colors, closeLabel = 'Close sheet', children }: { title: string; visible: boolean; onClose: () => void; onDismiss: () => void; busy: boolean; allowDismissWhileBusy?: boolean; closeLabel?: string; colors: Palette; children: ReactNode }) {
   const reducedMotion = useReducedMotion();
-  return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy} onRequestClose={() => { if (!busy) onClose(); }} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
+  return <Modal visible={visible} animationType={reducedMotion ? 'fade' : 'slide'} presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'} allowSwipeDismissal={!busy || allowDismissWhileBusy} onRequestClose={() => { if (!busy || allowDismissWhileBusy) onClose(); }} onDismiss={onDismiss} onShow={() => { if (Platform.OS === 'android') StatusBar.setBarStyle(colors === DARK ? 'light-content' : 'dark-content'); }}>
     <SafeAreaProvider>
       <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.flex, { backgroundColor: colors.background }]}>
         {Platform.OS === 'android' ? <StatusBar barStyle={colors === DARK ? 'light-content' : 'dark-content'} backgroundColor={colors.background} /> : null}
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>
           {busy ? <ActivityIndicator color={colors.accent} /> : null}
-          <IconButton icon="close" label={closeLabel} colors={colors} onPress={onClose} disabled={busy} />
+          <IconButton icon="close" label={closeLabel} colors={colors} onPress={onClose} disabled={busy && !allowDismissWhileBusy} />
         </View>
         {children}
       </SafeAreaView>
@@ -1021,11 +1056,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [runtimeDiscovery, setRuntimeDiscovery] = useState<RuntimeDiscovery | null>(() => fixture?.runtimeDiscovery ?? null);
   const [runtimePickerVisible, setRuntimePickerVisible] = useState(() => fixture?.runtimePickerVisible ?? false);
   const [runtimeCreateVisible, setRuntimeCreateVisible] = useState(() => fixture?.runtimeCreateVisible ?? false);
+  const [switcherTarget, setSwitcherTarget] = useState<SwitcherTarget | null>(() => fixture?.switcherTarget ?? null);
+  const [switcherStarted, setSwitcherStarted] = useState(() => fixture?.switcherStarted ?? false);
+  const [switcherAccepting, setSwitcherAccepting] = useState(false);
+  const [switcherMessage, setSwitcherMessage] = useState('');
   const [runtimeSelectingId, setRuntimeSelectingId] = useState('');
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
   const [runtimeSelectionErrors, setRuntimeSelectionErrors] = useState<Record<string, string>>({});
   const [runtimeMessage, setRuntimeMessage] = useState(() => fixture?.runtimeMessage ?? '');
+  const runtimeNameRef = useRef('');
   const [runtimeCreationError, setRuntimeCreationError] = useState('');
   const [runtimeHint, setRuntimeHint] = useState<RuntimeHint | null>(null);
   const [, setRuntimeBound] = useState(() => Boolean(fixture?.hasConnected));
@@ -1068,6 +1108,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const runtimeDiscoveryRequestedPhase = useRef('');
   const runtimeConnectionGeneration = useRef<string | null>(fixture?.runtimeDiscovery?.connectionGeneration ?? null);
   const runtimeHintRef = useRef<RuntimeHint | null>(null);
+  const switcherOperation = useRef(false);
+  const switcherBoundary = useRef(Boolean(fixture?.switcherStarted));
+  const switcherCancelFence = useRef(false);
+  const switcherCancelReleaseIssued = useRef(false);
+  const boundaryFailureFence = useRef<{ errorCode: string; errorMessage: string } | null>(null);
+  const returnToSwitcherAfterForm = useRef(false);
+  const switcherFormConnected = useRef(false);
   const controlRef = useRef(control);
   const dismissedCleanupWarningIdRef = useRef('');
   const recoveryInvalidatedRef = useRef(recoveryInvalidated);
@@ -1089,6 +1136,25 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     runtimeBoundRef.current = value;
     setRuntimeBound(value);
   }, []);
+
+  const failClosedForBoundaryResult = useCallback((errorCode: string, errorMessage: string) => {
+    boundaryFailureFence.current = { errorCode, errorMessage };
+    recoveryInvalidatedRef.current = true;
+    workspaceObservationRef.current = false;
+    setRecoveryInvalidated(true);
+    setRecoveredEpoch('');
+    ignoreReadyUntilNewConnection.current = true;
+    runtimeSelectionRequired.current = true;
+    updateRuntimeBound(false);
+    setHasConnected(false);
+    setConnection(current => ({
+      ...current,
+      state: 'Failed',
+      errorCode,
+      errorMessage,
+    }));
+    setControlMessage(errorMessage);
+  }, [updateRuntimeBound]);
 
   const observeCleanupWarning = useCallback((candidate: WorkspaceControl['cleanupWarning']) => {
     if (!candidate) return;
@@ -1196,7 +1262,34 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const pendingRefreshAtStart = pendingRuntimeRefresh.current;
       const observePendingRuntime = Boolean(pendingSelectionAtStart || pendingCreationAtStart || pendingRefreshAtStart);
       try {
-        const next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        let next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+        const forcedBoundaryFailure = boundaryFailureFence.current;
+        if (forcedBoundaryFailure) {
+          next = {
+            ...next,
+            state: 'Failed',
+            errorCode: forcedBoundaryFailure.errorCode,
+            errorMessage: forcedBoundaryFailure.errorMessage,
+          };
+        }
+        if (!forcedBoundaryFailure && switcherCancelFence.current && next.state === 'Ready'
+          && !pendingSelectionAtStart
+          && !commandPending.current && version === commandVersion.current) {
+          // A native runtime-selection request may finish after the user
+          // canceled the switch. Keep the canceled UI fail-closed and release
+          // that late owner once. It stays fenced until a candidate from the
+          // new discovery generation is explicitly selected and reaches Ready.
+          if (!switcherCancelReleaseIssued.current) {
+            switcherCancelReleaseIssued.current = true;
+            try {
+              await MeetermTerminal.disconnect(CONNECTION_ID);
+              next = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+            } catch {
+              next = { ...next, state: 'Disconnected' };
+            }
+          }
+          if (next.state === 'Ready') next = { ...next, state: 'Disconnected' };
+        }
         // Host authentication and fresh runtime discovery do not have
         // workspace metadata yet. A retained-work recovery is the exception:
         // keep polling its coherent cached snapshot so the existing native
@@ -1392,6 +1485,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const effectiveRuntimeHint = runtimeHint ?? runtimeHintForProfile(currentProfile);
   runtimeHintRef.current = effectiveRuntimeHint;
 
+  useEffect(() => {
+    if (!switcherStarted || sheet !== 'switcher') return;
+    if (connection.state === 'Failed') {
+      setSwitcherMessage(connectionError(connection));
+    } else if (connection.state === 'HostKeyPending') {
+      setSwitcherMessage('Verify the host key to continue to this server’s sessions.');
+    } else if (['Connecting', 'Authenticating', 'OpeningPty', 'AttachingTmux', 'Synchronizing', 'DiscoveringRuntimes', 'AwaitingRuntimeSelection', 'AttachingRuntime', 'CreatingRuntime'].includes(connection.state)) {
+      setSwitcherMessage('');
+    }
+  }, [connection, sheet, switcherStarted]);
+
   const loadRuntimeDiscovery = useCallback(async (refresh = false, clearSelectionErrors = refresh) => {
     if (smokeFixtureActive) return runtimeDiscovery;
     if (refresh) {
@@ -1547,7 +1651,32 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const closing = connection.state === 'Closing';
   const active = !['Disconnected', 'Failed', 'Closing'].includes(connection.state);
   const attempted = Boolean(connection.host);
-  const canReconnect = !recoveryPhaseActive && hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
+  const currentSessionDescription = runtimeReady || retainedWorkAvailable
+    ? `${session.backend === 'herdr' ? 'Herdr' : 'tmux'} · ${session.runtime}`
+    : active ? 'No Session selected' : 'Not connected';
+  const currentSwitcherProfile = currentProfile ?? (attempted ? {
+    id: profileId || '__current_connection__',
+    name: endpoint(connection),
+    host: connection.host,
+    port: connection.port,
+    username: '',
+    authMethod: 'publicKey' as const,
+    credentialSaved: false,
+    backend: session.backend,
+    runtime: session.runtime,
+  } : null);
+  const switcherServerRows = [
+    ...profiles.map(profile => ({
+      profile,
+      isCurrent: active && profile.id === profileId,
+    })),
+    ...(currentSwitcherProfile && !profiles.some(profile => profile.id === currentSwitcherProfile.id)
+      ? [{ profile: currentSwitcherProfile, isCurrent: active }]
+      : []),
+  ];
+  const switcherSessionServerName = switcherTarget?.profile.name ?? currentProfile?.name ?? endpoint(connection);
+  const canReconnect = !recoveryPhaseActive && !boundaryFailureFence.current
+    && hasConnected && !active && !closing && connection.errorCode !== 'host_key_changed';
   const filteredWorkspaces = useMemo(() => searching ? workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(query))) : workspaces, [query, searching, workspaces]);
   const pickerWorkspaces = useMemo(() => workspaces.filter(item => normalizeSearch(item.name).includes(normalizeSearch(pickerQuery))), [pickerQuery, workspaces]);
 
@@ -1700,24 +1829,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     };
     if (!startRecoveryAction('change', identity)) return;
 
-    try {
-      if (!smokeFixtureActive) {
-        await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch);
-        const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
-        try {
-          const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
-          const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
-          observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
-        } catch {
-          observeCleanupWarning(legacyCleanupWarning(released));
-        }
-      }
-
-      // Native acceptance is the one-way boundary. Keep the exact retained
-      // surface mounted while the request is pending or rejected; only after
-      // acceptance may a picker/server destination bind and release the old
-      // recovery cache. Bump the observation version first so an old Ready
-      // poll already in flight cannot restore the retired session afterward.
+    let boundaryAttempted = false;
+    let boundaryOutcomeObserved = false;
+    let boundaryUiCleared = false;
+    let acceptedAfterFailure = false;
+    const clearRecoveryBinding = () => {
       commandVersion.current += 1;
       recoveryInvalidatedRef.current = true;
       workspaceObservationRef.current = false;
@@ -1736,6 +1852,60 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setRuntimeCreateVisible(false);
       setRuntimeMessage('');
       updateRuntimeBound(false);
+      boundaryUiCleared = true;
+    };
+
+    try {
+      if (!smokeFixtureActive) {
+        boundaryAttempted = true;
+        const outcome = readRuntimeBoundaryResult(
+          await MeetermTerminal.changeRuntime(CONNECTION_ID, identity.epoch),
+        );
+        if (!outcome) {
+          const message = 'The switch result could not be confirmed. Start a new connection before continuing.';
+          setSheet(null);
+          failClosedForBoundaryResult('switch_outcome_unknown', message);
+          return;
+        }
+        boundaryOutcomeObserved = true;
+        if (outcome.status === 'not_invoked' || outcome.status === 'rejected_before_boundary') {
+          setControlMessage('Could not start the destination change. Check the connection and try again.');
+          return;
+        }
+        acceptedAfterFailure = outcome.status === 'accepted_after_failure';
+        if (!acceptedAfterFailure) {
+          // These snapshots refresh ordinary state and cleanup notices only;
+          // the typed return value above is the boundary authority.
+          try {
+            const released = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+            try {
+              const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+              const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
+              observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released));
+            } catch {
+              observeCleanupWarning(legacyCleanupWarning(released));
+            }
+          } catch {
+            // The accepted boundary remains authoritative even if a later
+            // low-frequency display snapshot cannot be read.
+          }
+        }
+      }
+
+      // Native acceptance is the one-way boundary. Keep the exact retained
+      // surface mounted while the request is pending or rejected; only after
+      // acceptance may a picker/server destination bind and release the old
+      // recovery cache. Bump the observation version first so an old Ready
+      // poll already in flight cannot restore the retired session afterward.
+      clearRecoveryBinding();
+
+      if (acceptedAfterFailure) {
+        const message = 'Could not start the new connection. Choose a server and Session, then try again.';
+        failClosedForBoundaryResult('runtime_switch_start_failed', message);
+        invalidateRuntimeDiscovery(false);
+        setSheet('servers');
+        return;
+      }
 
       if (destination === 'runtime') {
         invalidateRuntimeDiscovery(true);
@@ -1744,14 +1914,23 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setSheet('servers');
       }
     } catch {
-      // A stale/error rejection means native recovery is still authoritative.
-      // Do not clear the retained pane/session or move the user away from the
-      // exact cached route; the pending action is released in finally below.
-      setControlMessage('Could not change the destination. Choose Connection details to continue.');
+      if (boundaryAttempted && !boundaryOutcomeObserved) {
+        const message = 'The switch result could not be confirmed. Start a new connection before continuing.';
+        setSheet(null);
+        failClosedForBoundaryResult('switch_outcome_unknown', message);
+      } else if (boundaryOutcomeObserved) {
+        if (!boundaryUiCleared) clearRecoveryBinding();
+        const message = 'Could not start the new connection. Choose a server and Session, then try again.';
+        failClosedForBoundaryResult('runtime_switch_start_failed', message);
+        invalidateRuntimeDiscovery(false);
+        setSheet('servers');
+      } else {
+        setControlMessage('Could not start the destination change. Check the connection and try again.');
+      }
     } finally {
       clearRecoveryAction('change', identity);
     }
-  }, [clearRecoveryAction, invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
+  }, [clearRecoveryAction, failClosedForBoundaryResult, invalidateRuntimeDiscovery, observeCleanupWarning, smokeFixtureActive, startRecoveryAction, updateRuntimeBound]);
 
   useEffect(() => {
     if (recoveryInvalidatedRef.current) {
@@ -1794,12 +1973,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRuntimeMessage('');
     setRuntimeCreationError('');
     setScreen('workspaces');
+    switcherBoundary.current = false;
+    switcherOperation.current = false;
+    setSwitcherTarget(null);
+    setSwitcherStarted(false);
+    setSwitcherAccepting(false);
+    setSwitcherMessage('');
     setSheet(null);
     setPickerQuery('');
 
     // A picker cancellation deliberately ignores the old Ready snapshot.
-    // Once this explicit candidate has reached Ready, subsequent polls may
-    // observe the new binding again.
+    // Clear the cancel fence only after an explicit candidate from the new
+    // discovery generation reaches Ready.
+    switcherCancelFence.current = false;
+    switcherCancelReleaseIssued.current = false;
     ignoreReadyUntilNewConnection.current = false;
     const profileIdForHint = profileId;
     if (!smokeFixtureActive && profileIdForHint) {
@@ -1992,11 +2179,22 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [runtimeActionBusy, runtimeDiscovery, smokeFixtureActive]);
 
   const finishConnectionForm = useCallback(() => {
-    if (Platform.OS === 'ios' && returnToServersAfterForm.current) setModalPending(true);
+    if (Platform.OS === 'ios' && (returnToServersAfterForm.current || returnToSwitcherAfterForm.current)) setModalPending(true);
     setFormVisible(false);
     if (Platform.OS !== 'ios' && returnToServersAfterForm.current) {
       returnToServersAfterForm.current = false;
       setSheet('servers');
+    }
+    if (Platform.OS !== 'ios' && returnToSwitcherAfterForm.current) {
+      returnToSwitcherAfterForm.current = false;
+      if (!switcherFormConnected.current) {
+        setSwitcherTarget(null);
+        switcherBoundary.current = false;
+        setSwitcherStarted(false);
+        setSwitcherMessage('The connection was canceled. The previous session remains disconnected. Choose a server to continue.');
+      }
+      switcherFormConnected.current = false;
+      setSheet('switcher');
     }
   }, []);
 
@@ -2007,10 +2205,23 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       returnToServersAfterForm.current = false;
       setSheet('servers');
     }
+    if (returnToSwitcherAfterForm.current) {
+      returnToSwitcherAfterForm.current = false;
+      if (!switcherFormConnected.current) {
+        setSwitcherTarget(null);
+        switcherBoundary.current = false;
+        setSwitcherStarted(false);
+        setSwitcherMessage('The connection was canceled. The previous session remains disconnected. Choose a server to continue.');
+      }
+      switcherFormConnected.current = false;
+      setSheet('switcher');
+    }
   }, []);
 
-  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>) => {
-    if (Platform.OS === 'ios' && (formVisible || sheet !== null)) setHostPromptDeferred(true);
+  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>, keepSwitcher = false) => {
+    if (Platform.OS === 'ios' && (formVisible || (sheet !== null && !keepSwitcher))) setHostPromptDeferred(true);
+    switcherCancelReleaseIssued.current = false;
+    boundaryFailureFence.current = null;
     recoveryInvalidatedRef.current = false;
     setRecoveryInvalidated(false);
     setRecoveredEpoch('');
@@ -2021,7 +2232,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setRecoveryPending({ retry: false, confirm: false, change: false });
     returnToServersAfterForm.current = false;
     setFormVisible(false);
-    setSheet(null);
+    if (!keepSwitcher) {
+      switcherBoundary.current = false;
+      switcherOperation.current = false;
+      setSwitcherTarget(null);
+      setSwitcherStarted(false);
+      setSwitcherAccepting(false);
+      setSwitcherMessage('');
+    }
+    setSheet(keepSwitcher ? 'switcher' : null);
     setScreen('workspaces');
     setFoundation(false);
     setSession(EMPTY_WORKSPACES);
@@ -2081,8 +2300,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       } else if (savedProfile?.credentialSaved) {
         await MeetermTerminal.connectProfileHost(CONNECTION_ID, savedProfile.id);
       } else { throw new Error('Credential required'); }
-      resetForConnection(savedProfile ?? submission.profile);
+      const returnToSwitcher = returnToSwitcherAfterForm.current;
+      resetForConnection(savedProfile ?? submission.profile, returnToSwitcher);
       setProfileId(savedProfile?.id ?? '');
+      if (returnToSwitcher) {
+        switcherBoundary.current = true;
+        switcherFormConnected.current = true;
+        setSwitcherStarted(true);
+      }
     }, 'Could not save or connect to this server. Check the address and credentials.');
     if (success) finishConnectionForm();
     return success;
@@ -2109,6 +2334,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (commandPending.current) return;
     // This legacy action is the fresh-picker-compatible reconnect path. It is
     // intentionally distinct from the retained-work Retry rail action.
+    // A deliberate reconnect starts a new native connection generation, so a
+    // canceled switcher's Ready fence must not hide the new generation or
+    // admit a stale workspace before its explicit runtime selection.
+    switcherCancelFence.current = false;
+    switcherCancelReleaseIssued.current = false;
+    ignoreReadyUntilNewConnection.current = false;
     if (recoveryPhaseActive) {
       recoveryInvalidatedRef.current = true;
       setRecoveryInvalidated(true);
@@ -2189,6 +2420,19 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setPickerQuery('');
     setSheet(kind);
   }, [runtimeReady]);
+  const presentSheetAfterCurrentDismissal = useCallback((kind: Exclude<SheetKind, null>) => {
+    Keyboard.dismiss();
+    if (Platform.OS === 'ios' && sheet !== null) {
+      // A saved-server manager is its own existing page sheet. Finish closing
+      // the current server/session sheet before presenting that manager so a
+      // later Add/Edit form can use the same ordered modal handoff.
+      setModalPending(true);
+      pendingModal.current = () => setSheet(kind);
+      setSheet(null);
+      return;
+    }
+    setSheet(kind);
+  }, [sheet]);
   const showModal = useCallback((show: () => void) => {
     // iOS must finish dismissing its page sheet before another native modal
     // is presented. Android owns a separate dialog window for each modal.
@@ -2214,8 +2458,201 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [sheet, showModal]);
   const openForm = useCallback(() => openProfileForm(currentProfile), [currentProfile, openProfileForm]);
 
+  const openSwitcher = useCallback(() => {
+    if (commandPending.current) return;
+    Keyboard.dismiss();
+    switcherBoundary.current = false;
+    setSwitcherTarget(null);
+    setSwitcherStarted(false);
+    setSwitcherAccepting(false);
+    setSwitcherMessage('');
+    setSheet('switcher');
+  }, []);
+
+  const beginSwitcherTarget = useCallback(async (target: SwitcherTarget) => {
+    if (commandPending.current || switcherOperation.current) return false;
+    switcherCancelReleaseIssued.current = false;
+    switcherOperation.current = true;
+    commandPending.current = true;
+    commandVersion.current += 1;
+    setCommandBusy(true);
+    setSwitcherTarget(target);
+    setSwitcherMessage('');
+    setSwitcherStarted(false);
+    setSwitcherAccepting(true);
+    let boundaryAccepted = false;
+    let boundaryAttempted = false;
+    let boundaryOutcomeObserved = false;
+    const profile = target.profile;
+    const selectedProfileId = target.isCurrent ? profileId : profile.id;
+
+    const publishBoundary = (state: 'Connecting' | 'Disconnected') => {
+      // Do not let a poll which began against the old connection restore its
+      // Ready workspace after the native owner accepted this switch.
+      resetForConnection(profile, true);
+      setProfileId(selectedProfileId);
+      switcherBoundary.current = true;
+      setSwitcherStarted(true);
+      setSwitcherMessage('');
+      if (state === 'Disconnected') {
+        setConnection({ ...INITIAL_CONNECTION, state, host: profile.host, port: profile.port });
+      }
+    };
+
+    const rejectBeforeBoundary = () => {
+      setSwitcherTarget(null);
+      setSwitcherStarted(false);
+      setSwitcherMessage('Could not start the switch. Check the connection and try again.');
+    };
+
+    const unknownBoundaryResult = () => {
+      const message = 'The switch result could not be confirmed. Start a new connection before continuing.';
+      setSwitcherTarget(null);
+      setSwitcherStarted(false);
+      setSwitcherMessage('The switch result could not be confirmed. Choose a server or Session to reconnect.');
+      failClosedForBoundaryResult('switch_outcome_unknown', message);
+    };
+
+    const finishBoundaryResult = (rawResult: unknown): 'accepted' | 'rejected' | 'failed' | 'unknown' => {
+      const outcome = readRuntimeBoundaryResult(rawResult);
+      if (!outcome) return 'unknown';
+      boundaryOutcomeObserved = true;
+      if (outcome.status === 'not_invoked' || outcome.status === 'rejected_before_boundary') {
+        return 'rejected';
+      }
+      boundaryAccepted = true;
+      if (outcome.status === 'accepted_after_failure') return 'failed';
+      return 'accepted';
+    };
+
+    try {
+      const currentOwnerCanChangeInPlace = target.isCurrent
+        && !['Disconnected', 'Failed', 'Closing'].includes(connection.state)
+        && Boolean(control.operationEpoch);
+      if (currentOwnerCanChangeInPlace) {
+        // This native command drains the current runtime actor and starts a
+        // fresh authenticated discovery generation for the same SSH profile.
+        // Its synchronous acceptance is the one-way boundary for the old
+        // selected runtime.
+        boundaryAttempted = true;
+        const result = finishBoundaryResult(
+          await MeetermTerminal.changeRuntime(CONNECTION_ID, control.operationEpoch),
+        );
+        if (result === 'rejected') {
+          rejectBeforeBoundary();
+          return false;
+        }
+        if (result === 'unknown') {
+          unknownBoundaryResult();
+          return false;
+        }
+        publishBoundary('Connecting');
+        if (result === 'failed') {
+          const message = 'Could not start the new connection. Choose a server or Session and try again.';
+          switcherBoundary.current = true;
+          setSwitcherStarted(true);
+          setSwitcherMessage(message);
+          failClosedForBoundaryResult('runtime_switch_start_failed', message);
+          return false;
+        }
+      } else {
+        const currentPreferences = preferencesLoaded ? preferences : await MeetermTerminal.getPreferences();
+        await MeetermTerminal.setAutomaticReconnect(CONNECTION_ID, currentPreferences.automaticReconnect);
+        await foregroundCommands.current;
+        await MeetermTerminal.setForeground(CONNECTION_ID, foreground.current);
+        // One selected actor per native connection: explicitly release it
+        // before connecting to the next SSH endpoint.
+        boundaryAttempted = true;
+        const result = finishBoundaryResult(
+          await MeetermTerminal.disconnectForSwitcher(CONNECTION_ID),
+        );
+        if (result === 'rejected') {
+          rejectBeforeBoundary();
+          return false;
+        }
+        if (result === 'unknown') {
+          unknownBoundaryResult();
+          return false;
+        }
+        publishBoundary('Disconnected');
+        if (result === 'failed') {
+          const message = 'Could not release the current connection cleanly. Choose a server or Session and try again.';
+          switcherBoundary.current = true;
+          setSwitcherStarted(true);
+          setSwitcherMessage(message);
+          failClosedForBoundaryResult('switch_release_failed', message);
+          return false;
+        }
+
+        let released: SshConnectionState | null = null;
+        try { released = await MeetermTerminal.getConnectionState(CONNECTION_ID); } catch { /* The release already crossed the boundary. */ }
+        try {
+          const releasedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+          const releasedControl = normalizeWorkspaceControl((releasedSession as WorkspaceState & { control?: unknown }).control);
+          observeCleanupWarning(releasedControl.cleanupWarning ?? legacyCleanupWarning(released ?? INITIAL_CONNECTION));
+        } catch {
+          observeCleanupWarning(legacyCleanupWarning(released ?? INITIAL_CONNECTION));
+        }
+
+        if (profile.credentialSaved) {
+          await MeetermTerminal.connectProfileHost(CONNECTION_ID, profile.id);
+          resetForConnection(profile, true);
+          setProfileId(selectedProfileId);
+          switcherBoundary.current = true;
+          setSwitcherStarted(true);
+        } else {
+          // The old owner is gone before opening the existing SSH form. The
+          // form returns to this switcher; it never restores the old runtime.
+          setConnection({ ...(released ?? INITIAL_CONNECTION), state: 'Disconnected', host: profile.host, port: profile.port });
+        }
+      }
+      return true;
+    } catch {
+      if (boundaryAccepted) {
+        switcherBoundary.current = true;
+        setSwitcherStarted(true);
+        const message = 'Could not start the new connection. Choose a server or Session and try again.';
+        setSwitcherMessage(message);
+        failClosedForBoundaryResult('runtime_switch_start_failed', message);
+      } else if (boundaryAttempted && !boundaryOutcomeObserved) {
+        unknownBoundaryResult();
+      } else {
+        rejectBeforeBoundary();
+      }
+      return false;
+    } finally {
+      setSwitcherAccepting(false);
+      switcherOperation.current = false;
+      commandPending.current = false;
+      setCommandBusy(false);
+    }
+  }, [control, failClosedForBoundaryResult, observeCleanupWarning, preferences, preferencesLoaded, profileId, resetForConnection]);
+
+  const startSwitcherTarget = useCallback(async (target: SwitcherTarget) => {
+    const needsForm = !target.profile.credentialSaved && !(target.isCurrent
+      && !['Disconnected', 'Failed', 'Closing'].includes(connection.state)
+      && Boolean(control.operationEpoch));
+    const started = await beginSwitcherTarget(target);
+    if (!started || !needsForm || !switcherBoundary.current) return started;
+    switcherFormConnected.current = false;
+    returnToSwitcherAfterForm.current = true;
+    showModal(() => {
+      formSavedProfile.current = undefined;
+      returnToServersAfterForm.current = false;
+      setFormProfile(target.profile);
+      setFormMode('connect');
+      setFormVisible(true);
+    });
+    return true;
+  }, [beginSwitcherTarget, connection.state, control.operationEpoch, showModal]);
+
   const connectSavedProfile = useCallback((profile: ServerProfile) => {
     if (commandPending.current) return;
+    if (active && profile.id !== profileId) {
+      openSwitcher();
+      void startSwitcherTarget({ profile, isCurrent: false });
+      return;
+    }
     const connect = () => {
       if (!profile.credentialSaved) { openProfileForm(profile); return; }
       void runCommand(async () => {
@@ -2225,14 +2662,115 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setProfileId(profile.id);
       }, 'Could not connect to this saved server. Choose Edit server to check its address and credentials.');
     };
-    if (active && profile.id !== profileId) {
-      Alert.alert('Switch servers?', 'This disconnects the current server and connects to the selected one. Your remote work keeps running.', [
-        { text: 'Cancel', style: 'cancel' }, { text: 'Switch server', onPress: connect },
-      ]);
-    } else if (active && profile.id === profileId) {
+    if (active && profile.id === profileId) {
       setSheet(null);
     } else connect();
-  }, [active, openProfileForm, prepareConnection, profileId, resetForConnection, runCommand]);
+  }, [active, openProfileForm, openSwitcher, prepareConnection, profileId, resetForConnection, runCommand, startSwitcherTarget]);
+
+  const cancelSwitcher = useCallback(async (destination: 'close' | 'switcher' | 'servers' = 'close') => {
+    if (switcherOperation.current) return;
+    const hadStarted = switcherBoundary.current;
+    if (!hadStarted) {
+      setSwitcherTarget(null);
+      setSwitcherStarted(false);
+      setSwitcherMessage('');
+      setSwitcherAccepting(false);
+      if (destination === 'servers') presentSheetAfterCurrentDismissal('servers');
+      else setSheet(destination === 'switcher' ? 'switcher' : null);
+      return;
+    }
+
+    // The switch boundary retired the previous UI binding. Route any later
+    // connection through a saved profile or credential form; the native
+    // ManualReconnect profile was intentionally cleared before selection.
+    switcherOperation.current = true;
+    commandPending.current = true;
+    commandVersion.current += 1;
+    setCommandBusy(true);
+    invalidateRuntimeDiscovery(false);
+    pendingRuntimeSelection.current = null;
+    pendingRuntimeCreation.current = '';
+    pendingRuntimeSelectionBaseline.current = { connectionGeneration: '', revision: -1, errorCode: '' };
+    pendingRuntimeCreationBaseline.current = { connectionGeneration: '', revision: -1, errorCode: '' };
+    setRuntimeSelectingId('');
+    setRuntimeBusy(false);
+    setRuntimeActionBusy(false);
+    setSwitcherTarget(null);
+    setSwitcherStarted(false);
+    setSwitcherAccepting(false);
+    setSwitcherMessage(destination === 'switcher'
+      ? 'The previous attempt was canceled. Its remote session remains available; choose a server to continue.'
+      : '');
+    switcherBoundary.current = false;
+    switcherCancelFence.current = true;
+    switcherCancelReleaseIssued.current = false;
+    recoveryInvalidatedRef.current = true;
+    setRecoveryInvalidated(true);
+    workspaceObservationRef.current = false;
+    ignoreReadyUntilNewConnection.current = true;
+    runtimeSelectionRequired.current = false;
+    retainedPaneRef.current = null;
+    setRecoveredEpoch('');
+    setSession(EMPTY_WORKSPACES);
+    setSelectedPaneIds({});
+    setWorkspaceId('');
+    setScreen('workspaces');
+    updateRuntimeBound(false);
+    setConnection(current => ({ ...current, state: 'Closing' }));
+    if (destination === 'servers') presentSheetAfterCurrentDismissal('servers');
+    else setSheet(destination === 'switcher' ? 'switcher' : null);
+    try {
+      await MeetermTerminal.disconnect(CONNECTION_ID);
+      const disconnected = await MeetermTerminal.getConnectionState(CONNECTION_ID);
+      setConnection(disconnected);
+      try {
+        const disconnectedSession = await MeetermTerminal.getWorkspaceState(CONNECTION_ID);
+        const disconnectedControl = normalizeWorkspaceControl((disconnectedSession as WorkspaceState & { control?: unknown }).control);
+        observeCleanupWarning(disconnectedControl.cleanupWarning ?? legacyCleanupWarning(disconnected));
+      } catch {
+        observeCleanupWarning(legacyCleanupWarning(disconnected));
+      }
+    } catch {
+      setControlMessage('Could not cancel the switch request. Retry or choose a server after connection status updates.');
+    } finally {
+      switcherOperation.current = false;
+      commandPending.current = false;
+      setCommandBusy(false);
+    }
+  }, [invalidateRuntimeDiscovery, observeCleanupWarning, presentSheetAfterCurrentDismissal, updateRuntimeBound]);
+
+  const closeSwitcher = useCallback(() => {
+    if (switcherAccepting) return;
+    void cancelSwitcher('close');
+  }, [cancelSwitcher, switcherAccepting]);
+
+  const switcherDismissed = useCallback(() => {
+    setHostPromptDeferred(false);
+    setModalPending(false);
+    const show = pendingModal.current;
+    pendingModal.current = null;
+    show?.();
+    if (sheet === 'switcher' && !returnToSwitcherAfterForm.current && switcherBoundary.current) {
+      void cancelSwitcher('close');
+    }
+  }, [cancelSwitcher, sheet]);
+
+  const manageFromSwitcher = useCallback(() => {
+    if (switcherBoundary.current) void cancelSwitcher('servers');
+    else {
+      setSwitcherTarget(null);
+      setSwitcherMessage('');
+      presentSheetAfterCurrentDismissal('servers');
+    }
+  }, [cancelSwitcher, presentSheetAfterCurrentDismissal]);
+
+  const chooseAnotherSwitcherServer = useCallback(() => {
+    if (switcherBoundary.current) void cancelSwitcher('switcher');
+    else {
+      setSwitcherTarget(null);
+      setSwitcherMessage('');
+    }
+  }, [cancelSwitcher]);
 
   const deleteProfile = useCallback((profile: ServerProfile) => {
     Alert.alert('Remove saved server?', `${profile.name}\n\nThis removes the server and its saved credentials from this device. Your remote work stays on the server.`, [
@@ -2380,13 +2918,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (foundation) { setFoundation(false); return true; }
+      if (sheet === 'switcher') { closeSwitcher(); return true; }
       if (runtimePickerVisible) { cancelRuntimeSelection(); return true; }
       if (screen === 'terminal') { backToWorkspaces(); return true; }
       if (searching) { closeSearch(); return true; }
       return false;
     });
     return () => subscription.remove();
-  }, [backToWorkspaces, cancelRuntimeSelection, closeSearch, foundation, runtimePickerVisible, screen, searching]);
+  }, [backToWorkspaces, cancelRuntimeSelection, closeSearch, closeSwitcher, foundation, runtimePickerVisible, screen, searching, sheet]);
 
   const reviewChangedHostKey = useCallback(() => {
     const changeId = keyChangeId(connection);
@@ -2448,9 +2987,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Companion small />
       </View> : null}
       {attempted ? <View style={[styles.serverRow, { borderBottomColor: homeColors.border }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" accessibilityHint="Choose a saved server" onPress={() => openSheet('servers')} style={({ pressed }) => [styles.serverTarget, pressed && { backgroundColor: homeColors.surface }]}>
+        <Pressable testID="switch-server-session" accessibilityRole="button" accessibilityLabel="Switch server or session" accessibilityHint={`${currentSessionDescription}. Opens the server and session switcher.`} onPress={openSwitcher} style={({ pressed }) => [styles.serverTarget, pressed && { backgroundColor: homeColors.surface }]}>
           <Icon name="server" color={homeColors.muted} size={17} />
-          <Text numberOfLines={1} style={[styles.serverName, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
+          <View style={styles.serverTargetLabels}>
+            <Text numberOfLines={1} style={[styles.serverName, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
+            <Text numberOfLines={1} style={[styles.serverSessionName, { color: homeColors.muted }]}>{currentSessionDescription}</Text>
+          </View>
           <Icon name="down" color={homeColors.muted} size={12} />
         </Pressable>
         <ConnectionStatus connection={connection} colors={homeColors} />
@@ -2527,7 +3069,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <IconButton icon="back" label="Back to workspaces" colors={DARK} onPress={backToWorkspaces} />
         <View style={styles.terminalHeading}>
           <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} accessibilityState={{ disabled: !runtimeReady }} disabled={!runtimeReady} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: DARK.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={DARK.muted} size={12} /></Pressable>
-          <View style={styles.terminalStatusRow}><Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{endpoint(connection)}</Text><ConnectionStatus connection={connection} colors={DARK} /></View>
+          <View style={styles.terminalStatusRow}>
+            <Pressable testID="switch-server-session" accessibilityRole="button" accessibilityLabel="Switch server or session" accessibilityHint={`${currentSessionDescription}. Opens the server and session switcher.`} onPress={openSwitcher} style={styles.terminalServerSession}>
+              <Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
+              <Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{currentSessionDescription}</Text>
+            </Pressable>
+            <ConnectionStatus connection={connection} colors={DARK} />
+          </View>
         </View>
         <IconButton icon="menu" label="Terminal menu" colors={DARK} onPress={() => openSheet('server')} />
       </View>
@@ -2565,11 +3113,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     />
 
     <RuntimePicker
-      // The Change → server path temporarily keeps the existing saved-server
-      // sheet in front of the fresh runtime picker. Closing that sheet then
-      // exposes the picker if the new connection is already awaiting a
-      // runtime; the old retained recovery is never restored.
-      visible={runtimePickerVisible && sheet !== 'servers'}
+      // Fresh/manual connects still use the standalone picker. A switch
+      // already in progress renders the same discovery snapshot inside its
+      // Server / Session sheet so an old runtime picker never covers it.
+      visible={runtimePickerVisible && sheet !== 'servers' && sheet !== 'switcher'}
       serverName={currentProfile?.name ?? endpoint(connection)}
       discovery={runtimeDiscovery}
       createVisible={runtimeCreateVisible}
@@ -2594,10 +3141,73 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={() => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : 'Close sheet'} busy={commandBusy || recoveryPending.change} onDismiss={() => { setHostPromptDeferred(false); setModalPending(false); const show = pendingModal.current; pendingModal.current = null; show?.(); }} colors={homeColors}>
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'switcher' ? switcherTarget ? `Sessions on ${switcherSessionServerName}` : 'Switch server or session' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={sheet === 'switcher' ? closeSwitcher : () => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : sheet === 'switcher' ? 'Cancel server or session switch' : 'Close sheet'} busy={sheet === 'switcher' ? switcherAccepting : commandBusy || recoveryPending.change} allowDismissWhileBusy={sheet === 'switcher' && !switcherAccepting} onDismiss={switcherDismissed} colors={homeColors}>
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
-      {sheet === 'recovery' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+      {sheet === 'switcher' ? switcherTarget ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.runtimePickerContent}>
+        <View style={styles.runtimeIntro}>
+          <Text accessibilityRole="header" style={[styles.runtimeIntroTitle, { color: homeColors.text }]}>Choose a Session</Text>
+          <Text numberOfLines={2} style={[styles.runtimeServer, { color: homeColors.muted }]}>{switcherTarget.profile.name} · {endpoint({ ...connection, host: switcherTarget.profile.host, port: switcherTarget.profile.port })}</Text>
+          <Text style={[styles.runtimeHint, { color: homeColors.muted }]}>Selecting a server disconnects this phone from its current session, then authenticates and finds sessions on the selected server.</Text>
+        </View>
+        <Button testID="switcher-choose-another-server" label="Choose another server" colors={homeColors} secondary disabled={switcherAccepting} onPress={chooseAnotherSwitcherServer}>Choose another server</Button>
+        {switcherStarted && ['Failed', 'Disconnected'].includes(connection.state) ? <Button testID="switcher-retry" label="Retry server connection" colors={homeColors} disabled={switcherAccepting || commandBusy} onPress={() => { void startSwitcherTarget(switcherTarget); }}>Retry connection</Button> : null}
+        {switcherAccepting || (switcherStarted && runtimeBusy && !runtimeDiscovery) ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>{switcherAccepting ? 'Releasing the current session…' : 'Finding sessions…'}</Text></View> : null}
+        {switcherMessage || runtimeMessage ? <Text accessibilityRole="alert" style={[styles.runtimeMessage, { color: homeColors.danger }]}>{switcherMessage || runtimeMessage}</Text> : null}
+        {runtimeCreateVisible ? <View style={styles.runtimeSection}>
+          <Text style={[styles.runtimeIntroTitle, { color: homeColors.text }]}>Create a tmux session</Text>
+          <Text style={[styles.runtimeHint, { color: homeColors.muted }]}>This creates a detached session on {switcherSessionServerName} and opens it after native confirms its identity.</Text>
+          <TextInput accessibilityLabel="tmux session name" testID="runtime-tmux-name" defaultValue={suggestedTmuxName(runtimeDiscovery)} autoCapitalize="none" autoComplete="off" autoCorrect={false} maxLength={64} placeholder="meeterm" placeholderTextColor={homeColors.placeholder} selectionColor={homeColors.accent} style={[styles.runtimeInput, { color: homeColors.text, backgroundColor: homeColors.elevated, borderColor: runtimeCreationError ? homeColors.danger : homeColors.border }]} onChangeText={value => { setRuntimeCreationError(''); (runtimeNameRef.current = value); }} />
+          {runtimeCreationError ? <Text accessibilityRole="alert" style={[styles.runtimeError, { color: homeColors.danger }]}>{runtimeCreationError}</Text> : null}
+          <Button testID="runtime-tmux-create-submit" label="Create tmux session" colors={homeColors} disabled={runtimeBusy || runtimeActionBusy} onPress={() => { const name = (runtimeNameRef.current || suggestedTmuxName(runtimeDiscovery)).trim(); const error = validateTmuxSessionName(name); if (error) setRuntimeCreationError(error); else void createTmuxSession(name); }}>Create and open</Button>
+          <Button label="Back to sessions" colors={homeColors} secondary disabled={runtimeBusy || runtimeActionBusy} onPress={() => setRuntimeCreateVisible(false)}>Back to sessions</Button>
+        </View> : null}
+        {!switcherAccepting && !(switcherStarted && runtimeBusy && !runtimeDiscovery) && !runtimeMessage && !switcherMessage && !runtimeDiscovery && switcherStarted && !['Failed', 'HostKeyPending'].includes(connection.state) ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>Connecting before session discovery…</Text></View> : null}
+        {!switcherAccepting && runtimeDiscovery ? <>
+          {runtimeDiscovery.backends.map(item => {
+            const sectionError = item.errorMessage || item.errorCode;
+            return <View key={item.backend} style={styles.runtimeSection}>
+              <View style={styles.runtimeSectionHeading}><Text style={[styles.runtimeSectionTitle, { color: homeColors.text }]}>{item.backend === 'tmux' ? 'tmux' : 'Herdr'}</Text>{item.state === 'loading' ? <ActivityIndicator size="small" color={homeColors.accent} /> : null}</View>
+              {item.state === 'error' || sectionError ? <View style={[styles.runtimeSectionError, { backgroundColor: homeColors.surface }]}><Text accessibilityRole="alert" style={[styles.runtimeHint, { color: homeColors.danger }]}>{sectionError || 'This backend could not be inspected.'}</Text>{item.state === 'error' ? <Button label={`Retry ${item.backend === 'tmux' ? 'tmux' : 'Herdr'} discovery`} colors={homeColors} secondary disabled={runtimeBusy || runtimeActionBusy} onPress={() => { if (!commandPending.current && !runtimeBusy) void loadRuntimeDiscovery(true, false); }}>Retry</Button> : null}</View> : null}
+              {item.state === 'loading' ? <Text style={[styles.runtimeHint, { color: homeColors.muted }]}>Looking for running sessions…</Text> : item.candidates.length ? item.candidates.map(candidate => {
+                const stopped = candidate.state !== 'running';
+                const unavailable = stopped || !candidate.selectable;
+                const error = runtimeSelectionErrors[candidate.id] || candidate.errorMessage || candidate.errorCode;
+                return <View key={candidate.id} style={[styles.runtimeRowContainer, { borderBottomColor: homeColors.border }]}>
+                  <Pressable testID={`runtime-row-${candidate.backend}-${candidate.id}`} accessibilityRole="button" accessibilityLabel={`${candidate.backend === 'tmux' ? 'tmux' : 'Herdr'} ${switcherTarget ? 'session' : 'runtime'} ${candidate.name}`} accessibilityHint={stopped ? 'Open this session on your computer, then refresh.' : !candidate.selectable ? 'This session is unavailable. Refresh and try again.' : undefined} accessibilityState={{ disabled: unavailable || runtimeBusy, selected: runtimeSelectingId === candidate.id }} disabled={unavailable || runtimeBusy} onPress={() => { void selectRuntime(candidate); }} style={({ pressed }) => [styles.runtimeRow, pressed && { backgroundColor: homeColors.surface }, (unavailable || runtimeBusy) && { opacity: stopped ? .55 : .8 }]}>
+                    <View style={styles.runtimeRowCopy}>
+                      <View style={styles.runtimeNameLine}><Text numberOfLines={2} style={[styles.runtimeName, { color: homeColors.text }]}>{candidate.name}</Text>{candidate.lastUsed ? <Text style={[styles.runtimeBadge, { color: homeColors.accent, borderColor: homeColors.accent }]}>Last used</Text> : null}</View>
+                      <Text style={[styles.runtimeState, { color: stopped || !candidate.selectable ? homeColors.muted : homeColors.accent }]}>{stopped ? 'Stopped' : candidate.selectable ? 'Running' : 'Unavailable'}</Text>
+                      {stopped ? <Text style={[styles.runtimeHint, { color: homeColors.muted }]}>Open this session in {candidate.backend === 'herdr' ? 'Herdr' : 'tmux'} on your computer, then tap Refresh.</Text> : null}
+                      {error ? <Text accessibilityRole="alert" style={[styles.runtimeError, { color: homeColors.danger }]}>{error}</Text> : null}
+                    </View>
+                    {runtimeSelectingId === candidate.id ? <ActivityIndicator color={homeColors.accent} /> : <Icon name="chevron" color={stopped ? homeColors.muted : homeColors.accent} size={18} />}
+                  </Pressable>
+                </View>;
+              }) : <Text style={[styles.runtimeHint, { color: homeColors.muted }]}>{item.backend === 'tmux' ? 'No running tmux sessions found.' : 'No running Herdr sessions found.'}</Text>}
+              {item.backend === 'tmux' && item.state === 'ready' && item.canCreate ? <Button testID="runtime-create-tmux" label="Create tmux session" colors={homeColors} secondary disabled={runtimeBusy || runtimeActionBusy} onPress={() => { runtimeNameRef.current = suggestedTmuxName(runtimeDiscovery); setRuntimeCreationError(''); setRuntimeCreateVisible(true); }}>Create tmux session</Button> : null}
+            </View>;
+          })}
+          <Button testID="runtime-refresh" label={switcherTarget ? 'Refresh sessions' : 'Refresh runtimes'} colors={homeColors} secondary disabled={runtimeBusy || runtimeActionBusy || Boolean(runtimeSelectingId)} onPress={refreshRuntimes}>Refresh</Button>
+          <Button testID="switcher-manage-servers" label="Manage servers" colors={homeColors} secondary disabled={switcherAccepting} onPress={manageFromSwitcher}>Manage servers</Button>
+          <Text style={[styles.runtimeHint, { color: homeColors.muted }]}>Herdr sessions must already be running. Starting or creating Herdr sessions happens on the computer.</Text>
+        </> : null}
+      </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+        <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Choose a server to reconnect and list its Sessions. Opening this sheet does not connect or search.</Text>
+        {switcherMessage ? <Text accessibilityRole="alert" style={[styles.runtimeMessage, { color: homeColors.danger }]}>{switcherMessage}</Text> : null}
+        {profilesLoading && switcherServerRows.length === 0 ? <View style={styles.loading}><ActivityIndicator color={homeColors.accent} /><Text style={[styles.emptyBody, { color: homeColors.muted }]}>Loading saved servers…</Text></View> : null}
+        {switcherServerRows.map(({ profile, isCurrent }) => {
+          const selectedSession = isCurrent && (runtimeReady || retainedWorkAvailable);
+          return <Pressable key={profile.id} testID={`switcher-server-${profile.id}`} accessibilityRole="button" accessibilityLabel={`Browse sessions on ${profile.name}`} accessibilityHint="Disconnects this phone from its current session, then reconnects and lists sessions on this server." accessibilityState={{ selected: selectedSession, disabled: switcherAccepting }} disabled={switcherAccepting} onPress={() => { void startSwitcherTarget({ profile, isCurrent }); }} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }, switcherAccepting && { opacity: .6 }]}>
+            <View style={styles.rowCopy}><Text numberOfLines={1} style={[styles.rowTitle, { color: homeColors.text }]}>{profile.name}</Text><Text numberOfLines={1} style={[styles.rowSubtitle, { color: homeColors.muted }]}>{isCurrent ? `${selectedSession ? `Current · ${currentSessionDescription}` : currentSessionDescription} · ${endpoint(connection)}` : `${profile.username}@${endpoint({ ...connection, host: profile.host, port: profile.port })}`}</Text></View>
+            {selectedSession ? <Text style={[styles.runtimeBadge, { color: homeColors.accent, borderColor: homeColors.accent }]}>Current</Text> : <Icon name="chevron" color={homeColors.muted} size={18} />}
+          </Pressable>;
+        })}
+        {!switcherServerRows.length && !profilesLoading ? <Text style={[styles.emptyBody, { color: homeColors.muted }]}>No saved servers yet. Connect to a server or add one to continue.</Text> : null}
+        {active ? <Button testID="switcher-disconnect" label="Disconnect" colors={homeColors} secondary disabled={commandBusy || switcherAccepting} onPress={disconnect}>Disconnect this phone</Button> : null}
+        <Button testID="switcher-manage-servers" label="Manage servers" colors={homeColors} secondary disabled={commandBusy || switcherAccepting} onPress={manageFromSwitcher}>Manage servers</Button>
+        {!attempted ? <Button label="Connect to another server" colors={homeColors} onPress={() => openProfileForm()}>Connect to another server</Button> : null}
+      </ScrollView> : sheet === 'recovery' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text testID="recovery-change-intro" style={[styles.emptyBody, { color: homeColors.muted }]}>Choosing another destination stops recovery for this workspace. Remote work will not be closed.</Text>
         <Pressable testID="recovery-change-runtime" accessibilityRole="button" accessibilityLabel="Choose another runtime" accessibilityState={{ disabled: recoveryPending.change }} disabled={recoveryPending.change} onPress={() => { void changeRecoveryDestination('runtime'); }} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}>
           <View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: homeColors.text }]}>Choose another runtime</Text><Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>Stay on {recoveryServerLabel}</Text></View><Icon name="chevron" color={homeColors.muted} size={18} />
@@ -2637,7 +3247,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {canReconnect ? <Button label="Reconnect" colors={homeColors} disabled={commandBusy} onPress={reconnect}>Reconnect</Button> : null}
         {!active && !closing ? <Button label="Connect" colors={homeColors} secondary onPress={openForm}>Connection details</Button> : null}
         {active ? <Button label="Disconnect" colors={homeColors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? 'Disconnect' : 'Cancel connection'}</Button> : null}
-        <Pressable accessibilityRole="button" accessibilityLabel="Saved servers" disabled={commandBusy} onPress={() => setSheet('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Switch server or session" disabled={commandBusy} onPress={openSwitcher} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server or session</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Manage servers" disabled={commandBusy} onPress={() => presentSheetAfterCurrentDismissal('servers')} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Manage servers</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Terminal settings" disabled={commandBusy} onPress={openSettings} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Settings</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>
         {screen === 'terminal' && workspace && selectedPane ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
           <Text numberOfLines={2} style={[styles.sectionLabel, { color: homeColors.muted }]}>{selectedPane.name || selectedPane.id}</Text>
@@ -2754,8 +3365,10 @@ const styles = StyleSheet.create({
   heroTitle: { fontSize: 30, lineHeight: 38, fontWeight: '700', letterSpacing: -1 },
   heroDescription: { fontSize: 13, lineHeight: 20, marginTop: 8 },
   serverRow: { marginHorizontal: 24, marginBottom: 16, minHeight: 60, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: StyleSheet.hairlineWidth },
-  serverName: { flex: 1, minWidth: 0, fontSize: 15 },
+  serverName: { minWidth: 0, fontSize: 15, fontWeight: '600' },
   serverTarget: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  serverTargetLabels: { flex: 1, minWidth: 0, gap: 1 },
+  serverSessionName: { minWidth: 0, fontSize: 11, lineHeight: 16 },
   status: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusText: { fontSize: 11, lineHeight: 18, flexShrink: 1 },
@@ -2795,7 +3408,8 @@ const styles = StyleSheet.create({
   terminalHeading: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center', paddingTop: 0, paddingBottom: 8 },
   terminalTitleRow: { minHeight: 44, alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   terminalTitle: { fontSize: 17, lineHeight: 25, fontWeight: '600', flexShrink: 1 },
-  terminalStatusRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 },
+  terminalStatusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8, alignSelf: 'stretch' },
+  terminalServerSession: { flex: 1, minWidth: 0 },
   terminalHost: { fontSize: 11, lineHeight: 18, flexShrink: 1 },
   paneStrip: { borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', paddingRight: 4 },
   paneTabs: { paddingHorizontal: 12, gap: 4 },

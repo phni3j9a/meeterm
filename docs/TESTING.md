@@ -13,8 +13,8 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | --- | --- | --- |
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
-| Android | full smoke（healthy foreground と fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker）と画像の実見。source-levelのobservational `SCREEN_NAMES` は31 route（従来25 route＋recovery 4 route＋layout-restore warning 2 route） | Androidの自動操作とnative境界。transport-lossの実証はremote emulator実行に限り、fixtureは表示確認だけの代替ではない |
-| iOS `standard` | production保存4件、native入力／復旧bridge 11件＋scroll gesture 1件、source-level 25画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| Android | full smoke（healthy foreground と fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker）と画像の実見。source-levelのobservational `SCREEN_NAMES` は33 route（従来25 route＋switcher 2 route＋recovery 4 route＋layout-restore warning 2 route） | Androidの自動操作とnative境界。transport-lossの実証はremote emulator実行に限り、fixtureは表示確認だけの代替ではない |
+| iOS `standard` | production保存4件、native入力／復旧bridge 12件＋scroll gesture 1件、source-level 27画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
 | iOS `ssh` | 接続、ホスト鍵確認、runtime picker/選択、healthy foreground復帰、fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker、切断 | iOSの実SSH、runtime選択、native端末入力とtransport-loss接続境界 |
@@ -63,14 +63,50 @@ warning、auth-error と cleanup-warning の併存を含む7 routeを
 確認します。
 Android full、iOS `standard`、接続変更を含む短い iOS `ssh` を適用し、両OSの
 スクリーンショットを実際にダウンロードして確認するまで visual success と報告
-しません。iOS `standard` の source-level manifest は25画面で、Issue #21の18画面に
-`recovery-progress`、`recovery-exhausted`、`recovery-mismatch`、
+しません。iOS `standard` の source-level manifest は27画面で、Issue #21の18画面に
+`session-switcher`、`session-switcher-sessions`、`recovery-progress`、
+`recovery-exhausted`、`recovery-mismatch`、
 `herdr-recovery-confirm`、`layout-restore-unconfirmed`、
 `runtime-layout-restore-unconfirmed`、`connection-error`を加えます。
 `herdr-connection` は Herdr `default` candidate の non-authoritative な `Last used` hint
-を示す picker state です。Android の observational `SCREEN_NAMES` は31 routeで、Issue #21の
-25 routeに4 recovery routeと2つの layout-restore warning fixtureを加えます。これらは source scope であり、remote CI や visual review の
+を示す picker state です。Android の observational `SCREEN_NAMES` は33 routeで、Issue #21の
+25 routeに2 switcher route、4 recovery routeと2つの layout-restore warning
+fixtureを加えます。これらは source scope であり、remote CI や visual review の
 結果ではありません。
+
+## Issue #27 sequential Server / Session switcher の確認項目
+
+Issue #27 の切替UIは同じプロセス内の単一 native owner を順に切り替えます。
+focused App/native 回帰では、シートを開閉するだけなら native 呼び出しがないこと、
+同一サーバーの `changeRuntime` と cross-server の `disconnect_for_switch` が返す
+境界結果を確認します。`not_invoked` / `rejected_before_boundary` は画面・recovery
+所有権を保ち、Readyかつinput gate閉鎖の場合と Reconnecting/Failed の retained work
+の両方で確認します。`accepted_after_failure` は旧 view を退役させ、unknown/throw は
+snapshotから境界を推定せず fail closed にします。recovery の `Change` も同じ結果型を
+消費すること、別サーバーでは release 後に認証・discoveryへ進むこと、Sessionの明示
+選択後だけReadyとlast-used hint更新が行われることを含めます。
+
+cancel回帰は、nativeのin-memory profileが選択前に消える実装を模擬します。キャンセル後に
+保存profileから `connectProfileHost` または既存credential formで新規接続し、fresh pickerで
+明示Session選択すること、旧generationの遅延Readyを無視すること、Reconnectやin-memory
+`reconnect` に依存しないことを確認します。開始後cancel、auth failure、retry、遅れて届く
+selection、switcher内のhost-key確認、独立runtime pickerの非表示、CurrentとLast usedの区別、
+profile ID/credentialの維持もfocused testの範囲です。
+
+Android full と iOS `ssh` の OpenSSH fixture は、同じ host の異なる SSH port にそれぞれ
+異なる通常 tmux server を割り当てます。fixtureのsshd設定は `Match LocalPort` ごとに
+別の `TMUX_TMPDIR` を `SetEnv` し、alternate endpointに
+`switcher-alternate-destination` Sessionを作ります。接続先をportで分けるため、cross-endpoint
+switchが元のtmux serverに戻ってしまう実装では試験を通過できません。
+
+Android full の daily-use 経路と iOS `ssh` は、同一host/portの別Sessionへのswitchと元Session
+へのreturn、alternate portへのswitch、switcher内の明示host-key確認、宛先へのmarker input、
+元Sessionへ戻った後の同じshell PIDを検証します。iOS `standard` は
+`session-switcher` / `session-switcher-sessions` の seeded 画面を撮影する表示確認で、SSH fixture
+を起動せず実際のswitch操作を証明しません。`ssh` が実操作の証拠です。Android full と iOS
+`standard`/`ssh` のsource-level対象とsuiteの役割を示しており、未実行のhosted runや画像reviewの
+結果は主張しません。Mainは候補sourceで実行し、最終suiteの両OS画像を取得・実見してから受入と
+visual successを報告します。
 
 ## Issue #26 retained-work recovery の確認項目
 
@@ -173,16 +209,18 @@ smoke buildと明示したテスト起動URLを組み合わせ、固定の公開
 
 対象はホーム、保存済みサーバー、鍵認証フォーム、パスワード認証フォーム、
 ワークスペース一覧、ターミナル、設定、ワークスペース名、ターミナル名、PC引き継ぎに加え、
+`session-switcher`、`session-switcher-sessions`、
 `runtime-picker`、`runtime-partial-error`、`runtime-empty`、`runtime-create`、
 `herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces`、
 `recovery-progress`、`recovery-exhausted`、`recovery-mismatch`、
 `herdr-recovery-confirm`、`layout-restore-unconfirmed`、
-`runtime-layout-restore-unconfirmed`、`connection-error`を含むiOS `standard` のsource-level 25画面です。
+`runtime-layout-restore-unconfirmed`、`connection-error`を含むiOS `standard` のsource-level 27画面です。
 `herdr-connection` は旧backend/session formではなく、
 Herdr `default` candidate の `Last used` hint を示すpicker stateです。
 `meeterm://smoke?screen=<名前>` で直接開き、`standard-<名前>.png` に保存します。
 名前は順に `home`、`servers`、`connection`、`password`、`workspaces`、`terminal`、
-`settings`、`workspace-name`、`terminal-name`、`handoff`、`runtime-picker`、
+`settings`、`workspace-name`、`terminal-name`、`handoff`、`session-switcher`、
+`session-switcher-sessions`、`runtime-picker`、
 `runtime-partial-error`、`runtime-empty`、`runtime-create`、
 `herdr-connection`、`herdr-groups`、`herdr-terminal`、`herdr-workspaces`、
 `recovery-progress`、`recovery-exhausted`、`recovery-mismatch`、
@@ -200,7 +238,8 @@ Herdr `default` candidate の `Last used` hint を示すpicker stateです。
 この区間だけ既存の録画機構で `daily-interactions.mp4` を記録します。
 fixtureは既存 `poc-main` を開くことだけを許し、接続・遠隔操作・端末データの生成は行いません。
 これはnavigation/keyboard表示の検証であり、SSH入力の証拠にはしません。
-Android の observational `SCREEN_NAMES` は31 routeです。従来25 routeに
+Android の observational `SCREEN_NAMES` は33 routeです。従来25 routeに
+`session-switcher` と `session-switcher-sessions`、
 `recovery-progress`、`recovery-exhausted`、`recovery-mismatch`、
 `herdr-recovery-confirm`、layout-restore warning 2 routeを加えたsource-level scopeで、
 任意の画像を採取します。既存full gateとdaily-use録画は維持し、source scopeと実際のCI・画像確認は

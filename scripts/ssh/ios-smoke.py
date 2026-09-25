@@ -100,11 +100,13 @@ NATIVE_INPUT_CASES = (
     "async_paste_epoch",
     "cached_read_only",
     "recovery_arguments",
+    "runtime_boundary_result",
     "live_epoch_refocus",
 )
 RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
     "MEETERM_SSH_PORT",
+    "MEETERM_SSH_ALTERNATE_PORT",
     "MEETERM_SSH_USERNAME",
     "MEETERM_SSH_FINGERPRINT",
     "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE",
@@ -151,6 +153,7 @@ NAMES_TEST_ENVIRONMENT_NAMES = (
 )
 SSH_TEST_ENVIRONMENT_NAMES = (
     *NAMES_TEST_ENVIRONMENT_NAMES,
+    "MEETERM_SSH_ALTERNATE_PORT",
     "MEETERM_IOS_MARKER_VALUE",
     "MEETERM_SSH_FIXTURE_CONTROL_REQUEST",
     "MEETERM_SSH_FIXTURE_CONTROL_STATUS",
@@ -196,6 +199,19 @@ def fixture_socket() -> Path:
     ):
         raise SmokeFailure("fixture_environment", "socket_path_invalid")
     return value
+
+
+def alternate_fixture_socket(primary_socket: Path | None = None) -> Path:
+    primary = primary_socket or fixture_socket()
+    root = primary.parent.parent.parent
+    if (
+        primary.name != "default"
+        or primary.parent.name != f"tmux-{os.getuid()}"
+        or primary.parent.parent.name != "tmux"
+        or not root.name.startswith("meeterm-ssh-fixture-")
+    ):
+        raise SmokeFailure("fixture_environment", "socket_path_invalid")
+    return root / "tmux-alternate" / f"tmux-{os.getuid()}" / "default"
 
 
 def sanitized_environment(socket_path: Path) -> dict[str, str]:
@@ -280,6 +296,11 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
         ("select-pane", "-t", first_pane),
         "tmux_fixture",
     )
+    run_tmux(
+        socket_path,
+        ("new-session", "-d", "-s", "switcher-destination", "-n", "switcher-main", "/bin/sh", "-i"),
+        "tmux_fixture",
+    )
     workspaces = run_tmux(
         socket_path,
         ("list-windows", "-t", "=meeterm", "-F", "#{window_name}"),
@@ -287,12 +308,33 @@ def prepare_topology(socket_path: Path) -> tuple[int, int]:
     ).stdout.splitlines()
     panes = run_tmux(
         socket_path,
-        ("list-panes", "-t", "=meeterm", "-a", "-F", "#{pane_id}"),
+        ("list-panes", "-s", "-t", "=meeterm", "-F", "#{pane_id}"),
         "tmux_fixture",
     ).stdout.splitlines()
     if set(workspaces) != {"ios-main", "ios-side"} or len(panes) != 3:
         raise SmokeFailure("tmux_fixture", "topology_invalid")
     return len(workspaces), len(panes)
+
+
+def prepare_alternate_topology(socket_path: Path) -> None:
+    """Seed a Session available only through the alternate SSH endpoint."""
+
+    existing = run_tmux(
+        socket_path,
+        ("list-sessions", "-F", "#{session_name}"),
+        "tmux_alternate_fixture",
+        allow_failure=True,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise SmokeFailure("tmux_alternate_fixture", "session_already_exists")
+    run_tmux(
+        socket_path,
+        (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ),
+        "tmux_alternate_fixture",
+    )
 
 
 def fixture_pane_processes(socket_path: Path, stage: str) -> list[tuple[str, int]]:
@@ -1777,6 +1819,7 @@ def main() -> int:
                     os.environ["MEETERM_IOS_HANDOFF_VALUE"] = handoff_value
 
             stage = "tmux_fixture"
+            prepare_alternate_topology(alternate_fixture_socket(socket_path))
             workspaces, panes = prepare_topology(socket_path)
             write_text(
                 args.artifact_dir / "fixture-validation.txt",

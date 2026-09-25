@@ -267,6 +267,25 @@ final class TerminalInputViewTests: XCTestCase {
     if !recordedIssue { appendValidation("case=recovery_arguments result=passed") }
   }
 
+  @MainActor func testRuntimeBoundaryBridgePreservesNativeAndPreCallResults() {
+    XCTAssertEqual(RuntimeBoundaryBridgeResult.notInvoked(), [
+      "status": "not_invoked",
+      "errorCode": "invalid_argument",
+    ])
+    XCTAssertEqual(RuntimeBoundaryBridgeResult.fromNativeCode(0), ["status": "accepted"])
+    XCTAssertEqual(RuntimeBoundaryBridgeResult.fromNativeCode(-14), [
+      "status": "rejected_before_boundary",
+      "errorCode": "recovery_stale",
+    ])
+    XCTAssertEqual(RuntimeBoundaryBridgeResult.fromNativeCode(-15), [
+      "status": "accepted_after_failure",
+      "errorCode": "boundary_accepted_failure",
+    ])
+    XCTAssertNil(RuntimeBoundaryBridgeResult.fromNativeCode(Int32.min),
+      "Unknown bridge failures must remain unclassified.")
+    if !recordedIssue { appendValidation("case=runtime_boundary_result result=passed") }
+  }
+
   @MainActor func testControlModifierAppliesToOneCommitAndIsCancelledOnRebind() {
     var modified: [(String, UInt32)] = []
     var committed: [String] = []

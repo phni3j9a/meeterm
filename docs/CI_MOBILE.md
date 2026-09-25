@@ -143,10 +143,11 @@ accessibility diagnostic simulator profile (SE-class layout, extra-large
 content size); report it separately from normal Pro-class results and never
 substitute a large device for a small one.
 
-- `standard`: four production storage cases, eleven native input/recovery-bridge
+- `standard`: four production storage cases, twelve native input/recovery-bridge
   cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
-  has 25 routes: the previous 18 plus `recovery-progress`,
+  has 27 routes: the previous 18 plus `session-switcher`,
+  `session-switcher-sessions`, `recovery-progress`,
   `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
   `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
   `connection-error`. The existing
@@ -186,15 +187,28 @@ switch/release, backend-local partial failures, and fail-closed linked/shared
 tmux mutations. Retained-work checks additionally cover strict original tmux
 pane recovery, Herdr in-work confirmation, operation-epoch input gating, no
 automatic picker/fallback, and authoritative resynchronization before Ready.
-The iOS `standard` source-level manifest has 25 routes and Android's
-observational `SCREEN_NAMES` has 31 routes: each includes the four
-runtime-picker routes `runtime-picker`, `runtime-partial-error`, `runtime-empty`,
-and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
+The iOS `standard` source-level manifest has 27 routes and Android's
+observational `SCREEN_NAMES` has 33 routes. Both include the two switcher routes,
+the four runtime-picker routes `runtime-picker`, `runtime-partial-error`,
+`runtime-empty`, and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
 `recovery-mismatch`, and `herdr-recovery-confirm`, plus the two
 `layout-restore-unconfirmed` warning fixtures and the `connection-error`
 auth-warning coexistence fixture, while `herdr-connection` is
 the repurposed picker state described above. These are source-level scopes only;
 this document does not claim remote CI or visual review.
+
+Issue #27 uses Android `full` and iOS `standard` plus `ssh`. The `standard`
+switcher routes are seeded presentation captures only; they do not start the
+SSH fixture or prove switch actions. Android `full`'s daily-use extension and
+iOS `ssh` perform same-server Session switching and cross-endpoint switching.
+The fixture sshd listens on distinct ports; `Match LocalPort` sets a different
+`TMUX_TMPDIR` for each port, and the alternate endpoint owns the separate
+ordinary tmux Session `switcher-alternate-destination`. The switch tests verify
+destination input markers, explicit host-key confirmation for the alternate
+profile, and the original shell PID after returning. These are suite scopes,
+not remote-run results; Main records exact-source builds/runs and reviews the
+final Android/iOS evidence separately. See [TESTING.md](TESTING.md) for the
+focused App/native boundary and cancel cases.
 
 Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
 forms/names have 15, and optional full retains its 30-minute storage/UI budget.

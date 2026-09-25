@@ -379,6 +379,25 @@ class InputSessionTest {
     assertFalse(RecoveryBridgeValidation.validRecoveryToken("nul\u0000token"))
   }
 
+  @Test
+  fun runtimeBoundaryResultsPreserveNativeMeaningAndPreCallRejection() {
+    assertEquals(mapOf("status" to "not_invoked", "errorCode" to "invalid_argument"),
+      RuntimeBoundaryBridgeResult.notInvoked())
+    assertEquals(mapOf("status" to "accepted"), RuntimeBoundaryBridgeResult.fromNativeCode(0))
+    assertEquals(mapOf("status" to "rejected_before_boundary", "errorCode" to "recovery_stale"),
+      RuntimeBoundaryBridgeResult.fromNativeCode(-14))
+    assertEquals(mapOf("status" to "accepted_after_failure", "errorCode" to "boundary_accepted_failure"),
+      RuntimeBoundaryBridgeResult.fromNativeCode(-15))
+
+    var unknownRejected = false
+    try {
+      RuntimeBoundaryBridgeResult.fromNativeCode(Int.MIN_VALUE)
+    } catch (_: IllegalStateException) {
+      unknownRejected = true
+    }
+    assertTrue("Unknown JNI failures must not be classified as pre-boundary", unknownRejected)
+  }
+
   private fun assertInvalidEpoch(value: String) {
     var rejected = false
     try {

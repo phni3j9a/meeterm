@@ -29,6 +29,42 @@ internal object RecoveryBridgeValidation {
       value.none(Char::isISOControl) && !value.contains('\u0000')
 }
 
+/** Stable JS result shape for native owner-boundary operations. */
+internal object RuntimeBoundaryBridgeResult {
+  fun notInvoked(): Map<String, String> = mapOf(
+    "status" to "not_invoked",
+    "errorCode" to "invalid_argument",
+  )
+
+  fun fromNativeCode(code: Int): Map<String, String> = when (code) {
+    0 -> mapOf("status" to "accepted")
+    -15 -> mapOf(
+      "status" to "accepted_after_failure",
+      "errorCode" to "boundary_accepted_failure",
+    )
+    else -> {
+      val errorCode = when (code) {
+        -1 -> "invalid_argument"
+        -2 -> "unknown_terminal"
+        -3 -> "runtime_unavailable"
+        -4 -> "internal_error"
+        -5 -> "host_key_response"
+        -6 -> "trust_store"
+        -7 -> "reconnect_unavailable"
+        -8 -> "runtime_selection_unavailable"
+        -9 -> "runtime_stale"
+        -10 -> "runtime_create_collision"
+        -11 -> "runtime_create_unknown"
+        -12 -> "tmux_topology_unsafe"
+        -13 -> "recovery_unavailable"
+        -14 -> "recovery_stale"
+        else -> throw IllegalStateException("The native runtime switch result is unknown.")
+      }
+      mapOf("status" to "rejected_before_boundary", "errorCode" to errorCode)
+    }
+  }
+}
+
 /**
  * Native-only text composition and key translation state.
  *

@@ -184,15 +184,16 @@ loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
 selection/create transitions are covered by focused app/native tests. The fixed
 source-level visual manifests include the picker routes plus retained-work
 recovery progress, exhaustion, mismatch, and Herdr confirmation. The iOS
-`standard` manifest has 25 screens: the Issue #21 set of 18 plus
+`standard` manifest has 27 screens: the Issue #21 set of 18 plus
+`session-switcher` and `session-switcher-sessions`,
 `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
 `herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
 `runtime-layout-restore-unconfirmed`, plus the `connection-error`
 auth-warning coexistence fixture.
 The existing `herdr-connection` route is the picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` has 31 routes: the Issue #21 set of 25 plus those four recovery
-routes and the two layout-restore warning fixtures. These counts describe source
+`SCREEN_NAMES` has 33 routes: the Issue #21 set of 25 plus the two switcher
+routes, four recovery routes, and the two layout-restore warning fixtures. These counts describe source
 scope only; Main must still record actual
 CI results and downloaded, viewed screenshots before visual success is reported.
 
@@ -241,6 +242,34 @@ The old full clipboard-observer timeout below remains unresolved. Actual iOS OS
 clipboard contents, physical-device Japanese IME/font/GPU behavior and TestFlight
 remain unverified; the accepted reduced suite does not claim those results.
 
+### Issue #27 sequential Server / Session switcher acceptance
+
+The final Issue #27 candidate is `e13a523`. GitHub CI on its branch push passed:
+Rust unit tests (184 passed, 1 ignored), Herdr tests (4 passed, 1 ignored), real
+OpenSSH PTY integration (1 passed), and real Herdr 0.9.0 integration (1 passed;
+SHA-256 `4fa1a011…` verified), along with iOS driver fast typecheck, JavaScript
+and Expo checks, and the Android native build.
+
+| Verification | Candidate and evidence | Result |
+| --- | --- | --- |
+| Android full | `1f219d9`, fresh CNG/build; Devin session `9429c00e…`; [evidence/android-20260925 @ `4c9ac51`](https://github.com/phni3j9a/meeterm/commit/4c9ac51) | PASS. Gates passed; 32/33 screen fixtures passed (`empty` is the pre-existing unavailable baseline). SSH passed `daily_same_server_session_switched`, `daily_same_server_old_shell_survived`, `daily_cross_endpoint_destination_input`, `daily_cross_endpoint_old_shell_survived`, `host_key_verified`, and `transport_loss_evidence=passed`. |
+| iOS standard | `e13a523`, fresh build; Devin session `7a32a4e6…`; [evidence/ios-20260925 @ `07f10a2`](https://github.com/phni3j9a/meeterm/commit/07f10a2) | PASS with 29 captures, including `standard-session-switcher` and `standard-session-switcher-sessions`. |
+| iOS `ssh` | `e13a523`, same-commit reuse with HEAD and xctestrun verified; same Devin session and evidence branch as above | PASS. Same-server switch, destination marker and old-shell PID survival; alternate-endpoint switch, host-key confirmation, cross-return and old-shell survival; transport-loss observations were `native_handle_same=yes`, `native_terminal_identifier_same=yes`, `selected_pane_identifier_same=yes`, `cached_read_only_surface=yes`, `picker_visible_during_loss=no`; explicit disconnect passed. |
+
+The final HEAD `e13a523` differs from Android candidate `1f219d9` only in
+`scripts/ci/MeetermSmokeUITests.swift` and `scripts/ssh/test_ios_smoke.py`; neither
+is an Android build/test input. Earlier Android full at `376164e` also passed
+(evidence `73d2adb`). Main viewed Android `session-switcher` and
+`session-switcher-sessions` screenshots from `1f219d9`, and iOS
+`standard-session-switcher`, `standard-session-switcher-sessions`,
+`switcher_alternate_password-form-keyboard`, and `ssh-terminal-input` screenshots
+from `e13a523`.
+
+Non-blocking visual notes: the stopped Herdr row retains a chevron, and the
+Session list repeats the explanation that selecting a server disconnects the
+phone. Physical devices were not verified; the acceptance runs used an Android
+emulator and iOS Simulator.
+
 ### Previous checkpoint
 
 The previous user-requested checkpoint followed the
@@ -286,8 +315,20 @@ for the preserved investigation history.
 The server list manages local profiles; only one server/runtime actor is
 interactive at a time. A profile stores SSH endpoint/authentication metadata;
 its legacy backend/runtime fields are only a display hint until a fresh picker selection
-reaches `Ready`. Connecting to another saved server or switching runtime asks
-before releasing the current transport/controller.
+reaches `Ready`. Selecting a server row in the Server / Session switcher starts
+the sequential switch directly; its explanatory text says the phone will leave
+the current Session before reconnecting and listing Sessions on the destination.
+There is no additional release-confirmation dialog. Same-server runtime changes
+also use an explicit switcher path and require a Session choice.
+
+Explicit Disconnect is a separate action: it closes the mobile connection and
+leaves remote work running; it does not navigate to Saved servers. A release
+rejected before its native boundary keeps the current or retained work screen;
+after an accepted boundary, cancel or startup failure does not restore the old
+binding. Other confirmation paths remain explicit: Herdr recovery reconnection
+asks for confirmation in the retained work screen, host-key trust/change has its
+own prompt, and saved-profile removal and destructive workspace, group, or
+terminal close actions ask before proceeding.
 A profile can be saved without a credential. Credential saving is opt-in, and an
 endpoint, username or authentication-method change invalidates the old credential.
 Renaming a profile preserves its credential. Migrating the legacy

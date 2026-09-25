@@ -146,11 +146,16 @@ int32_t meeterm_connect_host(
 );
 
 int32_t meeterm_disconnect(uint64_t terminal_id);
+/* Switch-only boundary result: 0=accepted, -1..-14=rejected before the
+ * owner boundary, -15=accepted after boundary but release failed. */
+int32_t meeterm_disconnect_for_switch(uint64_t terminal_id);
 int32_t meeterm_reconnect(uint64_t terminal_id);
 /* Recovery controls consume a decimal epoch/token validated by the platform
  * adapter before crossing this lossless u64/UTF-8 ABI. */
 int32_t meeterm_retry_recovery(uint64_t terminal_id, uint64_t expected_epoch);
 int32_t meeterm_confirm_recovery(uint64_t terminal_id, const uint8_t *token, size_t token_length);
+/* Runtime-boundary result: 0=accepted, -1..-14=rejected before the owner
+ * boundary, -15=accepted after boundary but replacement start failed. */
 int32_t meeterm_change_runtime(uint64_t terminal_id, uint64_t expected_epoch);
 /* 0=create window, 1=rename window, 2=close window, 3=create pane,
  * 4=rename pane, 5=close pane, 6=redraw selected pane, 7=create group,

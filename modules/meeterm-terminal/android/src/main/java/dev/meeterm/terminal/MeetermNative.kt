@@ -107,6 +107,7 @@ internal object MeetermNative {
 
   /** Queue an SSH close request; zero means accepted/already closed. */
   external fun sshDisconnect(handle: Long): Int
+  external fun disconnectForSwitcher(handle: Long): Int
 
   /** Native-only lifecycle fields: state, host, port, fingerprint, algorithm,
    * known fingerprint, error code, and sanitized error message. */

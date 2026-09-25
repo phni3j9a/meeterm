@@ -115,6 +115,14 @@ public final class MeetermTerminalModule: Module {
       }
     }
 
+    AsyncFunction("disconnectForSwitcher") { (terminalId: String) throws -> [String: String] in
+      guard let normalizedId = Self.validatedBoundaryTerminalId(terminalId) else {
+        return RuntimeBoundaryBridgeResult.notInvoked()
+      }
+      let handle = try Self.ensureHandle(normalizedId)
+      return try Self.runtimeBoundaryResult(MeetermCore.disconnectForSwitcher(terminalId: handle))
+    }
+
     AsyncFunction("getConnectionState") { (terminalId: String) throws -> [String: Any] in
       let normalizedId = try Self.normalizeTerminalId(terminalId)
       let handle = try Self.ensureHandle(normalizedId)
@@ -182,12 +190,14 @@ public final class MeetermTerminalModule: Module {
       }
     }
 
-    AsyncFunction("changeRuntime") { (terminalId: String, operationEpoch: String) throws in
-      let epoch = try Self.parseOperationEpoch(operationEpoch)
-      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
-      guard MeetermCore.changeRuntime(terminalId: handle, expectedEpoch: epoch) == 0 else {
-        throw Self.error("The runtime could not be changed.")
+    AsyncFunction("changeRuntime") { (terminalId: String, operationEpoch: String) throws -> [String: String] in
+      guard let arguments = Self.validatedBoundaryArguments(terminalId, operationEpoch) else {
+        return RuntimeBoundaryBridgeResult.notInvoked()
       }
+      let handle = try Self.ensureHandle(arguments.terminalId)
+      return try Self.runtimeBoundaryResult(
+        MeetermCore.changeRuntime(terminalId: handle, expectedEpoch: arguments.epoch)
+      )
     }
 
     AsyncFunction("selectPane") { (terminalId: String, paneId: String) throws in
@@ -456,6 +466,30 @@ public final class MeetermTerminalModule: Module {
       throw error("The operation epoch is invalid.")
     }
     return epoch
+  }
+
+  private static func validatedBoundaryTerminalId(_ value: String) -> String? {
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty, !containsControl(normalized) else { return nil }
+    return normalized
+  }
+
+  private static func validatedBoundaryArguments(
+    _ terminalId: String,
+    _ operationEpoch: String
+  ) -> (terminalId: String, epoch: UInt64)? {
+    guard let normalizedId = validatedBoundaryTerminalId(terminalId),
+          let epoch = RecoveryBridgeValidation.parseOperationEpoch(operationEpoch) else {
+      return nil
+    }
+    return (normalizedId, epoch)
+  }
+
+  private static func runtimeBoundaryResult(_ code: Int32) throws -> [String: String] {
+    guard let result = RuntimeBoundaryBridgeResult.fromNativeCode(code) else {
+      throw Self.error("The runtime switch result is unknown.")
+    }
+    return result
   }
 
   private static func validRecoveryToken(_ value: String) -> Bool {

@@ -27,6 +27,52 @@ class FixtureControlTests(unittest.TestCase):
             fixture.CONTROL_STATUS_ENV: str(instance.control_status_path),
         }
 
+    def test_fixture_allocates_two_distinct_unprivileged_ports(self) -> None:
+        directory, instance = self.make_fixture()
+        self.addCleanup(directory.cleanup)
+        self.assertNotEqual(instance.port, instance.alternate_port)
+        self.assertTrue(all(1025 <= port <= 65535 for port in (instance.port, instance.alternate_port)))
+
+    def test_ssh_tmux_preflight_checks_both_endpoints_with_one_host_key(self) -> None:
+        directory, instance = self.make_fixture()
+        self.addCleanup(directory.cleanup)
+        public_key = instance.host_key.with_name(instance.host_key.name + ".pub")
+        public_key.write_text("ssh-ed25519 AAAA-fixture fixture\n", encoding="utf-8")
+
+        with mock.patch.object(fixture, "_run_quietly") as run:
+            instance.check_ssh_tmux()
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            [run.call_args_list[index].args[0][run.call_args_list[index].args[0].index("-p") + 1]
+             for index in range(2)],
+            [str(instance.port), str(instance.alternate_port)],
+        )
+        trust_store = instance.trust_store.read_text(encoding="utf-8")
+        self.assertIn(f"[127.0.0.1]:{instance.port} ssh-ed25519 AAAA-fixture fixture", trust_store)
+        self.assertIn(f"[127.0.0.1]:{instance.alternate_port} ssh-ed25519 AAAA-fixture fixture", trust_store)
+
+    def test_environment_publishes_distinct_alternate_tmux_fixture_paths(self) -> None:
+        directory, instance = self.make_fixture()
+        self.addCleanup(directory.cleanup)
+        for key_path in (
+            instance.host_key.with_name(instance.host_key.name + ".pub"),
+            instance.alternate_host_key.with_name(instance.alternate_host_key.name + ".pub"),
+        ):
+            key_path.write_text("ssh-ed25519 AAAA-fixture fixture\n", encoding="utf-8")
+
+        with mock.patch.object(fixture, "_fingerprint", return_value="SHA256:fixture"):
+            environment = instance.environment()
+
+        self.assertEqual(environment["MEETERM_SSH_ALTERNATE_PORT"], str(instance.alternate_port))
+        self.assertEqual(environment["MEETERM_SSH_FINGERPRINT"], "SHA256:fixture")
+        self.assertEqual(environment["MEETERM_SSH_ALTERNATE_HOST_KEY_FILE"], str(instance.alternate_host_key.with_name(instance.alternate_host_key.name + ".pub")))
+        self.assertEqual(environment["MEETERM_TMUX_TMPDIR"], str(instance.tmux_tmpdir))
+        self.assertEqual(environment["MEETERM_TMUX_SOCKET"], str(instance.tmux_socket))
+        self.assertEqual(environment["MEETERM_TMUX_ALTERNATE_TMPDIR"], str(instance.alternate_tmux_tmpdir))
+        self.assertEqual(environment["MEETERM_TMUX_ALTERNATE_SOCKET"], str(instance.alternate_tmux_socket))
+        self.assertNotEqual(environment["MEETERM_TMUX_SOCKET"], environment["MEETERM_TMUX_ALTERNATE_SOCKET"])
+
     def test_stop_and_start_use_one_fixture_owned_control_channel(self) -> None:
         directory, instance = self.make_fixture()
         self.addCleanup(directory.cleanup)
@@ -76,7 +122,7 @@ class FixtureControlTests(unittest.TestCase):
             mock.patch.object(
                 instance,
                 "_linux_local_port_sshd_process_ids",
-                side_effect=[{4001, 4004}, set()],
+                side_effect=[{4001, 4004}, set(), set(), set()],
             ),
             mock.patch.object(
                 instance,
@@ -241,7 +287,7 @@ class FixtureControlTests(unittest.TestCase):
             mock.patch.object(
                 instance,
                 "_linux_local_port_sshd_process_ids",
-                side_effect=[{4401}, {4499}],
+                side_effect=[{4401}, set(), {4499}],
             ),
             mock.patch.object(instance, "_signal_process_group"),
             mock.patch.object(instance, "_signal_process_identities") as signal_ids,

@@ -245,6 +245,31 @@ pub enum ConnectionError {
     RecoveryStale,
 }
 
+/// Synchronous result for operations that can retire the selected runtime.
+/// `Accepted` means the next connection flow was started or the owner was
+/// released; it does not mean authentication or runtime selection succeeded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeBoundaryOutcome {
+    RejectedBeforeBoundary(ConnectionError),
+    Accepted,
+    AcceptedAfterFailure(ConnectionError),
+}
+
+impl RuntimeBoundaryOutcome {
+    /// Append-only native bridge code. Existing negative connection codes
+    /// remain pre-boundary rejections; -15 means the old binding boundary was
+    /// accepted but starting its replacement failed.
+    pub const ACCEPTED_AFTER_FAILURE_CODE: i32 = -15;
+
+    pub const fn bridge_code(self) -> i32 {
+        match self {
+            Self::RejectedBeforeBoundary(error) => error.code(),
+            Self::Accepted => 0,
+            Self::AcceptedAfterFailure(_) => Self::ACCEPTED_AFTER_FAILURE_CODE,
+        }
+    }
+}
+
 impl ConnectionError {
     pub const fn code(self) -> i32 {
         match self {
@@ -1997,6 +2022,7 @@ impl OwnerTransition {
         }
     }
 
+    #[cfg(test)]
     fn cancel_current(&self) {
         if let Ok(_commit) = self.commit.lock() {
             self.cancel_current_locked();
@@ -2326,29 +2352,62 @@ pub fn confirm_recovery(terminal_id: TerminalId, token: &str) -> Result<(), Conn
 /// Explicitly leave the retained runtime and enter the existing authenticated
 /// picker path.  This is the only recovery API that clears the cached runtime
 /// binding/native view, and it does so before a new runtime can be acquired.
-pub fn change_runtime(terminal_id: TerminalId, expected_epoch: u64) -> Result<(), ConnectionError> {
-    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    let shared = current_connection(terminal_id)?;
+pub fn change_runtime(terminal_id: TerminalId, expected_epoch: u64) -> RuntimeBoundaryOutcome {
+    change_runtime_with_start(terminal_id, expected_epoch, start_connection)
+}
+
+fn change_runtime_with_start(
+    terminal_id: TerminalId,
+    expected_epoch: u64,
+    start: impl FnOnce(TerminalId, ConnectionStart) -> Result<(), ConnectionError>,
+) -> RuntimeBoundaryOutcome {
+    if let Err(error) = registry::shared_terminal(terminal_id).map_err(map_terminal_error) {
+        return RuntimeBoundaryOutcome::RejectedBeforeBoundary(error);
+    }
+    let shared = match current_connection(terminal_id) {
+        Ok(shared) => shared,
+        Err(error) => return RuntimeBoundaryOutcome::RejectedBeforeBoundary(error),
+    };
     let profile = {
-        let state = shared
-            .session
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
+        let state = match shared.session.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return RuntimeBoundaryOutcome::RejectedBeforeBoundary(ConnectionError::Internal);
+            }
+        };
         if state.operation_epoch != expected_epoch {
-            return Err(ConnectionError::RecoveryStale);
+            return RuntimeBoundaryOutcome::RejectedBeforeBoundary(ConnectionError::RecoveryStale);
         }
-        state
-            .profile
-            .clone()
-            .ok_or(ConnectionError::RecoveryUnavailable)?
+        match state.profile.clone() {
+            Some(profile) => profile,
+            None => {
+                return RuntimeBoundaryOutcome::RejectedBeforeBoundary(
+                    ConnectionError::RecoveryUnavailable,
+                );
+            }
+        }
     };
     // Cancel a possible in-flight replacement before starting the explicit
     // runtime change. The owner ticket is checked again by start_connection,
     // so a late handoff cannot install the old actor after this boundary.
-    owner_transition(terminal_id)?.cancel_current();
+    let owner = match owner_transition(terminal_id) {
+        Ok(owner) => owner,
+        Err(error) => return RuntimeBoundaryOutcome::RejectedBeforeBoundary(error),
+    };
+    let commit = match owner.commit.lock() {
+        Ok(commit) => commit,
+        Err(_) => {
+            return RuntimeBoundaryOutcome::RejectedBeforeBoundary(ConnectionError::Internal);
+        }
+    };
+    owner.cancel_current_locked();
+    drop(commit);
     shared.invalidate_explicitly("runtime_changed");
     detach_all(&shared);
-    start_connection(terminal_id, ConnectionStart::ManualReconnect(profile))
+    match start(terminal_id, ConnectionStart::ManualReconnect(profile)) {
+        Ok(()) => RuntimeBoundaryOutcome::Accepted,
+        Err(error) => RuntimeBoundaryOutcome::AcceptedAfterFailure(error),
+    }
 }
 
 /// Select a pane by its stable tmux numeric ID. The desired selection is kept
@@ -3266,16 +3325,45 @@ fn start_connection(
 /// Abort the session and leave the terminal in remote mode with local echo
 /// disabled.  The registry entry remains available for state polling.
 pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError> {
-    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    let owner = owner_transition(terminal_id)?;
+    match disconnect_with_boundary(terminal_id) {
+        RuntimeBoundaryOutcome::RejectedBeforeBoundary(error)
+        | RuntimeBoundaryOutcome::AcceptedAfterFailure(error) => Err(error),
+        RuntimeBoundaryOutcome::Accepted => Ok(()),
+    }
+}
+
+/// Owner release path for a cross-server switch. The typed result prevents a
+/// caller from inferring the release boundary from a later state snapshot.
+pub fn disconnect_for_switch(terminal_id: TerminalId) -> RuntimeBoundaryOutcome {
+    disconnect_with_boundary(terminal_id)
+}
+
+fn disconnect_with_boundary(terminal_id: TerminalId) -> RuntimeBoundaryOutcome {
+    if let Err(error) = registry::shared_terminal(terminal_id).map_err(map_terminal_error) {
+        return RuntimeBoundaryOutcome::RejectedBeforeBoundary(error);
+    }
+    let owner = match owner_transition(terminal_id) {
+        Ok(owner) => owner,
+        Err(error) => return RuntimeBoundaryOutcome::RejectedBeforeBoundary(error),
+    };
     let (shared, abort) = {
-        let _commit = owner.commit.lock().map_err(|_| ConnectionError::Internal)?;
+        let _commit = match owner.commit.lock() {
+            Ok(commit) => commit,
+            Err(_) => {
+                return RuntimeBoundaryOutcome::RejectedBeforeBoundary(ConnectionError::Internal);
+            }
+        };
+        // This is the boundary: any failure acquiring the connection map from
+        // here on must be reported as accepted-after-failure.
         owner.cancel_current_locked();
-        let entries = connections()
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
+        let entries = match connections().lock() {
+            Ok(entries) => entries,
+            Err(_) => {
+                return RuntimeBoundaryOutcome::AcceptedAfterFailure(ConnectionError::Internal);
+            }
+        };
         let Some(entry) = entries.get(&terminal_id) else {
-            return Ok(());
+            return RuntimeBoundaryOutcome::Accepted;
         };
         entry.shared.invalidate_explicitly("explicit_disconnect");
         (Arc::clone(&entry.shared), entry.abort.clone())
@@ -3309,7 +3397,7 @@ pub fn disconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionErro
             shared.finish(Err(FlowFailure::Stale));
         }
     }
-    Ok(())
+    RuntimeBoundaryOutcome::Accepted
 }
 
 #[cfg(test)]
@@ -8164,6 +8252,79 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             tmux_identity: None,
             herdr_executable: None,
         }
+    }
+
+    #[test]
+    fn change_runtime_reports_pre_boundary_rejections_and_injected_post_boundary_failure() {
+        let (owner, shared) = recovery_fixture();
+        let abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        connections().lock().expect("connection registry").insert(
+            owner,
+            ConnectionEntry {
+                shared: Arc::clone(&shared),
+                abort,
+            },
+        );
+
+        let initial_epoch = shared.operation_epoch();
+        let stale = change_runtime_with_start(owner, initial_epoch + 1, |_, _| {
+            panic!("stale epoch must not start a replacement")
+        });
+        assert_eq!(
+            stale,
+            RuntimeBoundaryOutcome::RejectedBeforeBoundary(ConnectionError::RecoveryStale)
+        );
+        assert_eq!(stale.bridge_code(), ConnectionError::RecoveryStale.code());
+        assert_eq!(shared.operation_epoch(), initial_epoch);
+        assert!(!shared.explicit_cleanup_requested());
+
+        let missing_profile = change_runtime_with_start(owner, initial_epoch, |_, _| {
+            panic!("missing profile must not start a replacement")
+        });
+        assert_eq!(
+            missing_profile,
+            RuntimeBoundaryOutcome::RejectedBeforeBoundary(ConnectionError::RecoveryUnavailable)
+        );
+        assert_eq!(shared.operation_epoch(), initial_epoch);
+        assert!(!shared.explicit_cleanup_requested());
+
+        shared.set_profile(retry_profile());
+        let failed = change_runtime_with_start(owner, initial_epoch, |_, start| {
+            assert!(matches!(start, ConnectionStart::ManualReconnect(_)));
+            // This deliberately shares a code with the pre-boundary profile
+            // rejection above. The actual lifecycle path must retain the
+            // post-boundary classification despite that duplicate error.
+            Err(ConnectionError::RecoveryUnavailable)
+        });
+        assert_eq!(
+            failed,
+            RuntimeBoundaryOutcome::AcceptedAfterFailure(ConnectionError::RecoveryUnavailable)
+        );
+        assert_eq!(
+            failed.bridge_code(),
+            RuntimeBoundaryOutcome::ACCEPTED_AFTER_FAILURE_CODE
+        );
+        assert!(shared.explicit_cleanup_requested());
+        assert!(shared.operation_epoch() > initial_epoch);
+        assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
+        assert_eq!(
+            shared.snapshot().expect("owner snapshot").state,
+            ConnectionState::Closing as u32,
+            "the retired owner is not restored to Ready after replacement start fails"
+        );
+        assert!(!shared.current_terminal_input_is_ready(shared.operation_epoch()));
+
+        connections()
+            .lock()
+            .expect("connection registry")
+            .remove(&owner)
+            .expect("boundary test connection")
+            .abort
+            .abort();
+        registry::destroy_terminal(owner);
     }
 
     #[test]

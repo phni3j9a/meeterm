@@ -118,11 +118,6 @@ RUNTIME_PICKER_ROW_PREFIXES = (
     "tmux runtime ",
     "Herdr runtime ",
 )
-PROFILE_SWITCH_CONFIRMATION_BRANCH = "confirmation"
-PROFILE_SWITCH_TARGET_PICKER_BRANCH = "target_picker"
-PROFILE_SWITCH_BOUNDARY_AMBIGUOUS = "profile_switch_boundary_ambiguous"
-PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER = "unexpected_profile_picker"
-PROFILE_SWITCH_BOUNDARY_TIMEOUT = "confirmation_or_target_picker_timeout"
 STALE_READ_ONLY_DIAGNOSTIC_NAME = "stale-read-only-diagnostic.txt"
 STALE_READ_ONLY_DIAGNOSTIC_KEYS = (
     "runtime_picker_hidden",
@@ -919,6 +914,16 @@ def load_fixture() -> tuple[str, int, str, str, Path]:
     return ANDROID_EMULATOR_HOST_ALIAS, port, username, key, fixture_key_path
 
 
+def load_alternate_fixture_port(primary_port: int) -> int:
+    try:
+        port = int(required_environment("MEETERM_SSH_ALTERNATE_PORT"), 10)
+    except ValueError as error:
+        raise SmokeFailure("fixture_environment", "invalid_alternate_port") from error
+    if not 1025 <= port <= 65535 or port == primary_port:
+        raise SmokeFailure("fixture_environment", "invalid_alternate_port")
+    return port
+
+
 def require_emulator_serial(serial: str) -> None:
     """Fail before credential entry when the emulator-only route is unavailable."""
 
@@ -948,6 +953,33 @@ def tmux_socket_from_fixture(key_path: Path) -> Path:
     if (
         len(relative.parts) != 3
         or relative.parts[0] != "tmux"
+        or relative.parts[1] != f"tmux-{os.getuid()}"
+        or resolved.name != "default"
+    ):
+        raise SmokeFailure("tmux_fixture", "socket_path_invalid")
+    if socket_path.is_symlink():
+        raise SmokeFailure("tmux_fixture", "socket_path_invalid")
+    return resolved
+
+
+def alternate_tmux_socket_from_fixture(key_path: Path) -> Path:
+    """Resolve the alternate-endpoint tmux socket inside the same fixture."""
+
+    root = key_path.parent.resolve()
+    if not root.is_dir() or not root.name.startswith("meeterm-ssh-fixture-"):
+        raise SmokeFailure("tmux_fixture", "fixture_root_unavailable")
+    raw_socket = required_environment("MEETERM_TMUX_ALTERNATE_SOCKET")
+    socket_path = Path(raw_socket)
+    if not socket_path.is_absolute():
+        raise SmokeFailure("tmux_fixture", "socket_path_invalid")
+    try:
+        resolved = socket_path.resolve(strict=False)
+        relative = resolved.relative_to(root)
+    except (OSError, ValueError) as error:
+        raise SmokeFailure("tmux_fixture", "socket_path_outside_fixture") from error
+    if (
+        len(relative.parts) != 3
+        or relative.parts[0] != "tmux-alternate"
         or relative.parts[1] != f"tmux-{os.getuid()}"
         or resolved.name != "default"
     ):
@@ -1253,7 +1285,9 @@ def wait_for_tmux_selection(
     raise SmokeFailure(stage, "tmux_selection_timeout")
 
 
-def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
+def prepare_tmux_fixture(
+    socket_path: Path, alternate_socket_path: Path | None = None
+) -> list[TmuxPaneRecord]:
     """Create two windows with two panes each and select the first pane."""
 
     stage = "tmux_fixture"
@@ -1347,7 +1381,36 @@ def prepare_tmux_fixture(socket_path: Path) -> list[TmuxPaneRecord]:
         for window_id in {record.window_id for record in selected}
     ):
         raise SmokeFailure(stage, "pane_layout_invalid")
+    run_tmux_command(
+        socket_path,
+        ("new-session", "-d", "-s", "switcher-destination", "-n", "switcher-main", "/bin/sh", "-i"),
+        stage,
+    )
+    if alternate_socket_path is not None:
+        prepare_alternate_tmux_session(alternate_socket_path)
     return selected
+
+
+def prepare_alternate_tmux_session(socket_path: Path) -> None:
+    """Seed the uniquely named Session exposed through the alternate port."""
+
+    stage = "tmux_alternate_fixture"
+    existing = run_tmux_command(
+        socket_path,
+        ("list-sessions", "-F", "#{session_name}"),
+        stage,
+        allow_failure=True,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise SmokeFailure(stage, "alternate_session_already_exists")
+    run_tmux_command(
+        socket_path,
+        (
+            "new-session", "-d", "-s", "switcher-alternate-destination",
+            "-n", "switcher-alternate-main", "/bin/sh", "-i",
+        ),
+        stage,
+    )
 
 
 def find_node(
@@ -1569,50 +1632,6 @@ def visible_exact_label(nodes: list[Node], label: str) -> bool:
         if node.text == label or node.content_description == label:
             return True
     return False
-
-
-def wait_for_profile_switch_boundary(
-    device: AndroidDevice,
-    stage: str,
-    expected_profile_name: str,
-    *,
-    timeout: float = RECONNECT_TIMEOUT,
-) -> str:
-    """Wait once for the confirmation or exact target-picker boundary.
-
-    The expected heading is compared only in memory.  Failure stages and
-    reasons remain fixed so a profile name or raw accessibility value cannot
-    leak into smoke artifacts.
-    """
-
-    expected_heading = f"{RUNTIME_PICKER_HEADING_PREFIX}{expected_profile_name}"
-    boundary_stage = f"{stage}_boundary"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            nodes = device.dump_ui()
-        except SmokeFailure:
-            time.sleep(0.2)
-            continue
-
-        confirmation_visible = visible_exact_label(nodes, "Switch servers?")
-        target_picker_visible = visible_exact_label(nodes, expected_heading)
-        picker_visible = runtime_picker_is_visible(nodes)
-
-        if confirmation_visible and target_picker_visible:
-            raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_AMBIGUOUS)
-        if picker_visible:
-            if target_picker_visible:
-                return PROFILE_SWITCH_TARGET_PICKER_BRANCH
-            raise SmokeFailure(
-                boundary_stage,
-                PROFILE_SWITCH_BOUNDARY_UNEXPECTED_PICKER,
-            )
-        if confirmation_visible:
-            return PROFILE_SWITCH_CONFIRMATION_BRANCH
-        time.sleep(0.2)
-
-    raise SmokeFailure(boundary_stage, PROFILE_SWITCH_BOUNDARY_TIMEOUT)
 
 
 def sanitized_failure_ui_state(nodes: list[Node]) -> str:
@@ -3259,6 +3278,20 @@ def wait_for_marker(path: Path, marker: str) -> None:
     wait_for_file_contents(path, f"{marker}\n", "remote_marker")
 
 
+def wait_for_shell_pid(path: Path, stage: str) -> str:
+    deadline = time.monotonic() + REMOTE_MARKER_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            value = path.read_text(encoding="ascii")
+        except (OSError, UnicodeError):
+            value = ""
+        match = re.fullmatch(r"([1-9][0-9]*)\n", value)
+        if match is not None:
+            return match.group(1)
+        time.sleep(0.2)
+    raise SmokeFailure(stage, "shell_pid_unavailable")
+
+
 def latest_native_terminal_handle(device: AndroidDevice, stage: str) -> str:
     """Read one sanitized opaque native handle observation from logcat."""
 
@@ -3749,83 +3782,80 @@ def switch_saved_profile(
     device: AndroidDevice,
     name: str,
     stage: str,
+    session_name: str = "meeterm",
+    *,
+    expected_fingerprint: str | None = None,
 ) -> str:
-    profile = wait_for_saved_profile(device, stage, name, selected=False)
-    tap_node(device, profile, stage)
-    confirmation_stage = f"{stage}_confirmation"
-    boundary = wait_for_profile_switch_boundary(
+    try:
+        current_nodes = device.dump_ui()
+    except SmokeFailure:
+        current_nodes = []
+    if visible_exact_label(current_nodes, "Saved servers"):
+        device.input_keyevent(KEYCODE_BACK, f"{stage}_return_to_workspaces")
+    switch_button = wait_for_node(
         device,
         stage,
-        name,
+        content_description="Switch server or session",
         timeout=RECONNECT_TIMEOUT,
     )
-    if boundary == PROFILE_SWITCH_CONFIRMATION_BRANCH:
-        tap_action(device, confirmation_stage, ("Switch server",))
-    elif boundary != PROFILE_SWITCH_TARGET_PICKER_BRANCH:
-        raise SmokeFailure(
-            f"{stage}_boundary",
-            "profile_switch_boundary_invalid",
-        )
-    select_fixture_tmux_runtime_and_wait_for_connected(
+    tap_node(device, switch_button, f"{stage}_open_switcher")
+    wait_for_node(device, stage, text="Switch server or session", timeout=RECONNECT_TIMEOUT)
+    server = wait_for_node(
         device,
-        f"{stage}_runtime_selection",
-    )
-
-    # `Connected` is the native Ready boundary, but the React workspace
-    # snapshot is loaded by the completion effect immediately afterward.  A
-    # second profile switch must not overlap that read-only snapshot request:
-    # the faster direct emulator host route exposed the race by starting the
-    # next disconnect/connect while the previous picker completion was still
-    # settling.  Require one real fixture workspace row before opening the
-    # server sheet again.  This is a state boundary, not a retry or a longer
-    # deadline, and it also proves that the picker closed onto authoritative
-    # workspace data.
-    wait_for_workspace(
-        device,
-        f"{stage}_workspace_ready",
+        stage,
+        content_description=f"Browse sessions on {name}",
         timeout=RECONNECT_TIMEOUT,
     )
-    tap_action(device, stage, ("Saved servers",))
-    wait_for_saved_profile(device, stage, name, selected=True)
-    return boundary
-
-
-def append_profile_switch_boundary_marker(
-    completed: list[str],
-    switch_name: str,
-    boundary: str,
-    stage: str,
-) -> None:
-    """Append only fixed, sanitized evidence for an accepted branch."""
-
-    markers = {
-        ("second", PROFILE_SWITCH_CONFIRMATION_BRANCH):
-            "daily_profile_switch_second_boundary_confirmation",
-        ("second", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
-            "daily_profile_switch_second_boundary_target_picker",
-        ("primary", PROFILE_SWITCH_CONFIRMATION_BRANCH):
-            "daily_profile_switch_primary_boundary_confirmation",
-        ("primary", PROFILE_SWITCH_TARGET_PICKER_BRANCH):
-            "daily_profile_switch_primary_boundary_target_picker",
-    }
-    marker = markers.get((switch_name, boundary))
-    if marker is None:
-        raise SmokeFailure(stage, "profile_switch_boundary_invalid")
-    completed.append(marker)
+    tap_node(device, server, f"{stage}_choose_server")
+    if expected_fingerprint is not None:
+        trust_host(device, expected_fingerprint)
+    session = wait_for_node(
+        device,
+        f"{stage}_session_list",
+        content_description=f"tmux session {session_name}",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, session, f"{stage}_choose_session")
+    wait_for_node(device, f"{stage}_ready", text="Connected", timeout=RECONNECT_TIMEOUT)
+    wait_for_workspace_count(device, f"{stage}_workspace_ready", count=1, timeout=RECONNECT_TIMEOUT)
+    return "sequential"
 
 
 def exercise_saved_profile_management(
     device: AndroidDevice,
     host: str,
     port: int,
+    alternate_port: int,
     username: str,
     key: str,
+    key_path: Path,
+    expected_fingerprint: str,
     completed: list[str],
 ) -> None:
-    """Exercise fixture-owned profile edit, switch, cancellation, and removal."""
+    """Exercise same-server Session and alternate-SSH-endpoint switching."""
+
+    old_pid_path, _ = make_marker_file(key_path)
+    same_destination_path, same_destination_marker = make_marker_file(key_path)
+    cross_destination_path, cross_destination_marker = make_marker_file(key_path)
+    same_return_path, same_return_marker = make_marker_file(key_path)
+    cross_return_path, cross_return_marker = make_marker_file(key_path)
+
+    workspace = wait_for_workspace(
+        device,
+        "daily_switcher_old_session_open",
+        label="Workspace smoke",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, "daily_switcher_old_session_open")
+    terminal = wait_for_terminal(device, "daily_switcher_old_shell", timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, "daily_switcher_old_shell")
+    terminal_line(device, f'printf "$$\\n" > {shell_quote(str(old_pid_path))}')
+    old_shell_pid = wait_for_shell_pid(old_pid_path, "daily_switcher_old_shell")
+    tap_action(device, "daily_switcher_old_session_return", BACK_TO_WORKSPACES_LABELS)
 
     stage = "daily_profile_management_open"
-    tap_action(device, stage, ("Saved servers",))
+    tap_action(device, stage, SERVER_CONNECTION_LABELS)
+    tap_action(device, stage, ("Manage servers",))
     wait_for_saved_profile(device, stage, DAILY_PROFILE_NAME, selected=True)
 
     edit_saved_profile_name(
@@ -3842,34 +3872,90 @@ def exercise_saved_profile_management(
     )
     completed.append("daily_profile_edited")
 
-    add_second_saved_fixture_profile(device, host, port, username, key)
+    add_second_saved_fixture_profile(device, host, alternate_port, username, key)
     completed.append("daily_second_profile_saved")
 
-    second_boundary = switch_saved_profile(
-        device,
-        DAILY_SECOND_PROFILE_NAME,
-        "daily_profile_switch_second",
-    )
-    append_profile_switch_boundary_marker(
-        completed,
-        "second",
-        second_boundary,
-        "daily_profile_switch_second",
-    )
-    completed.append("daily_profile_switched")
-    primary_boundary = switch_saved_profile(
+    switch_saved_profile(
         device,
         DAILY_PROFILE_NAME,
-        "daily_profile_switch_primary",
+        "daily_profile_switch_same_session",
+        "switcher-destination",
     )
-    append_profile_switch_boundary_marker(
-        completed,
-        "primary",
-        primary_boundary,
-        "daily_profile_switch_primary",
+    destination = wait_for_workspace(
+        device,
+        "daily_profile_switch_same_destination",
+        label="Workspace switcher-main",
+        timeout=RECONNECT_TIMEOUT,
     )
-    completed.append("daily_profile_switch_restored")
+    tap_node(device, destination, "daily_profile_switch_same_destination")
+    terminal = wait_for_terminal(device, "daily_profile_switch_same_terminal", timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, "daily_profile_switch_same_terminal")
+    terminal_line(device, session_marker_command(same_destination_marker, same_destination_path))
+    wait_for_marker(same_destination_path, same_destination_marker)
+    tap_action(device, "daily_profile_switch_same_return", BACK_TO_WORKSPACES_LABELS)
+    completed.append("daily_same_server_session_switched")
 
+    switch_saved_profile(
+        device,
+        DAILY_PROFILE_NAME,
+        "daily_profile_switch_same_back",
+    )
+    workspace = wait_for_workspace(
+        device,
+        "daily_profile_switch_same_old_session",
+        label="Workspace smoke",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, "daily_profile_switch_same_old_session")
+    terminal = wait_for_terminal(device, "daily_profile_switch_same_old_terminal", timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, "daily_profile_switch_same_old_terminal")
+    terminal_line(device, f'test "$$" = "{old_shell_pid}" && printf "{same_return_marker}\\n" > {shell_quote(str(same_return_path))}')
+    wait_for_marker(same_return_path, same_return_marker)
+    tap_action(device, "daily_profile_switch_same_old_back", BACK_TO_WORKSPACES_LABELS)
+    completed.append("daily_same_server_old_shell_survived")
+
+    switch_saved_profile(
+        device,
+        DAILY_SECOND_PROFILE_NAME,
+        "daily_profile_switch_cross_endpoint",
+        "switcher-alternate-destination",
+        expected_fingerprint=expected_fingerprint,
+    )
+    destination = wait_for_workspace(
+        device,
+        "daily_profile_switch_cross_destination",
+        label="Workspace switcher-alternate-main",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, destination, "daily_profile_switch_cross_destination")
+    terminal = wait_for_terminal(device, "daily_profile_switch_cross_terminal", timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, "daily_profile_switch_cross_terminal")
+    terminal_line(device, session_marker_command(cross_destination_marker, cross_destination_path))
+    wait_for_marker(cross_destination_path, cross_destination_marker)
+    tap_action(device, "daily_profile_switch_cross_return", BACK_TO_WORKSPACES_LABELS)
+    completed.append("daily_cross_endpoint_destination_input")
+
+    switch_saved_profile(
+        device,
+        DAILY_PROFILE_NAME,
+        "daily_profile_switch_cross_back",
+    )
+    workspace = wait_for_workspace(
+        device,
+        "daily_profile_switch_cross_old_session",
+        label="Workspace smoke",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, "daily_profile_switch_cross_old_session")
+    terminal = wait_for_terminal(device, "daily_profile_switch_cross_old_terminal", timeout=RECONNECT_TIMEOUT)
+    focus_terminal(device, terminal, "daily_profile_switch_cross_old_terminal")
+    terminal_line(device, f'test "$$" = "{old_shell_pid}" && printf "{cross_return_marker}\\n" > {shell_quote(str(cross_return_path))}')
+    wait_for_marker(cross_return_path, cross_return_marker)
+    tap_action(device, "daily_profile_switch_cross_old_back", BACK_TO_WORKSPACES_LABELS)
+    completed.append("daily_cross_endpoint_old_shell_survived")
+
+    tap_action(device, "daily_profile_delete_open_manager", SERVER_CONNECTION_LABELS)
+    tap_action(device, "daily_profile_delete_open_manager", ("Manage servers",))
     stage = "daily_profile_delete_cancel"
     second_options = wait_for_node(
         device,
@@ -4864,11 +4950,13 @@ def main(argv: list[str] | None = None) -> int:
             raise SmokeFailure("artifacts", "artifact_write_failed") from error
 
         host, port, username, key, key_path = load_fixture()
+        alternate_port = load_alternate_fixture_port(port)
         expected_fingerprint = required_environment("MEETERM_SSH_FINGERPRINT")
         if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]+={0,2}", expected_fingerprint):
             raise SmokeFailure("fixture_environment", "invalid_fingerprint")
         tmux_socket = tmux_socket_from_fixture(key_path)
-        fixture_layout = prepare_tmux_fixture(tmux_socket)
+        alternate_tmux_socket = alternate_tmux_socket_from_fixture(key_path)
+        fixture_layout = prepare_tmux_fixture(tmux_socket, alternate_tmux_socket)
         marker_path, marker_value = make_marker_file(key_path)
         second_marker_path, second_marker_value = make_marker_file(key_path)
         foreground_marker_path, foreground_marker_value = make_marker_file(key_path)
@@ -4890,6 +4978,7 @@ def main(argv: list[str] | None = None) -> int:
         completed.append("device_ready")
         device.verify_emulator_fixture_route("device_emulator_route")
         device.verify_emulator_host_alias(port, "device_emulator_host_alias")
+        device.verify_emulator_host_alias(alternate_port, "device_emulator_alternate_host_alias")
         completed.append("emulator_host_loopback")
         completed.append("emulator_host_alias_reachable")
         completed.append("adb_reverse_preflight_empty")
@@ -5002,8 +5091,11 @@ def main(argv: list[str] | None = None) -> int:
             device,
             host,
             port,
+            alternate_port,
             username,
             key,
+            key_path,
+            expected_fingerprint,
             completed,
         )
         exercise_foreground_return(

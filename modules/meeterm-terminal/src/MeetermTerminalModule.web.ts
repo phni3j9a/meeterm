@@ -11,6 +11,7 @@ import type {
   WorkspaceState,
   RuntimeBackend,
   RuntimeDiscovery,
+  RuntimeBoundaryResult,
 } from './MeetermTerminal.types';
 
 const WEB_UNAVAILABLE =
@@ -97,7 +98,11 @@ class MeetermTerminalModule extends NativeModule<{}> {
     throw new Error(WEB_UNAVAILABLE);
   }
 
-  async changeRuntime(_terminalId: string, _operationEpoch: string): Promise<void> {
+  async changeRuntime(_terminalId: string, _operationEpoch: string): Promise<RuntimeBoundaryResult> {
+    throw new Error(WEB_UNAVAILABLE);
+  }
+
+  async disconnectForSwitcher(_terminalId: string): Promise<RuntimeBoundaryResult> {
     throw new Error(WEB_UNAVAILABLE);
   }
 

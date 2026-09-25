@@ -59,6 +59,13 @@ export type TerminalPreferences = {
   automaticReconnect: boolean;
 };
 
+/** Result of a synchronous request that may retire the selected runtime. */
+export type RuntimeBoundaryResult =
+  | { status: 'not_invoked'; errorCode: string }
+  | { status: 'rejected_before_boundary'; errorCode: string }
+  | { status: 'accepted' }
+  | { status: 'accepted_after_failure'; errorCode: 'boundary_accepted_failure' };
+
 export type SshConnectionPhase =
   | 'Disconnected'
   | 'Connecting'
