@@ -1,11 +1,10 @@
-source_sha=5df2510b2b8bb779124e332f89f28c4c40c5b1df
+source_sha=376164e182a71a0393590b114814ef22d7da9a4a
 suite=android-emulator-observability
-branch=deps-expo-57-patch
-run_kind=full-acceptance-deps-update
-change=expo-57.0.24to57.0.25,expo-build-properties-57.0.21to57.0.22,expo-modules-core-57.0.19,expo-modules-jsi-57.1.1,expo-cli-57.0.27
+branch=issue-27-sequential-switcher
+run_kind=full-acceptance
+fresh_build=yes-npm-ci+cng-clean+assembleRelease
 toolchains=rustc-1.96.0,ndk-27.1.12297006,node-v24.19.0,npm-10.8.3,gradle-9.3.1
 emulator=meeterm_api36-api36-headless
-fresh_build=yes-npm-ci+cng-clean+assembleRelease
 api=36
 abi=x86_64
 device=sdk_gphone64_x86_64

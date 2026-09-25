@@ -1,27 +1,27 @@
     earliestFreezableTimeMs=--
-     Configuration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.52 fontWeightAdjustment=0}
+     Configuration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.51 fontWeightAdjustment=0}
      OverrideConfiguration={0.0 ?mcc0mnc ?localeList ?layoutDir ?swdp ?wdp ?hdp ?density ?lsize ?long ?ldr ?wideColorGamut ?orien ?uimode ?night ?touch ?keyb/?/? ?nav/? winConfig={ mBounds=Rect(0, 0 - 0, 0) mAppBounds=null mMaxBounds=Rect(0, 0 - 0, 0) mDisplayRotation=undefined mWindowingMode=undefined mActivityType=undefined mAlwaysOnTop=undefined mRotation=undefined} as.3 ?fontWeightAdjustment}
-     mLastReportedConfiguration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.79 fontWeightAdjustment=0}
-  *APP* UID 10216 ProcessRecord{f706ad6 3899:dev.meeterm.app/u0a216}
+     mLastReportedConfiguration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.77 fontWeightAdjustment=0}
+  *APP* UID 10216 ProcessRecord{b40532c 4106:dev.meeterm.app/u0a216}
     user #0 uid=10216 gids={3003, 50216, 20216, 9997}
     mRequiredAbi=x86_64 instructionSet=x86_64
     class=dev.meeterm.app.MainApplication
-    dir=/data/app/~~gQBB4l9QndNz8tOS-Wisgg==/dev.meeterm.app-uiuXAEaFf8UK6QsOhgO5rg==/base.apk publicDir=/data/app/~~gQBB4l9QndNz8tOS-Wisgg==/dev.meeterm.app-uiuXAEaFf8UK6QsOhgO5rg==/base.apk data=/data/user/0/dev.meeterm.app
+    dir=/data/app/~~efOoG92ilBLejD7LWnlhqw==/dev.meeterm.app-YxzhVWiXnSReX_JeCby07Q==/base.apk publicDir=/data/app/~~efOoG92ilBLejD7LWnlhqw==/dev.meeterm.app-YxzhVWiXnSReX_JeCby07Q==/base.apk data=/data/user/0/dev.meeterm.app
     packageList={dev.meeterm.app}
     compat={420dpi}
-    thread=com.android.server.am.ApplicationThreadDeferred@e95ca66
-    pid=3899
-    lastActivityTime=-8s10ms    startUpTime=-8s283ms    startElapsedTime=-8s283ms
-    startSeq=66
+    thread=com.android.server.am.ApplicationThreadDeferred@a277c8a
+    pid=4106
+    lastActivityTime=-8s85ms    startUpTime=-8s374ms    startElapsedTime=-8s374ms
+    startSeq=67
     mountMode=DEFAULT
-    lastRssTime=-8s289ms rssProcState=20 rssStatType=0 nextRssTime=+16m22s511ms
+    lastRssTime=-8s375ms rssProcState=20 rssStatType=0 nextRssTime=+16m40s442ms
     lastRss=0.00 lastCachedRss=0.00
     trimMemoryLevel=0
     procStateMemTracker: best=4 () / pending state=1 highest=1 1.0x
-    lastRequestedGc=-8s240ms lastLowMemory=-8s240ms reportLowMemory=false
+    lastRequestedGc=-8s268ms lastLowMemory=-8s268ms reportLowMemory=false
     currentHostingComponentTypes=0x0 historicalHostingComponentTypes=0x0
-    reportedInteraction=true time=-8s240ms
-    adjSeq=2139 lruSeq=1608
+    reportedInteraction=true time=-8s268ms
+    adjSeq=3470 lruSeq=2600
     oom adj: max=1001 curRaw=0 setRaw=0 cur=0 set=0
     mCurSchedGroup=3 setSchedGroup=3 systemNoUi=false
 --
@@ -29,139 +29,147 @@
     scheduleServiceTimeoutPending=false
     Published Providers:
       - androidx.startup.InitializationProvider
-        -> ContentProviderRecord{a5671a7 u0 dev.meeterm.app/androidx.startup.InitializationProvider}
+        -> ContentProviderRecord{77e42fb u0 dev.meeterm.app/androidx.startup.InitializationProvider}
       - expo.modules.filesystem.FileSystemFileProvider
-        -> ContentProviderRecord{b997654 u0 dev.meeterm.app/expo.modules.filesystem.FileSystemFileProvider}
+        -> ContentProviderRecord{24d2f18 u0 dev.meeterm.app/expo.modules.filesystem.FileSystemFileProvider}
     Connected Providers:
-      - 61222c1/com.android.providers.settings/.SettingsProvider->3899:dev.meeterm.app/u0a216 s1/1 u0/0 +7s995ms
+      - 91876f5/com.android.providers.settings/.SettingsProvider->4106:dev.meeterm.app/u0a216 s1/1 u0/0 +8s63ms
+      - d37782d/com.google.android.gms/.fonts.provider.FontsProvider->4106:dev.meeterm.app/u0a216 s0/2 u1/3 +5s468ms
     lastCompactTime=0 lastCompactProfile=null
     hasPendingCompaction=false    isFreezeExempt=false isPendingFreeze=false isFrozen=false
     earliestFreezableTimeMs=--
     Activities:
-      - ActivityRecord{34769836 u0 dev.meeterm.app/.MainActivity t946}
+      - ActivityRecord{161867156 u0 dev.meeterm.app/.MainActivity t981}
     Recent Tasks:
-      - Task{b7c1075 #946 type=standard A=10216:dev.meeterm.app}
-     Configuration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.88 fontWeightAdjustment=0}
+      - Task{d7eb39 #981 type=standard A=10216:dev.meeterm.app}
+     Configuration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.86 fontWeightAdjustment=0}
      OverrideConfiguration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=standard mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.2 fontWeightAdjustment=0}
-     mLastReportedConfiguration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.88 fontWeightAdjustment=0}
+     mLastReportedConfiguration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.86 fontWeightAdjustment=0}
      mActivityStateFlags=W|V|R|VT|taskLayer=1
-  *APP* UID 10134 ProcessRecord{8bbe2ff 3014:com.google.android.projection.gearhead:car/u0a134}
+  *APP* UID 10134 ProcessRecord{dac1753 3164:com.google.android.projection.gearhead:car/u0a134}
     user #0 uid=10134 gids={3002, 3003, 3001, 50134, 20134, 9997, 1077}
     mRequiredAbi=x86_64 instructionSet=null
     class=com.google.android.apps.auto.components.app.stubapp.GhStubApplication
     dir=/product/priv-app/AndroidAutoStubPrebuilt/AndroidAutoStubPrebuilt.apk publicDir=/product/priv-app/AndroidAutoStubPrebuilt/AndroidAutoStubPrebuilt.apk data=/data/user/0/com.google.android.projection.gearhead
     packageList={com.google.android.projection.gearhead}
     compat={420dpi}
-    thread=com.android.server.am.ApplicationThreadDeferred@b5d29fd
-    pid=3014
-    lastActivityTime=-3m31s739ms    startUpTime=-3m31s809ms    startElapsedTime=-3m31s809ms
-    startSeq=54
+    thread=com.android.server.am.ApplicationThreadDeferred@3c68d71
+    pid=3164
+    lastActivityTime=-3m10s871ms    startUpTime=-3m11s88ms    startElapsedTime=-3m11s88ms
+    startSeq=56
     mountMode=DEFAULT
 --
-        com.google.android.providers.media.module/com.android.providers.media.fuse.ExternalStorageServiceImpl<=Proc{678:system/1000}
+        com.google.android.providers.media.module/com.android.providers.media.fuse.ExternalStorageServiceImpl<=Proc{684:system/1000}
         oom: max=1001 curRaw=-700 setRaw=-700 cur=-700 set=-700
         state: cur=PER  set=PER  lastRss=0.00 lastCachedRss=0.00
         cached=false empty=false hasAboveClient=false
-    Proc # 7: fg     T/A/TOP  LCMNFUAT  t: 0 3899:dev.meeterm.app/u0a216 (top-activity)
+    Proc # 0: fg     T/A/TOP  LCMNFUAT  t: 0 4106:dev.meeterm.app/u0a216 (top-activity)
         oom: max=1001 curRaw=0 setRaw=0 cur=0 set=0
         state: cur=TOP  set=TOP  lastRss=0.00 lastCachedRss=0.00
         cached=false empty=false hasAboveClient=false
-    Proc #14: vis    F/ /BFGS ---NFU-T  t: 0 3811:com.google.android.apps.nexuslauncher/u0a184 (service)
-        com.google.android.apps.nexuslauncher/com.android.quickstep.TouchInteractionService<=Proc{931:com.android.systemui/u0a183}
+    Proc # 3: fg     F/ /BTOP LCMNFUAT  t: 0 1243:com.google.android.gms.persistent/u0a146 (provider)
+        com.google.android.gms/.fonts.provider.FontsProvider<=Proc{4106:dev.meeterm.app/u0a216}
+        oom: max=1001 curRaw=0 setRaw=0 cur=0 set=0
+        state: cur=BTOP set=BTOP lastRss=0.00 lastCachedRss=0.00
+        cached=false empty=false hasAboveClient=false
+    Proc #13: vis    F/ /BFGS ---NFU-T  t: 0 1482:com.google.android.apps.wellbeing/u0a140 (service)
+        com.google.android.apps.wellbeing/.azr.impl.AzrConditionProviderService<=Proc{684:system/1000}
         oom: max=1001 curRaw=100 setRaw=100 cur=100 set=100
         state: cur=BFGS set=BFGS lastRss=0.00 lastCachedRss=0.00
         cached=false empty=false hasAboveClient=false
-    Proc #12: vis    F/ /BFGS ---NFU-T  t: 0 1462:com.google.android.apps.wellbeing/u0a140 (service)
-        com.google.android.apps.wellbeing/.azr.impl.AzrConditionProviderService<=Proc{678:system/1000}
+    Proc # 9: vis    F/ /BFGS LCMNFUAT  t: 0 1095:com.google.android.ext.services/u0a189 (service)
+        com.google.android.ext.services/android.ext.services.autofill.InlineSuggestionRenderServiceImpl<=Proc{684:system/1000}
         oom: max=1001 curRaw=100 setRaw=100 cur=100 set=100
         state: cur=BFGS set=BFGS lastRss=0.00 lastCachedRss=0.00
         cached=false empty=false hasAboveClient=false
-    Proc # 8: vis    F/ /BFGS LCMNFUAT  t: 0 1076:com.google.android.ext.services/u0a189 (service)
-        com.google.android.ext.services/android.ext.services.autofill.InlineSuggestionRenderServiceImpl<=Proc{678:system/1000}
+    Proc # 7: vis    F/ /BFGS LCMNFUAT  t: 0 1590:com.google.android.as/u0a144 (service)
+        com.google.android.as/com.google.android.apps.miphone.aiai.app.AiAiContentCaptureService<=Proc{684:system/1000}
         oom: max=1001 curRaw=100 setRaw=100 cur=100 set=100
 --
       curProcState=6 curCapability=-------T
-      proc=ProcessRecord{8beeb9a 1312:com.google.android.permissioncontroller/u0a214}
-    UID u0a216: UidRecord{bcdb7f3 u0a216 TOP  change:active|uncached|procstate|procadj procs:0 seq(4203,4092)} caps=LCMNFUAT
+      proc=ProcessRecord{1f28fec 1329:com.google.android.permissioncontroller/u0a214}
+    UID u0a216: UidRecord{5281608 u0a216 TOP  change:active|uncached|procstate|procadj procs:0 seq(6824,6724)} caps=LCMNFUAT
       curProcState=2 curCapability=LCMNFUAT
-      proc=ProcessRecord{f706ad6 3899:dev.meeterm.app/u0a216}
+      proc=ProcessRecord{b40532c 4106:dev.meeterm.app/u0a216}
 
   UID validation:
-    UID 1000: UidRecord{d958cb0 1000 PER  procs:0 seq(0,0)} caps=LCMNFUAT
+    UID 1000: UidRecord{af801a1 1000 PER  idle procs:0 seq(0,0)} caps=LCMNFUAT
       curProcState=0 curCapability=LCMNFUAT
-    UID 1001: UidRecord{9aab729 1001 PER  procs:0 seq(0,0)} caps=LCMNFUAT
+    UID 1001: UidRecord{f9defc6 1001 PER  procs:0 seq(0,0)} caps=LCMNFUAT
       curProcState=0 curCapability=LCMNFUAT
-    UID 1002: UidRecord{434aaae 1002 PER  procs:0 seq(0,0)} caps=LCMNFUAT
+    UID 1002: UidRecord{e719b87 1002 PER  procs:0 seq(0,0)} caps=LCMNFUAT
       curProcState=0 curCapability=LCMNFUAT
-    UID 1068: UidRecord{701e04f 1068 PER  procs:0 seq(0,0)} caps=LCMNFUAT
+    UID 1068: UidRecord{52c8ab4 1068 PER  procs:0 seq(0,0)} caps=LCMNFUAT
       curProcState=0 curCapability=LCMNFUAT
-    UID 1073: UidRecord{a3ec3dc 1073 PER  procs:0 seq(0,0)} caps=LCMNFUAT
+    UID 1073: UidRecord{17216dd 1073 PER  procs:0 seq(0,0)} caps=LCMNFUAT
       curProcState=0 curCapability=LCMNFUAT
-    UID 2000: UidRecord{48e9ce5 2000 CEM  idle procs:0 seq(0,0)} caps=--------
+    UID 2000: UidRecord{c794252 2000 CEM  idle procs:0 seq(0,0)} caps=--------
       curProcState=19 curCapability=--------
-    UID u0a94: UidRecord{2a4c3ba u0a94 CEM  idle procs:0 seq(0,0)} caps=--------
+    UID u0a94: UidRecord{f426923 u0a94 CEM  idle procs:0 seq(0,0)} caps=--------
       curProcState=19 curCapability=--------
 --
-    #56: vis    BFGS LCMNFUAT 1550:com.google.android.googlequicksearchbox:interactor/u0a147
-    #55: prcp   BFGS ---NFU-T 1571:com.google.android.apps.messaging:rcs/u0a145
-    #54: vis    BFGS LCMNFUAT 1528:com.google.android.as/u0a144
-    #53: psvc   PER  LCMNFUAT 1513:com.google.android.providers.media.module/u0a191
-    #52: fg     TOP  LCMNFUAT 3899:dev.meeterm.app/u0a216 act:activities|recents
-    #51: vis    BFGS LCMNFUAT 1076:com.google.android.ext.services/u0a189
-    #50: vis    IMPF -------T 1312:com.google.android.permissioncontroller/u0a214
-    #49: cch+ 5 CEM  -------T 1765:com.android.keychain/1000
-    #48: psvc   PER  LCMNFUAT 1027:com.google.android.bluetooth/1002
-    #47: vis    BFGS ---NFU-T 1462:com.google.android.apps.wellbeing/u0a140
-    #46: prev   LAST -------- 2517:com.google.android.apps.wallpaper/u0a186
-    #45: vis    BFGS ---NFU-T 3811:com.google.android.apps.nexuslauncher/u0a184 act:activities|recents
-    #44: cch+ 5 CEM  -------- 3171:com.google.android.apps.photos/u0a161
-    #43: cch+ 5 CEM  -------- 2997:com.google.android.gms.unstable/u0a146
-    #42: cch+ 5 CEM  -------- 1333:com.google.android.dialer/u0a135
-    #41: cch+15 CEM  -------- 3070:com.google.android.settings.intelligence/u0a136
-    #40: svcb   SVC  -------T 1158:com.android.settings/1000
-    #39: cch+15 CEM  -------- 2411:com.google.android.tts/u0a150
-    #38: prcp   IMPB -------T 1497:com.google.android.inputmethod.latin/u0a152
-    #37: cch+15 CEM  -------- 2079:com.google.android.as.oss/u0a142
-    #36: cch+15 CEM  -------- 1846:com.google.android.apps.messaging/u0a145
+      curProcState=2 curCapability=LCMNFUAT
+
+  Raw LRU list (dumpsys activity lru):
+    Activities:
+    #60: fg     TOP  LCMNFUAT 4106:dev.meeterm.app/u0a216 act:activities|recents
+    #59: vis    BFGS ---NFU-T 4002:com.google.android.apps.nexuslauncher/u0a184 act:activities|recents
+    Other:
+    #58: cch+ 5 CEM  -------- 1520:com.google.android.gms/u0a146
+    #57: fg     BTOP LCMNFUAT 1243:com.google.android.gms.persistent/u0a146
+    #56: prev   LAST -------- 3668:com.google.android.googlequicksearchbox:search/u0a147
+    #55: vis    BFGS LCMNFUAT 1603:com.google.android.googlequicksearchbox:interactor/u0a147
+    #54: prcp   BFGS ---NFU-T 1611:com.google.android.apps.messaging:rcs/u0a145
+    #53: vis    BFGS LCMNFUAT 1590:com.google.android.as/u0a144
+    #52: psvc   PER  LCMNFUAT 1571:com.google.android.providers.media.module/u0a191
+    #51: vis    BFGS LCMNFUAT 1095:com.google.android.ext.services/u0a189
+    #50: vis    IMPF -------T 1329:com.google.android.permissioncontroller/u0a214
+    #49: cch+ 5 CEM  -------T 1835:com.android.keychain/1000
+    #48: psvc   PER  LCMNFUAT 998:com.google.android.bluetooth/1002
+    #47: vis    BFGS ---NFU-T 1482:com.google.android.apps.wellbeing/u0a140
+    #46: prev   LAST -------- 2544:com.google.android.apps.wallpaper/u0a186
+    #45: cch+ 5 CEM  -------- 4001:com.android.imsserviceentitlement/u0a131
 --
-    Proc #11: psvc   F/ /PER  LCMNFUAT  t: 0 1027:com.google.android.bluetooth/1002 (service)
-        com.google.android.bluetooth/com.android.bluetooth.btservice.AdapterService<=Proc{678:system/1000}
-    Proc # 6: psvc   F/ /PER  LCMNFUAT  t: 0 1513:com.google.android.providers.media.module/u0a191 (service)
-        com.google.android.providers.media.module/com.android.providers.media.fuse.ExternalStorageServiceImpl<=Proc{678:system/1000}
-    Proc # 7: fg     T/A/TOP  LCMNFUAT  t: 0 3899:dev.meeterm.app/u0a216 (top-activity)
-    Proc #14: vis    F/ /BFGS ---NFU-T  t: 0 3811:com.google.android.apps.nexuslauncher/u0a184 (service)
-        com.google.android.apps.nexuslauncher/com.android.quickstep.TouchInteractionService<=Proc{931:com.android.systemui/u0a183}
-    Proc #12: vis    F/ /BFGS ---NFU-T  t: 0 1462:com.google.android.apps.wellbeing/u0a140 (service)
-        com.google.android.apps.wellbeing/.azr.impl.AzrConditionProviderService<=Proc{678:system/1000}
-    Proc # 8: vis    F/ /BFGS LCMNFUAT  t: 0 1076:com.google.android.ext.services/u0a189 (service)
-        com.google.android.ext.services/android.ext.services.autofill.InlineSuggestionRenderServiceImpl<=Proc{678:system/1000}
-    Proc # 5: vis    F/ /BFGS LCMNFUAT  t: 0 1528:com.google.android.as/u0a144 (service)
-        com.google.android.as/com.google.android.apps.miphone.aiai.app.AiAiContentCaptureService<=Proc{678:system/1000}
-    Proc # 3: vis    F/ /BFGS LCMNFUAT  t: 0 1550:com.google.android.googlequicksearchbox:interactor/u0a147 (service)
-        com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService<=Proc{678:system/1000}
-    Proc # 1: vis    F/ /BFGS LCMNFUAT  t: 0 1222:com.google.android.gms.persistent/u0a146 (service)
-        com.google.android.gms/.chimera.PersistentDirectBootAwareApiService<=Proc{1462:com.google.android.apps.wellbeing/u0a140}
-    Proc # 9: vis    F/ /IMPF -------T  t: 0 1312:com.google.android.permissioncontroller/u0a214 (service)
-        com.google.android.permissioncontroller/com.android.permissioncontroller.permission.service.PermissionControllerServiceImpl<=Proc{678:system/1000}
-    Proc # 4: prcp   F/ /BFGS ---NFU-T  t: 0 1571:com.google.android.apps.messaging:rcs/u0a145 (service)
-        com.google.android.apps.messaging/com.google.android.ims.binding.SystemBindingService<=Proc{678:system/1000}
+    Proc #12: psvc   F/ /PER  LCMNFUAT  t: 0 998:com.google.android.bluetooth/1002 (service)
+        com.google.android.bluetooth/com.android.bluetooth.btservice.AdapterService<=Proc{684:system/1000}
+    Proc # 8: psvc   F/ /PER  LCMNFUAT  t: 0 1571:com.google.android.providers.media.module/u0a191 (service)
+        com.google.android.providers.media.module/com.android.providers.media.fuse.ExternalStorageServiceImpl<=Proc{684:system/1000}
+    Proc # 0: fg     T/A/TOP  LCMNFUAT  t: 0 4106:dev.meeterm.app/u0a216 (top-activity)
+    Proc # 3: fg     F/ /BTOP LCMNFUAT  t: 0 1243:com.google.android.gms.persistent/u0a146 (provider)
+        com.google.android.gms/.fonts.provider.FontsProvider<=Proc{4106:dev.meeterm.app/u0a216}
+    Proc #13: vis    F/ /BFGS ---NFU-T  t: 0 1482:com.google.android.apps.wellbeing/u0a140 (service)
+        com.google.android.apps.wellbeing/.azr.impl.AzrConditionProviderService<=Proc{684:system/1000}
+    Proc # 9: vis    F/ /BFGS LCMNFUAT  t: 0 1095:com.google.android.ext.services/u0a189 (service)
+        com.google.android.ext.services/android.ext.services.autofill.InlineSuggestionRenderServiceImpl<=Proc{684:system/1000}
+    Proc # 7: vis    F/ /BFGS LCMNFUAT  t: 0 1590:com.google.android.as/u0a144 (service)
+        com.google.android.as/com.google.android.apps.miphone.aiai.app.AiAiContentCaptureService<=Proc{684:system/1000}
+    Proc # 5: vis    F/ /BFGS LCMNFUAT  t: 0 1603:com.google.android.googlequicksearchbox:interactor/u0a147 (service)
+        com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService<=Proc{684:system/1000}
+    Proc # 1: vis    F/ /BFGS ---NFU-T  t: 0 4002:com.google.android.apps.nexuslauncher/u0a184 (service)
+        com.google.android.apps.nexuslauncher/com.android.quickstep.TouchInteractionService<=Proc{923:com.android.systemui/u0a183}
+    Proc #10: vis    F/ /IMPF -------T  t: 0 1329:com.google.android.permissioncontroller/u0a214 (service)
+        com.google.android.permissioncontroller/com.android.permissioncontroller.permission.service.PermissionControllerServiceImpl<=Proc{684:system/1000}
+    Proc # 6: prcp   F/ /BFGS ---NFU-T  t: 0 1611:com.google.android.apps.messaging:rcs/u0a145 (service)
+        com.google.android.apps.messaging/com.google.android.ims.binding.SystemBindingService<=Proc{684:system/1000}
+    Proc #24: prcp   T/ /IMPB -------T  t: 0 1499:com.google.android.inputmethod.latin/u0a152 (service)
+        com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME<=Proc{684:system/1000}
 --
-    PID #3323: ProcessRecord{39a06f5 3323:com.google.android.gms.ui/u0a146}
-    PID #3326: ProcessRecord{60ccb2e 3326:com.google.android.marvin.talkback/u0a169}
-    PID #3617: ProcessRecord{a616d56 3617:com.google.android.googlequicksearchbox:search/u0a147}
-    PID #3811: ProcessRecord{940f61d 3811:com.google.android.apps.nexuslauncher/u0a184}
-    PID #3899: ProcessRecord{f706ad6 3899:dev.meeterm.app/u0a216}
+    PID #3397: ProcessRecord{5173edc 3397:com.google.android.marvin.talkback/u0a169}
+    PID #3668: ProcessRecord{d2ee44e 3668:com.google.android.googlequicksearchbox:search/u0a147}
+    PID #4001: ProcessRecord{271b6a6 4001:com.android.imsserviceentitlement/u0a131}
+    PID #4002: ProcessRecord{5729732 4002:com.google.android.apps.nexuslauncher/u0a184}
+    PID #4106: ProcessRecord{b40532c 4106:dev.meeterm.app/u0a216}
 
   Active process infos:
-    Pinfo PID #1076:
+    Pinfo PID #1095:
       name=com.google.android.ext.services
       deny: android.permission.INTERNET
 
-  mHomeProcess: ProcessRecord{940f61d 3811:com.google.android.apps.nexuslauncher/u0a184}
+  mHomeProcess: ProcessRecord{5729732 4002:com.google.android.apps.nexuslauncher/u0a184}
   mPreviousProcessVisibleTime: 0
-  mGlobalConfiguration: {1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.52 fontWeightAdjustment=0}
+  mGlobalConfiguration: {1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.51 fontWeightAdjustment=0}
   Display override configurations:
-    0: {1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.52 fontWeightAdjustment=0}
+    0: {1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h914dp 420dpi nrml long port finger qwerty/v/v -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} as.3 s.51 fontWeightAdjustment=0}
   mConfigWillChange: false
   mWakefulness=Awake
   mSleepTokens={}
