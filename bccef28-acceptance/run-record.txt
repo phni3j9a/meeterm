@@ -1,0 +1,18 @@
+source_sha=bccef28bfeabe4dbeefc1e0a2a880af0906031ce
+branch=issue-27-sequential-switcher
+delta_vs_376164e=harness fixes only (scripts/ssh/ios-smoke.py registers runtime_boundary_result in NATIVE_INPUT_CASES; prepare_topology uses list-panes -s scoped to the meeterm session) + test_ios_smoke.py additions + docs. No app/native/test product source changed, but a fresh build-for-testing was run per directive.
+suites=standard (fresh build), ssh (same-commit products reuse — HEAD sha + single xctestrun verified before run)
+result_standard=PASSED — 27 route captures incl. standard-session-switcher + standard-session-switcher-sessions (the two new seeded screens), ios-standard-validation=passed, foundation=passed, renderer_backend=metal
+result_ssh=FAILED at xcuitest_ssh: ui_test_failed (exit 65) — MeetermSmokeUITests.swift:2452 "The short field is not hittable." The Host field inside the embedded Add-server ConnectionForm (Manage servers -> Add server) exists but is unreachable for 10s: element present in the a11y tree, not hittable. Same signature as the embedded-form (0,0) dead-zone defect verified on be7e23e (issue-27-session-switcher): the form's ScrollView is not a direct child of the sheet content wrapper, so it keeps a (0,0)-origin layout and top fields sit in the sheet-grabber dead zone. XCTest reached this step only after completing the same-server switch flow.
+ssh_markers_verified_before_failure=ssh_switcher_same_server_session, same_destination_input_* (marker entry incl. paste+keyboard path), same_server_return, same_old_shell_check_*, same_server_old_shell_survived — same-server Session switch + destination-input marker + original shell PID survival all completed per ios-ui-stages.txt.
+ssh_items_blocked_by_failure=alternate SSH endpoint switch (switcher-alternate-destination), host-key confirmation for the second endpoint, and all later steps — the run died while setting up the "Alternate endpoint" profile in the Manage sheet.
+fixture_topology=pass — fixture-validation.txt records workspace_count=2 pane_count=3 under the -s-scoped count (the bccef28 fix works).
+toolchain=Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c; react-native 0.86.3, expo ~57.0.25
+build=fresh clean CNG + build-for-testing EXPO_PUBLIC_MEETERM_SMOKE=1 ENABLE_TESTABILITY=YES ARCHS=arm64; build_wall_seconds=141
+standard_wall_seconds=292; xcodebuild_elapsed_ms=270462, xcodebuild_result_line=passed, xcodebuild_forced_exit_after_result=1, xcodebuild_post_result_wait_ms=60425, keyboard_introduction_suppressed=1
+ssh_wall_seconds=240; xcodebuild_elapsed_ms=230422, xcodebuild_result_line=failed, xcodebuild_forced_exit_after_result=1, xcodebuild_post_result_wait_ms=60078
+xcresult_note=meeterm-ios-ssh.xcresult is incomplete (no Info.plist) — forced-exit watchdog stops xcodebuild before bundle finalization; xcresult_summary_available=0. Stage file + raw log carry the failure record.
+simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0
+simulator_note=metadata.txt records iPhone 18 Pro (1308A109): ios-select-simulator.sh auto-boots the first 'iPhone * Pro' device; the XCTest destination is $IOS_SIMULATOR_UDID (Pro Max).
+stale_file_note=per-invocation cleanup does not cover some harness files; pre-run leftovers were removed from both suite dirs (see file lists).
+no_source_modified=true; assertions not loosened.
