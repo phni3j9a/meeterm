@@ -1,0 +1,13 @@
+source_sha=376164e182a71a0393590b114814ef22d7da9a4a
+branch=issue-27-sequential-switcher
+change_scope=Issue #27 sequential switcher: native boundary-result contract over the bridge, boundary-aware app resume/cancel, alternate-SSH-endpoint fixture (per-port tmux), destination-input marker, old-shell-PID survival. Native bridge changed (MeetermCore/MeetermTerminalModule/TerminalInputView + TerminalInputViewTests).
+suites=standard (fresh build), ssh (same-commit products reuse — commit + toolchain verified)
+result_standard=FAILED gate xcuitest_standard:native_cases_incomplete — UI XCTest itself passed (xcodebuild_result_line=passed, all 27 route captures incl. both new standard-session-switcher screens, foundation metal). Gate failed because TerminalInputViewTests.swift:286 writes a 13th line `case=runtime_boundary_result result=passed` but ios-smoke.py NATIVE_INPUT_CASES expects exactly 12 (exact set-equality). Branch-internal test<->runner mismatch; the boundary-result case itself passed.
+result_ssh=FAILED at tmux_fixture:topology_invalid — prepare_topology creates the new switcher-destination session then counts panes with `tmux list-panes -a -t =meeterm`; -a is server-wide and returns 4 panes (verified locally on tmux 3.7c) while the check demands exactly 3. Harness defect in scripts/ssh/ios-smoke.py; no XCTest ran, so same-server switch / alternate endpoint / host-key / destination-marker / old-shell-PID items were NOT verified.
+toolchain=Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c; react-native 0.86.3, expo ~57.0.25
+build=fresh clean CNG (rm -rf ios; expo prebuild --platform ios --no-install; ios-inject-ui-test.sh; pod install; ios-strip-storage-rust-link.py) + build-for-testing EXPO_PUBLIC_MEETERM_SMOKE=1 ENABLE_TESTABILITY=YES ARCHS=arm64
+build_wall_seconds=229
+standard_wall_seconds=406 (incl. bootstatus); xcodebuild_elapsed_ms=354160, xcodebuild_result_line=passed, xcodebuild_forced_exit_after_result=1, xcodebuild_post_result_wait_ms=60242, keyboard_introduction_suppressed=1
+ssh_wall_seconds=65 (fixture-stage failure; no XCTest)
+simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0 — IOS_SIMULATOR_UDID exported; test destination platform=iOS Simulator,id=$IOS_SIMULATOR_UDID
+no_source_modified=true; assertions not loosened; both failures reproduced/analyzed as stated above.
