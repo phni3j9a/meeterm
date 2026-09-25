@@ -1,9 +1,9 @@
 import Foundation
 import UIKit
 
-/// Shared native-side validation for recovery values that arrive as strings
-/// from JavaScript. The decimal epoch is parsed only after an ASCII digit
-/// check, so it never travels through NSNumber/Double.
+/// Shared native-side validation for operation epochs arriving from JavaScript.
+/// The decimal epoch is checked as ASCII before conversion, so it never travels
+/// through NSNumber/Double.
 enum RecoveryBridgeValidation {
   static func parseOperationEpoch(_ value: String) -> UInt64? {
     guard !value.isEmpty,
@@ -12,12 +12,6 @@ enum RecoveryBridgeValidation {
       return nil
     }
     return UInt64(value)
-  }
-
-  static func validRecoveryToken(_ value: String) -> Bool {
-    !value.isEmpty && value.utf8.count <= 128 &&
-      !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
-      !value.utf8.contains(0)
   }
 }
 

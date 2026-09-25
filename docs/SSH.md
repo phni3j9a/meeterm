@@ -26,13 +26,18 @@ start, attach, or mutate anything.
    its processes continue running. Switching server/runtime releases the current
    controller before acquiring the next one.
 6. After a transport failure, the last synchronized terminal remains visible
-   but read-only while Rust performs bounded recovery. tmux resumes only after
-   the exact session and pane identities plus an authoritative screen are
-   verified. Herdr asks for an in-workspace confirmation before reacquiring the
-   compatible candidate and original stable terminal. Missing, replaced,
-   restarted, incompatible, or uncertain targets remain on the stale work
-   screen with **Retry** and **Change connection or runtime**; they do not open
-   the picker automatically. After the app process exits, open **サーバーに接続**
+   but read-only while Rust automatically recovers the same tmux or Herdr
+   target. Herdr checks the approved SSH host/key and authentication,
+   compatibility, selected runtime, original stable terminal, ordinary
+   controller lease without takeover, and authoritative full frame. Missing
+   server-instance identity by itself does not require confirmation. An actual
+   mismatch, authentication/synchronization failure, missing runtime/terminal,
+   or controller conflict keeps the stale work screen with **Retry** and
+   **Change connection or runtime**; it does not open the picker automatically.
+   **Reconnect** in Workspaces and **Retry** use `retryRecovery` for retained
+   work. The first automatic retry is immediate, subsequent failures use
+   bounded exponential backoff, and foreground/network-change events wake a
+   sleeping retry. After the app process exits, open **サーバーに接続**
    (**Connect**) and authenticate again; a fresh manual/cold connection always
    shows the picker.
 
@@ -105,12 +110,17 @@ registry. Platform adapters do not create a second copy of pane state. Removing
 a view leaves the remote pane running; removing a remote pane invalidates its
 borrowed local handle safely.
 
-Reconnect commands and bounded automatic retry are native-owned, not a React
-timer or an unbounded background retry. React polls only low-frequency state.
-Native reconstruction after a
-connection gap must obtain the current remote screen and topology before
-accepting terminal input again. Local display contents alone are not proof of
-remote reconnection.
+Retained **Reconnect** and **Retry** commands use the native `retryRecovery`
+same-intent entry. The native `reconnect`/`ManualReconnect` entry is reserved
+for fresh selection with no retained work. Automatic retry is native-owned,
+not a React timer or an unbounded background retry. The first attempt is
+immediate; failures use bounded exponential backoff. Foreground return and the
+native network-change notification wake a sleeping retry only while foreground
+and automatic reconnect is enabled; they do not interrupt a healthy connection
+or reset the retry budget. React polls only low-frequency state. Native
+reconstruction after a connection gap must obtain the current remote screen
+and topology before accepting terminal input again. Local display contents
+alone are not proof of remote reconnection.
 
 The selected pane is temporarily zoomed with tmux's own zoom operation; its
 underlying split layout is retained. Recovery uses an allocated pair of
@@ -301,3 +311,8 @@ proof that the hosted run passed; see `FIRST_APP.md` for current evidence.
 A CoreGraphics fallback frame is explicitly different from Metal execution.
 Physical-device GPU, Japanese IME, background network behavior, and font parity
 still need their own device evidence.
+
+The Android full and iOS `ssh` real-connection loss cases exercise tmux. Herdr's
+zero-tap recovery is verified by the opt-in ignored Rust integration using the
+real Herdr 0.9.0 binary over its isolated russh endpoint; mobile Herdr fixture
+screenshots are presentation evidence only.

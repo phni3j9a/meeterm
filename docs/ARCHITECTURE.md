@@ -142,23 +142,25 @@ queue, drains/closes the stream as required by the backend, and only then
 acquires the next binding. Release, disconnect, or hidden terminal view does not
 destroy the remote runtime or its processes. After Ready, transport recovery
 keeps the last authoritative native terminal/workspace mounted but revokes its
-operation epoch. It may return directly only after host-key/authentication,
-backend capability, runtime identity, selected terminal, topology, and
-authoritative screen resynchronization are committed. A missing, replaced,
-restarted, incompatible, or uncertain target remains fail-closed in that stale
-work screen; only an explicit Change action enters a fresh picker.
+operation epoch. Retained recovery verifies host-key/authentication, backend
+capability, selected runtime, selected terminal, topology, and authoritative
+screen resynchronization before returning to Ready. A concrete mismatch,
+conflict, authentication failure, or failed required synchronization keeps the
+cached read-only screen available for Retry or explicit Change. An unsupported
+server-instance continuity proof is not itself a conflict.
 
 tmux supplies a server PID/start-time epoch that can prove an unchanged server
 for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
 comparable server-instance identity through the selected public interfaces.
-That identity is therefore uncertain after a Herdr transport loss. Recovery
-authenticates and performs bounded read-only discovery, then waits for an
-explicit confirmation inside the retained work screen. Confirmation is scoped
-to the freshly validated candidate and does not prove instance continuity.
-Only a subsequent compatibility check, original stable-terminal resolution,
-ordinary controller acquisition without takeover, and authoritative first full
-frame can commit Ready. Failure keeps the stale work visible and never falls
-back to tmux.
+Recovery therefore does not require proof of server instance continuity. It
+reauthenticates to the same approved SSH host, verifies a compatible Herdr
+0.9.0 capability (protocol 22, schema 1, direct stream-local operations), the
+same selected running runtime and original stable `terminal_id`, acquires the
+ordinary controller lease without takeover, and requires the authoritative
+first full frame. A missing runtime/terminal, incompatibility, actual identity
+mismatch, controller conflict, or failed frame/resynchronization stops on the
+cached read-only screen. Recovery never retargets, falls back to tmux, or opens
+the picker automatically.
 
 The saved server profile stores SSH endpoint and authentication metadata.
 Legacy backend/runtime fields represent a non-authoritative logical
@@ -477,15 +479,24 @@ only window/pane identities, labels, selection, and connection state. The same
 native view binds a `native:<id>` borrowed Rust terminal handle when the selected
 pane changes. View unmount does not disconnect or destroy the remote pane.
 
-Rust owns bounded automatic retry after transient transport loss and foreground
-return. The public recovery control plane distinguishes Retry of the same
-retained intent, one-use Herdr confirmation, and explicit Change to a fresh
-runtime picker. A connection generation scopes the actor; a separate monotonic
-operation epoch invalidates delayed key, paste, resize, terminal-generated
-reply, and topology-mutation callbacks. Cached native output can remain visible
-while that gate is closed, but only a complete authoritative resynchronization
-sets Ready and reopens input. Explicit disconnect/change cancels retry and
-confirmation; host-key/authentication failures require user action. Rust
+Rust owns bounded automatic retry after transient transport loss. When retained
+work exists, Workspaces **Reconnect** and recovery **Retry** both call
+`retryRecovery(id, operationEpoch)`: stopped/exhausted recovery restarts the
+same intent with a fresh retry budget, sleeping backoff wakes immediately, and
+an in-flight attempt accepts a no-op request. An explicit Disconnect/Change
+or stale operation epoch rejects the request. `reconnect(id)` /
+`ManualReconnect` is only the fresh-selection boundary when there is no retained
+work. The first automatic attempt starts immediately; bounded exponential
+backoff applies only after a failed attempt. Foreground return and
+`network_changed()` wake retained recovery sleeping in backoff when automatic
+reconnect is enabled and the app is foregrounded. This wake never interrupts a
+healthy connection or resets the retry budget. A connection generation scopes
+the actor; a separate monotonic operation epoch invalidates delayed key, paste,
+resize, terminal-generated reply, and topology-mutation callbacks. Cached
+native output can remain visible while that gate is closed, but only a complete
+authoritative resynchronization sets Ready and reopens input. Explicit
+disconnect/change cancels retry; host-key/authentication failures require user
+action. Rust
 retains the selected parsed key or a `Zeroizing` password buffer in process
 memory. The form clears credential inputs after submission. Optional
 platform-secure credential storage supports reopening a saved server after
@@ -716,7 +727,7 @@ Disconnected
 → Synchronizing
 → Ready
 → Reconnecting
-→ AwaitingRecoveryConfirmation / Resynchronizing / RecoveryStopped
+→ Resynchronizing / RecoveryStopped
 ```
 
 React Native observes a low-frequency snapshot of this state; React Native must not implement the reconnect state machine with timers and effects.
@@ -730,8 +741,9 @@ name and legacy hint.
 
 Backgrounding alone does not tear down a healthy controller; native input is
 closed while the view is inactive and the same live connection may continue on
-foreground return. If transport is actually lost, reconnect waits for the app
-to return to the foreground and then resynchronizes. During same-process
+foreground return. If transport is lost, the first retry starts immediately
+when foregrounded; a foreground return or network-change notification skips
+the remaining backoff after a failed attempt. During same-process
 recovery the last authoritative native view remains mounted as cached read-only
 output. A retained terminal is not live until backend identity/topology and an
 authoritative selected-terminal frame have been committed and its new operation
@@ -808,14 +820,14 @@ terminal data plane native. Continue to verify:
    linked/shared tmux topology-mutation tests.
 10. Android full and iOS `standard` plus the short `ssh` suite cover the
     applicable mobile connection lifecycle. The iOS `standard` source-level
-    manifest has 27 screens: the previous 18 plus `session-switcher`,
+    manifest has 26 screens: the previous 18 plus `session-switcher`,
     `session-switcher-sessions`, `recovery-progress`,
-    `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
+    `recovery-exhausted`, `recovery-mismatch`,
     `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
     `connection-error`; its
     `herdr-connection` route is the picker with the Herdr `default` candidate's
     non-authoritative `Last used` hint. Android's observational `SCREEN_NAMES`
-    has 33 routes: the previous 25 plus the two switcher routes, those four
+    has 32 routes: the previous 25 plus the two switcher routes, three
     recovery routes, and the two layout-restore warning fixtures. These counts
     define source scope only; they
     do not claim remote CI or visual
@@ -823,13 +835,17 @@ terminal data plane native. Continue to verify:
     before visual success is reported.
 11. Retained-work recovery changes additionally verify native Term/selection
     preservation, operation-epoch invalidation, no queued input/mutation replay,
-    strict tmux runtime/pane identity, Herdr in-work confirmation before normal
-    lease acquisition, authoritative selected-terminal resynchronization before
-    Ready, and fail-closed retry exhaustion without an automatic picker.
+    strict tmux runtime/pane identity, Herdr same-runtime/stable-terminal/normal
+    lease checks without takeover, authoritative selected-terminal
+    resynchronization before Ready, and same-intent retry exhaustion without an
+    automatic picker. The live Herdr zero-tap check belongs to the real Herdr
+    Rust/russh integration; mobile real-connection tests exercise tmux.
 
 A simulator/emulator smoke result does not replace physical-device GPU, font,
-or IME validation. The [live native Herdr test](evidence/issue-17-herdr-native.md)
-has passed locally. The [mobile acceptance record](evidence/issue-17-herdr-mobile.md)
+or IME validation. The prior local live-Herdr result remains scoped to the
+source revision in the [native integration record](evidence/issue-17-herdr-native.md);
+run the updated ignored test at the current candidate before claiming zero-tap
+Herdr recovery acceptance. The [mobile acceptance record](evidence/issue-17-herdr-mobile.md)
 records CI results and actual screen review for each source revision.
 
 ## CI and mobile evidence

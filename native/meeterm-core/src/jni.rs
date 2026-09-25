@@ -242,6 +242,14 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setForeground(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_networkChanged(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+) {
+    crate::ffi::meeterm_network_changed();
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_setTerminalVisible(
     _env: EnvUnowned<'_>,
     _this: JObject<'_>,
@@ -1226,23 +1234,6 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_retryRecovery(
     code_from_outcome(unowned_env.with_env(|env| {
         let operation_epoch = operation_epoch_from_java(env, &operation_epoch)?;
         Ok(crate::ffi::meeterm_retry_recovery(handle, operation_epoch))
-    }))
-}
-
-/// Confirm retained recovery with a bounded, control-free token.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_confirmRecovery<'caller>(
-    mut unowned_env: EnvUnowned<'caller>,
-    _this: JObject<'caller>,
-    handle: jlong,
-    token: JString<'caller>,
-) -> jint {
-    let Some(handle) = handle_from_jlong(handle) else {
-        return -1;
-    };
-    code_from_outcome(unowned_env.with_env(|env| {
-        let token = string_from_java(env, &token)?;
-        Ok(unsafe { crate::ffi::meeterm_confirm_recovery(handle, token.as_ptr(), token.len()) })
     }))
 }
 

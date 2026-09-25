@@ -16,11 +16,11 @@ pub mod workspace;
 pub use ffi::{
     meeterm_change_runtime, meeterm_clear_selection, meeterm_commit_modified_utf8,
     meeterm_commit_modified_utf8_at_epoch, meeterm_commit_utf8, meeterm_commit_utf8_at_epoch,
-    meeterm_confirm_recovery, meeterm_connect, meeterm_connect_host, meeterm_connection_snapshot,
+    meeterm_connect, meeterm_connect_host, meeterm_connection_snapshot,
     meeterm_connection_snapshot_size, meeterm_create_runtime, meeterm_create_terminal,
     meeterm_create_tmux_session, meeterm_destroy_terminal, meeterm_disconnect,
     meeterm_forget_host_key, meeterm_input_commit_count, meeterm_list_runtimes,
-    meeterm_operation_epoch, meeterm_pane_record_size, meeterm_paste_utf8,
+    meeterm_network_changed, meeterm_operation_epoch, meeterm_pane_record_size, meeterm_paste_utf8,
     meeterm_paste_utf8_at_epoch, meeterm_reconnect, meeterm_refresh_runtimes,
     meeterm_resize_terminal, meeterm_resize_terminal_at_epoch, meeterm_respond_host_key,
     meeterm_retry_recovery, meeterm_runtime_discovery, meeterm_runtime_discovery_size,

@@ -93,11 +93,9 @@ type RecoveryActionIdentity = {
   epoch: string;
   phase: WorkspaceControl['recovery']['phase'];
   attempt: number;
-  token: string;
 };
 type RecoveryPendingActions = {
   retry: RecoveryActionIdentity | null;
-  confirm: RecoveryActionIdentity | null;
   change: RecoveryActionIdentity | null;
 };
 type PendingRuntimeRefresh = {
@@ -106,7 +104,7 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'herdr-recovery-confirm' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 // This is the native message published after an explicit disconnect cannot
@@ -327,11 +325,11 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     });
     return base;
   }
-  if (screen === 'recovery-progress' || screen === 'recovery-exhausted' || screen === 'recovery-mismatch' || screen === 'herdr-recovery-confirm') {
-    const base = smokeFixture(screen === 'herdr-recovery-confirm' ? 'herdr-terminal' : 'terminal');
+  if (screen === 'recovery-progress' || screen === 'recovery-exhausted' || screen === 'recovery-mismatch') {
+    const base = smokeFixture('terminal');
     base.connection = {
       ...base.connection,
-      state: screen === 'recovery-progress' || screen === 'herdr-recovery-confirm' ? 'Reconnecting' : 'Failed',
+      state: screen === 'recovery-progress' ? 'Reconnecting' : 'Failed',
       errorCode: '',
       errorMessage: '',
     };
@@ -343,9 +341,7 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
         ? { phase: 'resynchronizing', reason: 'runtime_validation', attempt: 2, maxAttempts: 6 }
         : screen === 'recovery-exhausted'
           ? { phase: 'stopped', reason: 'retry_exhausted', attempt: 6, maxAttempts: 6 }
-          : screen === 'recovery-mismatch'
-            ? { phase: 'stopped', reason: 'runtime_identity_mismatch', attempt: 1, maxAttempts: 6 }
-            : { phase: 'awaitingConfirmation', reason: 'herdr_continuity_uncertain', attempt: 1, maxAttempts: 1, confirmationToken: 'smoke-confirmation' },
+          : { phase: 'stopped', reason: 'runtime_identity_mismatch', attempt: 1, maxAttempts: 6 },
     });
     return base;
   }
@@ -423,7 +419,7 @@ const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
   'session-switcher', 'session-switcher-sessions',
-  'recovery-progress', 'recovery-exhausted', 'recovery-mismatch', 'herdr-recovery-confirm',
+  'recovery-progress', 'recovery-exhausted', 'recovery-mismatch',
   'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
@@ -935,22 +931,6 @@ function recoveryRailCopy(control: WorkspaceControl, backend: RuntimeBackend, ru
     return { title: 'Refreshing terminal…', detail: 'Receiving the current remote screen.', meta, progress: true, danger: false, assertive: false, retry: false, review: false, connectionDetails: false, chooseTerminal: false, change: false };
   }
 
-  if (control.recovery.phase === 'awaitingConfirmation') {
-    return {
-      title: 'Confirmation needed',
-      detail: `Herdr can’t verify that “${runtimeLabel}” is the same instance.`,
-      meta,
-      progress: false,
-      danger: false,
-      assertive: true,
-      retry: false,
-      review: true,
-      connectionDetails: false,
-      chooseTerminal: false,
-      change: true,
-    };
-  }
-
   if (control.recovery.phase !== 'stopped') return null;
 
   switch (reason) {
@@ -978,7 +958,7 @@ function recoveryRailCopy(control: WorkspaceControl, backend: RuntimeBackend, ru
 function RecoveryRail({ copy, colors, busy, onRetry, onReview, onConnectionDetails, onChooseTerminal, onChange }: {
   copy: RecoveryRailCopy;
   colors: Palette;
-  busy: { retry: boolean; review: boolean; change: boolean };
+  busy: { retry: boolean; change: boolean };
   onRetry: () => void;
   onReview: () => void;
   onConnectionDetails: () => void;
@@ -999,7 +979,7 @@ function RecoveryRail({ copy, colors, busy, onRetry, onReview, onConnectionDetai
       </View>
       {copy.retry || copy.review || copy.connectionDetails || copy.chooseTerminal || copy.change ? <View style={styles.recoveryRailActions}>
         {copy.retry ? <Button testID="recovery-retry" label="Retry recovery" colors={colors} disabled={busy.retry} onPress={onRetry}>Retry</Button> : null}
-        {copy.review ? <Pressable testID="recovery-review" accessibilityRole="button" accessibilityLabel={copy.reviewAccessibilityLabel ?? 'Review recovery'} accessibilityState={{ disabled: busy.review }} disabled={busy.review} onPress={onReview} style={[styles.textAction, { opacity: busy.review ? .45 : 1 }]}><Text style={[styles.actionText, { color: colors.accent }]}>{copy.reviewLabel ?? 'Review'}</Text></Pressable> : null}
+        {copy.review ? <Pressable testID="recovery-review" accessibilityRole="button" accessibilityLabel={copy.reviewAccessibilityLabel ?? 'Review recovery'} onPress={onReview} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>{copy.reviewLabel ?? 'Review'}</Text></Pressable> : null}
         {copy.connectionDetails ? <Pressable testID="recovery-connection-details" accessibilityRole="button" accessibilityLabel="Connection details" onPress={onConnectionDetails} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Connection details</Text></Pressable> : null}
         {copy.chooseTerminal ? <Pressable testID="recovery-choose-terminal" accessibilityRole="button" accessibilityLabel="Choose another terminal" onPress={onChooseTerminal} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Choose terminal…</Text></Pressable> : null}
         {copy.change ? <Pressable testID="recovery-change" accessibilityRole="button" accessibilityLabel="Change connection or runtime" accessibilityState={{ disabled: busy.change }} disabled={busy.change} onPress={onChange} style={[styles.textAction, { opacity: busy.change ? .45 : 1 }]}><Text style={[styles.actionText, { color: colors.accent }]}>Change…</Text></Pressable> : null}
@@ -1081,7 +1061,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [appState, setAppState] = useState(AppState.currentState);
   const [foundation, setFoundation] = useState(() => smokeRoute?.kind === 'foundation');
   const [recoveryInvalidated, setRecoveryInvalidated] = useState(false);
-  const [recoveryPending, setRecoveryPending] = useState({ retry: false, confirm: false, change: false });
+  const [recoveryPending, setRecoveryPending] = useState({ retry: false, change: false });
   const [recoveredEpoch, setRecoveredEpoch] = useState('');
   const commandPending = useRef(false);
   const commandVersion = useRef(0);
@@ -1120,7 +1100,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const recoveryInvalidatedRef = useRef(recoveryInvalidated);
   const workspaceObservationRef = useRef(Boolean(fixture?.hasConnected && fixture.panes.length > 0));
   const retainedPaneRef = useRef<RemoteTerminal | null>(null);
-  const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, confirm: null, change: null });
+  const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, change: null });
   const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
   const completedRecoveryEpochRef = useRef('');
   const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1365,6 +1345,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           const retainedSession = Boolean(nextSession && nextSessionControl?.hasRetainedWork
             && nextSessionControl.recovery.phase !== 'none'
             && !recoveryInvalidatedRef.current);
+          if (!readySession && !retainedSession && nextSession && nextSessionControl
+            && !recoveryInvalidatedRef.current && next.state !== 'Ready') {
+            // A disconnected native snapshot can advance its operation epoch
+            // before it publishes an active recovery phase. Refresh lifecycle
+            // control while keeping the last workspace and selected terminal
+            // metadata bound to the cached screen.
+            setSession(current => {
+              const nextControlOnly = { ...current, control: nextSessionControl };
+              return sameSession(current, nextControlOnly) ? current : nextControlOnly;
+            });
+          }
           if (readySession || retainedSession) {
             if (readySession) {
               // A Ready snapshot with both native gates open is a valid
@@ -1749,65 +1740,35 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const clearRecoveryAction = useCallback((kind: keyof RecoveryPendingActions, expected?: RecoveryActionIdentity) => {
     const current = recoveryPendingRef.current[kind];
     if (!current || (expected && (current.epoch !== expected.epoch
-      || current.phase !== expected.phase || current.attempt !== expected.attempt || current.token !== expected.token))) return;
+      || current.phase !== expected.phase || current.attempt !== expected.attempt))) return;
     recoveryPendingRef.current = { ...recoveryPendingRef.current, [kind]: null };
     setRecoveryPending(value => ({ ...value, [kind]: false }));
   }, []);
 
-  const retryRecovery = useCallback(() => {
+  const requestRetainedRecovery = useCallback((allowInFlight: boolean) => {
     const current = controlRef.current;
-    const copy = recoveryRailCopy(current, session.backend, session.runtime, recoveryServerLabel);
     if (recoveryInvalidatedRef.current || !current.hasRetainedWork
-      || current.recovery.phase !== 'stopped' || !copy?.retry) return;
+      || (!allowInFlight && current.recovery.phase !== 'stopped')) return false;
     const identity: RecoveryActionIdentity = {
       epoch: current.operationEpoch,
       phase: current.recovery.phase,
       attempt: current.recovery.attempt,
-      token: current.recovery.confirmationToken,
     };
-    if (!startRecoveryAction('retry', identity)) return;
+    if (!startRecoveryAction('retry', identity)) return false;
     void MeetermTerminal.retryRecovery(CONNECTION_ID, identity.epoch)
       .catch(() => {
         clearRecoveryAction('retry', identity);
         setControlMessage('Recovery could not be started. Try again or change the destination.');
       });
-  }, [clearRecoveryAction, recoveryServerLabel, session.backend, session.runtime, startRecoveryAction]);
-
-  const confirmRecovery = useCallback((token: string) => {
-    const current = controlRef.current;
-    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
-      || current.recovery.phase !== 'awaitingConfirmation'
-      || !token || token !== current.recovery.confirmationToken) return;
-    const identity: RecoveryActionIdentity = {
-      epoch: current.operationEpoch,
-      phase: current.recovery.phase,
-      attempt: current.recovery.attempt,
-      token,
-    };
-    if (!startRecoveryAction('confirm', identity)) return;
-    void MeetermTerminal.confirmRecovery(CONNECTION_ID, token)
-      .catch(() => {
-        clearRecoveryAction('confirm', identity);
-        setControlMessage('This recovery confirmation is no longer valid. Review the workspace again.');
-      });
+    return true;
   }, [clearRecoveryAction, startRecoveryAction]);
 
-  const reviewRecovery = useCallback(() => {
+  const retryRecovery = useCallback(() => {
     const current = controlRef.current;
-    if (recoveryInvalidatedRef.current || !current.hasRetainedWork
-      || current.recovery.phase !== 'awaitingConfirmation' || !current.recovery.confirmationToken
-      || recoveryPendingRef.current.confirm) return;
-    const runtimeLabel = safeRecoveryLabel(session.runtime, 'this runtime');
-    const token = current.recovery.confirmationToken;
-    Alert.alert(
-      `Reconnect to “${runtimeLabel}”?`,
-      'Herdr can’t prove this is the same server instance. Continue only if you expect this running session to be your previous one. meeterm won’t take over another controller.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Reconnect', onPress: () => confirmRecovery(token) },
-      ],
-    );
-  }, [confirmRecovery, session.runtime]);
+    const copy = recoveryRailCopy(current, session.backend, session.runtime, recoveryServerLabel);
+    if (!copy?.retry || current.recovery.phase !== 'stopped') return;
+    requestRetainedRecovery(false);
+  }, [recoveryServerLabel, requestRetainedRecovery, session.backend, session.runtime]);
 
   const openRecoveryChange = useCallback(() => {
     const current = controlRef.current;
@@ -1825,7 +1786,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       epoch: current.operationEpoch,
       phase: current.recovery.phase,
       attempt: current.recovery.attempt,
-      token: current.recovery.confirmationToken,
     };
     if (!startRecoveryAction('change', identity)) return;
 
@@ -1935,22 +1895,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   useEffect(() => {
     if (recoveryInvalidatedRef.current) {
       clearRecoveryAction('retry');
-      clearRecoveryAction('confirm');
       return;
     }
     const current = controlRef.current;
-    (['retry', 'confirm'] as const).forEach(kind => {
-      const pending = recoveryPendingRef.current[kind];
-      if (!pending) return;
-      const token = kind === 'confirm' ? current.recovery.confirmationToken : pending.token;
-      if (pending.epoch !== current.operationEpoch
-        || pending.phase !== current.recovery.phase
-        || pending.attempt !== current.recovery.attempt
-        || (kind === 'confirm' && token !== pending.token)) {
-        clearRecoveryAction(kind, pending);
-      }
-    });
-  }, [clearRecoveryAction, control.operationEpoch, control.recovery.attempt, control.recovery.confirmationToken, control.recovery.phase, recoveryInvalidated]);
+    const pending = recoveryPendingRef.current.retry;
+    if (pending && (pending.epoch !== current.operationEpoch
+      || pending.phase !== current.recovery.phase
+      || pending.attempt !== current.recovery.attempt)) {
+      clearRecoveryAction('retry', pending);
+    }
+  }, [clearRecoveryAction, control.operationEpoch, control.recovery.attempt, control.recovery.phase, recoveryInvalidated]);
 
   const finishRuntimeSelection = useCallback((candidate: RuntimeCandidate) => {
     // This callback is reached only after a Ready snapshot. Keeping the hint
@@ -2228,8 +2182,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     recoveryMilestoneRef.current = null;
     completedRecoveryEpochRef.current = '';
     retainedPaneRef.current = null;
-    recoveryPendingRef.current = { retry: null, confirm: null, change: null };
-    setRecoveryPending({ retry: false, confirm: false, change: false });
+    recoveryPendingRef.current = { retry: null, change: null };
+    setRecoveryPending({ retry: false, change: false });
     returnToServersAfterForm.current = false;
     setFormVisible(false);
     if (!keepSwitcher) {
@@ -2332,8 +2286,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const reconnect = useCallback(() => {
     if (commandPending.current) return;
-    // This legacy action is the fresh-picker-compatible reconnect path. It is
-    // intentionally distinct from the retained-work Retry rail action.
+    const current = controlRef.current;
+    if (!recoveryInvalidatedRef.current && current.hasRetainedWork) {
+      requestRetainedRecovery(true);
+      return;
+    }
+    // Without retained work, reconnect starts a fresh connection generation
+    // and follows the explicit runtime picker flow.
     // A deliberate reconnect starts a new native connection generation, so a
     // canceled switcher's Ready fence must not hide the new generation or
     // admit a stale workspace before its explicit runtime selection.
@@ -2354,7 +2313,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     void runCommand(() => MeetermTerminal.reconnect(CONNECTION_ID), 'Could not reconnect. Choose Connection details to enter your credentials again.').then(success => {
       if (!success) setConnection(previous);
     });
-  }, [connection, recoveryPhaseActive, runCommand]);
+  }, [connection, recoveryPhaseActive, requestRetainedRecovery, runCommand]);
 
   const retainedWorkspaceId = retainedWorkAvailable && retainedPane ? retainedPane.workspaceId : '';
   const choosePane = useCallback(async (pane: RemoteTerminal) => {
@@ -2948,7 +2907,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <Text style={[styles.noticeTitle, { color: colors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'Verify this server' : connection.state === 'Disconnected' ? 'Disconnected' : presentation.label}</Text>
     <Text style={[styles.noticeBody, { color: colors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'Your work is still running on the server. Reconnect to pick up where you left off.' : 'Enter your connection details to get started.' : closing ? hasConnected ? 'Disconnecting. Your work will keep running on the server.' : 'Canceling the connection.' : 'Checking your remote workspaces.'}</Text>
     <View style={styles.noticeActions}>
-      {canReconnect ? <Button label="Reconnect" colors={colors} disabled={commandBusy} onPress={reconnect}>Reconnect</Button> : null}
+      {canReconnect ? <Button label="Reconnect" colors={colors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
       {!active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={openForm} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Connection details</Text></Pressable> : null}
       {active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel connection" disabled={commandBusy} onPress={disconnect} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Cancel</Text></Pressable> : null}
       {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Review key change</Text></Pressable> : null}
@@ -2966,8 +2925,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   </View> : null;
 
   const recoveryRail = showRecoveryRail
-    ? <RecoveryRail copy={recoveryCopy!} colors={DARK} busy={{ retry: recoveryPending.retry, review: recoveryPending.confirm, change: recoveryPending.change }} onRetry={retryRecovery} onReview={recoveryReasonKind(control.recovery.reason) === 'hostKeyChanged' ? reviewChangedHostKey : reviewRecovery} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} />
-    : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, review: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
+    ? <RecoveryRail copy={recoveryCopy!} colors={DARK} busy={{ retry: recoveryPending.retry, change: recoveryPending.change }} onRetry={retryRecovery} onReview={reviewChangedHostKey} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} />
+    : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
     : null;
 
   const listHeader = <View>
@@ -3244,7 +3203,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           <ConnectionStatus connection={connection} colors={homeColors} />
         </View>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Your work lives on this server. Disconnecting leaves it running.</Text>
-        {canReconnect ? <Button label="Reconnect" colors={homeColors} disabled={commandBusy} onPress={reconnect}>Reconnect</Button> : null}
+        {canReconnect ? <Button label="Reconnect" colors={homeColors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
         {!active && !closing ? <Button label="Connect" colors={homeColors} secondary onPress={openForm}>Connection details</Button> : null}
         {active ? <Button label="Disconnect" colors={homeColors} secondary disabled={commandBusy} onPress={disconnect}>{ready ? 'Disconnect' : 'Cancel connection'}</Button> : null}
         <Pressable accessibilityRole="button" accessibilityLabel="Switch server or session" disabled={commandBusy} onPress={openSwitcher} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}><Text style={[styles.actionText, { color: homeColors.text }]}>Switch server or session</Text><Icon name="chevron" color={homeColors.muted} size={18} /></Pressable>

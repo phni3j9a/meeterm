@@ -210,18 +210,26 @@ process を終了させずに snapshot/frame を resync します。background �
 Rust が bounded reconnect します。別の server profile または runtime へ切り替える場合も、
 先に現在の controller を release してから新しい actor/binding を取得します。
 
-Herdr 0.9.0 の公開 API には、transport loss の前後で同じ server instance だと比較できる
-identity がありません。そのため一度 `Ready` になった作業の bounded recovery は、最後の
-workspace/terminal画面をread-onlyで保持し、SSH認証とside-effect-free discoveryの後に
-画面内の明示確認を待ちます。確認は同じinstanceの証明ではありません。確認後も候補と
-0.9.0 / protocol 22 / schema 1 / direct stream-local contractを再検証し、元のstable
-`terminal_id`を現在のpane aliasへ解決して通常取得し、最初のauthoritative full frameを
-受け取った時だけ `Ready` と入力許可を公開します。takeoverは行いません。
+Herdr 0.9.0 の公開 API は transport loss の前後で同じ server instance だと比較できる
+identity を公開しません。この不足だけでは通常 recovery を止めません。一度 `Ready` に
+なった作業は最後の workspace/terminal 画面を read-only で保持し、同じ承認済み SSH host/key
+へ再認証した後、compatible な Herdr 0.9.0 / protocol 22 / schema 1 / direct stream-local
+contract、同じ選択 runtime、元の stable `terminal_id` の存在を確認します。そのうえで通常の
+controller lease を takeover なしで取得し、最初の authoritative full frame が届いた時に
+`Ready` と入力許可を戻します。確認画面や Review 操作はありません。
 
-session/capability/stable terminalが消えた、候補が停止・非互換になった、controllerが競合した、
-またはidentityが不確かな場合は、古い画面を残してfail closedに停止します。pickerやtmuxへ
-自動fallbackせず、RetryまたはChange connection/runtimeをユーザーが明示します。fresh
-manual connectとcold startは従来どおり常にpickerから選び直します。
+host key 変更、認証失敗、選択 runtime/session または stable terminal の欠落、互換性不一致、
+実際の identity mismatch、controller conflict、authoritative frame または必要な再同期の失敗は
+具体的な停止条件です。古い画面内で Retry は同じ recovery intent を再試行し、Change は対象を
+破棄して fresh picker へ進みます。別 runtime や tmux へ暗黙 fallback しません。保持対象が
+ない cold/fresh connection、明示的な server/Session change、および target loss 後にユーザーが
+Change を選んだ時だけ fresh-selection picker を使います。
+
+保持対象がある時の Workspaces の **Reconnect** と recovery 画面の **Retry** は、同じ
+`retryRecovery(id, operationEpoch)` fast path を使います。初回 automatic retry は即時で、
+bounded exponential backoff は失敗後だけに適用します。foreground 復帰と network-change 通知は、
+foreground かつ automatic reconnect が有効な間、backoff 中の retry を起こします。健康な接続を
+切らず、retry budget も reset しません。
 
 tmux は選択した通常の session を PC から `tmux attach -t <selected-session>` で開き、同じ
 window/pane layout を使えます。Herdr は選択した session を通常の Herdr client から開けます。
@@ -252,8 +260,10 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 resize、semantic input、CJK paste、controller conflict、release/reacquire、外部 move と
 stable identity を一つの bounded ケースで確認します。公式 binary の CI job は
 `RUNNER_TEMP` にだけ pinned digest で取得し、既存環境やユーザーの Herdr session を変更
-しません。ローカルのproduction native統合テストは成功しています。通常のPC clientとの
-入力・引き継ぎも含む[実測結果と限界](evidence/issue-17-herdr-native.md)を参照してください。
+しません。既に記録したローカルのproduction native統合テスト結果は、その記録にあるsourceの
+証拠です。更新後の zero-tap recovery の受入には、今回のcandidateでこのignored testを実行して
+成功を確認する必要があります。通常のPC clientとの入力・引き継ぎも含む
+[実測結果と限界](evidence/issue-17-herdr-native.md)を参照してください。
 一般CIと両OSの結果は[モバイル受入記録](evidence/issue-17-herdr-mobile.md)で、
 対象sourceと検証範囲を分けて記録します。
 
@@ -267,17 +277,20 @@ topology の安全性は、Herdr の既存 close contract と混同せず、tmux
 モバイルでは Android full、iOS `standard`、接続・認証・native input を含む短い iOS `ssh` を
 影響範囲に応じて実行します。runtime picker の loading、mixed、empty、partial error、重複名、
 明示的作成、stale selection の画面は fixture で確認します。iOS `standard` の source-level
-manifest は27画面で、Issue #21の18画面に `session-switcher`、
+manifest は26画面で、Issue #21の18画面に `session-switcher`、
 `session-switcher-sessions`、`recovery-progress`、
-`recovery-exhausted`、`recovery-mismatch`、`herdr-recovery-confirm`、
+`recovery-exhausted`、`recovery-mismatch`、
 `connection-error`を加えたものです。
 `layout-restore-unconfirmed` と `runtime-layout-restore-unconfirmed` の warning fixture も含みます。
 既存の `herdr-connection` は、
 Herdr `default` candidate に non-authoritative な `Last used` hint を表示する picker state
-です。Android の observational `SCREEN_NAMES` は33 routeで、Issue #21の25
-routeに2つの switcher route、4つの recovery route、2つの layout-restore
+です。Android の observational `SCREEN_NAMES` は32 routeで、Issue #21の25
+routeに2つの switcher route、3つの recovery route、2つの layout-restore
 warning fixtureを加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
-しません。seeded presentation は remote 操作の成功や pixel-diff の gate ではなく、iOS/Android
+しません。Herdr の実切断からの zero-tap recovery は opt-in ignored Rust/russh integration で
+実 Herdr 0.9.0 binary を使って検証します。Android full と iOS `ssh` の実接続切断試験は tmux
+を対象とし、iOS standard の Herdr 画面は seeded presentation のみです。seeded presentation は
+remote 操作の成功や pixel-diff の gate ではなく、iOS/Android
 の画像を実際に review するまで visual success と報告しません。
 
 旧 `scripts/herdr/feasibility.py` の public CLI proof は OpenSSH 経由の先行診断です。新しい

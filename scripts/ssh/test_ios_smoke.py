@@ -418,7 +418,7 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertNotIn('app.staticTexts["Stopped"]', runtime_cases)
         self.assertNotIn('app.staticTexts["Last used"]', runtime_cases)
 
-    def test_standard_manifest_covers_the_four_recovery_presentation_routes(self):
+    def test_standard_manifest_covers_the_recovery_presentation_routes(self):
         source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
         start = source.index("let screens = [")
         end = source.index("    ]", start)
@@ -432,14 +432,14 @@ class DiagnosticSourceContractTests(unittest.TestCase):
                 "session-switcher", "session-switcher-sessions",
                 "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
                 "recovery-progress", "recovery-exhausted", "recovery-mismatch",
-                "herdr-recovery-confirm", "layout-restore-unconfirmed",
+                "layout-restore-unconfirmed",
                 "runtime-layout-restore-unconfirmed", "connection-error",
             ],
         )
-        self.assertEqual(len(manifest), 27)
+        self.assertEqual(len(manifest), 26)
         for identifier in (
             "recovery-rail", "recovery-title", "recovery-detail", "recovery-meta",
-            "recovery-retry", "recovery-review", "recovery-change",
+            "recovery-retry", "recovery-change",
         ):
             self.assertIn(f'"{identifier}"', source)
         self.assertIn("waitForEnabledHittable", source)

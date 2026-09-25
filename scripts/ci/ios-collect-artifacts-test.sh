@@ -123,7 +123,7 @@ for checkpoint in \
   standard-herdr-connection standard-herdr-groups standard-herdr-terminal \
   standard-herdr-workspaces \
   standard-recovery-progress standard-recovery-exhausted \
-  standard-recovery-mismatch standard-herdr-recovery-confirm \
+  standard-recovery-mismatch \
   standard-layout-restore-unconfirmed standard-runtime-layout-restore-unconfirmed \
   standard-connection-error; do
   cp "${temporary_root}/expected.png" "${artifact_root}/${checkpoint}.png"
@@ -141,11 +141,9 @@ grep -Fq 'XCTest did not capture the fresh native foundation' \
 cmp "${artifact_root}/standard-terminal-name.png" "${temporary_root}/expected.png"
 : > "${artifact_root}/standard-handoff.png"
 : > "${artifact_root}/standard-herdr-workspaces.png"
-: > "${artifact_root}/standard-herdr-recovery-confirm.png"
 run_collector standard
 grep -Fq 'standard-handoff' "${artifact_root}/ui-screenshots-unavailable.txt"
 grep -Fq 'standard-herdr-workspaces' "${artifact_root}/ui-screenshots-unavailable.txt"
-grep -Fq 'standard-herdr-recovery-confirm' "${artifact_root}/ui-screenshots-unavailable.txt"
 if grep -Eq 'host-trust|reconnected|forms-controls' "${artifact_root}/ui-screenshots-unavailable.txt"; then
   echo "standard evidence incorrectly requires old full or form checkpoints" >&2
   exit 1

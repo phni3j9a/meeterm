@@ -91,7 +91,6 @@ rm -f \
   "${artifact_dir}/standard-recovery-progress.png" \
   "${artifact_dir}/standard-recovery-exhausted.png" \
   "${artifact_dir}/standard-recovery-mismatch.png" \
-  "${artifact_dir}/standard-herdr-recovery-confirm.png" \
   "${artifact_dir}/standard-layout-restore-unconfirmed.png" \
   "${artifact_dir}/standard-runtime-layout-restore-unconfirmed.png" \
   "${artifact_dir}/standard-connection-error.png" \

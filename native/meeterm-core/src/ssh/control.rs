@@ -810,8 +810,6 @@ pub(super) async fn run(
                     Some(ControlCommand::CreateGroup { .. } | ControlCommand::RenameGroup { .. }
                         | ControlCommand::CloseGroup { .. } | ControlCommand::SelectGroup { .. }) => return Err(FlowFailure::TmuxProtocol),
                         Some(ControlCommand::SetTerminalVisible { .. }) => {},
-                        Some(ControlCommand::RetryRecovery)
-                        | Some(ControlCommand::ConfirmRecovery { .. }) => {}
                         None => return Err(FlowFailure::Stale),
                     }
                     client.command_epoch = None;

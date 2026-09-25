@@ -484,10 +484,6 @@ struct SessionState {
     /// Recovery state and gates are kept under the same lock as the topology
     /// to make one workspace JSON response coherent.
     recovery: RecoverySnapshot,
-    /// A confirmation is consumed synchronously by the public API and handed
-    /// to the actor through this private slot.  Keeping the public token empty
-    /// closes the double-submit race before the command is dequeued.
-    pending_confirmation_token: Option<String>,
     /// The last selected Herdr stable terminal identity.  Herdr pane aliases
     /// are mutable and therefore never serve as the recovery identity.
     recovery_terminal_id: Option<String>,
@@ -536,7 +532,6 @@ impl Default for SessionState {
             herdr_executable: None,
             operation_epoch: 0,
             recovery: RecoverySnapshot::default(),
-            pending_confirmation_token: None,
             recovery_terminal_id: None,
             recovery_group_id: None,
             zoom_cleanup_record: None,
@@ -700,6 +695,12 @@ struct ConnectionShared {
     cancel_notify: Arc<Notify>,
     finished_notify: Arc<Notify>,
     retry_notify: Arc<Notify>,
+    /// Marks only the bounded delay between automatic attempts. This lets
+    /// explicit Retry, foreground return, and network changes wake that wait
+    /// without creating a parallel attempt or leaving a stale wake for a later
+    /// backoff.
+    reconnect_waiting: AtomicBool,
+    reconnect_wake_epoch: AtomicU64,
     /// Serializes foreground transitions with backend wake handling. The
     /// guard is held only across synchronous session/gate updates; no network
     /// await occurs while it is held.
@@ -753,6 +754,8 @@ impl ConnectionShared {
             cancel_notify: Arc::new(Notify::new()),
             finished_notify: Arc::new(Notify::new()),
             retry_notify: Arc::new(Notify::new()),
+            reconnect_waiting: AtomicBool::new(false),
+            reconnect_wake_epoch: AtomicU64::new(0),
             foreground_transition: Mutex::new(()),
             foreground: AtomicBool::new(foreground),
             automatic_reconnect: AtomicBool::new(automatic_reconnect),
@@ -1153,10 +1156,7 @@ impl ConnectionShared {
             // directly, so this compatibility path cannot bypass recovery
             // validation in production.
             let recovery_phase = self.recovery_phase();
-            if matches!(
-                recovery_phase,
-                RecoveryPhase::AwaitingConfirmation | RecoveryPhase::Stopped
-            ) {
+            if recovery_phase == RecoveryPhase::Stopped {
                 return;
             }
             if let Ok(mut info) = self.info.lock() {
@@ -1237,9 +1237,7 @@ impl ConnectionShared {
             reason: sanitize_recovery_reason(reason),
             attempt: attempt.min(workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS),
             max_attempts: workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS,
-            confirmation_token: String::new(),
         };
-        state.pending_confirmation_token = None;
         state.runtime_operations_ready = false;
         state.terminal_input_ready = false;
         if state
@@ -1298,9 +1296,7 @@ impl ConnectionShared {
             reason: "manual_retry".to_owned(),
             attempt: 0,
             max_attempts: workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS,
-            confirmation_token: String::new(),
         };
-        state.pending_confirmation_token = None;
         state.runtime_operations_ready = false;
         state.terminal_input_ready = false;
         if state
@@ -1353,52 +1349,12 @@ impl ConnectionShared {
         }
         state.operation_epoch = next_operation_epoch(state.operation_epoch);
         state.recovery = RecoverySnapshot::default();
-        state.pending_confirmation_token = None;
         state.recovery_terminal_id = None;
         state.recovery_group_id = None;
         state.runtime_operations_ready = false;
         state.terminal_input_ready = false;
         info.state = ConnectionState::AttachingRuntime;
         true
-    }
-
-    fn publish_recovery_confirmation(&self, token: String) -> Result<u64, FlowFailure> {
-        if token.is_empty() || token.len() > RECOVERY_TOKEN_MAX_BYTES {
-            return Err(FlowFailure::HerdrProtocol);
-        }
-        let Ok(mut info) = self.info.lock() else {
-            return Err(FlowFailure::Stale);
-        };
-        if self.is_cancelled() || info.finished {
-            return Err(FlowFailure::Stale);
-        }
-        let Ok(mut state) = self.session.lock() else {
-            return Err(FlowFailure::Stale);
-        };
-        if state.generation != self.generation
-            || state.recovery.phase != RecoveryPhase::Reconnecting
-        {
-            return Err(FlowFailure::Stale);
-        }
-        state.recovery.phase = RecoveryPhase::AwaitingConfirmation;
-        state.recovery.confirmation_token = token;
-        state.pending_confirmation_token = None;
-        state.runtime_operations_ready = false;
-        state.terminal_input_ready = false;
-        info.state = ConnectionState::Reconnecting;
-        Ok(state.operation_epoch)
-    }
-
-    fn take_pending_confirmation(&self, token: &str) -> bool {
-        self.session
-            .lock()
-            .map(|mut state| {
-                state
-                    .pending_confirmation_token
-                    .take()
-                    .is_some_and(|pending| pending == token)
-            })
-            .unwrap_or(false)
     }
 
     /// Publish a fully verified backend/frame commit for the operation that
@@ -1443,15 +1399,11 @@ impl ConnectionShared {
         if state.operation_epoch != expected_epoch {
             return Err(FlowFailure::Stale);
         }
-        if matches!(
-            state.recovery.phase,
-            RecoveryPhase::AwaitingConfirmation | RecoveryPhase::Stopped
-        ) {
+        if state.recovery.phase == RecoveryPhase::Stopped {
             return Err(FlowFailure::Stale);
         }
         commit(&mut state)?;
         state.recovery = RecoverySnapshot::default();
-        state.pending_confirmation_token = None;
         state.recovery_terminal_id = None;
         state.recovery_group_id = None;
         state.runtime_operations_ready = true;
@@ -1514,8 +1466,6 @@ impl ConnectionShared {
         state.operation_epoch = next_operation_epoch(state.operation_epoch);
         state.recovery.phase = RecoveryPhase::Stopped;
         state.recovery.reason = sanitize_recovery_reason(reason);
-        state.recovery.confirmation_token.clear();
-        state.pending_confirmation_token = None;
         state.runtime_operations_ready = false;
         state.terminal_input_ready = false;
         if !preserve_security_failure {
@@ -1552,8 +1502,6 @@ impl ConnectionShared {
                 state.operation_epoch = next_operation_epoch(state.operation_epoch);
                 state.recovery.phase = RecoveryPhase::Stopped;
                 state.recovery.reason = sanitize_recovery_reason(reason);
-                state.recovery.confirmation_token.clear();
-                state.pending_confirmation_token = None;
                 state.runtime_operations_ready = false;
                 state.terminal_input_ready = false;
             }
@@ -1648,6 +1596,35 @@ impl ConnectionShared {
         }
     }
 
+    /// Wake only an actor that is already inside the automatic retry wait.
+    /// The epoch makes a notification that races waiter registration visible
+    /// without leaving a permit that could skip a later attempt's backoff.
+    fn wake_reconnect_wait(&self) -> bool {
+        if self.is_cancelled()
+            || self.explicit_cleanup_requested()
+            || !self.is_foreground()
+            || !self.automatic_reconnect_enabled()
+            || !self.reconnect_waiting.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let recovering_retained_work = self
+            .session
+            .lock()
+            .map(|state| {
+                state.generation == self.generation
+                    && state.recovery.phase == RecoveryPhase::Reconnecting
+                    && state.has_retained_work()
+            })
+            .unwrap_or(false);
+        if !recovering_retained_work || !self.reconnect_waiting.load(Ordering::Acquire) {
+            return false;
+        }
+        self.reconnect_wake_epoch.fetch_add(1, Ordering::AcqRel);
+        self.retry_notify.notify_waiters();
+        true
+    }
+
     fn set_foreground(&self, foreground: bool) {
         let _transition = self.foreground_transition_lock();
         self.foreground.store(foreground, Ordering::Release);
@@ -1657,19 +1634,6 @@ impl ConnectionShared {
                 state.foreground = foreground;
                 if !foreground {
                     state.terminal_input_ready = false;
-                    // A confirmation token is tied to the visible recovery
-                    // attempt. If the app backgrounds while that token is
-                    // shown, revoke it synchronously and let the Herdr
-                    // coordinator run a fresh bounded discovery on the next
-                    // wake. A healthy live controller is not torn down merely
-                    // because the app changed foreground state.
-                    if state.recovery.phase == RecoveryPhase::AwaitingConfirmation {
-                        state.operation_epoch = next_operation_epoch(state.operation_epoch);
-                        state.recovery.phase = RecoveryPhase::Reconnecting;
-                        state.recovery.confirmation_token.clear();
-                        state.pending_confirmation_token = None;
-                        state.runtime_operations_ready = false;
-                    }
                 }
 
                 // Do not call into the registry while holding SessionState.
@@ -1711,9 +1675,11 @@ impl ConnectionShared {
                 registry::suspend_transport(terminal_id, generation);
             }
         }
-        // Retain one wake permit when the actor is between awaits; a
-        // waiters-only notification could be lost while Herdr is processing a
-        // frame/input request and leave its suspended controller asleep.
+        if foreground {
+            self.wake_reconnect_wait();
+        }
+        // Retain one wake permit for the live Herdr controller, which may be
+        // between awaits while processing a frame/input request.
         self.retry_notify.notify_one();
     }
 
@@ -1867,8 +1833,6 @@ impl ConnectionShared {
                 state.operation_epoch = next_operation_epoch(state.operation_epoch);
                 state.recovery.phase = RecoveryPhase::Stopped;
                 state.recovery.reason = sanitize_recovery_reason(reason);
-                state.recovery.confirmation_token.clear();
-                state.pending_confirmation_token = None;
                 state.runtime_operations_ready = false;
                 state.terminal_input_ready = false;
                 if info.state != ConnectionState::Disconnected {
@@ -1929,8 +1893,6 @@ enum ControlCommand {
     CloseGroup { group_id: u64 },
     SelectGroup { group_id: u64 },
     SetTerminalVisible { visible: bool },
-    RetryRecovery,
-    ConfirmRecovery { token: String },
 }
 
 struct ConnectionEntry {
@@ -2231,19 +2193,24 @@ pub fn reconnect_terminal(terminal_id: TerminalId) -> Result<(), ConnectionError
     start_connection(terminal_id, ConnectionStart::ManualReconnect(profile))
 }
 
-/// Retry the retained recovery intent for the current owner.  An active actor
-/// receives a tagged command and joins the existing attempt; only a stopped,
-/// still-authenticated actor starts a replacement generation.
+/// Retry the retained recovery intent for the current owner. During an active
+/// attempt this is an accepted no-op; during backoff it wakes the existing
+/// actor, and only a stopped actor starts a replacement generation.
 pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<(), ConnectionError> {
     registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
     let shared = current_connection(terminal_id)?;
-    if shared.is_cancelled() {
+    if shared.is_cancelled() || shared.explicit_cleanup_requested() {
         // Explicit disconnect is a one-way lifecycle boundary.  A later
         // foreground notification or stale Retry button must not resurrect
         // the cancelled actor; a fresh connect is required instead.
         return Err(ConnectionError::RecoveryUnavailable);
     }
-    let (phase, profile, epoch) = {
+    let finished = shared
+        .info
+        .lock()
+        .map_err(|_| ConnectionError::Internal)?
+        .finished;
+    let (phase, profile, epoch, has_retained_work) = {
         let state = shared
             .session
             .lock()
@@ -2252,25 +2219,24 @@ pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<()
             state.recovery.phase,
             state.profile.clone(),
             state.operation_epoch,
+            state.has_retained_work(),
         )
     };
     if epoch != expected_epoch {
         return Err(ConnectionError::RecoveryStale);
     }
-    if !shared.has_been_ready() || phase == RecoveryPhase::None {
+    if !shared.has_been_ready() || !has_retained_work || phase == RecoveryPhase::None {
         return Err(ConnectionError::RecoveryUnavailable);
     }
 
     if phase != RecoveryPhase::Stopped {
-        let sender = shared
-            .command_sender()
-            .ok_or(ConnectionError::RecoveryUnavailable)?;
-        sender
-            .try_send(ControlRequest {
-                epoch,
-                command: ControlCommand::RetryRecovery,
-            })
-            .map_err(|_| ConnectionError::RecoveryUnavailable)?;
+        shared.wake_reconnect_wait();
+        return Ok(());
+    }
+    if !finished {
+        // The actor has committed Stopped but is still unwinding its final
+        // flow. Treat Retry as an accepted in-progress no-op; the same screen
+        // will expose a fresh operation epoch once the actor has finished.
         return Ok(());
     }
 
@@ -2298,55 +2264,6 @@ pub fn retry_recovery(terminal_id: TerminalId, expected_epoch: u64) -> Result<()
         shared.recovery_starting.store(false, Ordering::Release);
     }
     result
-}
-
-/// Confirm the currently displayed Herdr recovery candidate.  Token
-/// consumption and the operation-epoch bump happen synchronously, before the
-/// actor is allowed to perform any controller acquisition.
-pub fn confirm_recovery(terminal_id: TerminalId, token: &str) -> Result<(), ConnectionError> {
-    if token.is_empty()
-        || token.len() > RECOVERY_TOKEN_MAX_BYTES
-        || token.chars().any(char::is_control)
-    {
-        return Err(ConnectionError::InvalidArgument);
-    }
-    registry::shared_terminal(terminal_id).map_err(map_terminal_error)?;
-    let shared = current_connection(terminal_id)?;
-    let sender = shared
-        .command_sender()
-        .ok_or(ConnectionError::RecoveryUnavailable)?;
-    let epoch = {
-        let mut state = shared
-            .session
-            .lock()
-            .map_err(|_| ConnectionError::Internal)?;
-        if state.recovery.phase != RecoveryPhase::AwaitingConfirmation
-            || state.recovery.confirmation_token != token
-        {
-            return Err(ConnectionError::RecoveryUnavailable);
-        }
-        let next = next_operation_epoch(state.operation_epoch);
-        state.operation_epoch = next;
-        state.recovery.phase = RecoveryPhase::Resynchronizing;
-        state.recovery.confirmation_token.clear();
-        state.pending_confirmation_token = Some(token.to_owned());
-        state.runtime_operations_ready = false;
-        state.terminal_input_ready = false;
-        next
-    };
-    if sender
-        .try_send(ControlRequest {
-            epoch,
-            command: ControlCommand::ConfirmRecovery {
-                token: token.to_owned(),
-            },
-        })
-        .is_err()
-    {
-        shared.stop_recovery("recovery_unavailable");
-        return Err(ConnectionError::RecoveryUnavailable);
-    }
-    Ok(())
 }
 
 /// Explicitly leave the retained runtime and enter the existing authenticated
@@ -2698,6 +2615,24 @@ pub fn set_foreground(terminal_id: TerminalId, foreground: bool) -> Result<(), C
     Ok(())
 }
 
+/// Wake every retained recovery actor that is currently waiting between
+/// automatic attempts. This is a one-shot signal from the platform's normal
+/// network-change callback; it does not probe or replace healthy connections.
+pub fn network_changed() {
+    let shared_connections = connections()
+        .lock()
+        .map(|connections| {
+            connections
+                .values()
+                .map(|entry| Arc::clone(&entry.shared))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for shared in shared_connections {
+        shared.wake_reconnect_wait();
+    }
+}
+
 /// Enable or disable bounded native reconnect attempts for this owner. The
 /// preference is retained across explicit reconnects while credentials remain
 /// in the process-local profile.
@@ -2851,7 +2786,6 @@ fn prepare_session_endpoint(
     state.herdr_executable = None;
     state.operation_epoch = next_operation_epoch(state.operation_epoch);
     state.recovery = RecoverySnapshot::default();
-    state.pending_confirmation_token = None;
     state.recovery_terminal_id = None;
     state.recovery_group_id = None;
     state.runtime_operations_ready = false;
@@ -2899,7 +2833,6 @@ fn prepare_host_endpoint(
     state.herdr_executable = None;
     state.operation_epoch = next_operation_epoch(state.operation_epoch);
     state.recovery = RecoverySnapshot::default();
-    state.pending_confirmation_token = None;
     state.recovery_terminal_id = None;
     state.recovery_group_id = None;
     state.runtime_operations_ready = false;
@@ -2942,7 +2875,6 @@ fn prepare_manual_reconnect(
     state.meeterm_zoomed_pane = None;
     state.operation_epoch = next_operation_epoch(state.operation_epoch);
     state.recovery = RecoverySnapshot::default();
-    state.pending_confirmation_token = None;
     state.recovery_terminal_id = None;
     state.recovery_group_id = None;
     state.runtime_operations_ready = false;
@@ -3273,7 +3205,6 @@ fn start_connection(
                 reason: "reconnecting".to_owned(),
                 attempt: 0,
                 max_attempts: workspace::DEFAULT_RECOVERY_MAX_ATTEMPTS,
-                confirmation_token: String::new(),
             };
             state.runtime_operations_ready = false;
             state.terminal_input_ready = false;
@@ -3899,7 +3830,6 @@ const AUTO_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 const AUTO_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(15);
 const REPLACEMENT_GRACE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RUNTIME_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
-const RECOVERY_TOKEN_MAX_BYTES: usize = 128;
 
 fn next_operation_epoch(current: u64) -> u64 {
     let next = current.wrapping_add(1);
@@ -4611,7 +4541,12 @@ fn automatic_retry_allowed(shared: &ConnectionShared, failure: FlowFailure) -> b
 }
 
 fn reconnect_delay(retry: u32) -> Duration {
-    let multiplier = 1_u32.checked_shl(retry.min(6)).unwrap_or(u32::MAX);
+    if retry == 0 {
+        return Duration::ZERO;
+    }
+    let multiplier = 1_u32
+        .checked_shl(retry.saturating_sub(1).min(6))
+        .unwrap_or(u32::MAX);
     AUTO_RECONNECT_BASE_DELAY
         .checked_mul(multiplier)
         .unwrap_or(AUTO_RECONNECT_MAX_DELAY)
@@ -4620,11 +4555,14 @@ fn reconnect_delay(retry: u32) -> Duration {
 
 async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + delay;
+    let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+    shared.reconnect_waiting.store(true, Ordering::Release);
     loop {
         if shared.is_cancelled()
             || shared.explicit_cleanup_requested()
             || !shared.automatic_reconnect_enabled()
         {
+            shared.reconnect_waiting.store(false, Ordering::Release);
             return false;
         }
         if !shared.is_foreground() {
@@ -4635,29 +4573,64 @@ async fn wait_for_reconnect(shared: &ConnectionShared, delay: Duration) -> bool 
                 || shared.explicit_cleanup_requested()
                 || !shared.automatic_reconnect_enabled()
             {
+                shared.reconnect_waiting.store(false, Ordering::Release);
                 return false;
             }
             if shared.is_foreground() {
                 continue;
             }
             tokio::select! {
-                _ = shared.cancelled() => return false,
-                _ = shared.explicit_cleanup() => return false,
+                _ = shared.cancelled() => {
+                    shared.reconnect_waiting.store(false, Ordering::Release);
+                    return false;
+                },
+                _ = shared.explicit_cleanup() => {
+                    shared.reconnect_waiting.store(false, Ordering::Release);
+                    return false;
+                },
                 _ = notified => {}
             }
             continue;
         }
+        if shared.reconnect_wake_epoch.load(Ordering::Acquire) != wake_epoch {
+            shared.reconnect_waiting.store(false, Ordering::Release);
+            return true;
+        }
         if tokio::time::Instant::now() >= deadline {
+            shared.reconnect_waiting.store(false, Ordering::Release);
             return true;
         }
         let notified = shared.retry_notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        if shared.is_cancelled()
+            || shared.explicit_cleanup_requested()
+            || !shared.automatic_reconnect_enabled()
+        {
+            shared.reconnect_waiting.store(false, Ordering::Release);
+            return false;
+        }
+        if !shared.is_foreground() {
+            continue;
+        }
+        if shared.reconnect_wake_epoch.load(Ordering::Acquire) != wake_epoch {
+            shared.reconnect_waiting.store(false, Ordering::Release);
+            return true;
+        }
         tokio::select! {
-            _ = shared.cancelled() => return false,
-            _ = shared.explicit_cleanup() => return false,
+            _ = shared.cancelled() => {
+                shared.reconnect_waiting.store(false, Ordering::Release);
+                return false;
+            },
+            _ = shared.explicit_cleanup() => {
+                shared.reconnect_waiting.store(false, Ordering::Release);
+                return false;
+            },
             _ = &mut notified => {},
-            _ = tokio::time::sleep_until(deadline) => return true,
+            _ = tokio::time::sleep_until(deadline) => {
+                shared.reconnect_waiting.store(false, Ordering::Release);
+                return true;
+            },
         }
     }
 }
@@ -4813,16 +4786,34 @@ async fn run_connection_flow(
         automatic_reconnect,
     )
     .await;
-    // Dropping a russh Handle does not synchronously stop its event loop.  A
-    // bounded disconnect gives normal failures and explicit cancellation a
-    // chance to close the owned session before this task exits.
-    let _ = tokio::time::timeout(
-        Duration::from_secs(2),
-        session.disconnect(Disconnect::ByApplication, "meeterm", "en"),
-    )
-    .await;
+    // Once the interactive channel has reported a transport failure, waiting
+    // for an SSH disconnect response only delays the retained retry. Explicit
+    // Disconnect/Change still gets its ordered graceful cleanup opportunity.
+    if should_disconnect_after_flow(&shared, &result) {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            session.disconnect(Disconnect::ByApplication, "meeterm", "en"),
+        )
+        .await;
+    }
     control.cancel();
     result
+}
+
+fn should_disconnect_after_flow(
+    shared: &ConnectionShared,
+    result: &Result<(), FlowFailure>,
+) -> bool {
+    if shared.explicit_cleanup_requested() {
+        return true;
+    }
+    !matches!(
+        result,
+        Err(FlowFailure::Network
+            | FlowFailure::Channel
+            | FlowFailure::Transport
+            | FlowFailure::RemoteClosed)
+    )
 }
 
 fn decode_credentials(credentials: AuthOptions) -> Result<StoredCredentials, FlowFailure> {
@@ -5079,7 +5070,6 @@ fn clear_runtime_binding(shared: &ConnectionShared) -> Result<(), FlowFailure> {
         state.meeterm_zoomed_pane = None;
         state.operation_epoch = next_operation_epoch(state.operation_epoch);
         state.recovery = RecoverySnapshot::default();
-        state.pending_confirmation_token = None;
         state.recovery_terminal_id = None;
         state.runtime_operations_ready = false;
         state.terminal_input_ready = false;
@@ -6220,7 +6210,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn runtime_picker_policy_distinguishes_fresh_and_retained_flows() {
+    fn automatic_reconnect_keeps_selected_backend_without_picker_discovery() {
         let options = || ConnectOptions {
             host: "example.test".into(),
             port: 22,
@@ -6249,11 +6239,13 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         let automatic = ConnectionStart::AutomaticReconnect(profile.clone());
         assert!(!automatic.enters_picker());
         assert!(automatic.is_automatic_reconnect());
+        assert_eq!(profile.backend, Backend::Tmux);
 
         let mut herdr_profile = profile.clone();
         herdr_profile.backend = Backend::Herdr;
         herdr_profile.runtime = None;
         herdr_profile.herdr_executable = Some("/home/fixture/.local/bin/herdr".into());
+        assert_eq!(herdr_profile.backend, Backend::Herdr);
         let herdr_automatic = ConnectionStart::AutomaticReconnect(herdr_profile);
         assert!(!herdr_automatic.enters_picker());
         assert!(herdr_automatic.is_automatic_reconnect());
@@ -6651,44 +6643,43 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn reconnect_wait_is_foreground_aware_and_disableable() {
-        let runtime = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        runtime.block_on(async {
-            let shared = Arc::new(ConnectionShared::new(
-                9003,
-                1,
-                "example.test".to_owned(),
-                22,
-                PathBuf::from("/tmp/example-known-hosts"),
-            ));
-            shared.set_state(ConnectionState::Ready);
-            assert!(automatic_retry_allowed(&shared, FlowFailure::Transport));
-            assert_eq!(shared.ready_epoch(), 1);
-            shared.set_state(ConnectionState::Ready);
-            assert_eq!(shared.ready_epoch(), 2);
+    fn reconnect_delay_starts_immediately_then_backs_off_exponentially() {
+        assert_eq!(reconnect_delay(0), Duration::ZERO);
+        assert_eq!(reconnect_delay(1), AUTO_RECONNECT_BASE_DELAY);
+        assert_eq!(reconnect_delay(2), AUTO_RECONNECT_BASE_DELAY * 2);
+        assert_eq!(reconnect_delay(3), AUTO_RECONNECT_BASE_DELAY * 4);
+        assert_eq!(reconnect_delay(u32::MAX), AUTO_RECONNECT_MAX_DELAY);
+    }
 
-            shared.set_foreground(false);
-            let waiting = tokio::spawn({
-                let shared = Arc::clone(&shared);
-                async move { wait_for_reconnect(&shared, Duration::from_millis(1)).await }
-            });
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            assert!(!waiting.is_finished(), "background reconnect must wait");
-            shared.set_foreground(true);
-            assert!(
-                tokio::time::timeout(Duration::from_secs(1), waiting)
-                    .await
-                    .expect("foreground should wake retry")
-                    .expect("retry task should join")
-            );
+    #[test]
+    fn transport_failure_skips_graceful_disconnect_but_explicit_cleanup_keeps_it() {
+        let shared = ConnectionShared::new(
+            9004,
+            1,
+            "example.test".to_owned(),
+            22,
+            PathBuf::from("/tmp/example-known-hosts"),
+        );
+        assert!(!should_disconnect_after_flow(
+            &shared,
+            &Err(FlowFailure::Transport)
+        ));
+        assert!(!should_disconnect_after_flow(
+            &shared,
+            &Err(FlowFailure::RemoteClosed)
+        ));
+        assert!(should_disconnect_after_flow(
+            &shared,
+            &Err(FlowFailure::Authentication)
+        ));
 
-            shared.set_foreground(false);
-            shared.set_automatic_reconnect(false);
-            assert!(!wait_for_reconnect(&shared, Duration::from_millis(1)).await);
-        });
+        shared
+            .explicit_cleanup_requested
+            .store(true, Ordering::Release);
+        assert!(should_disconnect_after_flow(
+            &shared,
+            &Err(FlowFailure::Transport)
+        ));
     }
 
     #[test]
@@ -7897,6 +7888,221 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         (owner, shared)
     }
 
+    fn register_recovery_test_connection(shared: &Arc<ConnectionShared>) {
+        let abort = runtime()
+            .expect("native runtime")
+            .spawn(std::future::pending::<()>())
+            .abort_handle();
+        let previous = connections().lock().expect("connection registry").insert(
+            shared.terminal_id,
+            ConnectionEntry {
+                shared: Arc::clone(shared),
+                abort,
+            },
+        );
+        assert!(
+            previous.is_none(),
+            "test owner should not already be registered"
+        );
+    }
+
+    fn unregister_recovery_test_connection(owner: TerminalId) {
+        connections()
+            .lock()
+            .expect("connection registry")
+            .remove(&owner)
+            .expect("registered test connection")
+            .abort
+            .abort();
+        registry::destroy_terminal(owner);
+    }
+
+    async fn wait_for_reconnect_waiter(shared: &ConnectionShared) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !shared.reconnect_waiting.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actor entered the reconnect wait");
+    }
+
+    #[test]
+    fn network_change_wakes_foreground_backoff_without_starting_an_actor_or_resetting_budget() {
+        let test_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        test_runtime.block_on(async {
+            let (owner, shared) = recovery_fixture();
+            let epoch = shared
+                .begin_recovery("transport", 1)
+                .expect("retained recovery");
+            let generation = shared.generation;
+            register_recovery_test_connection(&shared);
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
+            });
+            wait_for_reconnect_waiter(&shared).await;
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            network_changed();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), waiting)
+                    .await
+                    .expect("network change wakes current retry")
+                    .expect("retry task joined")
+            );
+            assert!(shared.reconnect_wake_epoch.load(Ordering::Acquire) > wake_epoch);
+            assert_eq!(shared.generation, generation);
+            let state = shared.session.lock().expect("retained recovery state");
+            assert_eq!(state.operation_epoch, epoch);
+            assert_eq!(state.recovery.attempt, 1);
+            assert_eq!(state.recovery.phase, RecoveryPhase::Reconnecting);
+            drop(state);
+            assert!(Arc::ptr_eq(
+                &shared,
+                &connections()
+                    .lock()
+                    .expect("connection registry")
+                    .get(&owner)
+                    .expect("same actor remains installed")
+                    .shared
+            ));
+            unregister_recovery_test_connection(owner);
+        });
+    }
+
+    #[test]
+    fn retry_recovery_wakes_backoff_and_is_a_noop_during_an_attempt() {
+        let test_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        test_runtime.block_on(async {
+            let (owner, shared) = recovery_fixture();
+            let epoch = shared
+                .begin_recovery("transport", 1)
+                .expect("retained recovery");
+            register_recovery_test_connection(&shared);
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            assert_eq!(retry_recovery(owner, epoch), Ok(()));
+            assert_eq!(
+                shared.reconnect_wake_epoch.load(Ordering::Acquire),
+                wake_epoch,
+                "an in-progress attempt is an accepted no-op"
+            );
+
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
+            });
+            wait_for_reconnect_waiter(&shared).await;
+            assert_eq!(
+                retry_recovery(owner, epoch.saturating_add(1)),
+                Err(ConnectionError::RecoveryStale)
+            );
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            assert_eq!(retry_recovery(owner, epoch), Ok(()));
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), waiting)
+                    .await
+                    .expect("manual Retry wakes current backoff")
+                    .expect("retry task joined")
+            );
+            assert!(shared.reconnect_wake_epoch.load(Ordering::Acquire) > wake_epoch);
+            let state = shared.session.lock().expect("retained recovery state");
+            assert_eq!(state.recovery.attempt, 1);
+            assert_eq!(state.operation_epoch, epoch);
+            drop(state);
+            unregister_recovery_test_connection(owner);
+        });
+    }
+
+    #[test]
+    fn network_change_is_ignored_in_background_when_disabled_or_after_cancel() {
+        let test_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        test_runtime.block_on(async {
+            let (owner, shared) = recovery_fixture();
+            shared
+                .begin_recovery("transport", 1)
+                .expect("retained recovery");
+            register_recovery_test_connection(&shared);
+            set_foreground(owner, false).expect("background recovery");
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
+            });
+            wait_for_reconnect_waiter(&shared).await;
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            network_changed();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert!(
+                !waiting.is_finished(),
+                "background network changes do not retry"
+            );
+            assert_eq!(
+                shared.reconnect_wake_epoch.load(Ordering::Acquire),
+                wake_epoch
+            );
+            set_foreground(owner, true).expect("foreground resumes recovery");
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), waiting)
+                    .await
+                    .expect("foreground wakes retry")
+                    .expect("retry task joined")
+            );
+            unregister_recovery_test_connection(owner);
+
+            let (owner, shared) = recovery_fixture();
+            shared
+                .begin_recovery("transport", 1)
+                .expect("disabled recovery");
+            register_recovery_test_connection(&shared);
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
+            });
+            wait_for_reconnect_waiter(&shared).await;
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            shared.set_automatic_reconnect(false);
+            assert!(!waiting.await.expect("disabled retry task joined"));
+            network_changed();
+            assert_eq!(
+                shared.reconnect_wake_epoch.load(Ordering::Acquire),
+                wake_epoch
+            );
+            unregister_recovery_test_connection(owner);
+
+            let (owner, shared) = recovery_fixture();
+            let epoch = shared
+                .begin_recovery("transport", 1)
+                .expect("cancelled recovery");
+            register_recovery_test_connection(&shared);
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
+            });
+            wait_for_reconnect_waiter(&shared).await;
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            shared.cancel();
+            network_changed();
+            assert!(!waiting.await.expect("cancelled retry task joined"));
+            assert_eq!(
+                shared.reconnect_wake_epoch.load(Ordering::Acquire),
+                wake_epoch
+            );
+            assert_eq!(
+                retry_recovery(owner, epoch),
+                Err(ConnectionError::RecoveryUnavailable)
+            );
+            unregister_recovery_test_connection(owner);
+        });
+    }
+
     #[test]
     fn post_ready_runtime_failure_keeps_retained_state_out_of_picker_reset() {
         let (owner, shared) = recovery_fixture();
@@ -8186,53 +8392,63 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn awaiting_confirmation_foreground_loss_revokes_old_token_and_wakes_recovery() {
-        let (owner, shared) = recovery_fixture();
-        let recovery_epoch = shared
-            .begin_recovery("transport", 1)
-            .expect("recovery epoch");
-        assert!(
+    fn foreground_return_skips_remaining_reconnect_backoff_without_resetting_attempt() {
+        let test_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        test_runtime.block_on(async {
+            let (owner, shared) = recovery_fixture();
             shared
-                .publish_recovery_confirmation("old-token".to_owned())
-                .is_ok()
-        );
-        let (sender, _receiver) = mpsc::channel(2);
-        shared.set_commands(sender);
-        let abort = runtime()
-            .expect("native runtime")
-            .spawn(std::future::pending::<()>())
-            .abort_handle();
-        connections().lock().expect("connection registry").insert(
-            owner,
-            ConnectionEntry {
-                shared: Arc::clone(&shared),
-                abort,
-            },
-        );
+                .begin_recovery("transport", 1)
+                .expect("recovery epoch");
+            let abort = runtime()
+                .expect("native runtime")
+                .spawn(std::future::pending::<()>())
+                .abort_handle();
+            connections().lock().expect("connection registry").insert(
+                owner,
+                ConnectionEntry {
+                    shared: Arc::clone(&shared),
+                    abort,
+                },
+            );
 
-        assert_eq!(set_foreground(owner, false), Ok(()));
-        assert!(shared.operation_epoch() > recovery_epoch);
-        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
-        assert_eq!(
-            confirm_recovery(owner, "old-token"),
-            Err(ConnectionError::RecoveryUnavailable)
-        );
-        assert_eq!(set_foreground(owner, true), Ok(()));
-        assert_eq!(shared.recovery_phase(), RecoveryPhase::Reconnecting);
-        {
-            let state = shared.session.lock().expect("revoked confirmation state");
-            assert!(state.recovery.confirmation_token.is_empty());
-            assert!(state.pending_confirmation_token.is_none());
-        }
+            set_foreground(owner, false).expect("background before retry wait");
+            let waiting = tokio::spawn({
+                let shared = Arc::clone(&shared);
+                async move { wait_for_reconnect(&shared, Duration::from_secs(30)).await }
+            });
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !shared.reconnect_waiting.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("retry actor entered backoff wait");
+            let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+            set_foreground(owner, true).expect("foreground wakes retry");
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), waiting)
+                    .await
+                    .expect("foreground returned retry immediately")
+                    .expect("retry task joined")
+            );
+            assert!(shared.reconnect_wake_epoch.load(Ordering::Acquire) > wake_epoch);
+            let state = shared.session.lock().expect("retained recovery state");
+            assert_eq!(state.recovery.attempt, 1);
+            assert_eq!(state.recovery.phase, RecoveryPhase::Reconnecting);
+            drop(state);
 
-        connections()
-            .lock()
-            .expect("connection registry")
-            .remove(&owner)
-            .expect("confirmation test connection")
-            .abort
-            .abort();
-        registry::destroy_terminal(owner);
+            connections()
+                .lock()
+                .expect("connection registry")
+                .remove(&owner)
+                .expect("foreground retry connection")
+                .abort
+                .abort();
+            registry::destroy_terminal(owner);
+        });
     }
 
     fn retry_profile() -> ConnectionProfile {
@@ -8328,16 +8544,23 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn stopped_retry_restarts_finished_actor_once_and_retains_native_term() {
+    fn stopped_retry_restores_retained_work_without_reenabling_automatic_retries() {
         let (owner, shared) = recovery_fixture();
         shared.set_profile(retry_profile());
 
         let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
         let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
         let old_generation = shared.generation;
-        shared
-            .begin_recovery("transport", 1)
-            .expect("initial recovery");
+        shared.set_automatic_reconnect(false);
+        let disposition = retry_disposition(&shared, FlowFailure::Transport);
+        assert_eq!(disposition, RetryDisposition::Stop("transport"));
+        // This is the native boundary used when Ready work is lost while the
+        // setting is disabled: retain the selected target, gate input, and
+        // expose a stopped recovery that can still be retried explicitly.
+        let RetryDisposition::Stop(reason) = disposition else {
+            panic!("disabled automatic recovery must stop");
+        };
+        shared.stop_recovery(reason);
         shared.finish(Err(FlowFailure::Transport));
         assert!(shared.info.lock().expect("old connection info").finished);
         assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
@@ -8370,6 +8593,10 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             .clone();
         assert_ne!(replacement.generation, old_generation);
         assert!(!Arc::ptr_eq(&replacement, &shared));
+        assert!(
+            !replacement.automatic_reconnect_enabled(),
+            "manual Retry must not re-enable automatic retries"
+        );
         let (new_generation, new_epoch) = {
             let state = session_state(owner);
             let state = state.lock().expect("replacement session state");
@@ -8436,7 +8663,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn retry_recovery_reports_unavailable_when_command_sender_is_gone() {
+    fn retry_during_an_active_attempt_is_an_accepted_noop() {
         let (owner, shared) = recovery_fixture();
         shared.set_profile(retry_profile());
         let epoch = shared
@@ -8455,9 +8682,13 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 abort,
             },
         );
+        let generation = shared.generation;
+        let wake_epoch = shared.reconnect_wake_epoch.load(Ordering::Acquire);
+        assert_eq!(retry_recovery(owner, epoch), Ok(()));
+        assert_eq!(shared.generation, generation);
         assert_eq!(
-            retry_recovery(owner, epoch),
-            Err(ConnectionError::RecoveryUnavailable)
+            shared.reconnect_wake_epoch.load(Ordering::Acquire),
+            wake_epoch
         );
         assert!(Arc::ptr_eq(
             &shared,
@@ -8468,7 +8699,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 .expect("unchanged active actor")
                 .shared
         ));
-        registry::destroy_terminal(owner);
+        unregister_recovery_test_connection(owner);
     }
 
     #[test]
@@ -8778,13 +9009,8 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             assert_eq!(state.selected_pane, Some(owner));
             assert!(state.pane_terminals.contains_key(&owner));
         }
-        assert!(matches!(
-            shared.publish_recovery_confirmation("token-1".to_owned()),
-            Ok(epoch) if epoch == recovery_epoch
-        ));
         let state = shared.session.lock().expect("recovery session state");
-        assert_eq!(state.recovery.phase, RecoveryPhase::AwaitingConfirmation);
-        assert_eq!(state.recovery.confirmation_token, "token-1");
+        assert_eq!(state.recovery.phase, RecoveryPhase::Reconnecting);
         drop(state);
         shared.invalidate_explicitly("runtime_changed");
         assert_eq!(shared.recovery_phase(), RecoveryPhase::Stopped);
@@ -8792,32 +9018,6 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
             !shared.mark_ready(),
             "explicit invalidation must not resurrect Ready"
         );
-        registry::destroy_terminal(owner);
-    }
-
-    #[test]
-    fn confirmation_token_consumption_is_single_use_across_epoch_bump() {
-        let (owner, shared) = recovery_fixture();
-        let epoch = shared
-            .begin_recovery("transport", 1)
-            .expect("recovery epoch");
-        shared
-            .publish_recovery_confirmation("opaque".to_owned())
-            .ok()
-            .expect("recovery confirmation");
-        let next = {
-            let mut state = shared.session.lock().expect("recovery session state");
-            assert_eq!(state.operation_epoch, epoch);
-            state.operation_epoch = next_operation_epoch(state.operation_epoch);
-            state.recovery.phase = RecoveryPhase::Resynchronizing;
-            state.recovery.confirmation_token.clear();
-            state.pending_confirmation_token = Some("opaque".to_owned());
-            state.operation_epoch
-        };
-        assert!(shared.current_request_epoch(next));
-        assert!(shared.take_pending_confirmation("opaque"));
-        assert!(!shared.take_pending_confirmation("opaque"));
-        assert!(!shared.current_request_is_ready(next));
         registry::destroy_terminal(owner);
     }
 

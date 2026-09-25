@@ -2,7 +2,12 @@
 
 This repository is a greenfield implementation of **meeterm**, a smartphone-first SSH client with ordinary tmux and an explicitly selected Herdr backend.
 
-Read `docs/PRODUCT.md` and `docs/ARCHITECTURE.md` before making architectural or product changes. Treat them as the current source of truth unless the task explicitly changes the product direction.
+Before making architectural or product changes, read `docs/PRODUCT.md`,
+`docs/ARCHITECTURE.md`, and `docs/ENGINEERING_PRINCIPLES.md`. Treat them as the
+current source of truth unless an approved task explicitly changes product
+direction. When an explicit product priority conflicts with an older, stricter
+implementation rule, follow the product priority while preserving unrelated
+invariants and concrete safety requirements.
 
 ## Product invariants
 
@@ -172,13 +177,28 @@ history as a stale read-only work screen. Input, resize, and remote mutations
 remain blocked until the host identity/authentication, backend capability,
 runtime identity, topology, selected terminal, and authoritative screen are
 verified and committed. tmux recovery requires the exact stored session
-identity and pane ID. Herdr recovery requires an in-work explicit confirmation
-because 0.9.0 has no comparable server-instance identity, followed by fresh
-candidate/compatibility/stable-terminal/full-frame validation without
-takeover. A missing, replaced, restarted, incompatible, or uncertain target
-stays fail-closed on the stale screen with Retry and Change actions; it does not
-open the picker, create, retarget, or fall back automatically. A fresh manual
-connection and cold start never skip the picker.
+identity and pane ID. Herdr recovery has no confirmation step: it checks the
+same approved SSH host/key, compatible Herdr 0.9.0 / protocol 22 / schema 1 /
+direct stream-local contract, the same selected running runtime, the original
+stable `terminal_id`, ordinary controller acquisition without takeover, and
+the first authoritative full frame. The absence of comparable Herdr
+server-instance identity alone does not stop recovery. A changed host key,
+authentication failure, missing runtime/session or terminal, incompatibility,
+actual identity mismatch, controller conflict, or failed required
+resynchronization stops on the cached work screen with Retry and Change;
+recovery never retargets or falls back to another runtime/backend.
+
+When retained work exists, Workspaces **Reconnect** and recovery **Retry** use
+the same-intent `retryRecovery(id, operationEpoch)` entry. It restarts stopped
+or exhausted recovery with a fresh retry budget, wakes a sleeping backoff
+immediately, and accepts an in-flight request as a no-op. It rejects after
+explicit Disconnect/Change or with a stale operation epoch. `reconnect(id)` /
+`ManualReconnect` and the runtime picker are reserved for cold/fresh selection,
+explicit server or Session changes, and **Change** after the target is lost.
+The first automatic attempt is immediate; bounded exponential backoff applies
+only after failures. Foreground return and `network_changed()` wake a sleeping
+retry only while foreground and automatic reconnect are enabled. A network
+wake never interrupts a healthy connection or resets the retry budget.
 
 Saved server profiles own SSH endpoint and authentication metadata. Existing
 backend/runtime fields represent a non-authoritative logical `lastUsedRuntime`
@@ -235,7 +255,9 @@ Do not route IME composition through a JavaScript `TextInput` merely because it 
   hint.
 - Each backend owns reconnect and resynchronization in the Rust core. Herdr
   release closes/EOFs the direct controller stream before a later stable-ID
-  reacquire, while the remote process remains alive.
+  reacquire, while the remote process remains alive. With retained work,
+  Workspaces Reconnect and recovery Retry use `retryRecovery`; `reconnect` /
+  `ManualReconnect` remains the fresh-selection entry without retained work.
 - Connection/reconnect behavior belongs in the Rust core, not scattered React hooks/timers.
 - A React Native view unmount must not imply pane destruction.
 - Backgrounding and transport loss should be recoverable through reconnect/resynchronization.
@@ -256,6 +278,12 @@ Initial non-goals include:
 - proprietary session model replacing tmux.
 
 Prefer the smallest implementation that proves the current milestone. Avoid speculative extensibility and over-engineering.
+
+An explicit product priority in an approved task takes precedence over an older
+stricter implementation policy. If safety or robustness appears to require
+expanding scope, first state the reproducible failure scenario and the smallest
+adequate alternative. Do not add confirmation UI, state, or abstraction beyond
+the task's acceptance criteria without that evidence.
 
 ## Current engineering sequence and acceptance
 
@@ -283,15 +311,15 @@ and launch it, observe native readiness and a first terminal frame, and check
 that the process does not crash. It is not a substitute for final full and
 `standard` acceptance.
 
-The iOS `standard` source-level manifest is 27 screens: the previous 18 plus
+The iOS `standard` source-level manifest is 26 screens: the previous 18 plus
 `session-switcher` and `session-switcher-sessions`,
-`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`, plus the `layout-restore-unconfirmed` and
+`recovery-progress`, `recovery-exhausted`, and `recovery-mismatch`, plus the
+`layout-restore-unconfirmed` and
 `runtime-layout-restore-unconfirmed` warning fixtures and `connection-error`.
 Its existing `herdr-connection` route is now a picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` contains 33 routes: the previous 25 plus the two switcher routes,
-the same four recovery routes, and the two warning fixtures. These are
+`SCREEN_NAMES` contains 32 routes: the previous 25 plus the two switcher routes,
+three recovery routes, and the two warning fixtures. These are
 source-level scopes, not remote CI
 or visual-review results.
 
@@ -347,14 +375,17 @@ backend failures, profile migration, reconnect identity, switch/release, and
 fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
 picker loading, duplicate-name, stale-selection, asynchronous refresh, and
 explicit selection/create state transitions in focused app/native tests. The
-27-screen iOS source manifest and 33-route Android observational `SCREEN_NAMES`
-include the four recovery visual routes `recovery-progress`,
-`recovery-exhausted`, `recovery-mismatch`, and `herdr-recovery-confirm` in
-addition to the runtime-picker routes and the two `layout-restore-unconfirmed`
+26-screen iOS source manifest and 32-route Android observational `SCREEN_NAMES`
+include the three recovery visual routes `recovery-progress`,
+`recovery-exhausted`, and `recovery-mismatch` in addition to the runtime-picker
+routes and the two `layout-restore-unconfirmed`
 warning fixtures. Android full and iOS `standard` plus `ssh`
 remain the required mobile paths for this connection-lifecycle change; both
 platform screenshots from the applicable exact-source acceptance runs must be
 downloaded and actually viewed before the corresponding evidence is reported.
+The ignored Rust/russh integration with the real Herdr 0.9.0 binary is the live
+Herdr zero-tap recovery evidence. Android full and iOS `ssh` real-connection
+loss tests exercise tmux; seeded Herdr screens are presentation evidence only.
 
 The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
 suite by its actual scope; never rename an old full failure into a passing result.

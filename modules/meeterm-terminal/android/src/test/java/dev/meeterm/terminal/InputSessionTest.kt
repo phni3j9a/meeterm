@@ -371,12 +371,6 @@ class InputSessionTest {
     assertInvalidEpoch("＋1")
     assertInvalidEpoch(" 1")
 
-    assertTrue(RecoveryBridgeValidation.validRecoveryToken("confirm-日本語"))
-    assertTrue(RecoveryBridgeValidation.validRecoveryToken("あ".repeat(42))) // 126 UTF-8 bytes
-    assertFalse(RecoveryBridgeValidation.validRecoveryToken("a".repeat(129)))
-    assertFalse(RecoveryBridgeValidation.validRecoveryToken("あ".repeat(43))) // 129 UTF-8 bytes
-    assertFalse(RecoveryBridgeValidation.validRecoveryToken("line\nfeed"))
-    assertFalse(RecoveryBridgeValidation.validRecoveryToken("nul\u0000token"))
   }
 
   @Test

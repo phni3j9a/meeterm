@@ -50,19 +50,26 @@ automatic fallback to tmux are outside this issue.
 
 For tmux, the selected session's `$N`, server PID, and server start time are
 verified again after Control Mode attach on that same stream and before
-synchronization or input readiness. A changed, malformed, or uncertain epoch
-is treated as a missing runtime and stops on the retained read-only work screen.
+synchronization or input readiness. A different epoch, missing session/pane,
+or failed identity read is a concrete verification failure and stops on the
+retained read-only work screen.
 
-Same-process transport recovery may reuse the selected `(backend, runtime)` only
-after identity, selected-terminal, topology, authoritative-frame, and
-compatibility verification. A missing, restarted, same-name-replaced,
-incompatible, or uncertain target keeps the cached work visible and stops
-fail-closed with Retry/Change actions. Because Herdr 0.9.0 has no comparable
-public server-instance identity, every Herdr continuity loss requires explicit
-confirmation inside that retained work screen before a fresh candidate/stable
-terminal/full frame can be accepted; tmux can resume directly only after its
-server epoch and original pane are verified. Fresh/cold/manual selection still
-uses the picker.
+Same-process transport recovery keeps the selected `(backend, runtime)` and
+cached work visible as read-only while it reconnects without a tap. tmux checks
+the selected session/server epoch and original pane. Herdr checks the approved
+SSH host/key and authentication, compatible capability, same selected running
+runtime, original stable `terminal_id`, ordinary controller lease without
+takeover, and authoritative full frame. Herdr 0.9.0 has no comparable public
+server-instance identity, but lack of that proof alone does not stop recovery.
+An actual mismatch, authentication or synchronization failure, missing runtime
+or terminal, or controller conflict keeps the cached screen with Retry/Change.
+
+When retained work exists, Workspaces **Reconnect** and recovery **Retry** use
+the same-intent `retryRecovery` path. Its first automatic attempt is immediate;
+bounded exponential backoff applies after failed attempts, and foreground
+return or network-change notification wakes a sleeping retry. `reconnect` /
+`ManualReconnect` and the picker are reserved for cold/fresh connection,
+explicit server/Session change, or **Change** after target loss.
 Switching server/runtime releases the current controller before acquiring the
 next one, keeps one selected runtime actor per host connection, and leaves the
 remote runtime/process alive. Before linked/shared tmux workspace close or a
@@ -183,19 +190,23 @@ and iOS `standard` plus the short `ssh` suite for connection changes. Picker
 loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
 selection/create transitions are covered by focused app/native tests. The fixed
 source-level visual manifests include the picker routes plus retained-work
-recovery progress, exhaustion, mismatch, and Herdr confirmation. The iOS
-`standard` manifest has 27 screens: the Issue #21 set of 18 plus
+recovery progress, exhaustion, and mismatch. The iOS `standard` manifest has
+26 screens: the Issue #21 set of 18 plus
 `session-switcher` and `session-switcher-sessions`,
-`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-`herdr-recovery-confirm`, `layout-restore-unconfirmed`, and
+`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`,
+`layout-restore-unconfirmed`, and
 `runtime-layout-restore-unconfirmed`, plus the `connection-error`
 auth-warning coexistence fixture.
 The existing `herdr-connection` route is the picker state whose Herdr `default`
 candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` has 33 routes: the Issue #21 set of 25 plus the two switcher
-routes, four recovery routes, and the two layout-restore warning fixtures. These counts describe source
+`SCREEN_NAMES` has 32 routes: the Issue #21 set of 25 plus the two switcher
+routes, three recovery routes, and the two layout-restore warning fixtures. These counts describe source
 scope only; Main must still record actual
 CI results and downloaded, viewed screenshots before visual success is reported.
+The live Herdr zero-tap recovery check uses the real Herdr 0.9.0 binary in the
+opt-in ignored Rust/russh integration. Android full and iOS `ssh` real-connection
+recovery checks exercise tmux; seeded Herdr screens do not establish a mobile
+Herdr connection result.
 
 ### Accepted candidate under the revised policy
 
@@ -325,10 +336,9 @@ Explicit Disconnect is a separate action: it closes the mobile connection and
 leaves remote work running; it does not navigate to Saved servers. A release
 rejected before its native boundary keeps the current or retained work screen;
 after an accepted boundary, cancel or startup failure does not restore the old
-binding. Other confirmation paths remain explicit: Herdr recovery reconnection
-asks for confirmation in the retained work screen, host-key trust/change has its
-own prompt, and saved-profile removal and destructive workspace, group, or
-terminal close actions ask before proceeding.
+binding. Host-key trust/change has its own prompt, and saved-profile removal
+and destructive workspace, group, or terminal close actions ask before
+proceeding.
 A profile can be saved without a credential. Credential saving is opt-in, and an
 endpoint, username or authentication-method change invalidates the old credential.
 Renaming a profile preserves its credential. Migrating the legacy

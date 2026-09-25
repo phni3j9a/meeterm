@@ -131,7 +131,6 @@ export type RemoteTerminal = {
 export type RecoveryPhase =
   | 'none'
   | 'reconnecting'
-  | 'awaitingConfirmation'
   | 'resynchronizing'
   | 'stopped';
 
@@ -141,8 +140,6 @@ export type WorkspaceRecovery = {
   reason: string;
   attempt: number;
   maxAttempts: number;
-  /** Opaque native confirmation value; never persist or display it. */
-  confirmationToken: string;
 };
 
 export type WorkspaceCleanupWarning = {
@@ -181,7 +178,6 @@ export const DEFAULT_WORKSPACE_CONTROL: WorkspaceControl = {
     reason: '',
     attempt: 0,
     maxAttempts: 0,
-    confirmationToken: '',
   },
   cleanupWarning: null,
 };
@@ -189,7 +185,6 @@ export const DEFAULT_WORKSPACE_CONTROL: WorkspaceControl = {
 const RECOVERY_PHASES: readonly RecoveryPhase[] = [
   'none',
   'reconnecting',
-  'awaitingConfirmation',
   'resynchronizing',
   'stopped',
 ];
@@ -244,7 +239,6 @@ export function normalizeWorkspaceControl(value: unknown): WorkspaceControl {
       reason: stringValue(rawRecovery.reason),
       attempt: boundedNonNegativeInteger(rawRecovery.attempt, 0),
       maxAttempts: boundedNonNegativeInteger(rawRecovery.maxAttempts, 0),
-      confirmationToken: stringValue(rawRecovery.confirmationToken),
     },
     cleanupWarning,
   };

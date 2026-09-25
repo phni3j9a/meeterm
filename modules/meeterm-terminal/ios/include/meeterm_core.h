@@ -150,10 +150,9 @@ int32_t meeterm_disconnect(uint64_t terminal_id);
  * owner boundary, -15=accepted after boundary but release failed. */
 int32_t meeterm_disconnect_for_switch(uint64_t terminal_id);
 int32_t meeterm_reconnect(uint64_t terminal_id);
-/* Recovery controls consume a decimal epoch/token validated by the platform
- * adapter before crossing this lossless u64/UTF-8 ABI. */
+/* Retry the retained intent for the exact decimal epoch observed by the
+ * caller. */
 int32_t meeterm_retry_recovery(uint64_t terminal_id, uint64_t expected_epoch);
-int32_t meeterm_confirm_recovery(uint64_t terminal_id, const uint8_t *token, size_t token_length);
 /* Runtime-boundary result: 0=accepted, -1..-14=rejected before the owner
  * boundary, -15=accepted after boundary but replacement start failed. */
 int32_t meeterm_change_runtime(uint64_t terminal_id, uint64_t expected_epoch);
@@ -164,6 +163,7 @@ int32_t meeterm_change_runtime(uint64_t terminal_id, uint64_t expected_epoch);
 int32_t meeterm_tmux_command(uint64_t terminal_id, uint32_t operation, uint64_t target,
   const uint8_t *name, size_t name_length);
 int32_t meeterm_set_foreground(uint64_t terminal_id, uint8_t foreground);
+void meeterm_network_changed(void);
 int32_t meeterm_set_terminal_visible(uint64_t terminal_id, uint8_t visible);
 int32_t meeterm_set_automatic_reconnect(uint64_t terminal_id, uint8_t enabled);
 int32_t meeterm_select_pane(uint64_t terminal_id, uint64_t pane_id);

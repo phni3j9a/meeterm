@@ -15,7 +15,6 @@ use zeroize::Zeroizing;
 
 const FFI_ERROR: i32 = -1;
 const FFI_INVALID_KEY: i32 = -2;
-const MAX_RECOVERY_TOKEN_BYTES: usize = 128;
 pub const MAX_WORKSPACE_STATE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_RUNTIME_DISCOVERY_BYTES: usize = 1024 * 1024;
 const RUNTIME_DISPLAY_NAME_BYTES: usize = 256;
@@ -182,17 +181,6 @@ pub(crate) fn parse_decimal_u64(value: &str) -> Option<u64> {
         return None;
     }
     value.parse::<u64>().ok()
-}
-
-unsafe fn recovery_token_argument(pointer: *const u8, length: usize) -> Result<String, ()> {
-    if length == 0 || length > MAX_RECOVERY_TOKEN_BYTES {
-        return Err(());
-    }
-    let token = unsafe { utf8_argument(pointer, length) }?;
-    if token.is_empty() || token.contains('\0') || token.chars().any(char::is_control) {
-        return Err(());
-    }
-    Ok(token)
 }
 
 fn connection_error_code(error: ConnectionError) -> i32 {
@@ -646,6 +634,14 @@ pub extern "C" fn meeterm_set_foreground(id: u64, foreground: u8) -> i32 {
         .unwrap_or_else(connection_error_code)
 }
 
+/// Wake retained recovery attempts that are sleeping in their bounded retry
+/// delay. The Rust core ignores this while healthy, backgrounded, disabled,
+/// or explicitly cancelled.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_network_changed() {
+    crate::ssh::network_changed();
+}
+
 /// Mark whether the terminal is currently visible in the native workspace
 /// view. Herdr uses this lifecycle edge to release a controller lease when a
 /// pane is hidden; tmux keeps its existing foreground behavior.
@@ -1012,26 +1008,6 @@ pub extern "C" fn meeterm_reconnect(id: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_retry_recovery(id: u64, expected_epoch: u64) -> i32 {
     crate::ssh::retry_recovery(id, expected_epoch)
-        .map(|()| 0)
-        .unwrap_or_else(connection_error_code)
-}
-
-/// Confirm a native recovery token. Tokens are bounded UTF-8 values and may
-/// not contain controls or NUL; the Rust recovery core consumes them only
-/// after validating the current awaiting-confirmation state.
-///
-/// # Safety
-/// For nonzero length, token must point to that many readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn meeterm_confirm_recovery(
-    id: u64,
-    token: *const u8,
-    token_length: usize,
-) -> i32 {
-    let Ok(token) = (unsafe { recovery_token_argument(token, token_length) }) else {
-        return ConnectionError::InvalidArgument.code();
-    };
-    crate::ssh::confirm_recovery(id, &token)
         .map(|()| 0)
         .unwrap_or_else(connection_error_code)
 }
@@ -1490,7 +1466,7 @@ mod session_abi_tests {
     }
 
     #[test]
-    fn operation_epoch_abi_rejects_stale_input_and_recovery_tokens() {
+    fn operation_epoch_abi_rejects_stale_input() {
         let id = meeterm_create_terminal(80, 24);
         assert_ne!(id, 0);
         let epoch = meeterm_operation_epoch(id);
@@ -1521,23 +1497,6 @@ mod session_abi_tests {
             FFI_ERROR
         );
 
-        let control_token = b"token\n";
-        // SAFETY: the token slice remains valid for the synchronous call.
-        assert_eq!(
-            unsafe { meeterm_confirm_recovery(id, control_token.as_ptr(), control_token.len()) },
-            ConnectionError::InvalidArgument.code()
-        );
-        assert_eq!(
-            unsafe { meeterm_confirm_recovery(id, std::ptr::null(), 0) },
-            ConnectionError::InvalidArgument.code()
-        );
-        let oversized_token = [b'x'; MAX_RECOVERY_TOKEN_BYTES + 1];
-        assert_eq!(
-            unsafe {
-                meeterm_confirm_recovery(id, oversized_token.as_ptr(), oversized_token.len())
-            },
-            ConnectionError::InvalidArgument.code()
-        );
         assert_eq!(meeterm_destroy_terminal(id), 1);
     }
 }

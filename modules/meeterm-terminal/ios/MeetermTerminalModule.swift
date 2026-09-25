@@ -1,8 +1,26 @@
 import ExpoModulesCore
+import Network
 
 public final class MeetermTerminalModule: Module {
+  private var networkPathMonitor: NWPathMonitor?
+
   public func definition() -> ModuleDefinition {
     Name("MeetermTerminal")
+
+    OnCreate {
+      let monitor = NWPathMonitor()
+      monitor.pathUpdateHandler = { path in
+        guard path.status == .satisfied else { return }
+        MeetermCore.networkChanged()
+      }
+      monitor.start(queue: DispatchQueue(label: "dev.meeterm.terminal.network-monitor"))
+      self.networkPathMonitor = monitor
+    }
+
+    OnDestroy {
+      self.networkPathMonitor?.cancel()
+      self.networkPathMonitor = nil
+    }
 
     // This is a smoke-only, fixed-enum sink. It is intentionally a no-op for
     // normal launches and for values outside the allowlist.
@@ -177,16 +195,6 @@ public final class MeetermTerminalModule: Module {
       let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
       guard MeetermCore.retryRecovery(terminalId: handle, expectedEpoch: epoch) == 0 else {
         throw Self.error("The recovery retry could not be started.")
-      }
-    }
-
-    AsyncFunction("confirmRecovery") { (terminalId: String, confirmationToken: String) throws in
-      guard Self.validRecoveryToken(confirmationToken) else {
-        throw Self.error("The recovery confirmation is invalid or unavailable.")
-      }
-      let handle = try Self.ensureHandle(Self.normalizeTerminalId(terminalId))
-      guard MeetermCore.confirmRecovery(terminalId: handle, token: confirmationToken) == 0 else {
-        throw Self.error("The recovery confirmation is invalid or unavailable.")
       }
     }
 
@@ -490,10 +498,6 @@ public final class MeetermTerminalModule: Module {
       throw Self.error("The runtime switch result is unknown.")
     }
     return result
-  }
-
-  private static func validRecoveryToken(_ value: String) -> Bool {
-    RecoveryBridgeValidation.validRecoveryToken(value)
   }
 
   private static func ensureHandle(_ terminalId: String) throws -> UInt64 {
