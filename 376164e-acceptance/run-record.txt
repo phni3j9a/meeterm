@@ -11,3 +11,4 @@ standard_wall_seconds=406 (incl. bootstatus); xcodebuild_elapsed_ms=354160, xcod
 ssh_wall_seconds=65 (fixture-stage failure; no XCTest)
 simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0 — IOS_SIMULATOR_UDID exported; test destination platform=iOS Simulator,id=$IOS_SIMULATOR_UDID
 no_source_modified=true; assertions not loosened; both failures reproduced/analyzed as stated above.
+ssh_dir_note=ios-native-input-validation.txt, ios-native-storage-validation.txt, ios-storage-xctest-runner-diagnostics.txt, ios-standard-xctest-runner-diagnostics.txt, ios-ui-timing.txt, ios-ui-failure.txt removed from ssh/: written by the preceding standard run (standard_screen markers) and not covered by ios-smoke.sh's per-invocation cleanup list.
