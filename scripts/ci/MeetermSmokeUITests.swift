@@ -2719,13 +2719,48 @@ final class MeetermSmokeUITests: XCTestCase {
   }
 
   private func input(_ label: String) -> XCUIElement {
-    let candidates = [
-      app.textFields[label],
-      app.textViews[label],
-      app.secureTextFields[label],
-      app.descendants(matching: .any)[label],
-    ]
-    return candidates.first(where: { $0.exists }) ?? app.descendants(matching: .any)[label]
+    // Keep field lookups within editable accessibility types. During the
+    // Add-server transition, a StaticText label can appear before its field;
+    // a type-agnostic lookup may bind that label and pass existence while
+    // never becoming hittable. Match the existing label first and the stable
+    // field identifier in the same typed query so an early lookup can wait
+    // for the actual control to enter the accessibility tree.
+    switch label {
+    case "Host": return textField(label, identifier: "ssh-host")
+    case "Port": return textField(label, identifier: "ssh-port")
+    case "Username": return textField(label, identifier: "ssh-username")
+    case "Server name": return textField(label, identifier: "server-profile-name")
+    case "Private OpenSSH key": return textView(label, identifier: "ssh-private-key")
+    case "SSH password": return secureTextField(label, identifier: "ssh-password")
+    case "Terminal font size": return textField(label, identifier: "terminal-font-size")
+    case "Scrollback lines": return textField(label, identifier: "scrollback-lines")
+    case "Workspace or terminal name":
+      return textField(label, identifier: "workspace-terminal-name")
+    case "tmux session name": return textField(label, identifier: "runtime-tmux-name")
+    case "Search workspaces":
+      return app.textFields.matching(NSPredicate(format: "label == %@", label)).firstMatch
+    default:
+      // Unknown form labels still resolve only to editable text fields.
+      return app.textFields.matching(NSPredicate(format: "label == %@", label)).firstMatch
+    }
+  }
+
+  private func textField(_ label: String, identifier: String) -> XCUIElement {
+    app.textFields.matching(
+      NSPredicate(format: "label == %@ OR identifier == %@", label, identifier)
+    ).firstMatch
+  }
+
+  private func textView(_ label: String, identifier: String) -> XCUIElement {
+    app.textViews.matching(
+      NSPredicate(format: "label == %@ OR identifier == %@", label, identifier)
+    ).firstMatch
+  }
+
+  private func secureTextField(_ label: String, identifier: String) -> XCUIElement {
+    app.secureTextFields.matching(
+      NSPredicate(format: "label == %@ OR identifier == %@", label, identifier)
+    ).firstMatch
   }
 
   private func button(_ label: String) -> XCUIElement {

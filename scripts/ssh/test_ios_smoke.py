@@ -189,6 +189,37 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn('app.staticTexts["Saved servers"].waitForExistence(timeout: 15)', helper)
         self.assertNotIn('button("Server connection").tap()', helper)
 
+    def test_text_input_lookup_uses_editable_accessibility_types_and_stable_identifiers(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        helper_start = source.index("private func input(_ label: String)")
+        helper_end = source.index("private func button(", helper_start)
+        helper = source[helper_start:helper_end]
+
+        for mapping in (
+            'case "Host": return textField(label, identifier: "ssh-host")',
+            'case "Port": return textField(label, identifier: "ssh-port")',
+            'case "Username": return textField(label, identifier: "ssh-username")',
+            'case "Server name": return textField(label, identifier: "server-profile-name")',
+            'case "Private OpenSSH key": return textView(label, identifier: "ssh-private-key")',
+            'case "SSH password": return secureTextField(label, identifier: "ssh-password")',
+        ):
+            self.assertIn(mapping, helper)
+        self.assertIn(
+            'NSPredicate(format: "label == %@ OR identifier == %@", label, identifier)',
+            helper,
+        )
+        self.assertIn("app.textFields.matching(", helper)
+        self.assertIn("app.textViews.matching(", helper)
+        self.assertIn("app.secureTextFields.matching(", helper)
+        self.assertNotIn("app.staticTexts", helper)
+        self.assertNotIn("app.descendants(matching: .any)", helper)
+
+        fill_start = source.index("private func fillTextField(label: String, value: String)")
+        fill_end = source.index("private func fillPrivateKey", fill_start)
+        fill_helper = source[fill_start:fill_end]
+        self.assertIn("guard waitForHittable(field, timeout: 10) else", fill_helper)
+        self.assertIn('XCTFail("The short field is not hittable.")', fill_helper)
+
     def test_new_suite_is_exposed_without_changing_the_standard_default(self):
         # The hosted mobile-smoke workflow was retired; suite selection now
         # lives in the smoke driver itself so any session applies the same gate.
