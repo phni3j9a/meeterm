@@ -304,6 +304,13 @@ leaves the interactive connection `Ready`. The delayed target verifies a
 stalled subsystem start surfaces a retryable `pending`/`timeout` state
 that can still be cancelled without harming the connection.
 
+Note the fixture sshd acts on the real account `$HOME`, so the default-dir
+leg does write generated names under `~/.local/share/meeterm/attachments`
+on the dev host; the test deletes them via `attachment_delete_remote` and
+a `RemoteAttachmentGuard` removes any new generated names it finds on
+unwind — other legs target a dedicated remote dir under `/tmp`. Local
+scratch dirs are `Drop`-guarded the same way.
+
 The Rust integration target exercises the real SSH/tmux/native-terminal path.
 Assertions cover explicit trust and encrypted-key authentication, pane-specific
 output and input, remote dimensions, topology changes, disconnect and resume,
