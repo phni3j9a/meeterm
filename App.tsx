@@ -159,7 +159,8 @@ const LEGACY_CLEANUP_WARNING_ID = 'legacy-layout-restore-unconfirmed';
 const ATTACHMENT_BEGIN_COMPOSING_NOTICE = 'Finish IME composition before attaching.';
 const ATTACHMENT_COMPOSING_NOTICE = 'Finish IME composition before inserting.';
 const ATTACHMENT_DEFAULT_REMOTE_DIRECTORY = '~/.local/share/meeterm/attachments';
-const ATTACHMENT_INSERTED_NOTICE = 'Inserted into terminal input. Review it before sending.';
+const ATTACHMENT_INSERTED_NOTICE = 'Inserted into terminal input — not sent. Review it and send it yourself.';
+const ATTACHMENT_INSERTED_DETAIL = "meeterm can't see what the CLI does with it, and nothing is resent automatically.";
 const ATTACHMENT_INSERTING_NOTICE = 'Inserting… verifying the remote file first.';
 const ATTACHMENT_INSERT_GUIDANCE = 'Close and insert from the terminal: tap Insert attachment in the terminal toolbar to add the image path.';
 const ATTACHMENT_INSERT_NOT_READY = 'The terminal input is not ready. Finish recovery and keep this terminal open before inserting.';
@@ -493,13 +494,15 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
 function smokeAttachmentDraft(screen: SmokeScreen): AttachmentDraftState {
   const prepared: AttachmentPreparedInfo = {
     fileId: 'att_smoke0001.png',
-    // A 1×1 PNG keeps the preview deterministic and offline.
-    previewUri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    // A real 540×960 portrait PNG keeps the preview deterministic and offline
+    // while its advertised metadata matches the actual placeholder image, so
+    // evidence captures can never be mistaken for a real transferred photo.
+    previewUri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAhwAAAPACAIAAADxFzfLAAAKvklEQVR42u3VMQ0AAAgEsfeEBcQhGxOwNamCWy7VAwAnIgEApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQBgKioAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoApqICAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCgKlIAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAJiKCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAoCpqACAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQBgKhIAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoApqICAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAYCoqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAJiKBACYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAoCpqACAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgCYigoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAHxZW0GNMPWqRpsAAAAASUVORK5CYII=',
     format: 'png',
-    width: 1080,
-    height: 1920,
-    byteCount: 248_912,
-    sourceByteCount: 4_203_304,
+    width: 540,
+    height: 960,
+    byteCount: 2807,
+    sourceByteCount: 2807,
   };
   const destination: AttachmentDestination = {
     terminalId: CONNECTION_ID,
@@ -827,6 +830,12 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
   const localBusy = draft?.phase === 'picking' || draft?.phase === 'normalizing';
   const operation = draft?.operation ?? null;
   const busy = localBusy || busyAction !== null || operation?.jobInFlight === true;
+  // Cancel is the exception to the one-in-flight-job gate: it must stay
+  // reachable while the upload job is in flight. It is gated only by local
+  // processing or an already-requested action — never by jobInFlight — so a
+  // tap cannot queue a duplicate cancel while Upload/Insert/Delete keep the
+  // ordinary mutual exclusion.
+  const cancelBusy = localBusy || busyAction !== null;
   const deleting = busyAction === 'deleteRemote';
   const inserting = busyAction === 'insert';
   const destinationMatches = !draft || draft.destination.terminalId === currentTerminalId;
@@ -882,7 +891,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
         <Text style={[styles.emptyTitle, { color: colors.text }]}>Upload waiting</Text>
         <Text style={[styles.emptyBody, { color: colors.muted }]}>{operation.errorMessage || `Waiting: ${operation.errorCode || 'the destination is not ready yet.'}`}</Text>
         <Button testID="attachment-retry-upload" label="Retry upload" colors={colors} disabled={busy} onPress={onRetryUpload}>Retry upload</Button>
-        <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={busy} onPress={onCancel} style={styles.attachmentActionSpacer}>Cancel</Button>
+        <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={cancelBusy} onPress={onCancel} style={styles.attachmentActionSpacer}>Cancel</Button>
       </View> : null}
 
       {operation?.phase === 'uploading' ? <View testID="attachment-uploading">
@@ -891,7 +900,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
           <View testID="attachment-progress-fill" style={[styles.attachmentProgressFill, { backgroundColor: colors.accent, width: `${Math.min(100, operation.sizeBytes > 0 ? Math.round((operation.bytesUploaded / operation.sizeBytes) * 100) : 0)}%` }]} />
         </View>
         <Text style={[styles.emptyBody, { color: colors.muted }]}>{`${Math.max(0, Math.round(operation.bytesUploaded / 1024))} KB of ${Math.max(1, Math.round(operation.sizeBytes / 1024))} KB`}</Text>
-        <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={busy} onPress={onCancel}>Cancel</Button>
+        <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={cancelBusy} onPress={onCancel}>Cancel</Button>
       </View> : null}
 
       {operation?.phase === 'uploaded' && !operation.remoteRemoved ? <View testID="attachment-uploaded">
@@ -910,7 +919,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
 
       {operation?.phase === 'inserted' && !operation.remoteRemoved ? <View testID="attachment-inserted">
         <Text style={[styles.emptyTitle, { color: colors.text }]}>{ATTACHMENT_INSERTED_NOTICE}</Text>
-        {operation.insertUnconfirmed ? <Text testID="attachment-unconfirmed" accessibilityRole="alert" style={[styles.runtimeHint, { color: colors.danger }]}>{ATTACHMENT_INSERT_UNCONFIRMED_NOTICE}</Text> : null}
+        <Text style={[styles.noticeBody, { color: colors.muted }]}>{ATTACHMENT_INSERTED_DETAIL}</Text>
         <Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{operation.remotePath}</Text>
         <View style={styles.noticeActions}>
           <Pressable testID="attachment-delete-remote" accessibilityRole="button" accessibilityLabel="Delete from server" disabled={busy} onPress={onDeleteRemote} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Delete from server</Text></Pressable>
@@ -1429,6 +1438,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const retainedPaneRef = useRef<RemoteTerminal | null>(null);
   const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, change: null });
   const attachmentGeneration = useRef(0);
+  // Snapshot read sequence: every read captures the current value at call
+  // start and applies only while it is still latest. Job and draft-intent
+  // starts bump it, so a read begun before a newer job (or a fresh draft)
+  // can never land afterwards, clear a live busyAction, or resurrect an
+  // action the new job already owns.
+  const attachmentSnapshotSeq = useRef(0);
   const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
   const completedRecoveryEpochRef = useRef('');
   const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2797,7 +2812,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   /** Fold the authoritative core snapshot into the draft, dropping stale ids. */
   const refreshAttachmentSnapshot = useCallback(() => {
     if (smokeFixtureActive) return;
+    const seq = ++attachmentSnapshotSeq.current;
     void MeetermTerminal.attachmentSnapshot().then(result => {
+      // A newer read already superseded this one, or a new job/draft intent
+      // began after it started — the response is stale and must not touch
+      // busyAction, the operation, or the toolbar gates.
+      if (attachmentSnapshotSeq.current !== seq) return;
       // During a pending delete, `idle` means the operation record itself is
       // gone — the remote file is removed with it.
       if (result.status === 'idle') {
@@ -2886,6 +2906,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         return;
       }
       const generation = ++attachmentGeneration.current;
+      // A brand-new draft intent: invalidate any snapshot read still in
+      // flight for the previous operation so it cannot land on this draft.
+      attachmentSnapshotSeq.current += 1;
       setAttachment({
         phase: 'choosing',
         prepared: null,
@@ -2972,6 +2995,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const pickAttachment = useCallback((source: AttachmentSource) => {
     if (!attachment || attachment.busyAction || attachment.phase === 'picking' || attachment.phase === 'normalizing') return;
     const generation = attachmentGeneration.current;
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, phase: 'picking', notice: '', errorCode: '', errorMessage: '' } : current);
     if (smokeFixtureActive) {
       // Fixtures never reach the OS picker; stay on the picking state only in
@@ -3025,6 +3049,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // Double-tap guard: a live op must be retried or cancelled, never rebegun.
     if (operation && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, busyAction: 'upload', notice: '', errorCode: '', errorMessage: '' } : current);
     void MeetermTerminal.uploadAttachment(attachment.destination.terminalId, attachment.remoteDirectory.trim())
       .then(result => {
@@ -3064,6 +3089,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       || (operation.phase === 'uploaded' && operation.remoteRemoved);
     if (!retryable) return;
     const generation = attachmentGeneration.current;
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, busyAction: 'retryUpload', notice: '' } : current);
     // The core verifies the passed pane terminal against the recorded
     // intent — a different visible pane fails with `destination_changed`.
@@ -3093,6 +3119,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!attachment || !operation || attachment.busyAction) return;
     if (operation.phase !== 'pending' && operation.phase !== 'uploading') return;
     const generation = attachmentGeneration.current;
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, busyAction: 'cancel', notice: '' } : current);
     void MeetermTerminal.cancelAttachment()
       .then(result => {
@@ -3132,6 +3159,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       return;
     }
     const generation = attachmentGeneration.current;
+    // New job starting: reads begun before this point belong to the previous
+    // job generation and must never clear the insert busy state.
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, busyAction: 'insert', notice: '' } : current);
     void MeetermTerminal.insertAttachment(pane.terminalId)
       .then(result => {
@@ -3172,6 +3202,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (operation.jobInFlight) return;
     if (operation.phase !== 'uploaded' && operation.phase !== 'inserted' && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, busyAction: 'deleteRemote', notice: '' } : current);
     // The core verifies the passed pane terminal against the recorded
     // intent — a different visible pane fails with `destination_changed`.
@@ -3211,6 +3242,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const discardAttachmentDraft = useCallback(() => {
     if (!attachment || attachment.busyAction) return;
     const generation = attachmentGeneration.current;
+    attachmentSnapshotSeq.current += 1;
     setAttachment(current => current ? { ...current, busyAction: 'discard', notice: '' } : current);
     void (async () => {
       if (!smokeFixtureActive) {

@@ -121,13 +121,16 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   "Inserting…" state and polls until the snapshot's `jobInFlight`
   (`flags & 0x4`) drops — landing `inserted`, or a pending reason when
   verification fails before any paste. An inserted op never offers insert
-  again; it shows "Inserted into terminal input. Review it before
-  sending." and the user still sends it themselves. Every job clears the
-  previous reason at start and at most one job per operation is in flight —
-  upload, insert, and delete refuse to overlap. Pending and failed states
-  show the core reason and "Retry upload" is a separate explicit action;
-  an unconfirmed insert shows a check-the-terminal notice and is never
-  resent automatically. "Delete from server" removes only the file the
+  again; it shows the neutral "Inserted into terminal input — not sent.
+  Review it and send it yourself." guidance (meeterm can't see what the
+  CLI does with it, and nothing is resent automatically), and the user
+  still sends it themselves. Every job clears the previous reason at
+  start and at most one job per operation is in flight — upload, insert,
+  and delete refuse to overlap. Cancel is the exception: it stays
+  reachable while a pending/uploading job is in flight so the transfer
+  can always be stopped, and a second tap never queues a duplicate
+  request. Pending and failed states show the core reason and "Retry
+  upload" is a separate explicit action. "Delete from server" removes only the file the
   operation created: after acceptance the sheet shows "Deleting…" and
   keeps polling until the snapshot reports `remoteRemoved` (`flags & 0x2`)
   or a failure; insert stays hidden while any job is in flight. "Discard"

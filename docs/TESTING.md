@@ -234,13 +234,16 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   pending reason / failure）を見て初めて解消すること。前回 attempt の
   stale reason/error は job 開始時に core が消し、UI は途中の flag 未降りで
   解消しないこと。Retry upload は `pending`/`failed` と verify 済み削除後の
-  `uploaded` のみ、Cancel / Delete from server / Discard は capability どおりに
-  のみ有効であること。insert は verify+insert の1 job（intent 再確認 →
+  `uploaded` のみ、Delete from server / Discard は capability どおりに
+  のみ有効であること。Cancel は例外的に `pending`/`uploading` の
+  `jobInFlight` 中も有効のまま（重複 cancel や他の local action 中のみ
+  無効）で、pending/uploading 以外の phase では出ないこと。insert は
+  verify+insert の1 job（intent 再確認 →
   新しい fence → remote lstat → 単一行 paste）で、verify 失敗は paste 前に
   pending として返ること。`inserted` op には insert action が出ず
-  review-before-send の案内のみを表示し、`inserted` で配送未確認
-  （`flags & 0x1`）のときは check-the-terminal 通知のみで、自動再送も
-  不確実な retry もしないこと。
+  中立な review-before-send の案内のみを表示すること — 配送未確認
+  （`flags & 0x1`）は `inserted` の通常状態なので error styling ではなく、
+  自動再送も不確実な retry もしないこと。
   表示中の terminal が capture 済み宛先と異なる場合は insert が出ず、
   別宛先への自動挿入はないこと。sheet の dismiss（iOS の swipe down を含む）は
   draft/session を保持し、再オープンで `getAttachmentState` から復元されること。
@@ -263,7 +266,9 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   が verify job として受理され `jobInFlight` 降下で成否が確定すること・
   Discard 後の別 pane での新 intent・inserted での insert 非表示・stale
   error を持つ op への delete retry が flag 降下まで pending のままである
-  こと）で確認します。
+  こと・upload job in-flight 中に Cancel が有効で受理後に重複発行されない
+  こと・insert 受理前に開始された snapshot read が後着しても insert の
+  busy/非表示状態を解除しないこと）で確認します。
   `ios-typecheck.sh` と `ios-inject-ui-test.sh` の manifest は
   `AttachmentOperation.swift` を含む同じ attachment source 群を含みます。
 - smoke fixture は `attachment-choose` / `attachment-ready` /
