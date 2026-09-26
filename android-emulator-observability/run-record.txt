@@ -1,5 +1,5 @@
 run=issue-28-focused-validation
-commit=32a6be3703e7735e87299c1ed769325367262322
+commit=abc1b2a54e6daaac651ade204e25cdd2d3713a13
 branch=issue-28-image-attachments
 result=pass
 scope=focused (no full/standard/ssh acceptance suites)
@@ -7,15 +7,15 @@ scope=focused (no full/standard/ssh acceptance suites)
 stage_commit=confirmed (HEAD verified)
 stage_npm_ci=pass
 stage_cng=pass (npx expo prebuild --platform android --non-interactive --no-install --clean; generated android/ removed first)
-stage_gradle_build=pass (assembleRelease 3m15s; Kotlin attachment code compiles; earlier 5e985f6 bugs fixed upstream)
-stage_unit_tests=pass (:meeterm-terminal:testReleaseUnitTest 65/65; AttachmentLimitsTest + AttachmentOperationTest included; task transitively rebuilt Rust dev profile both ABIs)
+stage_gradle_build=pass (assembleRelease 2m36s, 668 tasks)
+stage_unit_tests=pass (:meeterm-terminal:testReleaseUnitTest 66/66, zero failures/errors; AttachmentLimitsTest + AttachmentOperationTest included)
 stage_emulator_install_launch=pass (fresh boot, adb install -r, launch)
 stage_native_ready=pass
 stage_first_frame=pass (Rust-owned snapshot rendered; terminal.png)
 stage_process_alive=pass
-stage_screen_fixtures=31/32 captured; empty=unavailable:missing_screen_element_0,screen_element_1 (pre-existing baseline, same as prior runs)
-stage_attachment_routes=11/11 captured manually via deep-link pattern (force-stop -> am start VIEW meeterm://smoke?screen=<route> -> bounded uiautomator wait -> screencap); distinct seeded content verified via ui dump (ready: normalized preview meta + Upload; error: size-limit copy; blocked: IME-composition gate)
-stage_picker=pass-real — smoke routes short-circuit pickAttachment by design (smokeFixtureActive stays in 'choosing'), so the real picker was driven through a live fixture session: fresh onboarding -> fx1 127.0.0.1:45285 (key auth + host-key trust) -> tmux meeterm -> terminal -> Attach image -> Choose from files -> SAF DocumentsUI -> Downloads/test_attach.png -> normalized preview 64x64 PNG 1KB reached (i28-attach-sheet-real.png, i28-picker-real-normalized.png). PickVisualMedia path not exercised (SAF chosen); SSH upload/insert not attempted per scope.
+stage_screen_fixtures=31/32 captured; empty=unavailable:missing_screen_element_0,screen_element_1 (pre-existing baseline)
+stage_attachment_routes=11/11 captured manually via deep-link pattern (force-stop -> am start VIEW meeteterm://smoke?screen=<route> -> bounded uiautomator wait -> screencap); distinct seeded content verified via ui dump (ready: normalized preview meta + Upload; error: size-limit copy; blocked: IME-composition gate)
+stage_picker=pass-real — smoke routes short-circuit pickAttachment by design (smokeFixtureActive stays in 'choosing'), so the real picker was driven through a live fixture session: fresh onboarding -> fx1 127.0.0.1:45703 (key auth + host-key trust) -> tmux meeterm -> terminal -> Attach image -> Choose from files -> SAF DocumentsUI -> Downloads/test_attach.png -> normalized preview 64x64 PNG 1KB reached (i28-attach-sheet-real.png, i28-picker-real-normalized.png). PickVisualMedia path not exercised (SAF chosen); SSH upload/insert not attempted per scope.
 note=attachment fixture captures are seeded presentation captures; the real-picker run additionally proves SAF pick -> native normalize -> ready phase on-device.
 
 toolchain_node=v24.19.0 (blueprint pins 22.22.2; standing deviation)
