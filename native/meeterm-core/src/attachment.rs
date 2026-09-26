@@ -1646,7 +1646,7 @@ pub(crate) fn start_insert<S>(
         let outcome = async {
             match session.init().await {
                 Ok(_) => {
-                    run_insert(&op, &session, |fence, line| {
+                    run_insert(&op, &session, attempt, |fence, line| {
                         shared.attachment_insert_line(fence, line)
                     })
                     .await
@@ -2438,6 +2438,7 @@ async fn run_remove(
 async fn run_insert(
     op: &Arc<Mutex<AttachmentOperation>>,
     session: &RawSftpSession,
+    attempt: u64,
     paste: impl Fn(&DestinationFence, &[u8]) -> Result<usize, AttachmentBlock>,
 ) -> TransferOutcome {
     // Steps 1+2: remote verification — only a verified file yields a line.
@@ -2445,14 +2446,38 @@ async fn run_insert(
         Ok(line) => line,
         Err(outcome) => return outcome,
     };
-    // Step 3: re-read the fence recorded at job accept and let the
-    // session-locked insert path re-check it right before pasting.
-    let fence = {
+    // Step 3: the operation lock is the cancel-vs-paste boundary — whoever
+    // acquires it first wins.  Registry membership is checked before
+    // taking it (`operations -> op` is the established order and a dispose
+    // cancels under the op lock before removing the entry, so either way
+    // the job stops).  Under the lock the job must still be this attempt
+    // and uncancelled; the lock is then held through the paste call, so a
+    // cancel/dispose racing the SFTP wait can only queue behind a paste
+    // decision that already passed.
+    let id = {
         let Ok(op) = op.lock() else {
             return TransferOutcome::Cancelled;
         };
-        op.fence.clone()
+        op.id
     };
+    let registered = operations()
+        .lock()
+        .map(|operations| {
+            operations
+                .get(&id)
+                .is_some_and(|entry| Arc::ptr_eq(entry, op))
+        })
+        .unwrap_or(false);
+    if !registered {
+        return TransferOutcome::Cancelled;
+    }
+    let Ok(op) = op.lock() else {
+        return TransferOutcome::Cancelled;
+    };
+    if op.cancel_requested || op.job_in_flight != Some(attempt) || op.attempt != attempt {
+        return TransferOutcome::Cancelled;
+    }
+    let fence = op.fence.clone();
     match paste(&fence, &line) {
         Ok(_) => TransferOutcome::Inserted,
         Err(block) => TransferOutcome::Pending(block),
@@ -2500,6 +2525,18 @@ async fn insert_verified_line(
             "remote_unsafe_path",
             "remote path is not under the recorded base".to_owned(),
         ));
+    }
+    // String equality is not continuity: re-walk every component of the
+    // recorded base so a swapped-in symlinked parent is refused instead of
+    // silently followed into a foreign directory, and a vanished base is a
+    // clean `remote_missing` before the leaf check.
+    match remote_base_verified(session, &base).await {
+        Ok(true) => {}
+        Ok(false) => return Err(TransferOutcome::RemoteMissing),
+        Err(TransferOutcome::Pending(block)) => {
+            return Err(TransferOutcome::VerifyPending(block));
+        }
+        Err(outcome) => return Err(outcome),
     }
     match session.lstat(&remote_path).await {
         Ok(attrs) if remote_file_complete(&attrs.attrs, size_bytes) => {}
@@ -3469,7 +3506,7 @@ mod tests {
             op.job_in_flight = Some(1);
         }
         let session = fixture_sftp(root.clone(), false).await;
-        let outcome = run_insert(&op, &session, |_, _| {
+        let outcome = run_insert(&op, &session, 1, |_, _| {
             pasted.fetch_add(1, Ordering::AcqRel);
             Ok(1)
         })
@@ -3517,8 +3554,19 @@ mod tests {
             op.job_in_flight = Some(2);
             op.attempt = 2;
         }
+        // The paste step requires the op to still be a registered,
+        // uncancelled, attempt-matching job owner.  A distinct id keeps
+        // the registry insert independent of other tests sharing 41.
+        {
+            let mut op = op.lock().unwrap();
+            op.id = 0x1_0001;
+        }
+        operations()
+            .lock()
+            .unwrap()
+            .insert(0x1_0001, Arc::clone(&op));
         let pasted = std::sync::atomic::AtomicUsize::new(0);
-        let outcome = run_insert(&op, &session, |_fence, line| {
+        let outcome = run_insert(&op, &session, 2, |_fence, line| {
             pasted.fetch_add(1, Ordering::AcqRel);
             let text = String::from_utf8(line.to_vec()).expect("utf8 line");
             assert!(!text.contains('\n') && !text.contains('\r'));
@@ -3531,6 +3579,119 @@ mod tests {
             "verified insert must land, got {outcome:?}"
         );
         assert_eq!(pasted.load(Ordering::Acquire), 1);
+        let _ = session.close_session();
+        operations().lock().unwrap().remove(&0x1_0001);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Review round 3 (FP-020): a cancel or dispose racing the SFTP wait
+    /// must serialize against the paste — a job whose cancellation beat
+    /// the op lock never reaches the native input path.
+    #[tokio::test]
+    async fn insert_never_pastes_after_cancel_or_dispose() {
+        for (dispose, id) in [(false, 0x1_0002u64), (true, 0x1_0003)] {
+            let root = fixture_root(if dispose {
+                "insert-dispose"
+            } else {
+                "insert-cancel"
+            });
+            fs::create_dir_all(root.join("home")).unwrap();
+            let local = root.join("image.png");
+            fs::write(&local, b"1234567890").unwrap();
+            let op = test_op(AttachmentPhase::Uploading);
+            {
+                let mut op = op.lock().unwrap();
+                op.id = id;
+                op.spec.local_path = local.to_str().unwrap().to_owned();
+            }
+            let session = fixture_sftp(root.clone(), false).await;
+            let outcome = run_transfer(&op, &session, false, 1).await;
+            let TransferOutcome::Uploaded(path) = outcome else {
+                panic!("fixture upload must publish, got {outcome:?}");
+            };
+            {
+                let mut op = op.lock().unwrap();
+                op.phase = AttachmentPhase::Uploaded;
+                op.remote_path = Some(path.clone());
+                op.remote_base = Some(
+                    path.rsplit_once('/')
+                        .map(|(dir, _)| dir.to_owned())
+                        .expect("published path has a dir"),
+                );
+                op.job_in_flight = Some(2);
+                op.attempt = 2;
+            }
+            // The actor gate passed — the op is live, registered, and the
+            // job is accepted.  Cancel/dispose lands while the detached
+            // job waits on SFTP verification.
+            operations().lock().unwrap().insert(id, Arc::clone(&op));
+            if dispose {
+                attachment_dispose(id).expect("dispose op");
+            } else {
+                attachment_cancel(id).expect("cancel op");
+            }
+            let pasted = std::sync::atomic::AtomicUsize::new(0);
+            let outcome = run_insert(&op, &session, 2, |_, _| {
+                pasted.fetch_add(1, Ordering::AcqRel);
+                Ok(1)
+            })
+            .await;
+            assert!(
+                matches!(outcome, TransferOutcome::Cancelled),
+                "cancelled/disposed insert must not paste, got {outcome:?}"
+            );
+            assert_eq!(
+                pasted.load(Ordering::Acquire),
+                0,
+                "a cancelled insert must never reach the paste path"
+            );
+            let _ = session.close_session();
+            operations().lock().unwrap().remove(&id);
+            fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// Review round 3 (FP-021): a recorded base whose component was
+    /// replaced by a symlink must refuse the insert — the leaf lstat
+    /// would silently follow it into a foreign directory holding a
+    /// same-name/same-size file.  Refused as `remote_unsafe_path` and no
+    /// paste.
+    #[tokio::test]
+    async fn insert_refuses_symlinked_recorded_parent() {
+        let root = fixture_root("insert-symlink-parent");
+        let name = "meeterm-20260101-120000-0123456789abcdef.png";
+        // The foreign directory holds a file that passes every leaf check
+        // — same generated name, size and 0600 mode.
+        let foreign = root.join("foreign");
+        fs::create_dir_all(&foreign).unwrap();
+        let file = foreign.join(name);
+        fs::write(&file, b"1234567890").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        // The recorded base `/chosen` is now a symlink into `/foreign`.
+        std::os::unix::fs::symlink(&foreign, root.join("chosen")).unwrap();
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.remote_path = Some(format!("/chosen/{name}"));
+            op.remote_base = Some("/chosen".to_owned());
+            op.job_in_flight = Some(1);
+        }
+        let session = fixture_sftp(root.clone(), false).await;
+        let pasted = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = run_insert(&op, &session, 1, |_, _| {
+            pasted.fetch_add(1, Ordering::AcqRel);
+            Ok(1)
+        })
+        .await;
+        assert!(
+            matches!(outcome, TransferOutcome::Failed("remote_unsafe_path", _)),
+            "a symlinked recorded parent must refuse the insert, got {outcome:?}"
+        );
+        assert_eq!(
+            pasted.load(Ordering::Acquire),
+            0,
+            "the symlinked parent must never reach the paste path"
+        );
         let _ = session.close_session();
         fs::remove_dir_all(&root).ok();
     }

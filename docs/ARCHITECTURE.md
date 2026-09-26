@@ -310,8 +310,11 @@ and an `lstat` byte/metadata check of the staged file passes; cancellation
 removes the partial best-effort, and a delayed completion cannot mutate a
 cancelled operation. `insert` is itself one asynchronous *verified-insert*
 job: it lstat-verifies the recorded remote file (generated name, canonical
-base, regular file, exact size, `0600`) — no path pastes before or without
-verification — then re-checks the fence under the session lock and pastes
+base re-walked component-by-component as real non-symlink directories,
+regular file, exact size, `0600`) — no path pastes before or without
+verification — then, serialized on the operation lock so a racing
+cancel/dispose lands strictly before or after the decision, re-checks the
+fence under the session lock and pastes
 one quoted path; a missing/replaced file clears the stale `remote_path`
 and lands `pending(remote_missing)` for an explicit re-upload, and
 `retry_upload` always re-uploads (short-circuiting on a verified

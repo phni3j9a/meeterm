@@ -251,10 +251,15 @@ rmdir ~/.local/share/meeterm/attachments ~/.local/share/meeterm 2>/dev/null
 one asynchronous *verified-insert* job. A `0` return only means the job
 was accepted (`0x4` set); the job re-resolves the intent onto a fresh
 fence, lstat-verifies the recorded remote file over SFTP (generated
-basename, recorded canonical base, regular file, exact size, `0600`),
+basename, recorded canonical base re-walked component-by-component as
+real non-symlink directories, regular file, exact size, `0600`),
 and only on success re-checks the whole fence under the session lock and
 pastes exactly one single-quoted remote-path line through
 `paste_utf8_at_epoch`. No path pastes before or without verification.
+The paste decision itself is serialized on the operation lock — the job
+must still be registered, uncancelled, and the current attempt — so a
+cancel/dispose racing the SFTP wait lands strictly before or after the
+paste, never during it.
 Verification loss clears the stale `remote_path` and lands
 `pending(remote_missing)` — the next move is a real `retry_upload`
 re-upload, not an insert retry; a paste-gate refusal keeps `uploaded`
