@@ -783,6 +783,7 @@ async fn run_impl(
             command = commands.recv() => {
                 let Some(request) = command else { let _ = client.release().await; return Err(FlowFailure::Stale); };
                 if !shared.current_request_epoch(request.epoch) {
+                    expire_attachment_request(&request.command, AttachmentBlock::StaleOperation);
                     continue;
                 }
                 let command = request.command;
@@ -796,6 +797,7 @@ async fn run_impl(
                     && !allow_recovery_visibility
                     && !shared.current_request_is_ready(request.epoch)
                 {
+                    expire_attachment_request(&command, AttachmentBlock::NotReady);
                     continue;
                 }
                 client.command_epoch = (!revoke && !allow_recovery_visibility)
@@ -1547,6 +1549,14 @@ impl HerdrClient<'_> {
 
     async fn command(&mut self, command: ControlCommand) -> Result<(), FlowFailure> {
         match command {
+            ControlCommand::SftpUpload { attachment_id } => {
+                launch_sftp_job(self.shared, self.session, attachment_id, SftpJob::Upload).await;
+                return Ok(());
+            }
+            ControlCommand::SftpRemove { attachment_id } => {
+                launch_sftp_job(self.shared, self.session, attachment_id, SftpJob::Remove).await;
+                return Ok(());
+            }
             ControlCommand::SetTerminalVisible { visible } => {
                 if !visible {
                     self.release().await?;
@@ -1657,7 +1667,9 @@ impl HerdrClient<'_> {
                 | ControlCommand::SelectPane { .. }
                 | ControlCommand::SelectGroup { .. }
                 | ControlCommand::RefreshTerminal
-                | ControlCommand::SetTerminalVisible { .. } => unreachable!(),
+                | ControlCommand::SetTerminalVisible { .. }
+                | ControlCommand::SftpUpload { .. }
+                | ControlCommand::SftpRemove { .. } => unreachable!(),
                 ControlCommand::CreateWorkspace { name } => {
                     ("workspace.create", json!({"label":name, "focus":false}))
                 }

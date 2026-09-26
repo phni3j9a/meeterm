@@ -653,12 +653,14 @@ pub(super) async fn run(
                         return Err(FlowFailure::Stale);
                     };
                     if !shared.current_request_epoch(request.epoch) {
+                        expire_attachment_request(&request.command, AttachmentBlock::StaleOperation);
                         continue;
                     }
                     let command = request.command;
                     if !matches!(&command, ControlCommand::SetTerminalVisible { visible: false })
                         && !shared.current_request_is_ready(request.epoch)
                     {
+                        expire_attachment_request(&command, AttachmentBlock::NotReady);
                         continue;
                     }
                     client.command_epoch = Some(request.epoch);
@@ -798,6 +800,12 @@ pub(super) async fn run(
                     Some(ControlCommand::RefreshTerminal) => {
                         client.refresh_terminal().await?;
                         client.synchronize(false).await?;
+                    }
+                    Some(ControlCommand::SftpUpload { attachment_id }) => {
+                        launch_sftp_job(shared, session, attachment_id, SftpJob::Upload).await;
+                    }
+                    Some(ControlCommand::SftpRemove { attachment_id }) => {
+                        launch_sftp_job(shared, session, attachment_id, SftpJob::Remove).await;
                     }
                     Some(ControlCommand::RefreshRuntimes
                         | ControlCommand::SelectRuntime { .. }

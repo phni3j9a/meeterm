@@ -13,7 +13,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 alacritty_terminal = "=0.26.0"
 russh = { version = "=0.63.2", default-features = false, features = ["ring"] }
+russh-sftp = "=3.0.0"
 tokio = { version = "1.17.0", default-features = false, features = [
+    "fs",
     "io-util",
     "macros",
     "net",

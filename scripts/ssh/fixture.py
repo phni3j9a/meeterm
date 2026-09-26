@@ -147,8 +147,12 @@ def _choose_port(excluded: set[int] | None = None) -> int:
 class Fixture:
     """The files and process for one temporary OpenSSH server."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, sftp: bool = False) -> None:
         self.root = root
+        # SFTP is opt-in so the default fixture keeps exercising the
+        # subsystem-unavailable path.  ``internal-sftp`` is built into sshd
+        # and works without locating an sftp-server binary on each platform.
+        self.sftp = sftp
         self.port = _choose_port()
         self.alternate_port = _choose_port({self.port})
         self.user = getpass.getuser()
@@ -239,6 +243,9 @@ class Fixture:
 
         # Use only this file.  No system sshd configuration, user ssh config,
         # or ~/.ssh path is read or modified by the fixture server.
+        sftp_directives = (
+            ("Subsystem sftp internal-sftp",) if self.sftp else ()
+        )
         self.config.write_text(
             "\n".join(
                 (
@@ -271,6 +278,9 @@ class Fixture:
                     "PermitTunnel no",
                     "PermitUserEnvironment no",
                     "LogLevel QUIET",
+                    # Subsystem is not a Match keyword; it must be declared
+                    # before the per-listener Match blocks below.
+                    *sftp_directives,
                     f"Match LocalPort {self.port}",
                     f"SetEnv TMUX_TMPDIR={self.tmux_tmpdir}",
                     f"Match LocalPort {self.alternate_port}",
@@ -912,6 +922,8 @@ class Fixture:
             "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE": str(self.client_key),
             "MEETERM_SSH_HOST_KEY_FILE": str(host_public_key),
             "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE": str(alternate_host_public_key),
+            # "1" only when the fixture sshd exposes the SFTP subsystem.
+            "MEETERM_SSH_SFTP": "1" if self.sftp else "0",
             # These are useful to shell-level integration checks and make the
             # isolation contract explicit.  The SSH server receives the same
             # endpoint-specific path through Match/SetEnv above.
@@ -1208,13 +1220,18 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         choices=("stop", "start"),
         help="request stop/start of the inherited fixture sshd without creating a new fixture",
     )
+    parser.add_argument(
+        "--sftp",
+        action="store_true",
+        help="expose the OpenSSH SFTP subsystem (default keeps it unavailable for negative tests)",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     parser.add_argument("--check", action="store_true", help="verify real SSH authentication and remote tmux, then clean up")
     args = parser.parse_args(argv)
     if args.command and args.command[0] == "--":
         args.command = args.command[1:]
     if args.control is not None and (
-        args.env_file is not None or args.command or args.check or args.print_fingerprint
+        args.env_file is not None or args.command or args.check or args.print_fingerprint or args.sftp
     ):
         parser.error("--control cannot be combined with fixture startup options")
     if args.control is not None:
@@ -1241,7 +1258,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(
             prefix="meeterm-ssh-fixture-", dir=Path.home()
         ) as temporary_root:
-            fixture = Fixture(Path(temporary_root))
+            fixture = Fixture(Path(temporary_root), sftp=args.sftp)
             try:
                 fixture.prepare()
                 fixture.start()

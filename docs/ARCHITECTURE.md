@@ -241,6 +241,64 @@ immediately before execution. Workspace close and terminal close that could
 remove the final pane are included. If exact cross-session safety cannot be
 proved at execution time, the operation fails closed with a clear error.
 
+## Issue #28 image attachment
+
+One photo or file image picked on the phone can be delivered to the selected
+remote terminal so an already-open Codex or Claude Code conversation can read
+it from a remote path. The whole operation is Rust-owned
+(`native/meeterm-core/src/attachment.rs`); the platform adapters only start,
+poll, insert, retry, cancel, and dispose operations through the explicit
+`meeterm_attachment_*` ABI. Image bytes never cross JavaScript.
+
+```text
+picked local file (adapter-owned, read-only for Rust)
+  ↓ begin: validate + fence destination + enqueue on the actor queue
+actor opens a second SSH session channel → "sftp" subsystem
+  ↓ detached transfer task (never the interactive command loop)
+<realpath(".")>/.local/share/meeterm/attachments/att-<id>-<millis><ext>
+                                          (dir 0700, file 0600)
+  ↓ explicit insert request only
+one single-quoted remote-path line → paste_utf8_at_epoch → pane input
+  ↓ the user reviews and presses Enter — the core never sends it
+```
+
+Only one attachment operation per connection is live at a time
+(`begin` while one is live is rejected; `failed`/`cancelled` records do
+not count). The remote directory is resolved from the SFTP start
+directory (`realpath(".")`), never a client-side `~` guess; every
+component is lstat-checked (symlinks rejected) and created `0700`. A
+user-specified absolute `remote_dir` is validated and lstat-walked but
+keeps its own modes. Remote file names are generated — the picked
+filename never appears remotely. Uploads persist until an explicit
+`attachment_remove_remote` deletes only the operation's generated names
+(file, `.partial-*` remnant, empty app-private dir) on the same
+authenticated endpoint; nothing is auto-deleted on insert, cancel,
+dispose, or exit.
+
+The destination fence captured at `begin` binds only stable identities:
+connection generation, the session operation epoch, the remote pane ID, the
+native terminal mapped to that pane, Herdr's stable `terminal_id` where
+applicable, and a credential-free endpoint (host/port/username/backend/
+runtime). Insert re-validates every field under the session lock and fails
+closed with a recorded pending reason (`destination_changed`,
+`stale_operation`, …) instead of retargeting; an explicit
+`attachment_retry_upload` re-fences the same pane identity on the *current*
+actor.
+
+The upload writes a private `.partial-*` staging file and publishes the final
+name by rename only after an `lstat` byte/metadata check; cancellation removes
+the partial best-effort, and a delayed completion cannot mutate a cancelled
+operation. An SFTP-refusing server, a missing subsystem, or a dead actor
+surfaces as an operation-level `failed`/`pending` snapshot — never as a
+connection failure.
+
+Uploaded, inserted, and model-observed are deliberately distinct milestones.
+The `inserted` phase only means the native input queue accepted one line;
+nothing claims the CLI or model consumed the image, and no shell command,
+Enter, or CLI session is ever generated. The same fence and insert path serve
+the tmux and Herdr backends because insertion goes through the shared
+epoch-guarded native input queue, not a backend-specific channel.
+
 ## Architectural rule: JavaScript is not the terminal data plane
 
 React Native owns app chrome and product interaction. Rust/native owns terminal transport, terminal state, input composition, and rendering.

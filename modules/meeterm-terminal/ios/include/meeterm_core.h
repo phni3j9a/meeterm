@@ -233,6 +233,84 @@ int32_t meeterm_forget_host_key(
 /* Monotonic native terminal-content revision; zero is valid for a new term. */
 uint64_t meeterm_terminal_revision(uint64_t terminal_id);
 
+/*
+ * Image attachment operations (Issue #28). Rust owns the whole operation:
+ * a bounded SFTP upload over the existing authenticated SSH connection,
+ * a fenced destination identity, and — only on explicit request — one
+ * quoted remote-path line through the epoch-guarded native paste path.
+ * No image bytes cross JavaScript; no Enter is ever generated; uploaded,
+ * inserted, and CLI/model-observed are distinct milestones.
+ */
+enum {
+  MEETERM_ATTACHMENT_PATH_CAPACITY = 512,
+  MEETERM_ATTACHMENT_NAME_CAPACITY = 128,
+  MEETERM_ATTACHMENT_CODE_CAPACITY = 64,
+  MEETERM_ATTACHMENT_MSG_CAPACITY = 256
+};
+
+enum {
+  MEETERM_ATTACHMENT_PENDING = 0,
+  MEETERM_ATTACHMENT_UPLOADING = 1,
+  MEETERM_ATTACHMENT_UPLOADED = 2,
+  MEETERM_ATTACHMENT_INSERTED = 3,
+  MEETERM_ATTACHMENT_FAILED = 4,
+  MEETERM_ATTACHMENT_CANCELLED = 5
+};
+
+enum {
+  MEETERM_ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED = 0x1,
+  /* The meeterm-created remote file was explicitly deleted. Composes with
+   * the phase: inserted is not revoked; uploaded+removed = path is gone. */
+  MEETERM_ATTACHMENT_FLAG_REMOTE_REMOVED = 0x2
+};
+
+typedef struct meeterm_attachment_snapshot {
+  uint32_t phase;
+  uint32_t flags;
+  uint64_t attachment_id;
+  uint64_t bytes_uploaded;
+  uint64_t size_bytes;
+  uint16_t remote_path_len;
+  uint8_t remote_path[MEETERM_ATTACHMENT_PATH_CAPACITY];
+  uint16_t display_name_len;
+  uint8_t display_name[MEETERM_ATTACHMENT_NAME_CAPACITY];
+  uint16_t error_code_len;
+  uint8_t error_code[MEETERM_ATTACHMENT_CODE_CAPACITY];
+  uint16_t error_message_len;
+  uint8_t error_message[MEETERM_ATTACHMENT_MSG_CAPACITY];
+} meeterm_attachment_snapshot_t;
+
+/* Opaque positive attachment id; zero = synchronously rejected.
+ * `remote_dir` is an optional explicit remote directory (clean absolute
+ * path); NULL/0 selects the app-private default under the SFTP start dir
+ * (~/.local/share/meeterm/attachments). */
+uint64_t meeterm_attachment_begin(
+  uint64_t terminal_id,
+  const uint8_t *local_path,
+  size_t local_path_length,
+  const uint8_t *display_name,
+  size_t display_name_length,
+  const uint8_t *remote_dir,
+  size_t remote_dir_length,
+  uint64_t size_bytes);
+/* Explicit transfer retry; re-fences the same destination identity. */
+int32_t meeterm_attachment_retry_upload(uint64_t terminal_id, uint64_t attachment_id);
+/* One quoted path line into the fenced pane only; never sends Enter. */
+int32_t meeterm_attachment_insert(uint64_t terminal_id, uint64_t attachment_id);
+/* Cancels in-flight work and discards delayed completion idempotently. */
+int32_t meeterm_attachment_cancel(uint64_t attachment_id);
+/* Drops the operation record, cancelling active work first; remote files
+ * are never auto-deleted — see meeterm_attachment_remove_remote. */
+int32_t meeterm_attachment_dispose(uint64_t attachment_id);
+/* Explicit remote deletion of only this operation's generated names, on
+ * the same authenticated SSH endpoint. Idempotent; the phase is kept. */
+int32_t meeterm_attachment_remove_remote(uint64_t attachment_id);
+/* Poll: fills one complete sanitized snapshot; negative = unknown id. */
+int32_t meeterm_attachment_snapshot(
+  uint64_t attachment_id,
+  meeterm_attachment_snapshot_t *output);
+size_t meeterm_attachment_snapshot_size(void);
+
 #ifdef __cplusplus
 }
 #endif
