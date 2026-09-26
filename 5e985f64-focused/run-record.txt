@@ -1,0 +1,70 @@
+5e985f64 focused validation run record — iOS Simulator (Issue #28 image attachments, Draft PR #43)
+=================================================================================================
+
+commit: 5e985f646d65a5174231f6b7681e5e52bcc69b86 (issue-28-image-attachments)
+base: origin/main f9728c5 (HEAD verified after fetch + reset --hard)
+date: 2026-09-26 UTC
+host toolchain: Xcode 26.6 (17F113), iphonesimulator26.5 SDK, arm64, RN 0.86.3,
+  Expo ~57.0.25, Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0.
+simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+env: EXPO_PUBLIC_MEETERM_SMOKE=1. No source/test patching.
+
+STAGE RESULTS
+  candidate commit confirmed : YES (HEAD == 5e985f646d65a5174231f6b7681e5e52bcc69b86)
+  npm ci                     : PASS (515 packages, 2m)
+  fresh CNG prebuild         : PASS (rm -rf ios; expo prebuild iOS only)
+  ios-inject-ui-test.sh      : PASS (meetermTests + meetermStorageTargets injected)
+  pod install                : PASS
+  strip storage rust link    : PASS
+  sim boot                   : PASS (manual bootstatus after VM restart)
+
+  [stage 3] xcodebuild app build (first real Swift compile of the attachment
+            adapter; plain `build`, NOT build-for-testing) : FAILED, 239s
+    VERBATIM FIRST COMPILE ERROR (only error site — 2 diagnostics on one line):
+
+      /Users/devin/repos/meeterm/modules/meeterm-terminal/ios/AttachmentController.swift:174:55:
+        error: binary operator '??' cannot be applied to operands of type '[String]?' and 'String'
+            .flatMap { try? requireStore().previewUri($0) } ?? ""
+      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~
+      /Users/devin/repos/meeterm/modules/meeterm-terminal/ios/AttachmentController.swift:174:49:
+        error: cannot convert value of type 'String.Element' (aka 'Character') to expected argument type 'String'
+            .flatMap { try? requireStore().previewUri($0) } ?? ""
+                                                      ^
+
+    Source context (line 170-176):
+        let preview = active.prepared?.fileName
+          .flatMap { try? requireStore().previewUri($0) } ?? ""
+
+    ROOT-CAUSE READOUT (diagnosis only — no fix applied):
+      Optional-chaining precedence defect. `prepared?.fileName.flatMap {...}`
+      distributes the member access over the optional chain, i.e. evaluates as
+      `prepared.flatMap { $0.fileName.flatMap { ... } }` — the INNER flatMap is
+      Sequence.flatMap over String's Characters ($0 : String.Element ->
+      String, yielding [String]), so the whole expression is `[String]?` and
+      `?? ""` cannot bind. Relevant types (verified):
+        AttachmentPreparedImage.fileName : String        (AttachmentSession.swift:43)
+        AttachmentStore.previewUri(_ fileName: String) -> String  (AttachmentStore.swift:163)
+      The intended expression is presumably
+      `prepared.flatMap { try? requireStore().previewUri($0.fileName) } ?? ""`
+      — but per instructions NOTHING was patched.
+
+    Full log: xcodebuild-app-build-failed.log (only 2 `error:` lines total —
+    this line is the sole compile blocker; the rest of the 21-file
+    MeetermTerminal Swift batch was co-compiled and produced only warnings).
+
+  [stage 4] ios-typecheck.sh / injected XCTest bundle : NOT RUN (stop rule —
+    build stage failed; typecheck hits the same module and cannot pass while
+    the adapter does not compile).
+  [stage 5] install/launch/readiness/frame gates : NOT RUN (no .app product).
+  [stage 6] 11 attachment fixture routes : NOT RUN (no installable product).
+  [stage 7] picker attempt : NOT RUN.
+
+FIRST-FAILURE SUMMARY
+  AttachmentController.swift:174 is the single compile error in the adapter.
+  Everything else in the pipeline (deps, CNG, pods, inject, strip) passed.
+  Product-vs-harness: this is a product source defect (integration type
+  mismatch under optional chaining), not a harness/env problem.
+
+evidence layout:
+  run-record.txt
+  xcodebuild-app-build-failed.log   full build log (search `error:`)
