@@ -379,7 +379,9 @@ scope.
   then the single quoted-path paste — so `accepted` only means the job
   started: the toolbar shows **Inserting…** and polls until the
   snapshot's `jobInFlight` (`flags & 0x4`) drops, landing `inserted` or
-  a pending reason (a failed verification never pastes). **Retry upload**
+  a pending reason (a failed verification never pastes). Snapshot reads are
+  suppressed while the native request still awaits its verdict, so only a
+  post-acceptance snapshot can settle the outcome. **Retry upload**
   is a separate explicit action for `pending`/`failed`, and for `uploaded`
   after verified removal. An `inserted` op keeps the neutral review-before-
   send guidance — meeterm can't see what the CLI does with the path, so
