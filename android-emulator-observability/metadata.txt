@@ -1,7 +1,14 @@
-api=36
-abi=x86_64
-device=sdk_gphone64_x86_64
-launcher_stabilizer=forced_stop_before_launch
-launcher_anr_recovery=not_observed
-app_pid_identity=captured
-smoke_exit=0
+commit=18141417916d54d2139cd1a82d73b419fc12a8c8
+branch=issue-28-image-attachments
+suite=android-focused-issue28-fp25-fp26
+result=passed
+fresh_build=yes
+unit_tests=66/66
+attachment_routes=11/11
+emulator=meeterm_api36 api=36 x86_64 headless
+node=v24.19.0
+rustc=1.96.0
+gradle=9.3.1
+ndk=27.1.12297006
+fixture=fixture.py --sftp --sftp-delay 12 (port 45821)
+date=2026-09-26

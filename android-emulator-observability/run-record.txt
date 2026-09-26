@@ -1,91 +1,78 @@
-meeterm Issue #28 final validation suite
-========================================
-commit=8fb2a584a84c51c8fc587d51f1e681023d15a020
-branch=issue-28-image-attachments (PR #43 head, fixes through FP-024)
-suite=android-full + issue28-acceptance
+meeterm Issue #28 focused re-check — FP-025 (retry->cancel)
+===========================================================
+commit=18141417916d54d2139cd1a82d73b419fc12a8c8
+branch=issue-28-image-attachments (PR #43 head; FP-025 + FP-026 integrated)
+suite=android-focused (NOT the full/standard/ssh suites)
 result=passed
 fresh_build=yes
 date=2026-09-26 (UTC)
 
-Section A — existing full suite
--------------------------------
-checkout: git fetch origin && git reset --hard 8fb2a584 (HEAD verified)
-npm ci: pass
-CNG: pass (rm -rf android/; NODE_ENV=production EXPO_PUBLIC_MEETERM_SMOKE=1 npx expo prebuild --platform android --non-interactive --no-install --clean)
-assembleRelease: pass (~2m31s; Rust core compiled arm64-v8a + x86_64)
-Kotlin unit tests: :meeterm-terminal:testReleaseUnitTest 66/66 pass
-  (includes AttachmentLimitsTest / AttachmentOperationTest; begin(composing=true)->held covered)
-emulator: sdk_gphone64_x86_64 api=36 abi=x86_64, meeterm_api36 headless
-install/launch/nativeReady/first-frame: pass (terminal.png, logcat.txt sanitized)
-screen fixtures: 31/32 captured (manifest=32 on this branch);
-  empty=unavailable:missing_screen_element_* is a pre-existing baseline
-attachment fixture routes (manual deep-links, presentation captures only):
-  11/11 captured — attachment-choose, -ready, -uploading, -pending, -uploaded,
-  -inserted, -failed, -cancelled, -deleted, -error, -blocked
-SSH fixture suite: pass (~35min) — see ssh-validation.txt completed= chain
-transport loss: pass — deterministic sshd stop/start; retained read-only
-  surface; same pane + same native handle; pre/post markers exactly once;
-  no input during loss; other panes clean (transport-loss-validation.txt)
+Scope
+-----
+1. npm ci: pass
+2. CNG fresh: pass — rm -rf android/ && NODE_ENV=production
+   EXPO_PUBLIC_MEETERM_SMOKE=1 npx expo prebuild --platform android
+   --non-interactive --no-install --clean
+3. Gradle release build: pass — :app:assembleRelease (~2m21s, 668 tasks;
+   Rust core arm64-v8a + x86_64, -PmeetermRustProfile=release)
+4. Kotlin unit tests: :meeterm-terminal:testReleaseUnitTest 66/66 pass, 0
+   failures (AttachmentLimitsTest + AttachmentOperationTest included)
+5. Emulator/install/launch: pass — AVD meeterm_api36 headless
+   (sdk_gphone64_x86_64, api=36, x86_64); install -r OK; smoke gates
+   nativeReady + first frame + process alive all pass
+   (terminal.png, logcat.txt sanitized)
+6. Attachment fixture routes: 11/11 captured via
+   meeterm://smoke?screen=attachment-* (force-stop -> am start -> bounded
+   uiautomator wait -> screencap). Seeded presentation captures only —
+   they do not prove picker/normalize/upload behavior:
+     attachment-choose.png      attachment-ready.png
+     attachment-uploading.png   attachment-pending.png
+     attachment-uploaded.png    attachment-inserted.png
+     attachment-failed.png      attachment-cancelled.png
+     attachment-deleted.png     attachment-error.png
+     attachment-blocked.png
+7. Live E2E (fixture sshd --sftp --sftp-delay 12 on port 45821, real tmux
+   session "meeterm", workspace sh / terminal devin-box):
+   connect (key auth + host key already trusted) -> runtime picker ->
+   tmux runtime meeterm -> workspace sh -> terminal Ready ->
+   Attach image -> Choose from files (SAF/DocumentsUI) -> fp25_e2e.png
+   (synthetic 320x200 PNG) -> normalized preview 320x200 PNG 1KB
+   (f25-e2e-normalized.png) -> Upload -> Uploading
+   (f25-e2e-uploading.png) -> Uploaded (f25-e2e-uploaded.png; remote file
+   verified present on fixture host under
+   ~/.local/share/meeterm/attachments/meeterm-20260926-*-*.png) ->
+   sheet closed, toolbar visible (f25-e2e-sheet-closed-toolbar.png) ->
+   toolbar Insert attachment -> Inserting… (f25-e2e-inserting.png) ->
+   Inserted (f25-e2e-inserted.png) -> input line holds '<absolute path>'
+   UNSENT (f25-e2e-input-quoted-path.png; confirmed via
+   tmux capture-pane — no Enter, no command executed) ->
+   Delete from server -> remote file gone (f25-e2e-deleted.png;
+   attachment dir absent on fixture host afterwards).
+   SAF picker capture: f25-saf-picker.png.
+   Incidental: an earlier stray-tap typed into the Remote directory field
+   and the destination_changed guard correctly refused the retarget —
+   captured as f25-rc-destination-guard.png (expected product behavior).
+8. FP-025 retry->cancel (drivable via fixture --sftp-delay 12; the app's
+   SFTP_LAUNCH_TIMEOUT is 15s so each SFTP subsystem request exposes a
+   ~12s in-flight window):
+   Upload -> killed the sftp-delay.sh wrapper + its `sleep 12` child
+   mid-window -> channel EOF -> op lands PENDING
+   ("Upload waiting — the connection was replaced; retry on the current
+   one") with Retry upload + Cancel upload (f25-rc-failed.png) ->
+   Retry upload tapped -> retry accepted; at ~+2s the sheet shows the
+   Uploading phase WITH "Cancel upload" tappable
+   (f25-rc-retry-running.png) -> Cancel tapped at ~+4.2s -> terminal
+   state "Upload cancelled — The transfer was stopped; nothing was
+   inserted into the terminal." with Upload again / Delete from server /
+   Discard (f25-rc-cancelled.png). Fixture host shows no remote file
+   (attachment dir absent) — the cancel prevented any upload.
+   Verified once, live, no faked captures.
+9. Evidence: pushed to evidence/android-20260926 (orphan finalize flow).
+   Sanitized: no APK, no credentials/keys, synthetic images only.
 
-Section B — Issue #28 acceptance additions (fixture sshd + real tmux)
--------------------------------------------------------------------
-fixture: 127.0.0.1:44719 fx1 with --sftp enabled; tmux session 'meeterm' pane %0;
-  synthetic images only (generated via PIL+piexif in /home/ubuntu)
-
-B.1 real pickers -> normalized preview:
-  Photo Picker (PickVisualMedia): exif_gps.jpg pushed to shared storage +
-    media scan -> picked -> normalized preview. shots: i28-saf-picker.png is
-    the SAF picker; i28-picker-photos-normalized.png = Photo Picker normalized preview.
-  SAF (Files/DocumentsUI): exif_orient6.jpg picked -> normalized preview
-    i28-exif-orient6-preview.png.
-  NOTE: smoke fixture routes short-circuit pickAttachment (smokeFixtureActive),
-    so both pickers were driven through a live fixture session.
-
-B.2 EXIF/GPS strip (AC07):
-  exif_orient6.jpg src 240x120 EXIF Orientation=6 red bar on left edge.
-    staged normalized file pulled via adb (adb root): staged_orient6.jpg
-    120x240, red bar moved left-edge -> top-edge, all EXIF IFDs empty.
-  exif_gps.jpg src 160x160 with GPS IFD (35d40'N 139d45'E alt40) + Orientation=1.
-    pulled: staged_gps_check.jpg 160x160, all EXIF/GPS IFDs empty.
-  both verified byte-level with piexif.
-
-B.3 live SSH E2E (AC10/AC13/AC21/AC30):
-  upload attempt before --sftp respawn captured as bonus failed-state evidence:
-    i28-e2e-upload-attempt.png, i28-e2e-upload-failed-nosftp.png
-    ("remote SSH server did not accept the SFTP subsystem" — expected on a
-    non-SFTP fixture).
-  With SFTP: Attach -> Upload progress (i28-e2e-uploading.png) -> Uploaded
-    (i28-e2e-uploaded.png); remote file appeared on fixture host at
-    ~/.local/share/meeterm/attachments/meeterm-20260926-192049-66b4a8e2d9d6be5f.jpg (1681 B).
-  Sheet closed -> toolbar Insert attachment (i28-e2e-sheet-closed-toolbar.png)
-    -> Inserting (i28-e2e-inserting.png) -> Inserted (i28-e2e-inserted.png).
-  Terminal input line contained '<absolute path>' UNSENT
-    (i28-e2e-input-quoted-path.png; tmux capture-pane confirmed prompt state,
-    no command executed).
-  Delete from server -> remote file gone on fixture host
-    (i28-e2e-deleted.png; remote dir listing verified empty/absent).
-
-B.4 IME protection (AC22) — verified live, not best-effort-blocked:
-  emulator ships LatinIME + voice IME only; LatinIME/Gboard commit each key
-  without a composing span on this field, so a minimal composing IME
-  (dev.miniime, hand-built InputMethodService exposing COMPOSE/FINISH that
-  drive InputConnection.setComposingText("かきく")/finishComposingText())
-  was installed to produce a real composition.
-  While composition was active, Attach image -> held notice
-  "Finish IME composition before attaching." (i28-ime-held.png), sheet did
-  not open, composition preserved: FINISH committed かきく intact into the
-  terminal input (i28-ime-composing.png, i28-ime-committed.png; tmux
-  capture-pane confirms provisional text never hit the remote before commit).
-  dev.miniime test IME was then deselected (LatinIME restored); its APK is a
-  test harness and is excluded from this bundle.
-  Unit coverage also present: AttachmentLimitsTest exercises
-  begin(composing=true) -> held.
-
-Section C — notes
+Environment notes
 -----------------
-- sanitized: no APK (app-release.apk removed), no keys/credentials, synthetic
-  images only; pulled files are app-generated normalized JPEGs.
-- attach_picker.py 'not connected' asserts observed twice were a pure timing
-  race (connection completes a beat after the 8s check); continued manually.
-- node v24.19.0 vs blueprint pin 22.22.2 — standing deviation (unchanged).
-- emulator + fixture fx1 left running.
+node v24.19.0 (blueprint pins 22.22.2 — standing deviation, reported);
+gradle 9.3.1; NDK 27.1.12297006; rustc 1.96.0; JAVA_HOME temurin-17.
+fixture: scripts/ssh/fixture.py --env-file /home/ubuntu/fx1.env --sftp
+--sftp-delay 12 (port 45821, alt 35771); ADB emulator-5554 adb root OK.
