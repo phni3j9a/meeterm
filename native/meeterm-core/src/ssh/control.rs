@@ -826,9 +826,9 @@ pub(super) async fn run(
                             shared, session, attachment_id, attempt, SftpJob::Remove,
                         )));
                     }
-                    Some(ControlCommand::SftpVerify { attachment_id, attempt }) => {
+                    Some(ControlCommand::SftpInsert { attachment_id, attempt }) => {
                         sftp_jobs.push_back(Box::pin(launch_sftp_job(
-                            shared, session, attachment_id, attempt, SftpJob::Verify,
+                            shared, session, attachment_id, attempt, SftpJob::Insert,
                         )));
                     }
                     Some(ControlCommand::RefreshRuntimes

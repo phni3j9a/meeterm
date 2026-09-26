@@ -31,6 +31,7 @@ use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags, StatusCode};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::registry;
+use crate::tmux::SessionIdentity;
 use crate::workspace::Backend;
 
 /// Public snapshot capacities shared with the fixed C ABI record.
@@ -47,6 +48,10 @@ pub const ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED: u32 = 0x1;
 /// `attachment_delete_remote`. Composes with the phase: `inserted` is not
 /// revoked, while `uploaded`+removed means the path is gone.
 pub const ATTACHMENT_FLAG_REMOTE_REMOVED: u32 = 0x2;
+/// One attachment job (upload / verified-insert / remote-delete) is
+/// in flight: the snapshot's phase and reasons are pre-job state until the
+/// flag clears. Pollers must keep waiting while this is set.
+pub const ATTACHMENT_FLAG_JOB_IN_FLIGHT: u32 = 0x4;
 
 /// Default remote base resolved against the SFTP start directory
 /// (`realpath(".")`), never a client-side `~` assumption.
@@ -277,6 +282,10 @@ pub(crate) struct DestinationFence {
     /// Herdr's stable remote `terminal_id`; `None` for the tmux backend,
     /// whose `%N` pane identity is already stable for the connection life.
     pub(crate) herdr_terminal_id: Option<String>,
+    /// The selected tmux session's exact identity (session id + server
+    /// pid/start-time) at fence capture; `None` for Herdr. A replaced tmux
+    /// server reusing the session name is not the recorded destination.
+    pub(crate) tmux_identity: Option<SessionIdentity>,
     /// Endpoint the upload targeted; same-target reuse requires equality.
     pub(crate) endpoint: AttachmentEndpoint,
 }
@@ -304,6 +313,10 @@ pub(crate) struct AttachmentIntent {
     /// is already the stable identity. Herdr aliases change on workspace
     /// moves, so resolution keys on this value when present.
     pub(crate) herdr_terminal_id: Option<String>,
+    /// The selected tmux session's exact identity (session id + server
+    /// pid/start-time) at intent capture; `None` for Herdr. A restarted
+    /// tmux server is a different runtime even when it reuses the name.
+    pub(crate) tmux_identity: Option<SessionIdentity>,
 }
 
 #[derive(Clone)]
@@ -328,7 +341,7 @@ pub(crate) struct AttachmentOperation {
     intent: AttachmentIntent,
     fence: DestinationFence,
     /// Monotonically increasing per-op attempt identity. Every actor-side
-    /// job (upload/remove/verify) carries the attempt it was launched for;
+    /// job (upload/insert/remove) carries the attempt it was launched for;
     /// outcomes and progress from an earlier attempt are discarded so a
     /// stale detached task can never mutate a retried operation.
     attempt: u64,
@@ -351,14 +364,13 @@ pub(crate) struct AttachmentOperation {
     insert_enqueued: bool,
     /// The uploaded remote file was explicitly deleted.
     removed: bool,
-    /// Attempt id of the `SftpRemove` request owning this op right now;
-    /// `Some` guards against duplicate remove enqueues, and the recorded
-    /// attempt identifies which job's completion may land.
-    remove_in_flight: Option<u64>,
-    /// Attempt id of the `SftpVerify` re-verification request owning this
-    /// op (`Uploaded` retry re-verifies the remote file instead of
-    /// re-uploading). `Some` while the job is queued/running.
-    verify_in_flight: Option<u64>,
+    /// Attempt id of the single job owning this op right now — at most one
+    /// upload / verified-insert / remote-delete job runs at a time and a
+    /// new job request while `Some` is rejected with `Busy`. The marker is
+    /// cleared only when that attempt's outcome/expiry lands, so a stale
+    /// detached task can never overwrite a newer job's result. The
+    /// snapshot exposes this as `ATTACHMENT_FLAG_JOB_IN_FLIGHT`.
+    job_in_flight: Option<u64>,
 }
 
 impl AttachmentOperation {
@@ -450,13 +462,19 @@ fn lock_operation(
 
 /// Test-only: stand in for the detached transfer's `Uploaded` outcome so
 /// fence/intent tests can exercise the post-upload paths without SFTP.
+/// `remote_dir` is the canonical base the real upload would have recorded;
+/// the generated remote name is appended so insert/delete verification
+/// walks the same name+base checks as a real uploaded file.
 #[cfg(test)]
-pub(crate) fn test_mark_uploaded(id: u64, remote_path: &str) {
+pub(crate) fn test_mark_uploaded(id: u64, remote_dir: &str) {
     if let Some(op) = operation(id)
         && let Ok(mut op) = op.lock()
     {
+        let base = remote_dir.trim_end_matches('/');
         op.phase = AttachmentPhase::Uploaded;
-        op.remote_path = Some(remote_path.to_owned());
+        op.remote_path = Some(format!("{base}/{}", op.spec.remote_name));
+        op.remote_base = Some(base.to_owned());
+        op.job_in_flight = None;
     }
 }
 
@@ -519,224 +537,151 @@ fn intent(intent_id: u64) -> Result<AttachmentIntent, AttachmentError> {
         .ok_or(AttachmentError::UnknownIntent)
 }
 
-/// Mark one in-flight op pending after its actor-side request was dropped
+/// The command loop dropped an attachment job request before executing it
 /// (stale epoch, not-ready gate, a dead command channel, or a queued
-/// launch the actor never reached). The attempt must still be current —
-/// a stale-attempt request that never ran must not disturb the retried op.
-/// A cancelled op keeps its cancelled outcome.
-pub(crate) fn mark_pending(id: u64, attempt: u64, block: AttachmentBlock) {
+/// launch the actor never reached). The marker clears so the op is never
+/// stuck "in flight" for a job that never ran; an `Uploading` op also
+/// drops to `Pending` since its upload never started. Only the recorded
+/// attempt may release the marker — a stale-attempt request that never ran
+/// must not disturb a newer job.
+pub(crate) fn mark_job_expired(id: u64, attempt: u64, block: AttachmentBlock) {
     if let Some(op) = operation(id)
         && let Ok(mut op) = op.lock()
-        && op.attempt == attempt
+        && op.job_in_flight == Some(attempt)
     {
-        op.pend(block);
+        op.job_in_flight = None;
+        if op.phase == AttachmentPhase::Uploading {
+            op.pend(block);
+        } else {
+            op.note_block(block);
+        }
     }
 }
 
-/// The command loop dropped a `SftpRemove` request before executing it.
-/// The op keeps its phase; the in-flight marker clears so an explicit
-/// remove retry can enqueue again. Only the owning attempt is released.
-pub(crate) fn mark_remove_expired(id: u64, attempt: u64, block: AttachmentBlock) {
-    if let Some(op) = operation(id)
-        && let Ok(mut op) = op.lock()
-        && op.remove_in_flight == Some(attempt)
-    {
-        op.remove_in_flight = None;
-        op.note_block(block);
-    }
-}
-
-/// The command loop dropped a `SftpVerify` request before executing it.
-/// The op keeps its `Uploaded` phase; the marker clears so another
-/// explicit re-verification can enqueue.
-pub(crate) fn mark_verify_expired(id: u64, attempt: u64, block: AttachmentBlock) {
-    if let Some(op) = operation(id)
-        && let Ok(mut op) = op.lock()
-        && op.verify_in_flight == Some(attempt)
-    {
-        op.verify_in_flight = None;
-        op.note_block(block);
-    }
-}
-
-/// Actor gate for `ControlCommand::SftpUpload`: the request must be the
-/// current attempt for this owner and this connection generation, and the
-/// op must still be awaiting launch. A request from a superseded attempt
-/// is dropped silently — the newer attempt owns the op's state.
-pub(crate) fn gate_launch(
+/// Actor gate for an attachment SFTP command: the queued request must
+/// still be the op's current in-flight job — the recorded attempt for this
+/// owner on this connection generation — and must satisfy the job kind's
+/// phase requirement. A superseded request is dropped silently (the newer
+/// job owns the op's state); a request that can never run releases the
+/// marker so the op does not stay busy forever.
+pub(crate) fn gate_job(
     op: &Arc<Mutex<AttachmentOperation>>,
     owner: u64,
     generation: u64,
     attempt: u64,
+    job: JobKind,
 ) -> bool {
     let Ok(mut op) = op.lock() else {
         return false;
     };
-    if op.attempt != attempt {
+    if op.job_in_flight != Some(attempt) {
         return false;
     }
     if op.cancel_requested {
-        op.phase = AttachmentPhase::Cancelled;
-        return false;
-    }
-    if op.phase != AttachmentPhase::Uploading {
-        return false;
-    }
-    if op.intent.owner_terminal != owner || op.fence.generation != generation {
-        op.phase = AttachmentPhase::Pending;
-        op.note_block(AttachmentBlock::StaleOperation);
-        return false;
-    }
-    true
-}
-
-/// Actor gate for `ControlCommand::SftpRemove`: the request must still be
-/// the in-flight remove for this attempt on this owner/generation.
-/// A stale request clears its in-flight marker instead of running.
-pub(crate) fn gate_remove(
-    op: &Arc<Mutex<AttachmentOperation>>,
-    owner: u64,
-    generation: u64,
-    attempt: u64,
-) -> bool {
-    let Ok(mut op) = op.lock() else {
-        return false;
-    };
-    if op.remove_in_flight != Some(attempt) {
-        return false;
+        // Cancellation is the one path that supersedes an in-flight job;
+        // the queued request must not run a remote mutation for a dead op.
+        // Remote deletes stay allowed — they clean up what upload created.
+        if job != JobKind::Remove {
+            op.job_in_flight = None;
+            if !matches!(
+                op.phase,
+                AttachmentPhase::Inserted | AttachmentPhase::Failed | AttachmentPhase::Cancelled
+            ) {
+                op.phase = AttachmentPhase::Cancelled;
+            }
+            return false;
+        }
     }
     if op.intent.owner_terminal != owner || op.fence.generation != generation {
-        op.remove_in_flight = None;
-        op.note_block(AttachmentBlock::StaleOperation);
+        op.job_in_flight = None;
+        if op.phase == AttachmentPhase::Uploading {
+            op.pend(AttachmentBlock::StaleOperation);
+        } else {
+            op.note_block(AttachmentBlock::StaleOperation);
+        }
         return false;
     }
-    true
-}
-
-/// Actor gate for `ControlCommand::SftpVerify`: the request must still be
-/// the in-flight re-verification for this attempt on this owner and this
-/// connection generation.
-pub(crate) fn gate_verify(
-    op: &Arc<Mutex<AttachmentOperation>>,
-    owner: u64,
-    generation: u64,
-    attempt: u64,
-) -> bool {
-    let Ok(mut op) = op.lock() else {
-        return false;
+    let armed = match job {
+        JobKind::Upload => op.phase == AttachmentPhase::Uploading,
+        JobKind::Insert => {
+            op.phase == AttachmentPhase::Uploaded && op.remote_path.is_some() && !op.removed
+        }
+        // Delete stays legal on terminal phases (cleaning the remote file
+        // after a failed/cancelled op is exactly its purpose).
+        JobKind::Remove => !matches!(
+            op.phase,
+            AttachmentPhase::Pending | AttachmentPhase::Uploading
+        ),
     };
-    if op.verify_in_flight != Some(attempt) {
-        return false;
-    }
-    if op.phase != AttachmentPhase::Uploaded
-        || op.intent.owner_terminal != owner
-        || op.fence.generation != generation
-    {
-        op.verify_in_flight = None;
-        op.note_block(AttachmentBlock::StaleOperation);
+    if !armed {
+        // The phase moved after the request was queued; drop the request
+        // and release the marker rather than leaving the op stuck busy.
+        op.job_in_flight = None;
+        op.note_block(AttachmentBlock::Internal);
         return false;
     }
     true
 }
 
-/// The actor aborted while preparing this op's SFTP channel. Applies only
-/// to the attempt it was launched for; the op may still be retried on a
-/// later connection attempt.
-pub(crate) fn launch_pending(
+/// A job stalled before its SFTP session existed (channel/subsystem
+/// setup): the marker releases and the op reports the blockage. Uploads
+/// drop to `Pending`; insert/remove keep their phase with the reason
+/// visible so the same explicit action can be retried.
+pub(crate) fn job_stalled(
     op: &Arc<Mutex<AttachmentOperation>>,
     attempt: u64,
     block: AttachmentBlock,
 ) {
     if let Ok(mut op) = op.lock()
-        && op.attempt == attempt
+        && op.job_in_flight == Some(attempt)
     {
-        op.pend(block);
+        op.job_in_flight = None;
+        if op.phase == AttachmentPhase::Uploading {
+            op.pend(block);
+        } else {
+            op.note_block(block);
+        }
     }
 }
 
-/// The actor-side channel/subsystem setup failed hard (SFTP unavailable).
-pub(crate) fn launch_failed(
+/// The SFTP subsystem was rejected outright for a job before it ran.
+/// Uploads fail terminally; insert drops to `Pending` (the remote file was
+/// never verified — `sftp_*` is a pending reason); remove keeps its phase
+/// with the error visible for an explicit delete retry.
+pub(crate) fn job_failed(
     op: &Arc<Mutex<AttachmentOperation>>,
     attempt: u64,
+    job: JobKind,
     code: &'static str,
     message: impl Into<String>,
 ) {
     if let Ok(mut op) = op.lock()
-        && op.attempt == attempt
+        && op.job_in_flight == Some(attempt)
     {
-        op.fail(code, message);
-    }
-}
-
-/// A remote-delete job stalled before its SFTP session existed. The file
-/// state is unchanged; the in-flight marker clears so an explicit retry
-/// can enqueue, and the reason stays visible without touching the phase.
-pub(crate) fn remove_stalled(
-    op: &Arc<Mutex<AttachmentOperation>>,
-    attempt: u64,
-    block: AttachmentBlock,
-) {
-    if let Ok(mut op) = op.lock()
-        && op.remove_in_flight == Some(attempt)
-    {
-        op.remove_in_flight = None;
-        op.note_block(block);
-    }
-}
-
-/// The SFTP subsystem was rejected outright for a remote-delete job.
-pub(crate) fn remove_failed(
-    op: &Arc<Mutex<AttachmentOperation>>,
-    attempt: u64,
-    code: &'static str,
-    message: impl Into<String>,
-) {
-    if let Ok(mut op) = op.lock()
-        && op.remove_in_flight == Some(attempt)
-    {
-        op.remove_in_flight = None;
-        op.error_code = Some(code);
-        op.error_message = Some(message.into());
-    }
-}
-
-/// A re-verification job stalled before its SFTP session existed. The op
-/// keeps its uploaded state; the marker clears for a later explicit retry.
-pub(crate) fn verify_stalled(
-    op: &Arc<Mutex<AttachmentOperation>>,
-    attempt: u64,
-    block: AttachmentBlock,
-) {
-    if let Ok(mut op) = op.lock()
-        && op.verify_in_flight == Some(attempt)
-    {
-        op.verify_in_flight = None;
-        op.note_block(block);
-    }
-}
-
-/// The SFTP subsystem was rejected outright for a re-verification job.
-pub(crate) fn verify_failed(
-    op: &Arc<Mutex<AttachmentOperation>>,
-    attempt: u64,
-    code: &'static str,
-    message: impl Into<String>,
-) {
-    if let Ok(mut op) = op.lock()
-        && op.verify_in_flight == Some(attempt)
-    {
-        op.verify_in_flight = None;
-        op.error_code = Some(code);
-        op.error_message = Some(message.into());
+        op.job_in_flight = None;
+        match job {
+            JobKind::Upload => op.fail(code, message),
+            JobKind::Insert => {
+                if op.phase == AttachmentPhase::Uploaded {
+                    op.phase = AttachmentPhase::Pending;
+                }
+                op.error_code = Some(code);
+                op.error_message = Some(message.into());
+            }
+            JobKind::Remove => {
+                op.error_code = Some(code);
+                op.error_message = Some(message.into());
+            }
+        }
     }
 }
 
 /// The connection actor for `generation` ended (flow failure or shutdown)
-/// and silently discarded any queued upload request. Mark surviving
-/// still-`Uploading` ops for that generation pending so they are retryable
-/// on the next actor instead of displaying a dead progress state. The
-/// attempt counter also bumps so a detached task completing after the
-/// actor died can never mutate the op's visible state.
+/// and silently discarded any queued request. Surviving ops for that
+/// generation release their in-flight marker — the detached job's late
+/// outcome is discarded on the attempt check — and mark `stale_connection`
+/// so they are retryable on the next actor instead of displaying a dead
+/// progress state. The attempt counter also bumps as a second guard.
 pub(crate) fn generation_finished(owner: u64, generation: u64) {
     let Ok(operations) = operations().lock() else {
         return;
@@ -749,14 +694,12 @@ pub(crate) fn generation_finished(owner: u64, generation: u64) {
             // A detached task from this attempt is now orphaned; make sure
             // its eventual outcome is discarded even if the op is retried.
             op.attempt += 1;
-            if op.remove_in_flight.is_some() {
-                op.remove_in_flight = None;
-                op.note_block(AttachmentBlock::StaleConnection);
-            } else if op.verify_in_flight.is_some() {
-                op.verify_in_flight = None;
-                op.note_block(AttachmentBlock::StaleConnection);
-            } else {
-                op.pend(AttachmentBlock::StaleConnection);
+            if op.job_in_flight.take().is_some() || op.phase == AttachmentPhase::Uploading {
+                if op.phase == AttachmentPhase::Uploading {
+                    op.pend(AttachmentBlock::StaleConnection);
+                } else {
+                    op.note_block(AttachmentBlock::StaleConnection);
+                }
             }
         }
     }
@@ -1198,8 +1141,7 @@ pub fn attachment_begin(
         cancel_requested: false,
         insert_enqueued: false,
         removed: false,
-        remove_in_flight: None,
-        verify_in_flight: None,
+        job_in_flight: Some(1),
     }));
     {
         let mut operations = operations().lock().map_err(|_| AttachmentError::Internal)?;
@@ -1212,35 +1154,29 @@ pub fn attachment_begin(
         attachment_id: id,
         attempt: 1,
     }) {
-        mark_pending(id, 1, block);
+        mark_job_expired(id, 1, block);
     }
     Ok(id)
 }
 
-/// Explicit transfer retry / re-validation against the recorded intent.
+/// Explicit transfer retry against the recorded intent: re-upload for
+/// `Pending`/`Failed` ops and for `Uploaded` ops whose remote file was
+/// removed. There is no re-verification path — an `Uploaded` op is already
+/// trusted; re-checking it before paste is the Insert job's work.
 /// `target_terminal_id` must be the pane terminal the intent captured —
 /// the call never retargets. The intent's stable identity is resolved
 /// against the *current* connection state and a fresh execution fence is
 /// captured, so a connection recovery (new generation/epoch, same stable
 /// destination) becomes usable again without a new intent.
 ///
-/// An `Uploaded` op whose remote file exists is *not* silently accepted:
-/// it is re-verified by a `SftpVerify` job (`lstat` + size + mode) before
-/// it can be trusted again, while keeping `Uploaded` so the user can
-/// insert. If the file is gone or replaced the op drops to `Pending` with
-/// `remote_missing` and a later retry uploads it again. A `Pending`,
-/// `Failed`, or explicitly-removed `Uploaded` op re-runs the full upload
-/// path; the transfer task's same-endpoint reuse check still skips
-/// re-sending a verified remote file.
+/// The transfer task's same-endpoint reuse check still skips re-sending a
+/// verified remote file. While any job (upload/insert/remove) is in flight
+/// the request is rejected `Busy` — the previous job is never superseded.
 pub fn attachment_retry_upload(
     target_terminal_id: u64,
     attachment_id: u64,
 ) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
-    enum Next {
-        Upload,
-        Verify,
-    }
     let (owner, intent) = {
         let mut op = lock_operation(&op)?;
         if op.intent.target_terminal != target_terminal_id {
@@ -1249,27 +1185,19 @@ pub fn attachment_retry_upload(
         if op.cancel_requested {
             return Err(AttachmentError::InvalidState);
         }
-        if op.remove_in_flight.is_some() {
+        if op.job_in_flight.is_some() {
             return Err(AttachmentError::Busy);
         }
         match op.phase {
-            AttachmentPhase::Uploaded
-                if op.remote_path.is_some() && !op.removed && op.verify_in_flight.is_none() =>
-            {
-                Next::Verify
-            }
-            AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => {
-                // A verify for this attempt is already queued/running;
-                // treat the repeat call as accepted work already done.
-                return Ok(());
-            }
-            AttachmentPhase::Uploaded | AttachmentPhase::Pending | AttachmentPhase::Failed => {
-                Next::Upload
-            }
-            AttachmentPhase::Uploading | AttachmentPhase::Inserted | AttachmentPhase::Cancelled => {
+            AttachmentPhase::Pending | AttachmentPhase::Failed => {}
+            AttachmentPhase::Uploaded if op.removed || op.remote_path.is_none() => {}
+            AttachmentPhase::Uploading
+            | AttachmentPhase::Uploaded
+            | AttachmentPhase::Inserted
+            | AttachmentPhase::Cancelled => {
                 return Err(AttachmentError::InvalidState);
             }
-        };
+        }
         (op.intent.owner_terminal, op.intent.clone())
     };
     let shared = crate::ssh::current_connection(owner).map_err(|_| {
@@ -1289,93 +1217,78 @@ pub fn attachment_retry_upload(
             return Err(block_as_error(block));
         }
     };
-    let (attachment_attempt, command) = {
+    let attempt = {
         let mut op = lock_operation(&op)?;
         if op.cancel_requested {
             return Err(AttachmentError::InvalidState);
         }
-        if op.remove_in_flight.is_some() {
+        if op.job_in_flight.is_some() {
             return Err(AttachmentError::Busy);
         }
-        let next = match op.phase {
-            AttachmentPhase::Uploaded
-                if op.remote_path.is_some() && !op.removed && op.verify_in_flight.is_none() =>
-            {
-                Next::Verify
-            }
-            AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => return Ok(()),
-            AttachmentPhase::Uploaded | AttachmentPhase::Pending | AttachmentPhase::Failed => {
-                Next::Upload
-            }
+        match op.phase {
+            AttachmentPhase::Pending | AttachmentPhase::Failed => {}
+            AttachmentPhase::Uploaded if op.removed || op.remote_path.is_none() => {}
             _ => return Err(AttachmentError::InvalidState),
-        };
+        }
         op.attempt += 1;
         let attempt = op.attempt;
         op.fence = fence;
+        // A fresh job supersedes whatever the previous outcome left behind.
         op.clear_status();
-        match next {
-            Next::Verify => {
-                op.verify_in_flight = Some(attempt);
-                (
-                    attempt,
-                    crate::ssh::ControlCommand::SftpVerify {
-                        attachment_id,
-                        attempt,
-                    },
-                )
-            }
-            Next::Upload => {
-                op.phase = AttachmentPhase::Uploading;
-                op.bytes_uploaded = 0;
-                op.remote_path = None;
-                op.removed = false;
-                op.cancel_requested = false;
-                (
-                    attempt,
-                    crate::ssh::ControlCommand::SftpUpload {
-                        attachment_id,
-                        attempt,
-                    },
-                )
-            }
-        }
+        op.job_in_flight = Some(attempt);
+        op.phase = AttachmentPhase::Uploading;
+        op.bytes_uploaded = 0;
+        op.remote_path = None;
+        op.removed = false;
+        op.cancel_requested = false;
+        attempt
     };
-    if let Err(block) = shared.attachment_enqueue_command(command) {
-        mark_pending(attachment_id, attachment_attempt, block);
-        if let Ok(mut op) = op.lock()
-            && op.attempt == attachment_attempt
-        {
-            op.verify_in_flight = None;
-        }
+    if let Err(block) = shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpUpload {
+        attachment_id,
+        attempt,
+    }) {
+        mark_job_expired(attachment_id, attempt, block);
+        return Err(block_as_error(block));
     }
     Ok(())
 }
 
-/// Explicit insert of an uploaded file: exactly one quoted remote path
-/// line into the still-current fenced pane through `paste_utf8_at_epoch`.
-/// Enter is never sent. A destination switch/replacement/disappearance,
-/// transport/controller generation mismatch, or Herdr read-only state
-/// records a pending reason and leaves the operation `Uploaded`.
+/// Explicit insert of an uploaded file as a single verified job: the
+/// intent is re-resolved against the current connection (fresh fence), an
+/// `SftpInsert` job is queued, and only after the job re-verifies the
+/// recorded remote file over SFTP — regular file, exact size, `0600`,
+/// generated name under the recorded base — does it re-check the fence
+/// under the session lock and paste exactly one quoted path line through
+/// `paste_utf8_at_epoch`. Enter is never sent and the paste can never run
+/// before the remote check succeeds.
+///
+/// `Ok(())` means the job was *accepted*, not that the line was inserted:
+/// the outcome is the snapshot — `Inserted`, or `Pending` with a
+/// verification reason (`remote_missing`, `remote_unsafe_path`, `sftp_*`,
+/// `timeout`, …), or `Uploaded` with a paste-gate reason. A call while any
+/// job is in flight is `Busy`; `Inserted` and removed/`Pending` ops are
+/// `InvalidState`.
 pub fn attachment_insert(
     target_terminal_id: u64,
     attachment_id: u64,
 ) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
-    let (owner, fence, remote_path) = {
+    let (owner, intent) = {
         let mut op = lock_operation(&op)?;
         if op.intent.target_terminal != target_terminal_id {
             return Err(reject_foreign_target(&mut op, target_terminal_id));
         }
+        if op.cancel_requested {
+            return Err(AttachmentError::InvalidState);
+        }
+        if op.job_in_flight.is_some() {
+            return Err(AttachmentError::Busy);
+        }
         match op.phase {
-            // A duplicate tap after a successful insert is a no-op.
-            AttachmentPhase::Inserted => return Ok(()),
-            AttachmentPhase::Uploaded => {}
+            AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => {}
             _ => return Err(AttachmentError::InvalidState),
         }
-        let Some(remote_path) = op.remote_path.clone() else {
-            return Err(AttachmentError::InvalidState);
-        };
-        (op.intent.owner_terminal, op.fence.clone(), remote_path)
+        (op.intent.owner_terminal, op.intent.clone())
     };
     let shared = crate::ssh::current_connection(owner).map_err(|_| {
         if let Ok(mut op) = op.lock()
@@ -1385,30 +1298,55 @@ pub fn attachment_insert(
         }
         AttachmentError::DestinationNotReady
     })?;
-    // The remote path is generated by us but resolved by the server;
-    // `'` / CR / LF / control characters are refused before the line
-    // exists so the paste can never smuggle an Enter.
-    let line = insertion_line(&remote_path).map_err(|_| AttachmentError::InvalidState)?;
-    match shared.attachment_insert_line(&fence, &line) {
-        Ok(_) => {
-            if let Ok(mut op) = op.lock()
-                && op.phase == AttachmentPhase::Uploaded
-            {
-                op.phase = AttachmentPhase::Inserted;
-                op.insert_enqueued = true;
-                op.clear_status();
-            }
-            Ok(())
-        }
+    // Intent re-resolution at call time fails fast when the recorded
+    // destination is gone or replaced; the job re-checks the same fence
+    // under the session lock right before pasting.
+    let fence = match shared.attachment_resolve_intent(&intent) {
+        Ok(fence) => fence,
         Err(block) => {
             if let Ok(mut op) = op.lock()
                 && op.phase == AttachmentPhase::Uploaded
             {
                 op.note_block(block);
             }
-            Err(AttachmentError::DestinationNotReady)
+            return Err(block_as_error(block));
         }
+    };
+    let attempt = {
+        let mut op = lock_operation(&op)?;
+        if op.cancel_requested {
+            return Err(AttachmentError::InvalidState);
+        }
+        if op.job_in_flight.is_some() {
+            return Err(AttachmentError::Busy);
+        }
+        match op.phase {
+            AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => {}
+            _ => return Err(AttachmentError::InvalidState),
+        }
+        op.attempt += 1;
+        let attempt = op.attempt;
+        op.fence = fence;
+        // A fresh job discards the previous outcome's reason/error.
+        op.clear_status();
+        op.job_in_flight = Some(attempt);
+        attempt
+    };
+    if let Err(block) = shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpInsert {
+        attachment_id,
+        attempt,
+    }) {
+        // The job was never accepted: release the marker and surface the
+        // reason — the recorded file stays `Uploaded` for a retry.
+        if let Ok(mut op) = op.lock()
+            && op.job_in_flight == Some(attempt)
+        {
+            op.job_in_flight = None;
+            op.note_block(block);
+        }
+        return Err(block_as_error(block));
     }
+    Ok(())
 }
 
 /// Cancel the operation. An in-flight transfer observes the flag, removes
@@ -1449,19 +1387,23 @@ pub fn attachment_dispose(attachment_id: u64) -> Result<(), AttachmentError> {
 
 /// Explicit remote deletion of the files this operation created — the
 /// published file and any `.meeterm-partial-*` staging remnant, on the
-/// *same* SSH endpoint only. Never deletes anything outside the generated
-/// names. Callable from `Uploaded`, `Inserted`, `Failed`, or `Cancelled`
-/// (a `Pending`/`Uploading` op is still in flight and must be cancelled
-/// first). Duplicate calls are idempotent; success sets
-/// `ATTACHMENT_FLAG_REMOTE_REMOVED` on the snapshot while the phase is
-/// kept (`inserted` cannot be revoked). There is no automatic deletion:
-/// nothing is removed on insert, cancel, dispose, or app exit.
+/// recorded destination only. Like every job it re-resolves the intent and
+/// captures a fresh fence at start, so the delete runs on the same
+/// authenticated endpoint/runtime/pane the upload targeted after any
+/// recovery — a changed or missing destination is refused. Never deletes
+/// anything outside the generated names. Callable from `Uploaded`,
+/// `Inserted`, `Failed`, or `Cancelled` while no job is in flight (a
+/// `Pending`/`Uploading` op is still in flight and must be cancelled
+/// first; a busy op reports `Busy`). Duplicate calls are idempotent;
+/// success sets `ATTACHMENT_FLAG_REMOTE_REMOVED` on the snapshot while the
+/// phase is kept (`inserted` cannot be revoked). There is no automatic
+/// deletion: nothing is removed on insert, cancel, dispose, or app exit.
 pub fn attachment_delete_remote(
     target_terminal_id: u64,
     attachment_id: u64,
 ) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
-    let (owner, endpoint) = {
+    let (owner, intent) = {
         let mut op = lock_operation(&op)?;
         if op.intent.target_terminal != target_terminal_id {
             return Err(reject_foreign_target(&mut op, target_terminal_id));
@@ -1469,7 +1411,7 @@ pub fn attachment_delete_remote(
         if op.removed {
             return Ok(());
         }
-        if op.remove_in_flight.is_some() {
+        if op.job_in_flight.is_some() {
             return Err(AttachmentError::Busy);
         }
         match op.phase {
@@ -1481,7 +1423,7 @@ pub fn attachment_delete_remote(
             | AttachmentPhase::Failed
             | AttachmentPhase::Cancelled => {}
         }
-        (op.intent.owner_terminal, op.fence.endpoint.clone())
+        (op.intent.owner_terminal, op.intent.clone())
     };
     let shared = crate::ssh::current_connection(owner).map_err(|_| {
         if let Ok(mut op) = op.lock() {
@@ -1489,42 +1431,53 @@ pub fn attachment_delete_remote(
         }
         AttachmentError::DestinationNotReady
     })?;
-    // Deletion verifies the endpoint half of the intent only: the pane may
-    // legitimately be gone while the remote file still exists and must be
-    // cleanable. An endpoint/generation switch still refuses — the delete
-    // must run on the same authenticated host that received the upload.
-    if let Err(block) = shared.attachment_recheck_endpoint(&endpoint) {
-        if let Ok(mut op) = op.lock() {
-            op.note_block(block);
+    // The whole recorded destination identity is re-resolved and the fresh
+    // fence — generation and all — is handed to the actor, so a recovered
+    // same-destination connection deletes normally while a genuinely
+    // changed destination is refused.
+    let fence = match shared.attachment_resolve_intent(&intent) {
+        Ok(fence) => fence,
+        Err(block) => {
+            if let Ok(mut op) = op.lock() {
+                op.note_block(block);
+            }
+            return Err(block_as_error(block));
         }
-        return Err(block_as_error(block));
-    }
+    };
     let attempt = {
         let mut op = lock_operation(&op)?;
         if op.removed {
             return Ok(());
         }
-        if op.remove_in_flight.is_some() {
+        if op.job_in_flight.is_some() {
             return Err(AttachmentError::Busy);
         }
+        match op.phase {
+            AttachmentPhase::Pending | AttachmentPhase::Uploading => {
+                return Err(AttachmentError::InvalidState);
+            }
+            _ => {}
+        }
         op.attempt += 1;
-        op.remove_in_flight = Some(op.attempt);
-        op.attempt
+        let attempt = op.attempt;
+        op.fence = fence;
+        // A fresh job discards the previous outcome's reason/error — a
+        // delete retry must not surface an older failure as done.
+        op.clear_status();
+        op.job_in_flight = Some(attempt);
+        attempt
     };
     if let Err(block) = shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpRemove {
         attachment_id,
         attempt,
     }) {
         if let Ok(mut op) = op.lock()
-            && op.remove_in_flight == Some(attempt)
+            && op.job_in_flight == Some(attempt)
         {
-            op.remove_in_flight = None;
+            op.job_in_flight = None;
             op.note_block(block);
         }
-        return Err(match block {
-            AttachmentBlock::Busy => AttachmentError::Busy,
-            _ => AttachmentError::DestinationNotReady,
-        });
+        return Err(block_as_error(block));
     }
     Ok(())
 }
@@ -1541,6 +1494,10 @@ pub fn attachment_snapshot(attachment_id: u64) -> Result<AttachmentSnapshot, Att
         0
     }) | (if op.removed {
         ATTACHMENT_FLAG_REMOTE_REMOVED
+    } else {
+        0
+    }) | (if op.job_in_flight.is_some() {
+        ATTACHMENT_FLAG_JOB_IN_FLIGHT
     } else {
         0
     });
@@ -1582,15 +1539,22 @@ pub const ATTACHMENT_SNAPSHOT_SIZE: usize = size_of::<AttachmentSnapshot>();
 enum TransferOutcome {
     /// Confirmed remote final path.
     Uploaded(String),
+    /// The verified-insert job pasted exactly one line — the remote file
+    /// was re-verified first and the fence re-checked under the lock.
+    Inserted,
     /// The generated remote names were deleted (or verified absent).
     Removed,
-    /// The re-verification found the recorded remote file intact —
-    /// same type, size, and private mode at the recorded path.
-    Verified,
     /// The recorded remote file is gone or no longer matches its
     /// generated identity — insert must not use the stale path.
     RemoteMissing,
-    /// Transient/structural blockage; the op stays retryable.
+    /// The insert job's remote verification could not conclude (timeout,
+    /// broken channel, …): the file state is unknown, so the op drops to
+    /// `Pending` and an explicit re-upload (which still short-circuits on
+    /// a verified same-endpoint file) restores the path.
+    VerifyPending(AttachmentBlock),
+    /// Post-verification paste-gate blockage (input not ready, pane
+    /// switched, stale epoch, …): the file is verified intact, so the op
+    /// stays `Uploaded` with the reason for a direct insert retry.
     Pending(AttachmentBlock),
     /// Terminal failure.
     Failed(&'static str, String),
@@ -1603,8 +1567,8 @@ enum TransferOutcome {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JobKind {
     Upload,
+    Insert,
     Remove,
-    Verify,
 }
 
 /// Spawn the detached transfer over an already-initialized SFTP stream.
@@ -1662,11 +1626,18 @@ where
     });
 }
 
-/// Spawn the detached remote re-verification for an `Uploaded` op being
-/// re-armed after a destination/connection change — `lstat` + size + mode
-/// on the recorded path, no re-upload.
-pub(crate) fn start_verify<S>(op: Arc<Mutex<AttachmentOperation>>, stream: S, attempt: u64)
-where
+/// Spawn the detached verified-insert job over an already-initialized
+/// SFTP stream: re-verify the recorded remote file (`lstat` type/size/
+/// mode + the generated name under the recorded base) and only then
+/// re-check the destination fence under the session lock and paste the
+/// single quoted path line. The paste can never run before verification
+/// succeeds.
+pub(crate) fn start_insert<S>(
+    op: Arc<Mutex<AttachmentOperation>>,
+    stream: S,
+    attempt: u64,
+    shared: Arc<crate::ssh::ConnectionShared>,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -1674,20 +1645,33 @@ where
         session.set_timeout(REQUEST_TIMEOUT_SECS);
         let outcome = async {
             match session.init().await {
-                Ok(_) => run_verify(&op, &session).await,
-                Err(error) => map_transfer_error(error, "sftp_unavailable"),
+                Ok(_) => {
+                    run_insert(&op, &session, |fence, line| {
+                        shared.attachment_insert_line(fence, line)
+                    })
+                    .await
+                }
+                Err(error) => match map_transfer_error(error, "sftp_unavailable") {
+                    TransferOutcome::Pending(block) => TransferOutcome::VerifyPending(block),
+                    other => other,
+                },
             }
         };
         let outcome =
             match tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), outcome).await {
                 Ok(outcome) => outcome,
-                Err(_) => TransferOutcome::Pending(AttachmentBlock::Timeout),
+                Err(_) => TransferOutcome::VerifyPending(AttachmentBlock::Timeout),
             };
-        apply_outcome(&op, outcome, attempt, JobKind::Verify);
+        apply_outcome(&op, outcome, attempt, JobKind::Insert);
         let _ = session.close_session();
     });
 }
 
+/// Apply a detached job's outcome. Only the op's current in-flight attempt
+/// may land a result — a stale/superseded job's outcome is discarded
+/// wholesale. Remote-side facts (verified deletion, an enqueued line) are
+/// recorded even when the user cancelled mid-flight; phase transitions are
+/// suppressed for a cancelled op.
 fn apply_outcome(
     op: &Arc<Mutex<AttachmentOperation>>,
     outcome: TransferOutcome,
@@ -1697,116 +1681,118 @@ fn apply_outcome(
     let Ok(mut op) = op.lock() else {
         return;
     };
+    if op.job_in_flight != Some(attempt) {
+        return;
+    }
+    op.job_in_flight = None;
+    // Factual remote state survives cancellation: the delete or paste
+    // already happened remotely/natively even if the op is discarded.
+    match outcome {
+        TransferOutcome::Removed => {
+            op.removed = true;
+            op.remote_path = None;
+        }
+        TransferOutcome::Inserted => {
+            op.insert_enqueued = true;
+        }
+        _ => {}
+    }
+    if op.cancel_requested {
+        if !matches!(
+            op.phase,
+            AttachmentPhase::Inserted | AttachmentPhase::Failed | AttachmentPhase::Cancelled
+        ) {
+            op.phase = AttachmentPhase::Cancelled;
+        }
+        return;
+    }
     match job {
-        JobKind::Remove => {
-            // Only the recorded remove attempt may land; a superseded or
-            // expired request's late result is dropped entirely.
-            if op.remove_in_flight != Some(attempt) {
-                return;
+        JobKind::Remove => match outcome {
+            TransferOutcome::Removed => op.clear_status(),
+            TransferOutcome::Pending(block) | TransferOutcome::VerifyPending(block) => {
+                op.note_block(block);
             }
-            op.remove_in_flight = None;
-            // Verified deletion is recorded even when the user cancelled
-            // mid-flight, but the phase itself is untouched — `inserted`
-            // is not revoked and failure keeps the uploaded state.
-            if matches!(outcome, TransferOutcome::Removed) {
-                op.removed = true;
+            TransferOutcome::Failed(code, message) => {
+                op.error_code = Some(code);
+                op.error_message = Some(message);
+            }
+            TransferOutcome::Uploaded(_)
+            | TransferOutcome::Inserted
+            | TransferOutcome::RemoteMissing
+            | TransferOutcome::Cancelled => {
+                op.note_block(AttachmentBlock::Internal);
+            }
+        },
+        JobKind::Insert => match outcome {
+            TransferOutcome::Inserted => {
+                if op.phase == AttachmentPhase::Uploaded {
+                    op.phase = AttachmentPhase::Inserted;
+                }
+                op.clear_status();
+            }
+            // Gone or replaced — never let a stale remote path be
+            // inserted; an explicit retry uploads again.
+            TransferOutcome::RemoteMissing => {
                 op.remote_path = None;
-            }
-            if op.cancel_requested {
-                op.phase = AttachmentPhase::Cancelled;
-                return;
-            }
-            match outcome {
-                TransferOutcome::Removed => op.clear_status(),
-                TransferOutcome::Pending(block) => op.note_block(block),
-                TransferOutcome::Failed(code, message) => {
-                    op.error_code = Some(code);
-                    op.error_message = Some(message);
+                op.removed = false;
+                if op.phase == AttachmentPhase::Uploaded {
+                    op.phase = AttachmentPhase::Pending;
                 }
-                TransferOutcome::Uploaded(_)
-                | TransferOutcome::Verified
-                | TransferOutcome::RemoteMissing
-                | TransferOutcome::Cancelled => {
-                    op.note_block(AttachmentBlock::Internal);
+                op.note_block(AttachmentBlock::RemoteMissing);
+            }
+            // Verification could not conclude — treat like a missing file
+            // minus clearing the path; re-upload re-validates everything.
+            TransferOutcome::VerifyPending(block) => {
+                if op.phase == AttachmentPhase::Uploaded {
+                    op.phase = AttachmentPhase::Pending;
+                }
+                op.note_block(block);
+            }
+            // Verification hard-failed (`sftp_*`, permission, …): same
+            // `Pending` landing, the precise code in the error fields.
+            TransferOutcome::Failed(code, message) => {
+                if op.phase == AttachmentPhase::Uploaded {
+                    op.phase = AttachmentPhase::Pending;
+                }
+                op.error_code = Some(code);
+                op.error_message = Some(message);
+            }
+            // The file verified but the paste gate refused — keep
+            // `Uploaded` with the reason so a direct insert retry works.
+            TransferOutcome::Pending(block) => op.note_block(block),
+            TransferOutcome::Cancelled => {
+                if op.phase == AttachmentPhase::Uploaded {
+                    op.phase = AttachmentPhase::Cancelled;
                 }
             }
-        }
-        JobKind::Verify => {
-            if op.verify_in_flight != Some(attempt) {
-                return;
+            TransferOutcome::Uploaded(_) | TransferOutcome::Removed => {
+                op.note_block(AttachmentBlock::Internal);
             }
-            op.verify_in_flight = None;
-            if op.cancel_requested {
-                return;
-            }
-            match outcome {
-                // The recorded remote file is still intact: keep the op
-                // `Uploaded` with the re-fenced destination so insert can
-                // proceed — no bytes were re-sent.
-                TransferOutcome::Verified => op.clear_status(),
-                TransferOutcome::RemoteMissing => {
-                    // Gone or replaced — do not let a stale remote path be
-                    // inserted; an explicit retry uploads again.
-                    op.remote_path = None;
-                    op.removed = false;
-                    if op.phase == AttachmentPhase::Uploaded {
-                        op.phase = AttachmentPhase::Pending;
-                    }
-                    op.note_block(AttachmentBlock::RemoteMissing);
+        },
+        JobKind::Upload => match outcome {
+            TransferOutcome::Uploaded(path) => {
+                if op.phase == AttachmentPhase::Uploading {
+                    op.phase = AttachmentPhase::Uploaded;
+                    op.remote_path = Some(path);
+                    op.clear_status();
                 }
-                TransferOutcome::Pending(block) => op.note_block(block),
-                TransferOutcome::Failed(code, message) => {
-                    op.error_code = Some(code);
-                    op.error_message = Some(message);
+            }
+            TransferOutcome::Pending(block) | TransferOutcome::VerifyPending(block) => {
+                op.pend(block)
+            }
+            TransferOutcome::Failed(code, message) => op.fail(code, message),
+            TransferOutcome::Cancelled => {
+                if matches!(
+                    op.phase,
+                    AttachmentPhase::Uploading | AttachmentPhase::Pending
+                ) {
+                    op.phase = AttachmentPhase::Cancelled;
                 }
-                TransferOutcome::Uploaded(_)
-                | TransferOutcome::Removed
-                | TransferOutcome::Cancelled => op.note_block(AttachmentBlock::Internal),
             }
-        }
-        JobKind::Upload => {
-            // A completion/progress from a superseded attempt belongs to a
-            // dead detached task — the retried operation must not move.
-            if op.attempt != attempt {
-                return;
-            }
-            if matches!(
-                outcome,
-                TransferOutcome::Removed
-                    | TransferOutcome::Verified
-                    | TransferOutcome::RemoteMissing
-            ) {
-                return;
-            }
-            if op.cancel_requested {
-                // A delayed completion must not resurrect a cancelled
-                // operation or change its visible state.
-                op.phase = AttachmentPhase::Cancelled;
-                return;
-            }
-            match outcome {
-                TransferOutcome::Uploaded(path) => {
-                    if op.phase == AttachmentPhase::Uploading {
-                        op.phase = AttachmentPhase::Uploaded;
-                        op.remote_path = Some(path);
-                        op.clear_status();
-                    }
-                }
-                TransferOutcome::Pending(block) => op.pend(block),
-                TransferOutcome::Failed(code, message) => op.fail(code, message),
-                TransferOutcome::Cancelled => {
-                    if matches!(
-                        op.phase,
-                        AttachmentPhase::Uploading | AttachmentPhase::Pending
-                    ) {
-                        op.phase = AttachmentPhase::Cancelled;
-                    }
-                }
-                TransferOutcome::Removed
-                | TransferOutcome::Verified
-                | TransferOutcome::RemoteMissing => {}
-            }
-        }
+            TransferOutcome::Inserted
+            | TransferOutcome::Removed
+            | TransferOutcome::RemoteMissing => {}
+        },
     }
 }
 
@@ -2434,36 +2420,109 @@ async fn run_remove(
     }
 }
 
-/// Remote re-verification for an `Uploaded` op whose destination fence was
-/// refreshed after recovery — the file must still be a regular file with
-/// the recorded size and the private `0600` mode at the recorded path.
-/// Anything else means the file is gone or was replaced: the op drops to
-/// `Pending(remote_missing)` so no stale path is ever inserted, and an
-/// explicit retry uploads it again. No bytes are transferred here.
-async fn run_verify(
+/// Detached body of `start_insert` — the single verification-backed
+/// insert job. Steps, in order, with no path that pastes before the
+/// remote check completes:
+///
+/// 1. The recorded identity is re-read: the published path, its generated
+///    basename, and the canonical base the upload recorded.
+/// 2. `lstat` verifies the file is still exactly what the upload
+///    published — a regular file of the expected size in `0600`, named by
+///    the generated grammar, directly under the recorded canonical base.
+///    A missing/replaced file is `RemoteMissing`; an incoherent or unsafe
+///    path is `remote_unsafe_path`; a transient SFTP failure keeps the op
+///    retryable.
+/// 3. Only then is the fence re-checked under the session lock inside
+///    `attachment_insert_line`, which pastes the single quoted path line
+///    through `paste_utf8_at_epoch`. Enter is never sent.
+async fn run_insert(
     op: &Arc<Mutex<AttachmentOperation>>,
     session: &RawSftpSession,
+    paste: impl Fn(&DestinationFence, &[u8]) -> Result<usize, AttachmentBlock>,
 ) -> TransferOutcome {
-    let (remote_path, size_bytes) = {
+    // Steps 1+2: remote verification — only a verified file yields a line.
+    let line = match insert_verified_line(op, session).await {
+        Ok(line) => line,
+        Err(outcome) => return outcome,
+    };
+    // Step 3: re-read the fence recorded at job accept and let the
+    // session-locked insert path re-check it right before pasting.
+    let fence = {
         let Ok(op) = op.lock() else {
             return TransferOutcome::Cancelled;
         };
-        match (op.remote_path.clone(), op.phase) {
-            (Some(path), AttachmentPhase::Uploaded) => (path, op.spec.size_bytes),
-            // Nothing to verify (removed/never uploaded) — still a clean
-            // verify outcome; apply_outcome leaves the phase untouched.
-            _ => return TransferOutcome::Verified,
+        op.fence.clone()
+    };
+    match paste(&fence, &line) {
+        Ok(_) => TransferOutcome::Inserted,
+        Err(block) => TransferOutcome::Pending(block),
+    }
+}
+
+/// The SFTP half of the verified-insert job: `lstat` the recorded remote
+/// file and require the published identity — a regular file of the exact
+/// uploaded size in `0600`, still named by the generated grammar,
+/// directly under the recorded canonical base. `Ok` carries the single
+/// quoted path line that is safe to paste; every `Err` is a
+/// verification-stage outcome that must never reach the paste step.
+async fn insert_verified_line(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    session: &RawSftpSession,
+) -> Result<Vec<u8>, TransferOutcome> {
+    let (remote_path, size_bytes, base) = {
+        let Ok(op) = op.lock() else {
+            return Err(TransferOutcome::Cancelled);
+        };
+        let (Some(path), Some(base)) = (op.remote_path.clone(), op.remote_base.clone()) else {
+            return Err(TransferOutcome::RemoteMissing);
+        };
+        // The basename must still be the generated name — a path that no
+        // longer matches what we published is never inserted.
+        match path
+            .rsplit('/')
+            .next()
+            .filter(|name| *name == op.spec.remote_name && remote_basename_valid(name))
+        {
+            Some(_) => (path, op.spec.size_bytes, base),
+            None => {
+                return Err(TransferOutcome::Failed(
+                    "remote_unsafe_path",
+                    "remote path no longer matches the generated name".to_owned(),
+                ));
+            }
         }
     };
-    match session.lstat(&remote_path).await {
-        Ok(attrs) if remote_file_complete(&attrs.attrs, size_bytes) => TransferOutcome::Verified,
-        // Exists but wrong type/size/mode — it is not the file we wrote.
-        Ok(_) => TransferOutcome::RemoteMissing,
-        Err(error) if is_no_such_file(&error) => TransferOutcome::RemoteMissing,
-        // Timeouts and channel failures are transient — keep Uploaded and
-        // let a later explicit retry re-verify.
-        Err(error) => map_transfer_error(error, "sftp_error"),
+    // The path must still live directly under the recorded canonical
+    // base — a relocated or hand-built path is refused.
+    let name = remote_path.rsplit('/').next().unwrap_or_default();
+    if remote_path != format!("{base}/{name}") {
+        return Err(TransferOutcome::Failed(
+            "remote_unsafe_path",
+            "remote path is not under the recorded base".to_owned(),
+        ));
     }
+    match session.lstat(&remote_path).await {
+        Ok(attrs) if remote_file_complete(&attrs.attrs, size_bytes) => {}
+        // Exists but wrong type/size/mode — it is not the file we wrote.
+        Ok(_) => return Err(TransferOutcome::RemoteMissing),
+        Err(error) if is_no_such_file(&error) => return Err(TransferOutcome::RemoteMissing),
+        // The remote check could not conclude — this is a verification
+        // failure, not a paste-gate failure, so the op must leave
+        // `Uploaded` for `Pending`.
+        Err(error) => {
+            return Err(match map_transfer_error(error, "sftp_verify_failed") {
+                TransferOutcome::Pending(block) => TransferOutcome::VerifyPending(block),
+                other => other,
+            });
+        }
+    }
+    // Verification succeeded — only now build the paste line.
+    insertion_line(&remote_path).map_err(|_| {
+        TransferOutcome::Failed(
+            "remote_unsafe_path",
+            "remote path cannot be quoted safely".to_owned(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -2477,6 +2536,7 @@ mod tests {
             pane_id: pane,
             native_terminal: native,
             herdr_terminal_id: None,
+            tmux_identity: None,
             endpoint: AttachmentEndpoint {
                 host: "example.test".to_owned(),
                 port: 22,
@@ -2497,6 +2557,7 @@ mod tests {
                 endpoint: fence(12, 90).endpoint,
                 pane_id: 12,
                 herdr_terminal_id: None,
+                tmux_identity: None,
             },
             fence: fence(12, 90),
             attempt: 1,
@@ -2520,8 +2581,7 @@ mod tests {
             cancel_requested: false,
             insert_enqueued: false,
             removed: false,
-            remove_in_flight: None,
-            verify_in_flight: None,
+            job_in_flight: None,
         }))
     }
 
@@ -2771,6 +2831,7 @@ mod tests {
         let op = test_op(AttachmentPhase::Cancelled);
         {
             let mut op = op.lock().unwrap();
+            op.job_in_flight = Some(1);
             op.cancel_requested = true;
         }
         apply_outcome(
@@ -2789,6 +2850,7 @@ mod tests {
         let op = test_op(AttachmentPhase::Uploading);
         {
             let mut op = op.lock().unwrap();
+            op.job_in_flight = Some(1);
             op.note_block(AttachmentBlock::Timeout);
         }
         apply_outcome(
@@ -2827,89 +2889,124 @@ mod tests {
     }
 
     #[test]
-    fn gate_launch_rejects_wrong_generation() {
+    fn gate_job_rejects_wrong_generation() {
         let op = test_op(AttachmentPhase::Uploading);
-        assert!(!gate_launch(&op, 9, 8, 1));
+        {
+            let mut op = op.lock().unwrap();
+            op.job_in_flight = Some(1);
+        }
+        assert!(!gate_job(&op, 9, 8, 1, JobKind::Upload));
         let op = op.lock().unwrap();
         assert_eq!(op.phase, AttachmentPhase::Pending);
         assert_eq!(op.reason_code, Some("stale_operation"));
+        assert!(op.job_in_flight.is_none());
     }
 
     #[test]
-    fn gate_launch_rejects_stale_attempt() {
+    fn gate_job_rejects_stale_attempt() {
         let op = test_op(AttachmentPhase::Uploading);
         {
             let mut op = op.lock().unwrap();
-            op.attempt += 1;
+            op.job_in_flight = Some(2);
         }
-        assert!(!gate_launch(&op, 9, 7, 1));
+        // The queued request carries a superseded attempt — it is dropped
+        // without releasing the current job's marker.
+        assert!(!gate_job(&op, 9, 7, 1, JobKind::Upload));
+        assert_eq!(op.lock().unwrap().job_in_flight, Some(2));
     }
 
     #[test]
-    fn gate_launch_rejects_cancelled() {
+    fn gate_job_rejects_cancelled() {
         let op = test_op(AttachmentPhase::Uploading);
         {
             let mut op = op.lock().unwrap();
+            op.job_in_flight = Some(1);
             op.cancel();
         }
-        assert!(!gate_launch(&op, 9, 7, 1));
+        assert!(!gate_job(&op, 9, 7, 1, JobKind::Upload));
         assert_eq!(op.lock().unwrap().phase, AttachmentPhase::Cancelled);
+        assert!(op.lock().unwrap().job_in_flight.is_none());
     }
 
     #[test]
-    fn gate_launch_accepts_current() {
+    fn gate_job_accepts_current() {
         let op = test_op(AttachmentPhase::Uploading);
-        assert!(gate_launch(&op, 9, 7, 1));
+        {
+            let mut op = op.lock().unwrap();
+            op.job_in_flight = Some(1);
+        }
+        assert!(gate_job(&op, 9, 7, 1, JobKind::Upload));
     }
 
     #[test]
-    fn verify_outcome_missing_remote_drops_to_pending() {
+    fn insert_outcome_missing_remote_drops_to_pending() {
         let op = test_op(AttachmentPhase::Uploaded);
         {
             let mut op = op.lock().unwrap();
             op.remote_path = Some("/remote/final".to_owned());
-            op.verify_in_flight = Some(2);
+            op.job_in_flight = Some(2);
             op.attempt = 2;
         }
-        apply_outcome(&op, TransferOutcome::RemoteMissing, 2, JobKind::Verify);
+        apply_outcome(&op, TransferOutcome::RemoteMissing, 2, JobKind::Insert);
         let op = op.lock().unwrap();
         assert_eq!(op.phase, AttachmentPhase::Pending);
         assert_eq!(op.reason_code, Some("remote_missing"));
         assert!(op.remote_path.is_none());
-        assert!(op.verify_in_flight.is_none());
+        assert!(op.job_in_flight.is_none());
     }
 
     #[test]
-    fn verify_outcome_verified_keeps_uploaded() {
+    fn insert_outcome_pastes_to_inserted() {
         let op = test_op(AttachmentPhase::Uploaded);
         {
             let mut op = op.lock().unwrap();
             op.remote_path = Some("/remote/final".to_owned());
-            op.verify_in_flight = Some(2);
+            op.job_in_flight = Some(2);
             op.attempt = 2;
             op.note_block(AttachmentBlock::StaleOperation);
         }
-        apply_outcome(&op, TransferOutcome::Verified, 2, JobKind::Verify);
+        apply_outcome(&op, TransferOutcome::Inserted, 2, JobKind::Insert);
         let op = op.lock().unwrap();
-        assert_eq!(op.phase, AttachmentPhase::Uploaded);
+        assert_eq!(op.phase, AttachmentPhase::Inserted);
+        assert!(op.insert_enqueued);
         assert_eq!(op.remote_path.as_deref(), Some("/remote/final"));
         assert!(op.reason_code.is_none());
     }
 
     #[test]
-    fn stale_verify_outcome_is_dropped() {
+    fn insert_outcome_verify_failure_drops_to_pending() {
         let op = test_op(AttachmentPhase::Uploaded);
         {
             let mut op = op.lock().unwrap();
             op.remote_path = Some("/remote/final".to_owned());
-            op.verify_in_flight = Some(2);
+            op.job_in_flight = Some(2);
+            op.attempt = 2;
+        }
+        apply_outcome(
+            &op,
+            TransferOutcome::VerifyPending(AttachmentBlock::Timeout),
+            2,
+            JobKind::Insert,
+        );
+        let op = op.lock().unwrap();
+        assert_eq!(op.phase, AttachmentPhase::Pending);
+        assert_eq!(op.reason_code, Some("timeout"));
+    }
+
+    #[test]
+    fn stale_insert_outcome_is_dropped() {
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.remote_path = Some("/remote/final".to_owned());
+            op.job_in_flight = Some(2);
         }
         // A completion carrying an earlier attempt must not clear the
         // in-flight marker or the remote-missing state.
-        apply_outcome(&op, TransferOutcome::RemoteMissing, 1, JobKind::Verify);
+        apply_outcome(&op, TransferOutcome::RemoteMissing, 1, JobKind::Insert);
         let op = op.lock().unwrap();
         assert_eq!(op.phase, AttachmentPhase::Uploaded);
-        assert_eq!(op.verify_in_flight, Some(2));
+        assert_eq!(op.job_in_flight, Some(2));
     }
 
     #[test]
@@ -2917,12 +3014,12 @@ mod tests {
         let op = test_op(AttachmentPhase::Uploaded);
         {
             let mut op = op.lock().unwrap();
-            op.remove_in_flight = Some(2);
+            op.job_in_flight = Some(2);
         }
         apply_outcome(&op, TransferOutcome::Removed, 1, JobKind::Remove);
         let op = op.lock().unwrap();
         assert!(!op.removed);
-        assert_eq!(op.remove_in_flight, Some(2));
+        assert_eq!(op.job_in_flight, Some(2));
     }
 
     #[test]
@@ -2947,8 +3044,9 @@ mod tests {
 
     // In-process SFTP server over a duplex stream (the reviewer's repro
     // harness): it exercises ensure_remote_dir / run_transfer / run_remove /
-    // run_verify against real lstat/mkdir/setstat/close replies instead of
-    // mocked outcomes, so path-security regressions surface end to end.
+    // insert verification against real lstat/mkdir/setstat/close replies
+    // instead of mocked outcomes, so path-security regressions surface end
+    // to end.
     use russh_sftp::protocol::{Attrs, Data, File as SftpFile, Handle, Name, Status};
     use std::fs::{self, File};
     use std::io::Write as _;
@@ -3305,10 +3403,12 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
-    /// FP-007: a successful close publishes end to end, and a later
-    /// re-verification lstat's the recorded path instead of re-uploading.
+    /// FP-007 round 2: the insert job's remote half lstat-verifies the
+    /// recorded file — and is the only path that may produce a paste
+    /// line. A verified file yields exactly one quoted line; a vanished
+    /// file is `remote_missing` and never a paste.
     #[tokio::test]
-    async fn verify_confirms_recorded_file_and_detects_loss() {
+    async fn insert_verify_gate_confirms_file_and_detects_loss() {
         let root = fixture_root("verify");
         fs::create_dir_all(root.join("home")).unwrap();
         let local = root.join("image.png");
@@ -3327,19 +3427,110 @@ mod tests {
             let mut op = op.lock().unwrap();
             op.phase = AttachmentPhase::Uploaded;
             op.remote_path = Some(path.clone());
+            op.remote_base = Some(
+                path.rsplit_once('/')
+                    .map(|(dir, _)| dir.to_owned())
+                    .expect("published path has a dir"),
+            );
         }
-        assert!(
-            matches!(run_verify(&op, &session).await, TransferOutcome::Verified),
-            "intact remote file verifies"
-        );
+        let line = insert_verified_line(&op, &session)
+            .await
+            .expect("intact remote file verifies to a paste line");
+        // Exactly one single-quoted line, no newline or Enter.
+        let text = String::from_utf8(line).expect("paste line is utf8");
+        assert!(!text.contains('\n') && !text.contains('\r'));
+        assert!(text.starts_with('\'') && text.trim_end().ends_with('\''));
         fs::remove_file(root.join(path.trim_start_matches('/'))).unwrap();
         assert!(
             matches!(
-                run_verify(&op, &session).await,
-                TransferOutcome::RemoteMissing
+                insert_verified_line(&op, &session).await,
+                Err(TransferOutcome::RemoteMissing)
             ),
-            "vanished remote file must be remote_missing"
+            "vanished remote file must be remote_missing — no paste"
         );
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Review round 2: the insert job must never paste before or without a
+    /// successful remote verification — a missing file yields
+    /// `remote_missing` and the paste path is never invoked.
+    #[tokio::test]
+    async fn insert_job_never_pastes_without_verification() {
+        let root = fixture_root("insert-no-paste");
+        fs::create_dir_all(root.join("home")).unwrap();
+        let op = test_op(AttachmentPhase::Uploaded);
+        let pasted = std::sync::atomic::AtomicUsize::new(0);
+        {
+            let mut op = op.lock().unwrap();
+            op.remote_path =
+                Some("/home/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png".to_owned());
+            op.remote_base = Some("/home/.local/share/meeterm/attachments".to_owned());
+            op.job_in_flight = Some(1);
+        }
+        let session = fixture_sftp(root.clone(), false).await;
+        let outcome = run_insert(&op, &session, |_, _| {
+            pasted.fetch_add(1, Ordering::AcqRel);
+            Ok(1)
+        })
+        .await;
+        assert!(
+            matches!(outcome, TransferOutcome::RemoteMissing),
+            "missing file must not verify, got {outcome:?}"
+        );
+        assert_eq!(
+            pasted.load(Ordering::Acquire),
+            0,
+            "a failed verification must never reach the paste path"
+        );
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Review round 2: a verified file reaches the paste path exactly
+    /// once, with the single quoted line, and lands `Inserted`.
+    #[tokio::test]
+    async fn insert_job_pastes_once_after_verification() {
+        let root = fixture_root("insert-paste");
+        fs::create_dir_all(root.join("home")).unwrap();
+        let local = root.join("image.png");
+        fs::write(&local, b"1234567890").unwrap();
+        let op = test_op(AttachmentPhase::Uploading);
+        {
+            let mut op = op.lock().unwrap();
+            op.spec.local_path = local.to_str().unwrap().to_owned();
+        }
+        let session = fixture_sftp(root.clone(), false).await;
+        let outcome = run_transfer(&op, &session, false, 1).await;
+        let TransferOutcome::Uploaded(path) = outcome else {
+            panic!("fixture upload must publish, got {outcome:?}");
+        };
+        {
+            let mut op = op.lock().unwrap();
+            op.phase = AttachmentPhase::Uploaded;
+            op.remote_path = Some(path.clone());
+            op.remote_base = Some(
+                path.rsplit_once('/')
+                    .map(|(dir, _)| dir.to_owned())
+                    .expect("published path has a dir"),
+            );
+            op.job_in_flight = Some(2);
+            op.attempt = 2;
+        }
+        let pasted = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = run_insert(&op, &session, |_fence, line| {
+            pasted.fetch_add(1, Ordering::AcqRel);
+            let text = String::from_utf8(line.to_vec()).expect("utf8 line");
+            assert!(!text.contains('\n') && !text.contains('\r'));
+            assert_eq!(text, format!("'{path}'"));
+            Ok(line.len())
+        })
+        .await;
+        assert!(
+            matches!(outcome, TransferOutcome::Inserted),
+            "verified insert must land, got {outcome:?}"
+        );
+        assert_eq!(pasted.load(Ordering::Acquire), 1);
         let _ = session.close_session();
         fs::remove_dir_all(&root).ok();
     }

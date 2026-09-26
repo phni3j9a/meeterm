@@ -1171,6 +1171,17 @@ impl ConnectionShared {
             // remote `terminal_id` could silently track the wrong pane.
             return Err(AttachmentBlock::DestinationMissing);
         }
+        // tmux records the exact session identity (session id + server
+        // pid + server start) so a restarted/replaced tmux server can
+        // never pass as the recorded runtime when a name is reused.
+        let tmux_identity = if endpoint.backend == Backend::Tmux {
+            state
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.tmux_identity.clone())
+        } else {
+            None
+        };
         Ok(AttachmentIntent {
             id: 0,
             target_terminal,
@@ -1178,6 +1189,7 @@ impl ConnectionShared {
             endpoint,
             pane_id,
             herdr_terminal_id,
+            tmux_identity,
         })
     }
 
@@ -1240,12 +1252,24 @@ impl ConnectionShared {
         if herdr_terminal_id != intent.herdr_terminal_id {
             return Err(AttachmentBlock::DestinationChanged);
         }
+        // A tmux backend additionally pins the exact server/session
+        // identity: transport recovery keeps it, a replaced tmux server —
+        // or an intent recorded without one while a runtime is bound —
+        // rejects instead of reusing a same-named destination.
+        let tmux_identity = state
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.tmux_identity.clone());
+        if endpoint.backend == Backend::Tmux && tmux_identity != intent.tmux_identity {
+            return Err(AttachmentBlock::DestinationChanged);
+        }
         Ok(DestinationFence {
             generation: state.generation,
             operation_epoch: state.operation_epoch,
             pane_id,
             native_terminal,
             herdr_terminal_id,
+            tmux_identity,
             endpoint,
         })
     }
@@ -1307,6 +1331,15 @@ impl ConnectionShared {
         {
             return Err(AttachmentBlock::DestinationChanged);
         }
+        if fence.endpoint.backend == Backend::Tmux
+            && state
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.tmux_identity.as_ref())
+                != fence.tmux_identity.as_ref()
+        {
+            return Err(AttachmentBlock::DestinationChanged);
+        }
         if !state.terminal_input_ready {
             return Err(AttachmentBlock::InputNotReady);
         }
@@ -1317,29 +1350,6 @@ impl ConnectionShared {
             .map_err(|_| AttachmentBlock::StaleTerminal)?;
         registry::paste_utf8_at_epoch(fence.native_terminal, epoch, line)
             .map_err(attachment_paste_block)
-    }
-
-    /// Re-check only the endpoint half of a destination fence for the
-    /// explicit remote-delete path: the pane may be gone, but the SSH
-    /// endpoint and connection generation must still match so deletion
-    /// runs on the same authenticated host that received the upload.
-    pub(crate) fn attachment_recheck_endpoint(
-        &self,
-        endpoint: &AttachmentEndpoint,
-    ) -> Result<(), AttachmentBlock> {
-        let state = self.session.lock().map_err(|_| AttachmentBlock::Internal)?;
-        if state.generation != self.generation || self.is_cancelled() {
-            return Err(AttachmentBlock::StaleConnection);
-        }
-        let current = state
-            .endpoint
-            .as_ref()
-            .ok_or(AttachmentBlock::NotReady)?
-            .attachment_endpoint();
-        if current != *endpoint {
-            return Err(AttachmentBlock::StaleConnection);
-        }
-        Ok(())
     }
 
     /// Enqueue this operation's SFTP command on the actor's serialized
@@ -2257,11 +2267,12 @@ pub(crate) enum ControlCommand {
         attachment_id: u64,
         attempt: u64,
     },
-    /// Remote re-verification (`lstat` + size + mode) for an `Uploaded`
-    /// attachment whose destination was re-fenced after a recovery — the
-    /// file is trusted again without re-sending it, and a missing or
-    /// replaced file drops the op back to `Pending`.
-    SftpVerify {
+    /// Verified-insert job for an `Uploaded` attachment: `lstat` +
+    /// size + mode + generated-name/base checks on the recorded remote
+    /// file first, then — under the session lock — the fence re-check and
+    /// the single quoted-path paste. `attempt` pins the request to the
+    /// recorded insert attempt.
+    SftpInsert {
         attachment_id: u64,
         attempt: u64,
     },
@@ -4888,15 +4899,15 @@ fn expire_attachment_request(command: &ControlCommand, block: AttachmentBlock) {
         ControlCommand::SftpUpload {
             attachment_id,
             attempt,
-        } => attachment::mark_pending(*attachment_id, *attempt, block),
-        ControlCommand::SftpRemove {
+        }
+        | ControlCommand::SftpRemove {
             attachment_id,
             attempt,
-        } => attachment::mark_remove_expired(*attachment_id, *attempt, block),
-        ControlCommand::SftpVerify {
+        }
+        | ControlCommand::SftpInsert {
             attachment_id,
             attempt,
-        } => attachment::mark_verify_expired(*attachment_id, *attempt, block),
+        } => attachment::mark_job_expired(*attachment_id, *attempt, block),
         _ => {}
     }
 }
@@ -4936,13 +4947,10 @@ where
     }
 }
 
-/// Which attachment job an accepted SFTP channel should start.
-#[derive(Clone, Copy)]
-enum SftpJob {
-    Upload,
-    Remove,
-    Verify,
-}
+/// Which attachment job an accepted SFTP channel should start — the
+/// shared job identity from `attachment` so gating, stalls, and outcomes
+/// all speak the same attempt language.
+use attachment::JobKind as SftpJob;
 
 /// A queued SFTP channel-setup job: the bounded open + subsystem handshake
 /// polled as one select arm of the interactive loop so it never blocks
@@ -4952,7 +4960,7 @@ enum SftpJob {
 /// and run in strict command order inside the actor task instead.
 type SftpLaunch<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// Actor-side SFTP launcher for `SftpUpload`/`SftpRemove`/`SftpVerify`.
+/// Actor-side SFTP launcher for `SftpUpload`/`SftpRemove`/`SftpInsert`.
 /// The command loop pushes this future onto its background launch queue
 /// (see `sftp_jobs` in the run loops) so the bounded channel open and the
 /// subsystem `CHANNEL_SUCCESS` wait never block interactive input or
@@ -4971,18 +4979,7 @@ async fn launch_sftp_job(
     let Some(op) = attachment::operation(attachment_id) else {
         return;
     };
-    let gated = match job {
-        SftpJob::Upload => {
-            attachment::gate_launch(&op, shared.terminal_id, shared.generation, attempt)
-        }
-        SftpJob::Remove => {
-            attachment::gate_remove(&op, shared.terminal_id, shared.generation, attempt)
-        }
-        SftpJob::Verify => {
-            attachment::gate_verify(&op, shared.terminal_id, shared.generation, attempt)
-        }
-    };
-    if !gated {
+    if !attachment::gate_job(&op, shared.terminal_id, shared.generation, attempt, job) {
         return;
     }
     // A stall keeps the op retryable: upload ops pend, remove/verify ops
@@ -4991,7 +4988,6 @@ async fn launch_sftp_job(
         Ok(channel) => channel,
         Err(failure) => {
             sftp_stall(
-                job,
                 &op,
                 attempt,
                 match failure {
@@ -5005,7 +5001,6 @@ async fn launch_sftp_job(
     };
     if let Err(failure) = sftp_stage(shared, channel.request_subsystem(true, "sftp")).await {
         sftp_stall(
-            job,
             &op,
             attempt,
             match failure {
@@ -5044,48 +5039,33 @@ async fn launch_sftp_job(
         SubsystemReply::Accepted => match job {
             SftpJob::Upload => attachment::start_transfer(op, channel.into_stream(), attempt),
             SftpJob::Remove => attachment::start_remove(op, channel.into_stream(), attempt),
-            SftpJob::Verify => attachment::start_verify(op, channel.into_stream(), attempt),
+            SftpJob::Insert => {
+                attachment::start_insert(op, channel.into_stream(), attempt, Arc::clone(shared))
+            }
         },
-        SubsystemReply::Rejected => match job {
-            SftpJob::Upload => attachment::launch_failed(
-                &op,
-                attempt,
-                "sftp_unavailable",
-                "the remote SSH server did not accept the SFTP subsystem",
-            ),
-            SftpJob::Remove => attachment::remove_failed(
-                &op,
-                attempt,
-                "sftp_unavailable",
-                "the remote SSH server did not accept the SFTP subsystem",
-            ),
-            SftpJob::Verify => attachment::verify_failed(
-                &op,
-                attempt,
-                "sftp_unavailable",
-                "the remote SSH server did not accept the SFTP subsystem",
-            ),
-        },
-        SubsystemReply::Stale => sftp_stall(job, &op, attempt, AttachmentBlock::StaleOperation),
-        SubsystemReply::Timeout => sftp_stall(job, &op, attempt, AttachmentBlock::Timeout),
+        SubsystemReply::Rejected => attachment::job_failed(
+            &op,
+            attempt,
+            job,
+            "sftp_unavailable",
+            "the remote SSH server did not accept the SFTP subsystem",
+        ),
+        SubsystemReply::Stale => sftp_stall(&op, attempt, AttachmentBlock::StaleOperation),
+        SubsystemReply::Timeout => sftp_stall(&op, attempt, AttachmentBlock::Timeout),
     }
 }
 
-/// Fold a pre-session SFTP stall into the op's visible state: upload ops
-/// pend with their reason, remove/verify ops clear the in-flight marker
-/// and keep the reason visible without disturbing the uploaded phase.
+/// Fold a pre-session SFTP stall into the op's visible state: the
+/// in-flight marker releases and the op reports the blockage — an
+/// `Uploading` op drops to `Pending`, other phases keep their state with
+/// the reason visible so the same explicit action can be retried.
 /// Only the armed attempt may land the reason.
 fn sftp_stall(
-    job: SftpJob,
     op: &Arc<Mutex<attachment::AttachmentOperation>>,
     attempt: u64,
     block: AttachmentBlock,
 ) {
-    match job {
-        SftpJob::Upload => attachment::launch_pending(op, attempt, block),
-        SftpJob::Remove => attachment::remove_stalled(op, attempt, block),
-        SftpJob::Verify => attachment::verify_stalled(op, attempt, block),
-    }
+    attachment::job_stalled(op, attempt, block);
 }
 
 async fn run_connection(
@@ -6839,7 +6819,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     }
 
     #[test]
-    fn uploaded_op_reverifies_then_inserts_after_epoch_revoke() {
+    fn uploaded_op_toolbar_insert_is_a_verified_job() {
         for backend in [Backend::Tmux, Backend::Herdr] {
             let mut fixture = bounded_control_fixture(backend);
             let source =
@@ -6853,46 +6833,207 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
                 .command_receiver
                 .try_recv()
                 .expect("queued upload request");
-            // Drive the op to Uploaded the way the detached transfer would.
+            // Drive the op to Uploaded the way the detached transfer would
+            // — the canonical base is what the upload recorded.
             attachment::test_mark_uploaded(
                 attachment_id,
-                "/home/u/.local/share/meeterm/attachments/m.png",
+                "/home/u/.local/share/meeterm/attachments",
             );
-            // Recovery revokes the operation epoch, then returns Ready —
-            // insert on the stale fence is refused.
-            {
-                let mut state = fixture.shared.session.lock().expect("session state");
-                state.operation_epoch = next_operation_epoch(state.operation_epoch);
-            }
-            assert!(
-                attachment::attachment_insert(fixture.owner, attachment_id).is_err(),
-                "insert on a revoked fence must be refused"
-            );
-            // The explicit retry re-resolves the intent, re-binds a fresh
-            // fence, and queues the remote re-verification — no re-upload.
-            attachment::attachment_retry_upload(fixture.owner, attachment_id)
-                .expect("explicit re-verify after recovery");
+            // The explicit insert is accepted as one verified job — the
+            // synchronous return only means the request was queued.
+            attachment::attachment_insert(fixture.owner, attachment_id)
+                .expect("insert job accepted");
             match fixture
                 .command_receiver
                 .try_recv()
-                .expect("queued verify request")
+                .expect("queued insert request")
                 .command
             {
-                ControlCommand::SftpVerify {
+                ControlCommand::SftpInsert {
                     attachment_id: queued,
                     attempt,
                 } => {
                     assert_eq!(queued, attachment_id);
-                    assert_eq!(attempt, 2, "verify runs on the bumped attempt");
+                    assert_eq!(attempt, 2, "insert runs on the bumped attempt");
                 }
-                _ => panic!("expected SftpVerify"),
+                _ => panic!("expected SftpInsert"),
             }
+            // While the job is in flight the op reports the flag and any
+            // second job request — insert or delete — is refused `Busy`
+            // rather than superseding the queued insert.
+            let snapshot = attachment::attachment_snapshot(attachment_id).expect("snapshot");
+            assert_ne!(
+                snapshot.flags & attachment::ATTACHMENT_FLAG_JOB_IN_FLIGHT,
+                0,
+                "in-flight insert job must be visible"
+            );
+            assert!(matches!(
+                attachment::attachment_insert(fixture.owner, attachment_id),
+                Err(attachment::AttachmentError::Busy)
+            ));
+            assert!(matches!(
+                attachment::attachment_delete_remote(fixture.owner, attachment_id),
+                Err(attachment::AttachmentError::Busy)
+            ));
+            // The epoch revoke supersedes the queued job before it ran —
+            // the actor drops it and reports the stale reason, clearing
+            // the in-flight flag so a fresh insert can be accepted.
+            {
+                let mut state = fixture.shared.session.lock().expect("session state");
+                state.operation_epoch = next_operation_epoch(state.operation_epoch);
+            }
+            attachment::mark_job_expired(attachment_id, 2, AttachmentBlock::StaleOperation);
+            let snapshot = attachment::attachment_snapshot(attachment_id).expect("snapshot");
+            assert_eq!(
+                snapshot.flags & attachment::ATTACHMENT_FLAG_JOB_IN_FLIGHT,
+                0
+            );
             attachment::attachment_insert(fixture.owner, attachment_id)
-                .expect("insert on the fresh fence");
+                .expect("insert re-accepted on the fresh epoch");
+            match fixture
+                .command_receiver
+                .try_recv()
+                .expect("re-queued insert request")
+                .command
+            {
+                ControlCommand::SftpInsert { attempt, .. } => {
+                    assert_eq!(attempt, 3, "re-insert is a fresh attempt");
+                }
+                _ => panic!("expected SftpInsert"),
+            }
+            // A stale-attempt expiry must not release the newer job.
+            attachment::mark_job_expired(attachment_id, 2, AttachmentBlock::StaleOperation);
+            let snapshot = attachment::attachment_snapshot(attachment_id).expect("snapshot");
+            assert_ne!(
+                snapshot.flags & attachment::ATTACHMENT_FLAG_JOB_IN_FLIGHT,
+                0
+            );
             attachment::attachment_dispose(attachment_id).expect("dispose op");
             attachment::attachment_intent_dispose(intent).expect("dispose intent");
             std::fs::remove_file(&source).ok();
         }
+    }
+
+    /// Review round 2 regression: every job — delete included — re-resolves
+    /// the recorded intent and captures a fresh fence, so a same-identity
+    /// destination works after an epoch revoke while a replaced tmux server
+    /// (same session name, new server pid/start) is refused.
+    #[test]
+    fn attachment_jobs_reverify_intent_and_reject_replaced_tmux_runtime() {
+        let mut fixture = bounded_control_fixture(Backend::Tmux);
+        // The connection carries the exact tmux session identity the
+        // intent must keep matching.
+        let identity = tmux::SessionIdentity {
+            session_id: "$7".into(),
+            name: "meeterm".into(),
+            server_pid: 7,
+            server_start_time: 1_700_000_000,
+        };
+        {
+            let mut state = fixture.shared.session.lock().expect("session state");
+            state.profile = Some(ConnectionProfile {
+                host: "bounded-control.example.test".into(),
+                port: 22,
+                username: "fixture".into(),
+                known_hosts_path: PathBuf::from("/tmp/bounded-control-known-hosts"),
+                credentials: StoredCredentials::Password {
+                    password: Arc::new(Zeroizing::new("fixture-only".into())),
+                },
+                backend: Backend::Tmux,
+                runtime: Some("meeterm".into()),
+                tmux_identity: Some(identity.clone()),
+                herdr_executable: None,
+            });
+        }
+        let source = std::env::temp_dir().join(format!("meeterm-job-id-{}", std::process::id()));
+        std::fs::write(&source, b"1234567890").expect("write picked file");
+        let path = source.to_str().expect("utf8 source path");
+        let intent = attachment::attachment_intent(fixture.owner).expect("pane intent");
+        let attachment_id = attachment::attachment_begin(intent, path, "picked.png", None, 10)
+            .expect("begin attachment");
+        fixture
+            .command_receiver
+            .try_recv()
+            .expect("queued upload request");
+        attachment::test_mark_uploaded(attachment_id, "/home/u/.local/share/meeterm/attachments");
+        // An operation-epoch revoke does not strand the op: delete
+        // re-resolves the intent and queues on the *fresh* fence.
+        {
+            let mut state = fixture.shared.session.lock().expect("session state");
+            state.operation_epoch = next_operation_epoch(state.operation_epoch);
+        }
+        attachment::attachment_delete_remote(fixture.owner, attachment_id)
+            .expect("delete re-accepted on the same identity after revoke");
+        match fixture
+            .command_receiver
+            .try_recv()
+            .expect("queued delete request")
+            .command
+        {
+            ControlCommand::SftpRemove { attempt, .. } => assert_eq!(attempt, 2),
+            _ => panic!("expected SftpRemove"),
+        }
+        // The actor dropped the queued job; the reason is visible and the
+        // marker released so an explicit retry is possible.
+        attachment::mark_job_expired(attachment_id, 2, AttachmentBlock::Timeout);
+        // The delete retry clears the previous reason instead of surfacing
+        // an old failure as the retry's result.
+        attachment::attachment_delete_remote(fixture.owner, attachment_id)
+            .expect("delete retry after expiry");
+        let snapshot = attachment::attachment_snapshot(attachment_id).expect("snapshot");
+        assert_ne!(
+            snapshot.flags & attachment::ATTACHMENT_FLAG_JOB_IN_FLIGHT,
+            0
+        );
+        assert_eq!(snapshot.error_code_len, 0, "fresh job clears prior status");
+        fixture
+            .command_receiver
+            .try_recv()
+            .expect("queued delete retry");
+        attachment::mark_job_expired(attachment_id, 3, AttachmentBlock::Timeout);
+        // A replaced tmux server — the same session name under a new
+        // server pid/start — must refuse: the recorded identity is gone.
+        {
+            let mut state = fixture.shared.session.lock().expect("session state");
+            state.profile.as_mut().expect("profile").tmux_identity = Some(tmux::SessionIdentity {
+                session_id: "$7".into(),
+                name: "meeterm".into(),
+                server_pid: 99,
+                server_start_time: 1_700_000_999,
+            });
+        }
+        assert!(
+            matches!(
+                attachment::attachment_delete_remote(fixture.owner, attachment_id),
+                Err(attachment::AttachmentError::DestinationChanged)
+            ),
+            "a replaced tmux server must not pass as the recorded runtime"
+        );
+        let snapshot = attachment::attachment_snapshot(attachment_id).expect("snapshot");
+        assert_eq!(
+            &snapshot.error_code[..snapshot.error_code_len as usize],
+            b"destination_changed"
+        );
+        // The same identity again — including a transport recovery that
+        // re-binds it — resolves and queues the delete normally.
+        {
+            let mut state = fixture.shared.session.lock().expect("session state");
+            state.profile.as_mut().expect("profile").tmux_identity = Some(identity);
+        }
+        attachment::attachment_delete_remote(fixture.owner, attachment_id)
+            .expect("delete after the recorded identity returns");
+        match fixture
+            .command_receiver
+            .try_recv()
+            .expect("queued delete after identity restore")
+            .command
+        {
+            ControlCommand::SftpRemove { attempt, .. } => assert_eq!(attempt, 4),
+            _ => panic!("expected SftpRemove"),
+        }
+        attachment::attachment_dispose(attachment_id).expect("dispose op");
+        attachment::attachment_intent_dispose(intent).expect("dispose intent");
+        std::fs::remove_file(&source).ok();
     }
 
     #[test]

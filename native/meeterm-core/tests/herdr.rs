@@ -20,17 +20,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use meeterm_core::workspace::{Backend, RuntimeDiscoverySnapshot, RuntimeState};
 use meeterm_core::{
-    ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentPhase, AttachmentSnapshot, AuthOptions,
-    ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
-    attachment_begin, attachment_delete_remote, attachment_dispose, attachment_insert,
-    attachment_intent, attachment_intent_dispose, attachment_snapshot, close_group, close_pane,
-    close_workspace, connect_host, connection_snapshot, create_group, create_pane, create_terminal,
-    create_workspace, destroy_terminal, disconnect_terminal, meeterm_commit_utf8,
-    meeterm_operation_epoch, meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key,
-    meeterm_scroll_lines, meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
-    meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
-    runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
-    set_foreground, terminal_revision, workspace_snapshot_json,
+    ATTACHMENT_FLAG_JOB_IN_FLIGHT, ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentPhase,
+    AttachmentSnapshot, AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState,
+    SessionSnapshot, SpecialKey, attachment_begin, attachment_delete_remote, attachment_dispose,
+    attachment_insert, attachment_intent, attachment_intent_dispose, attachment_snapshot,
+    close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
+    create_pane, create_terminal, create_workspace, destroy_terminal, disconnect_terminal,
+    meeterm_commit_utf8, meeterm_operation_epoch, meeterm_paste_utf8, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_scroll_lines, meeterm_send_special_key,
+    meeterm_set_terminal_visible, meeterm_snapshot, meeterm_snapshot_size, reconnect_terminal,
+    rename_group, rename_pane, rename_workspace, runtime_discovery_snapshot, select_group,
+    select_pane, select_runtime, session_snapshot, set_foreground, terminal_revision,
+    workspace_snapshot_json,
 };
 use russh::keys;
 use russh::server::{self, Auth, ChannelOpenHandle, Handler, Msg, Server as RusshServer, Session};
@@ -2921,6 +2922,26 @@ fn wait_attachment_flag(attachment_id: u64, flag: u32, label: &str) -> Attachmen
     }
 }
 
+/// Poll one attachment until no job is in flight and return the settled
+/// snapshot — synchronous insert/delete calls only mean a job was
+/// *accepted*; the result is readable once the flag clears.
+fn wait_attachment_idle(attachment_id: u64, label: &str) -> AttachmentSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let snapshot = attachment_snapshot(attachment_id).expect("attachment snapshot");
+        if snapshot.flags & ATTACHMENT_FLAG_JOB_IN_FLIGHT == 0 {
+            return snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{label}: job never settled; phase={} code={}",
+            snapshot.phase,
+            field(&snapshot.error_code, snapshot.error_code_len),
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn generated_basename_valid(name: &str) -> bool {
     let Some(rest) = name.strip_prefix("meeterm-") else {
         return false;
@@ -3054,14 +3075,13 @@ fn real_herdr_attachment_upload_insert_and_fence() {
             .iter()
             .any(|pane| entity_id(&pane["id"]) == other_pane && pane["selected"] == true)
     });
-    // Stale-destination rejection, two ways: the operation's own pane is
-    // no longer the selected pane, and a foreign pane terminal cannot
-    // address the operation at all. Both are held — never retargeted.
-    assert!(
-        attachment_insert(root.terminal_id, attachment_id).is_err(),
-        "insert while another pane is selected must be held"
-    );
-    let blocked = attachment_snapshot(attachment_id).expect("blocked snapshot");
+    // Stale-destination rejection, two ways: with another pane selected
+    // the insert *job* is accepted but its paste gate refuses under the
+    // session lock — the op stays Uploaded with `destination_changed` and
+    // nothing is pasted — while a foreign pane terminal cannot even
+    // address the operation. Both are held — never retargeted.
+    attachment_insert(root.terminal_id, attachment_id).expect("insert job accepted");
+    let blocked = wait_attachment_idle(attachment_id, "stale-pane insert job");
     assert_eq!(blocked.phase, AttachmentPhase::Uploaded as u32);
     assert_eq!(
         field(&blocked.error_code, blocked.error_code_len),
@@ -3091,11 +3111,11 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     wait_json(id, "terminal input unready while hidden", |value| {
         value["control"]["terminalInputReady"] == false
     });
-    assert!(
-        attachment_insert(root.terminal_id, attachment_id).is_err(),
-        "insert while input is unready must be held, not sent"
-    );
-    let held = attachment_snapshot(attachment_id).expect("held snapshot");
+    // The insert job is accepted, but its verified paste step is refused
+    // under the session lock while input is unready — the op settles back
+    // to Uploaded with `input_not_ready` and nothing is pasted.
+    attachment_insert(root.terminal_id, attachment_id).expect("insert job accepted");
+    let held = wait_attachment_idle(attachment_id, "hidden-input insert job");
     assert_eq!(held.phase, AttachmentPhase::Uploaded as u32);
     assert_eq!(
         field(&held.error_code, held.error_code_len),
@@ -3110,17 +3130,32 @@ fn real_herdr_attachment_upload_insert_and_fence() {
         value["control"]["terminalInputReady"] == true
     });
     // The JSON readiness flag precedes the transport re-bind by a moment;
-    // the operation stays Uploaded while the gate is closed, so retry the
-    // explicit insert briefly instead of racing it.
+    // a job that settles back to `Uploaded` is retried until the gate
+    // opens — each accepted job re-verifies remotely before pasting.
     let deadline = Instant::now() + WAIT_TIMEOUT;
-    while let Err(error) = attachment_insert(root.terminal_id, attachment_id) {
-        let snapshot = attachment_snapshot(attachment_id).expect("snapshot after failed insert");
-        assert!(
-            Instant::now() < deadline,
-            "insert remote path: {error:?} block={}",
-            field(&snapshot.error_code, snapshot.error_code_len)
-        );
-        thread::sleep(POLL_INTERVAL);
+    loop {
+        match attachment_insert(root.terminal_id, attachment_id) {
+            Ok(()) => {
+                let settled = wait_attachment_idle(attachment_id, "herdr insert job");
+                if settled.phase == AttachmentPhase::Inserted as u32 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "insert job kept settling without insert: code={}",
+                    field(&settled.error_code, settled.error_code_len)
+                );
+            }
+            Err(error) => {
+                let snapshot = attachment_snapshot(attachment_id).expect("snapshot");
+                assert!(
+                    Instant::now() < deadline,
+                    "insert remote path: {error:?} block={}",
+                    field(&snapshot.error_code, snapshot.error_code_len)
+                );
+                thread::sleep(POLL_INTERVAL);
+            }
+        }
     }
     let inserted = wait_attachment_phase(attachment_id, AttachmentPhase::Inserted, "Herdr insert");
     assert_eq!(inserted.phase, AttachmentPhase::Inserted as u32);

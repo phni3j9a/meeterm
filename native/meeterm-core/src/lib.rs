@@ -16,9 +16,9 @@ pub mod workspace;
 
 pub use attachment::{
     ATTACHMENT_CODE_CAPACITY, ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED,
-    ATTACHMENT_FLAG_REMOTE_REMOVED, ATTACHMENT_MSG_CAPACITY, ATTACHMENT_NAME_CAPACITY,
-    ATTACHMENT_PATH_CAPACITY, ATTACHMENT_SNAPSHOT_SIZE, AttachmentError, AttachmentPhase,
-    AttachmentSnapshot, MAX_ATTACHMENT_BYTES, attachment_begin, attachment_cancel,
+    ATTACHMENT_FLAG_JOB_IN_FLIGHT, ATTACHMENT_FLAG_REMOTE_REMOVED, ATTACHMENT_MSG_CAPACITY,
+    ATTACHMENT_NAME_CAPACITY, ATTACHMENT_PATH_CAPACITY, ATTACHMENT_SNAPSHOT_SIZE, AttachmentError,
+    AttachmentPhase, AttachmentSnapshot, MAX_ATTACHMENT_BYTES, attachment_begin, attachment_cancel,
     attachment_delete_remote, attachment_dispose, attachment_insert, attachment_intent,
     attachment_intent_dispose, attachment_retry_upload, attachment_snapshot,
 };

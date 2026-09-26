@@ -481,11 +481,11 @@ pub unsafe extern "C" fn meeterm_attachment_begin(
     .unwrap_or(0)
 }
 
-/// Explicit transfer retry / re-validation for a pending/failed operation,
-/// or remote re-verification for an uploaded one whose destination was
-/// re-fenced after recovery. `target_terminal_id` must be the pane
-/// terminal the operation's intent captured — the call never retargets.
-/// Zero is accepted, negative is a stable native error code.
+/// Explicit transfer retry for a pending/failed operation — or for an
+/// uploaded one whose remote file was verified gone (`remote_missing`)
+/// or explicitly deleted. `target_terminal_id` must be the pane terminal
+/// the operation's intent captured — the call never retargets. Zero means
+/// the upload job was queued; negative is a stable native error code.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_attachment_retry_upload(
     target_terminal_id: u64,
@@ -496,12 +496,17 @@ pub extern "C" fn meeterm_attachment_retry_upload(
         .unwrap_or_else(|error| error.code())
 }
 
-/// Explicit insert: one quoted remote-path line into the operation's
-/// recorded destination pane through the epoch-guarded native paste path.
-/// `target_terminal_id` must be the pane terminal the intent captured.
-/// Never sends Enter; a stale or changed destination records a pending
-/// reason on the snapshot instead of retargeting to the selected pane.
-/// Zero is accepted, negative is a native error code.
+/// Queue the verified-insert job: the recorded remote file is re-verified
+/// over SFTP (regular file, exact size, `0600`, generated name under the
+/// recorded base) before one quoted remote-path line is pasted into the
+/// operation's recorded destination pane through the epoch-guarded native
+/// paste path under the session lock. `target_terminal_id` must be the
+/// pane terminal the intent captured. Never sends Enter; never retargets
+/// to the selected pane. Zero means the job was *accepted* — the result
+/// is the snapshot after `JOB_IN_FLIGHT` (`0x4`) clears: `inserted`, or
+/// pending/failed with a verification reason (`remote_missing`,
+/// `remote_unsafe_path`, `sftp_*`, `timeout`) or a paste-gate reason.
+/// `-8` (`busy`) while any job is in flight.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_attachment_insert(target_terminal_id: u64, attachment_id: u64) -> i32 {
     crate::attachment::attachment_insert(target_terminal_id, attachment_id)
@@ -531,13 +536,18 @@ pub extern "C" fn meeterm_attachment_dispose(attachment_id: u64) -> i32 {
 
 /// Explicit remote deletion of the meeterm-generated names this operation
 /// owns (published file and `.meeterm-partial-*` remnant; the app-private
-/// attachments directory is removed only when empty).
+/// attachments directory is removed only when empty). Like every job it
+/// re-resolves the recorded intent against the current connection and
+/// captures a fresh fence — the whole recorded destination identity
+/// (endpoint, backend/runtime, pane identity, exact tmux session) must
+/// still match, so a recovered same-destination connection deletes
+/// normally while a changed one is refused.
 /// `target_terminal_id` must be the pane terminal the operation's intent
-/// captured, and the SSH endpoint must still match. Only names matching
-/// the generated grammar are deleted — never a caller-supplied path. The
-/// op keeps its phase — an inserted reference is not revoked — while the
-/// snapshot's `remote_removed` flag records the verified deletion. Zero is
-/// accepted/queued, negative is a native error code.
+/// captured. Only names matching the generated grammar are deleted —
+/// never a caller-supplied path. The op keeps its phase — an inserted
+/// reference is not revoked — while the snapshot's `remote_removed` flag
+/// records the verified deletion. Zero means the job was queued; `-8`
+/// (`busy`) while any job is in flight.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_attachment_delete_remote(
     target_terminal_id: u64,

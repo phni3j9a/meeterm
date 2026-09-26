@@ -289,24 +289,33 @@ The destination identity lives in an `attachment_intent` recorded from the
 *picked pane's* native terminal — any pane, not only the connection owner;
 the core resolves the owning connection itself. The intent binds only
 stable identities: the credential-free endpoint (host/port/username/
-verified host-key context, backend, runtime), the remote pane, and Herdr's
+verified host-key context, backend, runtime — for tmux the exact session
+identity: session id + server pid + server start, so a replaced tmux
+server reusing a session name is rejected), the remote pane, and Herdr's
 stable `terminal_id` rather than its mutable alias. Generation and epochs
-are deliberately excluded: each `begin`/`retry`/`insert` re-resolves the
-intent against the live actor into a fresh execution fence, so a recovered
-connection works again without a new intent while a Server/Session/runtime
-switch, a replaced or vanished pane, or a foreign terminal id fails closed
-with a recorded pending reason (`destination_changed`,
-`destination_missing`, `stale_operation`, …) instead of retargeting
-whatever is now selected. After a recovery revoked an `uploaded` op's
-fence, `attachment_retry_upload` re-verifies the recorded remote file
-(`lstat` type/size/`0600`) without re-uploading; a missing or replaced
-file drops to `pending(remote_missing)` until an explicit retry re-uploads.
+are deliberately excluded: **every** job (`begin`, `retry`, `insert`,
+`delete_remote`) re-resolves the intent against the live actor into a
+fresh execution fence, so a recovered connection works again without a
+new intent while a Server/Session/runtime switch, a replaced tmux server,
+a replaced or vanished pane, or a foreign terminal id fails closed with a
+recorded pending reason (`destination_changed`, `destination_missing`,
+`stale_operation`, …) instead of retargeting whatever is now selected.
+At most one job is in flight per operation (a second request is refused
+`busy`, and snapshot flag `0x4` reports in-flight state; the synchronous
+return only means *accepted*).
 
 The upload writes a private `.meeterm-partial-*` staging file and publishes
 the final name by rename only after the SFTP `CLOSE` reply reports success
 and an `lstat` byte/metadata check of the staged file passes; cancellation
 removes the partial best-effort, and a delayed completion cannot mutate a
-cancelled operation. Every launch/transfer/delete/verify job carries the
+cancelled operation. `insert` is itself one asynchronous *verified-insert*
+job: it lstat-verifies the recorded remote file (generated name, canonical
+base, regular file, exact size, `0600`) — no path pastes before or without
+verification — then re-checks the fence under the session lock and pastes
+one quoted path; a missing/replaced file clears the stale `remote_path`
+and lands `pending(remote_missing)` for an explicit re-upload, and
+`retry_upload` always re-uploads (short-circuiting on a verified
+same-endpoint file). Every launch/transfer/insert/delete job carries the
 operation's attempt identity, so a superseded detached job's late progress
 or completion is discarded instead of disturbing the current attempt. An
 SFTP-refusing server, a missing subsystem, or a dead actor surfaces as an
