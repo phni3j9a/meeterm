@@ -1,24 +1,91 @@
-run=issue-28-focused-validation
-commit=abc1b2a54e6daaac651ade204e25cdd2d3713a13
-branch=issue-28-image-attachments
-result=pass
-scope=focused (no full/standard/ssh acceptance suites)
+meeterm Issue #28 final validation suite
+========================================
+commit=8fb2a584a84c51c8fc587d51f1e681023d15a020
+branch=issue-28-image-attachments (PR #43 head, fixes through FP-024)
+suite=android-full + issue28-acceptance
+result=passed
+fresh_build=yes
+date=2026-09-26 (UTC)
 
-stage_commit=confirmed (HEAD verified)
-stage_npm_ci=pass
-stage_cng=pass (npx expo prebuild --platform android --non-interactive --no-install --clean; generated android/ removed first)
-stage_gradle_build=pass (assembleRelease 2m36s, 668 tasks)
-stage_unit_tests=pass (:meeterm-terminal:testReleaseUnitTest 66/66, zero failures/errors; AttachmentLimitsTest + AttachmentOperationTest included)
-stage_emulator_install_launch=pass (fresh boot, adb install -r, launch)
-stage_native_ready=pass
-stage_first_frame=pass (Rust-owned snapshot rendered; terminal.png)
-stage_process_alive=pass
-stage_screen_fixtures=31/32 captured; empty=unavailable:missing_screen_element_0,screen_element_1 (pre-existing baseline)
-stage_attachment_routes=11/11 captured manually via deep-link pattern (force-stop -> am start VIEW meeteterm://smoke?screen=<route> -> bounded uiautomator wait -> screencap); distinct seeded content verified via ui dump (ready: normalized preview meta + Upload; error: size-limit copy; blocked: IME-composition gate)
-stage_picker=pass-real — smoke routes short-circuit pickAttachment by design (smokeFixtureActive stays in 'choosing'), so the real picker was driven through a live fixture session: fresh onboarding -> fx1 127.0.0.1:45703 (key auth + host-key trust) -> tmux meeterm -> terminal -> Attach image -> Choose from files -> SAF DocumentsUI -> Downloads/test_attach.png -> normalized preview 64x64 PNG 1KB reached (i28-attach-sheet-real.png, i28-picker-real-normalized.png). PickVisualMedia path not exercised (SAF chosen); SSH upload/insert not attempted per scope.
-note=attachment fixture captures are seeded presentation captures; the real-picker run additionally proves SAF pick -> native normalize -> ready phase on-device.
+Section A — existing full suite
+-------------------------------
+checkout: git fetch origin && git reset --hard 8fb2a584 (HEAD verified)
+npm ci: pass
+CNG: pass (rm -rf android/; NODE_ENV=production EXPO_PUBLIC_MEETERM_SMOKE=1 npx expo prebuild --platform android --non-interactive --no-install --clean)
+assembleRelease: pass (~2m31s; Rust core compiled arm64-v8a + x86_64)
+Kotlin unit tests: :meeterm-terminal:testReleaseUnitTest 66/66 pass
+  (includes AttachmentLimitsTest / AttachmentOperationTest; begin(composing=true)->held covered)
+emulator: sdk_gphone64_x86_64 api=36 abi=x86_64, meeterm_api36 headless
+install/launch/nativeReady/first-frame: pass (terminal.png, logcat.txt sanitized)
+screen fixtures: 31/32 captured (manifest=32 on this branch);
+  empty=unavailable:missing_screen_element_* is a pre-existing baseline
+attachment fixture routes (manual deep-links, presentation captures only):
+  11/11 captured — attachment-choose, -ready, -uploading, -pending, -uploaded,
+  -inserted, -failed, -cancelled, -deleted, -error, -blocked
+SSH fixture suite: pass (~35min) — see ssh-validation.txt completed= chain
+transport loss: pass — deterministic sshd stop/start; retained read-only
+  surface; same pane + same native handle; pre/post markers exactly once;
+  no input during loss; other panes clean (transport-loss-validation.txt)
 
-toolchain_node=v24.19.0 (blueprint pins 22.22.2; standing deviation)
-toolchain_gradle=9.3.1
-toolchain_ndk=27.1.12297006
-toolchain_rust=1.96.0
+Section B — Issue #28 acceptance additions (fixture sshd + real tmux)
+-------------------------------------------------------------------
+fixture: 127.0.0.1:44719 fx1 with --sftp enabled; tmux session 'meeterm' pane %0;
+  synthetic images only (generated via PIL+piexif in /home/ubuntu)
+
+B.1 real pickers -> normalized preview:
+  Photo Picker (PickVisualMedia): exif_gps.jpg pushed to shared storage +
+    media scan -> picked -> normalized preview. shots: i28-saf-picker.png is
+    the SAF picker; i28-picker-photos-normalized.png = Photo Picker normalized preview.
+  SAF (Files/DocumentsUI): exif_orient6.jpg picked -> normalized preview
+    i28-exif-orient6-preview.png.
+  NOTE: smoke fixture routes short-circuit pickAttachment (smokeFixtureActive),
+    so both pickers were driven through a live fixture session.
+
+B.2 EXIF/GPS strip (AC07):
+  exif_orient6.jpg src 240x120 EXIF Orientation=6 red bar on left edge.
+    staged normalized file pulled via adb (adb root): staged_orient6.jpg
+    120x240, red bar moved left-edge -> top-edge, all EXIF IFDs empty.
+  exif_gps.jpg src 160x160 with GPS IFD (35d40'N 139d45'E alt40) + Orientation=1.
+    pulled: staged_gps_check.jpg 160x160, all EXIF/GPS IFDs empty.
+  both verified byte-level with piexif.
+
+B.3 live SSH E2E (AC10/AC13/AC21/AC30):
+  upload attempt before --sftp respawn captured as bonus failed-state evidence:
+    i28-e2e-upload-attempt.png, i28-e2e-upload-failed-nosftp.png
+    ("remote SSH server did not accept the SFTP subsystem" — expected on a
+    non-SFTP fixture).
+  With SFTP: Attach -> Upload progress (i28-e2e-uploading.png) -> Uploaded
+    (i28-e2e-uploaded.png); remote file appeared on fixture host at
+    ~/.local/share/meeterm/attachments/meeterm-20260926-192049-66b4a8e2d9d6be5f.jpg (1681 B).
+  Sheet closed -> toolbar Insert attachment (i28-e2e-sheet-closed-toolbar.png)
+    -> Inserting (i28-e2e-inserting.png) -> Inserted (i28-e2e-inserted.png).
+  Terminal input line contained '<absolute path>' UNSENT
+    (i28-e2e-input-quoted-path.png; tmux capture-pane confirmed prompt state,
+    no command executed).
+  Delete from server -> remote file gone on fixture host
+    (i28-e2e-deleted.png; remote dir listing verified empty/absent).
+
+B.4 IME protection (AC22) — verified live, not best-effort-blocked:
+  emulator ships LatinIME + voice IME only; LatinIME/Gboard commit each key
+  without a composing span on this field, so a minimal composing IME
+  (dev.miniime, hand-built InputMethodService exposing COMPOSE/FINISH that
+  drive InputConnection.setComposingText("かきく")/finishComposingText())
+  was installed to produce a real composition.
+  While composition was active, Attach image -> held notice
+  "Finish IME composition before attaching." (i28-ime-held.png), sheet did
+  not open, composition preserved: FINISH committed かきく intact into the
+  terminal input (i28-ime-composing.png, i28-ime-committed.png; tmux
+  capture-pane confirms provisional text never hit the remote before commit).
+  dev.miniime test IME was then deselected (LatinIME restored); its APK is a
+  test harness and is excluded from this bundle.
+  Unit coverage also present: AttachmentLimitsTest exercises
+  begin(composing=true) -> held.
+
+Section C — notes
+-----------------
+- sanitized: no APK (app-release.apk removed), no keys/credentials, synthetic
+  images only; pulled files are app-generated normalized JPEGs.
+- attach_picker.py 'not connected' asserts observed twice were a pure timing
+  race (connection completes a beat after the 8s check); continued manually.
+- node v24.19.0 vs blueprint pin 22.22.2 — standing deviation (unchanged).
+- emulator + fixture fx1 left running.
