@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.Promise
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -27,6 +28,9 @@ internal class AttachmentPicker(
   enum class Source { PHOTOS, FILES }
 
   private val requestCounter = AtomicLong()
+  // Result callbacks fire on the main thread; the bounded stream copy moves
+  // off it so a large image never stalls the UI.
+  private val copyExecutor = Executors.newSingleThreadExecutor()
 
   fun pick(source: Source, promise: Promise) {
     val activity = appContext.currentActivity as? ComponentActivity
@@ -55,20 +59,22 @@ internal class AttachmentPicker(
           promise.resolve(AttachmentResults.canceled())
           return@register
         }
-        when (val staged = store.stageFromUri(uri, store.newStagingFileName())) {
-          is AttachmentStore.StageCopy.Ok -> promise.resolve(
-            AttachmentResults.picked(staged.fileName, staged.byteCount),
-          )
-          is AttachmentStore.StageCopy.Rejected -> promise.resolve(
-            AttachmentResults.error(
-              staged.errorCode,
-              if (staged.errorCode == AttachmentLimits.ERROR_INPUT_TOO_LARGE) {
-                "The image is too large to attach."
-              } else {
-                "The image could not be copied into app storage."
-              },
-            ),
-          )
+        copyExecutor.execute {
+          when (val staged = store.stageFromUri(uri, store.newStagingFileName())) {
+            is AttachmentStore.StageCopy.Ok -> promise.resolve(
+              AttachmentResults.picked(staged.fileName, staged.byteCount),
+            )
+            is AttachmentStore.StageCopy.Rejected -> promise.resolve(
+              AttachmentResults.error(
+                staged.errorCode,
+                if (staged.errorCode == AttachmentLimits.ERROR_INPUT_TOO_LARGE) {
+                  "The image is too large to attach."
+                } else {
+                  "The image could not be copied into app storage."
+                },
+              ),
+            )
+          }
         }
       }
     launcher = registered

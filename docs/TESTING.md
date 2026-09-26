@@ -217,14 +217,23 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
 - attachment sheet は preview に normalize 済みの app-owned file だけを使い、
   寸法・format・byte count・宛先（Server/Session/Workspace/Terminal）・保存先
   （既定 `~/.local/share/meeterm/attachments`、明示入力可）を表示すること。
-  Upload と Insert は別の明示操作であり、insert は terminal input への参照
-  挿入のみで submit は常に利用者の明示操作であること。operation phase は
+  sheet を開く前に `attachmentCompositionStatus` が main thread で実 IME 状態を
+  読み、composing 中は keyboard dismiss / sheet 提示を行わず
+  `Finish IME composition before attaching.` を通知に出すこと。sheet の下では
+  terminal view が mounted・visible のまま残ること。Upload と Insert は別の
+  明示操作であり、insert は sheet ではなく terminal toolbar の
+  `Insert attachment` からのみ行うこと。toolbar の action は capture 済み宛先の
+  terminal が表示中で op が remote file を持つ間だけ出し、tap は通常の terminal
+  input gate を通ること。input gate が落ちている tap は理由を通知し core に
+  到達しないこと。operation phase は
   `pending`/`uploading`/`uploaded`/`inserted`/`failed`/`cancelled`
-  を理由・進捗付きで表示し、明示削除は phase を維持したまま
-  `remoteRemoved`（`flags & 0x2`）として表れること。Retry upload /
-  Cancel / Retry insert /
-  Delete from server / Discard は capability どおりにのみ有効であること。
-  表示中の terminal が capture 済み宛先と異なる場合は insert が無効化され、
+  を理由・進捗付きで表示し、明示削除の accept は `Deleting…` と継続 poll で
+  表し、snapshot の `remoteRemoved`（`flags & 0x2`）または failure を見て初めて
+  解消すること。Retry upload は `pending`/`failed` と verify 済み削除後の
+  `uploaded` のみ、Cancel / Delete from server / Discard は capability どおりに
+  のみ有効であること。`inserted` で配送未確認（`flags & 0x1`）のときは
+  check-the-terminal 通知のみで、自動再送も不確実な retry もしないこと。
+  表示中の terminal が capture 済み宛先と異なる場合は insert が出ず、
   別宛先への自動挿入はないこと。sheet の dismiss（iOS の swipe down を含む）は
   draft/session を保持し、再オープンで `getAttachmentState` から復元されること。
   Discard または別の1枚の選択だけが local file と core operation を破棄すること。
@@ -233,8 +242,14 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   固定長 snapshot decode・stale id 破棄・cancel 後の遅延完了非復活・二重
   upload 拒否・capability 表）と、注入 XCTest `AttachmentTests.swift`（同じ
   operation machine 検証＋実 `TerminalInputView` の marked text による insert
-  hold）で確認します。`ios-typecheck.sh` と `ios-inject-ui-test.sh` の manifest
-  は `AttachmentOperation.swift` を含む同じ attachment source 群を含みます。
+  hold＋cold-start reclaim が store 作成後に走り前プロセスの app-owned file を
+  回収すること）と、app-selection test の attachment 節（sheet を開いても
+  terminal input surface が生きること・held composition での拒否・upload が
+  capture 済み宛先へ行くこと・accept 済み delete が `remoteRemoved` まで poll
+  されること・verify 済み削除後の Upload again が transfer retry を呼ぶこと・
+  toolbar insert の宛先/input gate・inserted notice）で確認します。
+  `ios-typecheck.sh` と `ios-inject-ui-test.sh` の manifest は
+  `AttachmentOperation.swift` を含む同じ attachment source 群を含みます。
 - smoke fixture は `attachment-choose` / `attachment-ready` /
   `attachment-uploading` / `attachment-pending` / `attachment-uploaded` /
   `attachment-inserted` / `attachment-failed` / `attachment-cancelled` /
@@ -242,10 +257,10 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   で表示確認のみを行います。fixture は OS picker や native session に触れず、
   picker/normalize/upload 実行の証拠にはしません。
 
-この時点で実際の upload/insert の end-to-end 動作は W2 の Rust 実装待ちのため
-未検証であり、Android では `unavailable` がユーザー向け文言として表示される
-ことを確認します。Mobile full/standard run の real-device picker 挙動も、実行
-された run が存在するまで主張しません。
+実際の upload/insert/delete の end-to-end 動作（picker → SSH 転送 → 宛先
+terminal への参照挿入 → CLI 側の受理）は、Devin Cloud の real-device run が
+実行されてからのみ主張します。Mobile full/standard run の real-device picker
+挙動も、実行された run が存在するまで主張しません。
 
 ## 変更に応じた実行範囲
 

@@ -156,7 +156,11 @@ extension AttachmentPicker: UIDocumentPickerDelegate {
       finish(AttachmentResults.canceled())
       return
     }
-    stage(url, securityScoped: true)
+    // The delegate fires on the main thread; the bounded staging copy moves
+    // off it so a large image never stalls the UI.
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      stage(url, securityScoped: true)
+    }
   }
 
   func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONArray
@@ -247,17 +248,26 @@ class MeetermTerminalModule : Module() {
       }
     }
 
-    // Issue #28 attachment flow. A held begin means the terminal's IME still
-    // owns a composition; JS shows the "finish conversion" hint and nothing
-    // about the composition is touched.
+    // Issue #28 attachment flow. Composition state is read on the main
+    // thread; a held result means the IME still owns marked text and the
+    // caller must not dismiss it.
     AsyncFunction("beginAttachment") { terminalId: String, target: Map<String, Any?> ->
       val identity = AttachmentTargetIdentity.fromMap(target)
         ?: throw IllegalArgumentException("The attachment target is invalid.")
       AttachmentController.begin(normalizeTerminalId(terminalId), identity, storageContext())
-    }
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("attachmentCompositionStatus") { terminalId: String ->
+      if (AttachmentCompositionGuard.isComposing(normalizeTerminalId(terminalId))) {
+        AttachmentResults.held(AttachmentLimits.REASON_COMPOSING)
+      } else {
+        mapOf("status" to "ok")
+      }
+    }.runOnQueue(Queues.MAIN)
+    // Activity result registration and launch are main-thread operations; the
+    // bounded staging copy inside the picker callback hops to a worker.
     AsyncFunction("pickAttachmentImage") { source: String, promise: Promise ->
       AttachmentController.pick(source, promise, appContext, storageContext())
-    }
+    }.runOnQueue(Queues.MAIN)
     AsyncFunction("prepareAttachmentImage") { token: String ->
       AttachmentController.prepare(token, storageContext())
     }
@@ -283,7 +293,7 @@ class MeetermTerminalModule : Module() {
     // keys, and held while the native IME owns a composition.
     AsyncFunction("insertAttachment") { terminalId: String ->
       AttachmentController.insert(normalizeTerminalId(terminalId), storageContext())
-    }
+    }.runOnQueue(Queues.MAIN)
     AsyncFunction("deleteRemoteAttachment") { terminalId: String ->
       AttachmentController.deleteRemote(normalizeTerminalId(terminalId), storageContext())
     }
