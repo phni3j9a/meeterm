@@ -18,16 +18,16 @@ use meeterm_core::workspace::{
     Backend, RuntimeDiscoverySnapshot, RuntimeSectionState, RuntimeState,
 };
 use meeterm_core::{
-    ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED, ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentError,
-    AttachmentPhase, AttachmentSnapshot, AuthOptions, ConnectOptions, ConnectionSnapshot,
-    ConnectionState, MAX_ATTACHMENT_BYTES, PaneSnapshot, SessionSnapshot, SpecialKey,
-    attachment_begin, attachment_cancel, attachment_delete_remote, attachment_dispose,
-    attachment_insert, attachment_intent, attachment_intent_dispose, attachment_retry_upload,
-    attachment_snapshot, close_pane, close_workspace, connect_host, connection_snapshot,
-    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
-    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
-    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
-    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
+    ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED, ATTACHMENT_FLAG_JOB_IN_FLIGHT,
+    ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentError, AttachmentPhase, AttachmentSnapshot,
+    AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, MAX_ATTACHMENT_BYTES,
+    PaneSnapshot, SessionSnapshot, SpecialKey, attachment_begin, attachment_cancel,
+    attachment_delete_remote, attachment_dispose, attachment_insert, attachment_intent,
+    attachment_intent_dispose, attachment_snapshot, close_pane, close_workspace, connect_host,
+    connection_snapshot, create_pane, create_runtime, create_terminal, create_workspace,
+    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count,
+    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot,
+    meeterm_snapshot_size, reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
     runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
 };
 
@@ -1488,6 +1488,27 @@ fn wait_for_attachment_flag(attachment_id: u64, flag: u32, label: &str) -> Attac
     }
 }
 
+/// Poll one attachment until no job is in flight and return the settled
+/// snapshot — synchronous insert/delete calls only mean a job was
+/// *accepted*; the result is readable only once the flag clears.
+fn wait_for_job_done(attachment_id: u64, label: &str) -> AttachmentSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let snapshot = attachment_snapshot(attachment_id).expect("attachment snapshot");
+        if snapshot.flags & ATTACHMENT_FLAG_JOB_IN_FLIGHT == 0 {
+            return snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{label}: job never settled; phase={} code={} message={}",
+            snapshot.phase,
+            connection_string(&snapshot.error_code, snapshot.error_code_len),
+            connection_string(&snapshot.error_message, snapshot.error_message_len),
+        );
+        sleep(POLL_INTERVAL);
+    }
+}
+
 #[test]
 #[ignore = "requires python3 scripts/ssh/fixture.py --sftp for a real local sshd with SFTP"]
 fn real_openssh_sftp_attachment_upload_and_insert() {
@@ -1619,25 +1640,31 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         .clone();
     select_pane(id, other.pane_id).expect("select other pane");
     wait_for_selected_pane(id, other.pane_id, "select other pane");
-    let rejected = attachment_insert(id, attachment_id);
-    assert!(
-        rejected.is_err(),
-        "insert after destination change must be rejected"
-    );
-    let blocked = attachment_snapshot(attachment_id).expect("blocked attachment snapshot");
+    let quoted = format!("'{remote_path}'");
+    // The insert *job* is still accepted — the intent's pane still exists
+    // — but with another pane selected the verified job's paste gate
+    // refuses under the session lock: nothing reaches the other pane and
+    // the op keeps `Uploaded` with `destination_changed` once the job
+    // settles.
+    attachment_insert(id, attachment_id).expect("insert job accepted");
+    let blocked = wait_for_job_done(attachment_id, "stale-pane insert job");
     assert_eq!(blocked.phase, AttachmentPhase::Uploaded as u32);
     assert_eq!(
         connection_string(&blocked.error_code, blocked.error_code_len),
         "destination_changed"
     );
+    sleep(Duration::from_millis(300));
+    let shown = read_snapshot(other.terminal_id);
+    assert!(
+        !snapshot_text(&shown).replace('\n', "").contains(&quoted),
+        "a refused insert must never paste into the other pane: {}",
+        snapshot_text(&shown)
+    );
 
-    // Reselecting the fenced pane restores the explicit insert path. An
-    // explicit retry on the Uploaded op re-fences the destination and
-    // queues the remote re-verification job — no bytes are re-sent — then
-    // insert proceeds on the fresh fence.
+    // Reselecting the fenced pane restores the explicit insert path: the
+    // job re-verifies the remote file first and only then pastes.
     select_pane(id, pane.pane_id).expect("reselect attachment pane");
     wait_for_selected_pane(id, pane.pane_id, "reselect attachment pane");
-    attachment_retry_upload(id, attachment_id).expect("re-verify uploaded attachment");
     attachment_insert(id, attachment_id).expect("insert remote path");
     let inserted =
         wait_for_attachment_phase(attachment_id, AttachmentPhase::Inserted, "path insert");
@@ -1649,7 +1676,6 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     // never sent, so the shell echoes the line without executing it. The
     // generated path is longer than the 80-column pane: it soft-wraps, so
     // the checks run against the wrap-joined viewport text.
-    let quoted = format!("'{remote_path}'");
     let shown = wait_for_pane_snapshot(&pane, "quoted remote path echo", |snapshot| {
         snapshot_text(snapshot).replace('\n', "").contains(&quoted)
     });

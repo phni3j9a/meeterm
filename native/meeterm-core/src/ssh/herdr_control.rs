@@ -1595,7 +1595,7 @@ impl<'a> HerdrClient<'a> {
                 )));
                 return Ok(());
             }
-            ControlCommand::SftpVerify {
+            ControlCommand::SftpInsert {
                 attachment_id,
                 attempt,
             } => {
@@ -1604,7 +1604,7 @@ impl<'a> HerdrClient<'a> {
                     self.session,
                     attachment_id,
                     attempt,
-                    SftpJob::Verify,
+                    SftpJob::Insert,
                 )));
                 return Ok(());
             }
@@ -1721,7 +1721,7 @@ impl<'a> HerdrClient<'a> {
                 | ControlCommand::SetTerminalVisible { .. }
                 | ControlCommand::SftpUpload { .. }
                 | ControlCommand::SftpRemove { .. }
-                | ControlCommand::SftpVerify { .. } => unreachable!(),
+                | ControlCommand::SftpInsert { .. } => unreachable!(),
                 ControlCommand::CreateWorkspace { name } => {
                     ("workspace.create", json!({"label":name, "focus":false}))
                 }

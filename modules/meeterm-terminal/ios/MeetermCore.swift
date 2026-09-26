@@ -696,13 +696,17 @@ enum MeetermCore {
     }
   }
 
-  /// `meeterm_attachment_retry_upload`: 0 accepted, negative = error code.
+  /// `meeterm_attachment_retry_upload`: 0 = re-upload job queued (pending/
+  /// failed/uploaded+removed only), negative = error code.
   /// `targetTerminalId` must be the pane terminal the intent captured.
   static func attachmentRetryUpload(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
     meeterm_attachment_retry_upload(targetTerminalId, attachmentId)
   }
 
-  /// `meeterm_attachment_insert`: 0 accepted, negative = error code.
+  /// `meeterm_attachment_insert`: queues the verified-insert job — remote
+  /// lstat + name/base checks first, then one quoted path line; never
+  /// sends Enter. 0 = job accepted (not inserted); the result lands in the
+  /// snapshot once JOB_IN_FLIGHT (0x4) clears. -8 = another job in flight.
   static func attachmentInsert(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
     meeterm_attachment_insert(targetTerminalId, attachmentId)
   }
@@ -717,7 +721,10 @@ enum MeetermCore {
     meeterm_attachment_dispose(attachmentId)
   }
 
-  /// `meeterm_attachment_delete_remote`: 0 accepted, negative = error code.
+  /// `meeterm_attachment_delete_remote`: queues the remote-delete job —
+  /// the recorded intent is re-resolved and a fresh fence captured, so it
+  /// runs on the same endpoint/runtime/pane the upload targeted. 0 = job
+  /// queued, -8 = another job in flight; REMOTE_REMOVED set on success.
   /// `targetTerminalId` must be the pane terminal the intent captured.
   static func attachmentDeleteRemote(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
     meeterm_attachment_delete_remote(targetTerminalId, attachmentId)

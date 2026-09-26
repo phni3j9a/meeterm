@@ -164,18 +164,24 @@ when the attachment sheet is confirmed: the adapter passes the *target
 pane's* native terminal id — any pane, not just the connection owner —
 and the core resolves the owning SSH connection itself and stores the
 stable identity (SSH endpoint + verified host key, backend/runtime, the
-remote pane, and for Herdr the stable remote `terminal_id` rather than
+remote pane, the exact tmux session identity — session id + server pid +
+server start, so a replaced server never passes even with a reused
+session name — and for Herdr the stable remote `terminal_id` rather than
 its mutable alias). `attachment_begin(intent_id, local_path,
 display_name, remote_dir, size_bytes)` then starts one Rust-owned
 operation against that intent — at most one live operation per
 connection (`pending`/`uploading`/`uploaded`/`inserted` count;
-`failed`/`cancelled` records do not). Every `begin`/`retry`/`insert`
+`failed`/`cancelled` records do not) and at most one job in flight per
+operation (a second request is refused `busy`; snapshot flag `0x4`
+reports the in-flight state while the phase still shows the last settled
+result). Every job — `begin`, `retry`, `insert`, `delete_remote` —
 re-resolves the intent into a fresh execution fence (generation,
-operation epoch, pane binding); a Server/Session/runtime switch during
-preview, a replaced or vanished pane, or a foreign terminal id fails
-closed instead of uploading to whatever is now selected. The picked file
-stays adapter-owned and read-only for the core; it is re-validated
-immediately before streaming.
+operation epoch, pane binding, tmux session identity); a
+Server/Session/runtime switch during preview, a replaced tmux server, a
+replaced or vanished pane, or a foreign terminal id fails closed instead
+of running against whatever is now selected. The picked file stays
+adapter-owned and read-only for the core; it is re-validated immediately
+before streaming.
 
 The upload multiplexes a second SSH **session channel** running the `sftp`
 subsystem on the already-authenticated connection — no second TCP session,
@@ -185,8 +191,8 @@ and the definitive `CHANNEL_SUCCESS`/`CHANNEL_FAILURE` wait
 background launch inside the actor task, polled as one `select!` arm —
 a stalled or slow subsystem can never freeze the interactive
 input/output loop, and launch order stays in command order. Byte
-streaming then moves to a detached task. Every launch/transfer/delete/
-verify job carries the op's *attempt* identity; progress, completion,
+streaming then moves to a detached task. Every launch/transfer/insert/
+delete job carries the op's *attempt* identity; progress, completion,
 failure and stall apply only to the current attempt, so a superseded
 detached job's late result is discarded, and every failure is folded
 into the operation's snapshot rather than failing the connection.
@@ -213,7 +219,10 @@ changed. Cancellation and failures remove the partial best-effort; a
 verified same-endpoint final file short-circuits a later retry without
 re-sending bytes.
 
-Remote files persist until `attachment_delete_remote` runs: it deletes
+Remote files persist until `attachment_delete_remote` runs — itself one
+accepted job that re-resolves the *whole* recorded intent (endpoint,
+backend/runtime incl. tmux session identity, remote pane) into a fresh
+fence, not merely a stale endpoint match: it deletes
 only the operation's generated names (the published `meeterm-*` file, its
 `.meeterm-partial-*` remnant, and the app-private attachments directory
 when empty) on the same authenticated endpoint recorded by the intent —
@@ -238,18 +247,25 @@ rmdir ~/.local/share/meeterm/attachments ~/.local/share/meeterm 2>/dev/null
 
 (`rmdir` fails harmlessly if the directory is not empty.)
 
-`attachment_insert` is a separate explicit step on the intent's pane:
-exactly one single-quoted remote-path line through the existing
-`paste_utf8_at_epoch` fence. Enter is never sent and no shell command is
+`attachment_insert` is a separate explicit step on the intent's pane —
+one asynchronous *verified-insert* job. A `0` return only means the job
+was accepted (`0x4` set); the job re-resolves the intent onto a fresh
+fence, lstat-verifies the recorded remote file over SFTP (generated
+basename, recorded canonical base, regular file, exact size, `0600`),
+and only on success re-checks the whole fence under the session lock and
+pastes exactly one single-quoted remote-path line through
+`paste_utf8_at_epoch`. No path pastes before or without verification.
+Verification loss clears the stale `remote_path` and lands
+`pending(remote_missing)` — the next move is a real `retry_upload`
+re-upload, not an insert retry; a paste-gate refusal keeps `uploaded`
+with the reason. Enter is never sent and no shell command is
 constructed; the user reviews and submits the line to whatever is running
 in the pane. `inserted` in the snapshot means only "the native input
 queue accepted the line" — it is not a CLI or model delivery
-acknowledgement. After a recovery revoked the op's fence, an explicit
-`attachment_retry_upload` on an `uploaded` op re-resolves the intent,
-binds a fresh fence, and re-verifies the recorded remote file
-(`lstat` type/size/`0600`) without re-uploading; a missing or replaced
-file drops to `pending(remote_missing)` so an explicit retry re-uploads,
-while transient SFTP errors keep `uploaded`.
+acknowledgement. `attachment_retry_upload` always re-uploads after
+re-fencing (`pending`/`failed`, or `uploaded` ops whose file was verified
+gone or deleted); the detached upload short-circuits on a verified
+same-endpoint file, so it doubles as the post-recovery path.
 
 ## Disposable fixture
 

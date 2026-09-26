@@ -150,10 +150,19 @@ internal object MeetermNative {
     sizeBytes: Long,
   ): Long
 
-  /** Explicit retry/re-verify; targetTerminalId must be the intent's pane. */
+  /**
+   * Re-upload for pending/failed (and uploaded+removed) ops;
+   * targetTerminalId must be the intent's pane. 0 = job queued; poll the
+   * snapshot while JOB_IN_FLIGHT (0x4) is set.
+   */
   external fun attachmentRetryUpload(targetTerminalId: Long, attachmentId: Long): Int
 
-  /** Insert one quoted remote-path line via the native paste path. */
+  /**
+   * Queue the verified-insert job — remote verify first, then one quoted
+   * remote-path line via the native paste path; never sends Enter.
+   * 0 = job accepted (not inserted); the result lands in the snapshot
+   * once JOB_IN_FLIGHT clears. -8 = another job in flight.
+   */
   external fun attachmentInsert(targetTerminalId: Long, attachmentId: Long): Int
 
   /** Cancel a pending/uploading op; delayed completions are discarded. */
@@ -162,7 +171,11 @@ internal object MeetermNative {
   /** Drop the operation record; cancels first when still active. */
   external fun attachmentDispose(attachmentId: Long): Int
 
-  /** Explicit server-side delete of the completed remote file. */
+  /**
+   * Queue remote deletion of this op's generated names on the recorded
+   * destination (fresh intent resolution + fence). 0 = job queued;
+   * -8 = another job in flight; phase kept, REMOTE_REMOVED on success.
+   */
   external fun attachmentDeleteRemote(targetTerminalId: Long, attachmentId: Long): Int
 
   /**
