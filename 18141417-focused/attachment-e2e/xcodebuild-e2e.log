@@ -1,0 +1,622 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp/meeterm-derived-data/Build/Products/att28-e2e.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" "-only-testing:meetermTests/MeetermSmokeUITests/testIssue28AttachmentEndToEnd" -resultBundlePath /Users/devin/runner-temp/att28-e2e-18141417.xcresult
+
+2026-09-26 14:19:10.124 xcodebuild[11348:84791] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+Writing result bundle at path:
+	/Users/devin/runner-temp/att28-e2e-18141417.xcresult
+
+2026-09-26 14:19:10.128 xcodebuild[11348:84791] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 14:19:10.349 xcodebuild[11348:84791] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 14:19:12.584715-0700 meetermTests-Runner[11364:85079] [Default] Running tests...
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-09-26 14:19:14.843.
+Test Suite 'meetermTests.xctest' started at 2026-09-26 14:19:14.843.
+Test Suite 'MeetermSmokeUITests' started at 2026-09-26 14:19:14.843.
+Test Case '-[meetermTests.MeetermSmokeUITests testIssue28AttachmentEndToEnd]' started.
+    t =     0.00s Start Test at 2026-09-26 14:19:14.848
+    t =     0.02s Set Up
+    t =     0.03s     Open dev.meeterm.app
+    t =     0.03s         Launch dev.meeterm.app
+2026-09-26 14:19:14.906 xcodebuild[11348:84791] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-26 14:19:14.906 xcodebuild[11348:84791] [MT] IDELaunchParametersSnapshot: no debugger version
+objc[11364]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x108324398) and /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x108b18310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =     1.11s             Setting up automation session
+    t =     3.51s             Wait for dev.meeterm.app to idle
+    t =     4.86s     Wait for dev.meeterm.app to become Running Foreground
+    t =     4.86s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =     4.92s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =     4.93s Checking existence of `Button (Element at index 0)`
+    t =     4.94s Find the Button (Element at index 0)
+    t =     4.99s Waiting 20.0s for "Connect" Button to exist
+    t =     6.04s     Checking `Expect predicate `existsNoRetry == 1` for object "Connect" Button`
+    t =     6.04s         Checking existence of `"Connect" Button`
+    t =     6.06s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =     6.08s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =     6.10s Checking existence of `Button (Element at index 0)`
+    t =     6.11s Find the Button (Element at index 0)
+    t =     6.14s Tap "Connect" Button
+    t =     6.14s     Wait for dev.meeterm.app to idle
+    t =     6.14s     Find the "Connect" Button
+    t =     6.16s     Check for interrupting elements affecting "Connect" Button
+    t =     6.18s     Synthesize event
+    t =     6.48s     Wait for dev.meeterm.app to idle
+    t =     6.89s Waiting 15.0s for TextField (First Match) to exist
+    t =     7.94s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =     7.94s         Checking existence of `TextField (First Match)`
+    t =     8.01s Waiting 10.0s for TextField (First Match) to exist
+    t =     9.11s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =     9.11s         Checking existence of `TextField (First Match)`
+    t =     9.19s Checking existence of `TextField (First Match)`
+    t =     9.25s Find the TextField (First Match)
+    t =     9.34s Tap "ssh-host" TextField[0.95, 0.50]
+    t =     9.34s     Wait for dev.meeterm.app to idle
+    t =     9.34s     Find the "ssh-host" TextField
+    t =     9.41s     Check for interrupting elements affecting "ssh-host" TextField
+    t =     9.46s     Synthesize event
+    t =     9.46s         Find the "ssh-host" TextField
+    t =     9.54s         Find the "ssh-host" TextField
+    t =     9.62s         Find the "ssh-host" TextField
+    t =     9.99s     Wait for dev.meeterm.app to idle
+    t =    10.17s Find the "ssh-host" TextField
+    t =    10.35s Find the "ssh-host" TextField
+    t =    10.55s Type '127.0.0.1' into "ssh-host" TextField
+    t =    10.55s     Wait for dev.meeterm.app to idle
+    t =    10.55s     Find the "ssh-host" TextField
+    t =    10.82s     Check for interrupting elements affecting "ssh-host" TextField
+    t =    10.87s     Synthesize event
+    t =    11.24s     Wait for dev.meeterm.app to idle
+    t =    12.30s Checking `Expect predicate `BLOCKPREDICATE(0x10864d290)` for object "ssh-host" TextField`
+    t =    12.30s     Find the "ssh-host" TextField
+    t =    12.44s     Find the "ssh-host" TextField
+    t =    12.58s Waiting 10.0s for TextField (First Match) to exist
+    t =    13.65s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    13.65s         Checking existence of `TextField (First Match)`
+    t =    13.78s Checking existence of `TextField (First Match)`
+    t =    13.90s Find the TextField (First Match)
+    t =    14.08s Tap "ssh-port" TextField[0.95, 0.50]
+    t =    14.08s     Wait for dev.meeterm.app to idle
+    t =    14.09s     Find the "ssh-port" TextField
+    t =    14.22s     Check for interrupting elements affecting "ssh-port" TextField
+    t =    14.26s     Synthesize event
+    t =    14.26s         Find the "ssh-port" TextField
+    t =    14.40s         Find the "ssh-port" TextField
+    t =    14.53s         Find the "ssh-port" TextField
+    t =    14.99s     Wait for dev.meeterm.app to idle
+    t =    15.07s Find the "ssh-port" TextField
+    t =    15.23s Find the "ssh-port" TextField
+    t =    15.43s Type '' into "ssh-port" TextField
+    t =    15.43s     Wait for dev.meeterm.app to idle
+    t =    15.44s     Find the "ssh-port" TextField
+    t =    15.57s     Check for interrupting elements affecting "ssh-port" TextField
+    t =    15.61s     Synthesize event
+    t =    15.87s     Wait for dev.meeterm.app to idle
+    t =    15.87s Find the "ssh-port" TextField
+    t =    15.99s Type '57673' into "ssh-port" TextField
+    t =    15.99s     Wait for dev.meeterm.app to idle
+    t =    16.00s     Find the "ssh-port" TextField
+    t =    16.11s     Check for interrupting elements affecting "ssh-port" TextField
+    t =    16.15s     Synthesize event
+    t =    16.44s     Wait for dev.meeterm.app to idle
+    t =    17.50s Checking `Expect predicate `BLOCKPREDICATE(0x1085bd050)` for object "ssh-port" TextField`
+    t =    17.50s     Find the "ssh-port" TextField
+    t =    17.62s     Find the "ssh-port" TextField
+    t =    17.73s Waiting 10.0s for TextField (First Match) to exist
+    t =    18.77s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    18.78s         Checking existence of `TextField (First Match)`
+    t =    18.90s Checking existence of `TextField (First Match)`
+    t =    19.01s Find the TextField (First Match)
+    t =    19.14s Tap "ssh-username" TextField[0.95, 0.50]
+    t =    19.14s     Wait for dev.meeterm.app to idle
+    t =    19.15s     Find the "ssh-username" TextField
+    t =    19.27s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    19.31s     Synthesize event
+    t =    19.31s         Find the "ssh-username" TextField
+    t =    19.44s         Find the "ssh-username" TextField
+    t =    19.56s         Find the "ssh-username" TextField
+    t =    19.97s     Wait for dev.meeterm.app to idle
+    t =    20.38s Find the "ssh-username" TextField
+    t =    20.52s Find the "ssh-username" TextField
+    t =    20.66s Type 'd' into "ssh-username" TextField
+    t =    20.66s     Wait for dev.meeterm.app to idle
+    t =    20.66s     Find the "ssh-username" TextField
+    t =    20.79s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    20.83s     Synthesize event
+    t =    21.06s     Wait for dev.meeterm.app to idle
+    t =    22.14s Checking `Expect predicate `BLOCKPREDICATE(0x10867a4c0)` for object "ssh-username" TextField`
+    t =    22.14s     Find the "ssh-username" TextField
+    t =    22.26s     Find the "ssh-username" TextField
+    t =    22.40s Type 'e' into "ssh-username" TextField
+    t =    22.40s     Wait for dev.meeterm.app to idle
+    t =    22.40s     Find the "ssh-username" TextField
+    t =    22.57s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    22.61s     Synthesize event
+    t =    22.84s     Wait for dev.meeterm.app to idle
+    t =    23.92s Checking `Expect predicate `BLOCKPREDICATE(0x10867a4c0)` for object "ssh-username" TextField`
+    t =    23.92s     Find the "ssh-username" TextField
+    t =    24.04s     Find the "ssh-username" TextField
+    t =    24.17s Type 'v' into "ssh-username" TextField
+    t =    24.17s     Wait for dev.meeterm.app to idle
+    t =    24.18s     Find the "ssh-username" TextField
+    t =    24.32s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    24.36s     Synthesize event
+    t =    24.59s     Wait for dev.meeterm.app to idle
+    t =    25.66s Checking `Expect predicate `BLOCKPREDICATE(0x10867a4c0)` for object "ssh-username" TextField`
+    t =    25.66s     Find the "ssh-username" TextField
+    t =    25.79s     Find the "ssh-username" TextField
+    t =    25.92s Type 'i' into "ssh-username" TextField
+    t =    25.92s     Wait for dev.meeterm.app to idle
+    t =    25.93s     Find the "ssh-username" TextField
+    t =    26.06s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    26.10s     Synthesize event
+    t =    26.33s     Wait for dev.meeterm.app to idle
+    t =    27.41s Checking `Expect predicate `BLOCKPREDICATE(0x10864e190)` for object "ssh-username" TextField`
+    t =    27.41s     Find the "ssh-username" TextField
+    t =    27.54s     Find the "ssh-username" TextField
+    t =    27.68s Type 'n' into "ssh-username" TextField
+    t =    27.68s     Wait for dev.meeterm.app to idle
+    t =    27.68s     Find the "ssh-username" TextField
+    t =    27.82s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    27.86s     Synthesize event
+    t =    28.09s     Wait for dev.meeterm.app to idle
+    t =    29.18s Checking `Expect predicate `BLOCKPREDICATE(0x1084ac3f0)` for object "ssh-username" TextField`
+    t =    29.18s     Find the "ssh-username" TextField
+    t =    29.31s     Find the "ssh-username" TextField
+    t =    30.51s Checking `Expect predicate `BLOCKPREDICATE(0x1085355f0)` for object "ssh-username" TextField`
+    t =    30.51s     Find the "ssh-username" TextField
+    t =    30.70s     Find the "ssh-username" TextField
+    t =    30.81s Find the TextView (First Match)
+    t =    30.97s Find the "ssh-private-key" TextView
+    t =    31.12s Find the "ssh-private-key" TextView
+    t =    31.27s Find the "ssh-private-key" TextView
+    t =    31.42s Find the "ssh-private-key" TextView
+    t =    31.57s Find the "ssh-private-key" TextView
+    t =    31.72s Find the "ssh-private-key" TextView
+    t =    31.88s Find the "ssh-private-key" TextView
+    t =    32.03s Waiting 15.0s for "ssh-private-key" TextView to exist
+    t =    33.07s     Checking `Expect predicate `existsNoRetry == 1` for object "ssh-private-key" TextView`
+    t =    33.07s         Checking existence of `"ssh-private-key" TextView`
+    t =    33.21s Tap "ssh-private-key" TextView
+    t =    33.21s     Wait for dev.meeterm.app to idle
+    t =    33.22s     Find the "ssh-private-key" TextView
+    t =    33.35s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    33.38s     Synthesize event
+    t =    33.68s     Wait for dev.meeterm.app to idle
+    t =    34.15s Type '-----BEGIN OPENSSH...' into "ssh-private-key" TextView
+    t =    34.15s     Wait for dev.meeterm.app to idle
+    t =    34.15s     Find the "ssh-private-key" TextView
+    t =    34.30s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    34.34s     Synthesize event
+    t =    35.12s     Wait for dev.meeterm.app to idle
+    t =    35.13s Checking existence of `"return" Key`
+    t =    35.19s Type '
+' into "ssh-private-key" TextView
+    t =    35.19s     Wait for dev.meeterm.app to idle
+    t =    35.19s     Find the "ssh-private-key" TextView
+    t =    35.42s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    35.47s     Synthesize event
+    t =    35.69s     Wait for dev.meeterm.app to idle
+    t =    35.70s Type 'b3BlbnNzaC1rZXktdj...' into "ssh-private-key" TextView
+    t =    35.70s     Wait for dev.meeterm.app to idle
+    t =    35.70s     Find the "ssh-private-key" TextView
+    t =    35.87s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    35.92s     Synthesize event
+    t =    37.32s     Wait for dev.meeterm.app to idle
+    t =    37.32s Checking existence of `"return" Key`
+    t =    37.37s Type '
+' into "ssh-private-key" TextView
+    t =    37.37s     Wait for dev.meeterm.app to idle
+    t =    37.38s     Find the "ssh-private-key" TextView
+    t =    37.68s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    37.74s     Synthesize event
+    t =    37.96s     Wait for dev.meeterm.app to idle
+    t =    37.97s Type 'QyNTUxOQAAACBZGnJq...' into "ssh-private-key" TextView
+    t =    37.97s     Wait for dev.meeterm.app to idle
+    t =    37.97s     Find the "ssh-private-key" TextView
+    t =    38.15s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    38.21s     Synthesize event
+    t =    39.59s     Wait for dev.meeterm.app to idle
+    t =    39.59s Checking existence of `"return" Key`
+    t =    39.63s Type '
+' into "ssh-private-key" TextView
+    t =    39.63s     Wait for dev.meeterm.app to idle
+    t =    39.64s     Find the "ssh-private-key" TextView
+    t =    39.77s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    39.81s     Synthesize event
+    t =    40.03s     Wait for dev.meeterm.app to idle
+    t =    40.03s Type 'ZgAAAAtzc2gtZWQyNT...' into "ssh-private-key" TextView
+    t =    40.03s     Wait for dev.meeterm.app to idle
+    t =    40.03s     Find the "ssh-private-key" TextView
+    t =    40.16s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    40.20s     Synthesize event
+    t =    41.57s     Wait for dev.meeterm.app to idle
+    t =    41.59s Checking existence of `"return" Key`
+    t =    41.63s Type '
+' into "ssh-private-key" TextView
+    t =    41.63s     Wait for dev.meeterm.app to idle
+    t =    41.64s     Find the "ssh-private-key" TextView
+    t =    41.76s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    41.80s     Synthesize event
+    t =    42.03s     Wait for dev.meeterm.app to idle
+    t =    42.03s Type 'AAAEDayd4TJY1iUxkT...' into "ssh-private-key" TextView
+    t =    42.03s     Wait for dev.meeterm.app to idle
+    t =    42.03s     Find the "ssh-private-key" TextView
+    t =    42.15s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    42.19s     Synthesize event
+    t =    43.56s     Wait for dev.meeterm.app to idle
+    t =    43.56s Checking existence of `"return" Key`
+    t =    43.60s Type '
+' into "ssh-private-key" TextView
+    t =    43.60s     Wait for dev.meeterm.app to idle
+    t =    43.60s     Find the "ssh-private-key" TextView
+    t =    43.74s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    43.77s     Synthesize event
+    t =    43.99s     Wait for dev.meeterm.app to idle
+    t =    44.00s Type 'tweLL2EgxPhMDzox7n...' into "ssh-private-key" TextView
+    t =    44.00s     Wait for dev.meeterm.app to idle
+    t =    44.00s     Find the "ssh-private-key" TextView
+    t =    44.12s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    44.16s     Synthesize event
+    t =    45.31s     Wait for dev.meeterm.app to idle
+    t =    45.31s Checking existence of `"return" Key`
+    t =    45.36s Type '
+' into "ssh-private-key" TextView
+    t =    45.36s     Wait for dev.meeterm.app to idle
+    t =    45.36s     Find the "ssh-private-key" TextView
+    t =    45.51s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    45.55s     Synthesize event
+    t =    45.77s     Wait for dev.meeterm.app to idle
+    t =    45.78s Type '-----END OPENSSH P...' into "ssh-private-key" TextView
+    t =    45.78s     Wait for dev.meeterm.app to idle
+    t =    45.78s     Find the "ssh-private-key" TextView
+    t =    45.91s     Check for interrupting elements affecting "ssh-private-key" TextView
+    t =    45.94s     Synthesize event
+    t =    46.71s     Wait for dev.meeterm.app to idle
+    t =    46.72s Waiting 15.0s for "ssh-submit" Button to exist
+    t =    47.77s     Checking `Expect predicate `existsNoRetry == 1` for object "ssh-submit" Button`
+    t =    47.77s         Checking existence of `"ssh-submit" Button`
+    t =    47.82s Checking existence of `"ssh-submit" Button`
+    t =    47.86s Find the "ssh-submit" Button
+    t =    47.91s Tap "ssh-submit" Button
+    t =    47.91s     Wait for dev.meeterm.app to idle
+    t =    47.91s     Find the "ssh-submit" Button
+    t =    47.95s     Check for interrupting elements affecting "ssh-submit" Button
+    t =    48.00s     Synthesize event
+    t =    48.30s     Wait for dev.meeterm.app to idle
+    t =    48.68s Checking existence of `"ssh-submit" Button`
+    t =    48.70s Checking existence of `Alert (First Match)`
+    t =    48.81s Checking existence of `StaticText (First Match)`
+    t =    48.84s Waiting 60.0s for StaticText (First Match) to exist
+    t =    49.87s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    49.87s         Checking existence of `StaticText (First Match)`
+    t =    49.90s Get number of matches for: Elements matching predicate 'identifier == "tmux runtime meeterm" OR label == "tmux runtime meeterm"'
+    t =    49.93s Get number of matches for: Elements matching predicate 'identifier == "tmux runtime meeterm" OR label == "tmux runtime meeterm"'
+    t =    49.95s Checking existence of `Button (Element at index 0)`
+    t =    49.97s Find the Button (Element at index 0)
+    t =    50.01s Waiting 30.0s for "runtime-row-tmux-runtime-1-1-tmux-0" Button to exist
+    t =    51.04s     Checking `Expect predicate `existsNoRetry == 1` for object "runtime-row-tmux-runtime-1-1-tmux-0" Button`
+    t =    51.04s         Checking existence of `"runtime-row-tmux-runtime-1-1-tmux-0" Button`
+    t =    51.08s Checking existence of `"runtime-row-tmux-runtime-1-1-tmux-0" Button`
+    t =    51.11s Find the "runtime-row-tmux-runtime-1-1-tmux-0" Button
+    t =    51.15s Tap "runtime-row-tmux-runtime-1-1-tmux-0" Button
+    t =    51.15s     Wait for dev.meeterm.app to idle
+    t =    51.16s     Find the "runtime-row-tmux-runtime-1-1-tmux-0" Button
+    t =    51.18s     Check for interrupting elements affecting "runtime-row-tmux-runtime-1-1-tmux-0" Button
+    t =    51.20s     Synthesize event
+    t =    51.50s     Wait for dev.meeterm.app to idle
+    t =    51.50s Waiting 90.0s for StaticText (First Match) to exist
+    t =    52.57s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    52.57s         Checking existence of `StaticText (First Match)`
+    t =    52.64s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "workspace-row-" AND label BEGINSWITH "Workspace "'
+    t =    52.66s Find the Button (Element at index 0)
+    t =    52.68s Find the Button (Element at index 1)
+    t =    52.70s Get number of matches for: Elements matching predicate 'identifier == "Workspace ios-main" OR label == "Workspace ios-main"'
+    t =    52.72s Get number of matches for: Elements matching predicate 'identifier == "Workspace ios-main" OR label == "Workspace ios-main"'
+    t =    52.74s Checking existence of `Button (Element at index 0)`
+    t =    52.76s Find the Button (Element at index 0)
+    t =    52.80s Checking existence of `"workspace-row-@0" Button`
+    t =    52.82s Get number of matches for: Elements matching predicate 'identifier == "Workspace ios-main" OR label == "Workspace ios-main"'
+    t =    52.84s Get number of matches for: Elements matching predicate 'identifier == "Workspace ios-main" OR label == "Workspace ios-main"'
+    t =    52.86s Checking existence of `Button (Element at index 0)`
+    t =    52.88s Find the Button (Element at index 0)
+    t =    52.91s Tap "workspace-row-@0" Button
+    t =    52.91s     Wait for dev.meeterm.app to idle
+    t =    52.91s     Find the "workspace-row-@0" Button
+    t =    52.94s     Check for interrupting elements affecting "workspace-row-@0" Button
+    t =    52.96s     Synthesize event
+    t =    53.26s     Wait for dev.meeterm.app to idle
+    t =    53.66s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =    53.67s Checking existence of `Other (Element at index 0)`
+    t =    53.69s Find the Other (Element at index 0)
+    t =    53.71s Checking existence of `Other (Element at index 1)`
+    t =    53.72s Find the Other (Element at index 1)
+    t =    53.75s Find the "Terminal" Other
+    t =    53.77s Get all elements bound by index for: Elements matching predicate 'identifier BEGINSWITH "terminal-tab-"'
+    t =    53.78s Find the Any (Element at index 0)
+    t =    53.80s Checking existence of `"terminal-tab-%0" Other`
+    t =    53.81s Find the Any (Element at index 1)
+    t =    53.83s Checking existence of `"terminal-tab-%1" Other`
+    t =    53.84s Find the "terminal-tab-%1" Other
+    t =    53.85s Find the "terminal-tab-%0" Other
+    t =    53.86s Find the "terminal-tab-%0" Other
+    t =    53.88s Find the "terminal-tab-%0" Other
+    t =    53.89s Get all elements bound by index for: Elements matching predicate 'identifier BEGINSWITH "terminal-tab-"'
+    t =    53.90s Find the Any (Element at index 0)
+    t =    53.92s Checking existence of `"terminal-tab-%0" Other`
+    t =    53.94s Find the Any (Element at index 1)
+    t =    53.96s Checking existence of `"terminal-tab-%1" Other`
+    t =    53.97s Find the "terminal-tab-%1" Other
+    t =    53.98s Find the "terminal-tab-%0" Other
+    t =    54.00s Find the "terminal-tab-%0" Other
+    t =    54.01s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =    54.03s Checking existence of `Other (Element at index 0)`
+    t =    54.04s Find the Other (Element at index 0)
+    t =    54.06s Checking existence of `Other (Element at index 1)`
+    t =    54.07s Find the Other (Element at index 1)
+    t =    54.09s Find the "Terminal" Other
+    t =    54.12s Checking existence of `StaticText (First Match)`
+    t =    54.14s Checking existence of `StaticText (First Match)`
+    t =    54.19s Checking existence of `Button (First Match)`
+    t =    54.23s Checking existence of `Any (First Match)`
+    t =    54.29s Checking existence of `"terminal-tab-%0" Other`
+    t =    54.30s Find the "terminal-tab-%0" Other
+    t =    54.32s Checking existence of `"Terminal" Other`
+    t =    54.34s Find the "Terminal" Other
+    t =    54.43s Waiting 30.0s for "Attach image" Button to exist
+    t =    55.47s     Checking `Expect predicate `existsNoRetry == 1` for object "Attach image" Button`
+    t =    55.47s         Checking existence of `"Attach image" Button`
+    t =    55.50s Checking existence of `"Attach image" Button`
+    t =    55.52s Find the "Attach image" Button
+    t =    55.53s Find the "attach-image" Button
+    t =    55.56s Tap "attach-image" Button
+    t =    55.56s     Wait for dev.meeterm.app to idle
+    t =    55.56s     Find the "attach-image" Button
+    t =    55.58s     Check for interrupting elements affecting "attach-image" Button
+    t =    55.60s     Synthesize event
+    t =    55.89s     Wait for dev.meeterm.app to idle
+    t =    56.24s Waiting 20.0s for "Choose from photos" Button to exist
+    t =    57.31s     Checking `Expect predicate `existsNoRetry == 1` for object "Choose from photos" Button`
+    t =    57.31s         Checking existence of `"Choose from photos" Button`
+    t =    57.43s Tap "Choose from photos" Button
+    t =    57.43s     Wait for dev.meeterm.app to idle
+    t =    57.43s     Find the "Choose from photos" Button
+    t =    57.46s     Check for interrupting elements affecting "attachment-pick-photos" Button
+    t =    57.48s     Synthesize event
+    t =    57.77s     Wait for dev.meeterm.app to idle
+    t =    57.78s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    58.30s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    58.81s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    59.34s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    59.85s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    60.37s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    60.94s Get number of matches for: Elements matching predicate 'identifier == "PXGGridLayout-Info"'
+    t =    61.35s Checking existence of `Image (First Match)`
+    t =    61.56s Find the Image (First Match)
+    t =    61.72s Tap "PXGGridLayout-Info" Image
+    t =    61.72s     Wait for dev.meeterm.app to idle
+    t =    61.72s     Find the "PXGGridLayout-Info" Image
+    t =    61.85s     Check for interrupting elements affecting "PXGGridLayout-Info" Image
+    t =    61.90s     Synthesize event
+    t =    62.20s     Wait for dev.meeterm.app to idle
+    t =    62.67s Waiting 90.0s for "attachment-preview" Image to exist
+    t =    63.70s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-preview" Image`
+    t =    63.70s         Checking existence of `"attachment-preview" Image`
+    t =    63.74s Checking existence of `"attachment-meta" StaticText`
+    t =    63.84s Waiting 15.0s for "attachment-upload" Button to exist
+    t =    64.84s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-upload" Button`
+    t =    64.84s         Checking existence of `"attachment-upload" Button`
+    t =    64.88s Tap "attachment-upload" Button
+    t =    64.88s     Wait for dev.meeterm.app to idle
+    t =    64.88s     Find the "attachment-upload" Button
+    t =    64.91s     Check for interrupting elements affecting "attachment-upload" Button
+    t =    64.93s     Synthesize event
+    t =    65.24s     Wait for dev.meeterm.app to idle
+    t =    65.24s Waiting 120.0s for "attachment-uploaded" Other to exist
+    t =    66.30s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-uploaded" Other`
+    t =    66.30s         Checking existence of `"attachment-uploaded" Other`
+    t =    66.32s         Capturing element debug description
+    t =    67.27s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-uploaded" Other`
+    t =    67.27s         Checking existence of `"attachment-uploaded" Other`
+    t =    67.31s         Capturing element debug description
+    t =    68.25s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-uploaded" Other`
+    t =    68.25s         Checking existence of `"attachment-uploaded" Other`
+    t =    68.28s         Capturing element debug description
+    t =    69.25s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-uploaded" Other`
+    t =    69.26s         Checking existence of `"attachment-uploaded" Other`
+    t =    69.28s         Capturing element debug description
+    t =    70.34s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-uploaded" Other`
+    t =    70.34s         Checking existence of `"attachment-uploaded" Other`
+    t =    70.36s         Capturing element debug description
+    t =    71.30s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-uploaded" Other`
+    t =    71.30s         Checking existence of `"attachment-uploaded" Other`
+    t =    71.43s Waiting 10.0s for StaticText (First Match) to exist
+    t =    72.45s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    72.46s         Checking existence of `StaticText (First Match)`
+    t =    72.52s Find the StaticText (First Match)
+    t =    73.08s Waiting 15.0s for "Close attachment sheet" Button to exist
+    t =    74.12s     Checking `Expect predicate `existsNoRetry == 1` for object "Close attachment sheet" Button`
+    t =    74.13s         Checking existence of `"Close attachment sheet" Button`
+    t =    74.15s Tap "Close attachment sheet" Button
+    t =    74.15s     Wait for dev.meeterm.app to idle
+    t =    74.17s     Find the "Close attachment sheet" Button
+    t =    74.19s     Check for interrupting elements affecting "Close attachment sheet" Button
+    t =    74.22s     Synthesize event
+    t =    74.53s     Wait for dev.meeterm.app to idle
+    t =    74.87s Waiting 30.0s for "Insert attachment" Button to exist
+    t =    75.90s     Checking `Expect predicate `existsNoRetry == 1` for object "Insert attachment" Button`
+    t =    75.90s         Checking existence of `"Insert attachment" Button`
+    t =    75.92s Checking existence of `"Insert attachment" Button`
+    t =    75.94s Find the "Insert attachment" Button
+    t =    75.95s Find the "attachment-insert" Button
+    t =    76.07s Tap "attachment-insert" Button
+    t =    76.07s     Wait for dev.meeterm.app to idle
+    t =    76.07s     Find the "attachment-insert" Button
+    t =    76.09s     Check for interrupting elements affecting "attachment-insert" Button
+    t =    76.11s     Synthesize event
+    t =    76.41s     Wait for dev.meeterm.app to idle
+    t =    76.41s Waiting 60.0s for StaticText (First Match) to exist
+    t =    77.49s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    77.49s         Checking existence of `StaticText (First Match)`
+    t =    77.55s         Capturing element debug description
+    t =    78.47s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    78.47s         Checking existence of `StaticText (First Match)`
+    t =    78.53s         Capturing element debug description
+    t =    79.46s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    79.46s         Checking existence of `StaticText (First Match)`
+    t =    79.52s         Capturing element debug description
+    t =    80.44s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    80.44s         Checking existence of `StaticText (First Match)`
+    t =    80.51s         Capturing element debug description
+    t =    81.44s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    81.44s         Checking existence of `StaticText (First Match)`
+    t =    81.51s         Capturing element debug description
+    t =    82.45s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    82.45s         Checking existence of `StaticText (First Match)`
+    t =    82.49s Tap "attach-image" Button
+    t =    82.50s     Wait for dev.meeterm.app to idle
+    t =    82.50s     Find the "attach-image" Button
+    t =    82.52s     Check for interrupting elements affecting "attach-image" Button
+    t =    82.54s     Synthesize event
+    t =    82.84s     Wait for dev.meeterm.app to idle
+    t =    83.19s Waiting 60.0s for "attachment-inserted" Other to exist
+    t =    84.21s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-inserted" Other`
+    t =    84.21s         Checking existence of `"attachment-inserted" Other`
+    t =    84.83s Waiting 15.0s for "Delete from server" Button to exist
+    t =    85.87s     Checking `Expect predicate `existsNoRetry == 1` for object "Delete from server" Button`
+    t =    85.87s         Checking existence of `"Delete from server" Button`
+    t =    85.90s Checking existence of `"Delete from server" Button`
+    t =    85.93s Find the "Delete from server" Button
+    t =    85.97s Find the "attachment-delete-remote" Button
+    t =    86.01s Tap "attachment-delete-remote" Button
+    t =    86.01s     Wait for dev.meeterm.app to idle
+    t =    86.01s     Find the "attachment-delete-remote" Button
+    t =    86.04s     Check for interrupting elements affecting "attachment-delete-remote" Button
+    t =    86.07s     Synthesize event
+    t =    86.37s     Wait for dev.meeterm.app to idle
+    t =    86.37s Waiting 90.0s for "attachment-deleted" Other to exist
+    t =    87.44s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-deleted" Other`
+    t =    87.44s         Checking existence of `"attachment-deleted" Other`
+    t =    87.47s         Capturing element debug description
+    t =    88.39s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-deleted" Other`
+    t =    88.39s         Checking existence of `"attachment-deleted" Other`
+    t =    88.42s         Capturing element debug description
+    t =    89.38s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-deleted" Other`
+    t =    89.38s         Checking existence of `"attachment-deleted" Other`
+    t =    89.41s         Capturing element debug description
+    t =    90.47s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-deleted" Other`
+    t =    90.47s         Checking existence of `"attachment-deleted" Other`
+    t =    90.50s         Capturing element debug description
+    t =    91.44s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-deleted" Other`
+    t =    91.44s         Checking existence of `"attachment-deleted" Other`
+    t =    91.47s         Capturing element debug description
+    t =    92.40s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-deleted" Other`
+    t =    92.40s         Checking existence of `"attachment-deleted" Other`
+    t =    93.02s Waiting 15.0s for "Discard local image" Button to exist
+    t =    94.07s     Checking `Expect predicate `existsNoRetry == 1` for object "Discard local image" Button`
+    t =    94.07s         Checking existence of `"Discard local image" Button`
+    t =    94.10s Tap "Discard local image" Button
+    t =    94.10s     Wait for dev.meeterm.app to idle
+    t =    94.10s     Find the "Discard local image" Button
+    t =    94.13s     Check for interrupting elements affecting "attachment-discard" Button
+    t =    94.16s     Synthesize event
+    t =    94.46s     Wait for dev.meeterm.app to idle
+    t =    94.46s Waiting 20.0s for "Choose from files" Button to exist
+    t =    95.50s     Checking `Expect predicate `existsNoRetry == 1` for object "Choose from files" Button`
+    t =    95.50s         Checking existence of `"Choose from files" Button`
+    t =    95.53s Tap "Choose from files" Button
+    t =    95.53s     Wait for dev.meeterm.app to idle
+    t =    95.54s     Find the "Choose from files" Button
+    t =    95.56s     Check for interrupting elements affecting "attachment-pick-files" Button
+    t =    95.60s     Synthesize event
+    t =    95.90s     Wait for dev.meeterm.app to idle
+    t =    95.90s Checking existence of `Cell (First Match)`
+    t =    96.00s Checking existence of `Button (First Match)`
+    t =    96.11s Checking existence of `Other (First Match)`
+    t =    96.28s Checking existence of `Cell (First Match)`
+    t =    97.29s Checking existence of `Cell (First Match)` (retry 1)
+    t =    98.29s Checking existence of `Cell (First Match)` (retry 2)
+    t =    98.29s Checking existence of `Button (First Match)`
+    t =    99.30s Checking existence of `Button (First Match)` (retry 1)
+    t =   100.31s Checking existence of `Button (First Match)` (retry 2)
+    t =   100.31s Checking existence of `Other (First Match)`
+    t =   101.31s Checking existence of `Other (First Match)` (retry 1)
+    t =   102.32s Checking existence of `Other (First Match)` (retry 2)
+    t =   102.32s Checking existence of `Cell (First Match)`
+    t =   103.33s Checking existence of `Cell (First Match)` (retry 1)
+    t =   104.34s Checking existence of `Cell (First Match)` (retry 2)
+    t =   104.34s Checking existence of `Button (First Match)`
+    t =   105.35s Checking existence of `Button (First Match)` (retry 1)
+    t =   106.35s Checking existence of `Button (First Match)` (retry 2)
+    t =   106.35s Checking existence of `Other (First Match)`
+    t =   107.36s Checking existence of `Other (First Match)` (retry 1)
+    t =   108.37s Checking existence of `Other (First Match)` (retry 2)
+    t =   109.27s Checking existence of `Cell (First Match)`
+    t =   109.53s Checking existence of `Cell (First Match)`
+    t =   109.68s Find the Cell (First Match)
+    t =   109.88s Tap "synthetic-attach-files, png" Cell
+    t =   109.88s     Wait for dev.meeterm.app to idle
+    t =   109.88s     Find the "synthetic-attach-files, png" Cell
+    t =   110.03s     Check for interrupting elements affecting "synthetic-attach-files, png" Cell
+    t =   110.08s     Synthesize event
+    t =   110.38s     Wait for dev.meeterm.app to idle
+    t =   110.49s Waiting 90.0s for "attachment-preview" Image to exist
+    t =   111.54s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-preview" Image`
+    t =   111.54s         Checking existence of `"attachment-preview" Image`
+    t =   112.15s Waiting 15.0s for "attachment-upload" Button to exist
+    t =   113.20s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-upload" Button`
+    t =   113.20s         Checking existence of `"attachment-upload" Button`
+    t =   113.23s Tap "attachment-upload" Button
+    t =   113.23s     Wait for dev.meeterm.app to idle
+    t =   113.23s     Find the "attachment-upload" Button
+    t =   113.26s     Check for interrupting elements affecting "attachment-upload" Button
+    t =   113.29s     Synthesize event
+    t =   113.60s     Wait for dev.meeterm.app to idle
+    t =   113.61s Waiting 120.0s for "attachment-failed" Other to exist
+    t =   114.67s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-failed" Other`
+    t =   114.67s         Checking existence of `"attachment-failed" Other`
+    t =   114.70s         Capturing element debug description
+    t =   115.64s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-failed" Other`
+    t =   115.64s         Checking existence of `"attachment-failed" Other`
+    t =   115.67s         Capturing element debug description
+    t =   116.69s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-failed" Other`
+    t =   116.69s         Checking existence of `"attachment-failed" Other`
+    t =   116.72s         Capturing element debug description
+    t =   117.67s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-failed" Other`
+    t =   117.67s         Checking existence of `"attachment-failed" Other`
+    t =   117.70s         Capturing element debug description
+    t =   118.62s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-failed" Other`
+    t =   118.62s         Checking existence of `"attachment-failed" Other`
+    t =   118.65s         Capturing element debug description
+    t =   119.68s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-failed" Other`
+    t =   119.68s         Checking existence of `"attachment-failed" Other`
+    t =   120.30s Waiting 15.0s for "attachment-retry-upload" Button to exist
+    t =   121.32s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-retry-upload" Button`
+    t =   121.32s         Checking existence of `"attachment-retry-upload" Button`
+    t =   121.36s Checking existence of `"attachment-retry-upload" Button`
+    t =   121.38s Find the "attachment-retry-upload" Button
+    t =   121.41s Find the "attachment-retry-upload" Button
+    t =   121.46s Tap "attachment-retry-upload" Button
+    t =   121.46s     Wait for dev.meeterm.app to idle
+    t =   121.46s     Find the "attachment-retry-upload" Button
+    t =   121.50s     Check for interrupting elements affecting "attachment-retry-upload" Button
+    t =   121.53s     Synthesize event
+    t =   121.82s     Wait for dev.meeterm.app to idle
+    t =   121.83s Checking existence of `"attachment-cancel" Button`
+    t =   121.85s Find the "attachment-cancel" Button
+    t =   121.89s Find the "attachment-cancel" Button
+    t =   122.01s Tap "attachment-cancel" Button
+    t =   122.01s     Wait for dev.meeterm.app to idle
+    t =   122.01s     Find the "attachment-cancel" Button
+    t =   122.04s     Check for interrupting elements affecting "attachment-cancel" Button
+    t =   122.07s     Synthesize event
+    t =   122.37s     Wait for dev.meeterm.app to idle
+    t =   122.37s Waiting 60.0s for "attachment-cancelled" Other to exist
+    t =   123.40s     Checking `Expect predicate `existsNoRetry == 1` for object "attachment-cancelled" Other`
+    t =   123.40s         Checking existence of `"attachment-cancelled" Other`
+    t =   124.03s Tear Down
+Test Case '-[meetermTests.MeetermSmokeUITests testIssue28AttachmentEndToEnd]' passed (124.333 seconds).
+Test Suite 'MeetermSmokeUITests' passed at 2026-09-26 14:21:19.181.
+	 Executed 1 test, with 0 failures (0 unexpected) in 124.333 (124.337) seconds
+Test Suite 'meetermTests.xctest' passed at 2026-09-26 14:21:19.181.
+	 Executed 1 test, with 0 failures (0 unexpected) in 124.333 (124.338) seconds
+Test Suite 'Selected tests' passed at 2026-09-26 14:21:19.181.
+	 Executed 1 test, with 0 failures (0 unexpected) in 124.333 (124.339) seconds

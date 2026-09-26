@@ -1,0 +1,230 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp/meeterm-derived-data/Build/Products/meeterm_iphonesimulator26.5-arm64.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" "-only-testing:meetermTests/AttachmentTests" "-only-testing:meetermTests/TerminalInputViewTests"
+
+2026-09-26 13:36:06.007 xcodebuild[4184:28391] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:36:06.011 xcodebuild[4184:28391] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:36:11.313 xcodebuild[4184:28391] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:36:56.281064-0700 meetermTests-Runner[4377:31956] [Default] Running tests...
+objc[4377]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x10a530398) and /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x10b194310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-09-26 13:37:02.475.
+Test Suite 'meetermTests.xctest' started at 2026-09-26 13:37:02.475.
+Test Suite 'AttachmentTests' started at 2026-09-26 13:37:02.476.
+Test Case '-[meetermTests.AttachmentTests testAppliesSnapshotsOnlyForTheSameAttachmentId]' started.
+    t =     0.01s Start Test at 2026-09-26 13:37:02.483
+    t =     0.23s Set Up
+    t =     0.23s Tear Down
+Test Case '-[meetermTests.AttachmentTests testAppliesSnapshotsOnlyForTheSameAttachmentId]' passed (0.293 seconds).
+Test Case '-[meetermTests.AttachmentTests testCancelledOperationIgnoresLateUploadSnapshots]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:02.777
+    t =     0.04s Set Up
+    t =     0.04s Tear Down
+Test Case '-[meetermTests.AttachmentTests testCancelledOperationIgnoresLateUploadSnapshots]' passed (0.090 seconds).
+Test Case '-[meetermTests.AttachmentTests testCapabilityGatesFollowTheContractPhases]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:02.868
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testCapabilityGatesFollowTheContractPhases]' passed (0.062 seconds).
+Test Case '-[meetermTests.AttachmentTests testClearDropsOperationForDiscardAndNewPick]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:02.931
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testClearDropsOperationForDiscardAndNewPick]' passed (0.079 seconds).
+Test Case '-[meetermTests.AttachmentTests testDecodesCompleteSnapshotRecord]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:03.010
+    t =     0.02s Set Up
+    t =     0.03s Tear Down
+Test Case '-[meetermTests.AttachmentTests testDecodesCompleteSnapshotRecord]' passed (0.067 seconds).
+Test Case '-[meetermTests.AttachmentTests testDecodesFlagsAndErrorFields]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:03.077
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testDecodesFlagsAndErrorFields]' passed (0.061 seconds).
+Test Case '-[meetermTests.AttachmentTests testEnforcesByteAndPixelCeilings]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:03.139
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testEnforcesByteAndPixelCeilings]' passed (0.065 seconds).
+Test Case '-[meetermTests.AttachmentTests testInFlightJobBlocksEveryAction]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:03.205
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testInFlightJobBlocksEveryAction]' passed (0.065 seconds).
+Test Case '-[meetermTests.AttachmentTests testInsertionPolicyHoldsWhileComposing]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:03.271
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testInsertionPolicyHoldsWhileComposing]' passed (0.412 seconds).
+Test Case '-[meetermTests.AttachmentTests testMarkedTextHoldsInsertionThroughRealInputView]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:03.683
+    t =     0.05s Set Up
+2026-09-26 13:37:04.483318-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 320 64); gestureRecognizers = <NSArray: 0x1145e4900>; layer = <UIWindowLayer: 0x10a0fe4c0>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.85s Tear Down
+2026-09-26 13:37:04.539557-0700 meetermTests-Runner[4377:31956] [XPCErrors] non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
+Test Case '-[meetermTests.AttachmentTests testMarkedTextHoldsInsertionThroughRealInputView]' passed (0.860 seconds).
+Test Case '-[meetermTests.AttachmentTests testPinsAllEightExifOrientations]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.544
+2026-09-26 13:37:04.551925-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+    t =     0.03s Set Up
+    t =     0.03s Tear Down
+Test Case '-[meetermTests.AttachmentTests testPinsAllEightExifOrientations]' passed (0.076 seconds).
+Test Case '-[meetermTests.AttachmentTests testRefusesSecondUploadWhileOperationIsLive]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.619
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testRefusesSecondUploadWhileOperationIsLive]' passed (0.065 seconds).
+Test Case '-[meetermTests.AttachmentTests testRejectsMalformedHeaders]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.684
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testRejectsMalformedHeaders]' passed (0.073 seconds).
+Test Case '-[meetermTests.AttachmentTests testRejectsShortRecordsAndUnknownPhases]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.758
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testRejectsShortRecordsAndUnknownPhases]' passed (0.063 seconds).
+Test Case '-[meetermTests.AttachmentTests testRejectsUnsupportedAndHeicFamiliesSeparately]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.821
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testRejectsUnsupportedAndHeicFamiliesSeparately]' passed (0.063 seconds).
+Test Case '-[meetermTests.AttachmentTests testRemoteRemovalKeepsPhaseAndChangesCapabilities]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.885
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testRemoteRemovalKeepsPhaseAndChangesCapabilities]' passed (0.070 seconds).
+Test Case '-[meetermTests.AttachmentTests testSessionSnapshotCarriesOnlyDisplayMetadata]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:04.956
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testSessionSnapshotCarriesOnlyDisplayMetadata]' passed (0.061 seconds).
+Test Case '-[meetermTests.AttachmentTests testSniffsPngAndJpegWithDimensions]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.017
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testSniffsPngAndJpegWithDimensions]' passed (0.061 seconds).
+Test Case '-[meetermTests.AttachmentTests testStartupReclaimSweepsPreviousProcessFiles]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.078
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testStartupReclaimSweepsPreviousProcessFiles]' passed (0.068 seconds).
+Test Case '-[meetermTests.AttachmentTests testValidatesAppOwnedFileNames]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.146
+    t =     0.02s Set Up
+    t =     0.02s Tear Down
+Test Case '-[meetermTests.AttachmentTests testValidatesAppOwnedFileNames]' passed (0.065 seconds).
+Test Suite 'AttachmentTests' passed at 2026-09-26 13:37:05.211.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 2.721 (2.736) seconds
+Test Suite 'TerminalInputViewTests' started at 2026-09-26 13:37:05.212.
+Test Case '-[meetermTests.TerminalInputViewTests testAsyncPasteCarriesStartEpochAndDropsAfterEpochChange]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.212
+    t =     0.02s Set Up
+2026-09-26 13:37:05.239301-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c2120>; layer = <UIWindowLayer: 0x10a0f8680>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+2026-09-26 13:37:05.243122-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c2120>; layer = <UIWindowLayer: 0x10a0f8680>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+2026-09-26 13:37:05.246991-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c2120>; layer = <UIWindowLayer: 0x10a0f8680>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.04s Tear Down
+2026-09-26 13:37:05.251373-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testAsyncPasteCarriesStartEpochAndDropsAfterEpochChange]' passed (0.066 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testCachedReadOnlyCancelsInputButPreservesBindingAndCopy]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.279
+    t =     0.02s Set Up
+2026-09-26 13:37:05.301241-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1145e4340>; layer = <UIWindowLayer: 0x10a0f8d40>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.04s Tear Down
+2026-09-26 13:37:05.323278-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+Test Case '-[meetermTests.TerminalInputViewTests testCachedReadOnlyCancelsInputButPreservesBindingAndCopy]' passed (0.068 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testControlModifierAppliesToOneCommitAndIsCancelledOnRebind]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.347
+    t =     0.02s Set Up
+2026-09-26 13:37:05.375970-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c06a0>; layer = <UIWindowLayer: 0x10a0fb500>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:05.382767-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testControlModifierAppliesToOneCommitAndIsCancelledOnRebind]' passed (0.070 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareControlUsesModifiedInputWithoutDoubleCommit]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.417
+    t =     0.02s Set Up
+2026-09-26 13:37:05.444501-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c13e0>; layer = <UIWindowLayer: 0x10a0fb1c0>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:05.449798-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareControlUsesModifiedInputWithoutDoubleCommit]' passed (0.068 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareShiftCombinationsAreRegisteredAndCommitOnce]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.485
+    t =     0.02s Set Up
+2026-09-26 13:37:05.514264-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c3380>; layer = <UIWindowLayer: 0x10a0fa880>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:05.520624-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareShiftCombinationsAreRegisteredAndCommitOnce]' passed (0.067 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testHistoryScrollYieldsToHorizontalNavigation]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.553
+    t =     0.02s Set Up
+2026-09-26 13:37:05.574952-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a28ad60>; layer = <UIWindowLayer: 0x1070616c0>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.02s Tear Down
+2026-09-26 13:37:05.582650-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+Test Case '-[meetermTests.TerminalInputViewTests testHistoryScrollYieldsToHorizontalNavigation]' passed (0.063 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testMarkedCompositionIsLocalAndCommitsOnce]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.616
+    t =     0.02s Set Up
+2026-09-26 13:37:05.638325-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c11a0>; layer = <UIWindowLayer: 0x10a102600>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:05.650698-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testMarkedCompositionIsLocalAndCommitsOnce]' passed (0.063 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testMultilinePasteCallsOnPasteOnceWithoutCommit]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.679
+    t =     0.03s Set Up
+2026-09-26 13:37:05.710229-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1073c31e0>; layer = <UIWindowLayer: 0x10a103f40>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.04s Tear Down
+2026-09-26 13:37:05.717466-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+Test Case '-[meetermTests.TerminalInputViewTests testMultilinePasteCallsOnPasteOnceWithoutCommit]' passed (0.073 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedAfterCancelComposition]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.752
+    t =     0.02s Set Up
+2026-09-26 13:37:05.773975-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1072a65a0>; layer = <UIWindowLayer: 0x10a102f40>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+2026-09-26 13:37:05.776673-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1072a65a0>; layer = <UIWindowLayer: 0x10a102f40>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:05.782631-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedAfterCancelComposition]' passed (0.066 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedWhenInputLeavesWindow]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.818
+    t =     0.02s Set Up
+2026-09-26 13:37:05.839689-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a10ada0>; layer = <UIWindowLayer: 0x10a102440>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:05.849316-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedWhenInputLeavesWindow]' passed (0.062 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testRecoveryBridgeArgumentsAreDecimalAndBounded]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.880
+    t =     0.04s Set Up
+2026-09-26 13:37:05.920317-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a28ba20>; layer = <UIWindowLayer: 0x10a102c80>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.04s Tear Down
+2026-09-26 13:37:05.932744-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testRecoveryBridgeArgumentsAreDecimalAndBounded]' passed (0.118 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testReturningLiveDoesNotAutoFocusAndUsesFreshEpoch]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:05.999
+    t =     0.02s Set Up
+2026-09-26 13:37:06.021014-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a28bdc0>; layer = <UIWindowLayer: 0x10a102f00>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+2026-09-26 13:37:06.023757-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a28bdc0>; layer = <UIWindowLayer: 0x10a102f00>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+2026-09-26 13:37:06.024989-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a28bdc0>; layer = <UIWindowLayer: 0x10a102f00>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:06.034553-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205400>.
+Test Case '-[meetermTests.TerminalInputViewTests testReturningLiveDoesNotAutoFocusAndUsesFreshEpoch]' passed (0.062 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testRuntimeBoundaryBridgePreservesNativeAndPreCallResults]' started.
+    t =     0.00s Start Test at 2026-09-26 13:37:06.061
+    t =     0.02s Set Up
+2026-09-26 13:37:06.087924-0700 meetermTests-Runner[4377:31956] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x107205400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x10a28bc60>; layer = <UIWindowLayer: 0x10a1023c0>>, key window is <UIWindow: 0x107204000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1072a6e80>; layer = <UIWindowLayer: 0x10726e5c0>>)
+    t =     0.03s Tear Down
+2026-09-26 13:37:06.099370-0700 meetermTests-Runner[4377:31956] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x107205000>.
+Test Case '-[meetermTests.TerminalInputViewTests testRuntimeBoundaryBridgePreservesNativeAndPreCallResults]' passed (0.071 seconds).
+Test Suite 'TerminalInputViewTests' passed at 2026-09-26 13:37:06.132.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.916 (0.920) seconds
+Test Suite 'meetermTests.xctest' passed at 2026-09-26 13:37:06.133.
+	 Executed 33 tests, with 0 failures (0 unexpected) in 3.638 (3.657) seconds
+Test Suite 'Selected tests' passed at 2026-09-26 13:37:06.133.
+	 Executed 33 tests, with 0 failures (0 unexpected) in 3.638 (3.659) seconds
+2026-09-26 13:37:06.412 xcodebuild[4184:28391] [MT] IDETestOperationsObserverDebug: 55.096 elapsed -- Testing started completed.
+2026-09-26 13:37:06.412 xcodebuild[4184:28391] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-26 13:37:06.412 xcodebuild[4184:28391] [MT] IDETestOperationsObserverDebug: 55.096 sec, +55.096 sec -- end
+
+Test session results, code coverage, and logs:
+	/Users/devin/Library/Developer/Xcode/DerivedData/meeterm-axvgjeauuwyfwcczfeetjgauaxoe/Logs/Test/Test-meeterm-2026.09.26_13-36-06--0700.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started

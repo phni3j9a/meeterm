@@ -1,0 +1,45 @@
+14:18:38 phase=
+14:19:19 phase=launch
+14:19:20 phase=launch
+14:20:27 phase=uploaded
+  remote file exists: /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png (292 bytes, mode 600)
+/Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png: PNG image data, 64 x 48, 8-bit/color RGB, non-interlaced
+14:20:28 phase=uploaded
+  remote file exists: /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png (292 bytes, mode 600)
+/Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png: PNG image data, 64 x 48, 8-bit/color RGB, non-interlaced
+14:20:39 phase=inserted
+  pane %0 last-nonblank: sh-3.2$ '/Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png'
+  quoted path held unsent at prompt on %0 (no trailing output lines)
+14:20:39 phase=inserted
+  FAIL: quoted path not found unsent (pane=)
+14:20:47 phase=deleted
+  remote file gone: /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png
+total 0
+drwx------  2 devin  staff  64 Sep 26 14:20 .
+drwx------  3 devin  staff  96 Sep 26 14:20 ..
+14:20:48 phase=deleted
+  remote file gone: /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-212019-128636fefd68c0a4.png
+total 0
+drwx------  2 devin  staff  64 Sep 26 14:20 .
+drwx------  3 devin  staff  96 Sep 26 14:20 ..
+14:21:06 phase=files-preview
+  induced failure: /Users/devin/.local/share/meeterm is now a regular file (ENOTDIR on mkdir)
+-rw-r--r--  1 devin  staff  0 Sep 26 14:21 /Users/devin/.local/share/meeterm
+14:21:07 phase=files-preview
+  induced failure: /Users/devin/.local/share/meeterm is now a regular file (ENOTDIR on mkdir)
+-rw-r--r--  1 devin  staff  0 Sep 26 14:21 /Users/devin/.local/share/meeterm
+14:21:14 phase=failed
+  restored: /Users/devin/.local/share/meeterm is a directory again
+drwxr-xr-x  2 devin  staff  64 Sep 26 14:21 /Users/devin/.local/share/meeterm
+14:21:15 phase=failed
+  restored: /Users/devin/.local/share/meeterm is a directory again
+drwxr-xr-x  2 devin  staff  64 Sep 26 14:21 /Users/devin/.local/share/meeterm
+14:21:18 phase=cancelled
+  no uploaded file from the cancelled retry
+total 0
+drwxr-xr-x  2 devin  staff  64 Sep 26 14:21 .
+drwx------  3 devin  staff  96 Sep 26 14:21 ..
+14:21:19 phase=complete
+14:21:19 complete
+14:21:19 phase=complete
+14:21:19 complete

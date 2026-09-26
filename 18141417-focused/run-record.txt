@@ -1,0 +1,36 @@
+candidate_sha=18141417916d54d2139cd1a82d73b419fc12a8c8
+branch=issue-28-image-attachments
+run_type=focused recheck (FP-025 + FP-026 head; standard/ssh suites NOT rerun)
+machine=Xcode 26.6 / iphonesimulator SDK 26.5 / ARCHS=arm64
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 (iPhone 18 Pro Max, iOS 27.0)
+
+stage_1_npm_ci=passed
+stage_2_cng_prebuild=passed (fresh ios/ dir)
+stage_3_xcodebuild_app=passed (build-for-testing, see xcodebuild-18141417-b4t.log)
+stage_4_typecheck=passed (typecheck-18141417.log)
+stage_4_injected_xctest=passed 38/38
+  meetermTests: AttachmentTests 20/20, TerminalInputViewTests 13/13 (xctest-18141417.log 33/33)
+  meetermStorageTests: ClientStoreTests 5/5 (xctest-storage-18141417.log)
+stage_5_launch_gates=passed
+  nativeReady=MEETERM_SMOKE_NATIVE_READY present
+  first_frame=MEETERM_SMOKE_FIRST_FRAME_METAL (CoreGraphics fallback marker: 0)
+  process_alive=yes; launch-terminal.png; launch-markers.log
+stage_6_attachment_routes=11/11 captured (attachment-routes/*.png)
+stage_7_live_ssh_e2e=passed (fixture: fixture.py --sftp --sftp-delay 5 + real tmux; test-without-building 124.3s, 0 failures; xcodebuild-e2e.log)
+  upload: remote file verified on host (meeterm-20260926-212019-128636fefd68c0a4.png, 292B PNG 64x48, mode 600)
+  insert: quoted absolute path held UNSENT at pane %0 prompt (capture-pane -J; no Enter, no command executed, other panes clean)
+  delete: remote file removed on host
+  stages captured: e2e-terminal-ready / sheet-choosing / picker-photos / preview-photos / uploaded / inserting / inserted / deleted / picker-files / preview-files
+stage_8_retry_cancel=passed (FP-025)
+  failure induction: remote meeterm dir replaced by regular file -> mkdir ENOTDIR -> attachment-failed (e2e-failed.png)
+    (note: chmod-0555 is NOT a usable trigger on the app-private default dir —
+     run_transfer setstats it back to 0700; ENOTDIR via file-obstruction lands failed)
+  retry accepted -> transfer in flight (5s sftp-delay window) -> Cancel enabled+tappable -> attachment-cancelled
+  captures: e2e-failed.png, e2e-retry-uploading.png, e2e-retry-cancelled.png
+  host verify: no uploaded file from the cancelled retry (attachments/ never recreated)
+  validation file: case=attachment_e2e result=passed / case=retry_cancel result=passed
+host_gate_log=attachment-e2e/host-gates.log
+
+note: test needed 4 runs — runs 1-3 all failed on host-side gate choreography
+(timeout waiting for manual continue files; ENOTDIR induction learned after run 1),
+not on product behavior. Run 4 is the authoritative result.

@@ -1,0 +1,57 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp/meeterm-derived-data/Build/Products/meeterm_iphonesimulator26.5-arm64.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" "-only-testing:meetermStorageTests/ClientStoreTests"
+
+2026-09-26 13:37:13.968 xcodebuild[4476:33332] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:37:14.060 xcodebuild[4476:33332] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:37:14.336 xcodebuild[4476:33332] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:37:14.667 xcodebuild[4476:33332] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 13:37:21.293029-0700 meeterm[4501:33839] [UIKit App Config] `UIScene` life cycle is now required when building with the latest SDKs. Apps that don't adopt will fail to launch.
+2026-09-26 13:37:21.295693-0700 meeterm[4501:33839] You've implemented -[<UIApplicationDelegate> application:performFetchWithCompletionHandler:], but you still need to add "fetch" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 13:37:21.295785-0700 meeterm[4501:33839] You've implemented -[<UIApplicationDelegate> application:didReceiveRemoteNotification:fetchCompletionHandler:], but you still need to add "remote-notification" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 13:37:21.302019-0700 meeterm[4501:33839] _setUpFeatureFlags called with release level 2
+2026-09-26 13:37:21.415571-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoModulesCoreJSLogger'
+2026-09-26 13:37:21.426487-0700 meeterm[4501:34165] [General] Failed to send CA Event for app launch measurements for ca_event_type: 0 event_name: com.apple.app_launch_measurement.FirstFramePresentationMetric
+2026-09-26 13:37:21.433887-0700 meeterm[4501:33839] [expo] 🟢 Posting 'appBecomesActive' event to registered modules
+2026-09-26 13:37:21.530550-0700 meeterm[4501:34174] [General] Failed to send CA Event for app launch measurements for ca_event_type: 1 event_name: com.apple.app_launch_measurement.ExtendedLaunchMetrics
+Test Suite 'Selected tests' started at 2026-09-26 13:37:21.615.
+Test Suite 'meetermStorageTests.xctest' started at 2026-09-26 13:37:21.616.
+Test Suite 'ClientStoreTests' started at 2026-09-26 13:37:21.617.
+2026-09-26 13:37:21.617811-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoDomWebViewModule'
+Test Case '-[meetermStorageTests.ClientStoreTests testCredentialRemainsNativeAndCannotFollowAnEndpointChange]' started.
+2026-09-26 13:37:21.663274-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoFetchModule'
+2026-09-26 13:37:21.677734-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoAsset'
+2026-09-26 13:37:21.699276-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExponentConstants'
+Test Case '-[meetermStorageTests.ClientStoreTests testCredentialRemainsNativeAndCannotFollowAnEndpointChange]' passed (0.124 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials]' started.
+2026-09-26 13:37:21.821127-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'FileSystem'
+2026-09-26 13:37:21.852163-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExponentFileSystem'
+2026-09-26 13:37:21.855007-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoFontLoader'
+2026-09-26 13:37:21.865222-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoFontUtils'
+2026-09-26 13:37:21.868603-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'ExpoKeepAwake'
+Test Case '-[meetermStorageTests.ClientStoreTests testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials]' passed (0.138 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testPreferencesRoundTripAndValidation]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testPreferencesRoundTripAndValidation]' passed (0.007 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testRemovingSavedCredentialAndProfile]' started.
+2026-09-26 13:37:21.908833-0700 meeterm[4501:34191] [expo] 🟢 Registering module 'MeetermTerminal'
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W0926 13:37:21.912096 1806626816 ReactInstance.cpp:267] ReactInstance: evaluateJavaScript() with JS bundle
+Test Case '-[meetermStorageTests.ClientStoreTests testRemovingSavedCredentialAndProfile]' passed (0.266 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules]' passed (0.014 seconds).
+Test Suite 'ClientStoreTests' passed at 2026-09-26 13:37:22.176.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.550 (0.560) seconds
+Test Suite 'meetermStorageTests.xctest' passed at 2026-09-26 13:37:22.176.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.550 (0.560) seconds
+Test Suite 'Selected tests' passed at 2026-09-26 13:37:22.176.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.550 (0.562) seconds
+2026-09-26 13:37:22.253290-0700 meeterm[4501:34191] [expo] 🟢 Creating JS object for module 'ExponentConstants'
+2026-09-26 13:37:22.614 xcodebuild[4476:33332] [MT] IDETestOperationsObserverDebug: 8.265 elapsed -- Testing started completed.
+2026-09-26 13:37:22.614 xcodebuild[4476:33332] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-26 13:37:22.614 xcodebuild[4476:33332] [MT] IDETestOperationsObserverDebug: 8.265 sec, +8.265 sec -- end
+
+Test session results, code coverage, and logs:
+	/Users/devin/Library/Developer/Xcode/DerivedData/meeterm-ewtfhshqjanjdafawqyajbiundrc/Logs/Test/Test-meeterm-2026.09.26_13-37-14--0700.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started

@@ -1,0 +1,613 @@
+Timestamp               Ty Process[PID:TID]
+2026-09-26 13:37:21.082 Df meeterm[4501:0] [com.apple.libsystem.libdispatch:] BUG in libdispatch: 25F84 24A434 - 612 - 0x4
+2026-09-26 13:37:21.199 Df meeterm[4501:842f] [com.apple.UIKit.tracing:UITraceManager] UITraceInitialize: registering notify listener
+2026-09-26 13:37:21.200 Df meeterm[4501:842f] [com.apple.UIKit.tracing:UITraceManager] handle_trace_notification: received notify (state=0)
+2026-09-26 13:37:21.201 Df meeterm[4501:842f] (libMobileGestalt.dylib) No persisted cache on this platform.
+2026-09-26 13:37:21.201 Df meeterm[4501:8575] [com.apple.xpc:connection] [0x1090500f0] activating connection: mach=true listener=false peer=false name=com.apple.cfprefsd.daemon
+2026-09-26 13:37:21.202 Df meeterm[4501:857e] [com.apple.xpc:connection] [0x109d64000] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:37:21.204 Df meeterm[4501:8575] [com.apple.UIKit:BackgroundTask] Creating new assertion because there is no existing background assertion.
+2026-09-26 13:37:21.208 A  meeterm[4501:857d] (CoreFoundation) Loading Preferences From User Session CFPrefsD
+2026-09-26 13:37:21.214 Df meeterm[4501:8575] [com.apple.UIKit:BackgroundTask] Creating new background assertion
+2026-09-26 13:37:21.215 Df meeterm[4501:8575] [com.apple.UIKit:BackgroundTask] Created new background assertion <BKSProcessAssertion: 0x109df4000>
+2026-09-26 13:37:21.215 Df meeterm[4501:8575] [com.apple.runningboard:connection] Initializing connection
+2026-09-26 13:37:21.215 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason added: 10; deactivation reasons: 0 -> 1024; animating application lifecycle event: 0
+2026-09-26 13:37:21.216 Df meeterm[4501:8575] [com.apple.runningboard:process] Removing all cached process handles
+2026-09-26 13:37:21.216 Df meeterm[4501:857f] [com.apple.runningboard:connection] Sending handshake request attempt #1 to server
+2026-09-26 13:37:21.216 Df meeterm[4501:842f] [com.apple.BoardServices:Injection] activating monitor for service com.apple.frontboard.open
+2026-09-26 13:37:21.216 Df meeterm[4501:842f] [com.apple.BoardServices:Injection] activating monitor for service com.apple.frontboard.workspace-service
+2026-09-26 13:37:21.216 Df meeterm[4501:857f] [com.apple.runningboard:connection] Creating connection to com.apple.runningboard
+2026-09-26 13:37:21.216 Df meeterm[4501:857f] [com.apple.xpc:connection] [0x109d64140] activating connection: mach=true listener=false peer=false name=com.apple.runningboard
+2026-09-26 13:37:21.217 Df meeterm[4501:842f] [com.apple.FrontBoard:Common] FBSWorkspace registering source: com.apple.frontboard.systemappservices
+2026-09-26 13:37:21.220 Df meeterm[4501:842f] [com.apple.FrontBoard:Common] FBSWorkspace connected to endpoint : <BSServiceConnectionEndpoint: 0x109d5cc60; target: com.apple.frontboard.systemappservices; service: com.apple.frontboard.workspace-service>
+2026-09-26 13:37:21.221 Df meeterm[4501:842f] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x109d29ae0 com.apple.frontboard.systemappservices> attempting immediate handshake from activate
+2026-09-26 13:37:21.221 Df meeterm[4501:842f] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x109d29ae0 com.apple.frontboard.systemappservices> sent handshake
+2026-09-26 13:37:21.222 Df meeterm[4501:842f] [com.apple.runningboard:general] Added observer for process assertions expiration warning: <_RBSExpirationWarningClient: 0x109d5d000>
+2026-09-26 13:37:21.229 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UIApplicationSceneKeyboardSettings on FBSSceneSettings
+2026-09-26 13:37:21.229 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneOcclusionSettings> on FBSSceneSettings
+2026-09-26 13:37:21.229 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneInterfaceProtectionSettings> on FBSSceneSettings
+2026-09-26 13:37:21.230 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneDestructionClientSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.230 Df meeterm[4501:857f] [com.apple.runningboard:connection] Handshake succeeded
+2026-09-26 13:37:21.230 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneLayoutPreferencesHostSettingsExtension on FBSSceneSettings
+2026-09-26 13:37:21.230 Df meeterm[4501:857f] [com.apple.runningboard:connection] Identity resolved as app<dev.meeterm.app((null))>
+2026-09-26 13:37:21.230 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneSafeAreaSettingsExtension on FBSSceneSettings
+2026-09-26 13:37:21.231 Df meeterm[4501:842f] [com.apple.dt.xctest:Default] Registering for test daemon availability notify post.
+2026-09-26 13:37:21.231 Df meeterm[4501:842f] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-09-26 13:37:21.231 Df meeterm[4501:842f] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-09-26 13:37:21.232 Df meeterm[4501:8575] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x109df4000>
+2026-09-26 13:37:21.232 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneBarPositionSettingsExtension on FBSSceneSettings
+2026-09-26 13:37:21.232 Df meeterm[4501:8575] [com.apple.UIKit:BackgroundTask] Created background task <_UIBackgroundTaskInfo: 0x109c6cd40>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 458 (elapsed = 0).
+2026-09-26 13:37:21.232 Df meeterm[4501:842f] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-09-26 13:37:21.232 A  meeterm[4501:857f] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:37:21.232 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneLayoutPreferenceClientSettingsExtension on FBSSceneClientSettings
+2026-09-26 13:37:21.233 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIHomeAffordanceHostSceneSettings> on FBSSceneSettings
+2026-09-26 13:37:21.233 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISystemShellSceneHostingEnvironmentSettings on FBSSceneSettings
+2026-09-26 13:37:21.234 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneRenderingEnvironmentSettings on FBSSceneSettings
+2026-09-26 13:37:21.234 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneRenderingEnvironmentClientSettings on FBSSceneClientSettings
+2026-09-26 13:37:21.234 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneTransitioningHostSettings> on FBSSceneSettings
+2026-09-26 13:37:21.234 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneActivationInteractionSettings> on FBSSceneSettings
+2026-09-26 13:37:21.235 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneFocusSystemSettings> on FBSSceneSettings
+2026-09-26 13:37:21.235 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneOrientationSettingsExtension on FBSSceneSettings
+2026-09-26 13:37:21.235 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneOrientationClientSettingsExtension on FBSSceneClientSettings
+2026-09-26 13:37:21.236 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneRegionSettings on FBSSceneSettings
+2026-09-26 13:37:21.236 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneWindowingControlClientSettings on FBSSceneClientSettings
+2026-09-26 13:37:21.236 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UICompanionSceneInterestClientSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.236 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIResourceConditionsSceneSettings> on FBSSceneSettings
+2026-09-26 13:37:21.237 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UIKeyboardInputScenePairingSettings on FBSSceneSettings
+2026-09-26 13:37:21.237 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingContentSizePreferenceClientSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.237 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneHostingTraitCollectionPropagationSettings on FBSSceneSettings
+2026-09-26 13:37:21.238 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingSheetPresentationSettings> on FBSSceneSettings
+2026-09-26 13:37:21.238 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingSheetPresentationClientSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.238 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIKit__UITypedKeyValueSceneSettings> on FBSSceneSettings
+2026-09-26 13:37:21.238 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIKit__UITypedKeyValueSceneSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.239 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingViewControllerPreferencePropagationClientSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.239 Df meeterm[4501:8575] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneZoomTransitionSettings> on FBSSceneSettings
+2026-09-26 13:37:21.239 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension FBSSceneSettingsCore on FBSSceneSettings
+2026-09-26 13:37:21.240 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension FBSSceneClientSettingsCore on FBSSceneClientSettings
+2026-09-26 13:37:21.243 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] UIMutableApplicationSceneSettings setting counterpart class: UIApplicationSceneSettings
+2026-09-26 13:37:21.244 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] UIMutableApplicationSceneClientSettings setting counterpart class: UIApplicationSceneClientSettings
+2026-09-26 13:37:21.244 Df meeterm[4501:857e] [com.apple.FrontBoard:SceneExtension] Realizing settings extension FBSSceneTransitionContextCore on FBSSceneTransitionContext
+2026-09-26 13:37:21.250 Df meeterm[4501:842f] [com.apple.app_launch_measurement:ApplicationLaunch] alm_acquire_pageins_recording_assertion: acquired pageins recording assertion!
+2026-09-26 13:37:21.252 Df meeterm[4501:842f] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x109d64b40> for initial
+2026-09-26 13:37:21.252 Df meeterm[4501:842f] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x109d64b40> for CADisplay KVO
+2026-09-26 13:37:21.253 Df meeterm[4501:842f] [com.apple.Accessibility:AXSupportCommon] Read CategoryName: per-app = 1, category name = (null)
+2026-09-26 13:37:21.253 Df meeterm[4501:842f] [com.apple.Accessibility:AXSupportCommon] Read CategoryName: per-app = 0, category name = UICTContentSizeCategoryL
+2026-09-26 13:37:21.261 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason added: 5; deactivation reasons: 1024 -> 1056; animating application lifecycle event: 1
+2026-09-26 13:37:21.263 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.263 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Should send trait collection or coordinate space update, interface style 1 -> 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.268 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.268 Df meeterm[4501:842f] [com.apple.UIKit:HomeAffordanceObservation] Initializing: <_UIHomeAffordanceSceneNotifier: 0x109e65730>; with scene: <UIWindowScene: 0x109056400>
+2026-09-26 13:37:21.268 Df meeterm[4501:842f] [com.apple.BacklightServices:scenes] 0x109e1f420 setDelegate:<0x109e1f5d0 _UIBacklightEnvironment> hasDelegate:YES for environment:sceneID:dev.meeterm.app-default
+2026-09-26 13:37:21.268 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.268 Df meeterm[4501:842f] [com.apple.UIKit:EventDeferring] [0x109e82c00] Initialized with scene: <UIWindowScene: 0x109056400>; behavior: <_UIEventDeferringBehavior_iOS: 0x109eccee0>; availableForProcess: 1, systemShellManagesKeyboardFocus: 1
+2026-09-26 13:37:21.271 Df meeterm[4501:842f] [com.apple.GenerativeModels:availability] UserDefaults(com.apple.gms.availability, 501
+2026-09-26 13:37:21.280 Df meeterm[4501:842f] [com.apple.GenerativeModels:availability] registering darwin observer for name: com.apple.gms.availability.notification
+2026-09-26 13:37:21.280 Df meeterm[4501:842f] [com.apple.GenerativeModels:availability] registering darwin observer for name: com.apple.os-eligibility-domain.change.greymatter
+2026-09-26 13:37:21.280 Df meeterm[4501:842f] [com.apple.GenerativeModels:availability] registering darwin observer for name: com.apple.language.changed
+2026-09-26 13:37:21.280 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.280 Df meeterm[4501:842f] [com.apple.xpc:connection] [0x109d65a40] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:37:21.281 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] policy observer <BKSHIDEventDeliveryPolicyObserver: 0x109e655e0; process scope; policy: UNKNOWN> added
+2026-09-26 13:37:21.281 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] set observing:YES
+2026-09-26 13:37:21.283 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x109e655e0; process scope; <target; generation: 20; finalStringToken>> was:(null)
+2026-09-26 13:37:21.283 Df meeterm[4501:8575] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] - connection activation
+2026-09-26 13:37:21.283 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] 0x109e655e0 _UIKeyWindowSceneObserver-0x109e1eca0 setToken:com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:37:21.284 Df meeterm[4501:8575] [com.apple.BackBoard:EventDelivery] will update observations for 0 observers
+2026-09-26 13:37:21.284 Df meeterm[4501:842f] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to LastOneWins
+2026-09-26 13:37:21.285 Df meeterm[4501:842f] [com.apple.UIKit:EventDeferring] [0x109e82c00] Scene target of event deferring environments did update: scene: 0x109056400; current systemShellManagesKeyboardFocus: 1; systemShellManagesKeyboardFocusForScene: 1; eligibleForRecordRemoval: 1;
+2026-09-26 13:37:21.285 Df meeterm[4501:842f] [com.apple.UIKit:KeyWindow] Stack[KeyWindow] 0x109e1fa80: Taking no further action for migration from LastOneWins -> SystemShellManaged as there are no scenes
+2026-09-26 13:37:21.285 Df meeterm[4501:842f] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to SystemShellManaged
+2026-09-26 13:37:21.286 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.288 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.289 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] policy observer <BKSHIDEventDeliveryPolicyObserver: 0x109e652d0; process scope; policy: UNKNOWN> added
+2026-09-26 13:37:21.289 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] set observing:YES
+2026-09-26 13:37:21.290 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x109e652d0; process scope; <target; generation: 20; finalStringToken>> was:(null)
+2026-09-26 13:37:21.290 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] 0x109e652d0  setToken:com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:37:21.290 Df meeterm[4501:8575] [com.apple.BackBoard:EventDelivery] will update observations for 0 observers
+2026-09-26 13:37:21.290 Df meeterm[4501:842f] [com.apple.UIKit:KeyboardFocusAssistant] Event deferring policy changed: finalScene:N->Y (token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.291 Df meeterm[4501:842f] [com.apple.UIKit:KeyboardArbiterClientLog] isWritingToolsHandlingKeyboardTracking:Y (WT ready:Y, Arbiter ready:Y)
+2026-09-26 13:37:21.291 Df meeterm[4501:842f] [com.apple.UIKit:KeyboardArbiterClientLog] -[_UIRemoteKeyboards prepareToMoveKeyboard:withIAV:isIAVRelevant:showing:notifyRemote:forScene:] position: {{0, 0}, {0, 0}} visible: 0; notifyRemote: 1; isMinimized: NO
+2026-09-26 13:37:21.291 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.291 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.291 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.xpc:connection] [0x109f20000] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.FrontBoard:Common] FBSWorkspace registering source: com.apple.UIKit.KeyboardManagement.hosted
+2026-09-26 13:37:21.292 Df meeterm[4501:842f] [com.apple.FrontBoard:Common] FBSWorkspace connected to endpoint : <BSServiceConnectionEndpoint: 0x109ece220; target: NL:com.apple.UIKit.KeyboardManagement.hosted; service: com.apple.frontboard.workspace-service>
+2026-09-26 13:37:21.292 F  meeterm[4501:842f] [com.apple.runtime-issues:UIKit App Config] `UIScene` life cycle is now required when building with the latest SDKs. Apps that don't adopt will fail to launch.
+2026-09-26 13:37:21.293 A  meeterm[4501:842f] (libsystem_trace.dylib) Activity for state dumps
+2026-09-26 13:37:21.293 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.293 Df meeterm[4501:842f] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:37:21.293 Df meeterm[4501:842f] [com.apple.UIKit:Application] Ignoring already applied deactivation reason: 5; deactivation reasons: 1056
+2026-09-26 13:37:21.293 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason added: 11; deactivation reasons: 1056 -> 3104; animating application lifecycle event: 1
+2026-09-26 13:37:21.293 Df meeterm[4501:842f] [com.apple.KeyboardArbiter:Client] startConnection
+2026-09-26 13:37:21.295 Df meeterm[4501:842f] (UIKitCore) You've implemented -[<UIApplicationDelegate> application:performFetchWithCompletionHandler:], but you still need to add "fetch" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 13:37:21.295 Df meeterm[4501:842f] (UIKitCore) You've implemented -[<UIApplicationDelegate> application:didReceiveRemoteNotification:fetchCompletionHandler:], but you still need to add "remote-notification" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 13:37:21.298 A  meeterm[4501:8575] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:37:21.299 Df meeterm[4501:857d] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x109d2ad00 com.apple.UIKit.KeyboardManagement.hosted> attempting delayed handshake from activation handler
+2026-09-26 13:37:21.299 Df meeterm[4501:857d] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x109d2ad00 com.apple.UIKit.KeyboardManagement.hosted> sent handshake
+2026-09-26 13:37:21.301 Df meeterm[4501:842f] (React) _setUpFeatureFlags called with release level 2
+2026-09-26 13:37:21.306 Df meeterm[4501:857d] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIKeyboardInputSceneSettings> on FBSSceneSettings
+2026-09-26 13:37:21.307 Df meeterm[4501:857d] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIKeyboardInputSceneClientSettings> on FBSSceneClientSettings
+2026-09-26 13:37:21.319 Df meeterm[4501:842f] [com.apple.network:] networkd_settings_read_from_file_locked initialized networkd settings by reading plist directly
+2026-09-26 13:37:21.319 Df meeterm[4501:842f] [com.apple.network:] networkd_settings_read_from_file_locked initialized networkd settings by reading plist directly
+2026-09-26 13:37:21.391 Df meeterm[4501:842f] [com.apple.UIKit:Orientation] <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B) Scene updated orientation preferences: none -> ( Pu Ll Lr )
+2026-09-26 13:37:21.391 Df meeterm[4501:842f] [com.apple.UIKit:KeyWindow] Key window API is scene-level: YES
+2026-09-26 13:37:21.392 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] BKSHIDEventDeliveryManager - connection activation
+2026-09-26 13:37:21.393 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] will update observations for 2 observers
+2026-09-26 13:37:21.393 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policy-per (
+    <0x109e655e0; _UIKeyWindowSce…ver-0x109e1eca0; fb/FBSceneManag…erm.app-default; <target; generation: 20; finalStringToken>>,
+    <0x109e652d0; _UIKeyboardFocu…ant-0x109c9a700; fb/FBSceneManag…erm.app-default; <target; generation: 20; finalStringToken>>
+)
+2026-09-26 13:37:21.394 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason removed: 10; deactivation reasons: 3104 -> 2080; animating application lifecycle event: 1
+2026-09-26 13:37:21.395 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason added: 12; deactivation reasons: 2080 -> 6176; animating application lifecycle event: 1
+2026-09-26 13:37:21.395 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason removed: 11; deactivation reasons: 6176 -> 4128; animating application lifecycle event: 1
+2026-09-26 13:37:21.395 Df meeterm[4501:842f] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneIntelligenceSupportSettings> on FBSSceneSettings
+2026-09-26 13:37:21.395 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] will update observations for 2 observers
+2026-09-26 13:37:21.395 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.395 Df meeterm[4501:842f] [com.apple.FrontBoard:SceneExtension] Ingesting properties from UIApplicationSceneSettings...
+2026-09-26 13:37:21.396 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] policyStatus:<0x109e655e0; _UIKeyWindowSceneObserver-0x109e1eca0; fb/FBSceneManager:sceneID%3Adev.meeterm.app-default; <ancestor; generation: 21; finalStringToken>> was:<target; generation: 20; finalStringToken>
+2026-09-26 13:37:21.397 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policyDidChange: 0x109e655e0 -> <_UIKeyWindowSceneObserver: 0x109e1eca0> now:<ancestor; generation: 21; finalStringToken>
+2026-09-26 13:37:21.397 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] policyStatus:<0x109e652d0; _UIKeyboardFocusAssistant-0x109c9a700; fb/FBSceneManager:sceneID%3Adev.meeterm.app-default; <ancestor; generation: 21; finalStringToken>> was:<target; generation: 20; finalStringToken>
+2026-09-26 13:37:21.397 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policyDidChange: 0x109e652d0 -> <_UIKeyboardFocusAssistant: 0x109c9a700> now:<ancestor; generation: 21; finalStringToken>
+2026-09-26 13:37:21.397 Df meeterm[4501:857d] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policy-per (
+    <0x109e655e0; _UIKeyWindowSce…ver-0x109e1eca0; fb/FBSceneManag…erm.app-default; <ancestor; generation: 21; finalStringToken>>,
+    <0x109e652d0; _UIKeyboardFocu…ant-0x109c9a700; fb/FBSceneManag…erm.app-default; <ancestor; generation: 21; finalStringToken>>
+)
+2026-09-26 13:37:21.398 Df meeterm[4501:842f] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIApplicationSceneSettings[derived]> on FBSSceneSettings
+2026-09-26 13:37:21.400 Df meeterm[4501:842f] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x109f58a20>: Scheduling <_UIScenePostSettingsUpdateWindowLayout: 0x109e3ce80>
+2026-09-26 13:37:21.400 Df meeterm[4501:842f] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x109f58a20>: Reducing <_UIScenePostSettingsUpdateWindowLayout: 0x109e3cf00> into <_UIScenePostSettingsUpdateWindowLayout: 0x109e3ce80>
+2026-09-26 13:37:21.400 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.400 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.406 Df meeterm[4501:8575] [com.apple.UIIntelligenceSupport:xpc] establishing connection to agent
+2026-09-26 13:37:21.408 Df meeterm[4501:8575] [com.apple.xpc:session] [0x109df5a90] Session created.
+2026-09-26 13:37:21.408 Df meeterm[4501:8575] [com.apple.xpc:session] [0x109df5a90] Session created from connection [0x109fc03c0]
+2026-09-26 13:37:21.408 Df meeterm[4501:8575] [com.apple.xpc:connection] [0x109fc03c0] activating connection: mach=true listener=false peer=false name=com.apple.uiintelligencesupport.agent
+2026-09-26 13:37:21.409 Df meeterm[4501:8575] [com.apple.xpc:session] [0x109df5a90] Session activated
+2026-09-26 13:37:21.410 Df meeterm[4501:858a] [com.apple.UIIntelligenceSupport:xpc] Connection established with agent PID: 4295
+2026-09-26 13:37:21.411 Df meeterm[4501:842f] [com.apple.xpc:connection] [0x109fc1540] activating connection: mach=true listener=false peer=false name=com.apple.lsd.mapdb
+2026-09-26 13:37:21.415 Df meeterm[4501:858a] [com.apple.xpc:connection] [0x109fc0640] activating connection: mach=true listener=false peer=false name=com.apple.fontservicesd
+2026-09-26 13:37:21.423 A  meeterm[4501:858a] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:1 [4801A4DB-A9E6-41CA-A232-F22F803E0A92] (reporting strategy default)>
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:2 [81DC456B-59DD-47C6-B9C2-17076E8BEF7B] (reporting strategy default)>
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.network:activity] Set activity <nw_activity 50:1 [4801A4DB-A9E6-41CA-A232-F22F803E0A92] (reporting strategy default)> as the global parent
+2026-09-26 13:37:21.426 Df meeterm[4501:8575] [com.apple.CoreAnalytics:client] No XPC connection in Simulator
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.UIKit:BackgroundTask] Ending background task with UIBackgroundTaskIdentifier: 1
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.UIKit:BackgroundTask] Ending task with identifier 1 and description: <_UIBackgroundTaskInfo: 0x109c6cd40>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 458 (elapsed = 0), _expireHandler: (null)
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x109df4000> (used by background task with identifier 1: <_UIBackgroundTaskInfo: 0x109c6cd40>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 458 (elapsed = 0))
+2026-09-26 13:37:21.426 E  meeterm[4501:8575] [com.apple.app_launch_measurement:General] Failed to send CA Event for app launch measurements for ca_event_type: 0 event_name: com.apple.app_launch_measurement.FirstFramePresentationMetric
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.UIKit:BackgroundTask] Will invalidate assertion: <BKSProcessAssertion: 0x109df4000> for task identifier: 1
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.UIKit:EventDeferring] [0x109e82c00] Scene target of event deferring environments did update: scene: 0x109056400; current systemShellManagesKeyboardFocus: 1; systemShellManagesKeyboardFocusForScene: 1; eligibleForRecordRemoval: 1;
+2026-09-26 13:37:21.426 Df meeterm[4501:842f] [com.apple.UIKit:KeyboardFocusAssistant] Event deferring policy changed: finalScene:Y->Y (token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.427 Df meeterm[4501:842f] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:37:21.427 A  meeterm[4501:8575] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:37:21.427 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.428 Df meeterm[4501:842f] [com.apple.FrontBoard:SceneExtension] Realizing settings extension SBUISecureRenderingSettingsExtension on FBSSceneSettings
+2026-09-26 13:37:21.429 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.429 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.429 Df meeterm[4501:842f] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:37:21.430 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason removed: 12; deactivation reasons: 4128 -> 32; animating application lifecycle event: 1
+2026-09-26 13:37:21.430 Df meeterm[4501:842f] [com.apple.KeyboardArbiter:Client] Send setDeactivating: N (-DeactivationReason:SuspendedEventsOnly)
+2026-09-26 13:37:21.431 Df meeterm[4501:842f] [com.apple.UIKit:Application] Deactivation reason removed: 5; deactivation reasons: 32 -> 0; animating application lifecycle event: 0
+2026-09-26 13:37:21.431 Df meeterm[4501:842f] [com.apple.KeyboardArbiter:Client] applicationDidBecomeActive (force:N)
+2026-09-26 13:37:21.434 Df meeterm[4501:842f] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x109f58a20>: Scheduling <_UIScenePostSettingsUpdateWindowLayout: 0x109e3d8a0>
+2026-09-26 13:37:21.434 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x109056400> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:37:21.434 Df meeterm[4501:842f] [com.apple.UIKit:DisplayLink] Legacy remapping target changed from '(null)' to '3EE83DFB-A9A9-4E3E-BB9D-426439A0AE71'
+2026-09-26 13:37:21.440 Df meeterm[4501:842f] [com.apple.xpc:connection] [0x109fc1180] activating connection: mach=true listener=false peer=false name=com.apple.testmanagerd
+2026-09-26 13:37:21.441 Df meeterm[4501:842f] [com.apple.KeyboardArbiter:Client] startConnection callback handleKeyboardChange:N (hasFocus:Y hasActiveInput:N expectingInitialState:Y disabled:N hasInfo:Y isWritingTOols:N)
+2026-09-26 13:37:21.441 Df meeterm[4501:842f] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x109fc0c80> for initial
+2026-09-26 13:37:21.442 Df meeterm[4501:842f] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x109fc0c80> for CADisplay KVO
+2026-09-26 13:37:21.442 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.442 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Should send trait collection or coordinate space update, interface style 1 -> 1, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.443 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.443 Df meeterm[4501:842f] [com.apple.UIKit:HomeAffordanceObservation] Initializing: <_UIHomeAffordanceSceneNotifier: 0x109e26a70>; with scene: <_UIKeyboardInputScene: 0x109fa4a00>
+2026-09-26 13:37:21.443 Df meeterm[4501:842f] [com.apple.BacklightServices:scenes] 0x10dc82b80 setDelegate:<0x10dc82b20 _UIBacklightEnvironment> hasDelegate:YES for environment:KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:37:21.445 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.445 Df meeterm[4501:842f] [com.apple.UIKit:EventDeferring] [0x109fcfe80] Initialized with scene: <_UIKeyboardInputScene: 0x109fa4a00>; behavior: <_UIEventDeferringBehavior_iOS: 0x109ecfba0>; availableForProcess: 1, systemShellManagesKeyboardFocus: 1
+2026-09-26 13:37:21.449 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.449 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] policy observer <BKSHIDEventDeliveryPolicyObserver: 0x109e26ca0; process scope; policy: UNKNOWN> added
+2026-09-26 13:37:21.449 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] set observing:YES
+2026-09-26 13:37:21.450 Df meeterm[4501:842f] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x109e26ca0; process scope; <target; generation: 21>> was:(null)
+2026-09-26 13:37:21.450 Df meeterm[4501:8575] [com.apple.BackBoard:EventDelivery] will update observations for 0 observers
+2026-09-26 13:37:21.450 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.451 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.452 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.452 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.452 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.452 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.452 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.453 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.453 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.453 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.454 Df meeterm[4501:842f] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:37:21.454 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.454 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.454 Df meeterm[4501:842f] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x10dc80b70>: Scheduling <_UIScenePostSettingsUpdateWindowLayout: 0x109e3dc90>
+2026-09-26 13:37:21.454 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.455 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.456 Df meeterm[4501:842f] [com.apple.KeyboardArbiter:Client] applicationWillResume note:UIApplicationResumedEventsOnlyNotification
+2026-09-26 13:37:21.457 Df meeterm[4501:842f] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:37:21.458 Sd meeterm[4501:0] (3D9A40AB-ACDF-3EC9-A223-5A041FBFFFCF) IOHIDManager State
+{
+    DispatchQueue = 0;
+    RunLoop = 1;
+    createOptions = 0;
+    isOpen = 0;
+    openOptions = 0;
+}
+2026-09-26 13:37:21.458 Df meeterm[4501:842f] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:37:21.458 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Scene did update interface style to 1, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.459 Df meeterm[4501:842f] [com.apple.UIKit:InterfaceStyle] Push traits update to screen for new style 1, <_UIKeyboardInputScene: 0x109fa4a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:37:21.459 Df meeterm[4501:842f] [com.apple.UIKit:KeyboardSceneDelegate] forceReloadInputViews
+2026-09-26 13:37:21.459 Df meeterm[4501:842f] [com.apple.UIKit:KeyboardSceneDelegate] Try reloading input views for responder:(nil) requiresKB:N force:Y scene-identity:com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:37:21.530 Df meeterm[4501:842f] [com.apple.network:activity] <nw_activity 50:1 [4801A4DB-A9E6-41CA-A232-F22F803E0A92] (global parent) (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 3760ms
+2026-09-26 13:37:21.530 Df meeterm[4501:842f] [com.apple.network:activity] <nw_activity 50:2 [81DC456B-59DD-47C6-B9C2-17076E8BEF7B] (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 3760ms
+2026-09-26 13:37:21.530 Df meeterm[4501:842f] [com.apple.network:activity] Unsetting the global parent activity <nw_activity 50:1 [4801A4DB-A9E6-41CA-A232-F22F803E0A92] (global parent) (reporting strategy default) complete (reason success)>
+2026-09-26 13:37:21.530 Df meeterm[4501:842f] [com.apple.network:activity] Unset the global parent activity
+2026-09-26 13:37:21.530 Df meeterm[4501:842f] [com.apple.app_launch_measurement:ApplicationLaunch] alm_release_pageins_recording_assertion: releasing pageins recording assertion
+2026-09-26 13:37:21.530 E  meeterm[4501:857e] [com.apple.app_launch_measurement:General] Failed to send CA Event for app launch measurements for ca_event_type: 1 event_name: com.apple.app_launch_measurement.ExtendedLaunchMetrics
+2026-09-26 13:37:21.533 A  meeterm[4501:857e] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:37:21.645 A  meeterm[4501:842f] (Security) SecItemAdd_ios
+2026-09-26 13:37:21.646 Df meeterm[4501:842f] [com.apple.securityd:secitemratelimit] Not internal release, disabling SIRL
+2026-09-26 13:37:21.659 Df meeterm[4501:842f] [com.apple.securityd:thread-local-client-debug] SecSecurityClientGet new thread!
+2026-09-26 13:37:21.660 Df meeterm[4501:842f] [com.apple.xpc:connection] [0x109fc2bc0] activating connection: mach=true listener=false peer=false name=com.apple.securityd
+2026-09-26 13:37:21.695 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.704 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.710 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.711 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.711 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.712 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.713 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.713 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.713 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.713 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.715 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.716 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.719 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.721 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.724 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.726 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.732 A  meeterm[4501:842f] (Security) SecItemDelete_ios
+2026-09-26 13:37:21.752 A  meeterm[4501:842f] (Security) SecItemAdd_ios
+2026-09-26 13:37:21.754 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.756 A  meeterm[4501:842f] (Security) SecItemAdd_ios
+2026-09-26 13:37:21.760 A  meeterm[4501:842f] (Security) SecItemDelete_ios
+2026-09-26 13:37:21.761 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.762 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.762 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.762 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.763 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.763 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.763 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.763 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.764 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.764 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.764 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:21.765 A  meeterm[4501:842f] (Security) SecItemDelete_ios
+2026-09-26 13:37:21.765 A  meeterm[4501:842f] (Security) SecItemDelete_ios
+2026-09-26 13:37:21.896 A  meeterm[4501:842f] (Security) SecItemAdd_ios
+2026-09-26 13:37:21.906 Df meeterm[4501:858f] [com.apple.network:path] nw_path_evaluator_start [65B44EFA-C121-4686-841F-3BB78B0877C9 <NULL> generic, multipath service: handover, attribution: developer]
+	path: satisfied (Path is satisfied), interface: en0
+2026-09-26 13:37:22.123 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.125 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.126 A  meeterm[4501:842f] (Security) SecItemDelete_ios
+2026-09-26 13:37:22.140 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.141 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.142 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.142 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.143 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.143 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.145 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.153 A  meeterm[4501:842f] (Security) SecItemCopyMatching_ios
+2026-09-26 13:37:22.178 Df meeterm[4501:842f] [com.apple.Accessibility:AXCommon] Read Per-App on Init: Smart invert = (null)
+2026-09-26 13:37:22.306 Df meeterm[4501:842f] [com.apple.CoreAnalytics:client] Entering exit handler.
+2026-09-26 13:37:22.306 Df meeterm[4501:842f] [com.apple.CoreAnalytics:client] Exiting exit handler.
+2026-09-26 13:38:02.948 Df meeterm[4709:0] [com.apple.libsystem.libdispatch:] BUG in libdispatch: 25F84 24A434 - 612 - 0x4
+2026-09-26 13:38:02.959 Df meeterm[4709:9121] [com.apple.UIKit.tracing:UITraceManager] UITraceInitialize: registering notify listener
+2026-09-26 13:38:02.959 Df meeterm[4709:9121] [com.apple.UIKit.tracing:UITraceManager] handle_trace_notification: received notify (state=0)
+2026-09-26 13:38:02.960 Df meeterm[4709:9121] (libMobileGestalt.dylib) No persisted cache on this platform.
+2026-09-26 13:38:02.961 Df meeterm[4709:91db] [com.apple.xpc:connection] [0x1087c1f50] activating connection: mach=true listener=false peer=false name=com.apple.cfprefsd.daemon
+2026-09-26 13:38:02.961 Df meeterm[4709:91eb] [com.apple.xpc:connection] [0x1087b8610] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:38:02.963 A  meeterm[4709:91ea] (CoreFoundation) Loading Preferences From User Session CFPrefsD
+2026-09-26 13:38:02.963 Df meeterm[4709:91db] [com.apple.UIKit:BackgroundTask] Creating new assertion because there is no existing background assertion.
+2026-09-26 13:38:02.970 Df meeterm[4709:91db] [com.apple.UIKit:BackgroundTask] Creating new background assertion
+2026-09-26 13:38:02.971 Df meeterm[4709:91db] [com.apple.UIKit:BackgroundTask] Created new background assertion <BKSProcessAssertion: 0x1087c5f60>
+2026-09-26 13:38:02.971 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason added: 10; deactivation reasons: 0 -> 1024; animating application lifecycle event: 0
+2026-09-26 13:38:02.971 Df meeterm[4709:91db] [com.apple.runningboard:connection] Initializing connection
+2026-09-26 13:38:02.971 Df meeterm[4709:91db] [com.apple.runningboard:process] Removing all cached process handles
+2026-09-26 13:38:02.971 Df meeterm[4709:91ea] [com.apple.runningboard:connection] Sending handshake request attempt #1 to server
+2026-09-26 13:38:02.971 Df meeterm[4709:91ea] [com.apple.runningboard:connection] Creating connection to com.apple.runningboard
+2026-09-26 13:38:02.971 Df meeterm[4709:91ea] [com.apple.xpc:connection] [0x108dbc140] activating connection: mach=true listener=false peer=false name=com.apple.runningboard
+2026-09-26 13:38:02.971 Df meeterm[4709:9121] [com.apple.BoardServices:Injection] activating monitor for service com.apple.frontboard.open
+2026-09-26 13:38:02.971 Df meeterm[4709:9121] [com.apple.BoardServices:Injection] activating monitor for service com.apple.frontboard.workspace-service
+2026-09-26 13:38:02.972 A  meeterm[4709:91eb] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:38:02.972 Df meeterm[4709:91ea] [com.apple.runningboard:connection] Handshake succeeded
+2026-09-26 13:38:02.972 Df meeterm[4709:91ea] [com.apple.runningboard:connection] Identity resolved as app<dev.meeterm.app((null))>
+2026-09-26 13:38:02.973 Df meeterm[4709:9121] [com.apple.FrontBoard:Common] FBSWorkspace registering source: com.apple.frontboard.systemappservices
+2026-09-26 13:38:02.976 Df meeterm[4709:9121] [com.apple.FrontBoard:Common] FBSWorkspace connected to endpoint : <BSServiceConnectionEndpoint: 0x108d50d60; target: com.apple.frontboard.systemappservices; service: com.apple.frontboard.workspace-service>
+2026-09-26 13:38:02.981 Df meeterm[4709:9121] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x108d099a0 com.apple.frontboard.systemappservices> attempting immediate handshake from activate
+2026-09-26 13:38:02.983 Df meeterm[4709:9121] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x108d099a0 com.apple.frontboard.systemappservices> sent handshake
+2026-09-26 13:38:02.984 Df meeterm[4709:9121] [com.apple.runningboard:general] Added observer for process assertions expiration warning: <_RBSExpirationWarningClient: 0x108d50f20>
+2026-09-26 13:38:02.985 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UIApplicationSceneKeyboardSettings on FBSSceneSettings
+2026-09-26 13:38:02.986 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneOcclusionSettings> on FBSSceneSettings
+2026-09-26 13:38:02.986 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneInterfaceProtectionSettings> on FBSSceneSettings
+2026-09-26 13:38:02.986 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneDestructionClientSettings> on FBSSceneClientSettings
+2026-09-26 13:38:02.986 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneLayoutPreferencesHostSettingsExtension on FBSSceneSettings
+2026-09-26 13:38:02.987 Df meeterm[4709:91db] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x1087c5f60>
+2026-09-26 13:38:02.987 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneSafeAreaSettingsExtension on FBSSceneSettings
+2026-09-26 13:38:02.987 Df meeterm[4709:91db] [com.apple.UIKit:BackgroundTask] Created background task <_UIBackgroundTaskInfo: 0x108c6eac0>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 500 (elapsed = 0).
+2026-09-26 13:38:02.987 Df meeterm[4709:9121] [com.apple.dt.xctest:Default] Registering for test daemon availability notify post.
+2026-09-26 13:38:02.987 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneBarPositionSettingsExtension on FBSSceneSettings
+2026-09-26 13:38:02.987 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneLayoutPreferenceClientSettingsExtension on FBSSceneClientSettings
+2026-09-26 13:38:02.988 Df meeterm[4709:9121] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-09-26 13:38:02.988 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIHomeAffordanceHostSceneSettings> on FBSSceneSettings
+2026-09-26 13:38:02.988 Df meeterm[4709:9121] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-09-26 13:38:02.988 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISystemShellSceneHostingEnvironmentSettings on FBSSceneSettings
+2026-09-26 13:38:02.990 Df meeterm[4709:9121] [com.apple.dt.xctest:Default] notify_get_state check indicated test daemon not ready.
+2026-09-26 13:38:02.990 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneRenderingEnvironmentSettings on FBSSceneSettings
+2026-09-26 13:38:02.990 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneRenderingEnvironmentClientSettings on FBSSceneClientSettings
+2026-09-26 13:38:02.990 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneTransitioningHostSettings> on FBSSceneSettings
+2026-09-26 13:38:02.991 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneActivationInteractionSettings> on FBSSceneSettings
+2026-09-26 13:38:02.991 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneFocusSystemSettings> on FBSSceneSettings
+2026-09-26 13:38:02.991 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneOrientationSettingsExtension on FBSSceneSettings
+2026-09-26 13:38:02.991 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneOrientationClientSettingsExtension on FBSSceneClientSettings
+2026-09-26 13:38:02.991 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneRegionSettings on FBSSceneSettings
+2026-09-26 13:38:02.992 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneWindowingControlClientSettings on FBSSceneClientSettings
+2026-09-26 13:38:02.992 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UICompanionSceneInterestClientSettings> on FBSSceneClientSettings
+2026-09-26 13:38:02.992 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIResourceConditionsSceneSettings> on FBSSceneSettings
+2026-09-26 13:38:02.993 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UIKeyboardInputScenePairingSettings on FBSSceneSettings
+2026-09-26 13:38:02.994 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension FBSSceneSettingsCore on FBSSceneSettings
+2026-09-26 13:38:02.995 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingContentSizePreferenceClientSettings> on FBSSceneClientSettings
+2026-09-26 13:38:02.996 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension FBSSceneClientSettingsCore on FBSSceneClientSettings
+2026-09-26 13:38:02.997 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension _UISceneHostingTraitCollectionPropagationSettings on FBSSceneSettings
+2026-09-26 13:38:02.997 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingSheetPresentationSettings> on FBSSceneSettings
+2026-09-26 13:38:02.998 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingSheetPresentationClientSettings> on FBSSceneClientSettings
+2026-09-26 13:38:02.998 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIKit__UITypedKeyValueSceneSettings> on FBSSceneSettings
+2026-09-26 13:38:02.999 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIKit__UITypedKeyValueSceneSettings> on FBSSceneClientSettings
+2026-09-26 13:38:02.999 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] UIMutableApplicationSceneSettings setting counterpart class: UIApplicationSceneSettings
+2026-09-26 13:38:02.999 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneHostingViewControllerPreferencePropagationClientSettings> on FBSSceneClientSettings
+2026-09-26 13:38:02.999 Df meeterm[4709:91db] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneZoomTransitionSettings> on FBSSceneSettings
+2026-09-26 13:38:02.999 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] UIMutableApplicationSceneClientSettings setting counterpart class: UIApplicationSceneClientSettings
+2026-09-26 13:38:03.000 Df meeterm[4709:91ea] [com.apple.FrontBoard:SceneExtension] Realizing settings extension FBSSceneTransitionContextCore on FBSSceneTransitionContext
+2026-09-26 13:38:03.007 Df meeterm[4709:9121] [com.apple.app_launch_measurement:ApplicationLaunch] alm_acquire_pageins_recording_assertion: acquired pageins recording assertion!
+2026-09-26 13:38:03.007 Df meeterm[4709:9121] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x108dbc8c0> for initial
+2026-09-26 13:38:03.007 Df meeterm[4709:9121] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x108dbc8c0> for CADisplay KVO
+2026-09-26 13:38:03.008 Df meeterm[4709:9121] [com.apple.Accessibility:AXSupportCommon] Read CategoryName: per-app = 1, category name = (null)
+2026-09-26 13:38:03.008 Df meeterm[4709:9121] [com.apple.Accessibility:AXSupportCommon] Read CategoryName: per-app = 0, category name = UICTContentSizeCategoryL
+2026-09-26 13:38:03.009 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Will add backgroundTask with taskName: Persistent SceneSession Map Update, expirationHandler: <__NSGlobalBlock__: 0x222a2e0c0>
+2026-09-26 13:38:03.009 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Reusing background assertion <BKSProcessAssertion: 0x1087c5f60>
+2026-09-26 13:38:03.009 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Incrementing reference count for background assertion <BKSProcessAssertion: 0x1087c5f60>
+2026-09-26 13:38:03.009 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Created background task <_UIBackgroundTaskInfo: 0x108e58880>: taskID = 2, taskName = Persistent SceneSession Map Update, creationTime = 500 (elapsed = 0).
+2026-09-26 13:38:03.010 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason added: 5; deactivation reasons: 1024 -> 1056; animating application lifecycle event: 1
+2026-09-26 13:38:03.010 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.011 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Should send trait collection or coordinate space update, interface style 1 -> 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.012 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.012 Df meeterm[4709:9121] [com.apple.UIKit:HomeAffordanceObservation] Initializing: <_UIHomeAffordanceSceneNotifier: 0x108e60cb0>; with scene: <UIWindowScene: 0x1087c9980>
+2026-09-26 13:38:03.012 Df meeterm[4709:9121] [com.apple.BacklightServices:scenes] 0x108e13420 setDelegate:<0x108e135d0 _UIBacklightEnvironment> hasDelegate:YES for environment:sceneID:dev.meeterm.app-default
+2026-09-26 13:38:03.012 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.012 Df meeterm[4709:9121] [com.apple.UIKit:EventDeferring] [0x108e7ef80] Initialized with scene: <UIWindowScene: 0x1087c9980>; behavior: <_UIEventDeferringBehavior_iOS: 0x108ec4e20>; availableForProcess: 1, systemShellManagesKeyboardFocus: 1
+2026-09-26 13:38:03.013 Df meeterm[4709:9121] [com.apple.GenerativeModels:availability] UserDefaults(com.apple.gms.availability, 501
+2026-09-26 13:38:03.041 Df meeterm[4709:9121] [com.apple.GenerativeModels:availability] registering darwin observer for name: com.apple.gms.availability.notification
+2026-09-26 13:38:03.041 Df meeterm[4709:9121] [com.apple.GenerativeModels:availability] registering darwin observer for name: com.apple.os-eligibility-domain.change.greymatter
+2026-09-26 13:38:03.041 Df meeterm[4709:9121] [com.apple.GenerativeModels:availability] registering darwin observer for name: com.apple.language.changed
+2026-09-26 13:38:03.042 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.042 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x108dbd7c0] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:38:03.042 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] policy observer <BKSHIDEventDeliveryPolicyObserver: 0x108e60d20; process scope; policy: UNKNOWN> added
+2026-09-26 13:38:03.042 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] set observing:YES
+2026-09-26 13:38:03.044 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x108e60d20; process scope; <target; generation: 29; finalStringToken>> was:(null)
+2026-09-26 13:38:03.044 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] - connection activation
+2026-09-26 13:38:03.044 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] 0x108e60d20 _UIKeyWindowSceneObserver-0x108e12d00 setToken:com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:38:03.045 Df meeterm[4709:9121] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to LastOneWins
+2026-09-26 13:38:03.045 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] will update observations for 0 observers
+2026-09-26 13:38:03.045 Df meeterm[4709:9121] [com.apple.UIKit:EventDeferring] [0x108e7ef80] Scene target of event deferring environments did update: scene: 0x1087c9980; current systemShellManagesKeyboardFocus: 1; systemShellManagesKeyboardFocusForScene: 1; eligibleForRecordRemoval: 1;
+2026-09-26 13:38:03.046 Df meeterm[4709:9121] [com.apple.UIKit:KeyWindow] Stack[KeyWindow] 0x108e137e0: Taking no further action for migration from LastOneWins -> SystemShellManaged as there are no scenes
+2026-09-26 13:38:03.046 Df meeterm[4709:9121] [com.apple.UIKit:KeyWindow] Setting default evaluation strategy for UIUserInterfaceIdiomPhone to SystemShellManaged
+2026-09-26 13:38:03.049 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.050 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.050 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] policy observer <BKSHIDEventDeliveryPolicyObserver: 0x108e615e0; process scope; policy: UNKNOWN> added
+2026-09-26 13:38:03.050 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] set observing:YES
+2026-09-26 13:38:03.053 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x108e615e0; process scope; <target; generation: 29; finalStringToken>> was:(null)
+2026-09-26 13:38:03.053 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] will update observations for 0 observers
+2026-09-26 13:38:03.053 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] 0x108e615e0  setToken:com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:38:03.053 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardFocusAssistant] Event deferring policy changed: finalScene:N->Y (token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.053 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardArbiterClientLog] isWritingToolsHandlingKeyboardTracking:Y (WT ready:Y, Arbiter ready:Y)
+2026-09-26 13:38:03.053 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardArbiterClientLog] -[_UIRemoteKeyboards prepareToMoveKeyboard:withIAV:isIAVRelevant:showing:notifyRemote:forScene:] position: {{0, 0}, {0, 0}} visible: 0; notifyRemote: 1; isMinimized: NO
+2026-09-26 13:38:03.054 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.057 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.058 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.058 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.058 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.058 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.058 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.060 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x108dbfd40] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:38:03.063 Df meeterm[4709:9121] [com.apple.FrontBoard:Common] FBSWorkspace registering source: com.apple.UIKit.KeyboardManagement.hosted
+2026-09-26 13:38:03.063 Df meeterm[4709:9121] [com.apple.FrontBoard:Common] FBSWorkspace connected to endpoint : <BSServiceConnectionEndpoint: 0x108ec6160; target: NL:com.apple.UIKit.KeyboardManagement.hosted; service: com.apple.frontboard.workspace-service>
+2026-09-26 13:38:03.064 F  meeterm[4709:9121] [com.apple.runtime-issues:UIKit App Config] `UIScene` life cycle is now required when building with the latest SDKs. Apps that don't adopt will fail to launch.
+2026-09-26 13:38:03.064 A  meeterm[4709:9121] (libsystem_trace.dylib) Activity for state dumps
+2026-09-26 13:38:03.065 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.065 Df meeterm[4709:9121] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:38:03.065 Df meeterm[4709:9121] [com.apple.UIKit:Application] Ignoring already applied deactivation reason: 5; deactivation reasons: 1056
+2026-09-26 13:38:03.065 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason added: 11; deactivation reasons: 1056 -> 3104; animating application lifecycle event: 1
+2026-09-26 13:38:03.065 Df meeterm[4709:9121] [com.apple.KeyboardArbiter:Client] startConnection
+2026-09-26 13:38:03.080 Df meeterm[4709:9121] (UIKitCore) You've implemented -[<UIApplicationDelegate> application:performFetchWithCompletionHandler:], but you still need to add "fetch" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 13:38:03.080 Df meeterm[4709:9121] (UIKitCore) You've implemented -[<UIApplicationDelegate> application:didReceiveRemoteNotification:fetchCompletionHandler:], but you still need to add "remote-notification" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 13:38:03.081 Df meeterm[4709:9121] (React) _setUpFeatureFlags called with release level 2
+2026-09-26 13:38:03.094 A  meeterm[4709:91db] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:38:03.101 Df meeterm[4709:9121] [com.apple.network:] networkd_settings_read_from_file_locked initialized networkd settings by reading plist directly
+2026-09-26 13:38:03.101 Df meeterm[4709:9121] [com.apple.network:] networkd_settings_read_from_file_locked initialized networkd settings by reading plist directly
+2026-09-26 13:38:03.105 Df meeterm[4709:91eb] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x108d0ad00 com.apple.UIKit.KeyboardManagement.hosted> attempting delayed handshake from activation handler
+2026-09-26 13:38:03.105 Df meeterm[4709:91eb] [com.apple.FrontBoard:Common] <FBSWorkspaceScenesClient:0x108d0ad00 com.apple.UIKit.KeyboardManagement.hosted> sent handshake
+2026-09-26 13:38:03.136 Df meeterm[4709:9121] [com.apple.UIKit:Orientation] <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B) Scene updated orientation preferences: none -> ( Pu Ll Lr )
+2026-09-26 13:38:03.136 Df meeterm[4709:9121] [com.apple.UIKit:KeyWindow] Key window API is scene-level: YES
+2026-09-26 13:38:03.137 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] BKSHIDEventDeliveryManager - connection activation
+2026-09-26 13:38:03.137 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] will update observations for 2 observers
+2026-09-26 13:38:03.138 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policy-per (
+    <0x108e615e0; _UIKeyboardFocu…ant-0x108db8600; fb/FBSceneManag…erm.app-default; <target; generation: 29; finalStringToken>>,
+    <0x108e60d20; _UIKeyWindowSce…ver-0x108e12d00; fb/FBSceneManag…erm.app-default; <target; generation: 29; finalStringToken>>
+)
+2026-09-26 13:38:03.139 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] will update observations for 2 observers
+2026-09-26 13:38:03.139 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] policyStatus:<0x108e615e0; _UIKeyboardFocusAssistant-0x108db8600; fb/FBSceneManager:sceneID%3Adev.meeterm.app-default; <ancestor; generation: 30; finalStringToken>> was:<target; generation: 29; finalStringToken>
+2026-09-26 13:38:03.139 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policyDidChange: 0x108e615e0 -> <_UIKeyboardFocusAssistant: 0x108db8600> now:<ancestor; generation: 30; finalStringToken>
+2026-09-26 13:38:03.139 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] policyStatus:<0x108e60d20; _UIKeyWindowSceneObserver-0x108e12d00; fb/FBSceneManager:sceneID%3Adev.meeterm.app-default; <ancestor; generation: 30; finalStringToken>> was:<target; generation: 29; finalStringToken>
+2026-09-26 13:38:03.139 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policyDidChange: 0x108e60d20 -> <_UIKeyWindowSceneObserver: 0x108e12d00> now:<ancestor; generation: 30; finalStringToken>
+2026-09-26 13:38:03.139 Df meeterm[4709:91db] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] policy-per (
+    <0x108e615e0; _UIKeyboardFocu…ant-0x108db8600; fb/FBSceneManag…erm.app-default; <ancestor; generation: 30; finalStringToken>>,
+    <0x108e60d20; _UIKeyWindowSce…ver-0x108e12d00; fb/FBSceneManag…erm.app-default; <ancestor; generation: 30; finalStringToken>>
+)
+2026-09-26 13:38:03.146 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason removed: 10; deactivation reasons: 3104 -> 2080; animating application lifecycle event: 1
+2026-09-26 13:38:03.146 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason added: 12; deactivation reasons: 2080 -> 6176; animating application lifecycle event: 1
+2026-09-26 13:38:03.146 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason removed: 11; deactivation reasons: 6176 -> 4128; animating application lifecycle event: 1
+2026-09-26 13:38:03.146 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UISceneIntelligenceSupportSettings> on FBSSceneSettings
+2026-09-26 13:38:03.147 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.147 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneExtension] Ingesting properties from UIApplicationSceneSettings...
+2026-09-26 13:38:03.147 Df meeterm[4709:91eb] [com.apple.UIIntelligenceSupport:xpc] establishing connection to agent
+2026-09-26 13:38:03.147 Df meeterm[4709:91eb] [com.apple.xpc:session] [0x108dde080] Session created.
+2026-09-26 13:38:03.147 Df meeterm[4709:91eb] [com.apple.xpc:session] [0x108dde080] Session created from connection [0x108f99f40]
+2026-09-26 13:38:03.147 Df meeterm[4709:91eb] [com.apple.xpc:connection] [0x108f99f40] activating connection: mach=true listener=false peer=false name=com.apple.uiintelligencesupport.agent
+2026-09-26 13:38:03.147 Df meeterm[4709:91eb] [com.apple.xpc:session] [0x108dde080] Session activated
+2026-09-26 13:38:03.148 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIApplicationSceneSettings[derived]> on FBSSceneSettings
+2026-09-26 13:38:03.148 Df meeterm[4709:9121] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x108c66610>: Scheduling <_UIScenePostSettingsUpdateWindowLayout: 0x108e40e50>
+2026-09-26 13:38:03.148 Df meeterm[4709:9121] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x108c66610>: Reducing <_UIScenePostSettingsUpdateWindowLayout: 0x108e40f00> into <_UIScenePostSettingsUpdateWindowLayout: 0x108e40e50>
+2026-09-26 13:38:03.148 Df meeterm[4709:91eb] [com.apple.UIIntelligenceSupport:xpc] Connection established with agent PID: 4295
+2026-09-26 13:38:03.148 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.149 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.152 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x108f983c0] activating connection: mach=true listener=false peer=false name=com.apple.lsd.mapdb
+2026-09-26 13:38:03.156 Df meeterm[4709:91eb] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIKeyboardInputSceneSettings> on FBSSceneSettings
+2026-09-26 13:38:03.157 Df meeterm[4709:91eb] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <_UIKeyboardInputSceneClientSettings> on FBSSceneClientSettings
+2026-09-26 13:38:03.157 Df meeterm[4709:91f0] [com.apple.xpc:connection] [0x108f98640] activating connection: mach=true listener=false peer=false name=com.apple.fontservicesd
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:1 [EF174D1E-DB9B-4FDA-AFE4-405544FA6EA4] (reporting strategy default)>
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.network:activity] Create activity from XPC object <nw_activity 50:2 [B0016115-073C-4075-BB76-3B012E5C2B4E] (reporting strategy default)>
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.network:activity] Set activity <nw_activity 50:1 [EF174D1E-DB9B-4FDA-AFE4-405544FA6EA4] (reporting strategy default)> as the global parent
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Ending background task with UIBackgroundTaskIdentifier: 1
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Ending task with identifier 1 and description: <_UIBackgroundTaskInfo: 0x108c6eac0>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 500 (elapsed = 0), _expireHandler: (null)
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x1087c5f60> (used by background task with identifier 1: <_UIBackgroundTaskInfo: 0x108c6eac0>: taskID = 1, taskName = Launch Background Task for Coalescing, creationTime = 500 (elapsed = 0))
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardFocusAssistant] Event deferring policy changed: finalScene:Y->Y (token: com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.165 Df meeterm[4709:9121] [com.apple.UIKit:EventDeferring] [0x108e7ef80] Scene target of event deferring environments did update: scene: 0x1087c9980; current systemShellManagesKeyboardFocus: 1; systemShellManagesKeyboardFocusForScene: 1; eligibleForRecordRemoval: 1;
+2026-09-26 13:38:03.166 Df meeterm[4709:9121] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:38:03.166 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.167 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneExtension] Realizing settings extension SBUISecureRenderingSettingsExtension on FBSSceneSettings
+2026-09-26 13:38:03.168 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.169 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.169 Df meeterm[4709:9121] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:38:03.169 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason removed: 12; deactivation reasons: 4128 -> 32; animating application lifecycle event: 1
+2026-09-26 13:38:03.169 Df meeterm[4709:9121] [com.apple.KeyboardArbiter:Client] Send setDeactivating: N (-DeactivationReason:SuspendedEventsOnly)
+2026-09-26 13:38:03.174 Df meeterm[4709:9121] [com.apple.UIKit:Application] Deactivation reason removed: 5; deactivation reasons: 32 -> 0; animating application lifecycle event: 0
+2026-09-26 13:38:03.174 Df meeterm[4709:9121] [com.apple.KeyboardArbiter:Client] applicationDidBecomeActive (force:N)
+2026-09-26 13:38:03.175 A  meeterm[4709:91eb] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:38:03.177 Df meeterm[4709:9121] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x108c66610>: Scheduling <_UIScenePostSettingsUpdateWindowLayout: 0x108e41910>
+2026-09-26 13:38:03.177 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 1, <UIWindowScene: 0x1087c9980> (66B7715C-B413-4A46-9E1A-1EB8A92C0D0B)
+2026-09-26 13:38:03.177 Df meeterm[4709:9121] [com.apple.UIKit:DisplayLink] Legacy remapping target changed from '(null)' to '3EE83DFB-A9A9-4E3E-BB9D-426439A0AE71'
+2026-09-26 13:38:03.178 Df meeterm[4709:9121] [com.apple.KeyboardArbiter:Client] applicationWillResume note:UIApplicationResumedEventsOnlyNotification
+2026-09-26 13:38:03.178 Df meeterm[4709:9121] [com.apple.KeyboardArbiter:Client] startConnection callback handleKeyboardChange:N (hasFocus:Y hasActiveInput:N expectingInitialState:Y disabled:N hasInfo:Y isWritingTOols:N)
+2026-09-26 13:38:03.178 Sd meeterm[4709:0] (3D9A40AB-ACDF-3EC9-A223-5A041FBFFFCF) IOHIDManager State
+{
+    DispatchQueue = 0;
+    RunLoop = 1;
+    createOptions = 0;
+    isOpen = 0;
+    openOptions = 0;
+}
+2026-09-26 13:38:03.178 Df meeterm[4709:9121] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x108f992c0> for initial
+2026-09-26 13:38:03.178 Df meeterm[4709:9121] [com.apple.UIKit:UIScreen] Evaluated capturing state as 0 on <UIScreen: 0x108f992c0> for CADisplay KVO
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Should send trait collection or coordinate space update, interface style 1 -> 1, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.UIKit:HomeAffordanceObservation] Initializing: <_UIHomeAffordanceSceneNotifier: 0x108e1a6f0>; with scene: <_UIKeyboardInputScene: 0x108f80a00>
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.BacklightServices:scenes] 0x108c64ed0 setDelegate:<0x108c653e0 _UIBacklightEnvironment> hasDelegate:YES for environment:KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.179 Df meeterm[4709:9121] [com.apple.UIKit:EventDeferring] [0x10d471900] Initialized with scene: <_UIKeyboardInputScene: 0x108f80a00>; behavior: <_UIEventDeferringBehavior_iOS: 0x108ec6040>; availableForProcess: 1, systemShellManagesKeyboardFocus: 1
+2026-09-26 13:38:03.180 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.180 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] policy observer <BKSHIDEventDeliveryPolicyObserver: 0x108e1a760; process scope; policy: UNKNOWN> added
+2026-09-26 13:38:03.180 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] [BKSHIDEventObserver] set observing:YES
+2026-09-26 13:38:03.180 Df meeterm[4709:9121] [com.apple.BackBoard:EventDelivery] policyStatus:<BKSHIDEventDeliveryPolicyObserver: 0x108e1a760; process scope; <target; generation: 30>> was:(null)
+2026-09-26 13:38:03.180 Df meeterm[4709:91eb] [com.apple.BackBoard:EventDelivery] will update observations for 0 observers
+2026-09-26 13:38:03.180 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.180 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.181 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.181 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.181 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.181 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.181 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.181 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.182 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:ScenePostSettingsUpdateResponse] <_UIScenePostSettingsUpdateResponseComponent: 0x108c65d10>: Scheduling <_UIScenePostSettingsUpdateWindowLayout: 0x108e41c50>
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.183 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Not push traits update to screen for new style 0, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.184 Df meeterm[4709:9121] [com.apple.KeyboardArbiter:Client] RX sceneBecameFocused:(null)
+2026-09-26 13:38:03.184 Df meeterm[4709:9121] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:38:03.184 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Scene did update interface style to 1, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.184 Df meeterm[4709:9121] [com.apple.UIKit:InterfaceStyle] Push traits update to screen for new style 1, <_UIKeyboardInputScene: 0x108f80a00> (KeyboardInputScene-com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default)
+2026-09-26 13:38:03.185 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardSceneDelegate] forceReloadInputViews
+2026-09-26 13:38:03.185 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardSceneDelegate] Try reloading input views for responder:(nil) requiresKB:N force:Y scene-identity:com.apple.frontboard.systemappservices/FBSceneManager:sceneID%3Adev.meeterm.app-default
+2026-09-26 13:38:03.222 Df meeterm[4709:9121] [com.apple.network:activity] <nw_activity 50:1 [EF174D1E-DB9B-4FDA-AFE4-405544FA6EA4] (global parent) (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 5207ms
+2026-09-26 13:38:03.222 Df meeterm[4709:9121] [com.apple.network:activity] <nw_activity 50:2 [B0016115-073C-4075-BB76-3B012E5C2B4E] (reporting strategy default) complete (reason success)> complete with reason 2 (success), duration 5207ms
+2026-09-26 13:38:03.222 Df meeterm[4709:9121] [com.apple.network:activity] Unsetting the global parent activity <nw_activity 50:1 [EF174D1E-DB9B-4FDA-AFE4-405544FA6EA4] (global parent) (reporting strategy default) complete (reason success)>
+2026-09-26 13:38:03.222 Df meeterm[4709:9121] [com.apple.network:activity] Unset the global parent activity
+2026-09-26 13:38:03.222 Df meeterm[4709:9121] [com.apple.app_launch_measurement:ApplicationLaunch] alm_release_pageins_recording_assertion: releasing pageins recording assertion
+2026-09-26 13:38:03.362 Df meeterm[4709:91f8] [com.apple.network:path] nw_path_evaluator_start [70C76428-1F89-4C34-8180-558B46954CE4 <NULL> generic, multipath service: handover, attribution: developer]
+	path: satisfied (Path is satisfied), interface: en0
+2026-09-26 13:38:03.507 Df meeterm[4709:9121] [com.apple.Accessibility:AXCommon] Read Per-App on Init: Smart invert = (null)
+2026-09-26 13:38:03.533 Df meeterm[4709:91ea] [com.apple.UIKit:BackgroundTask] Ending background task with UIBackgroundTaskIdentifier: 2
+2026-09-26 13:38:03.533 Df meeterm[4709:91ea] [com.apple.UIKit:BackgroundTask] Ending task with identifier 2 and description: <_UIBackgroundTaskInfo: 0x108e58880>: taskID = 2, taskName = Persistent SceneSession Map Update, creationTime = 500 (elapsed = 0), _expireHandler: <__NSGlobalBlock__: 0x222a2e0c0>
+2026-09-26 13:38:03.533 Df meeterm[4709:91ea] [com.apple.UIKit:BackgroundTask] Decrementing reference count for assertion <BKSProcessAssertion: 0x1087c5f60> (used by background task with identifier 2: <_UIBackgroundTaskInfo: 0x108e58880>: taskID = 2, taskName = Persistent SceneSession Map Update, creationTime = 500 (elapsed = 0))
+2026-09-26 13:38:03.533 Df meeterm[4709:91ea] [com.apple.UIKit:BackgroundTask] Will invalidate assertion: <BKSProcessAssertion: 0x1087c5f60> for task identifier: 2
+2026-09-26 13:38:03.603 E  meeterm[4709:9121] [com.apple.UIKit:UIFocus] RCTScrollViewComponentView implements focusItemsInRect: - caching for linear focus movement is limited as long as this view is on screen.
+2026-09-26 13:38:03.605 Df meeterm[4709:9121] [com.apple.UIKit:_UIVisualStyleRegistry] Warning: no visual style classes have been registered at all.
+2026-09-26 13:38:03.605 Df meeterm[4709:9121] [com.apple.UIKit:_UIVisualStyleRegistry] Warning: no visual style classes have been registered at all.
+2026-09-26 13:38:03.605 Df meeterm[4709:9121] [com.apple.UIKit:_UIVisualStyleRegistry] Note: no default visual style class registered as fallback for stylable class UIActivityIndicatorView
+2026-09-26 13:38:03.605 Df meeterm[4709:9121] [com.apple.UIKit:_UIVisualStyleRegistry] Note: no default visual style class registered as fallback for stylable class UIActivityIndicatorView
+2026-09-26 13:38:03.605 Df meeterm[4709:9121] [PrototypeTools:domain] Not observing PTDefaults on customer install.
+2026-09-26 13:38:03.647 Df meeterm[4709:91db] [com.apple.xpc:connection] [0x108f0ef80] activating connection: mach=false listener=false peer=false name=(anonymous)
+2026-09-26 13:38:03.656 Df meeterm[4709:91ea] [com.apple.CoreAnalytics:client] No XPC connection in Simulator
+2026-09-26 13:38:03.657 E  meeterm[4709:91ea] [com.apple.coreui:framework] CoreUI: CUIThemeStore: No theme registered with id=0
+2026-09-26 13:38:03.657 F  meeterm[4709:91ea] [com.apple.coreui:framework] CoreUI: CUIThemeStore: No theme registered with id=0
+2026-09-26 13:38:03.657 A  meeterm[4709:91ea] (libsystem_trace.dylib) Activity for state dumps
+2026-09-26 13:38:03.691 E  meeterm[4709:9121] [com.apple.coreanimation:API] cannot add handler to 0 from 0 - dropping
+2026-09-26 13:38:03.736 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneExtension] Ingesting properties from UIApplicationSceneClientSettings...
+2026-09-26 13:38:03.737 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneExtension] Realizing settings extension <UIApplicationSceneClientSettings[derived]> on FBSSceneClientSettings
+2026-09-26 13:38:03.739 E  meeterm[4709:9121] [com.apple.BoardServices:XPCErrors] non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
+2026-09-26 13:38:03.740 Sd meeterm[4709:0] (3D9A40AB-ACDF-3EC9-A223-5A041FBFFFCF) IOHIDManager State
+{
+    DispatchQueue = 0;
+    RunLoop = 1;
+    createOptions = 0;
+    isOpen = 0;
+    openOptions = 0;
+}
+2026-09-26 13:38:04.091 A  meeterm[4709:91eb] (RunningBoardServices) didChangeInheritances
+2026-09-26 13:39:18.980 Df meeterm[4709:9121] [com.apple.FrontBoard:SceneClient] [(FBSceneManager):sceneID:dev.meeterm.app-default] Received action(s) in scene-update: UIOpenURLAction
+2026-09-26 13:39:18.981 Df meeterm[4709:9121] [com.apple.UIKit:AppLifecycle] sceneOfRecord: sceneID: sceneID:dev.meeterm.app-default  persistentID: 66B7715C-B413-4A46-9E1A-1EB8A92C0D0B
+2026-09-26 13:39:19.056 E  meeterm[4709:9121] [com.apple.UIKit:UIFocus] RCTScrollViewComponentView implements focusItemsInRect: - caching for linear focus movement is limited as long as this view is on screen.
+2026-09-26 13:39:19.072 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x11026c640] activating connection: mach=true listener=false peer=false name=com.apple.pasteboard.pasted
+2026-09-26 13:39:19.073 Df meeterm[4709:9121] [com.apple.Pasteboard:Pasteboard] Retrieving pasteboard named com.apple.UIKit.pboard.general, create if needed: NO
+2026-09-26 13:39:19.077 Df meeterm[4709:9121] [com.apple.Pasteboard:Pasteboard] ...retrieving pasteboard named com.apple.UIKit.pboard.general completed successfully.
+2026-09-26 13:39:19.082 Df meeterm[4709:9121] [com.apple.UIKit:_UIVisualStyleRegistry] Note: no default visual style class registered as fallback for stylable class UITextEffectsWindow
+2026-09-26 13:39:19.083 Df meeterm[4709:9121] [com.apple.UIKit:_UIVisualStyleRegistry] Note: no default visual style class registered as fallback for stylable class UITextEffectsWindow
+2026-09-26 13:39:19.086 Df meeterm[4709:9121] [com.apple.UIKit:TrackingElementWindowController] Change from input view set: (null)
+2026-09-26 13:39:19.086 Df meeterm[4709:9121] [com.apple.UIKit:TrackingElementWindowController] Change to input view set: (null)
+2026-09-26 13:39:19.089 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardLayoutGuide] _moveGuideOffscreenAtEdge: 4
+2026-09-26 13:39:19.090 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardLayoutGuide] changeOffsetConstants: offset is changing to {0, 0} [previous offset: {-1, -1}]
+2026-09-26 13:39:19.090 Df meeterm[4709:9121] [com.apple.UIKit:KeyboardLayoutGuide] changeSizingConstants: size is changing [not transitioning] to {440, 0} [previous size: {1, 0}]
+2026-09-26 13:39:19.145 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x1102d7ac0] activating connection: mach=true listener=false peer=false name=com.apple.metal.simulator
+2026-09-26 13:39:19.146 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x1102d7c00] activating connection: mach=true listener=false peer=false name=com.apple.metal.simulator
+2026-09-26 13:39:19.146 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x1102d7d40] activating connection: mach=true listener=false peer=false name=com.apple.metal.simulator
+2026-09-26 13:39:19.148 E  meeterm[4709:9121] (libCoreFSCache.dylib) fopen failed for data file: errno = 2 (No such file or directory)
+2026-09-26 13:39:19.148 Df meeterm[4709:9121] (libCoreFSCache.dylib) Invalidating cache
+2026-09-26 13:39:19.148 Df meeterm[4709:9121] (Metal) Metal compiler process merging enabled (new scheduler only)
+2026-09-26 13:39:19.148 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x1102d7e80] activating connection: mach=false listener=false peer=false name=com.apple.MTLCompilerService
+2026-09-26 13:39:19.177 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x1103e8000] activating connection: mach=false listener=false peer=false name=com.apple.MTLCompilerService
+2026-09-26 13:39:19.177 A  meeterm[4709:9218] (Metal) Metal Compiling Shader
+2026-09-26 13:39:25.501 E  meeterm[4709:9121] (libCoreFSCache.dylib) fopen failed for data file: errno = 2 (No such file or directory)
+2026-09-26 13:39:25.501 Df meeterm[4709:9121] (libCoreFSCache.dylib) Invalidating cache
+2026-09-26 13:39:25.501 A  meeterm[4709:9218] (Metal) Metal Compiling Shader
+2026-09-26 13:39:25.511 A  meeterm[4709:9218] (Metal) Metal Compiling Shader
+2026-09-26 13:39:25.522 Df meeterm[4709:9121] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-26 13:39:25.525 E  meeterm[4709:9121] [com.apple.coreanimation:API] cannot add handler to 0 from 0 - dropping
+2026-09-26 13:39:25.566 Df meeterm[4709:9121] [com.apple.xpc:connection] [0x1103e9b80] activating connection: mach=true listener=false peer=false name=com.apple.IOSurface.Remote
+2026-09-26 13:39:25.614 Df meeterm[4709:9121] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-26 13:39:25.620 E  meeterm[4709:9121] [com.apple.coreanimation:API] cannot add handler to 0 from 0 - dropping
