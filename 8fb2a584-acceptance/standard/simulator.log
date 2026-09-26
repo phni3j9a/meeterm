@@ -1,0 +1,22 @@
+Timestamp               Ty Process[PID:TID]
+2026-09-26 18:43:23.657 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=js_module_loaded
+2026-09-26 18:43:23.660 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=root_effect
+2026-09-26 18:43:23.672 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=initial_url_requested
+2026-09-26 18:43:23.673 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=initial_url_null
+2026-09-26 18:43:23.706 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=app_content_mounted
+2026-09-26 18:43:23.706 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=profiles_requested
+2026-09-26 18:43:23.719 Df meeterm[6235:d336] (Foundation) MEETERM_SMOKE_STARTUP phase=profiles_succeeded
+2026-09-26 18:43:27.941 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=js_module_loaded
+2026-09-26 18:43:27.946 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=root_effect
+2026-09-26 18:43:27.956 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=initial_url_requested
+2026-09-26 18:43:27.959 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=initial_url_allowed_fixture
+2026-09-26 18:43:28.002 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=app_content_mounted
+2026-09-26 18:43:28.003 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=profiles_requested
+2026-09-26 18:43:28.015 Df meeterm[6253:d3f2] (Foundation) MEETERM_SMOKE_STARTUP phase=profiles_succeeded
+2026-09-26 18:43:28.026 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-26 18:43:28.026 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-26 18:43:28.212 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-26 18:43:28.215 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-26 18:43:28.225 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-26 18:43:28.242 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-26 18:43:28.314 Df meeterm[6253:d37e] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL

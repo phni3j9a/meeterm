@@ -1,0 +1,12 @@
+transport_loss=passed
+pre_marker_exactly_once=yes
+post_marker_exactly_once=yes
+same_pane=yes
+same_pane_pid=yes
+other_panes_clean=yes
+fixture_control=stopped_and_started
+native_terminal_identifier_same=yes
+native_handle_same=yes
+selected_pane_identifier_same=yes
+cached_read_only_surface=yes
+input_during_loss=none

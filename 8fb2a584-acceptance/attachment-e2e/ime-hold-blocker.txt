@@ -1,0 +1,23 @@
+Issue #28 addition C3 (IME hold): NOT DRIVABLE via XCUITest — recorded blocker.
+
+Requirement: during an unfinished IME/marked-text composition in the terminal
+input, Attach -> "Finish IME composition before attaching." + composition
+preserved.
+
+Blocker: XCUITest has no API to produce marked text (an unfinished
+UITextInput composition) on the app's native TerminalInputView.
+- typeText commits each character directly (no composing state).
+- There is no accessibility action or keyboard switch that leaves a live
+  marked-text session on the input view; the on-screen IME candidates bar is
+  only reachable through real IME input on a hardware/software keyboard
+  producing marked text, which XCUITest cannot drive.
+- xcrun simctl provides no text/IME injection.
+
+Unit-level coverage of the same contract exists and PASSED in this suite:
+scripts/ci/AttachmentTests.swift
+  testMarkedTextHoldsInsertionThroughRealInputView — constructs a real
+  TerminalInputView + AttachmentCompositionGuard, calls setMarkedText("あい"),
+  asserts isComposing and the held-composing policy, and that the composition
+  is preserved. 38/38 injected XCTest all passed (see xctest-8fb2a584.log).
+
+Screenshots for every other stage are in this directory (e2e-*.png).

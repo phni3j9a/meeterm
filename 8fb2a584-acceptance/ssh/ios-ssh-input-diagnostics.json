@@ -1,0 +1,47 @@
+{
+  "marker_file_exists": true,
+  "marker_file_matches": true,
+  "marker_line_count": 1,
+  "marker_exactly_once": true,
+  "panes": [
+    {
+      "capture_char_count": 892,
+      "capture_line_count": 7,
+      "command_echo_seen": false,
+      "keyboard_word_seen": true,
+      "paste_body_seen": false,
+      "keyboard_prefix_suffix_length": 0,
+      "marker_echo_seen": true,
+      "marker_path_echo_seen": true,
+      "shell_command_not_found": false,
+      "shell_permission_denied": false,
+      "shell_syntax_error": false
+    },
+    {
+      "capture_char_count": 27,
+      "capture_line_count": 19,
+      "command_echo_seen": false,
+      "keyboard_word_seen": false,
+      "paste_body_seen": false,
+      "keyboard_prefix_suffix_length": 0,
+      "marker_echo_seen": false,
+      "marker_path_echo_seen": false,
+      "shell_command_not_found": false,
+      "shell_permission_denied": false,
+      "shell_syntax_error": false
+    },
+    {
+      "capture_char_count": 27,
+      "capture_line_count": 19,
+      "command_echo_seen": false,
+      "keyboard_word_seen": false,
+      "paste_body_seen": false,
+      "keyboard_prefix_suffix_length": 0,
+      "marker_echo_seen": false,
+      "marker_path_echo_seen": false,
+      "shell_command_not_found": false,
+      "shell_permission_denied": false,
+      "shell_syntax_error": false
+    }
+  ]
+}

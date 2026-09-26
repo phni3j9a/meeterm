@@ -1,0 +1,5 @@
+case=credential_endpoint_binding result=passed
+case=interrupted_write_cleanup result=passed
+case=preferences_validation result=passed
+case=remove_saved_credential result=passed
+case=runtime_hint_validation result=passed

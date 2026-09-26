@@ -1,0 +1,60 @@
+# meeterm Issue #28 — final validation suite (8fb2a584)
+
+candidate_sha=8fb2a584a84c51c8fc587d51f1e681023d15a020
+branch=issue-28-image-attachments (PR #43 head, review-round fixes through FP-024)
+recorded_utc=2026-09-26
+host=macOS arm64 (Apple Silicon), Xcode 26.6 (17F113), SDK iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2, RN 0.86.3, expo ~57.0.25, tmux 3.7c
+simulator=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377, iOS 27.0); suite-internal device iPhone 18 Pro (1308A109-3EE0-4711-9287-85246639DBC7)
+
+== Pipeline ==
+git fetch origin && git reset --hard 8fb2a584...  OK (HEAD verified)
+npm ci                                          OK
+fresh CNG (rm -rf ios; expo prebuild ios)       OK
+ios-inject-ui-test.sh                           OK (AttachmentTests+TerminalInputViewTests+ClientStoreTests injected)
+pod install                                     OK
+ios-strip-storage-rust-link.py                  OK
+build-for-testing (Release smoke, arm64)        PASSED (152s; logs/xcodebuild-8fb2a584-b4t.log)
+ios-typecheck.sh                                PASSED (logs/typecheck-8fb2a584.log)
+injected XCTest                                 38/38 PASSED — AttachmentTests 20/20, TerminalInputViewTests 13/13, ClientStoreTests 5/5 (logs/xctest-8fb2a584.log, logs/xctest-storage-8fb2a584.log)
+
+== A. standard suite (fresh build) == PASSED — wall 328s (logs/standard-8fb2a584.log)
+native readiness: MEETERM_SMOKE_NATIVE_READY observed
+first frame:      MEETERM_SMOKE_FIRST_FRAME_METAL (Metal; CoreGraphics fallback marker 0 occurrences)
+no crash: process alive throughout; 26-route manifest all captured + 11 attachment fixture routes (attachment-choose/ready/uploading/pending/uploaded/inserted/failed/cancelled/deleted/error/blocked) -> standard/attachment-routes/*.png
+evidence dir: standard/
+
+== B. ssh suite (REUSE of the same-commit build-for-testing product from A) == PASSED — wall 483s (logs/ssh-8fb2a584.log)
+pristine conditions verified before reuse: HEAD==8fb2a584, exactly one *.xctestrun in Products, stale xcresult removed. Recorded: reuse of the standard run's fresh-build product.
+fixture topology, same-server session ops, alternate endpoint + host-key confirm, transport-loss contract all PASS (ssh/ios-ssh-validation.txt, ssh/ios-transport-loss-validation.txt, ssh captures ssh-*.png)
+evidence dir: ssh/
+
+== C. Issue #28 acceptance additions (live fixture: scripts/ssh/fixture.py sshd --sftp + real tmux) ==
+Harness: disposable XCUITest appended to the GENERATED ios/meetermTests copy (extension reusing the suite's private connect helpers; source tree untouched). Fixture env injected into a temp xctestrun copy (no secrets in artifacts). Remote state verified host-side between phases via marker files + `tmux -S <fixture-socket> capture-pane`.
+
+C1 real pickers -> normalized preview:
+  AC03 PHPicker (Photos):   PASS — seeded synthetic PNG via `xcrun simctl addmedia`, picked in the real PHPicker grid, normalized preview shown. attachment-e2e/e2e-picker-photos.png, attachment-e2e/e2e-preview-photos.png
+  AC04 document picker (Files): PASS — seeded PNG in the local Files domain, picked via UIDocumentPickerViewController, normalized preview shown. attachment-e2e/e2e-picker-files.png, attachment-e2e/e2e-preview-files.png
+
+C2 live SSH E2E (attach -> upload -> insert -> delete): PASS
+  e2e-sheet-choosing.png  Attach image sheet, Photos/Files choices
+  e2e-picker-photos.png   real PHPicker open with photo grid
+  e2e-preview-photos.png  normalized preview (64x48 PNG, remote dir ~/.local/share/meeterm/attachments)
+  e2e-uploaded.png        Uploaded + absolute remote path
+  e2e-remote-path.txt     /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-194711-d09fb58c54dc6ddb.png — host-verified present (292B valid PNG, 0640)
+  e2e-inserting.png       post-Insert capture (Inserting… notice is transient)
+  e2e-inserted.png        Inserted — "not sent. Review it and send it yourself."
+  remote verify           tmux capture-pane on fixture socket shows '<absolute path>' at the pane prompt UNSENT; other panes' prompts untouched; no command ran
+  e2e-deleted.png         Deleted from server
+  remote verify           remote file gone after delete (attachments dir pruned)
+  e2e-picker-files.png    document picker (Files) UI
+  e2e-preview-files.png   normalized preview via Files pick
+  attachment-e2e/ios-ui-attachment-e2e-validation.txt: case=attachment_e2e result=passed (xcodebuild test passed, 216s; logs/att28-e2e-run.log)
+
+C3 IME hold: BLOCKED (tool limitation, not a product failure)
+  attachment-e2e/ime-hold-blocker.txt — XCUITest cannot produce a live marked-text composition on the native input view (typeText commits characters; no setMarkedText injection; simctl has no IME path). Unit coverage of the same contract: AttachmentTests.testMarkedTextHoldsInsertionThroughRealInputView PASSED (setMarkedText -> isComposing -> heldComposing, composition preserved) in the 38/38 bundle.
+
+cloud providers: none used (recorded as not done — synthetic images only, per scope)
+
+== D. evidence ==
+branch=evidence/ios-20260926  dir=8fb2a584-acceptance/
+no credentials/keys/personal data in bundle; fixture private key not included; xctestrun/xcresult binaries excluded.
