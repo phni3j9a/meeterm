@@ -99,6 +99,14 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   retained; fresh/cold connection discovery uses the picker.
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
+- The terminal header's Attach action opens an image-attachment sheet (Issue
+  #28 Phase A). It offers Photos and Files, reports a held
+  "変換を確定してから挿入してください" notice while an IME composition is
+  active, and previews only the normalized app-owned image with its dimensions,
+  format, and byte count. The insert action inserts an image reference into
+  the native input; submitting it remains the user's own explicit key action.
+  Choosing another image replaces the draft, and closing the sheet discards
+  the native session and its files.
 
 ### Agent status metadata
 

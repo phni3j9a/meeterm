@@ -329,6 +329,51 @@ See [TESTING.md](TESTING.md) for the standard method,
 measured results, and [earlier daily-use evidence](evidence/daily-use-validation-history.md)
 for the preserved investigation history.
 
+## Issue #28 image attachment (Phase A)
+
+Issue #28 adds a smartphone-first image attachment flow to the native terminal.
+This milestone implements the mobile side only: pick one image from the phone,
+stage it in app-owned storage, validate and normalize it, preview it in a sheet,
+and request a reference insertion into the native terminal input. Remote
+upload/delete and the CLI/AI submission stay behind a dedicated core bridge that
+answers `unavailable` (`core_contract_pending`) until the shared Rust FFI
+contract lands in a later work item.
+
+- The Attach control sits on the terminal screen and is only reachable while a
+  terminal is selected and the runtime is Ready. `beginAttachment` carries the
+  selected terminal/server/session identity; a later `insertAttachment` call is
+  rejected when it names a different terminal.
+- Photos uses `PickVisualMedia` (Android) / `PHPickerViewController` (iOS);
+  Files uses `ACTION_OPEN_DOCUMENT` / `UIDocumentPickerViewController`. Sources
+  stream into app-owned staging under a bounded 24 MiB copy — the provider never
+  hands the pipeline an unbounded buffer, and staging file names are
+  app-generated so provider names cannot traverse the directory.
+- The picked bytes pass magic/dimension checks before any decode: only PNG and
+  JPEG are accepted, HEIC-family brands report a distinct error, and oversized
+  inputs are rejected before pixels are read. EXIF orientation is normalized to
+  an ops model covering all eight values, and the output is re-encoded
+  PNG/JPEG with source metadata dropped.
+- The sheet previews only the normalized app-owned file with its dimensions,
+  format and byte count. Choosing a different image invalidates the old
+  staging/prepared/remote state; dismissing the sheet (including an iOS swipe
+  down) discards the native session and its files, and stale picker results are
+  dropped through a generation counter.
+- IME composition is protected by the real input state, not a flag: Android
+  reads composing spans plus `InputSession.composingText`, iOS reads
+  `markedTextRange`, both through per-terminal providers unregistered on rebind
+  or unmount. While a composition is active, begin/insert return
+  `held` (`reason=composing`) and the composition itself is never committed or
+  cleared. Attachment insertion never routes through the paste or special-key
+  paths.
+- Insertion inserts an image-path reference into the native input only; the
+  user always reviews and submits the terminal input themselves. Until the W2
+  core contract exists the insert action reports the unavailable backend
+  notice instead of a false success.
+
+Staging and prepared files are reclaimed on startup when no live session
+references them. Ordinary paste, special keys, and existing native input
+behavior are unchanged by the attachment path.
+
 ## User behavior and storage boundary
 
 The server list manages local profiles; only one server/runtime actor is

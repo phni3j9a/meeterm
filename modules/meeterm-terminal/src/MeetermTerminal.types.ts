@@ -291,6 +291,80 @@ export type RuntimeDiscovery = {
   backends: RuntimeBackendDiscovery[];
 };
 
+/** Attachment entry points offered to the native picker adapter. */
+export type AttachmentSource = 'photos' | 'files';
+
+/** Re-encoded formats accepted by the first attachment milestone. */
+export type AttachmentImageFormat = 'png' | 'jpeg';
+
+/**
+ * Opaque remote-target identity captured when an attachment starts. Every
+ * field is display/metadata only; the native side revalidates its own
+ * terminal identity and operation epoch before any remote operation.
+ */
+export type AttachmentTarget = {
+  terminalId: string;
+  paneId: string;
+  workspaceId: string;
+  backend: RuntimeBackend;
+  runtime: string;
+  host: string;
+  port: number;
+};
+
+/** Attachment open result. `held` means native input composition is active. */
+export type AttachmentBeginResult =
+  | { status: 'ready' }
+  | { status: 'held'; reason: 'composing' };
+
+export type AttachmentPickResult =
+  | { status: 'picked'; token: string; byteCount: number }
+  | { status: 'canceled' }
+  | { status: 'error'; errorCode: string; message: string };
+
+export type AttachmentPrepareResult =
+  | {
+      status: 'prepared';
+      fileId: string;
+      previewUri: string;
+      format: AttachmentImageFormat;
+      width: number;
+      height: number;
+      byteCount: number;
+      sourceByteCount: number;
+    }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Upload/delete answer; remote progress is Phase B and stays unavailable. */
+export type AttachmentTransferResult =
+  | { status: 'uploaded'; remotePath: string }
+  | { status: 'deleted' }
+  | { status: 'held'; reason: string }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Insertion answer; `held` keeps the composition and reports a reason. */
+export type AttachmentInsertResult =
+  | { status: 'inserted' }
+  | { status: 'held'; reason: 'composing' | 'no_attachment' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Low-frequency native attachment session snapshot for remount recovery. */
+export type AttachmentSessionState = {
+  status: 'idle' | 'staged' | 'prepared' | 'uploaded';
+  fileId: string;
+  previewUri: string;
+  format: AttachmentImageFormat;
+  width: number;
+  height: number;
+  byteCount: number;
+  sourceByteCount: number;
+  remotePath: string;
+  errorCode: string;
+  message: string;
+};
+
 export type NativeReadyEvent = {
   terminalId: string;
   native: true;

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONArray
@@ -32,6 +33,9 @@ class MeetermTerminalModule : Module() {
         manager.registerDefaultNetworkCallback(callback)
         connectivityManager = manager
         networkCallback = callback
+      }
+      appContext.reactContext?.applicationContext?.let {
+        AttachmentController.reclaimStaleFiles(it)
       }
     }
 
@@ -241,6 +245,38 @@ class MeetermTerminalModule : Module() {
       ) {
         throw IllegalStateException("The trusted host key could not be removed.")
       }
+    }
+
+    // Issue #28 attachment flow. A held begin means the terminal's IME still
+    // owns a composition; JS shows the "finish conversion" hint and nothing
+    // about the composition is touched.
+    AsyncFunction("beginAttachment") { terminalId: String, target: Map<String, Any?> ->
+      val identity = AttachmentTargetIdentity.fromMap(target)
+        ?: throw IllegalArgumentException("The attachment target is invalid.")
+      AttachmentController.begin(normalizeTerminalId(terminalId), identity, storageContext())
+    }
+    AsyncFunction("pickAttachmentImage") { source: String, promise: Promise ->
+      AttachmentController.pick(source, promise, appContext, storageContext())
+    }
+    AsyncFunction("prepareAttachmentImage") { token: String ->
+      AttachmentController.prepare(token, storageContext())
+    }
+    AsyncFunction("discardAttachment") {
+      AttachmentController.discard(storageContext())
+    }
+    AsyncFunction("getAttachmentState") {
+      AttachmentController.snapshot(storageContext())
+    }
+    AsyncFunction("uploadAttachment") { terminalId: String, remoteDirectory: String ->
+      AttachmentController.upload(normalizeTerminalId(terminalId), remoteDirectory, storageContext())
+    }
+    // Dedicated attachment insertion — never routed through paste or special
+    // keys, and held while the native IME owns a composition.
+    AsyncFunction("insertAttachment") { terminalId: String ->
+      AttachmentController.insert(normalizeTerminalId(terminalId), storageContext())
+    }
+    AsyncFunction("deleteRemoteAttachment") { terminalId: String, remotePath: String ->
+      AttachmentController.deleteRemote(normalizeTerminalId(terminalId), remotePath, storageContext())
     }
 
     View(MeetermTerminalView::class) {

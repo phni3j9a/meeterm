@@ -852,7 +852,8 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
     'session-switcher', 'session-switcher-sessions',
     'recovery-progress', 'recovery-exhausted', 'recovery-mismatch',
-    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
+    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
+    'attachment-choose', 'attachment-ready', 'attachment-error', 'attachment-blocked']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);

@@ -1,6 +1,14 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
 import type {
+  AttachmentBeginResult,
+  AttachmentInsertResult,
+  AttachmentPickResult,
+  AttachmentPrepareResult,
+  AttachmentSessionState,
+  AttachmentSource,
+  AttachmentTarget,
+  AttachmentTransferResult,
   SavedCredential,
   ServerProfile,
   SshConnectOptions,
@@ -62,6 +70,29 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
     accept: boolean,
   ): Promise<void>;
   forgetHostKey(host: string, port: number): Promise<void>;
+  /**
+   * Start one attachment session against the captured remote target. Held
+   * while native input composition is active; it never commits or clears it.
+   */
+  beginAttachment(terminalId: string, target: AttachmentTarget): Promise<AttachmentBeginResult>;
+  /** OS picker; the chosen image is stream-copied into app-owned staging. */
+  pickAttachmentImage(source: AttachmentSource): Promise<AttachmentPickResult>;
+  /** Validate, orient, strip metadata, and re-encode the staged image. */
+  prepareAttachmentImage(token: string): Promise<AttachmentPrepareResult>;
+  /** Remove the active session's local staging/prepared files. */
+  discardAttachment(): Promise<void>;
+  /** Low-frequency session snapshot used to rebind state after remounts. */
+  getAttachmentState(): Promise<AttachmentSessionState>;
+  /** Reserved W2 transfer wiring; reports `unavailable` until it lands. */
+  uploadAttachment(terminalId: string, remoteDirectory: string): Promise<AttachmentTransferResult>;
+  /**
+   * IME-safe attachment insertion entry. When a native composition exists it
+   * returns `held` without touching it; otherwise the request goes to the W2
+   * Rust insertion contract (Phase A reports `unavailable`).
+   */
+  insertAttachment(terminalId: string): Promise<AttachmentInsertResult>;
+  /** Reserved W2 remote delete wiring; reports `unavailable` until it lands. */
+  deleteRemoteAttachment(terminalId: string, remotePath: string): Promise<AttachmentTransferResult>;
 }
 
 export default requireNativeModule<MeetermTerminalModule>('MeetermTerminal');

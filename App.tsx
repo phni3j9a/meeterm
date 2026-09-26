@@ -7,6 +7,7 @@ import {
   BackHandler,
   AccessibilityInfo,
   FlatList,
+  Image,
   Keyboard,
   Linking,
   Modal,
@@ -24,7 +25,7 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
-import type { AgentStatus, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
+import type { AgentStatus, AttachmentSource, AttachmentTarget, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -85,7 +86,28 @@ const INITIAL_CONNECTION: SshConnectionState = {
   knownFingerprint: '', errorCode: '', errorMessage: '',
 };
 type Workspace = RemoteWorkspace & { panes: RemoteTerminal[] };
-type SheetKind = 'server' | 'servers' | 'switcher' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | null;
+type SheetKind = 'server' | 'servers' | 'switcher' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | 'attachment' | null;
+
+// Issue #28 attachment draft. `phase` drives the sheet body; `prepared` only
+// holds display metadata from the native normalize result — the file itself
+// stays native-owned until insertion or discard.
+type AttachmentPhase = 'choosing' | 'picking' | 'normalizing' | 'ready' | 'inserting' | 'error';
+type AttachmentPreparedInfo = {
+  fileId: string;
+  previewUri: string;
+  format: string;
+  width: number;
+  height: number;
+  byteCount: number;
+  sourceByteCount: number;
+};
+type AttachmentDraftState = {
+  phase: AttachmentPhase;
+  prepared: AttachmentPreparedInfo | null;
+  notice: string;
+  errorCode: string;
+  errorMessage: string;
+};
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
 type SwitcherTarget = { profile: ServerProfile; isCurrent: boolean };
@@ -104,7 +126,7 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff' | 'attachment-choose' | 'attachment-ready' | 'attachment-error' | 'attachment-blocked';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
 
 // This is the native message published after an explicit disconnect cannot
@@ -114,6 +136,10 @@ type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen
 const SMOKE_LAYOUT_RESTORE_WARNING = 'The connection closed, but the desktop layout could not be confirmed as restored.';
 const SMOKE_CLEANUP_WARNING_MESSAGE = "The old connection's desktop layout restore could not be confirmed.";
 const LEGACY_CLEANUP_WARNING_ID = 'legacy-layout-restore-unconfirmed';
+
+// IME-safe attachment insertion: a live composition holds the request instead
+// of being committed, cleared, or forwarded by the native path.
+const ATTACHMENT_COMPOSING_NOTICE = '変換を確定してから挿入してください';
 
 function legacyCleanupWarning(connection: SshConnectionState): WorkspaceControl['cleanupWarning'] {
   if (connection.errorCode !== 'layout_restore_unconfirmed') return null;
@@ -174,6 +200,7 @@ type SmokeFixtureState = {
   profileId: string;
   sheet: SheetKind;
   hasConnected: boolean;
+  attachmentDraft?: AttachmentDraftState | null;
   searching?: boolean;
   query?: string;
   runtimeDiscovery?: RuntimeDiscovery;
@@ -384,6 +411,28 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.sheet = screen === 'herdr-groups' ? 'groups' : null;
     return base;
   }
+  if (screen.startsWith('attachment-')) {
+    const base = smokeFixture('terminal');
+    base.sheet = 'attachment';
+    const prepared: AttachmentPreparedInfo = {
+      fileId: 'att_smoke0001.png',
+      // A 1×1 PNG keeps the preview deterministic and offline.
+      previewUri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      format: 'png',
+      width: 1080,
+      height: 1920,
+      byteCount: 248_912,
+      sourceByteCount: 4_203_304,
+    };
+    base.attachmentDraft = screen === 'attachment-ready'
+      ? { phase: 'ready', prepared, notice: '', errorCode: '', errorMessage: '' }
+      : screen === 'attachment-error'
+        ? { phase: 'error', prepared: null, notice: '', errorCode: 'attachment_too_many_pixels', errorMessage: 'The image exceeds the attachment size limits.' }
+        : screen === 'attachment-blocked'
+          ? { phase: 'ready', prepared, notice: ATTACHMENT_COMPOSING_NOTICE, errorCode: '', errorMessage: '' }
+          : { phase: 'choosing', prepared: null, notice: '', errorCode: '', errorMessage: '' };
+    return base;
+  }
   const panes = smokePanes();
   const ready = ['workspaces', 'terminal', 'workspace-name', 'terminal-name', 'handoff'].includes(screen);
   const mainWorkspace = smokeWorkspace(panes, '@smoke-main');
@@ -423,6 +472,7 @@ const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
+  'attachment-choose', 'attachment-ready', 'attachment-error', 'attachment-blocked',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
 ];
 
@@ -631,6 +681,48 @@ function NativeSheet({ title, visible, onClose, onDismiss, busy, allowDismissWhi
       </SafeAreaView>
     </SafeAreaProvider>
   </Modal>;
+}
+
+/**
+ * Issue #28 attachment sheet body. Preview always renders the normalized,
+ * app-owned output file — never the untrusted picker source.
+ */
+function AttachmentSheet({ draft, colors, onPickSource, onInsert, onChooseDifferent }: {
+  draft: AttachmentDraftState | null;
+  colors: Palette;
+  onPickSource: (source: AttachmentSource) => void;
+  onInsert: () => void;
+  onChooseDifferent: () => void;
+}) {
+  const busy = draft?.phase === 'picking' || draft?.phase === 'normalizing' || draft?.phase === 'inserting';
+  return <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+    {draft?.notice ? <View testID="attachment-notice" accessibilityLiveRegion="polite" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}><Text style={[styles.emptyBody, { color: colors.text }]}>{draft.notice}</Text></View> : null}
+    {draft?.phase === 'error' ? <View style={styles.gone}>
+      <Icon name="attach" color={colors.danger} size={32} />
+      <Text testID="attachment-error" style={[styles.emptyTitle, { color: colors.text }]}>The image could not be attached</Text>
+      <Text style={[styles.emptyBody, { color: colors.muted }]}>{draft.errorMessage || 'Choose a different image and try again.'}</Text>
+      <Button label="Choose another image" colors={colors} onPress={onChooseDifferent}>Choose another image</Button>
+    </View> : null}
+    {draft?.phase === 'choosing' ? <View>
+      <Text style={[styles.emptyBody, { color: colors.muted }]}>Choose one image. It is checked against size limits, rotated to its stored orientation, and stripped of location and other metadata before preview.</Text>
+      <Button testID="attachment-pick-photos" label="Choose from photos" colors={colors} disabled={busy} onPress={() => onPickSource('photos')}>Choose from photos</Button>
+      <Button testID="attachment-pick-files" label="Choose from files" colors={colors} secondary disabled={busy} onPress={() => onPickSource('files')} style={styles.attachmentActionSpacer}>Choose from files</Button>
+    </View> : null}
+    {draft?.phase === 'picking' || draft?.phase === 'normalizing' ? <View testID="attachment-progress" style={styles.gone}>
+      <ActivityIndicator color={colors.accent} size="large" />
+      <Text style={[styles.emptyBody, { color: colors.muted }]}>{draft.phase === 'picking' ? 'Waiting for the system picker…' : 'Checking and normalizing the image…'}</Text>
+    </View> : null}
+    {(draft?.phase === 'ready' || draft?.phase === 'inserting') && draft.prepared ? <View>
+      <Image testID="attachment-preview" source={{ uri: draft.prepared.previewUri }} accessibilityLabel="Normalized image preview" resizeMode="contain" style={[styles.attachmentPreview, { borderColor: colors.border, backgroundColor: colors.surface }]} />
+      <Text testID="attachment-meta" style={[styles.emptyBody, { color: colors.muted }]}>{`${draft.prepared.width}×${draft.prepared.height} · ${draft.prepared.format.toUpperCase()} · ${Math.max(1, Math.round(draft.prepared.byteCount / 1024))} KB`}</Text>
+      <Button testID="attachment-insert" label="Insert into terminal input" colors={colors} disabled={busy} onPress={onInsert}>Insert into terminal input</Button>
+      <Text style={[styles.noticeBody, { color: colors.muted }]}>Inserting adds an image reference to the command line. You still review and send it yourself.</Text>
+      <View style={styles.noticeActions}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Choose a different image" disabled={busy} onPress={onChooseDifferent} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Choose a different image</Text></Pressable>
+      </View>
+    </View> : null}
+    {!draft ? <Text style={[styles.emptyBody, { color: colors.muted }]}>No image selected.</Text> : null}
+  </ScrollView>;
 }
 
 function emptyRuntimeBackend(backend: RuntimeBackend): RuntimeBackendDiscovery {
@@ -1057,6 +1149,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
   const [hasConnected, setHasConnected] = useState(() => fixture?.hasConnected ?? false);
+  const [attachment, setAttachment] = useState<AttachmentDraftState | null>(() => fixture?.attachmentDraft ?? null);
   const [commandBusy, setCommandBusy] = useState(false);
   const [appState, setAppState] = useState(AppState.currentState);
   const [foundation, setFoundation] = useState(() => smokeRoute?.kind === 'foundation');
@@ -1101,6 +1194,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const workspaceObservationRef = useRef(Boolean(fixture?.hasConnected && fixture.panes.length > 0));
   const retainedPaneRef = useRef<RemoteTerminal | null>(null);
   const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, change: null });
+  const attachmentGeneration = useRef(0);
   const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
   const completedRecoveryEpochRef = useRef('');
   const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2426,6 +2520,132 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [sheet, showModal]);
   const openForm = useCallback(() => openProfileForm(currentProfile), [currentProfile, openProfileForm]);
 
+  // Issue #28 image attachment. One draft at a time; a generation counter
+  // drops late picker/normalize results after discard or a fresh begin.
+  const attachmentTargetFor = useCallback((pane: RemoteTerminal): AttachmentTarget => ({
+    terminalId: pane.terminalId,
+    paneId: pane.id,
+    workspaceId: pane.workspaceId,
+    backend: runtimeHint?.backend ?? 'tmux',
+    runtime: runtimeHint?.runtime ?? '',
+    host: connection.host,
+    port: connection.port,
+  }), [connection.host, connection.port, runtimeHint]);
+
+  const closeAttachmentSheet = useCallback(() => {
+    if (sheet === 'attachment') setSheet(null);
+    if (!attachment) return;
+    attachmentGeneration.current += 1;
+    setAttachment(null);
+    if (!smokeFixtureActive) {
+      void MeetermTerminal.discardAttachment().catch(() => {});
+    }
+  }, [attachment, sheet, smokeFixtureActive]);
+
+  const openAttachment = useCallback(() => {
+    const pane = selectedPane;
+    if (!pane || !runtimeReady || commandBusy) return;
+    Keyboard.dismiss();
+    const generation = ++attachmentGeneration.current;
+    setAttachment({ phase: 'choosing', prepared: null, notice: '', errorCode: '', errorMessage: '' });
+    setSheet('attachment');
+    if (smokeFixtureActive) return;
+    void MeetermTerminal.beginAttachment(pane.terminalId, attachmentTargetFor(pane))
+      .then(result => {
+        if (attachmentGeneration.current !== generation) return;
+        if (result.status === 'held') {
+          setAttachment(current => current ? { ...current, notice: ATTACHMENT_COMPOSING_NOTICE } : current);
+        }
+      })
+      .catch(() => {
+        if (attachmentGeneration.current !== generation) return;
+        setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_unavailable', errorMessage: 'Could not start the attachment.' } : current);
+      });
+  }, [attachmentTargetFor, commandBusy, runtimeReady, selectedPane, smokeFixtureActive]);
+
+  const pickAttachment = useCallback((source: AttachmentSource) => {
+    if (!attachment || attachment.phase === 'picking' || attachment.phase === 'normalizing' || attachment.phase === 'inserting') return;
+    const generation = attachmentGeneration.current;
+    setAttachment(current => current ? { ...current, phase: 'picking', notice: '', errorCode: '', errorMessage: '' } : current);
+    if (smokeFixtureActive) {
+      // Fixtures never reach the OS picker; stay on the picking state only in
+      // the real flow and return to choosing in smoke screenshots.
+      setAttachment(current => current ? { ...current, phase: 'choosing' } : current);
+      return;
+    }
+    void MeetermTerminal.pickAttachmentImage(source)
+      .then(async result => {
+        if (attachmentGeneration.current !== generation) return;
+        if (result.status === 'canceled') {
+          setAttachment(current => current ? { ...current, phase: 'choosing' } : current);
+          return;
+        }
+        if (result.status === 'error') {
+          setAttachment(current => current ? { ...current, phase: 'error', errorCode: result.errorCode, errorMessage: result.message } : current);
+          return;
+        }
+        setAttachment(current => current ? { ...current, phase: 'normalizing' } : current);
+        const prepared = await MeetermTerminal.prepareAttachmentImage(result.token);
+        if (attachmentGeneration.current !== generation) return;
+        if (prepared.status === 'prepared') {
+          setAttachment(current => current ? { ...current, phase: 'ready', prepared: {
+            fileId: prepared.fileId,
+            previewUri: prepared.previewUri,
+            format: prepared.format,
+            width: prepared.width,
+            height: prepared.height,
+            byteCount: prepared.byteCount,
+            sourceByteCount: prepared.sourceByteCount,
+          } } : current);
+        } else {
+          setAttachment(current => current ? { ...current, phase: 'error', errorCode: prepared.errorCode, errorMessage: prepared.message } : current);
+        }
+      })
+      .catch(() => {
+        if (attachmentGeneration.current !== generation) return;
+        setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_io_failed', errorMessage: 'The image could not be prepared.' } : current);
+      });
+  }, [attachment, smokeFixtureActive]);
+
+  const insertPreparedAttachment = useCallback(() => {
+    const pane = selectedPane;
+    if (!attachment || attachment.phase !== 'ready' || !attachment.prepared || !pane) return;
+    const generation = attachmentGeneration.current;
+    setAttachment(current => current ? { ...current, phase: 'inserting' } : current);
+    void MeetermTerminal.insertAttachment(pane.terminalId)
+      .then(result => {
+        if (attachmentGeneration.current !== generation) return;
+        if (result.status === 'inserted') {
+          const notice = 'Image reference inserted. Review the command line and send it yourself.';
+          if (sheet === 'attachment') setSheet(null);
+          attachmentGeneration.current += 1;
+          setAttachment(null);
+          if (!smokeFixtureActive) {
+            void MeetermTerminal.discardAttachment().catch(() => {});
+          }
+          setControlMessage(notice);
+          return;
+        }
+        if (result.status === 'held') {
+          setAttachment(current => current ? { ...current, phase: 'ready', notice: result.reason === 'composing' ? ATTACHMENT_COMPOSING_NOTICE : 'No prepared image is attached yet.' } : current);
+          return;
+        }
+        if (result.status === 'unavailable') {
+          setAttachment(current => current ? { ...current, phase: 'ready', notice: 'The attachment backend is not available in this build.' } : current);
+          return;
+        }
+        setAttachment(current => current ? { ...current, phase: 'error', errorCode: result.errorCode, errorMessage: result.message } : current);
+      })
+      .catch(() => {
+        if (attachmentGeneration.current !== generation) return;
+        setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_unavailable', errorMessage: 'The image reference could not be inserted.' } : current);
+      });
+  }, [attachment, selectedPane, sheet, smokeFixtureActive]);
+
+  const reopenAttachmentPicker = useCallback(() => {
+    setAttachment(current => current ? { ...current, phase: 'choosing', notice: '', errorCode: '', errorMessage: '' } : current);
+  }, []);
+
   const openSwitcher = useCallback(() => {
     if (commandPending.current) return;
     Keyboard.dismiss();
@@ -2721,7 +2941,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (sheet === 'switcher' && !returnToSwitcherAfterForm.current && switcherBoundary.current) {
       void cancelSwitcher('close');
     }
-  }, [cancelSwitcher, sheet]);
+    // An iOS swipe-dismissal skips onClose; never leave the native
+    // attachment session (or its files) alive under a gone sheet.
+    if (sheet === 'attachment' && attachment) {
+      attachmentGeneration.current += 1;
+      setAttachment(null);
+      if (!smokeFixtureActive) {
+        void MeetermTerminal.discardAttachment().catch(() => {});
+      }
+    }
+  }, [attachment, cancelSwitcher, sheet, smokeFixtureActive]);
 
   const manageFromSwitcher = useCallback(() => {
     if (switcherBoundary.current) void cancelSwitcher('servers');
@@ -3045,6 +3274,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             <ConnectionStatus connection={connection} colors={DARK} />
           </View>
         </View>
+        <IconButton testID="attach-image" icon="attach" label="Attach image" colors={DARK} disabled={!runtimeReady || commandBusy || !surfaceAvailable} onPress={openAttachment} />
         <IconButton icon="menu" label="Terminal menu" colors={DARK} onPress={() => openSheet('server')} />
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
@@ -3109,7 +3339,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'switcher' ? switcherTarget ? `Sessions on ${switcherSessionServerName}` : 'Switch server or session' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={sheet === 'switcher' ? closeSwitcher : () => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : sheet === 'switcher' ? 'Cancel server or session switch' : 'Close sheet'} busy={sheet === 'switcher' ? switcherAccepting : commandBusy || recoveryPending.change} allowDismissWhileBusy={sheet === 'switcher' && !switcherAccepting} onDismiss={switcherDismissed} colors={homeColors}>
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'attachment' ? 'Attach image' : sheet === 'servers' ? 'Saved servers' : sheet === 'switcher' ? switcherTarget ? `Sessions on ${switcherSessionServerName}` : 'Switch server or session' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={sheet === 'switcher' ? closeSwitcher : sheet === 'attachment' ? closeAttachmentSheet : () => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : sheet === 'switcher' ? 'Cancel server or session switch' : sheet === 'attachment' ? 'Discard attachment' : 'Close sheet'} busy={sheet === 'switcher' ? switcherAccepting : sheet === 'attachment' ? attachment?.phase === 'picking' || attachment?.phase === 'normalizing' || attachment?.phase === 'inserting' : commandBusy || recoveryPending.change} allowDismissWhileBusy={sheet === 'switcher' && !switcherAccepting} onDismiss={switcherDismissed} colors={homeColors}>
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'switcher' ? switcherTarget ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.runtimePickerContent}>
@@ -3204,7 +3434,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Text selectable style={[styles.command, { backgroundColor: homeColors.surface, color: homeColors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : `tmux attach -t ${session.runtime || 'meeterm'}`}</Text>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Run this command to reopen the same workspaces and terminals.</Text>
         {active ? <Button label="Disconnect" colors={homeColors} disabled={commandBusy} onPress={disconnect}>Disconnect this phone</Button> : <Button label="Close sheet" colors={homeColors} secondary onPress={() => setSheet(null)}>Close</Button>}
-      </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+      </ScrollView> : sheet === 'attachment' ? <AttachmentSheet draft={attachment} colors={homeColors} onPickSource={pickAttachment} onInsert={insertPreparedAttachment} onChooseDifferent={reopenAttachmentPicker} /> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <View style={styles.serverDetails}>
           <Icon name="server" color={homeColors.accent} size={28} />
           <Text selectable style={[styles.serverDetailTitle, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
@@ -3226,6 +3456,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             <Pressable accessibilityRole="button" accessibilityLabel="Rename terminal" disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'renamePane', pane: selectedPane })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename</Text></Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!runtimeReady || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close terminal</Text></Pressable>
           </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Attach image" accessibilityHint="Choose one image, preview it, then insert a reference into the terminal input." disabled={!runtimeReady || commandBusy} onPress={openAttachment} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Attach image</Text></Pressable>
           <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!runtimeReady || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Workspace options</Text></Pressable>
         </View> : null}
         {screen === 'terminal' && workspace && session.groupsSupported ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
@@ -3398,6 +3629,9 @@ const styles = StyleSheet.create({
   sheetHeader: { minHeight: 64, paddingLeft: 24, paddingRight: 12, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   sheetTitle: { flex: 1, fontSize: 18, lineHeight: 28, fontWeight: '600' },
   sheetContent: { padding: 24, gap: 20 },
+  noticeBox: { padding: 14, borderRadius: 12, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth },
+  attachmentPreview: { width: '100%', height: 260, borderRadius: 12, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth },
+  attachmentActionSpacer: { marginTop: 12 },
   serverDetails: { alignItems: 'flex-start', gap: 12, paddingBottom: 4 },
   serverDetailTitle: { fontSize: 23, lineHeight: 32, fontWeight: '600' },
   menuRow: { minHeight: 56, paddingVertical: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth },

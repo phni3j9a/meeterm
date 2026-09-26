@@ -15,6 +15,7 @@ public final class MeetermTerminalModule: Module {
       }
       monitor.start(queue: DispatchQueue(label: "dev.meeterm.terminal.network-monitor"))
       self.networkPathMonitor = monitor
+      AttachmentController.shared.reclaimStaleFiles()
     }
 
     OnDestroy {
@@ -259,6 +260,54 @@ public final class MeetermTerminalModule: Module {
       ) == 0 else {
         throw Self.error("The trusted host key could not be removed.")
       }
+    }
+
+    // Issue #28 attachment flow. A held begin means the terminal's IME still
+    // owns a marked-text composition; JS shows the "finish conversion" hint
+    // and nothing about the composition is touched.
+    AsyncFunction("beginAttachment") { (terminalId: String, target: [String: Any]) throws -> [String: Any] in
+      guard let identity = AttachmentTargetIdentity.from(target) else {
+        throw Self.error("The attachment target is invalid.")
+      }
+      return try AttachmentController.shared.begin(
+        terminalId: Self.normalizeTerminalId(terminalId),
+        target: identity
+      )
+    }
+    AsyncFunction("pickAttachmentImage") { (source: String, promise: Promise) in
+      do {
+        try AttachmentController.shared.pick(source: source, promise: promise) { [weak self] in
+          self?.appContext?.utilities?.currentViewController()
+        }
+      } catch {
+        promise.reject(error)
+      }
+    }
+    AsyncFunction("prepareAttachmentImage") { (token: String) throws -> [String: Any] in
+      try AttachmentController.shared.prepare(token: token)
+    }
+    AsyncFunction("discardAttachment") {
+      try AttachmentController.shared.discard()
+    }
+    AsyncFunction("getAttachmentState") { () throws -> [String: Any] in
+      try AttachmentController.shared.snapshot()
+    }
+    AsyncFunction("uploadAttachment") { (terminalId: String, remoteDirectory: String) throws -> [String: Any] in
+      try AttachmentController.shared.upload(
+        terminalId: Self.normalizeTerminalId(terminalId),
+        remoteDirectory: remoteDirectory
+      )
+    }
+    // Dedicated attachment insertion — never routed through paste or special
+    // keys, and held while the native IME owns a marked-text composition.
+    AsyncFunction("insertAttachment") { (terminalId: String) throws -> [String: Any] in
+      try AttachmentController.shared.insert(terminalId: Self.normalizeTerminalId(terminalId))
+    }
+    AsyncFunction("deleteRemoteAttachment") { (terminalId: String, remotePath: String) throws -> [String: Any] in
+      try AttachmentController.shared.deleteRemote(
+        terminalId: Self.normalizeTerminalId(terminalId),
+        remotePath: remotePath
+      )
     }
 
     View(MeetermTerminalView.self) {

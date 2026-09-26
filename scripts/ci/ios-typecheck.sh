@@ -20,18 +20,28 @@ fi
 
 readonly driver_source="${repository_root}/scripts/ci/MeetermSmokeUITests.swift"
 readonly input_tests_source="${repository_root}/scripts/ci/TerminalInputViewTests.swift"
+readonly attachment_tests_source="${repository_root}/scripts/ci/AttachmentTests.swift"
 readonly native_input_source="${repository_root}/modules/meeterm-terminal/ios/TerminalInputView.swift"
 readonly native_key_source="${repository_root}/modules/meeterm-terminal/ios/TerminalSpecialKey.swift"
 readonly native_scroll_source="${repository_root}/modules/meeterm-terminal/ios/TerminalScrollGestureDelegate.swift"
+readonly attachment_limits_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentLimits.swift"
+readonly attachment_session_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentSession.swift"
+readonly attachment_policy_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentInsertionPolicy.swift"
+readonly attachment_guard_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentCompositionGuard.swift"
 # Production storage tests are intentionally outside this preflight: their
 # @testable import requires the built production app module and app host.
 
 for source in \
   "${driver_source}" \
   "${input_tests_source}" \
+  "${attachment_tests_source}" \
   "${native_input_source}" \
   "${native_key_source}" \
-  "${native_scroll_source}"; do
+  "${native_scroll_source}" \
+  "${attachment_limits_source}" \
+  "${attachment_session_source}" \
+  "${attachment_policy_source}" \
+  "${attachment_guard_source}"; do
   if [[ ! -f "${source}" ]]; then
     echo "iOS Swift typecheck source is missing: ${source}" >&2
     exit 1
@@ -75,10 +85,14 @@ mkdir -p "${staged_source_directory}" "${temporary_directory}/module-cache"
 cp "${native_input_source}" "${staged_source_directory}/TerminalInputView.swift"
 cp "${native_key_source}" "${staged_source_directory}/TerminalSpecialKey.swift"
 cp "${native_scroll_source}" "${staged_source_directory}/TerminalScrollGestureDelegate.swift"
+cp "${attachment_limits_source}" "${staged_source_directory}/AttachmentLimits.swift"
+cp "${attachment_session_source}" "${staged_source_directory}/AttachmentSession.swift"
+cp "${attachment_policy_source}" "${staged_source_directory}/AttachmentInsertionPolicy.swift"
+cp "${attachment_guard_source}" "${staged_source_directory}/AttachmentCompositionGuard.swift"
 
 selected_developer_directory="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
 readonly selected_developer_directory
-printf 'iOS Swift typecheck: Xcode=%s SDK=%s target=%s sources=5\n' \
+printf 'iOS Swift typecheck: Xcode=%s SDK=%s target=%s sources=10\n' \
   "${selected_developer_directory:-unavailable}" \
   "${sdk_version}" \
   "${swift_target}"
@@ -94,9 +108,14 @@ xcrun swiftc \
   -F "${xctest_frameworks_path}" \
   "${driver_source}" \
   "${input_tests_source}" \
+  "${attachment_tests_source}" \
   "${staged_source_directory}/TerminalInputView.swift" \
   "${staged_source_directory}/TerminalSpecialKey.swift" \
-  "${staged_source_directory}/TerminalScrollGestureDelegate.swift"
+  "${staged_source_directory}/TerminalScrollGestureDelegate.swift" \
+  "${staged_source_directory}/AttachmentLimits.swift" \
+  "${staged_source_directory}/AttachmentSession.swift" \
+  "${staged_source_directory}/AttachmentInsertionPolicy.swift" \
+  "${staged_source_directory}/AttachmentCompositionGuard.swift"
 
 echo "iOS Swift typecheck passed."
 
