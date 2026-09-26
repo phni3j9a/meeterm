@@ -99,7 +99,7 @@ NATIVE_INPUT_CASES = (
     "scroll_gesture",
     "async_paste_epoch",
     "cached_read_only",
-    "recovery_arguments",
+    "recovery_epoch",
     "runtime_boundary_result",
     "live_epoch_refocus",
 )

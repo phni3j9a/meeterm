@@ -23,10 +23,6 @@ internal object RecoveryBridgeValidation {
     ) { "The operation epoch is invalid." }
     return value
   }
-
-  fun validRecoveryToken(value: String): Boolean =
-    value.isNotEmpty() && value.toByteArray(Charsets.UTF_8).size <= 128 &&
-      value.none(Char::isISOControl) && !value.contains('\u0000')
 }
 
 /** Stable JS result shape for native owner-boundary operations. */

@@ -7,11 +7,9 @@ use crate::input::{KeyCode, Modifiers, encode_key, encode_text};
 use crate::terminal::SemanticInput;
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
 
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 static NEXT_REMOTE_HANDLE: AtomicU64 = AtomicU64::new(1_000_000);
-static NEXT_RECOVERY_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Default)]
 pub(super) struct Metadata {
@@ -239,6 +237,26 @@ impl JsonChannel {
     }
 }
 
+async fn release_after_controller_failure(
+    failure: FlowFailure,
+    explicit_shutdown: bool,
+    release: impl std::future::Future<Output = Result<(), FlowFailure>>,
+) -> bool {
+    if !explicit_shutdown
+        && matches!(
+            failure,
+            FlowFailure::Network
+                | FlowFailure::Channel
+                | FlowFailure::Transport
+                | FlowFailure::RemoteClosed
+        )
+    {
+        return false;
+    }
+    let _ = release.await;
+    true
+}
+
 struct Controller {
     pane: u64,
     native: u64,
@@ -324,6 +342,26 @@ fn recovery_target(state: &SessionState) -> RecoveryTarget {
     }
 }
 
+/// Resolve the retained Herdr identity before opening the recovered
+/// controller. A missing identity is a terminal-local recovery result and is
+/// staged here so the enclosing SSH actor can preserve its specific reason.
+pub(super) fn recovery_target_or_stop(
+    shared: &ConnectionShared,
+) -> Result<Option<String>, FlowFailure> {
+    let target = {
+        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+        recovery_target(&state)
+    };
+    match target {
+        RecoveryTarget::Terminal(terminal) => Ok(Some(terminal)),
+        RecoveryTarget::EmptyGroup(_) => Ok(None),
+        RecoveryTarget::Missing => {
+            shared.stop_recovery("herdr_terminal_missing");
+            Err(FlowFailure::HerdrSessionMissing)
+        }
+    }
+}
+
 fn is_recovery_local_failure(failure: FlowFailure) -> bool {
     matches!(
         failure,
@@ -359,65 +397,19 @@ fn recovery_reason_for_failure(failure: FlowFailure) -> &'static str {
     }
 }
 
-fn publish_recovery_candidate(
+/// Stage a recovery-local failure before it leaves the backend flow. The
+/// outer SSH actor will still decide whether to retry or stop, but this local
+/// classification carries distinctions such as a stopped runtime versus a
+/// missing stable terminal.
+pub(super) fn stage_local_recovery_failure(
     shared: &ConnectionShared,
-    profile: &ConnectionProfile,
-    candidate: &DiscoveredSession,
-    expected_epoch: u64,
-) -> Result<u64, FlowFailure> {
-    let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-    if state.generation != shared.generation
-        || state.operation_epoch != expected_epoch
-        || shared.is_cancelled()
-    {
-        return Err(FlowFailure::Stale);
+    failure: FlowFailure,
+) -> bool {
+    if !is_recovery_local_failure(failure) {
+        return false;
     }
-    let revision = state
-        .runtime_discovery
-        .discovery_revision
-        .wrapping_add(1)
-        .max(1);
-    let id = format!("recovery-{}-herdr-{}", shared.generation, revision);
-    let binding = RuntimeBinding::Herdr {
-        name: candidate.name.clone(),
-        default: candidate.default,
-        executable: candidate.executable.clone(),
-    };
-    state.runtime_candidates.clear();
-    state.runtime_candidates.insert(id.clone(), binding);
-    state.runtime_discovery = RuntimeDiscoverySnapshot {
-        connection_generation: shared.generation,
-        discovery_revision: revision,
-        tmux: RuntimeSection {
-            state: RuntimeSectionState::Empty,
-            ..RuntimeSection::default()
-        },
-        herdr: RuntimeSection {
-            state: RuntimeSectionState::Success,
-            candidates: vec![RuntimeCandidate {
-                id,
-                backend: Backend::Herdr,
-                name: candidate.name.clone(),
-                state: RuntimeState::Running,
-                selectable: true,
-                suggested: candidate.default,
-                error_code: None,
-                error_message: None,
-            }],
-            ..RuntimeSection::default()
-        },
-    };
-    // The profile is the connection-scoped capability.  It is updated only
-    // after the candidate has been verified and never exposes the executable
-    // through the serialized picker rows.
-    state.profile = Some(profile.clone());
-    Ok(revision)
-}
-
-fn terminal_scope_digest(terminal_id: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    terminal_id.hash(&mut hasher);
-    hasher.finish()
+    shared.stop_recovery(recovery_reason_for_failure(failure));
+    true
 }
 
 /// Resolve and list all Herdr sessions without opening, starting, stopping,
@@ -574,10 +566,10 @@ pub(super) async fn run(
     run_impl(shared, profile, session, commands, None, None).await
 }
 
-/// Reauthenticate and rediscover a Herdr runtime without acquiring a
-/// controller until the user confirms the currently discovered candidate.
-/// The existing SSH actor owns this loop, so duplicate retry/confirm calls
-/// cannot create parallel controllers.
+/// Revalidate the retained Herdr target directly. The selected session's
+/// status, compatibility, stable terminal, ordinary controller lease, and
+/// first full frame are checked by `run_impl`; picker discovery is not part of
+/// this retained recovery path.
 pub(super) async fn recover(
     shared: &Arc<ConnectionShared>,
     profile: &mut ConnectionProfile,
@@ -585,190 +577,29 @@ pub(super) async fn recover(
     commands: &mut mpsc::Receiver<ControlRequest>,
 ) -> Result<(), FlowFailure> {
     // Copy the recovery identity out of the mutex before taking any failure
-    // transition. Calling `stop_recovery` while a temporary SessionState guard
-    // is alive self-deadlocks on the same mutex. An empty selected group is a
-    // valid metadata-only target; a group with panes but no selected stable
-    // terminal means the previously selected terminal disappeared.
-    let target = {
-        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        recovery_target(&state)
-    };
-    let (expected_terminal, empty_group) = match target {
-        RecoveryTarget::Terminal(terminal) => (Some(terminal), None),
-        RecoveryTarget::EmptyGroup(group) => (None, Some(group)),
-        RecoveryTarget::Missing => (None, None),
-    };
-    if expected_terminal.is_none() && empty_group.is_none() {
-        shared.stop_recovery("herdr_terminal_missing");
-        return Err(FlowFailure::HerdrSessionMissing);
+    // transition. An empty selected group is a valid metadata-only target; a
+    // group with panes but no selected stable terminal means the previously
+    // selected terminal disappeared.
+    let expected_terminal = recovery_target_or_stop(shared)?;
+
+    let epoch = shared.operation_epoch();
+    if !shared.current_request_epoch(epoch) {
+        return Err(FlowFailure::Stale);
     }
-
-    loop {
-        let discovery_epoch = shared.operation_epoch();
-        if !shared.current_request_epoch(discovery_epoch) {
-            return Err(FlowFailure::Stale);
-        }
-        let discovery = match discover_at_epoch(
-            shared,
-            session,
-            profile.herdr_executable.as_deref(),
-            Some(discovery_epoch),
-        )
-        .await
-        {
-            Ok(discovery) => discovery,
-            Err(failure) if is_recovery_local_failure(failure) => {
-                shared.stop_recovery(recovery_reason_for_failure(failure));
-                return Err(failure);
-            }
-            Err(failure) => return Err(failure),
-        };
-        let candidate = discovery
-            .sessions
-            .iter()
-            .find(|candidate| {
-                candidate.running
-                    && ((profile.runtime.is_none() && candidate.default)
-                        || (profile.runtime.as_deref() == Some(candidate.name.as_str())))
-            })
-            .cloned();
-        let Some(candidate) = candidate else {
-            shared.stop_recovery("herdr_session_missing");
-            return Err(FlowFailure::HerdrSessionMissing);
-        };
-        if candidate.executable != discovery.executable {
-            shared.stop_recovery("herdr_incompatible");
-            return Err(FlowFailure::HerdrIncompatible);
-        }
-        profile.herdr_executable = Some(discovery.executable.clone());
-        shared.set_profile(profile.clone());
-        let revision = publish_recovery_candidate(shared, profile, &candidate, discovery_epoch)?;
-        let token = format!(
-            "herdr-recovery-{}-{}-{}-{:016x}-{}",
-            shared.generation,
-            discovery_epoch,
-            revision,
-            expected_terminal
-                .as_deref()
-                .map(terminal_scope_digest)
-                .unwrap_or_else(|| terminal_scope_digest(&format!("group:{:?}", empty_group))),
-            NEXT_RECOVERY_TOKEN.fetch_add(1, Ordering::Relaxed)
-        );
-        if shared
-            .publish_recovery_confirmation(token)?
-            .ne(&discovery_epoch)
-        {
-            return Err(FlowFailure::Stale);
-        }
-
-        loop {
-            if shared.recovery_phase() != RecoveryPhase::AwaitingConfirmation {
-                // Foreground/visibility invalidation may have happened before
-                // this loop registered its waiter. The outer loop owns the
-                // next discovery and confirmation token.
-                break;
-            }
-            let request = tokio::select! {
-                _ = shared.cancelled() => return Err(FlowFailure::Stale),
-                _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
-                _ = shared.retry_notify.notified() => {
-                    if shared.recovery_phase() != RecoveryPhase::AwaitingConfirmation {
-                        break;
-                    }
-                    continue;
-                },
-                request = commands.recv() => request,
-            };
-            let Some(request) = request else {
-                return Err(FlowFailure::Stale);
-            };
-            if !shared.current_request_epoch(request.epoch) {
-                continue;
-            }
-            match request.command {
-                ControlCommand::RetryRecovery => {
-                    let attempt = shared
-                        .session
-                        .lock()
-                        .map(|state| state.recovery.attempt.saturating_add(1))
-                        .unwrap_or(1);
-                    if shared.begin_recovery("manual_retry", attempt).is_none() {
-                        return Err(FlowFailure::Stale);
-                    }
-                    break;
-                }
-                ControlCommand::ConfirmRecovery { token: submitted } => {
-                    // `confirm_recovery` consumes the public token and places
-                    // the same bounded value in this private slot before the
-                    // request is queued.  No controller operation occurs for
-                    // a stale or duplicated token.
-                    if !shared.take_pending_confirmation(&submitted) {
-                        shared.stop_recovery("recovery_stale");
-                        return Err(FlowFailure::HerdrProtocol);
-                    }
-                    if shared.recovery_phase() != RecoveryPhase::Resynchronizing {
-                        shared.stop_recovery("recovery_stale");
-                        return Err(FlowFailure::HerdrProtocol);
-                    }
-                    let confirmed_epoch = request.epoch;
-                    let confirmed = match discover_at_epoch(
-                        shared,
-                        session,
-                        profile.herdr_executable.as_deref(),
-                        Some(confirmed_epoch),
-                    )
-                    .await
-                    {
-                        Ok(discovery) => discovery,
-                        Err(failure) if is_recovery_local_failure(failure) => {
-                            shared.stop_recovery(recovery_reason_for_failure(failure));
-                            return Err(failure);
-                        }
-                        Err(failure) => return Err(failure),
-                    };
-                    if !shared.current_request_epoch(confirmed_epoch) {
-                        return Err(FlowFailure::Stale);
-                    }
-                    let Some(candidate) = confirmed.sessions.iter().find(|candidate| {
-                        candidate.running
-                            && ((profile.runtime.is_none() && candidate.default)
-                                || (profile.runtime.as_deref() == Some(candidate.name.as_str())))
-                    }) else {
-                        shared.stop_recovery("herdr_session_missing");
-                        return Err(FlowFailure::HerdrSessionMissing);
-                    };
-                    if candidate.executable != confirmed.executable {
-                        shared.stop_recovery("herdr_incompatible");
-                        return Err(FlowFailure::HerdrIncompatible);
-                    }
-                    profile.herdr_executable = Some(confirmed.executable.clone());
-                    shared.set_profile(profile.clone());
-                    let result = run_impl(
-                        shared,
-                        profile,
-                        session,
-                        commands,
-                        expected_terminal.clone(),
-                        Some(confirmed_epoch),
-                    )
-                    .await;
-                    if let Err(failure) = result {
-                        if is_recovery_local_failure(failure) {
-                            shared.stop_recovery(recovery_reason_for_failure(failure));
-                        }
-                        return Err(failure);
-                    }
-                    return Ok(());
-                }
-                ControlCommand::SetTerminalVisible { visible: false } => {
-                    // There is no controller in this phase.  The public
-                    // setter already revoked the native transport.
-                }
-                _ => {
-                    // Picker/topology/input commands cannot be replayed into
-                    // a later recovery epoch.
-                }
-            }
+    match run_impl(
+        shared,
+        profile,
+        session,
+        commands,
+        expected_terminal,
+        Some(epoch),
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(failure) => {
+            stage_local_recovery_failure(shared, failure);
+            Err(failure)
         }
     }
 }
@@ -781,16 +612,17 @@ async fn run_impl(
     strict_terminal: Option<String>,
     expected_epoch: Option<u64>,
 ) -> Result<(), FlowFailure> {
-    let operation_epoch = {
-        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
+    let (operation_epoch, initial_recovery_epoch) = {
+        let mut state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
         let epoch = expected_epoch.unwrap_or(state.operation_epoch);
-        (state.generation == shared.generation && state.operation_epoch == epoch)
-            .then_some(epoch)
-            .ok_or(FlowFailure::Stale)?
-    };
-    let initial_recovery_epoch = {
-        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        (state.recovery.phase != RecoveryPhase::None).then_some(operation_epoch)
+        if state.generation != shared.generation || state.operation_epoch != epoch {
+            return Err(FlowFailure::Stale);
+        }
+        let recovering = state.recovery.phase != RecoveryPhase::None;
+        if state.recovery.phase == RecoveryPhase::Reconnecting {
+            state.recovery.phase = RecoveryPhase::Resynchronizing;
+        }
+        (epoch, recovering.then_some(epoch))
     };
     let executable = resolve_executable(
         shared,
@@ -819,9 +651,9 @@ async fn run_impl(
     )
     .await
     .map_err(|failure| match failure {
-        // A named/default server can disappear after picker discovery. Treat
-        // a failed status probe as a local selection miss so the actor returns
-        // to the picker instead of reporting a host-wide transport failure.
+        // A named/default server can disappear after picker selection. Keep
+        // the failure local to the selected runtime instead of reporting it
+        // as an SSH transport failure.
         FlowFailure::HerdrOperation => FlowFailure::HerdrSessionMissing,
         failure => failure,
     })?;
@@ -924,7 +756,19 @@ async fn run_impl(
             } => {
                 match frame {
                     Ok(value) => client.frame(value)?,
-                    Err(error) => { let _ = client.release().await; return Err(error); },
+                    Err(error) => {
+                        let explicit_shutdown = shared.explicit_cleanup_requested();
+                        if !release_after_controller_failure(
+                            error,
+                            explicit_shutdown,
+                            client.release(),
+                        )
+                        .await
+                        {
+                            client.abandon_controller();
+                        }
+                        return Err(error);
+                    },
                 }
             },
             event = client.subscription.next() => {
@@ -1769,11 +1613,6 @@ impl HerdrClient<'_> {
                 // state and must not tear down the selected runtime.
                 return Ok(());
             }
-            ControlCommand::RetryRecovery | ControlCommand::ConfirmRecovery { .. } => {
-                // Recovery commands are consumed by the native recovery
-                // coordinator before a selected backend actor is started.
-                return Ok(());
-            }
             _ => {}
         }
         if matches!(
@@ -1819,9 +1658,6 @@ impl HerdrClient<'_> {
                 | ControlCommand::SelectGroup { .. }
                 | ControlCommand::RefreshTerminal
                 | ControlCommand::SetTerminalVisible { .. } => unreachable!(),
-                ControlCommand::RetryRecovery | ControlCommand::ConfirmRecovery { .. } => {
-                    unreachable!()
-                }
                 ControlCommand::CreateWorkspace { name } => {
                     ("workspace.create", json!({"label":name, "focus":false}))
                 }
@@ -1944,8 +1780,8 @@ impl HerdrClient<'_> {
             .ok_or(FlowFailure::HerdrProtocol)?;
         let id = format!("meeterm-{}", self.request_id);
         let mut channel = open_api(self.shared, self.session, &self.socket).await?;
-        // Opening a direct stream is an awaited boundary. A foreground loss,
-        // confirmation invalidation, or newer command epoch during that wait
+        // Opening a direct stream is an awaited boundary. A foreground loss
+        // or newer recovery/command epoch during that wait
         // must prevent the request bytes from being sent on this channel.
         if !self.shared.current_request_epoch(expected_epoch) {
             channel.close().await;
@@ -2014,6 +1850,18 @@ impl HerdrClient<'_> {
         .and_then(|result| result);
         controller.stream.close().await;
         released
+    }
+
+    /// A dead transport cannot acknowledge controller.release. Revoke local
+    /// terminal access and drop the SSH channel immediately; waiting for a
+    /// remote lease acknowledgement here would delay the first retained retry.
+    fn abandon_controller(&mut self) {
+        let Some(mut controller) = self.controller.take() else {
+            return;
+        };
+        registry::detach_transport(controller.native, self.shared.generation);
+        controller.input.close();
+        drop(controller);
     }
 
     async fn activate_selected(&mut self) -> Result<(), FlowFailure> {
@@ -2801,8 +2649,8 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_epoch_is_rechecked_at_discovery_controller_and_mutation_boundaries() {
-        for boundary in ["confirm-discovery", "controller-open", "mutation-open"] {
+    fn recovery_epoch_is_rechecked_at_discovery_controller_and_mutation_boundaries() {
+        for boundary in ["runtime-revalidation", "controller-open", "mutation-open"] {
             let owner = registry::create_terminal(80, 24).expect("epoch test terminal");
             let generation = 78_000 + u64::from(owner as u32);
             let shared = Arc::new(ConnectionShared::new(
@@ -2827,8 +2675,8 @@ mod tests {
             let worker_sent = Arc::clone(&stale_send);
             let handle = std::thread::spawn(move || {
                 // The channel/API open has completed, but the request/exec is
-                // still unsent. This is the exact await boundary guarded by
-                // the fixed confirmation epoch in production.
+                // still unsent. This is the await boundary guarded by the
+                // current recovery operation epoch in production.
                 worker_opened.wait();
                 worker_release.wait();
                 if worker_shared.current_request_epoch(accepted_epoch) {
@@ -3463,5 +3311,60 @@ mod tests {
         assert_eq!(projection.flat.len(), 2);
         assert_eq!(projected.backend, Backend::Herdr);
         assert_eq!(projected.runtime, "default");
+    }
+
+    #[test]
+    fn transport_controller_failure_does_not_wait_for_remote_release() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("controller teardown test runtime");
+        runtime.block_on(async {
+            for failure in [
+                FlowFailure::Network,
+                FlowFailure::Channel,
+                FlowFailure::Transport,
+                FlowFailure::RemoteClosed,
+            ] {
+                let release_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let release_started = Arc::clone(&release_polled);
+                let release = async move {
+                    release_started.store(true, std::sync::atomic::Ordering::Release);
+                    std::future::pending::<Result<(), FlowFailure>>().await
+                };
+
+                assert!(
+                    !release_after_controller_failure(failure, false, release).await,
+                    "transport failures abandon the controller"
+                );
+                assert!(
+                    !release_polled.load(std::sync::atomic::Ordering::Acquire),
+                    "transport failure must not poll the bounded remote release future"
+                );
+            }
+
+            let release_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release_started = Arc::clone(&release_polled);
+            let release = async move {
+                release_started.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            };
+            assert!(
+                release_after_controller_failure(FlowFailure::HerdrOperation, false, release).await
+            );
+            assert!(release_polled.load(std::sync::atomic::Ordering::Acquire));
+
+            let release_polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release_started = Arc::clone(&release_polled);
+            let release = async move {
+                release_started.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            };
+            assert!(
+                release_after_controller_failure(FlowFailure::Transport, true, release).await,
+                "explicit shutdown keeps the ordered controller release even during loss"
+            );
+            assert!(release_polled.load(std::sync::atomic::Ordering::Acquire));
+        });
     }
 }

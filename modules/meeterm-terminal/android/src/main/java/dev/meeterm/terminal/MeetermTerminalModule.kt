@@ -1,13 +1,49 @@
 package dev.meeterm.terminal
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONArray
 import org.json.JSONObject
 
 class MeetermTerminalModule : Module() {
+  private var connectivityManager: ConnectivityManager? = null
+  private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
   override fun definition() = ModuleDefinition {
     Name("MeetermTerminal")
+
+    OnCreate {
+      val manager = appContext.reactContext?.applicationContext
+        ?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+      if (manager != null) {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+          override fun onAvailable(network: Network) {
+            MeetermNative.networkChanged()
+          }
+
+          override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            MeetermNative.networkChanged()
+          }
+        }
+        manager.registerDefaultNetworkCallback(callback)
+        connectivityManager = manager
+        networkCallback = callback
+      }
+    }
+
+    OnDestroy {
+      val manager = connectivityManager
+      val callback = networkCallback
+      connectivityManager = null
+      networkCallback = null
+      if (manager != null && callback != null) {
+        manager.unregisterNetworkCallback(callback)
+      }
+    }
 
     AsyncFunction("getProfiles") { ClientStore.profiles(storageContext()) }
     AsyncFunction("saveProfile") { profile: Map<String, Any?>, credential: Map<String, Any?>?, keepCredential: Boolean ->
@@ -142,18 +178,6 @@ class MeetermTerminalModule : Module() {
       }
     }
 
-    AsyncFunction("confirmRecovery") { terminalId: String, confirmationToken: String ->
-      require(validRecoveryToken(confirmationToken)) {
-        "The recovery confirmation is invalid."
-      }
-      check(MeetermNative.confirmRecovery(
-        ensureHandle(normalizeTerminalId(terminalId)),
-        confirmationToken,
-      ) == 0) {
-        "The recovery confirmation is unavailable."
-      }
-    }
-
     AsyncFunction("changeRuntime") { terminalId: String, operationEpoch: String ->
       val arguments = validatedBoundaryArguments(terminalId, operationEpoch)
         ?: return@AsyncFunction RuntimeBoundaryBridgeResult.notInvoked()
@@ -265,9 +289,6 @@ class MeetermTerminalModule : Module() {
     }
     return normalizedId to epoch
   }
-
-  private fun validRecoveryToken(value: String): Boolean =
-    RecoveryBridgeValidation.validRecoveryToken(value)
 
   private fun numericId(value: String): Long {
     val normalized = value.trim()

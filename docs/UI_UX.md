@@ -81,12 +81,22 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   verification and destructive remote actions remain explicit.
 - After Ready, a temporary loss keeps the same native terminal surface visible
   as cached read-only output. A compact recovery rail sits between pane chrome
-  and the terminal without dimming or covering cells. Progress is non-modal;
-  retry exhaustion and fail-closed identity errors expose Retry and Change
-  actions in place. Herdr continuity confirmation opens only after an explicit
-  Review action and never implies takeover, compatibility override, or tmux
-  fallback. Fresh/cold connection discovery continues to use the runtime
-  picker.
+  and the terminal without dimming or covering cells. Recovery progresses
+  without a tap for tmux and Herdr when the selected target, required
+  capability/lease, and authoritative frame checks succeed. A concrete
+  mismatch, conflict, authentication failure, missing target, incompatibility,
+  or resynchronization failure leaves the cached work read-only. Retry and
+  Change are offered for `runtimeMismatch`, controller conflict, and
+  retry-exhaustion/unknown stops; `runtimeMissing`, `terminalMissing`, and
+  `incompatible` offer Change only. A changed host key offers Review key, while
+  authentication failure offers Connection details. Workspaces-list and
+  Server-sheet Reconnect controls appear during reconnecting or for a stopped
+  retry-eligible reason, not during
+  resynchronization or for Change-only/security stops. No Herdr
+  Review/confirmation step,
+  takeover, compatibility override, or tmux fallback is implied. Workspaces
+  Reconnect and recovery Retry share same-intent recovery while work is
+  retained; fresh/cold connection discovery uses the picker.
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
 
@@ -249,14 +259,14 @@ new fixed input diagnostics; local revalidation identified Metal without
 overwriting their artifacts. The complete sequence is retained in
 [PR 20](https://github.com/phni3j9a/meeterm/pull/20).
 
-The current iOS `standard` source-level manifest has 27 screens: the previous
+The current iOS `standard` source-level manifest has 26 screens: the previous
 18 plus `session-switcher`, `session-switcher-sessions`, `recovery-progress`,
-`recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
+`recovery-exhausted`, `recovery-mismatch`,
 `layout-restore-unconfirmed`, and `runtime-layout-restore-unconfirmed`, plus
 `connection-error`. The existing `herdr-connection` route remains the picker
 state whose Herdr `default` candidate carries the non-authoritative
-`Last used` hint. Android's observational `SCREEN_NAMES` has 33 routes: the
-previous 25 plus the two switcher routes, those four recovery routes, and the
+`Last used` hint. Android's observational `SCREEN_NAMES` has 32 routes: the
+previous 25 plus the two switcher routes, three recovery routes, and the
 two layout-restore warning fixtures. These counts describe source scope only; the
 historical run table above remains historical and does not establish new remote
 CI or visual-review results. The seven extra states and navigation belong to

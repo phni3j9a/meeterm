@@ -194,10 +194,8 @@ enum MeetermCore {
     meeterm_retry_recovery(terminalId, expectedEpoch)
   }
 
-  static func confirmRecovery(terminalId: UInt64, token: String) -> Int32 {
-    withUTF8(token) { pointer, length in
-      meeterm_confirm_recovery(terminalId, pointer, length)
-    }
+  static func networkChanged() {
+    meeterm_network_changed()
   }
 
   static func changeRuntime(terminalId: UInt64, expectedEpoch: UInt64) -> Int32 {

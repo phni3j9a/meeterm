@@ -258,13 +258,7 @@ final class TerminalInputViewTests: XCTestCase {
     XCTAssertNil(RecoveryBridgeValidation.parseOperationEpoch("＋1"))
     XCTAssertNil(RecoveryBridgeValidation.parseOperationEpoch(" 1"))
 
-    XCTAssertTrue(RecoveryBridgeValidation.validRecoveryToken("confirm-日本語"))
-    XCTAssertTrue(RecoveryBridgeValidation.validRecoveryToken(String(repeating: "あ", count: 42)))
-    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken(String(repeating: "あ", count: 43)))
-    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken("line\nfeed"))
-    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken("nul\u{0}token"))
-    XCTAssertFalse(RecoveryBridgeValidation.validRecoveryToken(""))
-    if !recordedIssue { appendValidation("case=recovery_arguments result=passed") }
+    if !recordedIssue { appendValidation("case=recovery_epoch result=passed") }
   }
 
   @MainActor func testRuntimeBoundaryBridgePreservesNativeAndPreCallResults() {

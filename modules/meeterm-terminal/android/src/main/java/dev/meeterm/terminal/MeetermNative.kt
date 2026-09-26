@@ -66,7 +66,7 @@ internal object MeetermNative {
 
   external fun sshReconnect(handle: Long): Int
   external fun retryRecovery(handle: Long, operationEpoch: String): Int
-  external fun confirmRecovery(handle: Long, confirmationToken: String): Int
+  external fun networkChanged()
   external fun changeRuntime(handle: Long, operationEpoch: String): Int
   external fun tmuxCommand(handle: Long, operation: Int, target: Long, name: String): Int
   external fun setForeground(handle: Long, foreground: Boolean): Int

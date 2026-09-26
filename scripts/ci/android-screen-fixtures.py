@@ -33,7 +33,6 @@ SCREEN_NAMES = (
     "recovery-progress",
     "recovery-exhausted",
     "recovery-mismatch",
-    "herdr-recovery-confirm",
     "layout-restore-unconfirmed",
     "runtime-layout-restore-unconfirmed",
     "welcome", "empty", "search-empty", "disconnected", "reconnecting",
@@ -217,7 +216,6 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
         "recovery-progress",
         "recovery-exhausted",
         "recovery-mismatch",
-        "herdr-recovery-confirm",
     }:
         checks = recovery_screen_checks(values)
         recovery_copy = {
@@ -236,11 +234,6 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
                 'The runtime named “meeterm” is not the same instance as before.',
                 "Last received output · Input paused",
             ),
-            "herdr-recovery-confirm": (
-                "Confirmation needed",
-                'Herdr can’t verify that “dev” is the same instance.',
-                "Last received output · Input paused",
-            ),
         }[screen]
         checks.extend(
             (f"recovery_copy_{index}", copy in normalized_values)
@@ -250,7 +243,6 @@ def screen_checks(screen: str, values: set[str]) -> list[str]:
             "recovery-progress": (),
             "recovery-exhausted": ("recovery-retry", "recovery-change"),
             "recovery-mismatch": ("recovery-retry", "recovery-change"),
-            "herdr-recovery-confirm": ("recovery-review", "recovery-change"),
         }[screen]
         checks.extend(
             (f"recovery_action_{action}_enabled", has_visible_test_id(values, action))

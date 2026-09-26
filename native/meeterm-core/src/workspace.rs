@@ -63,7 +63,6 @@ pub enum RecoveryPhase {
     #[default]
     None,
     Reconnecting,
-    AwaitingConfirmation,
     Resynchronizing,
     Stopped,
 }
@@ -77,9 +76,6 @@ pub struct RecoverySnapshot {
     pub reason: String,
     pub attempt: u32,
     pub max_attempts: u32,
-    /// Opaque, bounded, native-scoped confirmation material.  It is empty
-    /// outside `awaitingConfirmation` and is never a remote path or ID.
-    pub confirmation_token: String,
 }
 
 impl Default for RecoverySnapshot {
@@ -89,7 +85,6 @@ impl Default for RecoverySnapshot {
             reason: String::new(),
             attempt: 0,
             max_attempts: DEFAULT_RECOVERY_MAX_ATTEMPTS,
-            confirmation_token: String::new(),
         }
     }
 }
@@ -354,11 +349,10 @@ mod tests {
                 runtime_operations_ready: false,
                 terminal_input_ready: false,
                 recovery: RecoverySnapshot {
-                    phase: RecoveryPhase::AwaitingConfirmation,
+                    phase: RecoveryPhase::Resynchronizing,
                     reason: "runtime_identity_uncertain".to_owned(),
                     attempt: 2,
                     max_attempts: DEFAULT_RECOVERY_MAX_ATTEMPTS,
-                    confirmation_token: "opaque-token".to_owned(),
                 },
                 cleanup_warning: None,
             },
@@ -374,11 +368,10 @@ mod tests {
                 "terminalInputReady": false,
                 "cleanupWarning": null,
                 "recovery": {
-                    "phase": "awaitingConfirmation",
+                    "phase": "resynchronizing",
                     "reason": "runtime_identity_uncertain",
                     "attempt": 2,
-                    "maxAttempts": DEFAULT_RECOVERY_MAX_ATTEMPTS,
-                    "confirmationToken": "opaque-token"
+                    "maxAttempts": DEFAULT_RECOVERY_MAX_ATTEMPTS
                 }
             })
         );

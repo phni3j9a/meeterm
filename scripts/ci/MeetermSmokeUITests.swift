@@ -199,7 +199,6 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-recovery-progress.png",
       "standard-recovery-exhausted.png",
       "standard-recovery-mismatch.png",
-      "standard-herdr-recovery-confirm.png",
       "standard-layout-restore-unconfirmed.png",
       "standard-runtime-layout-restore-unconfirmed.png",
       "standard-connection-error.png",
@@ -606,7 +605,7 @@ final class MeetermSmokeUITests: XCTestCase {
       "runtime-picker", "runtime-partial-error", "runtime-empty", "runtime-create",
       "session-switcher", "session-switcher-sessions",
       "herdr-connection", "herdr-groups", "herdr-terminal", "herdr-workspaces",
-      "recovery-progress", "recovery-exhausted", "recovery-mismatch", "herdr-recovery-confirm",
+      "recovery-progress", "recovery-exhausted", "recovery-mismatch",
       "layout-restore-unconfirmed", "runtime-layout-restore-unconfirmed",
       "connection-error",
     ]
@@ -1255,12 +1254,6 @@ final class MeetermSmokeUITests: XCTestCase {
         title: "This runtime can’t be restored",
         detail: "The runtime named “meeterm” is not the same instance as before.",
         actions: ["recovery-retry", "recovery-change"]
-      )
-    case "herdr-recovery-confirm":
-      return waitForRecoveryScreen(
-        title: "Confirmation needed",
-        detail: "Herdr can’t verify that “dev” is the same instance.",
-        actions: ["recovery-review", "recovery-change"]
       )
     default:
       return false

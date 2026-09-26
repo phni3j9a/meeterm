@@ -146,15 +146,15 @@ substitute a large device for a small one.
 - `standard`: four production storage cases, twelve native input/recovery-bridge
   cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
-  has 27 routes: the previous 18 plus `session-switcher`,
+  has 26 routes: the previous 18 plus `session-switcher`,
   `session-switcher-sessions`, `recovery-progress`,
-  `recovery-exhausted`, `recovery-mismatch`, `herdr-recovery-confirm`,
+  `recovery-exhausted`, `recovery-mismatch`,
   `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
   `connection-error`. The existing
   `herdr-connection` route is the picker with the Herdr `default` candidate's
-  non-authoritative `Last used` hint. The four recovery presentation routes
-  are `recovery-progress`, `recovery-exhausted`, `recovery-mismatch`, and
-  `herdr-recovery-confirm`; they retain the native terminal and verify the
+  non-authoritative `Last used` hint. The three recovery presentation routes
+  are `recovery-progress`, `recovery-exhausted`, and `recovery-mismatch`; they
+  retain the native terminal and verify the
   applicable recovery rail copy/action state. Runtime-picker and recovery
   states are seeded only for presentation; no SSH fixture is started.
 - `ssh`: the actual connection and host-key boundary, runtime discovery and
@@ -179,23 +179,29 @@ substitute a large device for a small one.
 - `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
   Full preserves its original assertions and result; a prior failed full remains failed.
 
-For Issue #26, Android `full` and iOS `standard` plus `ssh` are the applicable
+For retained-work recovery (Issues #26 and #41), Android `full` and iOS `standard` plus `ssh` are the applicable
 mobile paths. Shared/native tests separately cover bounded no-side-effect
 discovery, tmux list/create/select and identity races, Herdr executable
 resolution and running-only selection, profile migration, reconnect identity,
 switch/release, backend-local partial failures, and fail-closed linked/shared
 tmux mutations. Retained-work checks additionally cover strict original tmux
-pane recovery, Herdr in-work confirmation, operation-epoch input gating, no
-automatic picker/fallback, and authoritative resynchronization before Ready.
-The iOS `standard` source-level manifest has 27 routes and Android's
-observational `SCREEN_NAMES` has 33 routes. Both include the two switcher routes,
+pane recovery, Herdr same-runtime/stable-terminal/ordinary-lease checks without
+takeover, operation-epoch input gating, no automatic picker/fallback, and
+authoritative resynchronization before Ready. The first retry is immediate;
+bounded backoff applies after a failure, while foreground and native network
+change wake a sleeping retry without resetting its budget or interrupting a
+healthy connection. The iOS `standard` source-level manifest has 26 routes and
+Android's observational `SCREEN_NAMES` has 32 routes. Both include the two switcher routes,
 the four runtime-picker routes `runtime-picker`, `runtime-partial-error`,
 `runtime-empty`, and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
-`recovery-mismatch`, and `herdr-recovery-confirm`, plus the two
+and `recovery-mismatch`, plus the two
 `layout-restore-unconfirmed` warning fixtures and the `connection-error`
 auth-warning coexistence fixture, while `herdr-connection` is
 the repurposed picker state described above. These are source-level scopes only;
 this document does not claim remote CI or visual review.
+The opt-in ignored Rust/russh integration with the real Herdr 0.9.0 binary
+provides the live Herdr zero-tap recovery evidence. Android full and iOS `ssh`
+exercise real tmux connection loss; they do not claim mobile Herdr recovery.
 
 Issue #27 uses Android `full` and iOS `standard` plus `ssh`. The `standard`
 switcher routes are seeded presentation captures only; they do not start the

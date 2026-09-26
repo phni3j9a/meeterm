@@ -27,8 +27,6 @@ class IOSSmokeSelectorSourceTests(unittest.TestCase):
         self.assertIn('identifier == %@ OR label == %@ OR label == %@', source)
         self.assertIn('initialPasteState?.hasPrefix("Ready ") == true', source)
         self.assertIn('value != %@ AND value BEGINSWITH %@', source)
-        self.assertIn('detail: "Herdr can’t verify that “dev” is the same instance."', source)
-        self.assertNotIn('detail: "Herdr can’t verify that “meeterm” is the same instance."', source)
         self.assertNotIn('predicate: NSPredicate(format: "value == %@", "Ready")', source)
         self.assertNotIn('statusLabels', source)
         self.assertNotIn("label BEGINSWITH 'Terminal '", source)

@@ -16,16 +16,16 @@ APP_SOURCE = Path(__file__).parents[2] / "App.tsx"
 
 
 class PresentationReadinessTests(unittest.TestCase):
-    def test_all_thirty_three_routes_require_visible_content(self):
-        self.assertEqual(len(fixtures.SCREEN_NAMES), 33)
-        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 33)
+    def test_all_thirty_two_routes_require_visible_content(self):
+        self.assertEqual(len(fixtures.SCREEN_NAMES), 32)
+        self.assertEqual(len(set(fixtures.SCREEN_NAMES)), 32)
         for screen in fixtures.SCREEN_NAMES:
             with self.subTest(screen=screen):
                 self.assertTrue(fixtures.screen_checks(screen, set()))
 
     def test_switcher_and_recovery_routes_are_stably_ordered_after_runtime_routes(self):
         self.assertEqual(
-            fixtures.SCREEN_NAMES[14:26],
+            fixtures.SCREEN_NAMES[14:25],
             (
                 "session-switcher",
                 "session-switcher-sessions",
@@ -36,7 +36,6 @@ class PresentationReadinessTests(unittest.TestCase):
                 "recovery-progress",
                 "recovery-exhausted",
                 "recovery-mismatch",
-                "herdr-recovery-confirm",
                 "layout-restore-unconfirmed",
                 "runtime-layout-restore-unconfirmed",
             ),
@@ -66,7 +65,6 @@ class PresentationReadinessTests(unittest.TestCase):
                 "recovery-progress",
                 "recovery-exhausted",
                 "recovery-mismatch",
-                "herdr-recovery-confirm",
                 "layout-restore-unconfirmed",
                 "runtime-layout-restore-unconfirmed",
             ):
@@ -78,7 +76,6 @@ class PresentationReadinessTests(unittest.TestCase):
             "recovery-detail",
             "recovery-meta",
             "recovery-retry",
-            "recovery-review",
             "recovery-change",
         ):
             with self.subTest(test_id=test_id):
@@ -119,17 +116,6 @@ class PresentationReadinessTests(unittest.TestCase):
             "recovery-change::enabled",
         }
         self.assertEqual(fixtures.screen_checks("recovery-mismatch", mismatch), [])
-
-        herdr_confirmation = common | {
-            "Confirmation needed",
-            'Herdr can’t verify that “dev” is the same instance.',
-            "recovery-review::enabled",
-            "recovery-change::enabled",
-        }
-        self.assertEqual(
-            fixtures.screen_checks("herdr-recovery-confirm", herdr_confirmation),
-            [],
-        )
 
     def test_layout_restore_warning_routes_require_real_message_and_dismiss_action(self):
         warning = "The old connection's desktop layout restore could not be confirmed."

@@ -23,12 +23,12 @@ use meeterm_core::{
     AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
     close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
     create_pane, create_terminal, create_workspace, destroy_terminal, disconnect_terminal,
-    meeterm_commit_utf8, meeterm_confirm_recovery, meeterm_operation_epoch, meeterm_paste_utf8,
-    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_scroll_lines,
-    meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
-    meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
-    runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
-    set_foreground, terminal_revision, workspace_snapshot_json,
+    meeterm_commit_utf8, meeterm_operation_epoch, meeterm_paste_utf8, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_scroll_lines, meeterm_send_special_key,
+    meeterm_set_terminal_visible, meeterm_snapshot, meeterm_snapshot_size, reconnect_terminal,
+    rename_group, rename_pane, rename_workspace, runtime_discovery_snapshot, select_group,
+    select_pane, select_runtime, session_snapshot, set_foreground, terminal_revision,
+    workspace_snapshot_json,
 };
 use russh::keys;
 use russh::server::{self, Auth, ChannelOpenHandle, Handler, Msg, Server as RusshServer, Session};
@@ -414,6 +414,7 @@ struct RusshState {
     runtimes: HashSet<String>,
     targets: HashSet<String>,
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
+    commands: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 struct FixtureSsh {
@@ -421,14 +422,17 @@ struct FixtureSsh {
     join: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     address: SocketAddr,
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
+    commands: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl FixtureSsh {
     fn start(manifest: &FixtureManifest) -> Self {
         let host_key = keys::load_secret_key(&manifest.host_key, None).expect("fixture host key");
         let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
         let state = Arc::new(RusshState {
             clients: Arc::clone(&clients),
+            commands: Arc::clone(&commands),
             binary: PathBuf::from(&manifest.binary),
             environment: manifest.environment.clone(),
             sockets: manifest
@@ -482,7 +486,17 @@ impl FixtureSsh {
             join: Arc::new(std::sync::Mutex::new(Some(join))),
             address,
             clients,
+            commands,
         }
+    }
+
+    fn herdr_session_list_count(&self) -> usize {
+        self.commands
+            .lock()
+            .expect("fixture command log")
+            .iter()
+            .filter(|command| command.ends_with(" session list --json"))
+            .count()
     }
 
     fn lose_connections(&self) {
@@ -571,6 +585,11 @@ impl Handler for FixtureServer {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         let command = String::from_utf8_lossy(data).into_owned();
+        self.state
+            .commands
+            .lock()
+            .expect("fixture command log")
+            .push(command.clone());
         let Some(parsed) = parse_exec_command(&command, &self.state) else {
             session.channel_failure(channel)?;
             return Ok(());
@@ -845,6 +864,7 @@ fn parser_fixture_state(binary: &str) -> RusshState {
             .collect(),
         targets: ["term_root"].into_iter().map(str::to_owned).collect(),
         clients: Arc::new(std::sync::Mutex::new(Vec::new())),
+        commands: Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -1134,48 +1154,18 @@ fn wait_json<F: FnMut(&Value) -> bool>(id: u64, label: &str, mut predicate: F) -
     }
 }
 
-fn wait_recovery_confirmation(id: u64, label: &str) -> (Value, String) {
+fn wait_recovery_ready_after_epoch(id: u64, previous_epoch: &str, label: &str) -> Value {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
         let state = connection_snapshot(id).expect("connection snapshot");
         let value: Value =
             serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
                 .expect("workspace snapshot JSON");
-        if value["control"]["recovery"]["phase"] == "awaitingConfirmation" {
-            let token = value["control"]["recovery"]["confirmationToken"]
-                .as_str()
-                .expect("recovery confirmation token")
-                .to_owned();
-            assert!(!token.is_empty(), "{label} published an empty token");
-            assert_eq!(value["control"]["runtimeOperationsReady"], false);
-            assert_eq!(value["control"]["terminalInputReady"], false);
-            return (value, token);
-        }
-        if state.state == ConnectionState::Failed as u32 {
-            panic!(
-                "{label} failed: {} {}",
-                field(&state.error_code, state.error_code_len),
-                field(&state.error_message, state.error_message_len)
-            );
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {label}");
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn confirm_recovery(id: u64, token: &str, label: &str) {
-    let result = unsafe { meeterm_confirm_recovery(id, token.as_ptr(), token.len()) };
-    assert_eq!(result, 0, "{label} recovery confirmation");
-}
-
-fn wait_recovery_ready(id: u64, label: &str) -> Value {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
-    loop {
-        let state = connection_snapshot(id).expect("connection snapshot");
-        let value: Value =
-            serde_json::from_str(&workspace_snapshot_json(id).expect("workspace JSON"))
-                .expect("workspace snapshot JSON");
-        if value["control"]["recovery"]["phase"] == "none"
+        let epoch_advanced = value["control"]["operationEpoch"]
+            .as_str()
+            .is_some_and(|epoch| epoch != previous_epoch);
+        if epoch_advanced
+            && value["control"]["recovery"]["phase"] == "none"
             && value["control"]["runtimeOperationsReady"] == true
             && value["control"]["terminalInputReady"] == true
             && state.state == ConnectionState::Ready as u32
@@ -1189,7 +1179,12 @@ fn wait_recovery_ready(id: u64, label: &str) -> Value {
                 field(&state.error_message, state.error_message_len)
             );
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label}; operation epoch {} → {}",
+            previous_epoch,
+            value["control"]["operationEpoch"]
+        );
         thread::sleep(POLL_INTERVAL);
     }
 }
@@ -2167,10 +2162,6 @@ fn real_herdr_native_backend_over_russh_fixture() {
     let background_json: Value =
         serde_json::from_str(&workspace_snapshot_json(default_id).unwrap()).unwrap();
     assert_eq!(background_json["control"]["recovery"]["phase"], "none");
-    assert_eq!(
-        background_json["control"]["recovery"]["confirmationToken"], "",
-        "healthy background must not publish a recovery confirmation"
-    );
     assert_eq!(background_json["control"]["runtimeOperationsReady"], true);
     assert_eq!(background_json["control"]["terminalInputReady"], false);
     assert_eq!(
@@ -2228,10 +2219,6 @@ fn real_herdr_native_backend_over_russh_fixture() {
         Some(before_background_epoch.as_str())
     );
     assert_eq!(
-        foreground_json["control"]["recovery"]["confirmationToken"], "",
-        "healthy foreground must not require recovery confirmation"
-    );
-    assert_eq!(
         foreground_json["terminals"]
             .as_array()
             .unwrap()
@@ -2263,16 +2250,31 @@ fn real_herdr_native_backend_over_russh_fixture() {
         "foreground shell round trip",
     );
 
-    ssh.lose_connections();
-    wait_state(
-        default_id,
-        ConnectionState::Reconnecting,
-        "server-side SSH connection loss",
+    let herdr_lists_before_transport_loss = ssh.herdr_session_list_count();
+    assert!(
+        herdr_lists_before_transport_loss > 0,
+        "initial picker listed Herdr sessions"
     );
-    let (_, transport_token) =
-        wait_recovery_confirmation(default_id, "Herdr transport recovery confirmation");
-    confirm_recovery(default_id, &transport_token, "Herdr transport recovery");
-    let _transport_json = wait_recovery_ready(default_id, "Herdr transport recovery");
+    let before_transport_epoch = workspace_snapshot_json(default_id)
+        .ok()
+        .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+        .and_then(|value| {
+            value["control"]["operationEpoch"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .expect("operation epoch before Herdr transport loss");
+    ssh.lose_connections();
+    let _transport_json = wait_recovery_ready_after_epoch(
+        default_id,
+        &before_transport_epoch,
+        "automatic Herdr transport recovery after server-side SSH connection loss",
+    );
+    assert_eq!(
+        ssh.herdr_session_list_count(),
+        herdr_lists_before_transport_loss,
+        "retained recovery validates the selected runtime directly without another picker list"
+    );
     let transport_session = wait_session(default_id, "Herdr transport recovery hierarchy");
     let previous_transport_terminal = root.terminal_id;
     let root = transport_session
@@ -2283,12 +2285,12 @@ fn real_herdr_native_backend_over_russh_fixture() {
         .clone();
     assert_eq!(
         root.terminal_id, previous_transport_terminal,
-        "confirmed Herdr recovery preserves the native terminal identity"
+        "automatic Herdr recovery preserves the native terminal identity"
     );
     commit_marker(
         root.terminal_id,
         "HERDR_TRANSPORT_RECOVERED_32C4",
-        "confirmed transport recovery input",
+        "automatic transport recovery input",
     );
 
     // A new connection owner has no old registry state, as after app process

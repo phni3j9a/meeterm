@@ -232,25 +232,46 @@ there is no automatic fallback from Herdr to tmux.
 
 After a runtime has reached `Ready`, same-process transport recovery keeps its
 last authoritative workspace, selected terminal, native `Term`, and local
-history visible but stale. Input, resize, and remote mutations remain closed
-until the SSH host/authentication, backend capability, exact runtime target,
-topology, selected terminal, and authoritative screen have been verified and
-committed together. Retry exhaustion and identity failure stay in that work
-screen with explicit Retry and Change connection/runtime actions; they do not
-open the picker, create a replacement, silently retarget, or fall back to the
-other backend.
+history visible as read-only while restoring the same work automatically.
+Input, resize, and remote mutations stay closed until host authentication,
+backend capability, selected runtime, topology, selected terminal, and an
+authoritative screen have been verified and committed together. Recovery stops
+in that work screen on a concrete mismatch, conflict, authentication failure,
+missing target, incompatibility, or required synchronization failure.
+`runtimeMismatch`, controller conflict, and retry-exhaustion/unknown
+stops offer **Retry** and **Change**; `runtimeMissing`, `terminalMissing`, and
+`incompatible` offer **Change** only. A changed host key offers **Review key**;
+authentication failure offers **Connection details**. The staged backend
+reason is retained unless a host-key or authentication failure takes precedence.
+Recovery does not open the picker,
+create a replacement, silently retarget, or fall back to the other backend.
 
-tmux recovery requires the previously selected session identity and pane ID.
-A missing runtime, tmux server restart, same-name replacement, missing pane, or
-uncertain identity therefore fails closed on the stale screen. Herdr 0.9.0 does
-not publish a server-instance identity that meeterm can compare across
-transport loss. Its recovery reauthenticates and performs bounded read-only
-discovery, then requires an explicit confirmation inside the existing work
-screen. Confirmation permits only a fresh compatible running candidate,
-original stable terminal ID, ordinary controller acquisition without takeover,
-and first authoritative full-frame check; it is not identity proof or a picker
-selection. A manual reconnect, fresh profile entry, and cold start remain fresh
-selection flows and always show the picker.
+tmux verifies the previously selected session identity and pane ID. Herdr
+recovery checks the same approved SSH host/key, compatible Herdr 0.9.0
+(protocol 22, schema 1, direct stream-local operations), the selected running
+runtime, the original stable `terminal_id`, successful ordinary controller
+acquisition without takeover, and the first authoritative full frame. Herdr
+0.9.0 does not publish a comparable server-instance identity; inability to
+prove that identity alone does not block recovery. A missing selected runtime
+or terminal, changed host key, authentication failure, incompatibility,
+controller conflict, or failed full-frame/resynchronization check stops
+recovery on the retained screen. These checks do not permit fallback to another
+runtime or backend.
+
+When retained work exists, **Reconnect** in the Workspaces list or Server sheet
+is available while recovery is reconnecting or stopped for a retry-eligible
+reason; both controls are hidden during resynchronization and for Change-only
+or security stops. These controls and recovery **Retry** call the same-intent
+recovery path. A stopped Retry publishes
+`reconnecting`/`manual_retry` before replacement; duplicate current-epoch calls
+are no-ops, and explicit Disconnect/Change revoke the intent even if the old
+actor has finished. The first automatic attempt starts immediately;
+bounded exponential backoff applies only after a failed attempt. Foreground
+return and a network-change notification wake a sleeping retry when automatic
+reconnect is enabled. `reconnect`/`ManualReconnect` and the picker are reserved
+for cold/fresh connection, explicit server or Session change, and **Change**
+after the retained target is lost. Those fresh-selection flows still require
+explicit runtime selection.
 
 The profile stores SSH endpoint/authentication metadata. Existing backend and
 runtime fields represent a non-authoritative logical `lastUsedRuntime` hint;

@@ -94,10 +94,6 @@ class MeetermTerminalModule extends NativeModule<{}> {
     throw new Error(WEB_UNAVAILABLE);
   }
 
-  async confirmRecovery(_terminalId: string, _confirmationToken: string): Promise<void> {
-    throw new Error(WEB_UNAVAILABLE);
-  }
-
   async changeRuntime(_terminalId: string, _operationEpoch: string): Promise<RuntimeBoundaryResult> {
     throw new Error(WEB_UNAVAILABLE);
   }
