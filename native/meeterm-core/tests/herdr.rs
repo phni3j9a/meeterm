@@ -440,7 +440,7 @@ struct FixtureSsh {
 }
 
 impl FixtureSsh {
-    fn start(manifest: &FixtureManifest) -> Self {
+    fn start(manifest: &FixtureManifest, sftp_reply_delay_secs: u64) -> Self {
         let host_key = keys::load_secret_key(&manifest.host_key, None).expect("fixture host key");
         let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
         let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -465,10 +465,7 @@ impl FixtureSsh {
                 .map(|session| session.terminal_id.clone())
                 .collect(),
             sftp_root,
-            sftp_reply_delay_secs: env::var("MEETERM_FIXTURE_SFTP_REPLY_DELAY")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0),
+            sftp_reply_delay_secs,
         });
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let join = thread::spawn(move || {
@@ -1789,7 +1786,7 @@ fn real_herdr_native_backend_over_russh_fixture() {
         Some("1")
     );
     let driver = Driver::start();
-    let ssh = FixtureSsh::start(&driver.manifest);
+    let ssh = FixtureSsh::start(&driver.manifest, 0);
 
     let default_id = create_terminal(40, 16).expect("create default Herdr terminal");
     let _default_guard = TerminalGuard { id: default_id };
@@ -2983,7 +2980,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
         Some("1")
     );
     let driver = Driver::start();
-    let ssh = FixtureSsh::start(&driver.manifest);
+    let ssh = FixtureSsh::start(&driver.manifest, 0);
 
     let id = create_terminal(60, 20).expect("create Herdr attachment terminal");
     let _guard = TerminalGuard { id };
@@ -3256,27 +3253,24 @@ fn real_herdr_attachment_upload_insert_and_fence() {
 }
 
 /// Issue #28 FP-015 over the real Herdr fixture: the `sftp` subsystem's
-/// CHANNEL_SUCCESS reply is deferred for `MEETERM_FIXTURE_SFTP_REPLY_DELAY`
-/// seconds. The queued launch must pend inside the actor's select loop —
-/// pane input keeps echoing while the subsystem wait is outstanding — and
-/// the upload still completes once the reply lands.
+/// CHANNEL_SUCCESS reply is deferred by `REPLY_DELAY_SECS` seconds. The
+/// queued launch must pend inside the actor's select loop — pane input
+/// keeps echoing while the subsystem wait is outstanding — and the upload
+/// still completes once the reply lands. The delay is configured by the
+/// test itself, so this runs under the same `MEETERM_HERDR_INTEGRATION=1`
+/// + `MEETERM_HERDR_BINARY` environment as every other Herdr fixture.
 #[test]
-#[ignore = "requires MEETERM_HERDR_INTEGRATION=1, a real Herdr 0.9.0 binary, and MEETERM_FIXTURE_SFTP_REPLY_DELAY"]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a real Herdr 0.9.0 binary"]
 fn real_herdr_delayed_subsystem_keeps_input_responsive() {
     assert_eq!(
         env::var("MEETERM_HERDR_INTEGRATION").ok().as_deref(),
         Some("1")
     );
-    let delay: u64 = env::var("MEETERM_FIXTURE_SFTP_REPLY_DELAY")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .expect("MEETERM_FIXTURE_SFTP_REPLY_DELAY must be set for this test");
-    assert!(
-        (3..15).contains(&delay),
-        "reply delay must visibly overlap input but stay under the 15s launch bound, got {delay}"
-    );
+    // Long enough to visibly overlap live input, short enough to stay
+    // under the actor's 15s launch bound.
+    const REPLY_DELAY_SECS: u64 = 6;
     let driver = Driver::start();
-    let ssh = FixtureSsh::start(&driver.manifest);
+    let ssh = FixtureSsh::start(&driver.manifest, REPLY_DELAY_SECS);
 
     let id = create_terminal(60, 20).expect("create delayed-SFTP terminal");
     let _guard = TerminalGuard { id };
@@ -3303,7 +3297,7 @@ fn real_herdr_delayed_subsystem_keeps_input_responsive() {
         attachment_begin(intent, local_path, "picked.png", None, payload.len() as u64)
             .expect("begin delayed-SFTP attachment");
 
-    // CHANNEL_SUCCESS is withheld for `delay` seconds while the queued
+    // CHANNEL_SUCCESS is withheld for `REPLY_DELAY_SECS` while the queued
     // launch pends in the actor's select loop — pane input must still
     // round-trip, and the upload cannot have progressed to Uploaded.
     let marker = "MEETERM_HERDR_DELAY_7C31";

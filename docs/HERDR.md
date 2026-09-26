@@ -306,10 +306,11 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 で起動する real Herdr 0.9.0 driver を組み合わせます。普通の OpenSSH server fixture では
 ありません。default/named runtime、snapshot/subscribe、workspace/group CRUD、ANSI frame、
 resize、semantic input、CJK paste、controller conflict、release/reacquire、外部 move と
-stable identity を一つの bounded ケースで確認します。`MEETERM_FIXTURE_SFTP_REPLY_DELAY=<秒>`
-を足すと fixture の `sftp` subsystem が CHANNEL_SUCCESS を遅延 reply し、
-`real_herdr_delayed_subsystem_keeps_input_responsive` が Success 待ちの間も pane 入力が
-応答すること（queued launch が interactive loop を塞がないこと）を確認します。公式 binary の CI job は
+stable identity を一つの bounded ケースで確認します。
+`real_herdr_delayed_subsystem_keeps_input_responsive` は fixture の `sftp` subsystem の
+CHANNEL_SUCCESS reply を6秒遅延させ（遅延値はテスト内の定数で、環境変数は不要）、
+Success 待ちの間も pane 入力が応答すること（queued launch が interactive loop を
+塞がないこと）を確認します。公式 binary の CI job は
 `RUNNER_TEMP` にだけ pinned digest で取得し、既存環境やユーザーの Herdr session を変更
 しません。既に記録したローカルのproduction native統合テスト結果は、その記録にあるsourceの
 証拠です。更新後の zero-tap recovery の受入には、今回のcandidateでこのignored testを実行して
