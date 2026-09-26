@@ -1353,7 +1353,7 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentCancel(
 }
 
 /// Drop the operation record, cancelling active work first. Remote files
-/// survive disposal; explicit removal is `attachmentRemoveRemote`.
+/// survive disposal; explicit removal is `attachmentDeleteRemote`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDispose(
     _env: EnvUnowned<'_>,
@@ -1369,17 +1369,22 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDispose
 }
 
 /// Explicit remote deletion restricted to this operation's generated
-/// names, on the same SSH endpoint only. Idempotent; the phase is kept.
+/// names, on the same SSH endpoint owned by `handle` only. Idempotent;
+/// the phase is kept. Renamed from `attachmentRemoveRemote`: the owning
+/// connection handle is now required.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentRemoveRemote(
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDeleteRemote(
     _env: EnvUnowned<'_>,
     _this: JObject<'_>,
+    handle: jlong,
     attachment_id: jlong,
 ) -> jint {
-    let Ok(attachment_id) = u64::try_from(attachment_id) else {
+    let (Some(handle), Ok(attachment_id)) =
+        (handle_from_jlong(handle), u64::try_from(attachment_id))
+    else {
         return -1;
     };
-    crate::attachment::attachment_remove_remote(attachment_id)
+    crate::attachment::attachment_delete_remote(handle, attachment_id)
         .map(|()| 0)
         .unwrap_or_else(|error| error.code())
 }

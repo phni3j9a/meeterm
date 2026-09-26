@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -43,13 +44,17 @@ pub const ATTACHMENT_MSG_CAPACITY: usize = 256;
 pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 pub const ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED: u32 = 0x1;
 /// The remote file this operation created was explicitly deleted through
-/// `attachment_remove_remote`. Composes with the phase: `inserted` is not
+/// `attachment_delete_remote`. Composes with the phase: `inserted` is not
 /// revoked, while `uploaded`+removed means the path is gone.
 pub const ATTACHMENT_FLAG_REMOTE_REMOVED: u32 = 0x2;
 
 /// Default remote base resolved against the SFTP start directory
 /// (`realpath(".")`), never a client-side `~` assumption.
 const REMOTE_DIR_COMPONENTS: [&str; 4] = [".local", "share", "meeterm", "attachments"];
+/// Number of trailing default-dir components that are app-private
+/// (`meeterm/attachments`): they are created *and* restricted to `0700`.
+/// `.local` and `share` are only created when missing and never chmod'ed.
+const APP_DIR_COMPONENTS: usize = 2;
 const REMOTE_DIR_MODE: u32 = 0o700;
 const REMOTE_FILE_MODE: u32 = 0o600;
 const WRITE_CHUNK_BYTES: usize = 32 * 1024;
@@ -62,7 +67,8 @@ const MAX_REMOTE_NAME_BYTES: usize = 128;
 const MAX_LIVE_OPS_PER_OWNER: usize = 1;
 const MAX_LOCAL_PATH_BYTES: usize = 4096;
 const MAX_DISPLAY_NAME_BYTES: usize = 512;
-const MAX_REMOTE_DIR_BYTES: usize = 1024;
+const MAX_REMOTE_DIR_BYTES: usize = 256;
+const MAX_EXT_BYTES: usize = 8;
 /// Slack over the payload so the availability check also covers directory
 /// metadata and the partial file that briefly coexists with a final copy.
 const REMOTE_SPACE_SLACK: u64 = 64 * 1024;
@@ -539,65 +545,279 @@ impl AttachmentSnapshot {
     }
 }
 
-/// Generated remote file name. The picked file's own name is never used
-/// remotely (privacy and collision hygiene); a time component keeps names
-/// collision-resistant across process restarts, and a sanitized extension
-/// preserves the type hint CLIs use when reading the path.
-fn remote_file_name(id: u64, local_path: &str) -> String {
+/// UTC `(YYYYMMDD, HHMMSS)` for the generated remote name. Derived from
+/// the system clock; collision-resistance comes from the random tail, not
+/// the stamp.
+fn stamp_from_millis(millis: u64) -> (u32, u32) {
+    let seconds = millis / 1000;
+    let days = seconds / 86_400;
+    let second_of_day = seconds % 86_400;
+    // Howard Hinnant's civil_from_days — days since epoch -> (y, m, d).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    let yyyymmdd = (year as u32) * 10_000 + (month as u32) * 100 + day as u32;
+    let hhmmss = ((second_of_day / 3600) as u32) * 10_000
+        + ((second_of_day / 60) % 60) as u32 * 100
+        + (second_of_day % 60) as u32;
+    (yyyymmdd, hhmmss)
+}
+
+/// Image type hint from the file's magic bytes, not its picked name. The
+/// generated remote name only carries an extension the data actually
+/// proves; recognized magic covers the common phone photo formats and a
+/// sanitized picked extension is a last resort for other types.
+fn image_extension(local_path: &str, picked_path: &str) -> String {
+    let magic = std::fs::File::open(local_path)
+        .and_then(|mut file| {
+            let mut head = [0u8; 16];
+            let mut read = 0usize;
+            while read < head.len() {
+                match file.read(&mut head[read..]) {
+                    Ok(0) => break,
+                    Ok(n) => read += n,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(head)
+        })
+        .unwrap_or([0u8; 16]);
+    let detected = if magic.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        Some("png")
+    } else if magic.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if magic.starts_with(b"GIF87a") || magic.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if magic.starts_with(b"RIFF") && magic[8..12] == *b"WEBP" {
+        Some("webp")
+    } else if magic[4..8] == *b"ftyp" {
+        // ISOBMFF brands (HEIC/HEIF/AVIF) used by phone cameras.
+        match &magic[8..12] {
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"hevm" | b"hevs" => {
+                Some("heic")
+            }
+            b"mif1" | b"msf1" => Some("heif"),
+            b"avif" | b"avis" => Some("avif"),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    detected
+        .map(|ext| format!(".{ext}"))
+        .or_else(|| {
+            Path::new(picked_path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .filter(|extension| {
+                    !extension.is_empty()
+                        && extension.len() <= MAX_EXT_BYTES
+                        && extension
+                            .bytes()
+                            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                })
+                .map(|extension| format!(".{extension}"))
+        })
+        .unwrap_or_default()
+}
+
+/// Generated remote file name: `meeterm-<YYYYMMDD>-<HHMMSS>-<16 hex>.<ext>`.
+/// The picked file's own name never reaches the remote; the random tail
+/// keeps names unpredictable and collision-resistant across restarts that
+/// reset attachment ids. All characters stay inside `[a-z0-9.-]`.
+fn remote_file_name(id: u64, extension: &str) -> String {
+    let _ = id;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
+        .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
-    let extension = Path::new(local_path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .filter(|extension| {
-            !extension.is_empty()
-                && extension.len() <= 16
-                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        })
-        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-        .unwrap_or_default();
-    let mut name = format!("att-{id}-{millis:x}{extension}");
+    let (yyyymmdd, hhmmss) = stamp_from_millis(millis);
+    let random = rand::random::<u64>();
+    let mut name = format!("meeterm-{yyyymmdd:08}-{hhmmss:06}-{random:016x}{extension}");
     name.truncate(MAX_REMOTE_NAME_BYTES);
     name
 }
 
-/// The single line inserted into the fenced pane. Single-quoting keeps a
-/// `$HOME` containing spaces safe; embedded quotes are escaped the standard
-/// `'\''` way. No newline and no Enter is ever added here; `paste_utf8`
-/// keeps the line editable for the user.
-fn insertion_line(remote_path: &str) -> Vec<u8> {
-    let mut line = String::with_capacity(remote_path.len() + 2);
-    line.push('\'');
-    line.push_str(&remote_path.replace('\'', "'\\''"));
-    line.push('\'');
-    line.into_bytes()
+/// The exact generated-name grammar `run_remove` requires before deleting:
+/// `meeterm-` + 8 digits + `-` + 6 digits + `-` + 16 lowercase hex +
+/// optional `.<a-z0-9>` extension. Anything else — including a name that
+/// was never generated by this client — must not be deleted by us.
+fn remote_basename_valid(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("meeterm-") else {
+        return false;
+    };
+    let mut parts = rest.splitn(3, '-');
+    let date = parts.next().unwrap_or_default();
+    let time = parts.next().unwrap_or_default();
+    let tail = parts.next().unwrap_or_default();
+    let (random, extension) = match tail.split_once('.') {
+        Some((random, extension)) => (random, Some(extension)),
+        None => (tail, None),
+    };
+    date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 6
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+        && random.len() == 16
+        && random
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && extension.is_none_or(|extension| {
+            !extension.is_empty()
+                && extension.len() <= MAX_EXT_BYTES
+                && extension
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
-/// The user may explicitly point at a remote directory the CLI can read.
-/// It must be a clean absolute path: no `..`, no control characters, every
-/// component bounded. Symlinked components are rejected later by lstat.
-fn validate_remote_dir(remote_dir: &str) -> Result<String, AttachmentError> {
-    if remote_dir.is_empty() {
-        return Err(AttachmentError::InvalidArgument);
-    }
-    if !remote_dir.starts_with('/')
-        || remote_dir.len() > MAX_REMOTE_DIR_BYTES
-        || remote_dir.chars().any(char::is_control)
+/// A staged partial name is `.meeterm-partial-` + the same generated base
+/// name; its validity is decided by the base-name check.
+fn partial_name(remote_name: &str) -> String {
+    format!(".meeterm-partial-{remote_name}")
+}
+
+/// The single line inserted into the fenced pane. Single-quoting keeps a
+/// `$HOME` containing spaces safe. The path must never carry `'`, CR, LF,
+/// or control characters — it is rejected *before* the line exists, never
+/// escaped, because only generated names and pre-validated directories are
+/// legitimate. No newline and no Enter is ever added; `paste_utf8` keeps
+/// the line editable for the user.
+fn insertion_line(remote_path: &str) -> Result<Vec<u8>, AttachmentError> {
+    if remote_path.is_empty()
+        || remote_path.contains('\'')
+        || remote_path.chars().any(char::is_control)
     {
         return Err(AttachmentError::InvalidArgument);
     }
+    let mut line = String::with_capacity(remote_path.len() + 2);
+    line.push('\'');
+    line.push_str(remote_path);
+    line.push('\'');
+    Ok(line.into_bytes())
+}
+
+/// Begin-level acceptance for an explicit `remote_dir`: clean absolute or
+/// `~/`-prefixed, byte-bounded, no NUL. Character/component safety is
+/// validated at transfer time where `remote_unsafe_path` can be reported
+/// on the snapshot; existence, symlink, and writability checks all run
+/// remotely.
+fn validate_remote_dir(remote_dir: &str) -> Result<String, AttachmentError> {
     let trimmed = remote_dir.trim_end_matches('/');
-    if trimmed.len() <= 1 {
+    if trimmed.is_empty() || trimmed.len() > MAX_REMOTE_DIR_BYTES || trimmed.contains('\0') {
         return Err(AttachmentError::InvalidArgument);
     }
-    for component in trimmed.split('/').skip(1) {
-        if component.is_empty() || component == "." || component == ".." || component.len() > 255 {
-            return Err(AttachmentError::InvalidArgument);
-        }
+    if !trimmed.starts_with('/') && !trimmed.starts_with("~/") {
+        return Err(AttachmentError::InvalidArgument);
+    }
+    if trimmed.len() <= 2 && trimmed.starts_with("~/") {
+        return Err(AttachmentError::InvalidArgument);
     }
     Ok(trimmed.to_owned())
+}
+
+/// Split a remote path into absolute components. The leading empty
+/// component represents the root marker and is skipped by the walker.
+fn path_components(path: &str) -> Vec<String> {
+    path.split('/').map(str::to_owned).collect()
+}
+
+/// Resolve the operation's remote directory into absolute components plus
+/// policy flags. `home` is the verified `realpath(".")` result; `~` is
+/// expanded *against it*, never client-side. Returns the components, how
+/// many leading ones are already verified (home), whether missing
+/// components may be created (default dir only), how many trailing ones
+/// are app-private and must be forced to `0700`, and whether the leaf is
+/// an explicit user directory that needs a writability probe.
+fn remote_dir_components(
+    spec: &TransferSpec,
+    home: &str,
+) -> Result<(Vec<String>, usize, bool, usize, bool), TransferOutcome> {
+    let Some(dir) = &spec.remote_dir else {
+        let mut components = path_components(home);
+        components.extend(REMOTE_DIR_COMPONENTS.iter().map(|part| (*part).to_owned()));
+        return Ok((
+            components,
+            path_components(home).len(),
+            true,
+            APP_DIR_COMPONENTS,
+            false,
+        ));
+    };
+    let unsafe_path = || {
+        TransferOutcome::Failed(
+            "remote_unsafe_path",
+            "explicit remote directory is not a clean absolute path".to_owned(),
+        )
+    };
+    // `'` / CR / LF / control characters can never appear: the resulting
+    // path is single-quoted verbatim into the inserted line.
+    if dir.chars().any(|ch| ch == '\'' || ch.is_control()) {
+        return Err(unsafe_path());
+    }
+    let mut components: Vec<String>;
+    let verified;
+    if let Some(rest) = dir.strip_prefix("~/") {
+        components = path_components(home.trim_end_matches('/'));
+        verified = components.len();
+        // `~//x` keeps a leading empty rest component — rejected by the
+        // empty-component check below, same as `/a//b`.
+        components.extend(path_components(rest));
+    } else if dir.starts_with('/') {
+        components = path_components(dir);
+        verified = 0;
+    } else {
+        return Err(unsafe_path());
+    }
+    for (index, component) in components.iter().enumerate() {
+        if index < verified {
+            continue;
+        }
+        if index == 0 && component.is_empty() {
+            continue; // leading '/' marker
+        }
+        if component.is_empty() || component == "." || component == ".." || component.len() > 255 {
+            return Err(unsafe_path());
+        }
+    }
+    Ok((components, verified, false, 0, true))
+}
+
+/// Exclusive-create probe proving the explicit leaf directory is actually
+/// writable — directory `rwx` bits alone do not prove the SFTP user can
+/// create files (ACLs, read-only mounts, quota). Denial maps to
+/// `remote_permission_denied`; the probe name is ours and always removed.
+async fn probe_dir_writable(session: &RawSftpSession, base: &str) -> Result<(), TransferOutcome> {
+    let probe = format!("{base}/.meeterm-probe-{:016x}", rand::random::<u64>());
+    match session
+        .open(
+            &probe,
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE,
+            mode_only(REMOTE_FILE_MODE),
+        )
+        .await
+    {
+        Ok(handle) => {
+            let _ = session.close(handle.handle).await;
+            let _ = session.remove(&probe).await;
+            Ok(())
+        }
+        Err(SftpError::Status(status)) if status.status_code == StatusCode::PermissionDenied => {
+            Err(TransferOutcome::Failed(
+                "remote_permission_denied",
+                "explicit remote directory is not writable".to_owned(),
+            ))
+        }
+        Err(error) => Err(map_transfer_error(error, "sftp_error")),
+    }
 }
 
 fn validate_begin_args(
@@ -669,8 +889,11 @@ pub fn attachment_begin(
         .map_err(|_| AttachmentError::DestinationNotReady)?;
 
     let id = NEXT_ATTACHMENT_ID.fetch_add(1, Ordering::AcqRel).max(1);
-    let remote_name = remote_file_name(id, local_path);
-    let partial_name = format!(".partial-{remote_name}");
+    // The remote extension reflects the file's magic bytes; the picked
+    // name is only a fallback hint and never leaks into the remote path.
+    let extension = image_extension(local_path, local_path);
+    let remote_name = remote_file_name(id, &extension);
+    let partial_name = partial_name(&remote_name);
     let display_name = if display_name.is_empty() {
         remote_name.clone()
     } else {
@@ -823,11 +1046,9 @@ pub fn attachment_insert(terminal_id: u64, attachment_id: u64) -> Result<(), Att
         AttachmentError::DestinationNotReady
     })?;
     // The remote path is generated by us but resolved by the server;
-    // refuse control characters so the line can never carry CR/LF.
-    if remote_path.chars().any(char::is_control) {
-        return Err(AttachmentError::InvalidState);
-    }
-    let line = insertion_line(&remote_path);
+    // `'` / CR / LF / control characters are refused before the line
+    // exists so the paste can never smuggle an Enter.
+    let line = insertion_line(&remote_path).map_err(|_| AttachmentError::InvalidState)?;
     match shared.attachment_insert_line(&fence, &line) {
         Ok(_) => {
             if let Ok(mut op) = op.lock()
@@ -887,16 +1108,24 @@ pub fn attachment_dispose(attachment_id: u64) -> Result<(), AttachmentError> {
 }
 
 /// Explicit remote deletion of the files this operation created — the
-/// published file, any `.partial-*` staging remnant, and the (empty)
-/// attachment directory, on the *same* SSH endpoint only. Never deletes
-/// anything outside the generated names. Duplicate calls are idempotent;
-/// success sets `ATTACHMENT_FLAG_REMOTE_REMOVED` on the snapshot while the
-/// phase is kept (`inserted` cannot be revoked). There is no automatic
-/// deletion: nothing is removed on insert, cancel, dispose, or app exit.
-pub fn attachment_remove_remote(attachment_id: u64) -> Result<(), AttachmentError> {
+/// published file and any `.meeterm-partial-*` staging remnant, on the
+/// *same* SSH endpoint only. Never deletes anything outside the generated
+/// names. Callable from `Uploaded`, `Inserted`, `Failed`, or `Cancelled`
+/// (a `Pending`/`Uploading` op is still in flight and must be cancelled
+/// first). Duplicate calls are idempotent; success sets
+/// `ATTACHMENT_FLAG_REMOTE_REMOVED` on the snapshot while the phase is
+/// kept (`inserted` cannot be revoked). There is no automatic deletion:
+/// nothing is removed on insert, cancel, dispose, or app exit.
+pub fn attachment_delete_remote(
+    terminal_id: u64,
+    attachment_id: u64,
+) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
     let (owner, fence) = {
         let op = lock_operation(&op)?;
+        if op.owner != terminal_id {
+            return Err(AttachmentError::InvalidArgument);
+        }
         if op.removed {
             return Ok(());
         }
@@ -904,9 +1133,10 @@ pub fn attachment_remove_remote(attachment_id: u64) -> Result<(), AttachmentErro
             return Err(AttachmentError::Busy);
         }
         match op.phase {
-            AttachmentPhase::Uploading => return Err(AttachmentError::InvalidState),
-            AttachmentPhase::Pending
-            | AttachmentPhase::Uploaded
+            AttachmentPhase::Pending | AttachmentPhase::Uploading => {
+                return Err(AttachmentError::InvalidState);
+            }
+            AttachmentPhase::Uploaded
             | AttachmentPhase::Inserted
             | AttachmentPhase::Failed
             | AttachmentPhase::Cancelled => {}
@@ -996,6 +1226,7 @@ pub const ATTACHMENT_SNAPSHOT_SIZE: usize = size_of::<AttachmentSnapshot>();
 // SFTP transfer task
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 enum TransferOutcome {
     /// Confirmed remote final path.
     Uploaded(String),
@@ -1209,17 +1440,23 @@ fn remote_file_complete(attrs: &FileAttributes, size_bytes: u64) -> bool {
             .is_some_and(|mode| mode & 0o777 == REMOTE_FILE_MODE)
 }
 
-/// Ensure `components` resolves to a real directory, creating missing
-/// components with `0700` as we walk. Every existing component is
-/// lstat-checked: a symlink anywhere in the chain is rejected because
-/// OpenSSH follows symlinks in path components silently. When `restrict`
-/// is set (the app-private default dir) the final directory is forced to
-/// `0700`; an explicitly user-chosen directory keeps its own modes.
+/// Ensure `components` resolves to a real directory. The first
+/// `verified` components are trusted (the `realpath(".")` home); every
+/// remaining component is lstat-checked — a symlink anywhere in the chain
+/// is rejected because OpenSSH follows symlinks in path components
+/// silently. Missing components are created with `0700` only when
+/// `create_missing` is set (the app-private default chain); an explicit
+/// user directory must already exist. The last `restrict_last`
+/// components are app-owned and get forced to `0700` when they deviate;
+/// an explicit directory's modes are never changed. The leaf is
+/// uid-checked against the home owner.
 async fn ensure_remote_dir(
     session: &RawSftpSession,
     components: &[String],
+    verified: usize,
+    create_missing: bool,
+    restrict_last: usize,
     expected_uid: Option<u32>,
-    restrict: bool,
 ) -> Result<(), TransferOutcome> {
     let mut path = String::new();
     for (index, component) in components.iter().enumerate() {
@@ -1229,13 +1466,22 @@ async fn ensure_remote_dir(
             path.push('/');
             path.push_str(component);
         }
-        if path.is_empty() {
+        if path.is_empty() || index < verified {
             continue;
         }
         let last = index + 1 == components.len();
+        let app_owned = index + 1 > components.len().saturating_sub(restrict_last);
         let attrs = match session.lstat(&path).await {
             Ok(attrs) => attrs.attrs,
             Err(error) if is_no_such_file(&error) => {
+                if !create_missing {
+                    // An explicit directory must exist; we never create
+                    // or fix up a user-chosen path.
+                    return Err(TransferOutcome::Failed(
+                        "remote_unsafe_path",
+                        "explicit remote directory does not exist".to_owned(),
+                    ));
+                }
                 session
                     .mkdir(&path, mode_only(REMOTE_DIR_MODE))
                     .await
@@ -1266,7 +1512,7 @@ async fn ensure_remote_dir(
                 "attachment directory is owned by another user".to_owned(),
             ));
         }
-        if restrict && attrs.permissions.is_none_or(|mode| mode & 0o077 != 0) {
+        if app_owned && attrs.permissions.is_none_or(|mode| mode & 0o077 != 0) {
             session
                 .setstat(&path, mode_only(REMOTE_DIR_MODE))
                 .await
@@ -1348,20 +1594,30 @@ async fn run_transfer(
             "remote home is not a directory".to_owned(),
         );
     }
-    // Default: app-private directory under the SFTP start dir. Explicit:
-    // the user-chosen absolute path; every component still gets lstat'd
-    // (symlinks rejected), but an existing custom dir keeps its modes.
-    let (components, restrict) = match &spec.remote_dir {
-        Some(dir) => (dir.split('/').map(str::to_owned).collect::<Vec<_>>(), false),
-        None => {
-            let mut components = Vec::with_capacity(1 + REMOTE_DIR_COMPONENTS.len());
-            components.push(home.clone());
-            components.extend(REMOTE_DIR_COMPONENTS.iter().map(|part| (*part).to_owned()));
-            (components, true)
-        }
-    };
+    // Default: app-private directory under the SFTP start dir (created
+    // and restricted). Explicit: a clean absolute or `~/`-prefixed path
+    // the user chose; every component still gets lstat'd (symlinks
+    // rejected) but nothing is created or chmod'ed, and writability is
+    // proven by an exclusive-create probe.
+    let (components, verified, create_missing, restrict_last, probe) =
+        match remote_dir_components(&spec, &home) {
+            Ok(resolved) => resolved,
+            Err(outcome) => return outcome,
+        };
     let base = components.join("/");
-    if let Err(outcome) = ensure_remote_dir(session, &components, home_attrs.uid, restrict).await {
+    if let Err(outcome) = ensure_remote_dir(
+        session,
+        &components,
+        verified,
+        create_missing,
+        restrict_last,
+        home_attrs.uid,
+    )
+    .await
+    {
+        return outcome;
+    }
+    if probe && let Err(outcome) = probe_dir_writable(session, &base).await {
         return outcome;
     }
     cancel_check!();
@@ -1521,52 +1777,105 @@ async fn run_transfer(
     outcome
 }
 
-/// Resolve the base directory exactly as the upload did, without failing
-/// when it is already gone — deletion must be idempotent.
+/// Resolve the base directory exactly as the upload did — including `~/`
+/// expansion against `realpath(".")` — without failing when it is already
+/// gone: deletion must be idempotent.
 async fn remove_base(session: &RawSftpSession, spec: &TransferSpec) -> Option<String> {
+    let resolve_home = || async {
+        let name = session.realpath(".").await.ok()?;
+        let home = name.files.first().map(|file| file.filename.clone())?;
+        if !home.starts_with('/') || home.chars().any(char::is_control) {
+            return None;
+        }
+        Some(home.trim_end_matches('/').to_owned())
+    };
     match &spec.remote_dir {
-        Some(dir) => Some(dir.clone()),
-        None => {
-            let name = session.realpath(".").await.ok()?;
-            let home = name.files.first().map(|file| file.filename.clone())?;
-            if home.chars().any(char::is_control) {
-                return None;
+        Some(dir) => {
+            if let Some(rest) = dir.strip_prefix("~/") {
+                let home = resolve_home().await?;
+                Some(format!("{home}/{rest}"))
+            } else if dir.starts_with('/') {
+                Some(dir.clone())
+            } else {
+                None
             }
-            let mut components = vec![home.trim_end_matches('/').to_owned()];
+        }
+        None => {
+            let home = resolve_home().await?;
+            let mut components = vec![home];
             components.extend(REMOTE_DIR_COMPONENTS.iter().map(|part| (*part).to_owned()));
             Some(components.join("/"))
         }
     }
 }
 
+/// One remote-delete step: the path must be absent, or a regular file
+/// with `0600` — never a symlink, directory, or a foreign mode. Anything
+/// else refuses the delete rather than trusting server-side expansion.
+async fn remove_checked(
+    session: &RawSftpSession,
+    path: &str,
+    what: &'static str,
+) -> Result<(), TransferOutcome> {
+    match session.lstat(path).await {
+        Err(error) if is_no_such_file(&error) => Ok(()),
+        Err(error) => Err(map_transfer_error(error, "sftp_error")),
+        Ok(attrs) => {
+            let attrs = &attrs.attrs;
+            if !attrs.file_type().is_file()
+                || attrs
+                    .permissions
+                    .is_none_or(|mode| mode & 0o777 != REMOTE_FILE_MODE)
+            {
+                return Err(TransferOutcome::Failed(
+                    "remote_unsafe_path",
+                    format!("remote {what} is not a private generated file"),
+                ));
+            }
+            session
+                .remove(path)
+                .await
+                .map(|_| ())
+                .map_err(|error| map_transfer_error(error, "sftp_error"))
+        }
+    }
+}
+
 /// Explicit remote deletion restricted to the names this operation
-/// generated: the published file, its `.partial-*` remnant, and — only for
-/// the app-private default — the (empty) attachments directory itself.
-/// Every step is idempotent so a repeated remove or a partially cleaned
-/// state still converges to `Removed`.
+/// generated: the published file and its `.meeterm-partial-*` remnant —
+/// only for names matching the generated grammar — and, only for the
+/// app-private default, the (empty) attachments directory itself. Every
+/// step is idempotent so a repeated remove or a partially cleaned state
+/// still converges to `Removed`.
 async fn run_remove(
     op: &Arc<Mutex<AttachmentOperation>>,
     session: &RawSftpSession,
 ) -> TransferOutcome {
-    let (spec, remote_path) = {
+    let spec = {
         let Ok(op) = op.lock() else {
             return TransferOutcome::Cancelled;
         };
-        (op.spec.clone(), op.remote_path.clone())
+        op.spec.clone()
     };
+    // The name grammar is validated before any delete touches the remote;
+    // a name we did not generate is never removed by this client.
+    if !remote_basename_valid(&spec.remote_name) {
+        return TransferOutcome::Failed(
+            "remote_unsafe_path",
+            "remote file name is outside the generated grammar".to_owned(),
+        );
+    }
     let Some(base) = remove_base(session, &spec).await else {
         return TransferOutcome::Pending(AttachmentBlock::StaleConnection);
     };
-    let final_path = remote_path.unwrap_or_else(|| format!("{base}/{}", spec.remote_name));
+    let final_path = format!("{base}/{}", spec.remote_name);
     let partial_path = format!("{base}/{}", spec.partial_name);
 
-    // Only ever our generated names — never a caller-supplied path.
-    for path in [&final_path, &partial_path] {
-        if let Err(error) = session.remove(path).await
-            && !is_no_such_file(&error)
-        {
-            return map_transfer_error(error, "sftp_error");
-        }
+    if let Err(outcome) = remove_checked(session, &final_path, "file").await {
+        return outcome;
+    }
+    if let Err(outcome) = remove_checked(session, &partial_path, "partial file").await {
+        return outcome;
     }
     if spec.remote_dir.is_none() {
         // rmdir fails harmlessly while the directory is non-empty; never
@@ -1613,8 +1922,9 @@ mod tests {
             spec: TransferSpec {
                 local_path: "/tmp/picked.jpg".to_owned(),
                 remote_dir: None,
-                remote_name: "att-41-abcdef.jpg".to_owned(),
-                partial_name: ".partial-att-41-abcdef.jpg".to_owned(),
+                remote_name: "meeterm-20260101-120000-0123456789abcdef.png".to_owned(),
+                partial_name: ".meeterm-partial-meeterm-20260101-120000-0123456789abcdef.png"
+                    .to_owned(),
                 size_bytes: 10,
             },
             display_name: "picked.jpg".to_owned(),
@@ -1633,46 +1943,215 @@ mod tests {
     }
 
     #[test]
-    fn remote_file_name_is_generated_not_picked() {
-        let name = remote_file_name(7, "/tmp/picked image.PNG");
-        assert!(name.starts_with("att-7-"), "generated prefix: {name}");
-        assert!(name.ends_with(".png"), "lowercased extension: {name}");
+    fn remote_file_name_matches_generated_grammar() {
+        let name = remote_file_name(7, ".png");
+        assert!(remote_basename_valid(&name), "generated name: {name}");
+        assert!(
+            name.bytes()
+                .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-')),
+            "name must stay inside [a-z0-9.-]: {name}"
+        );
         assert!(!name.contains("picked") && !name.contains(' '));
-        let no_ext = remote_file_name(9, "/tmp/no extension");
-        assert!(no_ext.starts_with("att-9-") && !no_ext.contains(' '));
+        assert_ne!(
+            remote_file_name(7, ".png"),
+            remote_file_name(8, ".png"),
+            "random tail keeps same-second names distinct"
+        );
+        // Two calls with the same id still differ — process restarts that
+        // reset the id sequence cannot collide on names.
+        assert_ne!(
+            remote_file_name(7, ".png"),
+            remote_file_name(7, ".png"),
+            "random tail keeps same-id names distinct"
+        );
     }
 
     #[test]
-    fn validate_remote_dir_accepts_clean_absolute() {
+    fn remote_basename_valid_is_strict() {
+        for name in [
+            "meeterm-20260101-120000-0123456789abcdef.png",
+            "meeterm-19991231-235959-deadbeefcafebabe",
+        ] {
+            assert!(remote_basename_valid(name), "accept {name}");
+        }
+        for name in [
+            "",
+            "att-1-abcdef.png",
+            "meeterm-20260101-120000-0123456789abc.png", // 15 hex
+            "meeterm-20260101-120000-0123456789abcdefg.png", // 17 hex
+            "meeterm-2026010-120000-0123456789abcdef.png", // short date
+            "meeterm-20260101-12000-0123456789abcdef.png", // short time
+            "meeterm-20260101-120000-0123456789ABCDEF.png", // uppercase hex
+            "meeterm_20260101_120000_0123456789abcdef.png",
+            "meeterm-20260101-120000-0123456789abcdef.p'ng",
+            "meeterm-20260101-120000-0123456789abcdef.png/extra",
+            "meeterm-20260101-120000-0123456789abcdef.pn g",
+            "meeterm-20260101-120000-0123456789abcdef.PNG",
+            ".meeterm-partial-meeterm-20260101-120000-0123456789abcdef.png",
+        ] {
+            assert!(!remote_basename_valid(name), "reject {name:?}");
+        }
+    }
+
+    #[test]
+    fn stamp_from_millis_is_utc() {
+        // 1970-01-01 00:00:00 UTC
+        assert_eq!(stamp_from_millis(0), (19700101, 0));
+        // 2000-02-29 23:59:59 UTC (leap day)
+        assert_eq!(stamp_from_millis(951_868_799_000), (20000229, 235959));
+        // 2024-12-31 23:59:59 UTC
+        assert_eq!(stamp_from_millis(1_735_689_599_000), (20241231, 235959));
+        // 2025-01-01 00:00:00 UTC
+        assert_eq!(stamp_from_millis(1_735_689_600_000), (20250101, 0));
+    }
+
+    #[test]
+    fn image_extension_comes_from_magic() {
+        let dir = std::env::temp_dir().join(format!("att-magic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("picked image.jpg"); // lying picked name
+        std::fs::write(
+            &png,
+            [
+                &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a][..],
+                &[0u8; 8][..],
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            image_extension(png.to_str().unwrap(), png.to_str().unwrap()),
+            ".png",
+            "magic wins over picked extension"
+        );
+        let jpg = dir.join("picked.png");
+        std::fs::write(&jpg, [0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(
+            image_extension(jpg.to_str().unwrap(), jpg.to_str().unwrap()),
+            ".jpg"
+        );
+        // Unknown magic falls back to a clean picked extension only.
+        let other = dir.join("payload.HEIC");
+        std::fs::write(&other, b"not-an-image").unwrap();
+        assert_eq!(
+            image_extension(other.to_str().unwrap(), other.to_str().unwrap()),
+            "",
+            "uppercase picked extension is dropped, never lowercased in"
+        );
+        let unknown = dir.join("payload.bin");
+        std::fs::write(&unknown, b"???").unwrap();
+        assert_eq!(
+            image_extension(unknown.to_str().unwrap(), unknown.to_str().unwrap()),
+            ".bin"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_remote_dir_acceptance_shape() {
         assert_eq!(
             validate_remote_dir("/var/tmp/attachments").unwrap(),
             "/var/tmp/attachments"
         );
         assert_eq!(validate_remote_dir("/home/u/dir/").unwrap(), "/home/u/dir");
-    }
-
-    #[test]
-    fn validate_remote_dir_rejects_unsafe() {
+        assert_eq!(validate_remote_dir("~/my dir").unwrap(), "~/my dir");
         for dir in [
             "",
             "relative/dir",
-            "/",
-            "/a/../b",
-            "/a/./b",
-            "/a//b",
-            "/a\nb",
+            "~",
+            "~/",
+            "a/b",
+            "~/..bad".repeat(60).as_str(),
         ] {
             assert!(validate_remote_dir(dir).is_err(), "must reject {dir:?}");
         }
     }
 
+    fn spec_with_dir(dir: Option<&str>) -> TransferSpec {
+        TransferSpec {
+            local_path: "/tmp/x.png".to_owned(),
+            remote_dir: dir.map(str::to_owned),
+            remote_name: "meeterm-20260101-120000-0123456789abcdef.png".to_owned(),
+            partial_name: ".meeterm-partial-meeterm-20260101-120000-0123456789abcdef.png"
+                .to_owned(),
+            size_bytes: 1,
+        }
+    }
+
+    #[test]
+    fn remote_dir_components_expands_tilde_against_home() {
+        let (components, verified, create, restrict, probe) =
+            remote_dir_components(&spec_with_dir(Some("~/my dir/deep")), "/home/u")
+                .expect("tilde dir resolves");
+        assert_eq!(components.join("/"), "/home/u/my dir/deep");
+        // `/` marker + `home` + `u` — the realpath-verified prefix.
+        assert_eq!(verified, 3, "home components are pre-verified");
+        assert!(!create && restrict == 0 && probe, "explicit dir is probed");
+
+        // Default dir: home-verified prefix, creatable, app-private tail.
+        let (components, verified, create, restrict, probe) =
+            remote_dir_components(&spec_with_dir(None), "/home/u").expect("default dir");
+        assert_eq!(
+            components.join("/"),
+            "/home/u/.local/share/meeterm/attachments"
+        );
+        assert_eq!(verified, 3);
+        assert!(create && restrict == APP_DIR_COMPONENTS && !probe);
+    }
+
+    #[test]
+    fn remote_dir_components_rejects_unsafe() {
+        for dir in [
+            "/a/../b",
+            "/a/./b",
+            "/a//b",
+            "/a\nb",
+            "/a\rb",
+            "/a'b",
+            "~/x/../y",
+            "~/../escape",
+            "relative/dir",
+        ] {
+            let spec = spec_with_dir(Some(dir));
+            match remote_dir_components(&spec, "/home/u") {
+                Err(TransferOutcome::Failed(code, _)) => {
+                    assert_eq!(code, "remote_unsafe_path", "reject {dir:?}")
+                }
+                _ => panic!("{dir:?} must fail with remote_unsafe_path"),
+            }
+        }
+    }
+
     #[test]
     fn insertion_line_is_single_line_quoted() {
-        let line = insertion_line("/home/a b/.meeterm-attachments/att-1.png");
-        assert_eq!(line, b"'/home/a b/.meeterm-attachments/att-1.png'");
-        assert!(!line.contains(&b'\n'));
-        let tricky = insertion_line("/home/o'x/att-1.png");
-        assert_eq!(tricky, b"'/home/o'\\''x/att-1.png'");
+        let line = insertion_line("/home/a b/.local/share/meeterm/attachments/m.png").unwrap();
+        assert_eq!(line, b"'/home/a b/.local/share/meeterm/attachments/m.png'");
+        assert!(!line.contains(&b'\n') && !line.contains(&b'\r'));
+    }
+
+    #[test]
+    fn insertion_line_rejects_dangerous_paths_before_generating() {
+        // `'`, CR, LF, and every control character are refused *before* a
+        // line exists — the pane must never receive an escaped-smuggle.
+        for path in [
+            "/home/o'x/m.png",
+            "/home/u/m.png\n",
+            "/home/u/m.png\r",
+            "/home/u/\u{7}m.png",
+            "/home/u/m.p\u{1b}ng",
+        ] {
+            assert!(
+                insertion_line(path).is_err(),
+                "must reject {path:?} before generating the line"
+            );
+        }
+        for byte in 0u8..=0x1f {
+            let path = format!("/home/u/{}.png", byte as char);
+            assert!(
+                insertion_line(&path).is_err(),
+                "control byte {byte:#x} must be rejected"
+            );
+        }
     }
 
     #[test]

@@ -414,8 +414,9 @@ pub unsafe extern "C" fn meeterm_paste_utf8_at_epoch(
 /// `meeterm_attachment_snapshot`; nothing proceeds without explicit calls.
 ///
 /// `remote_dir` is an optional explicit remote directory (clean absolute
-/// path); a null pointer or zero length selects the app-private default
-/// `~/.local/share/meeterm/attachments` resolved from the SFTP start dir.
+/// or `~/`-prefixed path, expanded against `realpath(".")`); a null
+/// pointer or zero length selects the app-private default
+/// `<sftp-start>/.local/share/meeterm/attachments`.
 ///
 /// # Safety
 /// For nonzero lengths, `local_path`, `display_name`, and `remote_dir`
@@ -490,7 +491,7 @@ pub extern "C" fn meeterm_attachment_cancel(attachment_id: u64) -> i32 {
 
 /// Drop the operation record; an active transfer is cancelled first.
 /// Disposal never deletes remote files — call
-/// `meeterm_attachment_remove_remote` first when remote cleanup is wanted.
+/// `meeterm_attachment_delete_remote` first when remote cleanup is wanted.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_attachment_dispose(attachment_id: u64) -> i32 {
     crate::attachment::attachment_dispose(attachment_id)
@@ -498,15 +499,18 @@ pub extern "C" fn meeterm_attachment_dispose(attachment_id: u64) -> i32 {
         .unwrap_or_else(|error| error.code())
 }
 
-/// Explicit remote deletion of the meeterm-created names this operation
-/// owns (published file, `.partial-*` remnant, and the app-private
-/// attachments directory when empty). Never touches caller-supplied paths.
-/// The op keeps its phase — an inserted reference is not revoked — while
-/// the snapshot's `remote_removed` flag records the verified deletion.
-/// Zero is accepted/queued, negative is a native error code.
+/// Explicit remote deletion of the meeterm-generated names this operation
+/// owns (published file and `.meeterm-partial-*` remnant; the app-private
+/// attachments directory is removed only when empty). `terminal_id` must
+/// be the connection that owns the operation and the SSH endpoint must
+/// still match. Only names matching the generated grammar are deleted —
+/// never a caller-supplied path. The op keeps its phase — an inserted
+/// reference is not revoked — while the snapshot's `remote_removed` flag
+/// records the verified deletion. Zero is accepted/queued, negative is a
+/// native error code.
 #[unsafe(no_mangle)]
-pub extern "C" fn meeterm_attachment_remove_remote(attachment_id: u64) -> i32 {
-    crate::attachment::attachment_remove_remote(attachment_id)
+pub extern "C" fn meeterm_attachment_delete_remote(terminal_id: u64, attachment_id: u64) -> i32 {
+    crate::attachment::attachment_delete_remote(terminal_id, attachment_id)
         .map(|()| 0)
         .unwrap_or_else(|error| error.code())
 }

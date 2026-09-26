@@ -20,19 +20,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use meeterm_core::workspace::{Backend, RuntimeDiscoverySnapshot, RuntimeState};
 use meeterm_core::{
-    AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
-    close_group, close_pane, close_workspace, connect_host, connection_snapshot, create_group,
-    create_pane, create_terminal, create_workspace, destroy_terminal, disconnect_terminal,
-    meeterm_commit_utf8, meeterm_operation_epoch, meeterm_paste_utf8, meeterm_resize_terminal,
-    meeterm_respond_host_key, meeterm_scroll_lines, meeterm_send_special_key,
-    meeterm_set_terminal_visible, meeterm_snapshot, meeterm_snapshot_size, reconnect_terminal,
-    rename_group, rename_pane, rename_workspace, runtime_discovery_snapshot, select_group,
-    select_pane, select_runtime, session_snapshot, set_foreground, terminal_revision,
-    workspace_snapshot_json,
+    ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentPhase, AttachmentSnapshot, AuthOptions,
+    ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
+    attachment_begin, attachment_delete_remote, attachment_dispose, attachment_insert,
+    attachment_snapshot, close_group, close_pane, close_workspace, connect_host,
+    connection_snapshot, create_group, create_pane, create_terminal, create_workspace,
+    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_operation_epoch,
+    meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key, meeterm_scroll_lines,
+    meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
+    meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
+    runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
+    set_foreground, terminal_revision, workspace_snapshot_json,
 };
 use russh::keys;
 use russh::server::{self, Auth, ChannelOpenHandle, Handler, Msg, Server as RusshServer, Session};
 use russh::{Channel, ChannelId};
+use russh_sftp::protocol::{
+    Attrs, Data, File as SftpFile, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::copy_bidirectional;
@@ -413,6 +418,10 @@ struct RusshState {
     sockets: HashSet<PathBuf>,
     runtimes: HashSet<String>,
     targets: HashSet<String>,
+    /// Chroot-style root for the test-only SFTP subsystem: the virtual
+    /// absolute path `/` maps to this directory, and `realpath(".")`
+    /// reports `/home` underneath it.
+    sftp_root: PathBuf,
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
     commands: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -430,6 +439,10 @@ impl FixtureSsh {
         let host_key = keys::load_secret_key(&manifest.host_key, None).expect("fixture host key");
         let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
         let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        // The fixture's virtual SFTP home lives under the disposable
+        // fixture root; nothing ever touches the real $HOME.
+        let sftp_root = PathBuf::from(&manifest.root).join("sftp-root");
+        fs::create_dir_all(sftp_root.join("home")).expect("create fixture SFTP home");
         let state = Arc::new(RusshState {
             clients: Arc::clone(&clients),
             commands: Arc::clone(&commands),
@@ -446,6 +459,7 @@ impl FixtureSsh {
                 .values()
                 .map(|session| session.terminal_id.clone())
                 .collect(),
+            sftp_root,
         });
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let join = thread::spawn(move || {
@@ -749,6 +763,306 @@ impl Handler for FixtureServer {
         });
         Ok(())
     }
+
+    /// The production attachment path opens an `sftp` subsystem on a
+    /// second session channel. The fixture serves it with a minimal
+    /// filesystem handler rooted at the disposable `sftp_root` so the
+    /// client exercises the exact wire protocol end-to-end — including
+    /// v3 rename-no-overwrite and lstat symlink visibility — against real
+    /// semantics rather than canned replies.
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if name != "sftp" {
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
+        let Some(channel_object) = self.channels.remove(&channel) else {
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
+        session.channel_success(channel)?;
+        let root = self.state.sftp_root.clone();
+        tokio::spawn(async move {
+            russh_sftp::server::run(channel_object.into_stream(), FixtureSftp::new(root)).await;
+        });
+        Ok(())
+    }
+}
+
+/// Minimal SFTP v3 server for the fixture: virtual absolute paths map
+/// onto the disposable `sftp_root` (`/home` is the reported SFTP home).
+/// Semantics mirror OpenSSH where the client relies on them: `lstat`
+/// never follows the final symlink, `rename` does not overwrite,
+/// `rmdir` on a non-empty directory fails, and modes are applied
+/// verbatim.
+struct FixtureSftp {
+    root: PathBuf,
+    files: HashMap<String, File>,
+    next_handle: u64,
+}
+
+impl FixtureSftp {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            files: HashMap::new(),
+            next_handle: 0,
+        }
+    }
+
+    fn map(&self, path: &str) -> PathBuf {
+        let clean: Vec<&str> = path
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
+        self.root.join(clean.join("/"))
+    }
+}
+
+fn sftp_status(id: u32, code: StatusCode) -> Status {
+    Status {
+        id,
+        status_code: code,
+        error_message: String::new(),
+        language_tag: String::new(),
+    }
+}
+
+fn sftp_io_error(error: &std::io::Error) -> StatusCode {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => StatusCode::NoSuchFile,
+        std::io::ErrorKind::PermissionDenied => StatusCode::PermissionDenied,
+        _ => StatusCode::Failure,
+    }
+}
+
+impl russh_sftp::server::Handler for FixtureSftp {
+    type Error = StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        StatusCode::OpUnsupported
+    }
+
+    fn realpath(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> impl std::future::Future<Output = Result<Name, Self::Error>> + Send {
+        let resolved = if path == "." || path.is_empty() {
+            "/home".to_owned()
+        } else {
+            path
+        };
+        async move {
+            Ok(Name {
+                id,
+                files: vec![SftpFile::dummy(resolved)],
+            })
+        }
+    }
+
+    fn lstat(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> impl std::future::Future<Output = Result<Attrs, Self::Error>> + Send {
+        let mapped = self.map(&path);
+        async move {
+            fs::symlink_metadata(&mapped)
+                .map(|metadata| Attrs {
+                    id,
+                    attrs: (&metadata).into(),
+                })
+                .map_err(|error| sftp_io_error(&error))
+        }
+    }
+
+    fn stat(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> impl std::future::Future<Output = Result<Attrs, Self::Error>> + Send {
+        let mapped = self.map(&path);
+        async move {
+            fs::metadata(&mapped)
+                .map(|metadata| Attrs {
+                    id,
+                    attrs: (&metadata).into(),
+                })
+                .map_err(|error| sftp_io_error(&error))
+        }
+    }
+
+    fn mkdir(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
+        let mapped = self.map(&path);
+        async move {
+            fs::create_dir(&mapped).map_err(|error| sftp_io_error(&error))?;
+            if let Some(mode) = attrs.permissions {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&mapped, fs::Permissions::from_mode(mode));
+            }
+            Ok(sftp_status(id, StatusCode::Ok))
+        }
+    }
+
+    fn rmdir(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
+        let mapped = self.map(&path);
+        async move {
+            fs::remove_dir(&mapped)
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+    }
+
+    fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        pflags: OpenFlags,
+        attrs: FileAttributes,
+    ) -> impl std::future::Future<Output = Result<Handle, Self::Error>> + Send {
+        let mapped = self.map(&filename);
+        self.next_handle += 1;
+        let token = format!("file-{}", self.next_handle);
+        async move {
+            let mut options = fs::OpenOptions::new();
+            options.read(pflags.contains(OpenFlags::READ));
+            options.write(pflags.contains(OpenFlags::WRITE));
+            options.append(pflags.contains(OpenFlags::APPEND));
+            if pflags.contains(OpenFlags::EXCLUDE) {
+                options.create_new(true);
+            } else {
+                options.create(pflags.contains(OpenFlags::CREATE));
+                options.truncate(pflags.contains(OpenFlags::TRUNCATE));
+            }
+            match options.open(&mapped) {
+                Ok(file) => {
+                    if let Some(mode) = attrs.permissions {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(&mapped, fs::Permissions::from_mode(mode));
+                    }
+                    self.files.insert(token.clone(), file);
+                    Ok(Handle { id, handle: token })
+                }
+                Err(error) => Err(sftp_io_error(&error)),
+            }
+        }
+    }
+
+    fn close(
+        &mut self,
+        id: u32,
+        handle: String,
+    ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
+        let closed = self.files.remove(&handle).is_some();
+        async move {
+            if closed {
+                Ok(sftp_status(id, StatusCode::Ok))
+            } else {
+                Err(StatusCode::Failure)
+            }
+        }
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, Self::Error> {
+        let Some(file) = self.files.get_mut(&handle) else {
+            return Err(StatusCode::Failure);
+        };
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .and_then(|_| file.write_all(&data))
+            .map(|()| sftp_status(id, StatusCode::Ok))
+            .map_err(|error| sftp_io_error(&error))
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, Self::Error> {
+        let Some(file) = self.files.get_mut(&handle) else {
+            return Err(StatusCode::Failure);
+        };
+        use std::io::Seek;
+        let mut buffer = vec![0u8; len as usize];
+        let read = file
+            .seek(std::io::SeekFrom::Start(offset))
+            .and_then(|_| file.read(&mut buffer))
+            .map_err(|error| sftp_io_error(&error))?;
+        buffer.truncate(read);
+        Ok(Data { id, data: buffer })
+    }
+
+    fn setstat(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
+        let mapped = self.map(&path);
+        async move {
+            if let Some(mode) = attrs.permissions {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&mapped, fs::Permissions::from_mode(mode))
+                    .map_err(|error| sftp_io_error(&error))?;
+            }
+            Ok(sftp_status(id, StatusCode::Ok))
+        }
+    }
+
+    fn remove(
+        &mut self,
+        id: u32,
+        filename: String,
+    ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
+        let mapped = self.map(&filename);
+        async move {
+            fs::remove_file(&mapped)
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+    }
+
+    /// SFTP v3 rename never overwrites — the client relies on this to
+    /// publish the staged partial without clobbering an existing file.
+    fn rename(
+        &mut self,
+        id: u32,
+        oldpath: String,
+        newpath: String,
+    ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
+        let old_mapped = self.map(&oldpath);
+        let new_mapped = self.map(&newpath);
+        async move {
+            if new_mapped.exists() || new_mapped.symlink_metadata().is_ok() {
+                return Err(StatusCode::Failure);
+            }
+            fs::rename(&old_mapped, &new_mapped)
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+    }
 }
 
 enum ExecCommand {
@@ -863,6 +1177,7 @@ fn parser_fixture_state(binary: &str) -> RusshState {
             .map(str::to_owned)
             .collect(),
         targets: ["term_root"].into_iter().map(str::to_owned).collect(),
+        sftp_root: PathBuf::from("/nonexistent-parser-fixture"),
         clients: Arc::new(std::sync::Mutex::new(Vec::new())),
         commands: Arc::new(std::sync::Mutex::new(Vec::new())),
     }
@@ -1055,7 +1370,13 @@ fn wait_ready_with_host_key(id: u64, label: &str) {
                 field(&snapshot.error_message, snapshot.error_message_len)
             );
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label}: state={} err={} {}",
+            snapshot.state,
+            field(&snapshot.error_code, snapshot.error_code_len),
+            field(&snapshot.error_message, snapshot.error_message_len)
+        );
         thread::sleep(POLL_INTERVAL);
     }
 }
@@ -2524,4 +2845,332 @@ fn real_herdr_native_backend_over_russh_fixture() {
     println!(
         "HERDR_LINKED_CLOSE_SCOPE_OK confirm_close=false pane/group/workspace_refused child_and_unlinked_parent_closed git_paths_preserved"
     );
+}
+
+/// Poll one attachment snapshot until `phase` or a terminal state.
+fn wait_attachment_phase(
+    attachment_id: u64,
+    phase: AttachmentPhase,
+    label: &str,
+) -> AttachmentSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let snapshot = attachment_snapshot(attachment_id).expect("attachment snapshot");
+        if snapshot.phase == phase as u32 {
+            return snapshot;
+        }
+        let terminal = snapshot.phase == AttachmentPhase::Failed as u32
+            || snapshot.phase == AttachmentPhase::Cancelled as u32
+            || (snapshot.phase == AttachmentPhase::Inserted as u32
+                && phase != AttachmentPhase::Inserted);
+        assert!(
+            !terminal,
+            "{label}: attachment reached terminal phase {} with code={} message={}",
+            snapshot.phase,
+            field(&snapshot.error_code, snapshot.error_code_len),
+            field(&snapshot.error_message, snapshot.error_message_len),
+        );
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label}: phase={} bytes={}/{}",
+            snapshot.phase,
+            snapshot.bytes_uploaded,
+            snapshot.size_bytes,
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn wait_attachment_flag(attachment_id: u64, flag: u32, label: &str) -> AttachmentSnapshot {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let snapshot = attachment_snapshot(attachment_id).expect("attachment snapshot");
+        if snapshot.flags & flag == flag {
+            return snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{label}: flag {flag:#x} never appeared; phase={}",
+            snapshot.phase,
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn generated_basename_valid(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("meeterm-") else {
+        return false;
+    };
+    let mut parts = rest.splitn(3, '-');
+    let date = parts.next().unwrap_or_default();
+    let time = parts.next().unwrap_or_default();
+    let tail = parts.next().unwrap_or_default();
+    let (random, extension) = tail
+        .split_once('.')
+        .map_or((tail, None), |(random, ext)| (random, Some(ext)));
+    date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 6
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+        && random.len() == 16
+        && random
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && extension.is_none_or(|ext| {
+            !ext.is_empty()
+                && ext.len() <= 8
+                && ext
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
+
+/// Issue #28 over the real Herdr fixture: SFTP upload on a second channel,
+/// fenced single-line insert, stale-destination rejection, input/read-only
+/// and controller-conflict pending states, and explicit remote deletion —
+/// all against the disposable fixture filesystem and isolated Herdr
+/// processes. The user's own Herdr configuration is never touched.
+#[test]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a real Herdr 0.9.0 binary"]
+fn real_herdr_attachment_upload_insert_and_fence() {
+    assert_eq!(
+        env::var("MEETERM_HERDR_INTEGRATION").ok().as_deref(),
+        Some("1")
+    );
+    let driver = Driver::start();
+    let ssh = FixtureSsh::start(&driver.manifest);
+
+    let id = create_terminal(60, 20).expect("create Herdr attachment terminal");
+    let _guard = TerminalGuard { id };
+    connect_host(id, options(&driver.manifest, &ssh, None)).expect("connect Herdr attachment host");
+    select_herdr_runtime_from_picker(id, "default", "Herdr attachment picker");
+    let initial = wait_session(id, "Herdr attachment session");
+    let root = initial
+        .panes
+        .iter()
+        .find(|pane| pane.selected)
+        .expect("selected Herdr pane")
+        .clone();
+    let workspace: Value = serde_json::from_str(&workspace_snapshot_json(id).unwrap()).unwrap();
+    let workspace_id = entity_id(&workspace["workspaces"][0]["id"]);
+
+    // The picked file is PNG data; the remote extension must come from
+    // magic, and the generated name must match meeterm-<ts>-<16hex>.png.
+    let scratch = std::env::temp_dir().join(format!("meeterm-herdr-att-{}", std::process::id()));
+    fs::create_dir_all(&scratch).expect("create attachment scratch");
+    let local = scratch.join("picked image.png");
+    let mut payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    payload.extend((0..48 * 1024_u32).map(|index| (index % 251) as u8));
+    fs::write(&local, &payload).expect("write picked image");
+    let local_path = local.to_str().expect("UTF-8 local path");
+
+    // Upload over a second SFTP channel on the same SSH connection.
+    let attachment_id = attachment_begin(
+        id,
+        local_path,
+        "picked image.png",
+        payload.len() as u64,
+        None,
+    )
+    .expect("begin Herdr attachment");
+    let uploaded = wait_attachment_phase(attachment_id, AttachmentPhase::Uploaded, "Herdr upload");
+    let remote_path = field(&uploaded.remote_path, uploaded.remote_path_len);
+    let basename = remote_path.rsplit('/').next().expect("remote basename");
+    assert!(
+        remote_path.starts_with("/home/.local/share/meeterm/attachments/meeterm-")
+            && generated_basename_valid(basename)
+            && basename.ends_with(".png"),
+        "unexpected remote attachment path: {remote_path}"
+    );
+    // The file physically exists in the disposable fixture filesystem
+    // with the private file mode.
+    let mirror = Path::new(&driver.manifest.root)
+        .join("sftp-root")
+        .join(remote_path.trim_start_matches('/'));
+    let remote_metadata = fs::metadata(&mirror).expect("remote file in fixture filesystem");
+    assert_eq!(remote_metadata.len() as u64, payload.len() as u64);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(remote_metadata.mode() & 0o777, 0o600, "remote file mode");
+    }
+
+    // Stale-destination rejection: selecting a different pane must not
+    // retarget the insert; the operation stays Uploaded with a reason.
+    create_pane(id, workspace_id).expect("create second Herdr pane");
+    let topology = wait_json(id, "second pane for stale check", |value| {
+        value["terminals"].as_array().is_some_and(|t| t.len() == 2)
+    });
+    let other_pane = topology["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pane| entity_id(&pane["id"]))
+        .find(|pane| *pane != root.pane_id)
+        .expect("the newly created Herdr pane");
+    select_pane(id, other_pane).expect("select other Herdr pane");
+    wait_json(id, "other pane selected", |value| {
+        value["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pane| entity_id(&pane["id"]) == other_pane && pane["selected"] == true)
+    });
+    assert!(
+        attachment_insert(id, attachment_id).is_err(),
+        "insert after destination change must be rejected"
+    );
+    let blocked = attachment_snapshot(attachment_id).expect("blocked snapshot");
+    assert_eq!(blocked.phase, AttachmentPhase::Uploaded as u32);
+    assert_eq!(
+        field(&blocked.error_code, blocked.error_code_len),
+        "destination_changed"
+    );
+
+    // Read-only/input-pending state: hiding the native terminal makes
+    // input unready; insert is held — never sent — and accepted again
+    // once the terminal is visible.
+    select_pane(id, root.pane_id).expect("reselect fenced pane before hide");
+    wait_json(id, "root pane reselected before hide", |value| {
+        value["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pane| entity_id(&pane["id"]) == root.pane_id && pane["selected"] == true)
+    });
+    assert_eq!(
+        meeterm_set_terminal_visible(id, 0),
+        0,
+        "hide Herdr terminal"
+    );
+    wait_json(id, "terminal input unready while hidden", |value| {
+        value["control"]["terminalInputReady"] == false
+    });
+    assert!(
+        attachment_insert(id, attachment_id).is_err(),
+        "insert while input is unready must be held, not sent"
+    );
+    let held = attachment_snapshot(attachment_id).expect("held snapshot");
+    assert_eq!(held.phase, AttachmentPhase::Uploaded as u32);
+    assert_eq!(
+        field(&held.error_code, held.error_code_len),
+        "input_not_ready"
+    );
+    assert_eq!(
+        meeterm_set_terminal_visible(id, 1),
+        0,
+        "show Herdr terminal"
+    );
+    wait_json(id, "terminal input ready again", |value| {
+        value["control"]["terminalInputReady"] == true
+    });
+    // The JSON readiness flag precedes the transport re-bind by a moment;
+    // the operation stays Uploaded while the gate is closed, so retry the
+    // explicit insert briefly instead of racing it.
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    while let Err(error) = attachment_insert(id, attachment_id) {
+        let snapshot = attachment_snapshot(attachment_id).expect("snapshot after failed insert");
+        assert!(
+            Instant::now() < deadline,
+            "insert remote path: {error:?} block={}",
+            field(&snapshot.error_code, snapshot.error_code_len)
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+    let inserted = wait_attachment_phase(attachment_id, AttachmentPhase::Inserted, "Herdr insert");
+    assert_eq!(inserted.phase, AttachmentPhase::Inserted as u32);
+    // The generated path is longer than the pane width: it soft-wraps, so
+    // the echo check runs against the wrap-joined snapshot text.
+    let quoted = format!("'{remote_path}'");
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let snapshot = read_snapshot(root.terminal_id);
+        if snapshot.text.replace('\n', "").contains(&quoted) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for quoted path in Herdr pane"
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+
+    // Explicit remote deletion on the same endpoint; verified by the flag
+    // and by the file disappearing from the fixture filesystem.
+    attachment_delete_remote(id, attachment_id).expect("queue remote delete");
+    let removed = wait_attachment_flag(
+        attachment_id,
+        ATTACHMENT_FLAG_REMOTE_REMOVED,
+        "remote delete",
+    );
+    assert_eq!(removed.phase, AttachmentPhase::Inserted as u32);
+    assert!(
+        !mirror.exists(),
+        "remote file still present after explicit delete: {}",
+        mirror.display()
+    );
+    attachment_dispose(attachment_id).expect("dispose first attachment");
+
+    // Controller conflict: a second operation uploads fine, then an
+    // external controller takes the pane's stream — production goes
+    // read-only/failed; insert is held (the op stays Uploaded) instead of
+    // landing anywhere else.
+    let second_id = attachment_begin(
+        id,
+        local_path,
+        "picked image.png",
+        payload.len() as u64,
+        None,
+    )
+    .expect("begin second attachment");
+    let second_uploaded =
+        wait_attachment_phase(second_id, AttachmentPhase::Uploaded, "second Herdr upload");
+    let second_path = field(
+        &second_uploaded.remote_path,
+        second_uploaded.remote_path_len,
+    );
+    let (mut takeover, takeover_output) = start_external_control(
+        &driver.manifest,
+        "default",
+        &driver.manifest.sessions["default"].terminal_id,
+        true,
+    );
+    let _takeover_frame = takeover_output
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("takeover controller frame");
+    wait_state(id, ConnectionState::Failed, "controller conflict teardown");
+    assert!(
+        attachment_insert(id, second_id).is_err(),
+        "insert while the connection is torn down must fail"
+    );
+    let held = attachment_snapshot(second_id).expect("held snapshot after conflict");
+    assert_eq!(held.phase, AttachmentPhase::Uploaded as u32);
+    assert!(
+        !field(&held.error_code, held.error_code_len).is_empty(),
+        "held attachment must record a pending reason"
+    );
+    // Deletion is endpoint-bound too: with the connection gone it cannot
+    // proceed, and the operation still retains its uploaded file state.
+    assert!(
+        attachment_delete_remote(id, second_id).is_err(),
+        "remote delete without the owning connection must fail"
+    );
+    let still_held = attachment_snapshot(second_id).expect("held snapshot after refused delete");
+    assert_eq!(still_held.phase, AttachmentPhase::Uploaded as u32);
+    stop_child(&mut takeover);
+    attachment_dispose(second_id).expect("dispose held attachment");
+
+    // Reconnect and verify the previously uploaded remote file survived
+    // on the same endpoint (byte identity is the fixture filesystem's own
+    // file — nothing was retransmitted or removed).
+    let second_mirror = Path::new(&driver.manifest.root)
+        .join("sftp-root")
+        .join(second_path.trim_start_matches('/'));
+    assert!(
+        second_mirror.exists(),
+        "remote file should survive the controller conflict: {}",
+        second_mirror.display()
+    );
+    println!("HERDR_ATTACHMENT_OK upload insert stale_reject input_held conflict_held delete");
+    let _ = fs::remove_dir_all(&scratch);
 }

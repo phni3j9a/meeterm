@@ -178,24 +178,45 @@ operation's snapshot rather than failing the connection.
 
 Remote layout: `<realpath(".")>/.local/share/meeterm/attachments/` — the
 SFTP start directory is resolved server-side (no client-side `~`
-assumption), every component lstat-checked and created `0700` with
-symlinks rejected. A `.partial-att-*` staging file written `0600` is
-published by a plain SFTP v3 rename (never an overwrite) as the generated
-name `att-<id>-<millis-hex><ext>` only after `lstat` verifies the staged
-bytes; the picked filename never appears remotely. An explicit absolute
-`remote_dir` may override the base; it gets the same per-component lstat
-walk but keeps its existing modes. Cancellation and failures remove the
-partial best-effort; a verified same-endpoint final file short-circuits a
-later retry without re-sending bytes.
+assumption), `.local`/`.local/share` are created when missing, and the
+meeterm-owned `meeterm`/`attachments` components are created or verified
+`0700` with symlinks rejected. A `.meeterm-partial-*` staging file
+written `0600` is published by a plain SFTP v3 rename (never an
+overwrite) as the generated name
+`meeterm-<YYYYMMDD>-<HHMMSS>-<16 lowercase hex>.<ext>` (`[a-z0-9.-]`,
+extension from the actual PNG/JPEG magic) only after `lstat` verifies the
+staged bytes; the picked filename never appears remotely. An explicit
+`remote_dir` may override the base: clean absolute paths and `~/…`
+(expanded against the server-returned `realpath(".")`, never client-side)
+are accepted; `'`, CR/LF, control characters, `..` and empty components
+are refused as `remote_unsafe_path`. The directory must already exist,
+its final component must not be a symlink, and an exclusive-create probe
+must succeed (`remote_permission_denied` otherwise); its modes are never
+changed. Cancellation and failures remove the partial best-effort; a
+verified same-endpoint final file short-circuits a later retry without
+re-sending bytes.
 
-Remote files persist until `attachment_remove_remote` runs: it deletes
-only the operation's generated names (the published file, its
-`.partial-*` remnant, and the app-private attachments directory when
-empty) on the same authenticated endpoint, then sets the snapshot's
-`remote_removed` flag while keeping the phase — an `inserted` reference
-is not revoked. A user-specified `remote_dir` is never removed, only the
-generated names inside it. Nothing is auto-deleted on insert, cancel,
-dispose, or process exit.
+Remote files persist until `attachment_delete_remote` runs: it deletes
+only the operation's generated names (the published `meeterm-*` file, its
+`.meeterm-partial-*` remnant, and the app-private attachments directory
+when empty) on the same authenticated endpoint owned by the same
+terminal, after re-validating each name against the generated grammar and
+lstat. Verified deletion sets the snapshot's `remote_removed` flag while
+keeping the phase — an `inserted` reference is not revoked. A
+user-specified `remote_dir` is never removed, only the generated names
+inside it. Nothing is auto-deleted on insert, cancel, dispose, or process
+exit; there is no TTL and no list API.
+
+Manual cleanup, if ever needed, is an ordinary shell step on the remote
+host — only the generated names under the app-private directory:
+
+```sh
+rm -f ~/.local/share/meeterm/attachments/meeterm-* \
+      ~/.local/share/meeterm/attachments/.meeterm-partial-*
+rmdir ~/.local/share/meeterm/attachments ~/.local/share/meeterm 2>/dev/null
+```
+
+(`rmdir` fails harmlessly if the directory is not empty.)
 
 `attachment_insert` is a separate explicit step: exactly one single-quoted
 remote-path line through the existing `paste_utf8_at_epoch` fence. Enter is
@@ -250,8 +271,11 @@ python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
 
 The fixture disables SFTP by default so negative-path tests exercise a
 server that rejects the subsystem. `--sftp` adds `Subsystem sftp
-internal-sftp` and exports `MEETERM_SSH_SFTP=1`; the two attachment
-integration targets each require one mode:
+internal-sftp` and exports `MEETERM_SSH_SFTP=1`. `--sftp-delay SECONDS`
+(requires `--sftp`) instead installs an external `sftp-server` behind a
+wrapper that sleeps before `exec`, so SSH_FXP_INIT outlives the
+per-request timeout; it exports the value as `MEETERM_SSH_SFTP_DELAY`.
+The three attachment integration targets each require one mode:
 
 ```sh
 python3 scripts/ssh/fixture.py --sftp -- \
@@ -261,16 +285,24 @@ python3 scripts/ssh/fixture.py --sftp -- \
 python3 scripts/ssh/fixture.py -- \
   cargo test --manifest-path native/meeterm-core/Cargo.toml \
   --test openssh real_openssh_no_sftp_attachment_fails_visibly -- --ignored
+
+python3 scripts/ssh/fixture.py --sftp --sftp-delay 45 -- \
+  cargo test --manifest-path native/meeterm-core/Cargo.toml \
+  --test openssh real_openssh_delayed_sftp_attachment_times_out -- --ignored
 ```
 
 The positive target verifies the full upload (byte equality, `0600` file /
 `0700` directory modes, generated names under
 `.local/share/meeterm/attachments`, rename publish), the one-live-op
 rejection, stale-destination insert rejection and reselect-then-insert
-recovery, single-quoted no-Enter input, explicit remote deletion with the
-phase kept, and cancel/dispose cleanup. The negative target verifies the
-`sftp_unavailable` failure is an attachment-level state that leaves the
-interactive connection `Ready`.
+recovery, single-quoted no-Enter input, `~/` and unsafe `remote_dir`
+handling, read-only-directory `remote_permission_denied`, pane
+responsiveness during a maximum-size upload, explicit remote deletion
+with the phase kept, and cancel/dispose cleanup. The negative target
+verifies the `sftp_unavailable` failure is an attachment-level state that
+leaves the interactive connection `Ready`. The delayed target verifies a
+stalled subsystem start surfaces a retryable `pending`/`timeout` state
+that can still be cancelled without harming the connection.
 
 The Rust integration target exercises the real SSH/tmux/native-terminal path.
 Assertions cover explicit trust and encrypted-key authentication, pane-specific

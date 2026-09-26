@@ -213,9 +213,12 @@ remote path 1行だけを送ります。Enter は送らず、shell command も�
 Codex/Claude が画像を読んだことの acknowledgement ではありません。
 
 remote 側のファイルは `<realpath(".")>/.local/share/meeterm/attachments/` 以下に
-生成名で保存され（picked filename は使いません）、`attachment_remove_remote` の明示
-削除まで残ります。削除対象は operation が生成した名前だけで、同じ SSH endpoint 上の
-SFTP channel から実行します。live operation は接続ごとに同時 1件です。
+生成名 `meeterm-<YYYYMMDD>-<HHMMSS>-<16 hex>.<ext>`（拡張子は画像 magic 由来、
+picked filename は使いません）で保存され、`attachment_delete_remote` の明示削除まで
+残ります。削除対象は operation が生成した名前だけで、同じ SSH endpoint を持つ同一
+terminal の SFTP channel から実行します。live operation は接続ごとに同時 1件です。
+自動削除・TTL はなく、手動削除は既定 dir 配下の `meeterm-*` / `.meeterm-partial-*`
+を `rm -f` するだけです（SSH.md 参照）。
 
 ## lifecycle と PC handoff
 

@@ -255,8 +255,8 @@ picked local file (adapter-owned, read-only for Rust)
   ↓ begin: validate + fence destination + enqueue on the actor queue
 actor opens a second SSH session channel → "sftp" subsystem
   ↓ detached transfer task (never the interactive command loop)
-<realpath(".")>/.local/share/meeterm/attachments/att-<id>-<millis><ext>
-                                          (dir 0700, file 0600)
+<realpath(".")>/.local/share/meeterm/attachments/
+    meeterm-<YYYYMMDD>-<HHMMSS>-<16hex>.<ext>   (dir 0700, file 0600)
   ↓ explicit insert request only
 one single-quoted remote-path line → paste_utf8_at_epoch → pane input
   ↓ the user reviews and presses Enter — the core never sends it
@@ -266,14 +266,21 @@ Only one attachment operation per connection is live at a time
 (`begin` while one is live is rejected; `failed`/`cancelled` records do
 not count). The remote directory is resolved from the SFTP start
 directory (`realpath(".")`), never a client-side `~` guess; every
-component is lstat-checked (symlinks rejected) and created `0700`. A
-user-specified absolute `remote_dir` is validated and lstat-walked but
-keeps its own modes. Remote file names are generated — the picked
-filename never appears remotely. Uploads persist until an explicit
-`attachment_remove_remote` deletes only the operation's generated names
-(file, `.partial-*` remnant, empty app-private dir) on the same
-authenticated endpoint; nothing is auto-deleted on insert, cancel,
-dispose, or exit.
+component is lstat-checked (symlinks rejected) and the meeterm-owned
+`meeterm`/`attachments` components are created or verified `0700`. A
+user-specified `remote_dir` accepts a clean absolute path or `~/…`
+(server-side expansion only) — `'`, CR/LF, control characters, `..` and
+empty components fail `remote_unsafe_path`; it must exist, must not end
+in a symlink, and must pass an exclusive-create writability probe
+(`remote_permission_denied`), keeping its own modes. Remote file names
+are generated — `meeterm-<YYYYMMDD>-<HHMMSS>-<16 lowercase hex>.<ext>`
+with the extension taken from the image magic; the picked filename never
+appears remotely. Uploads persist until an explicit
+`attachment_delete_remote` deletes only the operation's generated names
+(`meeterm-*` file, `.meeterm-partial-*` remnant, empty app-private dir)
+on the same authenticated endpoint owned by the same terminal; nothing is
+auto-deleted on insert, cancel, dispose, or exit. Manual cleanup is an
+ordinary `rm -f` of those generated names — see SSH.md.
 
 The destination fence captured at `begin` binds only stable identities:
 connection generation, the session operation epoch, the remote pane ID, the
@@ -285,8 +292,9 @@ closed with a recorded pending reason (`destination_changed`,
 `attachment_retry_upload` re-fences the same pane identity on the *current*
 actor.
 
-The upload writes a private `.partial-*` staging file and publishes the final
-name by rename only after an `lstat` byte/metadata check; cancellation removes
+The upload writes a private `.meeterm-partial-*` staging file and publishes
+the final name by rename only after an `lstat` byte/metadata check;
+cancellation removes
 the partial best-effort, and a delayed completion cannot mutate a cancelled
 operation. An SFTP-refusing server, a missing subsystem, or a dead actor
 surfaces as an operation-level `failed`/`pending` snapshot — never as a

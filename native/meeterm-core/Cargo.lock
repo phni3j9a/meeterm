@@ -980,6 +980,7 @@ dependencies = [
  "alacritty_terminal",
  "base64",
  "jni",
+ "rand",
  "russh",
  "russh-sftp",
  "serde",

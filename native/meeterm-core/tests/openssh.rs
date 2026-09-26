@@ -20,14 +20,14 @@ use meeterm_core::workspace::{
 use meeterm_core::{
     ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED, ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentPhase,
     AttachmentSnapshot, AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState,
-    PaneSnapshot, SessionSnapshot, SpecialKey, attachment_begin, attachment_cancel,
-    attachment_dispose, attachment_insert, attachment_remove_remote, attachment_snapshot,
-    close_pane, close_workspace, connect_host, connection_snapshot, create_pane, create_runtime,
-    create_terminal, create_workspace, destroy_terminal, disconnect_terminal, meeterm_commit_utf8,
-    meeterm_input_commit_count, meeterm_resize_terminal, meeterm_respond_host_key,
-    meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size, reconnect_terminal,
-    refresh_terminal, rename_pane, rename_workspace, runtime_discovery_snapshot, select_pane,
-    select_runtime, send_bytes, session_snapshot,
+    MAX_ATTACHMENT_BYTES, PaneSnapshot, SessionSnapshot, SpecialKey, attachment_begin,
+    attachment_cancel, attachment_delete_remote, attachment_dispose, attachment_insert,
+    attachment_snapshot, close_pane, close_workspace, connect_host, connection_snapshot,
+    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
+    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
+    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
+    runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
 };
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1438,6 +1438,36 @@ fn wait_for_attachment_phase(
     }
 }
 
+/// Generated-name grammar: `meeterm-<8 digits>-<6 digits>-<16 lower hex>`
+/// plus an optional `.<lower-alnum>` extension.
+fn generated_name_valid(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("meeterm-") else {
+        return false;
+    };
+    let mut parts = rest.splitn(3, '-');
+    let date = parts.next().unwrap_or_default();
+    let time = parts.next().unwrap_or_default();
+    let tail = parts.next().unwrap_or_default();
+    let (random, extension) = tail
+        .split_once('.')
+        .map_or((tail, None), |(random, ext)| (random, Some(ext)));
+    date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 6
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+        && random.len() == 16
+        && random
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && extension.is_none_or(|ext| {
+            !ext.is_empty()
+                && ext.len() <= 8
+                && ext
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
+
 /// Poll one attachment until `flag` appears in the snapshot flags.
 fn wait_for_attachment_flag(attachment_id: u64, flag: u32, label: &str) -> AttachmentSnapshot {
     let deadline = Instant::now() + WAIT_TIMEOUT;
@@ -1478,13 +1508,14 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     prepare_pane(&pane, "attachment pane shell");
 
     // The picked file must stay readable and unchanged for the operation's
-    // lifetime; its name must never leak into the remote path.
+    // lifetime; its name must never leak into the remote path. The file is
+    // named `.jpg` but carries PNG magic — the remote extension must come
+    // from the data, not the picked name.
     let scratch = std::env::temp_dir().join(format!("meeterm-att-src-{}", std::process::id()));
     fs::create_dir_all(&scratch).expect("create attachment scratch directory");
     let local = scratch.join("picked image.jpg");
-    let payload: Vec<u8> = (0..96 * 1024_u32)
-        .map(|index| (index % 251) as u8)
-        .collect();
+    let mut payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    payload.extend((0..96 * 1024_u32).map(|index| (index % 251) as u8));
     fs::write(&local, &payload).expect("write picked image");
     let local_path = local.to_str().expect("UTF-8 local path");
 
@@ -1507,12 +1538,23 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     assert_eq!(uploaded.bytes_uploaded, payload.len() as u64);
     let remote_path = connection_string(&uploaded.remote_path, uploaded.remote_path_len);
     assert!(
-        remote_path.contains("/.local/share/meeterm/attachments/att-"),
+        remote_path.contains("/.local/share/meeterm/attachments/meeterm-"),
         "unexpected remote attachment path: {remote_path}"
     );
     assert!(
         !remote_path.contains("picked"),
         "picked filename leaked into remote path: {remote_path}"
+    );
+    // The basename is generated: meeterm-<YYYYMMDD>-<HHMMSS>-<16 hex>,
+    // extension decided by magic bytes (PNG data under a .jpg name).
+    let basename = remote_path.rsplit('/').next().expect("remote basename");
+    assert!(
+        generated_name_valid(basename),
+        "remote basename outside generated grammar: {basename}"
+    );
+    assert!(
+        basename.ends_with(".png"),
+        "extension must come from magic bytes, not the picked name: {basename}"
     );
 
     // Byte equality and restrictive permissions on the remote side.
@@ -1587,27 +1629,31 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED
     );
     // Exactly one single-quoted line lands in the pane input; Enter is
-    // never sent, so the shell echoes the line without executing it.
+    // never sent, so the shell echoes the line without executing it. The
+    // generated path is longer than the 80-column pane: it soft-wraps, so
+    // the checks run against the wrap-joined viewport text.
     let quoted = format!("'{remote_path}'");
-    let shown = wait_for_pane_text(&pane, &quoted, "quoted remote path echo");
-    let text = snapshot_text(&shown);
-    let echoed = text
-        .lines()
-        .rev()
-        .find(|line| line.contains(&quoted))
-        .expect("inserted line in pane");
+    let shown = wait_for_pane_snapshot(&pane, "quoted remote path echo", |snapshot| {
+        snapshot_text(snapshot).replace('\n', "").contains(&quoted)
+    });
+    let text = snapshot_text(&shown).replace('\n', "");
     assert!(
         !text.contains("Permission denied") && !text.contains("not found"),
         "the inserted path must not have been executed:\n{text}"
     );
     assert!(
-        echoed.trim_end().ends_with(&quoted),
-        "insert must append one path line without Enter, got: {echoed:?}"
+        text.trim_end().ends_with(&quoted),
+        "insert must append one path line without Enter, got: {text:?}"
     );
 
     // Explicit remote deletion removes only the generated names; verified
     // removal is reported by the flag while the inserted phase is kept.
-    attachment_remove_remote(attachment_id).expect("queue remote delete");
+    // The call is owner-bound: another terminal id cannot delete.
+    assert!(
+        attachment_delete_remote(id + 10_000, attachment_id).is_err(),
+        "delete from a foreign terminal id must be rejected"
+    );
+    attachment_delete_remote(id, attachment_id).expect("queue remote delete");
     let removed = wait_for_attachment_flag(
         attachment_id,
         ATTACHMENT_FLAG_REMOTE_REMOVED,
@@ -1621,7 +1667,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         &format!(
             "test -e '{remote_path}' && echo FILE_PRESENT || echo FILE_GONE; \
              find \"$HOME/.local/share/meeterm/attachments\" \
-                -name '.partial-att-{attachment_id}-*' 2>/dev/null | wc -l"
+                -name '.meeterm-partial-{basename}' 2>/dev/null | wc -l"
         ),
         "remote file deleted",
     );
@@ -1636,7 +1682,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "remote partial leaked"
     );
     // Idempotent: a second remove while already flagged returns success.
-    attachment_remove_remote(attachment_id).expect("idempotent remote delete");
+    attachment_delete_remote(id, attachment_id).expect("idempotent remote delete");
     attachment_dispose(attachment_id).expect("dispose first attachment");
 
     // An explicit remote directory is validated component-by-component:
@@ -1656,11 +1702,8 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         Some("/tmp/meeterm-att-link/inside"),
     )
     .expect("begin symlinked-dir attachment");
-    let symlinked = wait_for_attachment_phase(
-        symlink_id,
-        AttachmentPhase::Failed,
-        "symlink dir rejection",
-    );
+    let symlinked =
+        wait_for_attachment_phase(symlink_id, AttachmentPhase::Failed, "symlink dir rejection");
     assert_eq!(
         connection_string(&symlinked.error_code, symlinked.error_code_len),
         "remote_unsafe_path"
@@ -1671,6 +1714,151 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "rm -f /tmp/meeterm-att-link; rm -rf /tmp/meeterm-att-target",
         "remote symlink cleanup",
     );
+
+    // `~/` expands against the SFTP realpath(".") result — never a
+    // client-side home guess. The target dir must already exist; we never
+    // create or chmod an explicit directory.
+    run_remote_tmux(
+        &fixture,
+        "mkdir -p \"$HOME/meeterm-att-tilde\" && chmod 0700 \"$HOME/meeterm-att-tilde\"",
+        "create remote tilde dir",
+    );
+    let tilde_id = attachment_begin(
+        id,
+        local_path,
+        "picked image.jpg",
+        payload.len() as u64,
+        Some("~/meeterm-att-tilde"),
+    )
+    .expect("begin tilde-dir attachment");
+    let tilde_uploaded =
+        wait_for_attachment_phase(tilde_id, AttachmentPhase::Uploaded, "tilde-dir upload");
+    let tilde_path = connection_string(&tilde_uploaded.remote_path, tilde_uploaded.remote_path_len);
+    let tilde_base = tilde_path.rsplit('/').next().expect("tilde basename");
+    assert!(
+        tilde_path.contains("/meeterm-att-tilde/meeterm-") && generated_name_valid(tilde_base),
+        "tilde-expanded remote path: {tilde_path}"
+    );
+    assert!(
+        !tilde_path.starts_with("~/"),
+        "remote path must be absolute after server-side expansion: {tilde_path}"
+    );
+    attachment_delete_remote(id, tilde_id).expect("queue tilde remote delete");
+    wait_for_attachment_flag(
+        tilde_id,
+        ATTACHMENT_FLAG_REMOTE_REMOVED,
+        "tilde remote delete",
+    );
+    attachment_dispose(tilde_id).expect("dispose tilde attachment");
+    run_remote_tmux(
+        &fixture,
+        "rm -rf \"$HOME/meeterm-att-tilde\"",
+        "remote tilde cleanup",
+    );
+
+    // Path characters that could break the single-quoted insertion line
+    // are rejected at transfer validation, before a line can exist.
+    for (index, dir) in [
+        "/tmp/meeterm-att-'quote",
+        "/tmp/meeterm-att-..\nnewline",
+        "/tmp/meeterm-att-\u{1}control",
+        "/tmp/meeterm-att/../escape",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let unsafe_id = attachment_begin(
+            id,
+            local_path,
+            "picked image.jpg",
+            payload.len() as u64,
+            Some(dir),
+        )
+        .unwrap_or_else(|_| panic!("begin unsafe-dir attachment #{index}"));
+        let failed = wait_for_attachment_phase(
+            unsafe_id,
+            AttachmentPhase::Failed,
+            "unsafe remote dir rejection",
+        );
+        assert_eq!(
+            connection_string(&failed.error_code, failed.error_code_len),
+            "remote_unsafe_path",
+            "remote dir {dir:?} must fail unsafe"
+        );
+        attachment_dispose(unsafe_id).expect("dispose unsafe-dir attachment");
+    }
+
+    // A read-only explicit directory fails the exclusive-create writability
+    // probe with remote_permission_denied.
+    run_remote_tmux(
+        &fixture,
+        "mkdir -p \"$HOME/meeterm-att-ro\" && chmod 0555 \"$HOME/meeterm-att-ro\"",
+        "create read-only remote dir",
+    );
+    let denied_id = attachment_begin(
+        id,
+        local_path,
+        "picked image.jpg",
+        payload.len() as u64,
+        Some("~/meeterm-att-ro"),
+    )
+    .expect("begin read-only-dir attachment");
+    let denied = wait_for_attachment_phase(
+        denied_id,
+        AttachmentPhase::Failed,
+        "read-only dir rejection",
+    );
+    assert_eq!(
+        connection_string(&denied.error_code, denied.error_code_len),
+        "remote_permission_denied",
+        "read-only explicit dir must fail remote_permission_denied: {}",
+        connection_string(&denied.error_message, denied.error_message_len),
+    );
+    attachment_dispose(denied_id).expect("dispose denied attachment");
+    run_remote_tmux(
+        &fixture,
+        "chmod 0700 \"$HOME/meeterm-att-ro\" && rm -rf \"$HOME/meeterm-att-ro\"",
+        "remote read-only cleanup",
+    );
+
+    // The detached SFTP task must not starve the interactive loop: pane
+    // input echoes back within the bounded deadline while a large upload
+    // is still streaming on the same connection. The payload uses the
+    // product maximum so the transfer outlasts the echo round trip.
+    send_raw_retry(pane.terminal_id, b"\x03", "clear inserted input line");
+    let responsive = scratch.join("picked large.png");
+    let responsive_payload = vec![0x5A_u8; MAX_ATTACHMENT_BYTES as usize];
+    fs::write(&responsive, &responsive_payload).expect("write large picked image");
+    let responsive_path = responsive.to_str().expect("UTF-8 large path");
+    let responsive_id = attachment_begin(
+        id,
+        responsive_path,
+        "picked large.png",
+        responsive_payload.len() as u64,
+        None,
+    )
+    .expect("begin large attachment");
+    let live_marker = format!("MEETERM_ATT_LIVE_{}", std::process::id());
+    send_line_retry(
+        pane.terminal_id,
+        &format!("printf '{}\\n'", printf_octal(&live_marker)),
+        "pane input during large upload",
+    );
+    wait_for_pane_text(&pane, &live_marker, "pane responsive during large upload");
+    let during = attachment_snapshot(responsive_id).expect("mid-upload snapshot");
+    assert_ne!(
+        during.phase,
+        AttachmentPhase::Uploaded as u32,
+        "max-size upload finished before the input echo — cannot prove overlap"
+    );
+    wait_for_attachment_phase(responsive_id, AttachmentPhase::Uploaded, "large upload");
+    attachment_delete_remote(id, responsive_id).expect("queue large remote delete");
+    wait_for_attachment_flag(
+        responsive_id,
+        ATTACHMENT_FLAG_REMOTE_REMOVED,
+        "large remote delete",
+    );
+    attachment_dispose(responsive_id).expect("dispose large attachment");
 
     // Cancelling a second operation discards its delayed completion; the
     // remote partial namespace is cleaned either way.
@@ -1695,12 +1883,8 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     sleep(Duration::from_millis(1500));
     let leftovers = run_remote_tmux(
         &fixture,
-        &format!(
-            "find \"$HOME/.local/share/meeterm\" \
-                \\( -name '.partial-att-{cancelled_id}-*' \
-                -o -name '.partial-att-{attachment_id}-*' \\) \
-                2>/dev/null | wc -l"
-        ),
+        "find \"$HOME/.local/share/meeterm\" \
+            -name '.meeterm-partial-meeterm-*' 2>/dev/null | wc -l",
         "no leftover remote partial",
     );
     assert_eq!(
@@ -1709,15 +1893,13 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "remote partial file leaked"
     );
     // Fixture hygiene: remove only the names this test generated — the
-    // shared attachments directory may hold other users' files.
+    // shared attachments directory may hold other workers' files.
     run_remote_tmux(
         &fixture,
         &format!(
             "find \"$HOME/.local/share/meeterm/attachments\" -maxdepth 1 \
-                \\( -name 'att-{attachment_id}-*' \
-                -o -name '.partial-att-{attachment_id}-*' \
-                -o -name 'att-{cancelled_id}-*' \
-                -o -name '.partial-att-{cancelled_id}-*' \\) \
+                \\( -name '{basename}' \
+                -o -name '.meeterm-partial-{basename}' \\) \
                 -delete 2>/dev/null || true"
         ),
         "fixture attachment cleanup",
@@ -1773,6 +1955,87 @@ fn real_openssh_no_sftp_attachment_fails_visibly() {
     );
     wait_for_pane_text(&pane, marker, "pane alive after failed attachment");
     attachment_dispose(attachment_id).expect("dispose failed attachment");
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+#[ignore = "requires python3 scripts/ssh/fixture.py --sftp --sftp-delay 45 for a stalled SFTP init"]
+fn real_openssh_delayed_sftp_attachment_times_out() {
+    assert_eq!(
+        env::var("MEETERM_SSH_SFTP").ok().as_deref(),
+        Some("1"),
+        "timeout attachment test requires the fixture started with --sftp"
+    );
+    let delay: f64 = env::var("MEETERM_SSH_SFTP_DELAY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0);
+    assert!(
+        delay >= 40.0,
+        "timeout attachment test requires --sftp-delay >= 40 (REQUEST_TIMEOUT is 30s), got {delay}"
+    );
+    let fixture = FixtureConfig::from_environment();
+    create_fixture_tmux_session(&fixture, "meeterm");
+    let id = create_terminal(80, 24).expect("create SSH terminal");
+    let _guard = TerminalGuard { id };
+
+    connect_host_and_select_meeterm(id, &fixture, "delayed-sftp attachment selection");
+    let initial = wait_for_session(id, 1, "attachment session");
+    let pane = initial.panes.first().expect("attachment pane").clone();
+    select_pane(id, pane.pane_id).expect("select attachment pane");
+    wait_for_selected_pane(id, pane.pane_id, "select attachment pane");
+
+    let scratch = std::env::temp_dir().join(format!("meeterm-att-timeout-{}", std::process::id()));
+    fs::create_dir_all(&scratch).expect("create attachment scratch directory");
+    let local = scratch.join("picked.png");
+    let payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+    fs::write(&local, &payload).expect("write picked image");
+    let local_path = local.to_str().expect("UTF-8 local path");
+
+    // The fixture's subsystem wrapper sleeps before exec'ing sftp-server,
+    // so SSH_FXP_INIT outlives the per-request timeout. The operation must
+    // surface a retryable Pending(timeout), not crash the connection.
+    let attachment_id = attachment_begin(id, local_path, "picked.png", payload.len() as u64, None)
+        .expect("begin delayed-sftp attachment");
+    // The init timeout lands at ~30s — beyond the shared WAIT_TIMEOUT —
+    // so poll with a longer, still-bounded deadline.
+    let deadline = Instant::now() + Duration::from_secs(75);
+    let stalled = loop {
+        let snapshot = attachment_snapshot(attachment_id).expect("attachment snapshot");
+        if snapshot.phase == AttachmentPhase::Pending as u32 {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for stalled SFTP init: phase={}, code={} message={}",
+            snapshot.phase,
+            connection_string(&snapshot.error_code, snapshot.error_code_len),
+            connection_string(&snapshot.error_message, snapshot.error_message_len),
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(
+        connection_string(&stalled.error_code, stalled.error_code_len),
+        "timeout",
+        "stalled SFTP init must surface a timeout reason: {}",
+        connection_string(&stalled.error_message, stalled.error_message_len),
+    );
+
+    // The stalled operation is recoverable: cancel discards it and the
+    // interactive pane keeps answering input.
+    attachment_cancel(attachment_id).expect("cancel stalled attachment");
+    wait_for_attachment_phase(attachment_id, AttachmentPhase::Cancelled, "cancel stalled");
+    attachment_dispose(attachment_id).expect("dispose stalled attachment");
+    let connection = connection_snapshot(id).expect("connection after stalled attachment");
+    assert_eq!(connection.state, ConnectionState::Ready as u32);
+    prepare_pane(&pane, "timeout pane shell");
+    let marker = "MEETERM_TIMEOUT_ALIVE_9C42";
+    send_line_retry(
+        pane.terminal_id,
+        &format!("printf '{}\\n'", printf_octal(marker)),
+        "pane alive after stalled attachment",
+    );
+    wait_for_pane_text(&pane, marker, "pane alive after stalled attachment");
     let _ = fs::remove_dir_all(&scratch);
 }
 

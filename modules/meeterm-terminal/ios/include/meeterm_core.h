@@ -282,8 +282,9 @@ typedef struct meeterm_attachment_snapshot {
 
 /* Opaque positive attachment id; zero = synchronously rejected.
  * `remote_dir` is an optional explicit remote directory (clean absolute
- * path); NULL/0 selects the app-private default under the SFTP start dir
- * (~/.local/share/meeterm/attachments). */
+ * or ~/-prefixed path expanded against realpath(".")); NULL/0 selects the
+ * app-private default under the SFTP start dir
+ * (.local/share/meeterm/attachments). */
 uint64_t meeterm_attachment_begin(
   uint64_t terminal_id,
   const uint8_t *local_path,
@@ -300,11 +301,12 @@ int32_t meeterm_attachment_insert(uint64_t terminal_id, uint64_t attachment_id);
 /* Cancels in-flight work and discards delayed completion idempotently. */
 int32_t meeterm_attachment_cancel(uint64_t attachment_id);
 /* Drops the operation record, cancelling active work first; remote files
- * are never auto-deleted — see meeterm_attachment_remove_remote. */
+ * are never auto-deleted — see meeterm_attachment_delete_remote. */
 int32_t meeterm_attachment_dispose(uint64_t attachment_id);
-/* Explicit remote deletion of only this operation's generated names, on
- * the same authenticated SSH endpoint. Idempotent; the phase is kept. */
-int32_t meeterm_attachment_remove_remote(uint64_t attachment_id);
+/* Explicit remote deletion of only this operation's generated
+ * meeterm-* / .meeterm-partial-* names, on the same authenticated SSH
+ * endpoint owned by terminal_id. Idempotent; the phase is kept. */
+int32_t meeterm_attachment_delete_remote(uint64_t terminal_id, uint64_t attachment_id);
 /* Poll: fills one complete sanitized snapshot; negative = unknown id. */
 int32_t meeterm_attachment_snapshot(
   uint64_t attachment_id,
