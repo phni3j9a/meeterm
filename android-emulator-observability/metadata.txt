@@ -1,14 +1,11 @@
-commit=18141417916d54d2139cd1a82d73b419fc12a8c8
+commit=bdd83d55ed0fe3053cc4a88ef48eb44733ea46c2
 branch=issue-28-image-attachments
-suite=android-focused-issue28-fp25-fp26
-result=passed
-fresh_build=yes
+suite=focused-issue28-fp027
+result=pass
+date=2026-09-26T22:12Z
 unit_tests=66/66
 attachment_routes=11/11
-emulator=meeterm_api36 api=36 x86_64 headless
-node=v24.19.0
-rustc=1.96.0
-gradle=9.3.1
-ndk=27.1.12297006
-fixture=fixture.py --sftp --sftp-delay 12 (port 45821)
-date=2026-09-26
+live_e2e=upload->insert(unsent)->delete PASS
+fp027=cancel->gated-cleanup->re-enable PASS
+fixture_sftp_delay=12s
+node=24.19.0 (blueprint 22.22.2)

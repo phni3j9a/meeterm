@@ -1,78 +1,27 @@
-meeterm Issue #28 focused re-check — FP-025 (retry->cancel)
-===========================================================
-commit=18141417916d54d2139cd1a82d73b419fc12a8c8
-branch=issue-28-image-attachments (PR #43 head; FP-025 + FP-026 integrated)
-suite=android-focused (NOT the full/standard/ssh suites)
-result=passed
-fresh_build=yes
-date=2026-09-26 (UTC)
+issue-28 focused re-check
+commit: bdd83d55ed0fe3053cc4a88ef48eb44733ea46c2
+branch: issue-28-image-attachments (PR #43)
+date: 2026-09-26
 
-Scope
------
-1. npm ci: pass
-2. CNG fresh: pass — rm -rf android/ && NODE_ENV=production
-   EXPO_PUBLIC_MEETERM_SMOKE=1 npx expo prebuild --platform android
-   --non-interactive --no-install --clean
-3. Gradle release build: pass — :app:assembleRelease (~2m21s, 668 tasks;
-   Rust core arm64-v8a + x86_64, -PmeetermRustProfile=release)
-4. Kotlin unit tests: :meeterm-terminal:testReleaseUnitTest 66/66 pass, 0
-   failures (AttachmentLimitsTest + AttachmentOperationTest included)
-5. Emulator/install/launch: pass — AVD meeterm_api36 headless
-   (sdk_gphone64_x86_64, api=36, x86_64); install -r OK; smoke gates
-   nativeReady + first frame + process alive all pass
-   (terminal.png, logcat.txt sanitized)
-6. Attachment fixture routes: 11/11 captured via
-   meeterm://smoke?screen=attachment-* (force-stop -> am start -> bounded
-   uiautomator wait -> screencap). Seeded presentation captures only —
-   they do not prove picker/normalize/upload behavior:
-     attachment-choose.png      attachment-ready.png
-     attachment-uploading.png   attachment-pending.png
-     attachment-uploaded.png    attachment-inserted.png
-     attachment-failed.png      attachment-cancelled.png
-     attachment-deleted.png     attachment-error.png
-     attachment-blocked.png
-7. Live E2E (fixture sshd --sftp --sftp-delay 12 on port 45821, real tmux
-   session "meeterm", workspace sh / terminal devin-box):
-   connect (key auth + host key already trusted) -> runtime picker ->
-   tmux runtime meeterm -> workspace sh -> terminal Ready ->
-   Attach image -> Choose from files (SAF/DocumentsUI) -> fp25_e2e.png
-   (synthetic 320x200 PNG) -> normalized preview 320x200 PNG 1KB
-   (f25-e2e-normalized.png) -> Upload -> Uploading
-   (f25-e2e-uploading.png) -> Uploaded (f25-e2e-uploaded.png; remote file
-   verified present on fixture host under
-   ~/.local/share/meeterm/attachments/meeterm-20260926-*-*.png) ->
-   sheet closed, toolbar visible (f25-e2e-sheet-closed-toolbar.png) ->
-   toolbar Insert attachment -> Inserting… (f25-e2e-inserting.png) ->
-   Inserted (f25-e2e-inserted.png) -> input line holds '<absolute path>'
-   UNSENT (f25-e2e-input-quoted-path.png; confirmed via
-   tmux capture-pane — no Enter, no command executed) ->
-   Delete from server -> remote file gone (f25-e2e-deleted.png;
-   attachment dir absent on fixture host afterwards).
-   SAF picker capture: f25-saf-picker.png.
-   Incidental: an earlier stray-tap typed into the Remote directory field
-   and the destination_changed guard correctly refused the retarget —
-   captured as f25-rc-destination-guard.png (expected product behavior).
-8. FP-025 retry->cancel (drivable via fixture --sftp-delay 12; the app's
-   SFTP_LAUNCH_TIMEOUT is 15s so each SFTP subsystem request exposes a
-   ~12s in-flight window):
-   Upload -> killed the sftp-delay.sh wrapper + its `sleep 12` child
-   mid-window -> channel EOF -> op lands PENDING
-   ("Upload waiting — the connection was replaced; retry on the current
-   one") with Retry upload + Cancel upload (f25-rc-failed.png) ->
-   Retry upload tapped -> retry accepted; at ~+2s the sheet shows the
-   Uploading phase WITH "Cancel upload" tappable
-   (f25-rc-retry-running.png) -> Cancel tapped at ~+4.2s -> terminal
-   state "Upload cancelled — The transfer was stopped; nothing was
-   inserted into the terminal." with Upload again / Delete from server /
-   Discard (f25-rc-cancelled.png). Fixture host shows no remote file
-   (attachment dir absent) — the cancel prevented any upload.
-   Verified once, live, no faked captures.
-9. Evidence: pushed to evidence/android-20260926 (orphan finalize flow).
-   Sanitized: no APK, no credentials/keys, synthetic images only.
-
-Environment notes
------------------
-node v24.19.0 (blueprint pins 22.22.2 — standing deviation, reported);
-gradle 9.3.1; NDK 27.1.12297006; rustc 1.96.0; JAVA_HOME temurin-17.
-fixture: scripts/ssh/fixture.py --env-file /home/ubuntu/fx1.env --sftp
---sftp-delay 12 (port 45821, alt 35771); ADB emulator-5554 adb root OK.
+scope: focused re-check (FP-025+026+027) — no full/standard/ssh suites
+1. npm ci: PASS
+2. fresh CNG (prebuild --platform android --non-interactive --no-install --clean): PASS
+3. Gradle assembleRelease: PASS (~2m15s)
+4. :meeterm-terminal:testReleaseUnitTest: PASS 66/66, 0 failures
+5. emulator boot / install / launch / nativeReady / first frame / process alive: PASS (terminal.png, logcat.txt sanitized)
+6. attachment fixture routes: 11/11 captured (seeded presentation captures only)
+7. live E2E on fixture sshd --sftp --sftp-delay 12 + real tmux: PASS
+   SAF pick fp25_e2e.png -> normalized preview -> Upload -> uploading (12s SFTP-delay window)
+   -> Uploaded (remote file verified on host) -> close sheet -> toolbar Insert attachment
+   -> Inserting -> Inserted -> '<absolute path>' UNSENT in pane (tmux capture-pane)
+   -> Delete from server -> remote file gone (dir absent)
+8. FP-027 cancel->cleanup->re-enable: PASS (one pass, live)
+   fresh attach -> Upload -> uploading + Cancel upload at +4.0s -> Cancel tapped
+   -> +2.0s 'Upload cancelled' while remote cleanup (a delayed SFTP remove job) still in flight:
+      actions gated — Discard/Delete-from-server enabled=false (jobInFlight hold)
+   -> +9.9s cleanup finished: Discard/Delete/Upload-again enabled=true, sheet never closed
+   remote host: no leftover remote file after cancel
+fixture: /home/ubuntu/fx1.env port 45821 alt 35771 (sftp + sftp-delay 12)
+note: 'Upload again' button's enabled flag matched only its inner text node; the
+  Pressable (desc 'Upload to server') shares disabled={busy} — visible dimming in
+  f27-cancelled-gated.png vs solid in f27-cancelled-enabled.png.
