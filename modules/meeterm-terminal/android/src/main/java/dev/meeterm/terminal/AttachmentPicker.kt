@@ -15,8 +15,9 @@ import java.util.concurrent.atomic.AtomicLong
  * System pickers for the attachment flow.
  *
  * `photos` goes through the photo picker (`PickVisualMedia`, image-only);
- * `files` goes through the document picker (`OpenDocument`/`GetContent` with
- * `image/*`). Either way only a Uri comes back — the chosen bytes are then
+ * `files` goes through the document picker (`OpenDocument`/`GetContent`
+ * restricted to the image MIME family). Either way only a Uri comes back —
+ * the chosen bytes are then
  * staged by [AttachmentStore] with its own magic checks.
  */
 internal class AttachmentPicker(
@@ -45,34 +46,37 @@ internal class AttachmentPicker(
       Source.FILES -> OpenImageDocumentContract()
     }
     var launcher: ActivityResultLauncher<Any?>? = null
-    launcher = registry.register<Any?, Uri?>(key, contract) { uri ->
-      val active = launcher
-      launcher = null
-      active?.unregister()
-      if (uri == null) {
-        promise.resolve(AttachmentResults.canceled())
-        return@register
+    val registered: ActivityResultLauncher<Any?> =
+      registry.register<Any?, Uri?>(key, contract) { uri ->
+        val active = launcher
+        launcher = null
+        active?.unregister()
+        if (uri == null) {
+          promise.resolve(AttachmentResults.canceled())
+          return@register
+        }
+        when (val staged = store.stageFromUri(uri, store.newStagingFileName())) {
+          is AttachmentStore.StageCopy.Ok -> promise.resolve(
+            AttachmentResults.picked(staged.fileName, staged.byteCount),
+          )
+          is AttachmentStore.StageCopy.Rejected -> promise.resolve(
+            AttachmentResults.error(
+              staged.errorCode,
+              if (staged.errorCode == AttachmentLimits.ERROR_INPUT_TOO_LARGE) {
+                "The image is too large to attach."
+              } else {
+                "The image could not be copied into app storage."
+              },
+            ),
+          )
+        }
       }
-      when (val staged = store.stageFromUri(uri, store.newStagingFileName())) {
-        is AttachmentStore.StageCopy.Ok -> promise.resolve(
-          AttachmentResults.picked(staged.fileName, staged.byteCount),
-        )
-        is AttachmentStore.StageCopy.Rejected -> promise.resolve(
-          AttachmentResults.error(
-            staged.errorCode,
-            if (staged.errorCode == AttachmentLimits.ERROR_INPUT_TOO_LARGE) {
-              "The image is too large to attach."
-            } else {
-              "The image could not be copied into app storage."
-            },
-          ),
-        )
-      }
-    }
+    launcher = registered
     try {
-      launcher.launch(null)
+      registered.launch(null)
     } catch (e: RuntimeException) {
-      launcher.unregister()
+      launcher = null
+      registered.unregister()
       promise.resolve(
         AttachmentResults.error(
           AttachmentLimits.ERROR_IO,

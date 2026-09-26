@@ -170,8 +170,8 @@ final class AttachmentController {
         "message": "",
       ]
     }
-    let preview = active.prepared?.fileName
-      .flatMap { try? requireStore().previewUri($0) } ?? ""
+    let preview = active.prepared
+      .flatMap { try? requireStore().previewUri($0.fileName) } ?? ""
     return active.snapshot(previewUri: preview)
   }
 
