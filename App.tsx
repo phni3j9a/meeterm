@@ -2866,20 +2866,24 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [smokeFixtureActive]);
 
   // Low-frequency progress polling: ~300 ms while the sheet is visible and a
-  // pending/uploading operation may still be moving, and whenever an accepted
-  // remote deletion is still awaiting its verified `remoteRemoved` flag —
-  // even if the sheet was closed while the delete was in flight.
+  // pending/uploading operation may still be moving — plus any operation whose
+  // JOB_IN_FLIGHT bit is still up, regardless of phase (a cancelled upload
+  // keeps the flag while the detached cleanup runs; only its drop frees the
+  // sheet actions) — and whenever an accepted remote deletion is still
+  // awaiting its verified `remoteRemoved` flag — even if the sheet was closed
+  // while the delete was in flight.
   const attachmentOperationPhase = attachment?.operation?.phase ?? null;
+  const attachmentJobInFlight = attachment?.operation?.jobInFlight === true;
   const attachmentDeleting = attachment?.busyAction === 'deleteRemote';
   const attachmentInserting = attachment?.busyAction === 'insert';
   useEffect(() => {
     if (smokeFixtureActive) return;
     const transferLive = sheet === 'attachment'
-      && (attachmentOperationPhase === 'pending' || attachmentOperationPhase === 'uploading');
+      && (attachmentOperationPhase === 'pending' || attachmentOperationPhase === 'uploading' || attachmentJobInFlight);
     if (!transferLive && !attachmentDeleting && !attachmentInserting) return;
     const timer = setInterval(refreshAttachmentSnapshot, 300);
     return () => clearInterval(timer);
-  }, [attachmentDeleting, attachmentInserting, attachmentOperationPhase, refreshAttachmentSnapshot, sheet, smokeFixtureActive]);
+  }, [attachmentDeleting, attachmentInserting, attachmentJobInFlight, attachmentOperationPhase, refreshAttachmentSnapshot, sheet, smokeFixtureActive]);
 
   /** Closing the sheet retains the draft and native session for remount. */
   const closeAttachmentSheet = useCallback(() => {
