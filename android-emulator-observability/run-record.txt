@@ -1,0 +1,37 @@
+Issue #28 (issue-28-image-attachments) focused Android validation @ 5e985f6 (5e985f646d65a5174231f6b7681e5e52bcc69b86)
+run_kind=focused (no full/standard/ssh suites per request); Draft PR #43
+env=meeterm_api36 headless emulator-5554; toolchain=rustc-1.96.0, ndk-27.1.12297006, node-v24.19.0, npm-10.8.3, gradle-9.3.1
+
+stages:
+- candidate commit: CONFIRMED (HEAD=5e985f646d65a5174231f6b7681e5e52bcc69b86)
+- npm ci: PASS
+- CNG prebuild --platform android --non-interactive --no-install --clean: PASS
+- Gradle assembleRelease (meetermRustProfile=release, ABIs arm64-v8a+x86_64): **FAIL — first failed stage**
+  Rust core compiled fine (release profile both ABIs, 27.43s); failure is in :meeterm-terminal:compileReleaseKotlin —
+  the first-ever compile of the Kotlin attachment code.
+
+first compile errors (verbatim, :meeterm-terminal:compileReleaseKotlin):
+  AttachmentPicker.kt:5-9   Unresolved reference 'activity' (androidx.activity.*)
+  AttachmentPicker.kt:125:1 Syntax error: Unclosed comment.
+  AttachmentController.kt:30:77/31:5  Unresolved reference 'AttachmentPicker'
+  AttachmentController.kt:143:19      Unresolved reference 'AttachmentPicker'
+  AttachmentController.kt:172:33      Unresolved reference 'pick'
+
+root-cause analysis (no source patched):
+1. AttachmentPicker.kt:19 inside the class doc comment contains `image/*` — Kotlin supports NESTED block comments,
+   so the `/*` inside `image/*` opens a nested comment. Depth trace: `/**`(L14)=1, `/*`in image/*(L19)=2,
+   `*/`(L21)=1, `/**`(L85)=2 ->`*/`=1, `/**`(L105)=2 ->`*/`(L108)=1, `/*`in "image/*"(L113)=2 -> EOF unclosed (125:1).
+   Result: the entire AttachmentPicker class (L22-124) is inside comments and never declared — that produces the
+   AttachmentController unresolved-reference cascade AND the EOF unclosed-comment error.
+2. Independently: `androidx.activity` (ComponentActivity, activity.result contracts, PickVisualMedia) is imported at
+   AttachmentPicker.kt:5-9 but `androidx.activity:activity*` is not on the module compile classpath —
+   modules/meeterm-terminal/android/build.gradle declares only testImplementation junit/json; no other module file
+   uses androidx.activity. Fixing the comment alone does not resolve these imports.
+
+stopped after this stage per instructions (no blind retries):
+- Kotlin unit tests not run: test task compiles the same source set, so it cannot pass while main compilation fails.
+  AttachmentLimitsTest/AttachmentOperationTest exist at modules/meeterm-terminal/android/src/test/java/dev/meeterm/terminal/.
+- emulator/install/launch/nativeReady/first frame: not reached (no APK produced).
+- screen fixtures + 11 attachment routes + picker attempt: not reached.
+
+result=FAIL, first_failed_stage=gradle_assembleRelease (compileReleaseKotlin)

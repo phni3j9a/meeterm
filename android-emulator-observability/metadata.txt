@@ -1,0 +1,7 @@
+source_sha=5e985f646d65a5174231f6b7681e5e52bcc69b86
+branch=issue-28-image-attachments
+pr=43 (draft)
+run_kind=focused
+fresh_build=attempted_failed_at_compileReleaseKotlin
+result=FAIL
+first_failed_stage=gradle_assembleRelease
