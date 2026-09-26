@@ -3811,13 +3811,34 @@ function configureAttachment(environment, native, initialOp) {
   });
   native.beginAttachment = async (id, target) => {
     environment.attachmentTarget = target;
+    environment.attachmentTargetId = id;
+    // The core records the intent's *stable identity* at sheet-open —
+    // endpoint + backend/runtime + the remote pane — not the snapshot object
+    // itself (a mere pane selection swap keeps the same identity).
+    environment.attachmentIntentEndpoint = `${environment.connection.host}:${environment.connection.port}`;
+    environment.attachmentIntentRuntime = `${environment.snapshot.backend}:${environment.snapshot.runtime}`;
     return { status: 'ready' };
   };
   native.pickAttachmentImage = async () => ({ status: 'picked', token: 'att_review001.bin', byteCount: 1000 });
   native.prepareAttachmentImage = async () => ATTACHMENT_PREPARED;
   native.uploadAttachment = async (terminalId, remoteDirectory) => {
-    environment.attachmentOwner = terminalId;
+    environment.attachmentUploadTarget = terminalId;
     environment.attachmentRemoteDirectory = remoteDirectory;
+    // Re-resolve the intent against current state, like the core does:
+    // changed endpoint/session fails `destination_changed`, a gone pane
+    // fails `destination_missing`, and neither writes to the new selection.
+    const paneAlive = environment.snapshot.terminals
+      .some(item => item.terminalId === environment.attachmentTargetId);
+    const endpoint = `${environment.connection.host}:${environment.connection.port}`;
+    const runtime = `${environment.snapshot.backend}:${environment.snapshot.runtime}`;
+    if (!paneAlive || endpoint !== environment.attachmentIntentEndpoint
+      || runtime !== environment.attachmentIntentRuntime) {
+      return {
+        status: 'error',
+        errorCode: paneAlive ? 'destination_changed' : 'destination_missing',
+        message: 'The attachment destination changed since the image was picked. It is never retargeted — return to the original terminal or discard and attach again.',
+      };
+    }
     environment.attachmentOp = environment.attachmentOp && environment.attachmentOp.phase !== 'cancelled'
       ? environment.attachmentOp
       : { ...ATTACHMENT_UPLOADED, phase: 'uploading', bytesUploaded: 0, remotePath: '' };
@@ -3875,14 +3896,60 @@ test('attachment: a composing IME holds the sheet open request', async t => {
   assert.equal(fixture.environment.visibility.at(-1), true, 'the terminal surface stays live while composition is held');
 });
 
-test('attachment: upload uses the captured destination, not the selected pane', async t => {
+test('attachment: upload stays bound to the intent pane, not the selected pane', async t => {
   const fixture = await openPrepared(t, null);
-  // Switch the selected pane under the open sheet: the captured target must
-  // still own the upload — it never follows the current selection.
+  // Switch the selected pane under the open sheet: the upload still carries
+  // the intent's recorded pane terminal — the selected pane never retargets it.
   await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
   await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
   await settleAsync();
-  assert.equal(fixture.environment.attachmentOwner, 'native:P1');
+  assert.equal(fixture.environment.attachmentUploadTarget, 'native:P1');
+});
+
+test('attachment: a non-owner pane records its own pane TerminalId for intent and upload', async t => {
+  // P2 is a second pane — on Herdr every pane is a non-owner of the owning
+  // connection; the adapter passes its TerminalId and the core resolves it.
+  const fixture = await mountForTest(t, makeSnapshot({
+    selectedPane: 'P2',
+    terminals: [
+      pane('P1', 'W1', 'G1', 'native:P1', false, false, 'P1'),
+      pane('P2', 'W1', 'G1', 'native:P2', false, true, 'P2'),
+      pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
+    ],
+  }), (e, n) => configureAttachment(e, n, null));
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentTargetId, 'native:P2', 'the pane TerminalId, not an owner id, drives the intent');
+  assert.deepEqual(Object.keys(fixture.environment.attachmentTarget).sort(), ['paneId', 'terminalId', 'workspaceId'],
+    'the adapter sends pane-scoped identity only — never a captured SSH owner');
+  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentUploadTarget, 'native:P2', 'upload is addressed by the pane TerminalId');
+});
+
+test('attachment: switching server/session mid-preview surfaces destination_changed and never saves elsewhere', async t => {
+  const fixture = await openPrepared(t, null);
+  // Switch the Session wholesale — different runtime identity means the
+  // recorded intent no longer resolves, so the core (double) rejects the
+  // upload with destination_changed instead of writing to the new session.
+  await updateSnapshot(fixture.environment, { ...makeSnapshot({ selectedPane: 'P1' }), runtime: 'other-session' });
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp, null, 'a rejected upload must not create an operation on the new destination');
+  assert.ok(findText(fixture.root, 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again. (destination_changed)'),
+    'the sheet explains the fenced rejection');
+  // A switched Server behaves identically — the recorded endpoint differs.
+  fixture.environment.connection = { ...fixture.environment.connection, host: 'other.example', port: 2222 };
+  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P1' }));
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp, null, 'a server switch must also refuse to save elsewhere');
+  assert.ok(findText(fixture.root, 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again. (destination_changed)'),
+    'the sheet keeps explaining the fenced rejection');
 });
 
 test('attachment: an accepted delete stays pending until remoteRemoved', async t => {

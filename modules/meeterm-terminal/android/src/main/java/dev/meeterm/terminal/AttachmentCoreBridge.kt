@@ -33,6 +33,9 @@ internal object AttachmentCoreBridge {
     -7 -> "destination_not_ready"
     -8 -> "busy"
     -9 -> "internal_error"
+    -10 -> "unknown_intent"
+    -11 -> "destination_changed"
+    -12 -> "destination_missing"
     else -> "native_error"
   }
 
@@ -44,6 +47,24 @@ internal object AttachmentCoreBridge {
     }
 
   /**
+   * `meeterm_attachment_intent`: record the destination intent for the
+   * picked pane's native terminal. The core resolves the owning SSH
+   * connection itself — the adapter never passes an owner id.
+   * Returns the opaque intent id (>0), 0 when the pane is not a usable
+   * destination, or null when the core contract is not linked yet.
+   */
+  fun intent(targetTerminalId: Long): Long? = pending(
+    { MeetermNative.attachmentIntent(targetTerminalId) },
+    { null },
+  )
+
+  /** `meeterm_attachment_intent_dispose`; idempotent. */
+  fun intentDispose(intentId: Long): Unit = pending(
+    { MeetermNative.attachmentIntentDispose(intentId); Unit },
+    { Unit },
+  )
+
+  /**
    * `meeterm_attachment_begin`. A null remoteDirectory selects the core
    * default `~/.local/share/meeterm/attachments` (the JNI `remote_dir`
    * parameter is nullable; an empty string would be a validation error,
@@ -52,7 +73,7 @@ internal object AttachmentCoreBridge {
    * the core contract is not linked yet.
    */
   fun begin(
-    terminalHandle: Long,
+    intentId: Long,
     localPath: String,
     displayName: String,
     remoteDirectory: String?,
@@ -60,23 +81,27 @@ internal object AttachmentCoreBridge {
   ): Long? = pending(
     {
       MeetermNative.attachmentBegin(
-        terminalHandle, localPath, displayName, remoteDirectory, sizeBytes,
+        intentId, localPath, displayName, remoteDirectory, sizeBytes,
       )
     },
     { null },
   )
 
-  /** `meeterm_attachment_retry_upload`; uniform accepted/error map. */
-  fun retryUpload(terminalHandle: Long, attachmentId: Long): Map<String, Any?> =
+  /**
+   * `meeterm_attachment_retry_upload`; uniform accepted/error map.
+   * `targetTerminalId` must be the intent's recorded pane terminal — the
+   * core refuses any other with `destination_changed`.
+   */
+  fun retryUpload(targetTerminalId: Long, attachmentId: Long): Map<String, Any?> =
     pending(
-      { actionResult(MeetermNative.attachmentRetryUpload(terminalHandle, attachmentId), attachmentId) },
+      { actionResult(MeetermNative.attachmentRetryUpload(targetTerminalId, attachmentId), attachmentId) },
       { AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING) },
     )
 
   /** `meeterm_attachment_insert`; uniform accepted/error map. */
-  fun insert(terminalHandle: Long, attachmentId: Long): Map<String, Any?> =
+  fun insert(targetTerminalId: Long, attachmentId: Long): Map<String, Any?> =
     pending(
-      { actionResult(MeetermNative.attachmentInsert(terminalHandle, attachmentId), attachmentId) },
+      { actionResult(MeetermNative.attachmentInsert(targetTerminalId, attachmentId), attachmentId) },
       { AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING) },
     )
 
@@ -95,9 +120,9 @@ internal object AttachmentCoreBridge {
     )
 
   /** `meeterm_attachment_delete_remote`; uniform accepted/error map. */
-  fun deleteRemote(terminalHandle: Long, attachmentId: Long): Map<String, Any?> =
+  fun deleteRemote(targetTerminalId: Long, attachmentId: Long): Map<String, Any?> =
     pending(
-      { actionResult(MeetermNative.attachmentDeleteRemote(terminalHandle, attachmentId), attachmentId) },
+      { actionResult(MeetermNative.attachmentDeleteRemote(targetTerminalId, attachmentId), attachmentId) },
       { AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING) },
     )
 

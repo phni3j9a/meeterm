@@ -298,24 +298,26 @@ export type AttachmentSource = 'photos' | 'files';
 export type AttachmentImageFormat = 'png' | 'jpeg';
 
 /**
- * Opaque remote-target identity captured when an attachment starts. Every
- * field is display/metadata only; the native side revalidates its own
- * terminal identity and operation epoch before any remote operation.
+ * Pane-scoped identity recorded when an attachment starts, for restore
+ * display only. The core resolves the owning SSH endpoint, runtime, and
+ * remote pane itself from `terminalId` (`meeterm_attachment_intent`); the
+ * adapter never captures or reuses an SSH owner id.
  */
 export type AttachmentTarget = {
   terminalId: string;
   paneId: string;
   workspaceId: string;
-  backend: RuntimeBackend;
-  runtime: string;
-  host: string;
-  port: number;
 };
 
-/** Attachment open result. `held` means native input composition is active. */
+/**
+ * Attachment open result. `held` means native input composition is active;
+ * `error` means the core refused the destination intent (`destination_*`
+ * codes carry the reason).
+ */
 export type AttachmentBeginResult =
   | { status: 'ready' }
-  | { status: 'held'; reason: 'composing' };
+  | { status: 'held'; reason: 'composing' }
+  | { status: 'error'; errorCode: string; message: string };
 
 /**
  * Answer to the main-thread composition query. Callers must not dismiss the

@@ -6,15 +6,17 @@ package dev.meeterm.terminal
  * JS sees only narrow result maps; file paths stay in the staging/prepared
  * name fields, and [snapshot] returns display metadata plus the app-local
  * preview URI for the pending image.
+ *
+ * [AttachmentTargetIdentity] is pane-scoped identity for display and
+ * session binding. The Rust core resolves the owning SSH endpoint, runtime,
+ * and remote pane itself from the pane's native terminal id
+ * (`meeterm_attachment_intent`), so the adapter never records or reuses an
+ * SSH owner id.
  */
 internal data class AttachmentTargetIdentity(
   val terminalId: String,
   val paneId: String,
   val workspaceId: String,
-  val backend: String,
-  val runtime: String,
-  val host: String,
-  val port: Int,
 ) {
   companion object {
     fun fromMap(raw: Map<String, Any?>?): AttachmentTargetIdentity? {
@@ -22,18 +24,10 @@ internal data class AttachmentTargetIdentity(
       val terminalId = raw["terminalId"] as? String ?: return null
       val paneId = raw["paneId"] as? String ?: return null
       val workspaceId = raw["workspaceId"] as? String ?: return null
-      val backend = raw["backend"] as? String ?: return null
-      val runtime = raw["runtime"] as? String ?: return null
-      val host = raw["host"] as? String ?: return null
-      val port = (raw["port"] as? Number)?.toInt() ?: return null
       return AttachmentTargetIdentity(
         terminalId = terminalId,
         paneId = paneId,
         workspaceId = workspaceId,
-        backend = backend,
-        runtime = runtime,
-        host = host,
-        port = port,
       )
     }
   }
@@ -56,6 +50,13 @@ internal data class AttachmentSession(
   var prepared: AttachmentPreparedImage? = null,
   var lastErrorCode: String = "",
   var lastMessage: String = "",
+  /**
+   * Live `meeterm_attachment_intent` id for the recorded pane terminal; 0
+   * means no intent is held (core contract pending or the pane refused).
+   * Kept for the process lifetime across sheet unmounts; released only by
+   * Discard or a fresh `begin`.
+   */
+  var intentId: Long = 0,
 ) {
   /** Live Rust-owned operation; its snapshot stays authoritative. */
   val machine = AttachmentOpMachine()
@@ -90,10 +91,6 @@ internal data class AttachmentSession(
       "terminalId" to target.terminalId,
       "paneId" to target.paneId,
       "workspaceId" to target.workspaceId,
-      "backend" to target.backend,
-      "runtime" to target.runtime,
-      "host" to target.host,
-      "port" to target.port,
     ),
     "operation" to machine.operation?.let(AttachmentResults::operation),
     "errorCode" to lastErrorCode,

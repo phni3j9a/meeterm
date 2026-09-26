@@ -164,6 +164,22 @@ const ATTACHMENT_INSERT_GUIDANCE = 'Close and insert from the terminal: tap Inse
 const ATTACHMENT_INSERT_NOT_READY = 'The terminal input is not ready. Finish recovery and keep this terminal open before inserting.';
 const ATTACHMENT_INSERT_UNCONFIRMED_NOTICE = 'Insert delivery is unconfirmed — check the terminal input yourself; it is not resent automatically.';
 const ATTACHMENT_DELETE_FAILED_NOTICE = 'The remote file could not be deleted. Try again.';
+const ATTACHMENT_DESTINATION_NOTICE = 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again.';
+// Core contract codes that all describe a fenced destination no longer
+// matching the recorded intent — shown with the same recovery guidance.
+const ATTACHMENT_DESTINATION_CODES = new Set([
+  'destination_changed',
+  'destination_missing',
+  'stale_connection',
+  'unknown_intent',
+  'attachment_target_mismatch',
+]);
+
+function attachmentFailureNotice(errorCode: string, message: string): string {
+  return ATTACHMENT_DESTINATION_CODES.has(errorCode)
+    ? `${ATTACHMENT_DESTINATION_NOTICE} (${errorCode})`
+    : message;
+}
 
 function legacyCleanupWarning(connection: SshConnectionState): WorkspaceControl['cleanupWarning'] {
   if (connection.errorCode !== 'layout_restore_unconfirmed') return null;
@@ -2739,15 +2755,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   // drops late picker/normalize results after discard or a fresh begin. The
   // captured destination never retargets: the native session revalidates its
   // own binding and the sheet disables Insert while another pane is shown.
+  // Pane-scoped identity only: the core resolves the owning SSH endpoint,
+  // backend/runtime, and remote pane itself at `meeterm_attachment_intent`
+  // time — the adapter never captures or reuses an SSH owner id.
   const attachmentTargetFor = useCallback((pane: RemoteTerminal): AttachmentTarget => ({
     terminalId: pane.terminalId,
     paneId: pane.id,
     workspaceId: pane.workspaceId,
-    backend: runtimeHint?.backend ?? 'tmux',
-    runtime: runtimeHint?.runtime ?? '',
-    host: connection.host,
-    port: connection.port,
-  }), [connection.host, connection.port, runtimeHint]);
+  }), []);
 
   const attachmentDestinationFor = useCallback((pane: RemoteTerminal): AttachmentDestination => ({
     terminalId: pane.terminalId,
@@ -2757,13 +2772,21 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     terminal: pane.name,
   }), [connection, currentProfile, currentSessionDescription, workspaces]);
 
-  const attachmentDestinationFromTarget = useCallback((target: AttachmentTarget): AttachmentDestination => ({
-    terminalId: target.terminalId,
-    server: `${target.host}:${target.port}`,
-    session: `${target.backend === 'herdr' ? 'Herdr' : 'tmux'} · ${target.runtime}`,
-    workspace: workspaces.find(item => item.id === target.workspaceId)?.name ?? target.workspaceId,
-    terminal: panes.find(item => item.id === target.paneId)?.name ?? target.paneId,
-  }), [panes, workspaces]);
+  // Restore display from pane-scoped identity only — resolve labels through
+  // the live pane/workspace lists; a gone pane falls back to the opaque ids
+  // (the destination warning still fences on terminalId).
+  const attachmentDestinationFromTarget = useCallback((target: AttachmentTarget): AttachmentDestination => {
+    const pane = panes.find(item => item.terminalId === target.terminalId)
+      ?? panes.find(item => item.id === target.paneId);
+    if (pane) return attachmentDestinationFor(pane);
+    return {
+      terminalId: target.terminalId,
+      server: 'previous server',
+      session: 'previous session',
+      workspace: workspaces.find(item => item.id === target.workspaceId)?.name ?? target.workspaceId,
+      terminal: target.paneId,
+    };
+  }, [attachmentDestinationFor, panes, workspaces]);
 
   /** Fold the authoritative core snapshot into the draft, dropping stale ids. */
   const refreshAttachmentSnapshot = useCallback(() => {
@@ -2881,6 +2904,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'held') {
           setAttachment(current => current ? { ...current, sessionReady: false, notice: ATTACHMENT_BEGIN_COMPOSING_NOTICE } : current);
+        } else if (result.status === 'error') {
+          // The core refused the destination intent — hold the sheet with
+          // the reason; never silently fall back to another destination.
+          setAttachment(current => current ? { ...current, sessionReady: false, notice: attachmentFailureNotice(result.errorCode, result.message) } : current);
         }
       } catch {
         if (attachmentGeneration.current !== generation) return;
@@ -2894,10 +2921,20 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (attachment?.sessionReady) return true;
     const pane = selectedPane;
     if (!pane) return false;
+    // An existing draft is bound to its recorded destination — a different
+    // visible pane must never rebind it to the wrong destination.
+    if (attachment && attachment.destination.terminalId !== pane.terminalId) {
+      setAttachment(current => current ? { ...current, notice: attachmentFailureNotice('destination_changed', '') } : current);
+      return false;
+    }
     try {
       const result = await MeetermTerminal.beginAttachment(pane.terminalId, attachmentTargetFor(pane));
       if (result.status === 'held') {
         setAttachment(current => current ? { ...current, notice: ATTACHMENT_BEGIN_COMPOSING_NOTICE } : current);
+        return false;
+      }
+      if (result.status === 'error') {
+        setAttachment(current => current ? { ...current, notice: attachmentFailureNotice(result.errorCode, result.message) } : current);
         return false;
       }
       setAttachment(current => current ? {
@@ -2912,7 +2949,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_unavailable', errorMessage: 'Could not start the attachment.' } : current);
       return false;
     }
-  }, [attachment?.sessionReady, attachmentDestinationFor, attachmentTargetFor, selectedPane]);
+  }, [attachment?.sessionReady, attachment?.destination.terminalId, attachmentDestinationFor, attachmentTargetFor, selectedPane]);
 
   const pickAttachment = useCallback((source: AttachmentSource) => {
     if (!attachment || attachment.busyAction || attachment.phase === 'picking' || attachment.phase === 'normalizing') return;
@@ -2991,7 +3028,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           return;
         }
         setAttachment(current => current ? { ...current, busyAction: null, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.' : result.message } : current);
+          result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
+            : attachmentFailureNotice(result.errorCode, result.message) } : current);
       })
       .catch(() => {
         if (attachmentGeneration.current !== generation) return;
@@ -3008,7 +3046,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!retryable) return;
     const generation = attachmentGeneration.current;
     setAttachment(current => current ? { ...current, busyAction: 'retryUpload', notice: '' } : current);
-    void MeetermTerminal.retryAttachmentUpload(attachment.destination.terminalId)
+    // The core verifies the passed pane terminal against the recorded
+    // intent — a different visible pane fails with `destination_changed`.
+    void MeetermTerminal.retryAttachmentUpload(selectedPane?.terminalId ?? '')
       .then(result => {
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null } : current);
@@ -3017,13 +3057,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           return;
         }
         setAttachment(current => current ? { ...current, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.' : result.message } : current);
+          result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
+            : attachmentFailureNotice(result.errorCode, result.message) } : current);
       })
       .catch(() => {
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null, notice: 'The retry could not be started.' } : current);
       });
-  }, [attachment, refreshAttachmentSnapshot]);
+  }, [attachment, refreshAttachmentSnapshot, selectedPane]);
 
   /** Explicit cancel of a pending/uploading operation. */
   const cancelAttachmentDraft = useCallback(() => {
@@ -3069,7 +3110,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
     const generation = attachmentGeneration.current;
     setAttachment(current => current ? { ...current, busyAction: 'insert', notice: '' } : current);
-    void MeetermTerminal.insertAttachment(attachment.destination.terminalId)
+    void MeetermTerminal.insertAttachment(pane.terminalId)
       .then(result => {
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'inserted') {
@@ -3085,7 +3126,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             ? (result.reason === 'composing' ? ATTACHMENT_COMPOSING_NOTICE : 'No prepared image is attached yet.')
             : result.status === 'unavailable'
               ? 'The attachment backend is not available in this build.'
-              : result.message);
+              : attachmentFailureNotice(result.errorCode, result.message));
       })
       .catch(() => {
         if (attachmentGeneration.current !== generation) return;
@@ -3105,7 +3146,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (operation.phase !== 'uploaded' && operation.phase !== 'inserted' && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
     setAttachment(current => current ? { ...current, busyAction: 'deleteRemote', notice: '' } : current);
-    void MeetermTerminal.deleteRemoteAttachment(attachment.destination.terminalId)
+    // The core verifies the passed pane terminal against the recorded
+    // intent — a different visible pane fails with `destination_changed`.
+    void MeetermTerminal.deleteRemoteAttachment(selectedPane?.terminalId ?? '')
       .then(result => {
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
@@ -3115,13 +3158,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           return;
         }
         setAttachment(current => current ? { ...current, busyAction: null, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.' : result.message } : current);
+          result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
+            : attachmentFailureNotice(result.errorCode, result.message) } : current);
       })
       .catch(() => {
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null, notice: ATTACHMENT_DELETE_FAILED_NOTICE } : current);
       });
-  }, [attachment, refreshAttachmentSnapshot]);
+  }, [attachment, refreshAttachmentSnapshot, selectedPane]);
 
   // Toolbar Insert: visible only while a captured uploaded/inserted op for
   // the displayed terminal still owns a remote file. Readiness is checked on

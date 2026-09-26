@@ -42,8 +42,12 @@ enum AttachmentLimits {
   static let errorIO = "attachment_io_failed"
   static let errorState = "attachment_invalid_state"
   static let errorMissing = "attachment_missing"
-  static let errorTarget = "attachment_target_mismatch"
   static let errorArgument = "attachment_invalid_argument"
+  // Contract error names (attachment-ffi.md) surfaced for destination
+  // fencing; kept unprefixed so JS sees one vocabulary end to end.
+  static let errorUnknownIntent = "unknown_intent"
+  static let errorDestinationChanged = "destination_changed"
+  static let errorDestinationMissing = "destination_missing"
   static let reasonComposing = "composing"
   static let reasonNoAttachment = "no_attachment"
   static let reasonCorePending = "core_contract_pending"

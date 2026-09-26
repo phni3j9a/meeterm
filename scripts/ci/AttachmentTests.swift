@@ -176,11 +176,7 @@ final class AttachmentTests: XCTestCase {
       target: AttachmentTargetIdentity(
         terminalId: "poc-main",
         paneId: "%1",
-        workspaceId: "@1",
-        backend: "tmux",
-        runtime: "meeterm",
-        host: "host",
-        port: 22
+        workspaceId: "@1"
       )
     )
     XCTAssertEqual(session.snapshot(previewUri: "")["status"] as? String, "idle")
@@ -432,7 +428,7 @@ final class AttachmentTests: XCTestCase {
         requestTerminalId: "poc-main"
       ),
       .rejected(
-        AttachmentLimits.errorTarget,
+        AttachmentLimits.errorDestinationChanged,
         "The attachment belongs to a different terminal."
       )
     )

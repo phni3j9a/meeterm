@@ -50,12 +50,34 @@ final class AttachmentController {
     if AttachmentCompositionGuard.shared.isComposing(terminalId: terminalId) {
       return AttachmentResults.held(AttachmentLimits.reasonComposing)
     }
+    // Record the destination intent with the picked pane's native terminal;
+    // the core resolves the owning SSH connection itself. A fresh begin
+    // retires the previous session's intent and live op.
+    let intentId = AttachmentCoreBridge.intent(
+      targetTerminalId: try ensureHandle(terminalId)
+    )
+    guard intentId != 0 else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorDestinationMissing,
+        "The attachment destination is not available on this connection."
+      )
+    }
     let existingStore = try requireStore()
+    let created = AttachmentSession(target: target)
+    created.intentId = intentId
     lock.lock()
     let previous = session
-    session = AttachmentSession(target: target)
+    session = created
+    if let previous = previous {
+      retireOperationLocked(previous)
+    }
     lock.unlock()
-    existingStore.delete(previous?.stagingFileName, previous?.prepared?.fileName)
+    if let previous = previous {
+      if previous.intentId != 0 {
+        AttachmentCoreBridge.intentDispose(intentId: previous.intentId)
+      }
+      existingStore.delete(previous.stagingFileName, previous.prepared?.fileName)
+    }
     return ["status": "ready"]
   }
 
@@ -142,7 +164,8 @@ final class AttachmentController {
     }
   }
 
-  /// Explicit Discard: cancel/dispose the core op, then delete local files.
+  /// Explicit Discard: cancel/dispose the core op and the recorded intent,
+  /// then delete local files.
   func discard() throws {
     lock.lock()
     let active = session
@@ -152,6 +175,9 @@ final class AttachmentController {
     lock.lock()
     retireOperationLocked(active)
     lock.unlock()
+    if active.intentId != 0 {
+      AttachmentCoreBridge.intentDispose(intentId: active.intentId)
+    }
     try requireStore().delete(active.stagingFileName, active.prepared?.fileName)
   }
 
@@ -181,7 +207,9 @@ final class AttachmentController {
   }
 
   /**
-   * Explicit Upload: `meeterm_attachment_begin` over the fenced connection.
+   * Explicit Upload: `meeterm_attachment_begin` against the recorded intent.
+   * The core re-resolves the intent's stable identity into a fresh fence; a
+   * switched server/session/runtime or vanished pane fails closed there.
    * A second upload is refused while the previous operation is live.
    */
   func upload(terminalId: String, remoteDirectory: String) throws -> [String: Any] {
@@ -193,9 +221,12 @@ final class AttachmentController {
     }
     guard active.target.terminalId == terminalId else {
       return AttachmentResults.error(
-        AttachmentLimits.errorTarget,
+        AttachmentLimits.errorDestinationChanged,
         "The attachment belongs to a different terminal."
       )
+    }
+    guard active.intentId != 0 else {
+      return AttachmentResults.unavailable(AttachmentLimits.reasonCorePending)
     }
     guard let prepared = active.prepared,
           let url = try requireStore().preparedURL(prepared.fileName) else {
@@ -214,16 +245,16 @@ final class AttachmentController {
       )
     }
     guard let attachmentId = AttachmentCoreBridge.begin(
-      terminalId: try ensureHandle(active.target.terminalId),
+      intentId: active.intentId,
       localPath: url.path,
       displayName: prepared.fileName,
       remoteDirectory: remoteDirectory,
       sizeBytes: UInt64(clamping: prepared.byteCount)
     ) else {
-      return AttachmentResults.error(
-        AttachmentLimits.errorState,
-        "The core could not start the upload; check the connection."
-      )
+      // `begin` flattens its rejection to nil; a fresh probe intent for the
+      // same pane separates a still-resolving destination (recorded identity
+      // changed) from one that no longer resolves at all.
+      return try probeDestination(active.target.terminalId)
     }
     lock.lock()
     let recorded = active.machine.recordBegin(
@@ -268,14 +299,16 @@ final class AttachmentController {
     return AttachmentResults.snapshotResult(fresh)
   }
 
-  /// Explicit transfer retry on a pending/failed operation.
+  /// Explicit transfer retry on a pending/failed operation. The passed pane
+  /// terminal must be the intent's recorded pane — the core refuses any
+  /// other terminal with `destination_changed`.
   func retryUpload(terminalId: String) throws -> [String: Any] {
     lock.lock()
     let active = session
     lock.unlock()
     guard let active = active, active.target.terminalId == terminalId else {
       return AttachmentResults.error(
-        AttachmentLimits.errorTarget,
+        AttachmentLimits.errorDestinationChanged,
         "The attachment belongs to a different terminal."
       )
     }
@@ -323,7 +356,7 @@ final class AttachmentController {
     lock.unlock()
     guard let active = active, active.target.terminalId == terminalId else {
       return AttachmentResults.error(
-        AttachmentLimits.errorTarget,
+        AttachmentLimits.errorDestinationChanged,
         "The attachment belongs to a different terminal."
       )
     }
@@ -334,7 +367,7 @@ final class AttachmentController {
       )
     }
     let result = AttachmentCoreBridge.deleteRemote(
-      terminalId: try ensureHandle(active.target.terminalId),
+      terminalId: try ensureHandle(terminalId),
       attachmentId: operation.attachmentId
     )
     if (result["status"] as? String) == "accepted" { refreshSnapshot(active) }
@@ -401,6 +434,28 @@ final class AttachmentController {
     }
     _ = AttachmentCoreBridge.dispose(attachmentId: operation.attachmentId)
     active.machine.clear()
+  }
+
+  /**
+   * Distinguish a `begin` rejection (which carries no code) by probing a
+   * fresh intent for the recorded pane: a still-resolving destination means
+   * the recorded identity changed; an unresolvable one is missing.
+   */
+  private func probeDestination(_ terminalId: String) throws -> [String: Any] {
+    let probe = AttachmentCoreBridge.intent(targetTerminalId: try ensureHandle(terminalId))
+    if probe != 0 {
+      AttachmentCoreBridge.intentDispose(intentId: probe)
+      return AttachmentResults.error(
+        AttachmentLimits.errorDestinationChanged,
+        "The attachment destination changed since the image was picked. " +
+          "It is never retargeted — return to the original terminal or discard and attach again."
+      )
+    }
+    return AttachmentResults.error(
+      AttachmentLimits.errorDestinationMissing,
+      "The attachment destination is no longer available. " +
+        "It is never retargeted — return to the original terminal or discard and attach again."
+    )
   }
 
   private func ensureHandle(_ terminalId: String) throws -> UInt64 {

@@ -17,18 +17,35 @@ enum AttachmentCoreBridge {
         )
   }
 
+  /**
+   * `meeterm_attachment_intent`: record the destination intent for the
+   * picked pane's native terminal. The core resolves the owning SSH
+   * connection itself — the adapter never passes an owner id.
+   * Returns the opaque intent id (>0) or 0 when the pane is not a usable
+   * destination.
+   */
+  static func intent(targetTerminalId: UInt64) -> UInt64 {
+    MeetermCore.attachmentIntent(targetTerminalId: targetTerminalId)
+  }
+
+  /// `meeterm_attachment_intent_dispose`; idempotent.
+  static func intentDispose(intentId: UInt64) {
+    _ = MeetermCore.attachmentIntentDispose(intentId: intentId)
+  }
+
   /// `meeterm_attachment_begin`. An empty remoteDirectory selects the core
   /// default `~/.local/share/meeterm/attachments`. Returns the attachment id
-  /// (>0) or nil on synchronous rejection (no connection, unreadable file).
+  /// (>0) or nil on synchronous rejection (unknown intent, unreadable file,
+  /// changed/missing destination, or a second live op).
   static func begin(
-    terminalId: UInt64,
+    intentId: UInt64,
     localPath: String,
     displayName: String,
     remoteDirectory: String,
     sizeBytes: UInt64
   ) -> UInt64? {
     let attachmentId = MeetermCore.attachmentBegin(
-      terminalId: terminalId,
+      intentId: intentId,
       localPath: localPath,
       displayName: displayName,
       remoteDirectory: remoteDirectory,
@@ -38,9 +55,10 @@ enum AttachmentCoreBridge {
   }
 
   /// `meeterm_attachment_retry_upload`; uniform accepted/error map.
+  /// `targetTerminalId` must be the intent's recorded pane terminal.
   static func retryUpload(terminalId: UInt64, attachmentId: UInt64) -> [String: Any] {
     actionResult(
-      MeetermCore.attachmentRetryUpload(terminalId: terminalId, attachmentId: attachmentId),
+      MeetermCore.attachmentRetryUpload(targetTerminalId: terminalId, attachmentId: attachmentId),
       attachmentId: attachmentId
     )
   }
@@ -48,7 +66,7 @@ enum AttachmentCoreBridge {
   /// `meeterm_attachment_insert`; uniform accepted/error map.
   static func insert(terminalId: UInt64, attachmentId: UInt64) -> [String: Any] {
     actionResult(
-      MeetermCore.attachmentInsert(terminalId: terminalId, attachmentId: attachmentId),
+      MeetermCore.attachmentInsert(targetTerminalId: terminalId, attachmentId: attachmentId),
       attachmentId: attachmentId
     )
   }
@@ -64,9 +82,10 @@ enum AttachmentCoreBridge {
   }
 
   /// `meeterm_attachment_delete_remote`; uniform accepted/error map.
+  /// `targetTerminalId` must be the intent's recorded pane terminal.
   static func deleteRemote(terminalId: UInt64, attachmentId: UInt64) -> [String: Any] {
     actionResult(
-      MeetermCore.attachmentDeleteRemote(terminalId: terminalId, attachmentId: attachmentId),
+      MeetermCore.attachmentDeleteRemote(targetTerminalId: terminalId, attachmentId: attachmentId),
       attachmentId: attachmentId
     )
   }
