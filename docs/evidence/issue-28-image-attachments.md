@@ -1,9 +1,19 @@
 # Issue #28: 画像添付 受入記録
 
 スマートフォンで選んだ1枚の画像を、選択中の SSH Server / Session / Terminal 上で既に開いている
-Codex または Claude Code の会話へ渡す機能の受入記録です。検証した exact source は
-`8fb2a584a84c51c8fc587d51f1e681023d15a020`（PR #43）で、以降の変更はこの記録と
-evidence 文書の追加だけです。
+Codex または Claude Code の会話へ渡す機能の受入記録です（PR #43）。検証は source ごとに次のとおりです。
+
+- `8fb2a584a84c51c8fc587d51f1e681023d15a020`: 両 OS の最終 suite（Android full、iOS standard + ssh）、
+  Issue #28 の実 picker と fixture E2E、本番 Rust core による実 CLI 4 組。下の表の結果はこの source のものです。
+- `18141417916d54d2139cd1a82d73b419fc12a8c8`: その後の最終確認で見つかった 2 件の修正を含みます。
+  Retry 受理後の転送中 Cancel（`App.tsx`）と、Herdr 遅延 test を CI の環境変数に依存させない修正（`tests/herdr.rs`）です。
+  この source で、両 OS の focused 確認（build、Android Gradle unit 66/66、iOS 注入 XCTest 38/38、launch と first frame、
+  attachment 11 route、fixture E2E、Retry → 転送中 Cancel の実操作）と、GitHub Actions の全 job を実施し、すべて pass しました。
+  evidence は `evidence/android-20260926@4a372a3`、`evidence/ios-20260926@01cdac6` です。
+- さらにその後、Cancel 後の cleanup 待ち状態を App が追跡し続ける修正（`App.tsx` の poll 条件のみ）を加えました。
+  最終 head での focused 確認と CI の結果は PR #43 の本文に記録します。
+- Rust の production source（`native/meeterm-core/src`）は `8fb2a58` 以降変わっていません。実 CLI の結果はその範囲の
+  証拠で、アプリ全体の実機検証ではありません。
 
 ## 実装した境界
 
