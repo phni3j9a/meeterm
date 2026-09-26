@@ -68,7 +68,23 @@ internal class AttachmentNormalize(private val store: AttachmentStore) {
     }
 
     val orientation = readOrientation(stagingFile)
-    val oriented = applyOrientation(decoded, orientation)
+    val oriented = try {
+      applyOrientation(decoded, orientation)
+    } catch (e: OutOfMemoryError) {
+      decoded.recycle()
+      // A failed transform must never fall back to the unrotated bitmap:
+      // the output contract requires the stored orientation to be applied.
+      return Result.Rejected(
+        AttachmentLimits.ERROR_DECODE,
+        "The image could not be oriented.",
+      )
+    } catch (e: RuntimeException) {
+      decoded.recycle()
+      return Result.Rejected(
+        AttachmentLimits.ERROR_DECODE,
+        "The image could not be oriented.",
+      )
+    }
     if (oriented !== decoded) decoded.recycle()
 
     val (outWidth, outHeight) = AttachmentDimensionPolicy.fittedOutputSize(
@@ -177,20 +193,14 @@ internal class AttachmentNormalize(private val store: AttachmentStore) {
           matrix.postScale(-1f, 1f)
       }
     }
-    return try {
-      Bitmap.createBitmap(
-        source,
-        0,
-        0,
-        source.width,
-        source.height,
-        matrix,
-        true,
-      )
-    } catch (e: OutOfMemoryError) {
-      source
-    } catch (e: RuntimeException) {
-      source
-    }
+    return Bitmap.createBitmap(
+      source,
+      0,
+      0,
+      source.width,
+      source.height,
+      matrix,
+      true,
+    )
   }
 }

@@ -317,6 +317,14 @@ export type AttachmentBeginResult =
   | { status: 'ready' }
   | { status: 'held'; reason: 'composing' };
 
+/**
+ * Answer to the main-thread composition query. Callers must not dismiss the
+ * keyboard, present the sheet, or unmount the view while `held`.
+ */
+export type AttachmentCompositionStatus =
+  | { status: 'ok' }
+  | { status: 'held'; reason: 'composing' };
+
 export type AttachmentPickResult =
   | { status: 'picked'; token: string; byteCount: number }
   | { status: 'canceled' }

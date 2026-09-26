@@ -100,24 +100,35 @@ white-background removal is required. See [asset provenance](../app/assets/READM
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
 - The terminal header's Attach action opens an image-attachment sheet (Issue
-  #28). It offers Photos and Files, previews only the normalized app-owned
-  image with its dimensions, format, and byte count, and shows the captured
-  destination (Server/Session/Workspace/Terminal) plus the remote directory
+  #28). Opening it is gated on the live IME state: while a composition is
+  active the request is held with "Finish IME composition before attaching."
+  and the keyboard is never dismissed. The sheet offers Photos and Files,
+  previews only the normalized app-owned image with its dimensions, format,
+  and byte count, and shows the captured destination
+  (Server/Session/Workspace/Terminal) plus the remote directory
   (default `~/.local/share/meeterm/attachments`, editable). Upload is an
   explicit action that starts the core operation; progress and Cancel come
-  from the operation snapshot. Uploaded offers a separate explicit
-  "Insert into terminal input" — inserting only places a path reference on the
-  input line, and the user still reviews and sends it themselves. Pending and
-  failed states show the core reason, "Retry upload" is a separate explicit
-  action, and an unconfirmed insert shows a check-the-terminal notice with an
-  explicit "Retry insert". "Delete from server" removes only the file the
-  operation created; "Discard" drops the local staging/prepared files and the
-  core operation. While an IME composition is active the sheet reports a held
-  "Finish IME composition before inserting." notice and never touches the
-  composition. The attachment stays bound to its captured terminal: showing a
-  different terminal disables insert rather than retargeting it, and closing
-  the sheet retains the draft for same-process reopen — only Discard or a new
-  pick releases it.
+  from the operation snapshot. The terminal surface stays mounted and
+  visible underneath the sheet, so its input state survives. Once uploaded,
+  the sheet shows "Close and insert from the terminal" guidance and no
+  Insert action of its own — insertion is the separate "Insert attachment"
+  action on the terminal toolbar, visible only while the captured
+  destination terminal is displayed and still owns the remote file. Tapping
+  it passes the normal terminal input gate and places a quoted path
+  reference on the input line; the user still reviews and sends it
+  themselves. Pending and failed states show the core reason and "Retry
+  upload" is a separate explicit action; an unconfirmed insert shows a
+  check-the-terminal notice and is never resent automatically. "Delete from
+  server" removes only the file the operation created: after acceptance the
+  sheet shows "Deleting…" and keeps polling until the snapshot reports
+  `remoteRemoved` (`flags & 0x2`) or a failure; insert stays disabled while
+  deletion is pending. "Discard" drops the local staging/prepared files and
+  the core operation. While an IME composition is active insertion returns a
+  held "Finish IME composition before inserting." notice and never touches
+  the composition. The attachment stays bound to its captured terminal:
+  showing a different terminal hides insert rather than retargeting it, and
+  closing the sheet retains the draft for same-process reopen — only Discard
+  or a new pick releases it.
 
 ### Agent status metadata
 

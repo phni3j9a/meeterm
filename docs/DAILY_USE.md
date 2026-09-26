@@ -335,15 +335,19 @@ Issue #28 adds a smartphone-first image attachment flow to the native terminal.
 One image is picked from the phone, staged in app-owned storage, validated and
 normalized, previewed in a sheet, uploaded to the SSH host by an explicit
 action, and then inserted into the native terminal input as a quoted path
-reference by a second explicit action. Submitting the terminal input is always
-the user's own action; the CLI or AI consuming the image is out of scope.
+reference by a separate explicit toolbar action. Submitting the terminal input
+is always the user's own action; the CLI or AI consuming the image is out of
+scope.
 
 - The Attach control sits on the terminal screen and is only reachable while a
-  terminal is selected and the runtime is Ready. `beginAttachment` captures
-  the selected terminal/server/session/workspace identity as a destination
-  fence: a later `insertAttachment` call naming a different terminal is
-  rejected, and showing a different terminal only disables insert — it never
-  retargets the attachment.
+  terminal is selected and the runtime is Ready. Before the keyboard is
+  dismissed or the sheet presented, `attachmentCompositionStatus` reads the
+  real IME state on the main thread; while a composition is active the request
+  is held with "Finish IME composition before attaching." `beginAttachment`
+  captures the selected terminal/server/session/workspace identity as a
+  destination fence: a later `insertAttachment` call naming a different
+  terminal is rejected, and showing a different terminal only hides insert —
+  it never retargets the attachment.
 - Photos uses `PickVisualMedia` (Android) / `PHPickerViewController` (iOS);
   Files uses `ACTION_OPEN_DOCUMENT` / `UIDocumentPickerViewController`. Sources
   stream into app-owned staging under a bounded 24 MiB copy — the provider never
@@ -361,32 +365,44 @@ the user's own action; the CLI or AI consuming the image is out of scope.
   `remote_unsafe_path`). Explicit **Upload** calls `meeterm_attachment_begin`;
   progress, Cancel, pending reasons, and failure codes come from the
   fixed-size operation snapshot (`attachmentSnapshot`, polled ~300 ms only
-  while the sheet is open and the op may still be moving). **Retry upload**
-  and **Insert into terminal input** are separate explicit actions; an
-  `inserted` op whose delivery is unconfirmed (`flags & 0x1`) shows a
-  check-the-terminal notice plus an explicit **Retry insert** — nothing is
-  resent automatically.
+  while the sheet is open and the op may still be moving, and while an
+  accepted delete is still awaiting confirmation). The terminal surface stays
+  mounted and visible under the sheet.
+- An uploaded op makes the sheet show "Close and insert from the terminal"
+  guidance. The actual insertion is **Insert attachment** on the terminal
+  toolbar — visible only while the captured destination terminal is the
+  displayed pane and the op still owns a remote file (`uploaded`/`inserted`,
+  not `remoteRemoved`). The tap passes the normal terminal input gate; when
+  input is not ready the tap explains itself instead of reaching the core.
+  **Retry upload** is a separate explicit action for `pending`/`failed`, and
+  for `uploaded` after verified removal. An `inserted` op whose delivery is
+  unconfirmed (`flags & 0x1`) shows a check-the-terminal notice — nothing is
+  resent automatically and no ambiguous retry is offered.
 - **Delete from server** calls `meeterm_attachment_delete_remote`, which
   removes only the file that operation created (published file plus a
-  `.meeterm-partial-*` remnant) on the same authenticated endpoint; the
-  snapshot then reports `deleted`. **Discard** cancels/disposes the core
-  operation and deletes the local staging/prepared files. Nothing is deleted
-  automatically — not on insert, cancel, sheet close, or app exit.
+  `.meeterm-partial-*` remnant) on the same authenticated endpoint. Acceptance
+  only queues the request: the sheet shows **Deleting…** and keeps polling
+  until the snapshot reports `remoteRemoved` (`flags & 0x2`) or a failure;
+  insert stays disabled while deletion is pending. **Discard**
+  cancels/disposes the core operation and deletes the local staging/prepared
+  files. Nothing is deleted automatically — not on insert, cancel, sheet
+  close, or app exit.
 - IME composition is protected by the real input state, not a flag: Android
   reads composing spans plus `InputSession.composingText`, iOS reads
   `markedTextRange`, both through per-terminal providers unregistered on rebind
   or unmount. While a composition is active, begin/insert return
   `held` (`reason=composing`) and the composition itself is never committed or
-  cleared. Attachment insertion never routes through the paste or special-key
-  paths.
+  cleared. Picker presentation and composition reads run on the main queue;
+  the bounded staging copy and decode work stay off it. Attachment insertion
+  never routes through the paste or special-key paths.
 - Closing the sheet (including an iOS swipe down) retains the native session,
   draft, and live operation for same-process reopen; stale picker results are
   dropped through a generation counter. Choosing a different image retires
   the old staging/prepared files and the live core operation.
 - All attachment core calls are confined to `AttachmentCoreBridge`
-  (Kotlin/Swift). Until the Rust FFI symbols ship, the Android bridge answers
-  `unavailable` (`core_contract_pending`); the iOS side compiles the declared
-  C ABI once the W2 header/library land.
+  (Kotlin/Swift), bound to the merged Rust `meeterm_attachment_*` C/JNI
+  surface; `scripts/ci/test_attachment_abi_parity.py` keeps the declared and
+  implemented symbols in lockstep.
 
 Manual remote cleanup: files the flow creates live under
 `~/.local/share/meeterm/attachments` (or the explicitly chosen directory) as

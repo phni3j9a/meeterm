@@ -3,6 +3,7 @@ import { NativeModule, requireNativeModule } from 'expo';
 import type {
   AttachmentActionResult,
   AttachmentBeginResult,
+  AttachmentCompositionStatus,
   AttachmentInsertResult,
   AttachmentPickResult,
   AttachmentPrepareResult,
@@ -76,6 +77,12 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
    * while native input composition is active; it never commits or clears it.
    */
   beginAttachment(terminalId: string, target: AttachmentTarget): Promise<AttachmentBeginResult>;
+  /**
+   * Explicit main-thread query for live IME composition on a terminal.
+   * Called before the sheet opens so `held` can refuse `Keyboard.dismiss()`
+   * without touching the composition.
+   */
+  attachmentCompositionStatus(terminalId: string): Promise<AttachmentCompositionStatus>;
   /** OS picker; the chosen image is stream-copied into app-owned staging. */
   pickAttachmentImage(source: AttachmentSource): Promise<AttachmentPickResult>;
   /** Validate, orient, strip metadata, and re-encode the staged image. */

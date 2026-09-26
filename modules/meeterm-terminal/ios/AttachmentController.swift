@@ -28,17 +28,22 @@ final class AttachmentController {
     return created
   }
 
-  /// Startup reclaim; safe to call repeatedly.
+  /// Startup reclaim; safe to call repeatedly. The store/directory is created
+  /// first so files the previous process left behind are still swept, and
+  /// `reclaimed` flips only after the sweep actually ran.
   func reclaimStaleFiles() {
     lock.lock()
     defer { lock.unlock() }
     guard !reclaimed else { return }
-    reclaimed = true
-    guard let existing = store else { return }
+    if store == nil {
+      guard let created = try? AttachmentStore() else { return }
+      store = created
+    }
     var kept = Set<String>()
     if let staging = session?.stagingFileName { kept.insert(staging) }
     if let prepared = session?.prepared?.fileName { kept.insert(prepared) }
-    existing.reclaimStale(keeping: kept)
+    store?.reclaimStale(keeping: kept)
+    reclaimed = true
   }
 
   func begin(terminalId: String, target: AttachmentTargetIdentity) throws -> [String: Any] {
@@ -170,8 +175,8 @@ final class AttachmentController {
         "message": "",
       ]
     }
-    let preview = active.prepared?.fileName
-      .flatMap { try? requireStore().previewUri($0) } ?? ""
+    let preview = active.prepared
+      .flatMap { try? requireStore().previewUri($0.fileName) } ?? ""
     return active.snapshot(previewUri: preview)
   }
 

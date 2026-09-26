@@ -262,9 +262,9 @@ public final class MeetermTerminalModule: Module {
       }
     }
 
-    // Issue #28 attachment flow. A held begin means the terminal's IME still
-    // owns a marked-text composition; JS shows the "finish conversion" hint
-    // and nothing about the composition is touched.
+    // Issue #28 attachment flow. Composition state is read on the main
+    // thread; a held result means the IME still owns marked text and the
+    // caller must not dismiss it.
     AsyncFunction("beginAttachment") { (terminalId: String, target: [String: Any]) throws -> [String: Any] in
       guard let identity = AttachmentTargetIdentity.from(target) else {
         throw Self.error("The attachment target is invalid.")
@@ -273,7 +273,15 @@ public final class MeetermTerminalModule: Module {
         terminalId: Self.normalizeTerminalId(terminalId),
         target: identity
       )
-    }
+    }.runOnQueue(.main)
+    AsyncFunction("attachmentCompositionStatus") { (terminalId: String) -> [String: Any] in
+      if AttachmentCompositionGuard.shared.isComposing(terminalId: Self.normalizeTerminalId(terminalId)) {
+        return AttachmentResults.held(AttachmentLimits.reasonComposing)
+      }
+      return ["status": "ok"]
+    }.runOnQueue(.main)
+    // Presenter lookup and `present` are main-thread operations; the bounded
+    // staging copy inside the picker stays off the main queue.
     AsyncFunction("pickAttachmentImage") { (source: String, promise: Promise) in
       do {
         try AttachmentController.shared.pick(source: source, promise: promise) { [weak self] in
@@ -282,7 +290,7 @@ public final class MeetermTerminalModule: Module {
       } catch {
         promise.reject(error)
       }
-    }
+    }.runOnQueue(.main)
     AsyncFunction("prepareAttachmentImage") { (token: String) throws -> [String: Any] in
       try AttachmentController.shared.prepare(token: token)
     }
@@ -313,7 +321,7 @@ public final class MeetermTerminalModule: Module {
     // keys, and held while the native IME owns a marked-text composition.
     AsyncFunction("insertAttachment") { (terminalId: String) throws -> [String: Any] in
       try AttachmentController.shared.insert(terminalId: Self.normalizeTerminalId(terminalId))
-    }
+    }.runOnQueue(.main)
     AsyncFunction("deleteRemoteAttachment") { (terminalId: String) throws -> [String: Any] in
       try AttachmentController.shared.deleteRemote(
         terminalId: Self.normalizeTerminalId(terminalId)

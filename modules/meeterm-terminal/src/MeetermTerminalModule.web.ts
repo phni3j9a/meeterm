@@ -4,6 +4,7 @@ import { DEFAULT_WORKSPACE_CONTROL } from './MeetermTerminal.types';
 import type {
   AttachmentActionResult,
   AttachmentBeginResult,
+  AttachmentCompositionStatus,
   AttachmentInsertResult,
   AttachmentPickResult,
   AttachmentPrepareResult,
@@ -133,6 +134,7 @@ class MeetermTerminalModule extends NativeModule<{}> {
   // product code on web gets deterministic unavailable answers instead of an
   // undefined binding.
   async beginAttachment(_terminalId: string, _target: AttachmentTarget): Promise<AttachmentBeginResult> { throw new Error(WEB_UNAVAILABLE); }
+  async attachmentCompositionStatus(_terminalId: string): Promise<AttachmentCompositionStatus> { return { status: 'ok' }; }
   async pickAttachmentImage(_source: AttachmentSource): Promise<AttachmentPickResult> { throw new Error(WEB_UNAVAILABLE); }
   async prepareAttachmentImage(_token: string): Promise<AttachmentPrepareResult> { throw new Error(WEB_UNAVAILABLE); }
   async discardAttachment(): Promise<void> { throw new Error(WEB_UNAVAILABLE); }

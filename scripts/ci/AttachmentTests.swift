@@ -493,6 +493,28 @@ final class AttachmentTests: XCTestCase {
     XCTAssertEqual(inputView.markedText(in: inputView.markedTextRange!), "あい")
   }
 
+  /// FP-014: a cold-start reclaim must create the store/directory first —
+  /// files left behind by a previous process are app-owned and swept.
+  func testStartupReclaimSweepsPreviousProcessFiles() throws {
+    let store = try AttachmentStore()
+    let orphanStaging = store.directoryURL.appendingPathComponent("att_orphanstaging.bin")
+    let orphanPrepared = store.directoryURL.appendingPathComponent("att_orphanprepared.png")
+    let foreign = store.directoryURL.deletingLastPathComponent()
+      .appendingPathComponent("att_foreign.bin")
+    try Data("orphan".utf8).write(to: orphanStaging)
+    try Data("orphan".utf8).write(to: orphanPrepared)
+    try Data("not in the attachment dir".utf8).write(to: foreign)
+    defer { try? FileManager.default.removeItem(at: foreign) }
+    // A fresh controller models the post-process-restart state: no store,
+    // no session — reclaim must still build the store and sweep.
+    let controller = AttachmentController()
+    controller.reclaimStaleFiles()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: orphanStaging.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: orphanPrepared.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path),
+      "reclaim must stay inside the app-owned attachments directory")
+  }
+
   override func tearDown() {
     super.tearDown()
     if !recordedIssue {

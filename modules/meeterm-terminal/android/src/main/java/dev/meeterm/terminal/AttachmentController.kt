@@ -2,6 +2,7 @@ package dev.meeterm.terminal
 
 import android.content.Context
 import expo.modules.kotlin.Promise
+import java.io.IOException
 
 /**
  * Process-wide attachment session owner for Issue #28.
@@ -34,11 +35,20 @@ internal object AttachmentController {
   fun reclaimStaleFiles(context: Context) {
     synchronized(lock) {
       if (reclaimed) return
-      reclaimed = true
       val kept = session?.let {
         setOfNotNull(it.stagingFileName, it.prepared?.fileName)
       } ?: emptySet()
-      store(context).reclaimStale(kept)
+      // Create the directory/store first so a first-launch reclaim still
+      // sweeps files the previous process left behind. `reclaimed` flips only
+      // after the sweep actually ran — a failing store retries next launch.
+      try {
+        store(context).reclaimStale(kept)
+      } catch (e: IOException) {
+        return
+      } catch (e: RuntimeException) {
+        return
+      }
+      reclaimed = true
     }
   }
 

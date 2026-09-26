@@ -95,6 +95,10 @@ tasks.named("preBuild").configure {
 }
 
 dependencies {
+  // System pickers (PickVisualMedia / OpenDocument contracts) and the
+  // ComponentActivity activity-result registry used by AttachmentPicker.
+  implementation("androidx.activity:activity:1.9.3")
+
   testImplementation("junit:junit:4.13.2")
   // Android's local-unit-test android.jar contains throwing org.json stubs.
   // Exercise profile migration with the same public API on the host JVM.
