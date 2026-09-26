@@ -237,7 +237,10 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   `uploaded` のみ、Delete from server / Discard は capability どおりに
   のみ有効であること。Cancel は例外的に `pending`/`uploading` の
   `jobInFlight` 中も有効のまま（重複 cancel や他の local action 中のみ
-  無効）で、pending/uploading 以外の phase では出ないこと。insert は
+  無効）で、pending/uploading 以外の phase では出ないこと。Retry の
+  受理待ちと受理済みの転送 job は区別し、受理後の retry 転送は初回
+  upload と同じく Cancel が有効であること（受理済み job は busyAction
+  ではなく `jobInFlight` で追跡する）。insert は
   verify+insert の1 job（intent 再確認 →
   新しい fence → remote lstat → 単一行 paste）で、verify 失敗は paste 前に
   pending として返ること。`inserted` op には insert action が出ず

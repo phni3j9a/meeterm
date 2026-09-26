@@ -3113,8 +3113,21 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
-          // Keep busyAction — the retry is an in-flight job; the snapshot's
-          // dropped jobInFlight flag carries its real outcome.
+          // The request was accepted — the wait is over and the transfer is
+          // now an ordinary in-flight job tracked by jobInFlight, exactly
+          // like the first upload. Leaving busyAction='retryUpload' here
+          // would lock Cancel for the whole transfer (FP-025).
+          setAttachment(current => current?.operation ? {
+            ...current,
+            busyAction: null,
+            operation: {
+              ...current.operation,
+              phase: 'uploading',
+              jobInFlight: true,
+              errorCode: '',
+              errorMessage: '',
+            },
+          } : current);
           refreshAttachmentSnapshot();
           return;
         }

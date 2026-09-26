@@ -4318,3 +4318,36 @@ test('attachment: a read during native Delete acceptance cannot finish that requ
   await settleAsync();
   assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'the dropped flag carries the verified removal');
 });
+
+test('attachment: an accepted retried upload remains cancellable', async t => {
+  const fixture = await openPrepared(t, {
+    ...ATTACHMENT_UPLOADED, phase: 'pending', remotePath: '',
+    jobInFlight: false, errorCode: 'timeout', errorMessage: 'previous upload timed out',
+  });
+  // The first upload press pulls the seeded pending op into the draft.
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  fixture.native.retryAttachmentUpload = async () => {
+    fixture.environment.attachmentOp = {
+      ...fixture.environment.attachmentOp, phase: 'uploading',
+      jobInFlight: true, errorCode: '', errorMessage: '',
+    };
+    return { status: 'accepted', attachmentId: '42' };
+  };
+  await press(fixture.root, findTestId(fixture.root, 'attachment-retry-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp.phase, 'uploading');
+  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
+  const cancel = findTestId(fixture.root, 'attachment-cancel');
+  assert.equal(cancel.props.disabled, false,
+    'an accepted retried upload must allow Cancel while its remote write job is running');
+  // Pressing it cancels the in-flight job like a first upload.
+  await press(fixture.root, cancel);
+  await settleAsync();
+  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'cancelled', jobInFlight: false };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
+});
