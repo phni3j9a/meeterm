@@ -710,7 +710,13 @@ enum MeetermCore {
     meeterm_attachment_delete_remote(terminalId, attachmentId)
   }
 
+  /// `meeterm_attachment_snapshot_size`: the ABI record size.
+  static func attachmentSnapshotSize() -> Int {
+    meeterm_attachment_snapshot_size()
+  }
+
   /// `meeterm_attachment_snapshot`: raw record bytes for the pure codec.
+  /// The record size stays consistent with `meetterm_attachment_snapshot_size`.
   static func attachmentSnapshot(attachmentId: UInt64) -> Data? {
     var native = meeterm_attachment_snapshot_t()
     guard meeterm_attachment_snapshot(attachmentId, &native) == 0 else {

@@ -1,7 +1,5 @@
 package dev.meeterm.terminal
 
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,12 +7,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Host-JVM coverage of the Phase B operation model: transition guards
- * (double upload, stale ids, cancel semantics) and the fixed-size
- * `meeterm_attachment_snapshot_t` codec.
+ * Host-JVM coverage of the operation model: transition guards
+ * (double upload, stale ids, cancel semantics), the `flags & 0x2`
+ * remote-removal representation, and the JNI `attachmentSnapshot`
+ * flat string array codec.
  */
 class AttachmentOperationTest {
-  private fun record(
+  private fun fields(
     attachmentId: Long = 42L,
     phase: Int = 1,
     flags: Int = 0,
@@ -24,36 +23,25 @@ class AttachmentOperationTest {
     displayName: String = "meeterm-x.png",
     errorCode: String = "",
     errorMessage: String = "",
-  ): ByteArray {
-    val bytes = ByteArray(AttachmentOperationCodec.RECORD_SIZE)
-    val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-    buffer.putInt(0, phase)
-    buffer.putInt(4, flags)
-    buffer.putLong(8, attachmentId)
-    buffer.putLong(16, bytesUploaded)
-    buffer.putLong(24, sizeBytes)
-    fun field(value: String, lengthOffset: Int, dataOffset: Int, capacity: Int) {
-      val raw = value.toByteArray(Charsets.UTF_8).copyOf(capacity)
-      val length = minOf(value.toByteArray(Charsets.UTF_8).size, capacity)
-      buffer.putShort(lengthOffset, length.toShort())
-      raw.copyInto(bytes, dataOffset)
-    }
-    field(remotePath, 32, 34, 512)
-    field(displayName, 546, 548, 128)
-    field(errorCode, 676, 678, 64)
-    field(errorMessage, 742, 744, 256)
-    return bytes
-  }
+  ): Array<String> = arrayOf(
+    phase.toString(),
+    flags.toString(),
+    attachmentId.toString(),
+    bytesUploaded.toString(),
+    sizeBytes.toString(),
+    remotePath,
+    displayName,
+    errorCode,
+    errorMessage,
+  )
 
   @Test
-  fun decodesCompleteSnapshotRecord() {
+  fun decodesCompleteSnapshotFields() {
     val decoded = AttachmentOperationCodec.decode(
-      record(
+      fields(
         attachmentId = 42L,
         phase = 2,
-        flags = 0,
         bytesUploaded = 1_000L,
-        sizeBytes = 1_000L,
         remotePath = "/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png",
       ),
     )!!
@@ -63,23 +51,27 @@ class AttachmentOperationTest {
     assertEquals(1_000L, decoded.bytesUploaded)
     assertEquals("/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png", decoded.remotePath)
     assertFalse(decoded.insertUnconfirmed)
+    assertFalse(decoded.remoteRemoved)
   }
 
   @Test
-  fun decodesInsertUnconfirmedFlagAndErrors() {
+  fun decodesFlagsAndErrorFields() {
     val decoded = AttachmentOperationCodec.decode(
-      record(phase = 3, flags = 1, errorCode = "input_unconfirmed", errorMessage = "unconfirmed"),
+      fields(phase = 3, flags = 3, errorCode = "input_unconfirmed", errorMessage = "unconfirmed"),
     )!!
     assertEquals(AttachmentOpPhase.INSERTED, decoded.phase)
     assertTrue(decoded.insertUnconfirmed)
+    assertTrue(decoded.remoteRemoved)
     assertEquals("input_unconfirmed", decoded.errorCode)
     assertEquals("unconfirmed", decoded.errorMessage)
   }
 
   @Test
-  fun rejectsShortRecordsAndUnknownPhases() {
-    assertNull(AttachmentOperationCodec.decode(record().copyOf(512)))
-    assertNull(AttachmentOperationCodec.decode(record(phase = 99)))
+  fun rejectsShortArraysAndUnknownPhases() {
+    assertNull(AttachmentOperationCodec.decode(arrayOf("1", "0")))
+    assertNull(AttachmentOperationCodec.decode(fields(phase = 99)))
+    assertNull(AttachmentOperationCodec.decode(fields(phase = 6)))
+    assertNull(AttachmentOperationCodec.decode(fields().also { it[0] = "pending" }))
   }
 
   @Test
@@ -97,7 +89,7 @@ class AttachmentOperationTest {
     val machine = AttachmentOpMachine()
     machine.recordBegin(7L, 100L, "a.png")
     for (phase in listOf(
-      AttachmentOpPhase.CANCELLED, AttachmentOpPhase.FAILED, AttachmentOpPhase.DELETED,
+      AttachmentOpPhase.CANCELLED, AttachmentOpPhase.FAILED,
     )) {
       machine.applySnapshot(operation(machine.operation!!.attachmentId, phase))
       assertTrue("expected re-begin after $phase", machine.canBeginUpload())
@@ -105,10 +97,10 @@ class AttachmentOperationTest {
     }
   }
 
-  private fun operation(id: Long, phase: AttachmentOpPhase) = AttachmentOperation(
+  private fun operation(id: Long, phase: AttachmentOpPhase, flags: Int = 0) = AttachmentOperation(
     attachmentId = id,
     phase = phase,
-    flags = 0,
+    flags = flags,
     bytesUploaded = 0L,
     sizeBytes = 100L,
     remotePath = "",
@@ -148,6 +140,7 @@ class AttachmentOperationTest {
     assertFalse(op(AttachmentOpPhase.UPLOADED).canRetryUpload)
 
     assertTrue(op(AttachmentOpPhase.UPLOADED).canInsert)
+    assertTrue(op(AttachmentOpPhase.INSERTED).canInsert)
     assertFalse(op(AttachmentOpPhase.UPLOADING).canInsert)
 
     assertTrue(op(AttachmentOpPhase.PENDING).canCancel)
@@ -162,6 +155,29 @@ class AttachmentOperationTest {
     }
     assertFalse(op(AttachmentOpPhase.UPLOADING).canDeleteRemote)
     assertFalse(op(AttachmentOpPhase.PENDING).canDeleteRemote)
+  }
+
+  @Test
+  fun remoteRemovalKeepsPhaseAndChangesCapabilities() {
+    // `flags & 0x2` marks the verified remote deletion; the phase itself is
+    // kept (an inserted line is not revoked, a failed op stays failed).
+    val removedUploaded = operation(1L, AttachmentOpPhase.UPLOADED, flags = 0x2)
+    assertTrue(removedUploaded.remoteRemoved)
+    assertEquals("uploaded", removedUploaded.wirePhase)
+    assertFalse(removedUploaded.canInsert)
+    assertFalse(removedUploaded.canDeleteRemote)
+    // The core re-uploads the same operation for uploaded+removed.
+    assertTrue(removedUploaded.canRetryUpload)
+
+    val removedInserted = operation(1L, AttachmentOpPhase.INSERTED, flags = 0x2)
+    assertTrue(removedInserted.remoteRemoved)
+    assertFalse(removedInserted.canInsert)
+    assertFalse(removedInserted.canDeleteRemote)
+    assertFalse(removedInserted.canRetryUpload)
+
+    val removedFailed = operation(1L, AttachmentOpPhase.FAILED, flags = 0x2)
+    assertTrue(removedFailed.canRetryUpload)
+    assertFalse(removedFailed.canDeleteRemote)
   }
 
   @Test

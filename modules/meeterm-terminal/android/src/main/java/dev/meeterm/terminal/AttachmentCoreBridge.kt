@@ -32,6 +32,7 @@ internal object AttachmentCoreBridge {
     -6 -> "source_too_large"
     -7 -> "destination_not_ready"
     -8 -> "busy"
+    -9 -> "internal_error"
     else -> "native_error"
   }
 
@@ -43,8 +44,10 @@ internal object AttachmentCoreBridge {
     }
 
   /**
-   * `meeterm_attachment_begin`. An empty remoteDirectory selects the core
-   * default `~/.local/share/meeterm/attachments`.
+   * `meeterm_attachment_begin`. A null remoteDirectory selects the core
+   * default `~/.local/share/meeterm/attachments` (the JNI `remote_dir`
+   * parameter is nullable; an empty string would be a validation error,
+   * not the default).
    * Returns the attachment id (>0), 0 on synchronous rejection, or null when
    * the core contract is not linked yet.
    */
@@ -52,7 +55,7 @@ internal object AttachmentCoreBridge {
     terminalHandle: Long,
     localPath: String,
     displayName: String,
-    remoteDirectory: String,
+    remoteDirectory: String?,
     sizeBytes: Long,
   ): Long? = pending(
     {
@@ -98,10 +101,10 @@ internal object AttachmentCoreBridge {
       { AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING) },
     )
 
-  /** `meeterm_attachment_snapshot`; decoded record, null when unknown. */
+  /** `meeterm_attachment_snapshot`; decoded fields, null when unknown. */
   fun snapshot(attachmentId: Long): AttachmentOperation? =
     pending(
-      { MeetermNative.attachmentSnapshot(attachmentId)?.let(AttachmentOperationCodec::decode) },
+      { AttachmentOperationCodec.decode(MeetermNative.attachmentSnapshot(attachmentId)) },
       { null },
     )
 }

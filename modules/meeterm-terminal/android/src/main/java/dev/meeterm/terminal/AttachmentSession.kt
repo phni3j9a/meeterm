@@ -160,6 +160,7 @@ internal object AttachmentResults {
     "errorCode" to op.errorCode,
     "errorMessage" to op.errorMessage,
     "insertUnconfirmed" to op.insertUnconfirmed,
+    "remoteRemoved" to op.remoteRemoved,
   )
 
   fun snapshotResult(op: AttachmentOperation?): Map<String, Any?> =

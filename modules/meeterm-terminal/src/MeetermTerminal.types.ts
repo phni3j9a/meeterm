@@ -339,7 +339,8 @@ export type AttachmentPrepareResult =
  * Rust-owned attachment operation phase (attachment-ffi contract). `pending`
  * means the op is blocked and `errorCode` carries the pending reason;
  * `inserted` only proves the native input queue accepted the path line —
- * never that a CLI or model consumed it.
+ * never that a CLI or model consumed it. Deletion is not a phase: the core
+ * keeps the phase and sets the `remoteRemoved` flag instead.
  */
 export type AttachmentCorePhase =
   | 'pending'
@@ -347,8 +348,7 @@ export type AttachmentCorePhase =
   | 'uploaded'
   | 'inserted'
   | 'failed'
-  | 'cancelled'
-  | 'deleted';
+  | 'cancelled';
 
 /** One complete core snapshot, decoded from the fixed-size C record. */
 export type AttachmentOperationSnapshot = {
@@ -363,6 +363,8 @@ export type AttachmentOperationSnapshot = {
   errorMessage: string;
   /** flags & 0x1: the input path accepted the line, delivery unconfirmed. */
   insertUnconfirmed: boolean;
+  /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
+  remoteRemoved: boolean;
 };
 
 /** Uniform answer for upload/retry/cancel/delete/dispose requests. */

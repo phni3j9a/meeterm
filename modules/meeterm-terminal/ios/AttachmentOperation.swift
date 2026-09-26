@@ -15,7 +15,6 @@ enum AttachmentOpPhase: Int {
   case inserted = 3
   case failed = 4
   case cancelled = 5
-  case deleted = 6
 
   var wireName: String {
     switch self {
@@ -25,7 +24,6 @@ enum AttachmentOpPhase: Int {
     case .inserted: return "inserted"
     case .failed: return "failed"
     case .cancelled: return "cancelled"
-    case .deleted: return "deleted"
     }
   }
 }
@@ -44,18 +42,29 @@ struct AttachmentOperation: Equatable {
   /// flags & 0x1: the input queue accepted the line; delivery unconfirmed.
   var insertUnconfirmed: Bool { flags & 0x1 != 0 }
 
-  /// Explicit Retry upload is offered only for pending/failed ops.
-  var canRetryUpload: Bool { phase == .pending || phase == .failed }
+  /// flags & 0x2: the meeterm-created remote file was explicitly deleted.
+  var remoteRemoved: Bool { flags & 0x2 != 0 }
 
-  /// Insert is allowed while uploaded; an inserted op accepts it idempotently.
-  var canInsert: Bool { phase == .uploaded || phase == .inserted }
+  /// Explicit Retry upload: pending/failed ops, plus an uploaded op whose
+  /// remote file was deleted — the core re-uploads that same operation.
+  var canRetryUpload: Bool {
+    phase == .pending || phase == .failed ||
+      (phase == .uploaded && remoteRemoved)
+  }
+
+  /// Insert is allowed while uploaded; an inserted op accepts it
+  /// idempotently. A removed remote file can never be inserted.
+  var canInsert: Bool {
+    !remoteRemoved && (phase == .uploaded || phase == .inserted)
+  }
 
   /// Cancel applies while transfer work may still be running.
   var canCancel: Bool { phase == .pending || phase == .uploading }
 
-  /// M4 remote delete covers every phase that may own a completed file.
+  /// M4 remote delete covers every phase that may still own a file.
   var canDeleteRemote: Bool {
-    phase == .uploaded || phase == .inserted || phase == .failed || phase == .cancelled
+    !remoteRemoved &&
+      (phase == .uploaded || phase == .inserted || phase == .failed || phase == .cancelled)
   }
 }
 
@@ -69,7 +78,7 @@ final class AttachmentOpMachine {
   /// A new upload may only replace a fully terminal (or absent) operation.
   func canBeginUpload() -> Bool {
     guard let op = operation else { return true }
-    return op.phase == .cancelled || op.phase == .deleted || op.phase == .failed
+    return op.phase == .cancelled || op.phase == .failed
   }
 
   /// Record the attachment id accepted by the core; false means refused.
