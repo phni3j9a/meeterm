@@ -274,8 +274,8 @@ public final class MeetermTerminalModule: Module {
         target: identity
       )
     }.runOnQueue(.main)
-    AsyncFunction("attachmentCompositionStatus") { (terminalId: String) -> [String: Any] in
-      if AttachmentCompositionGuard.shared.isComposing(terminalId: Self.normalizeTerminalId(terminalId)) {
+    AsyncFunction("attachmentCompositionStatus") { (terminalId: String) throws -> [String: Any] in
+      if AttachmentCompositionGuard.shared.isComposing(terminalId: try Self.normalizeTerminalId(terminalId)) {
         return AttachmentResults.held(AttachmentLimits.reasonComposing)
       }
       return ["status": "ok"]
