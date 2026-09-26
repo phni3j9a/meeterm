@@ -1,0 +1,40 @@
+candidate_sha=bdd83d55ed0fe3053cc4a88ef48eb44733ea46c2
+branch=issue-28-image-attachments
+run_type=focused recheck (FP-025/026/027 + docs head; standard/ssh suites NOT rerun)
+delta_from_previous=App.tsx polling now also tracks jobInFlight post-cancel (FP-027), docs, app-selection.test.cjs
+machine=Xcode 26.6 / iphonesimulator SDK 26.5 / ARCHS=arm64
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 (iPhone 18 Pro Max, iOS 27.0)
+
+stage_1_npm_ci=passed
+stage_2_cng_prebuild=passed (fresh ios/ dir)
+stage_3_xcodebuild_app=passed (build-for-testing, 0 errors; xcodebuild-bdd83d55-b4t.log)
+stage_4_typecheck=passed (typecheck-bdd83d55.log)
+stage_4_injected_xctest=passed 38/38
+  meetermTests: AttachmentTests 20/20, TerminalInputViewTests 13/13 (xctest-bdd83d55.log 33/33)
+  meetermStorageTests: ClientStoreTests 5/5 (xctest-storage-bdd83d55.log)
+stage_5_launch_gates=passed
+  nativeReady=MEETERM_SMOKE_NATIVE_READY present
+  first_frame=MEETERM_SMOKE_FIRST_FRAME_METAL (CoreGraphics fallback marker: 0)
+  process_alive=yes; launch-terminal.png; launch-markers.log
+stage_6_attachment_routes=11/11 captured (attachment-routes/*.png)
+stage_7_live_ssh_e2e=passed (fixture: fixture.py --sftp --sftp-delay 5 + real tmux;
+  test-without-building 128.3s, 0 failures; attachment-e2e/xcodebuild-e2e.log)
+  upload: remote file verified on host (meeterm-20260926-220434-87307c4133407732.png, 292B PNG 64x48, mode 600)
+  insert: quoted absolute path held UNSENT at pane %0 prompt (capture-pane -J; no Enter, no command executed)
+  delete: remote file removed on host
+  stage captures: e2e-terminal-ready / sheet-choosing / picker-photos / preview-photos /
+    uploaded / inserting / inserted / deleted / picker-files / preview-files
+stage_8_fp027_cancel_cleanup_reenable=passed
+  second upload via Files picker -> attachment-uploading -> Cancel tapped in flight
+    (5s sftp-delay window) -> attachment-cancelled landed while detached cleanup ran
+  gated window observed: attachment-upload + attachment-discard isEnabled=false
+    during cleanup (programmatic, ~5s) -> e2e-cancelled-gated.png
+  after cleanup dropped jobInFlight: both actions re-enabled without closing the
+    sheet -> e2e-cancelled-reenabled.png
+  host verify: no leftover remote file after cancelled upload + cleanup
+    (attachments/ empty; host-gates.log)
+  validation: case=attachment_e2e result=passed / case=cancel_cleanup_reenable result=passed
+
+note: run 1 passed all asserts too; re-run only to capture e2e-cancelled-gated.png
+inside the gated window (run 1's shot was post-transition). No product defect
+observed in either run.

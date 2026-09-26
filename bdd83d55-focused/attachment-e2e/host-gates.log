@@ -1,0 +1,21 @@
+15:03:33 phase=launch
+15:04:41 phase=uploaded
+  remote file exists: /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-220434-87307c4133407732.png (292 bytes, mode 600)
+/Users/devin/.local/share/meeterm/attachments/meeterm-20260926-220434-87307c4133407732.png: PNG image data, 64 x 48, 8-bit/color RGB, non-interlaced
+15:04:54 phase=inserted
+  pane %0 last-nonblank: sh-3.2$ '/Users/devin/.local/share/meeterm/attachments/meeterm-20260926-220434-87307c4133407732.png'
+  quoted path held unsent at prompt on %0
+15:05:02 phase=deleted
+  remote file gone: /Users/devin/.local/share/meeterm/attachments/meeterm-20260926-220434-87307c4133407732.png
+total 0
+drwx------  2 devin  staff  64 Sep 26 15:05 .
+drwx------  3 devin  staff  96 Sep 26 15:04 ..
+15:05:21 phase=files-preview
+  released cancel-ready (no induction needed for FP-027)
+15:05:26 phase=cancelled
+  no leftover remote file after cancelled upload+cleanup
+total 0
+drwx------  2 devin  staff  64 Sep 26 15:05 .
+drwx------  3 devin  staff  96 Sep 26 15:04 ..
+15:05:35 phase=complete
+15:05:35 complete

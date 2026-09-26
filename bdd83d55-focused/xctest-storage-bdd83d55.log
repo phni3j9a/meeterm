@@ -1,0 +1,50 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp/meeterm-derived-data/Build/Products/att28-bdd83d55.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" "-only-testing:meetermStorageTests/ClientStoreTests"
+
+2026-09-26 14:54:27.671 xcodebuild[17619:133341] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 14:54:27.675 xcodebuild[17619:133341] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 14:54:27.868 xcodebuild[17619:133341] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-26 14:54:32.033836-0700 meeterm[17636:133671] [UIKit App Config] `UIScene` life cycle is now required when building with the latest SDKs. Apps that don't adopt will fail to launch.
+2026-09-26 14:54:32.036342-0700 meeterm[17636:133671] You've implemented -[<UIApplicationDelegate> application:performFetchWithCompletionHandler:], but you still need to add "fetch" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 14:54:32.036448-0700 meeterm[17636:133671] You've implemented -[<UIApplicationDelegate> application:didReceiveRemoteNotification:fetchCompletionHandler:], but you still need to add "remote-notification" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-09-26 14:54:32.037472-0700 meeterm[17636:133671] _setUpFeatureFlags called with release level 2
+2026-09-26 14:54:32.087635-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoModulesCoreJSLogger'
+2026-09-26 14:54:32.129749-0700 meeterm[17636:133671] [expo] 🟢 Posting 'appBecomesActive' event to registered modules
+2026-09-26 14:54:32.138617-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoDomWebViewModule'
+2026-09-26 14:54:32.156691-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoFetchModule'
+2026-09-26 14:54:32.158691-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoAsset'
+2026-09-26 14:54:32.162738-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExponentConstants'
+Test Suite 'Selected tests' started at 2026-09-26 14:54:32.172.
+Test Suite 'meetermStorageTests.xctest' started at 2026-09-26 14:54:32.173.
+Test Suite 'ClientStoreTests' started at 2026-09-26 14:54:32.173.
+Test Case '-[meetermStorageTests.ClientStoreTests testCredentialRemainsNativeAndCannotFollowAnEndpointChange]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testCredentialRemainsNativeAndCannotFollowAnEndpointChange]' passed (0.036 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials]' started.
+2026-09-26 14:54:32.219488-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'FileSystem'
+Test Case '-[meetermStorageTests.ClientStoreTests testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials]' passed (0.013 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testPreferencesRoundTripAndValidation]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testPreferencesRoundTripAndValidation]' passed (0.004 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testRemovingSavedCredentialAndProfile]' started.
+2026-09-26 14:54:32.240126-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExponentFileSystem'
+2026-09-26 14:54:32.242997-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoFontLoader'
+2026-09-26 14:54:32.244828-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoFontUtils'
+2026-09-26 14:54:32.251949-0700 meeterm[17636:133777] [expo] 🟢 Registering module 'ExpoKeepAwake'
+Test Case '-[meetermStorageTests.ClientStoreTests testRemovingSavedCredentialAndProfile]' passed (0.022 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules]' passed (0.011 seconds).
+Test Suite 'ClientStoreTests' passed at 2026-09-26 14:54:32.266.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.085 (0.093) seconds
+Test Suite 'meetermStorageTests.xctest' passed at 2026-09-26 14:54:32.266.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.085 (0.093) seconds
+Test Suite 'Selected tests' passed at 2026-09-26 14:54:32.266.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.085 (0.094) seconds
+2026-09-26 14:54:32.545 xcodebuild[17619:133341] [MT] IDETestOperationsObserverDebug: 4.675 elapsed -- Testing started completed.
+2026-09-26 14:54:32.545 xcodebuild[17619:133341] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-26 14:54:32.545 xcodebuild[17619:133341] [MT] IDETestOperationsObserverDebug: 4.675 sec, +4.675 sec -- end
+
+Test session results, code coverage, and logs:
+	/Users/devin/Library/Developer/Xcode/DerivedData/meeterm-cgjnxfecuvenczgoqqzpkpepxphu/Logs/Test/Test-meeterm-2026.09.26_14-54-27--0700.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started
