@@ -94,8 +94,9 @@ final class AttachmentController {
     let stalePrepared = active.prepared?.fileName
     active.stagingFileName = token
     active.prepared = nil
-    active.remotePath = nil
     active.clearError()
+    // A fresh pick also retires any live core operation from this session.
+    retireOperationLocked(active)
     store?.delete(stale == token ? nil : stale, stalePrepared == token ? nil : stalePrepared)
   }
 
@@ -136,12 +137,16 @@ final class AttachmentController {
     }
   }
 
+  /// Explicit Discard: cancel/dispose the core op, then delete local files.
   func discard() throws {
     lock.lock()
     let active = session
     session = nil
     lock.unlock()
     guard let active = active else { return }
+    lock.lock()
+    retireOperationLocked(active)
+    lock.unlock()
     try requireStore().delete(active.stagingFileName, active.prepared?.fileName)
   }
 
@@ -159,7 +164,8 @@ final class AttachmentController {
         "height": 0,
         "byteCount": 0,
         "sourceByteCount": 0,
-        "remotePath": "",
+        "target": NSNull(),
+        "operation": NSNull(),
         "errorCode": "",
         "message": "",
       ]
@@ -169,6 +175,10 @@ final class AttachmentController {
     return active.snapshot(previewUri: preview)
   }
 
+  /**
+   * Explicit Upload: `meeterm_attachment_begin` over the fenced connection.
+   * A second upload is refused while the previous operation is live.
+   */
   func upload(terminalId: String, remoteDirectory: String) throws -> [String: Any] {
     lock.lock()
     let active = session
@@ -189,21 +199,72 @@ final class AttachmentController {
         "The prepared image is missing; prepare it again."
       )
     }
-    let result = AttachmentCoreBridge.upload(
-      terminalHandle: try ensureHandle(active.target.terminalId),
-      localPath: url.path,
-      remoteDirectory: remoteDirectory
-    )
-    if (result["status"] as? String) == "uploaded",
-       let remotePath = result["remotePath"] as? String, !remotePath.isEmpty {
-      lock.lock()
-      active.remotePath = remotePath
-      lock.unlock()
+    lock.lock()
+    let previousOpId = active.machine.operation?.attachmentId
+    lock.unlock()
+    guard active.machine.canBeginUpload() else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorState,
+        "An attachment upload is already in progress."
+      )
     }
-    return result
+    guard let attachmentId = AttachmentCoreBridge.begin(
+      terminalId: try ensureHandle(active.target.terminalId),
+      localPath: url.path,
+      displayName: prepared.fileName,
+      remoteDirectory: remoteDirectory,
+      sizeBytes: UInt64(clamping: prepared.byteCount)
+    ) else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorState,
+        "The core could not start the upload; check the connection."
+      )
+    }
+    lock.lock()
+    let recorded = active.machine.recordBegin(
+      attachmentId: attachmentId,
+      sizeBytes: UInt64(clamping: prepared.byteCount),
+      displayName: prepared.fileName
+    )
+    if recorded { active.clearError() }
+    lock.unlock()
+    if !recorded {
+      // A racing upload won the slot; release the orphaned core op.
+      _ = AttachmentCoreBridge.dispose(attachmentId: attachmentId)
+      return AttachmentResults.error(
+        AttachmentLimits.errorState,
+        "An attachment upload is already in progress."
+      )
+    }
+    if let previousOpId = previousOpId, previousOpId != attachmentId {
+      // The replaced op is terminal by definition; release its core record.
+      _ = AttachmentCoreBridge.dispose(attachmentId: previousOpId)
+    }
+    refreshSnapshot(active)
+    return AttachmentResults.accepted(attachmentId)
   }
 
-  func deleteRemote(terminalId: String, remotePath: String) throws -> [String: Any] {
+  /// Poll the live core operation and fold it into the session machine.
+  func attachmentSnapshot() -> [String: Any] {
+    lock.lock()
+    let active = session
+    lock.unlock()
+    guard let operation = active?.machine.operation else {
+      return ["status": "idle"]
+    }
+    guard let fresh = AttachmentCoreBridge.snapshot(attachmentId: operation.attachmentId) else {
+      return AttachmentResults.unavailable(AttachmentLimits.reasonCorePending)
+    }
+    lock.lock()
+    if active?.machine.operation?.attachmentId == fresh.attachmentId {
+      active?.machine.applySnapshot(fresh)
+    }
+    lock.unlock()
+    return AttachmentResults.snapshotResult(fresh)
+  }
+
+  /// Explicit transfer retry on a pending/failed operation.
+  func retryUpload(terminalId: String) throws -> [String: Any] {
     lock.lock()
     let active = session
     lock.unlock()
@@ -213,15 +274,65 @@ final class AttachmentController {
         "The attachment belongs to a different terminal."
       )
     }
-    let result = AttachmentCoreBridge.delete(
-      terminalHandle: try ensureHandle(active.target.terminalId),
-      remotePath: remotePath
+    guard let operation = active.machine.operation, operation.canRetryUpload else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorState,
+        "There is no upload to retry."
+      )
+    }
+    let result = AttachmentCoreBridge.retryUpload(
+      terminalId: try ensureHandle(terminalId),
+      attachmentId: operation.attachmentId
     )
-    if (result["status"] as? String) == "deleted" {
+    if (result["status"] as? String) == "accepted" { refreshSnapshot(active) }
+    return result
+  }
+
+  /// Explicit cancel of a pending/uploading operation.
+  func cancel() -> [String: Any] {
+    lock.lock()
+    let active = session
+    lock.unlock()
+    guard let active = active else {
+      return AttachmentResults.unavailable(AttachmentLimits.reasonNoAttachment)
+    }
+    guard let operation = active.machine.operation, operation.canCancel else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorState,
+        "There is no upload to cancel."
+      )
+    }
+    let result = AttachmentCoreBridge.cancel(attachmentId: operation.attachmentId)
+    if (result["status"] as? String) == "accepted" {
       lock.lock()
-      active.remotePath = nil
+      active.machine.markCancelled()
       lock.unlock()
     }
+    return result
+  }
+
+  /// Explicit server-side delete of the completed remote file.
+  func deleteRemote(terminalId: String) throws -> [String: Any] {
+    lock.lock()
+    let active = session
+    lock.unlock()
+    guard let active = active, active.target.terminalId == terminalId else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorTarget,
+        "The attachment belongs to a different terminal."
+      )
+    }
+    guard let operation = active.machine.operation, operation.canDeleteRemote else {
+      return AttachmentResults.error(
+        AttachmentLimits.errorState,
+        "There is no uploaded file to delete."
+      )
+    }
+    let result = AttachmentCoreBridge.deleteRemote(
+      terminalId: try ensureHandle(active.target.terminalId),
+      attachmentId: operation.attachmentId
+    )
+    if (result["status"] as? String) == "accepted" { refreshSnapshot(active) }
     return result
   }
 
@@ -229,14 +340,12 @@ final class AttachmentController {
     lock.lock()
     let active = session
     lock.unlock()
-    let existingStore = try? requireStore()
-    let hasPrepared = active?.prepared
-      .map { existingStore?.preparedURL($0.fileName) != nil } ?? false
+    let operation = active?.machine.operation
     let verdict = AttachmentInsertionPolicy.insert(
       composing: AttachmentCompositionGuard.shared.isComposing(terminalId: terminalId),
       hasActiveSession: active != nil,
-      hasPreparedImage: hasPrepared,
-      hasUploadedPath: active?.remotePath != nil,
+      hasPreparedImage: operation?.canInsert == true,
+      hasUploadedPath: operation?.phase == .uploaded,
       sessionTerminalId: active?.target.terminalId,
       requestTerminalId: terminalId
     )
@@ -248,11 +357,45 @@ final class AttachmentController {
     case .rejected(let errorCode, let message):
       return AttachmentResults.error(errorCode, message)
     case .readyToInsert:
-      return AttachmentCoreBridge.insert(
-        terminalHandle: try ensureHandle(terminalId),
-        remotePath: active?.remotePath
+      guard let operation = operation, let active = active else {
+        return AttachmentResults.held(AttachmentLimits.reasonNoAttachment)
+      }
+      let result = AttachmentCoreBridge.insert(
+        terminalId: try ensureHandle(terminalId),
+        attachmentId: operation.attachmentId
       )
+      if (result["status"] as? String) == "accepted" {
+        refreshSnapshot(active)
+        return AttachmentResults.inserted()
+      }
+      return result
     }
+  }
+
+  /// Fold the latest core snapshot into the session when the id still matches.
+  private func refreshSnapshot(_ active: AttachmentSession) {
+    lock.lock()
+    let attachmentId = active.machine.operation?.attachmentId
+    lock.unlock()
+    guard let attachmentId = attachmentId,
+          let fresh = AttachmentCoreBridge.snapshot(attachmentId: attachmentId) else {
+      return
+    }
+    lock.lock()
+    if active.machine.operation?.attachmentId == fresh.attachmentId {
+      active.machine.applySnapshot(fresh)
+    }
+    lock.unlock()
+  }
+
+  /// Cancel + dispose + clear a live op while `lock` is held.
+  private func retireOperationLocked(_ active: AttachmentSession) {
+    guard let operation = active.machine.operation else { return }
+    if operation.canCancel {
+      _ = AttachmentCoreBridge.cancel(attachmentId: operation.attachmentId)
+    }
+    _ = AttachmentCoreBridge.dispose(attachmentId: operation.attachmentId)
+    active.machine.clear()
   }
 
   private func ensureHandle(_ terminalId: String) throws -> UInt64 {

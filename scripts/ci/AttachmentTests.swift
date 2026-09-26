@@ -204,8 +204,158 @@ final class AttachmentTests: XCTestCase {
       "file:///cache/attachments/att_8899aabbccddeeff.png"
     )
     XCTAssertEqual(snapshot["width"] as? Int, 1080)
-    session.remotePath = "/tmp/meeterm-attach/att.png"
-    XCTAssertEqual(session.snapshot(previewUri: "")["status"] as? String, "uploaded")
+    XCTAssertEqual(
+      (snapshot["target"] as? [String: Any])?["terminalId"] as? String,
+      "poc-main"
+    )
+    // The core operation rides the session snapshot only while an op exists.
+    XCTAssertTrue(snapshot["operation"] is NSNull)
+    XCTAssertTrue(session.machine.recordBegin(
+      attachmentId: 7,
+      sizeBytes: 123_456,
+      displayName: "att_8899aabbccddeeff.png"
+    ))
+    let withOp = session.snapshot(previewUri: "")["operation"] as? [String: Any]
+    XCTAssertEqual(withOp?["phase"] as? String, "uploading")
+    XCTAssertEqual(withOp?["attachmentId"] as? String, "7")
+  }
+
+  // Phase B: the adapter-side machine mirrors the contract's phase rules
+  // while the Rust snapshot stays authoritative.
+
+  private func operationRecord(
+    attachmentId: UInt64 = 42,
+    phase: Int32 = 1,
+    flags: UInt32 = 0,
+    bytesUploaded: UInt64 = 0,
+    sizeBytes: UInt64 = 1_000,
+    remotePath: String = "",
+    displayName: String = "meeterm-x.png",
+    errorCode: String = "",
+    errorMessage: String = ""
+  ) -> Data {
+    var bytes = Data(count: AttachmentOperationCodec.recordSize)
+    bytes.withUnsafeMutableBytes { raw in
+      raw.storeBytes(of: phase.littleEndian, toByteOffset: 0, as: Int32.self)
+      raw.storeBytes(of: flags.littleEndian, toByteOffset: 4, as: UInt32.self)
+      raw.storeBytes(of: attachmentId.littleEndian, toByteOffset: 8, as: UInt64.self)
+      raw.storeBytes(of: bytesUploaded.littleEndian, toByteOffset: 16, as: UInt64.self)
+      raw.storeBytes(of: sizeBytes.littleEndian, toByteOffset: 24, as: UInt64.self)
+      func field(_ value: String, _ lengthOffset: Int, _ dataOffset: Int, _ capacity: Int) {
+        let utf8 = Array(value.utf8.prefix(capacity))
+        raw.storeBytes(of: UInt16(utf8.count).littleEndian, toByteOffset: lengthOffset, as: UInt16.self)
+        raw.copyBytes(from: utf8, toByteRange: dataOffset ..< dataOffset + utf8.count)
+      }
+      field(remotePath, 32, 34, 512)
+      field(displayName, 546, 548, 128)
+      field(errorCode, 676, 678, 64)
+      field(errorMessage, 742, 744, 256)
+    }
+    return bytes
+  }
+
+  private func operation(_ id: UInt64, _ phase: AttachmentOpPhase) -> AttachmentOperation {
+    AttachmentOperation(
+      attachmentId: id,
+      phase: phase,
+      flags: 0,
+      bytesUploaded: 0,
+      sizeBytes: 100,
+      remotePath: "",
+      displayName: "a.png",
+      errorCode: "",
+      errorMessage: ""
+    )
+  }
+
+  func testDecodesCompleteSnapshotRecord() {
+    let decoded = AttachmentOperationCodec.decode(
+      operationRecord(
+        attachmentId: 42,
+        phase: 2,
+        bytesUploaded: 1_000,
+        remotePath: "/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png"
+      )
+    )
+    XCTAssertNotNil(decoded)
+    XCTAssertEqual(decoded?.attachmentId, 42)
+    XCTAssertEqual(decoded?.phase, .uploaded)
+    XCTAssertEqual(decoded?.phase.wireName, "uploaded")
+    XCTAssertEqual(decoded?.bytesUploaded, 1_000)
+    XCTAssertEqual(
+      decoded?.remotePath,
+      "/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png"
+    )
+    XCTAssertEqual(decoded?.insertUnconfirmed, false)
+  }
+
+  func testDecodesInsertUnconfirmedFlagAndErrors() {
+    let decoded = AttachmentOperationCodec.decode(
+      operationRecord(phase: 3, flags: 1, errorCode: "input_unconfirmed", errorMessage: "unconfirmed")
+    )
+    XCTAssertEqual(decoded?.phase, .inserted)
+    XCTAssertEqual(decoded?.insertUnconfirmed, true)
+    XCTAssertEqual(decoded?.errorCode, "input_unconfirmed")
+    XCTAssertEqual(decoded?.errorMessage, "unconfirmed")
+  }
+
+  func testRejectsShortRecordsAndUnknownPhases() {
+    XCTAssertNil(AttachmentOperationCodec.decode(operationRecord().prefix(512)))
+    XCTAssertNil(AttachmentOperationCodec.decode(operationRecord(phase: 99)))
+  }
+
+  func testRefusesSecondUploadWhileOperationIsLive() {
+    let machine = AttachmentOpMachine()
+    XCTAssertTrue(machine.canBeginUpload())
+    XCTAssertTrue(machine.recordBegin(attachmentId: 7, sizeBytes: 100, displayName: "a.png"))
+    XCTAssertFalse(machine.canBeginUpload())
+    XCTAssertFalse(machine.recordBegin(attachmentId: 8, sizeBytes: 100, displayName: "b.png"))
+    XCTAssertEqual(machine.operation?.attachmentId, 7)
+  }
+
+  func testAppliesSnapshotsOnlyForTheSameAttachmentId() {
+    let machine = AttachmentOpMachine()
+    machine.recordBegin(attachmentId: 7, sizeBytes: 100, displayName: "a.png")
+    XCTAssertFalse(machine.applySnapshot(operation(9, .uploaded)))
+    XCTAssertEqual(machine.operation?.phase, .uploading)
+    XCTAssertTrue(machine.applySnapshot(operation(7, .uploaded)))
+    XCTAssertEqual(machine.operation?.phase, .uploaded)
+  }
+
+  func testCancelledOperationIgnoresLateUploadSnapshots() {
+    let machine = AttachmentOpMachine()
+    machine.recordBegin(attachmentId: 7, sizeBytes: 100, displayName: "a.png")
+    machine.markCancelled()
+    // Late progress after a local cancel never resurrects the upload.
+    XCTAssertTrue(machine.applySnapshot(operation(7, .uploading)))
+    XCTAssertEqual(machine.operation?.phase, .cancelled)
+    // A genuinely finished upload still surfaces its terminal state.
+    XCTAssertTrue(machine.applySnapshot(operation(7, .uploaded)))
+    XCTAssertEqual(machine.operation?.phase, .uploaded)
+  }
+
+  func testCapabilityGatesFollowTheContractPhases() {
+    XCTAssertTrue(operation(1, .pending).canRetryUpload)
+    XCTAssertTrue(operation(1, .failed).canRetryUpload)
+    XCTAssertFalse(operation(1, .uploaded).canRetryUpload)
+    XCTAssertTrue(operation(1, .uploaded).canInsert)
+    XCTAssertFalse(operation(1, .uploading).canInsert)
+    XCTAssertTrue(operation(1, .pending).canCancel)
+    XCTAssertTrue(operation(1, .uploading).canCancel)
+    XCTAssertFalse(operation(1, .uploaded).canCancel)
+    for phase in [AttachmentOpPhase.uploaded, .inserted, .failed, .cancelled] {
+      XCTAssertTrue(operation(1, phase).canDeleteRemote, "delete allowed in \(phase)")
+    }
+    XCTAssertFalse(operation(1, .uploading).canDeleteRemote)
+    XCTAssertFalse(operation(1, .pending).canDeleteRemote)
+  }
+
+  func testClearDropsOperationForDiscardAndNewPick() {
+    let machine = AttachmentOpMachine()
+    machine.recordBegin(attachmentId: 7, sizeBytes: 100, displayName: "a.png")
+    machine.clear()
+    XCTAssertNil(machine.operation)
+    XCTAssertTrue(machine.canBeginUpload())
   }
 
   func testInsertionPolicyHoldsWhileComposing() {

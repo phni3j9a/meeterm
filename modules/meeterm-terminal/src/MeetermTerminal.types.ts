@@ -335,11 +335,46 @@ export type AttachmentPrepareResult =
     }
   | { status: 'error'; errorCode: string; message: string };
 
-/** Upload/delete answer; remote progress is Phase B and stays unavailable. */
-export type AttachmentTransferResult =
-  | { status: 'uploaded'; remotePath: string }
-  | { status: 'deleted' }
-  | { status: 'held'; reason: string }
+/**
+ * Rust-owned attachment operation phase (attachment-ffi contract). `pending`
+ * means the op is blocked and `errorCode` carries the pending reason;
+ * `inserted` only proves the native input queue accepted the path line —
+ * never that a CLI or model consumed it.
+ */
+export type AttachmentCorePhase =
+  | 'pending'
+  | 'uploading'
+  | 'uploaded'
+  | 'inserted'
+  | 'failed'
+  | 'cancelled'
+  | 'deleted';
+
+/** One complete core snapshot, decoded from the fixed-size C record. */
+export type AttachmentOperationSnapshot = {
+  phase: AttachmentCorePhase;
+  /** Decimal u64; never convert to Number. */
+  attachmentId: string;
+  bytesUploaded: number;
+  sizeBytes: number;
+  remotePath: string;
+  displayName: string;
+  errorCode: string;
+  errorMessage: string;
+  /** flags & 0x1: the input path accepted the line, delivery unconfirmed. */
+  insertUnconfirmed: boolean;
+};
+
+/** Uniform answer for upload/retry/cancel/delete/dispose requests. */
+export type AttachmentActionResult =
+  | { status: 'accepted'; attachmentId: string }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Snapshot poll answer; `idle` means no operation is live. */
+export type AttachmentSnapshotResult =
+  | { status: 'snapshot'; operation: AttachmentOperationSnapshot }
+  | { status: 'idle' }
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; errorCode: string; message: string };
 
@@ -352,7 +387,7 @@ export type AttachmentInsertResult =
 
 /** Low-frequency native attachment session snapshot for remount recovery. */
 export type AttachmentSessionState = {
-  status: 'idle' | 'staged' | 'prepared' | 'uploaded';
+  status: 'idle' | 'staged' | 'prepared';
   fileId: string;
   previewUri: string;
   format: AttachmentImageFormat;
@@ -360,7 +395,10 @@ export type AttachmentSessionState = {
   height: number;
   byteCount: number;
   sourceByteCount: number;
-  remotePath: string;
+  /** Captured destination binding; needed to restore honestly after remount. */
+  target: AttachmentTarget | null;
+  /** Last-known core operation, present only while an op is live. */
+  operation: AttachmentOperationSnapshot | null;
   errorCode: string;
   message: string;
 };

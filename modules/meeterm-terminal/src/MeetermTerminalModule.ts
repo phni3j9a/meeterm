@@ -1,14 +1,15 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
 import type {
+  AttachmentActionResult,
   AttachmentBeginResult,
   AttachmentInsertResult,
   AttachmentPickResult,
   AttachmentPrepareResult,
   AttachmentSessionState,
+  AttachmentSnapshotResult,
   AttachmentSource,
   AttachmentTarget,
-  AttachmentTransferResult,
   SavedCredential,
   ServerProfile,
   SshConnectOptions,
@@ -79,20 +80,36 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   pickAttachmentImage(source: AttachmentSource): Promise<AttachmentPickResult>;
   /** Validate, orient, strip metadata, and re-encode the staged image. */
   prepareAttachmentImage(token: string): Promise<AttachmentPrepareResult>;
-  /** Remove the active session's local staging/prepared files. */
+  /**
+   * Cancel any live core operation, dispose its record, and remove the
+   * session's local staging/prepared files. Explicit Discard action.
+   */
   discardAttachment(): Promise<void>;
   /** Low-frequency session snapshot used to rebind state after remounts. */
   getAttachmentState(): Promise<AttachmentSessionState>;
-  /** Reserved W2 transfer wiring; reports `unavailable` until it lands. */
-  uploadAttachment(terminalId: string, remoteDirectory: string): Promise<AttachmentTransferResult>;
+  /**
+   * Explicit Upload of the normalized image over the fenced SSH connection
+   * (`meeterm_attachment_begin`). `remoteDirectory` is an absolute or `~/`
+   * path; empty means the core's `~/.local/share/meeterm/attachments` default.
+   */
+  uploadAttachment(terminalId: string, remoteDirectory: string): Promise<AttachmentActionResult>;
+  /** Poll the live core operation (`meeterm_attachment_snapshot`). */
+  attachmentSnapshot(): Promise<AttachmentSnapshotResult>;
+  /** Explicit transfer retry on a pending/failed operation. */
+  retryAttachmentUpload(terminalId: string): Promise<AttachmentActionResult>;
   /**
    * IME-safe attachment insertion entry. When a native composition exists it
-   * returns `held` without touching it; otherwise the request goes to the W2
-   * Rust insertion contract (Phase A reports `unavailable`).
+   * returns `held` without touching it; otherwise the request goes to
+   * `meeterm_attachment_insert` for the fenced destination only.
    */
   insertAttachment(terminalId: string): Promise<AttachmentInsertResult>;
-  /** Reserved W2 remote delete wiring; reports `unavailable` until it lands. */
-  deleteRemoteAttachment(terminalId: string, remotePath: string): Promise<AttachmentTransferResult>;
+  /** Cancel a pending/uploading operation (`meeterm_attachment_cancel`). */
+  cancelAttachment(): Promise<AttachmentActionResult>;
+  /**
+   * Explicit server-side delete of the completed remote file, validated by
+   * the core (`meeterm_attachment_delete_remote`).
+   */
+  deleteRemoteAttachment(terminalId: string): Promise<AttachmentActionResult>;
 }
 
 export default requireNativeModule<MeetermTerminalModule>('MeetermTerminal');

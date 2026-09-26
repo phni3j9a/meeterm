@@ -48,19 +48,20 @@ internal data class AttachmentPreparedImage(
   val sourceByteCount: Long,
 )
 
-internal enum class AttachmentSessionStatus { IDLE, STAGED, PREPARED, UPLOADED }
+internal enum class AttachmentSessionStatus { IDLE, STAGED, PREPARED }
 
 internal data class AttachmentSession(
   val target: AttachmentTargetIdentity,
   var stagingFileName: String? = null,
   var prepared: AttachmentPreparedImage? = null,
-  var remotePath: String? = null,
   var lastErrorCode: String = "",
   var lastMessage: String = "",
 ) {
+  /** Live Rust-owned operation; its snapshot stays authoritative. */
+  val machine = AttachmentOpMachine()
+
   val status: AttachmentSessionStatus
     get() = when {
-      prepared != null && remotePath != null -> AttachmentSessionStatus.UPLOADED
       prepared != null -> AttachmentSessionStatus.PREPARED
       stagingFileName != null -> AttachmentSessionStatus.STAGED
       else -> AttachmentSessionStatus.IDLE
@@ -85,7 +86,16 @@ internal data class AttachmentSession(
     "height" to (prepared?.height ?: 0),
     "byteCount" to (prepared?.byteCount ?: 0L),
     "sourceByteCount" to (prepared?.sourceByteCount ?: 0L),
-    "remotePath" to (remotePath ?: ""),
+    "target" to mapOf(
+      "terminalId" to target.terminalId,
+      "paneId" to target.paneId,
+      "workspaceId" to target.workspaceId,
+      "backend" to target.backend,
+      "runtime" to target.runtime,
+      "host" to target.host,
+      "port" to target.port,
+    ),
+    "operation" to machine.operation?.let(AttachmentResults::operation),
     "errorCode" to lastErrorCode,
     "message" to lastMessage,
   )
@@ -131,12 +141,31 @@ internal object AttachmentResults {
     "sourceByteCount" to image.sourceByteCount,
   )
 
-  fun uploaded(remotePath: String): Map<String, Any?> = mapOf(
-    "status" to "uploaded",
-    "remotePath" to remotePath,
+  /** Uniform accepted answer carrying the decimal u64 attachment id. */
+  fun accepted(attachmentId: Long): Map<String, Any?> = mapOf(
+    "status" to "accepted",
+    "attachmentId" to java.lang.Long.toUnsignedString(attachmentId),
   )
 
-  fun deleted(): Map<String, Any?> = mapOf("status" to "deleted")
-
   fun inserted(): Map<String, Any?> = mapOf("status" to "inserted")
+
+  /** Core snapshot fields, mirroring AttachmentOperationSnapshot (TS). */
+  fun operation(op: AttachmentOperation): Map<String, Any?> = mapOf(
+    "phase" to op.wirePhase,
+    "attachmentId" to java.lang.Long.toUnsignedString(op.attachmentId),
+    "bytesUploaded" to op.bytesUploaded.toDouble(),
+    "sizeBytes" to op.sizeBytes.toDouble(),
+    "remotePath" to op.remotePath,
+    "displayName" to op.displayName,
+    "errorCode" to op.errorCode,
+    "errorMessage" to op.errorMessage,
+    "insertUnconfirmed" to op.insertUnconfirmed,
+  )
+
+  fun snapshotResult(op: AttachmentOperation?): Map<String, Any?> =
+    if (op == null) {
+      mapOf("status" to "idle")
+    } else {
+      mapOf("status" to "snapshot", "operation" to operation(op))
+    }
 }

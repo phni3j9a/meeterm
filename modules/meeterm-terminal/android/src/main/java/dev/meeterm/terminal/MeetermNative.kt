@@ -124,6 +124,40 @@ internal object MeetermNative {
   external fun refreshRuntimes(handle: Long): Int
   external fun selectRuntime(handle: Long, candidateId: String): Int
   external fun createTmuxSession(handle: Long, name: String): Int
+
+  /*
+   * Issue #28 attachment contract (attachment-ffi + Main amendments). jni.rs
+   * (W2) implements `Java_dev_meeterm_terminal_MeetermNative_attachment*`
+   * with the same call order as the C API. begin maps to
+   * `meeterm_attachment_begin`; an empty remoteDirectory selects the core
+   * `~/.local/share/meeterm/attachments` default. Returns the opaque
+   * attachment id (>0), or 0 on synchronous rejection.
+   */
+  external fun attachmentBegin(
+    terminalId: Long,
+    localPath: String,
+    displayName: String,
+    remoteDirectory: String,
+    sizeBytes: Long,
+  ): Long
+
+  /** Explicit transfer retry; re-fences the same destination pane. */
+  external fun attachmentRetryUpload(terminalId: Long, attachmentId: Long): Int
+
+  /** Insert one quoted remote-path line via the native paste path. */
+  external fun attachmentInsert(terminalId: Long, attachmentId: Long): Int
+
+  /** Cancel a pending/uploading op; delayed completions are discarded. */
+  external fun attachmentCancel(attachmentId: Long): Int
+
+  /** Drop the operation record; cancels first when still active. */
+  external fun attachmentDispose(attachmentId: Long): Int
+
+  /** Explicit server-side delete of the completed remote file. */
+  external fun attachmentDeleteRemote(terminalId: Long, attachmentId: Long): Int
+
+  /** Fixed-size `meeterm_attachment_snapshot_t` record, or null. */
+  external fun attachmentSnapshot(attachmentId: Long): ByteArray?
 }
 
 internal class RustInputSink(

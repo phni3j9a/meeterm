@@ -52,21 +52,21 @@ enum AttachmentSessionStatus: String {
   case idle
   case staged
   case prepared
-  case uploaded
 }
 
 final class AttachmentSession {
   let target: AttachmentTargetIdentity
   var stagingFileName: String?
   var prepared: AttachmentPreparedImage?
-  var remotePath: String?
   var lastErrorCode = ""
   var lastMessage = ""
+
+  /// Live Rust-owned operation; its snapshot stays authoritative.
+  let machine = AttachmentOpMachine()
 
   init(target: AttachmentTargetIdentity) { self.target = target }
 
   var status: AttachmentSessionStatus {
-    if prepared != nil, remotePath != nil { return .uploaded }
     if prepared != nil { return .prepared }
     if stagingFileName != nil { return .staged }
     return .idle
@@ -92,7 +92,16 @@ final class AttachmentSession {
       "height": prepared?.height ?? 0,
       "byteCount": prepared?.byteCount ?? 0,
       "sourceByteCount": prepared?.sourceByteCount ?? 0,
-      "remotePath": remotePath ?? "",
+      "target": [
+        "terminalId": target.terminalId,
+        "paneId": target.paneId,
+        "workspaceId": target.workspaceId,
+        "backend": target.backend,
+        "runtime": target.runtime,
+        "host": target.host,
+        "port": target.port,
+      ],
+      "operation": machine.operation.map(AttachmentResults.operation) ?? NSNull(),
       "errorCode": lastErrorCode,
       "message": lastMessage,
     ]
@@ -132,11 +141,45 @@ enum AttachmentResults {
     ]
   }
 
-  static func uploaded(_ remotePath: String) -> [String: Any] {
-    ["status": "uploaded", "remotePath": remotePath]
+  /// Uniform accepted answer carrying the decimal u64 attachment id.
+  static func accepted(_ attachmentId: UInt64) -> [String: Any] {
+    ["status": "accepted", "attachmentId": String(attachmentId)]
   }
 
-  static func deleted() -> [String: Any] { ["status": "deleted"] }
-
   static func inserted() -> [String: Any] { ["status": "inserted"] }
+
+  /// Core snapshot fields, mirroring AttachmentOperationSnapshot (TS).
+  static func operation(_ op: AttachmentOperation) -> [String: Any] {
+    [
+      "phase": op.phase.wireName,
+      "attachmentId": String(op.attachmentId),
+      "bytesUploaded": op.bytesUploaded,
+      "sizeBytes": op.sizeBytes,
+      "remotePath": op.remotePath,
+      "displayName": op.displayName,
+      "errorCode": op.errorCode,
+      "errorMessage": op.errorMessage,
+      "insertUnconfirmed": op.insertUnconfirmed,
+    ]
+  }
+
+  static func snapshotResult(_ op: AttachmentOperation?) -> [String: Any] {
+    guard let op = op else { return ["status": "idle"] }
+    return ["status": "snapshot", "operation": operation(op)]
+  }
+
+  /// Contract return code → sanitized snake_case name.
+  static func returnCodeError(_ code: Int32) -> String {
+    switch code {
+    case -1: return "invalid_argument"
+    case -2: return "unknown_terminal"
+    case -3: return "unknown_attachment"
+    case -4: return "invalid_state"
+    case -5: return "source_unreadable"
+    case -6: return "source_too_large"
+    case -7: return "destination_not_ready"
+    case -8: return "busy"
+    default: return "native_error"
+    }
+  }
 }

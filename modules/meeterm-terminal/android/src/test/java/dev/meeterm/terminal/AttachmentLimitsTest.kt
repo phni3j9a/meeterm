@@ -321,7 +321,12 @@ class AttachmentLimitsTest {
     assertEquals("file:///cache/attachments/att_8899aabbccddeeff.png", snapshot["previewUri"])
     assertEquals(1080, snapshot["width"])
     assertEquals(1920, snapshot["height"])
-    session.remotePath = "/tmp/meeterm-attach/att.png"
-    assertEquals("uploaded", session.snapshot("")["status"])
+    assertEquals("poc-main", (snapshot["target"] as Map<*, *>)["terminalId"])
+    // The core operation rides the session snapshot only while an op exists.
+    assertEquals(null, snapshot["operation"])
+    session.machine.recordBegin(7L, 123_456L, "att_8899aabbccddeeff.png")
+    val withOp = session.snapshot("")["operation"] as Map<*, *>
+    assertEquals("uploading", withOp["phase"])
+    assertEquals("7", withOp["attachmentId"])
   }
 }

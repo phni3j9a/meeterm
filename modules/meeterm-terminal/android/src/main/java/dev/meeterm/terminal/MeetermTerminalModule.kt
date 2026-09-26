@@ -270,13 +270,22 @@ class MeetermTerminalModule : Module() {
     AsyncFunction("uploadAttachment") { terminalId: String, remoteDirectory: String ->
       AttachmentController.upload(normalizeTerminalId(terminalId), remoteDirectory, storageContext())
     }
+    AsyncFunction("attachmentSnapshot") {
+      AttachmentController.attachmentSnapshot()
+    }
+    AsyncFunction("retryAttachmentUpload") { terminalId: String ->
+      AttachmentController.retryUpload(normalizeTerminalId(terminalId), storageContext())
+    }
+    AsyncFunction("cancelAttachment") {
+      AttachmentController.cancel()
+    }
     // Dedicated attachment insertion — never routed through paste or special
     // keys, and held while the native IME owns a composition.
     AsyncFunction("insertAttachment") { terminalId: String ->
       AttachmentController.insert(normalizeTerminalId(terminalId), storageContext())
     }
-    AsyncFunction("deleteRemoteAttachment") { terminalId: String, remotePath: String ->
-      AttachmentController.deleteRemote(normalizeTerminalId(terminalId), remotePath, storageContext())
+    AsyncFunction("deleteRemoteAttachment") { terminalId: String ->
+      AttachmentController.deleteRemote(normalizeTerminalId(terminalId), storageContext())
     }
 
     View(MeetermTerminalView::class) {

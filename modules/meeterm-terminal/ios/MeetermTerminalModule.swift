@@ -298,15 +298,25 @@ public final class MeetermTerminalModule: Module {
         remoteDirectory: remoteDirectory
       )
     }
+    AsyncFunction("attachmentSnapshot") { () -> [String: Any] in
+      AttachmentController.shared.attachmentSnapshot()
+    }
+    AsyncFunction("retryAttachmentUpload") { (terminalId: String) throws -> [String: Any] in
+      try AttachmentController.shared.retryUpload(
+        terminalId: Self.normalizeTerminalId(terminalId)
+      )
+    }
+    AsyncFunction("cancelAttachment") { () -> [String: Any] in
+      AttachmentController.shared.cancel()
+    }
     // Dedicated attachment insertion — never routed through paste or special
     // keys, and held while the native IME owns a marked-text composition.
     AsyncFunction("insertAttachment") { (terminalId: String) throws -> [String: Any] in
       try AttachmentController.shared.insert(terminalId: Self.normalizeTerminalId(terminalId))
     }
-    AsyncFunction("deleteRemoteAttachment") { (terminalId: String, remotePath: String) throws -> [String: Any] in
+    AsyncFunction("deleteRemoteAttachment") { (terminalId: String) throws -> [String: Any] in
       try AttachmentController.shared.deleteRemote(
-        terminalId: Self.normalizeTerminalId(terminalId),
-        remotePath: remotePath
+        terminalId: Self.normalizeTerminalId(terminalId)
       )
     }
 

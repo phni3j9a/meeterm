@@ -65,13 +65,13 @@ internal object AttachmentController {
       val active = session ?: return
       if (!AttachmentFileNames.isStagingName(token)) return
       // The picker stages before this runs; a fresh pick invalidates any
-      // older staging or prepared files from the same session.
+      // older staging, prepared file, or live operation from this session.
       val stale = active.stagingFileName
       val stalePrepared = active.prepared?.fileName
       active.stagingFileName = token
       active.prepared = null
-      active.remotePath = null
       active.clearError()
+      retireOperationLocked(active)
       store(context).delete(
         stale?.takeIf { it != token },
         stalePrepared?.takeIf { it != token },
@@ -116,12 +116,19 @@ internal object AttachmentController {
     }
   }
 
+  /** Explicit Discard: cancel/dispose the core op, then delete local files. */
   fun discard(context: Context) {
     val active = synchronized(lock) {
       val current = session
       session = null
       current
     } ?: return
+    val op = active.machine.operation
+    if (op != null) {
+      if (op.canCancel) AttachmentCoreBridge.cancel(op.attachmentId)
+      AttachmentCoreBridge.dispose(op.attachmentId)
+    }
+    active.machine.clear()
     store(context).delete(active.stagingFileName, active.prepared?.fileName)
   }
 
@@ -165,6 +172,10 @@ internal object AttachmentController {
     picker(appContext, context).pick(parsed, wrapped)
   }
 
+  /**
+   * Explicit Upload: `meeterm_attachment_begin` over the fenced connection.
+   * A second upload is refused while the previous operation is live.
+   */
   fun upload(terminalId: String, remoteDirectory: String, context: Context): Map<String, Any?> {
     val active = synchronized(lock) { session }
       ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_NO_ATTACHMENT)
@@ -179,24 +190,70 @@ internal object AttachmentController {
         "The attachment belongs to a different terminal.",
       )
     }
+    val previousOpId = synchronized(lock) { active.machine.operation?.attachmentId }
+    if (!active.machine.canBeginUpload()) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_STATE,
+        "An attachment upload is already in progress.",
+      )
+    }
     val file = store(context).preparedFile(prepared.fileName)
       ?: return AttachmentResults.error(
         AttachmentLimits.ERROR_MISSING,
         "The prepared image is missing; prepare it again.",
       )
-    val result = AttachmentCoreBridge.upload(
+    val attachmentId = AttachmentCoreBridge.begin(
       ensureNativeHandle(active.target.terminalId),
       file.absolutePath,
+      prepared.fileName,
       remoteDirectory,
-    )
-    val remotePath = result["remotePath"] as? String
-    if (result["status"] == "uploaded" && !remotePath.isNullOrEmpty()) {
-      synchronized(lock) { active.remotePath = remotePath }
+      prepared.byteCount,
+    ) ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
+    if (attachmentId == 0L) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_STATE,
+        "The core could not start the upload; check the connection.",
+      )
     }
-    return result
+    val recorded = synchronized(lock) {
+      val ok = active.machine.recordBegin(attachmentId, prepared.byteCount, prepared.fileName)
+      if (ok) active.clearError()
+      ok
+    }
+    if (recorded && previousOpId != null && previousOpId != attachmentId) {
+      // The replaced op is terminal by definition; release its core record.
+      AttachmentCoreBridge.dispose(previousOpId)
+    }
+    if (!recorded) {
+      // A racing upload won the slot; release the orphaned core op.
+      AttachmentCoreBridge.dispose(attachmentId)
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_STATE,
+        "An attachment upload is already in progress.",
+      )
+    }
+    refreshSnapshot(active)
+    return AttachmentResults.accepted(attachmentId)
   }
 
-  fun deleteRemote(terminalId: String, remotePath: String, context: Context): Map<String, Any?> {
+  /** Poll the live core operation and fold it into the session machine. */
+  fun attachmentSnapshot(): Map<String, Any?> {
+    val active = synchronized(lock) { session }
+      ?: return mapOf("status" to "idle")
+    val op = synchronized(lock) { active.machine.operation }
+      ?: return mapOf("status" to "idle")
+    val fresh = AttachmentCoreBridge.snapshot(op.attachmentId)
+      ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
+    synchronized(lock) {
+      if (active.machine.operation?.attachmentId == fresh.attachmentId) {
+        active.machine.applySnapshot(fresh)
+      }
+    }
+    return AttachmentResults.snapshotResult(fresh)
+  }
+
+  /** Explicit transfer retry on a pending/failed operation. */
+  fun retryUpload(terminalId: String, context: Context): Map<String, Any?> {
     val active = synchronized(lock) { session }
     if (active == null || active.target.terminalId != terminalId) {
       return AttachmentResults.error(
@@ -204,24 +261,71 @@ internal object AttachmentController {
         "The attachment belongs to a different terminal.",
       )
     }
-    val result = AttachmentCoreBridge.delete(
-      ensureNativeHandle(active.target.terminalId),
-      remotePath,
-    )
-    if (result["status"] == "deleted") {
-      synchronized(lock) { active.remotePath = null }
+    val op = active.machine.operation
+    if (op == null || !op.canRetryUpload) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_STATE,
+        "There is no upload to retry.",
+      )
     }
+    val result = AttachmentCoreBridge.retryUpload(
+      ensureNativeHandle(terminalId),
+      op.attachmentId,
+    )
+    if (result["status"] == "accepted") refreshSnapshot(active)
+    return result
+  }
+
+  /** Explicit cancel of a pending/uploading operation. */
+  fun cancel(): Map<String, Any?> {
+    val active = synchronized(lock) { session }
+      ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_NO_ATTACHMENT)
+    val op = active.machine.operation
+    if (op == null || !op.canCancel) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_STATE,
+        "There is no upload to cancel.",
+      )
+    }
+    val result = AttachmentCoreBridge.cancel(op.attachmentId)
+    if (result["status"] == "accepted") {
+      synchronized(lock) { active.machine.markCancelled() }
+    }
+    return result
+  }
+
+  /** Explicit server-side delete of the completed remote file. */
+  fun deleteRemote(terminalId: String, context: Context): Map<String, Any?> {
+    val active = synchronized(lock) { session }
+    if (active == null || active.target.terminalId != terminalId) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_TARGET,
+        "The attachment belongs to a different terminal.",
+      )
+    }
+    val op = active.machine.operation
+    if (op == null || !op.canDeleteRemote) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_STATE,
+        "There is no uploaded file to delete.",
+      )
+    }
+    val result = AttachmentCoreBridge.deleteRemote(
+      ensureNativeHandle(active.target.terminalId),
+      op.attachmentId,
+    )
+    if (result["status"] == "accepted") refreshSnapshot(active)
     return result
   }
 
   fun insert(terminalId: String, context: Context): Map<String, Any?> {
     val active = synchronized(lock) { session }
+    val op = active?.machine?.operation
     val verdict = AttachmentInsertionPolicy.insert(
       composing = AttachmentCompositionGuard.isComposing(terminalId),
       hasActiveSession = active != null,
-      hasPreparedImage = active?.prepared != null &&
-        active.prepared?.fileName?.let { store(context).preparedFile(it)?.isFile } == true,
-      hasUploadedPath = active?.remotePath != null,
+      hasPreparedImage = op?.canInsert == true,
+      hasUploadedPath = op?.phase == AttachmentOpPhase.UPLOADED,
       sessionTerminalId = active?.target?.terminalId,
       requestTerminalId = terminalId,
     )
@@ -232,12 +336,36 @@ internal object AttachmentController {
         AttachmentResults.held(AttachmentLimits.REASON_NO_ATTACHMENT)
       is AttachmentInsertionPolicy.Verdict.Rejected ->
         AttachmentResults.error(verdict.errorCode, verdict.message)
-      AttachmentInsertionPolicy.Verdict.ReadyToInsert ->
-        AttachmentCoreBridge.insert(
+      AttachmentInsertionPolicy.Verdict.ReadyToInsert -> {
+        val result = AttachmentCoreBridge.insert(
           ensureNativeHandle(terminalId),
-          active?.remotePath,
+          op!!.attachmentId,
         )
+        if (result["status"] == "accepted") {
+          refreshSnapshot(active!!)
+          return AttachmentResults.inserted()
+        }
+        result
+      }
     }
+  }
+
+  private fun refreshSnapshot(active: AttachmentSession) {
+    val id = synchronized(lock) { active.machine.operation?.attachmentId } ?: return
+    val fresh = AttachmentCoreBridge.snapshot(id) ?: return
+    synchronized(lock) {
+      if (active.machine.operation?.attachmentId == fresh.attachmentId) {
+        active.machine.applySnapshot(fresh)
+      }
+    }
+  }
+
+  /** Cancel + dispose + clear a live op while `lock` is held. */
+  private fun retireOperationLocked(active: AttachmentSession) {
+    val op = active.machine.operation ?: return
+    if (op.canCancel) AttachmentCoreBridge.cancel(op.attachmentId)
+    AttachmentCoreBridge.dispose(op.attachmentId)
+    active.machine.clear()
   }
 
   private fun ensureNativeHandle(terminalId: String): Long {
@@ -255,7 +383,8 @@ internal object AttachmentController {
     "height" to 0,
     "byteCount" to 0L,
     "sourceByteCount" to 0L,
-    "remotePath" to "",
+    "target" to null,
+    "operation" to null,
     "errorCode" to "",
     "message" to "",
   )

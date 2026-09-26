@@ -28,6 +28,7 @@ readonly attachment_limits_source="${repository_root}/modules/meeterm-terminal/i
 readonly attachment_session_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentSession.swift"
 readonly attachment_policy_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentInsertionPolicy.swift"
 readonly attachment_guard_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentCompositionGuard.swift"
+readonly attachment_operation_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentOperation.swift"
 # Production storage tests are intentionally outside this preflight: their
 # @testable import requires the built production app module and app host.
 
@@ -41,7 +42,8 @@ for source in \
   "${attachment_limits_source}" \
   "${attachment_session_source}" \
   "${attachment_policy_source}" \
-  "${attachment_guard_source}"; do
+  "${attachment_guard_source}" \
+  "${attachment_operation_source}"; do
   if [[ ! -f "${source}" ]]; then
     echo "iOS Swift typecheck source is missing: ${source}" >&2
     exit 1
@@ -89,6 +91,7 @@ cp "${attachment_limits_source}" "${staged_source_directory}/AttachmentLimits.sw
 cp "${attachment_session_source}" "${staged_source_directory}/AttachmentSession.swift"
 cp "${attachment_policy_source}" "${staged_source_directory}/AttachmentInsertionPolicy.swift"
 cp "${attachment_guard_source}" "${staged_source_directory}/AttachmentCompositionGuard.swift"
+cp "${attachment_operation_source}" "${staged_source_directory}/AttachmentOperation.swift"
 
 selected_developer_directory="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
 readonly selected_developer_directory
@@ -115,7 +118,8 @@ xcrun swiftc \
   "${staged_source_directory}/AttachmentLimits.swift" \
   "${staged_source_directory}/AttachmentSession.swift" \
   "${staged_source_directory}/AttachmentInsertionPolicy.swift" \
-  "${staged_source_directory}/AttachmentCompositionGuard.swift"
+  "${staged_source_directory}/AttachmentCompositionGuard.swift" \
+  "${staged_source_directory}/AttachmentOperation.swift"
 
 echo "iOS Swift typecheck passed."
 

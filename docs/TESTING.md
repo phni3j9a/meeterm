@@ -190,10 +190,13 @@ session を変更しません。ローカル成功とGitHub CIの結果は区別
 
 ## Issue #28 image attachment の確認項目
 
-Issue #28 のmobile側（picker、画像正規化、preview、IME保護、添付シート）は
-Phase A として実装されています。remote upload/delete と Rust core への送信は
-`attachment_core_bridge` に隔離され、W2 の FFI 契約が来るまで `unavailable`
-(`core_contract_pending`) を返す設計です。この節の確認はその境界を前提にします。
+Issue #28 のmobile側（picker、画像正規化、preview、IME保護、添付シート、
+operation-state UI）は実装済みです。Rust core への呼び出しは
+`AttachmentCoreBridge` に隔離され、C ABI / JNI `external fun` は
+attachment-ffi 契約＋Main修正（`remote_directory`、`delete_remote`、`deleted`
+phase）どおりに宣言されています。W2 の Rust 実装がこの branch に無い間は
+Android が `unavailable`（`core_contract_pending`）を返し、iOS は契約 header が
+揃ってから compile されます。この節の確認はその境界を前提にします。
 
 - picker は photos（Android `PickVisualMedia` / iOS `PHPickerViewController`）と
   files（Android `ACTION_OPEN_DOCUMENT` / iOS `UIDocumentPickerViewController`）の
@@ -210,23 +213,35 @@ Phase A として実装されています。remote upload/delete と Rust core �
   composition を commit も clear もしないこと。terminal の rebind/unmount で
   provider が unregister され、stale view が stale terminalId に答えないこと。
 - attachment sheet は preview に normalize 済みの app-owned file だけを使い、
-  寸法・format・byte count を表示すること。insert は terminal input への参照挿入のみで、
-  submit は常に利用者の明示操作であること。sheet の dismiss（iOS の swipe down を
-  含む）は generation を進めて遅延 picker 結果を破棄し、native session と file を
-  削除すること。別の1枚を選び直した場合は古い staging/prepared/remote state が
-  消えること。
+  寸法・format・byte count・宛先（Server/Session/Workspace/Terminal）・保存先
+  （既定 `~/.local/share/meeterm/attachments`、明示入力可）を表示すること。
+  Upload と Insert は別の明示操作であり、insert は terminal input への参照
+  挿入のみで submit は常に利用者の明示操作であること。operation phase は
+  `pending`/`uploading`/`uploaded`/`inserted`/`failed`/`cancelled`/`deleted`
+  を理由・進捗付きで表示し、Retry upload / Cancel / Retry insert /
+  Delete from server / Discard は capability どおりにのみ有効であること。
+  表示中の terminal が capture 済み宛先と異なる場合は insert が無効化され、
+  別宛先への自動挿入はないこと。sheet の dismiss（iOS の swipe down を含む）は
+  draft/session を保持し、再オープンで `getAttachmentState` から復元されること。
+  Discard または別の1枚の選択だけが local file と core operation を破棄すること。
 - focused 回帰は Kotlin 単体 test（sniffer、limits、sample-size math、8 EXIF
-  orientation、filename、insertion policy、session 遷移）と、注入 XCTest
-  `AttachmentTests.swift`（limits/policy/session と、実 `TerminalInputView` の
-  marked text による insert hold）で確認します。`ios-typecheck.sh` と
-  `ios-inject-ui-test.sh` の manifest は同じ4本の attachment pure source を含みます。
-- smoke fixture は `attachment-choose` / `attachment-ready` / `attachment-error` /
-  `attachment-blocked` の4 route で表示確認のみを行います。fixture は OS picker や
-  native session に触れず、picker/normalize 実行の証拠にはしません。
+  orientation、filename、insertion policy、session 遷移、operation machine:
+  固定長 snapshot decode・stale id 破棄・cancel 後の遅延完了非復活・二重
+  upload 拒否・capability 表）と、注入 XCTest `AttachmentTests.swift`（同じ
+  operation machine 検証＋実 `TerminalInputView` の marked text による insert
+  hold）で確認します。`ios-typecheck.sh` と `ios-inject-ui-test.sh` の manifest
+  は `AttachmentOperation.swift` を含む同じ attachment source 群を含みます。
+- smoke fixture は `attachment-choose` / `attachment-ready` /
+  `attachment-uploading` / `attachment-pending` / `attachment-uploaded` /
+  `attachment-inserted` / `attachment-failed` / `attachment-cancelled` /
+  `attachment-deleted` / `attachment-error` / `attachment-blocked` の11 route
+  で表示確認のみを行います。fixture は OS picker や native session に触れず、
+  picker/normalize/upload 実行の証拠にはしません。
 
-この時点で実際の upload/insert の end-to-end 動作は W2 契約待ちのため未検証であり、
-`unavailable` がユーザー向け文言として表示されることを確認します。Mobile full/standard
-run の real-device picker 挙動も、実行された run が存在するまで主張しません。
+この時点で実際の upload/insert の end-to-end 動作は W2 の Rust 実装待ちのため
+未検証であり、Android では `unavailable` がユーザー向け文言として表示される
+ことを確認します。Mobile full/standard run の real-device picker 挙動も、実行
+された run が存在するまで主張しません。
 
 ## 変更に応じた実行範囲
 

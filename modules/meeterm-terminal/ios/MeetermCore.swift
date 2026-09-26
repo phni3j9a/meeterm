@@ -652,6 +652,73 @@ enum MeetermCore {
     terminalId != 0 && meeterm_destroy_terminal(terminalId) == 1
   }
 
+  // Issue #28 attachment contract (attachment-ffi.md + Main amendments).
+  // The core owns the SFTP operation, remote path, destination fence, and the
+  // single-line insert; this adapter only passes the local file and polls the
+  // fixed-size snapshot. An empty remoteDirectory selects the core default
+  // `~/.local/share/meeterm/attachments`.
+
+  /// `meeterm_attachment_begin`: attachment id (>0), or 0 on synchronous
+  /// rejection (poll-free errors such as no connection or unreadable file).
+  static func attachmentBegin(
+    terminalId: UInt64,
+    localPath: String,
+    displayName: String,
+    remoteDirectory: String,
+    sizeBytes: UInt64
+  ) -> UInt64 {
+    Data(localPath.utf8).withUnsafeBytes { path in
+      Data(displayName.utf8).withUnsafeBytes { name in
+        Data(remoteDirectory.utf8).withUnsafeBytes { directory in
+          meeterm_attachment_begin(
+            terminalId,
+            path.bindMemory(to: UInt8.self).baseAddress,
+            path.count,
+            name.bindMemory(to: UInt8.self).baseAddress,
+            name.count,
+            directory.bindMemory(to: UInt8.self).baseAddress,
+            directory.count,
+            sizeBytes
+          )
+        }
+      }
+    }
+  }
+
+  /// `meeterm_attachment_retry_upload`: 0 accepted, negative = error code.
+  static func attachmentRetryUpload(terminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_retry_upload(terminalId, attachmentId)
+  }
+
+  /// `meeterm_attachment_insert`: 0 accepted, negative = error code.
+  static func attachmentInsert(terminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_insert(terminalId, attachmentId)
+  }
+
+  /// `meeterm_attachment_cancel`: 0 accepted, negative = error code.
+  static func attachmentCancel(attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_cancel(attachmentId)
+  }
+
+  /// `meeterm_attachment_dispose`: 0 accepted, negative = error code.
+  static func attachmentDispose(attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_dispose(attachmentId)
+  }
+
+  /// `meeterm_attachment_delete_remote`: 0 accepted, negative = error code.
+  static func attachmentDeleteRemote(terminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_delete_remote(terminalId, attachmentId)
+  }
+
+  /// `meeterm_attachment_snapshot`: raw record bytes for the pure codec.
+  static func attachmentSnapshot(attachmentId: UInt64) -> Data? {
+    var native = meeterm_attachment_snapshot_t()
+    guard meeterm_attachment_snapshot(attachmentId, &native) == 0 else {
+      return nil
+    }
+    return withUnsafeBytes(of: &native) { Data($0) }
+  }
+
   private static func withUTF8(
     _ value: String,
     _ body: (UnsafePointer<UInt8>?, Int) -> Int32
