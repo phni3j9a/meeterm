@@ -22,11 +22,12 @@ use meeterm_core::{
     AttachmentPhase, AttachmentSnapshot, AuthOptions, ConnectOptions, ConnectionSnapshot,
     ConnectionState, MAX_ATTACHMENT_BYTES, PaneSnapshot, SessionSnapshot, SpecialKey,
     attachment_begin, attachment_cancel, attachment_delete_remote, attachment_dispose,
-    attachment_insert, attachment_snapshot, close_pane, close_workspace, connect_host,
-    connection_snapshot, create_pane, create_runtime, create_terminal, create_workspace,
-    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count,
-    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot,
-    meeterm_snapshot_size, reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
+    attachment_insert, attachment_intent, attachment_intent_dispose, attachment_retry_upload,
+    attachment_snapshot, close_pane, close_workspace, connect_host, connection_snapshot,
+    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
+    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
+    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
+    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
     runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
 };
 
@@ -1527,18 +1528,22 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     fs::write(&local, &payload).expect("write picked image");
     let local_path = local.to_str().expect("UTF-8 local path");
 
+    // The destination intent is recorded once from the picked pane's
+    // native terminal; every begin on this pane reuses it.
+    let intent = attachment_intent(id).expect("attachment destination intent");
+
     let attachment_id = attachment_begin(
-        id,
+        intent,
         local_path,
         "picked image.jpg",
-        payload.len() as u64,
         None,
+        payload.len() as u64,
     )
     .expect("begin SFTP attachment");
     // One live operation at a time: a second begin is rejected while this
     // one is in flight.
     assert!(
-        attachment_begin(id, local_path, "second.jpg", payload.len() as u64, None).is_err(),
+        attachment_begin(intent, local_path, "second.jpg", None, payload.len() as u64).is_err(),
         "a second live attachment must be rejected"
     );
     let uploaded =
@@ -1626,9 +1631,13 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "destination_changed"
     );
 
-    // Reselecting the fenced pane restores the explicit insert path.
+    // Reselecting the fenced pane restores the explicit insert path. An
+    // explicit retry on the Uploaded op re-fences the destination and
+    // queues the remote re-verification job — no bytes are re-sent — then
+    // insert proceeds on the fresh fence.
     select_pane(id, pane.pane_id).expect("reselect attachment pane");
     wait_for_selected_pane(id, pane.pane_id, "reselect attachment pane");
+    attachment_retry_upload(id, attachment_id).expect("re-verify uploaded attachment");
     attachment_insert(id, attachment_id).expect("insert remote path");
     let inserted =
         wait_for_attachment_phase(attachment_id, AttachmentPhase::Inserted, "path insert");
@@ -1656,7 +1665,8 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
 
     // Explicit remote deletion removes only the generated names; verified
     // removal is reported by the flag while the inserted phase is kept.
-    // The call is owner-bound: another terminal id cannot delete.
+    // The call is target-bound: a terminal id other than the intent's
+    // pane terminal cannot delete.
     assert!(
         attachment_delete_remote(id + 10_000, attachment_id).is_err(),
         "delete from a foreign terminal id must be rejected"
@@ -1705,11 +1715,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "create remote symlink dir",
     );
     let symlink_id = attachment_begin(
-        id,
+        intent,
         local_path,
         "picked image.jpg",
-        payload.len() as u64,
         Some("/tmp/meeterm-att-link/inside"),
+        payload.len() as u64,
     )
     .expect("begin symlinked-dir attachment");
     let symlinked =
@@ -1735,11 +1745,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "create remote tilde dir",
     );
     let tilde_id = attachment_begin(
-        id,
+        intent,
         local_path,
         "picked image.jpg",
-        payload.len() as u64,
         Some("~/meeterm-att-tilde"),
+        payload.len() as u64,
     )
     .expect("begin tilde-dir attachment");
     let tilde_uploaded =
@@ -1779,11 +1789,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     .enumerate()
     {
         let unsafe_id = attachment_begin(
-            id,
+            intent,
             local_path,
             "picked image.jpg",
-            payload.len() as u64,
             Some(dir),
+            payload.len() as u64,
         )
         .unwrap_or_else(|_| panic!("begin unsafe-dir attachment #{index}"));
         let failed = wait_for_attachment_phase(
@@ -1808,11 +1818,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "create read-only remote dir",
     );
     let denied_id = attachment_begin(
-        id,
+        intent,
         local_path,
         "picked image.jpg",
-        payload.len() as u64,
         Some("~/meeterm-att-ro"),
+        payload.len() as u64,
     )
     .expect("begin read-only-dir attachment");
     let denied = wait_for_attachment_phase(
@@ -1844,11 +1854,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     assert!(
         matches!(
             attachment_begin(
-                id,
+                intent,
                 oversized_path,
                 "picked oversized.bin",
-                MAX_ATTACHMENT_BYTES + 1,
                 None,
+                MAX_ATTACHMENT_BYTES + 1,
             ),
             Err(AttachmentError::SourceTooLarge)
         ),
@@ -1868,11 +1878,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         .expect("size large picked image");
     let responsive_path = responsive.to_str().expect("UTF-8 large path");
     let responsive_id = attachment_begin(
-        id,
+        intent,
         responsive_path,
         "picked large.png",
-        MAX_ATTACHMENT_BYTES,
         Some(remote_scratch.as_str()),
+        MAX_ATTACHMENT_BYTES,
     )
     .expect("begin large attachment");
     let live_marker = format!("MEETERM_ATT_LIVE_{}", std::process::id());
@@ -1904,11 +1914,11 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     fs::write(&big, &big_payload).expect("write second picked image");
     let big_path = big.to_str().expect("UTF-8 second path");
     let cancelled_id = attachment_begin(
-        id,
+        intent,
         big_path,
         "picked second.png",
-        big_payload.len() as u64,
         Some(remote_scratch.as_str()),
+        big_payload.len() as u64,
     )
     .expect("begin second attachment");
     attachment_cancel(cancelled_id).expect("cancel second attachment");
@@ -1942,6 +1952,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "fixture attachment cleanup",
     );
     send_raw_retry(pane.terminal_id, b"\x03", "discard inserted input line");
+    attachment_intent_dispose(intent).expect("dispose attachment intent");
     // ScratchDirGuard and RemoteAttachmentGuard collect the rest.
 }
 
@@ -1969,7 +1980,8 @@ fn real_openssh_no_sftp_attachment_fails_visibly() {
     fs::write(&local, b"negative-path-image").expect("write picked image");
     let local_path = local.to_str().expect("UTF-8 local path");
 
-    let attachment_id = attachment_begin(id, local_path, "picked.jpg", 19, None)
+    let intent = attachment_intent(id).expect("attachment intent without SFTP");
+    let attachment_id = attachment_begin(intent, local_path, "picked.jpg", None, 19)
         .expect("begin attachment without SFTP");
     let failed =
         wait_for_attachment_phase(attachment_id, AttachmentPhase::Failed, "sftp-unavailable");
@@ -1991,6 +2003,7 @@ fn real_openssh_no_sftp_attachment_fails_visibly() {
     );
     wait_for_pane_text(&pane, marker, "pane alive after failed attachment");
     attachment_dispose(attachment_id).expect("dispose failed attachment");
+    attachment_intent_dispose(intent).expect("dispose no-sftp intent");
 }
 
 #[test]
@@ -2029,8 +2042,23 @@ fn real_openssh_delayed_sftp_attachment_times_out() {
     // The fixture's subsystem wrapper sleeps before exec'ing sftp-server,
     // so SSH_FXP_INIT outlives the per-request timeout. The operation must
     // surface a retryable Pending(timeout), not crash the connection.
-    let attachment_id = attachment_begin(id, local_path, "picked.png", payload.len() as u64, None)
-        .expect("begin delayed-sftp attachment");
+    let intent = attachment_intent(id).expect("attachment intent for delayed SFTP");
+    let attachment_id =
+        attachment_begin(intent, local_path, "picked.png", None, payload.len() as u64)
+            .expect("begin delayed-sftp attachment");
+
+    // While the subsystem handshake is stalled, the interactive pane must
+    // still answer input — the channel open / subsystem wait runs as a
+    // queued background launch, not inside the serialized command loop.
+    prepare_pane(&pane, "stalled-sftp pane shell");
+    let marker = "MEETERM_STALL_ALIVE_51F0";
+    send_line_retry(
+        pane.terminal_id,
+        &format!("printf '{}\\n'", printf_octal(marker)),
+        "pane alive during stalled SFTP setup",
+    );
+    wait_for_pane_text(&pane, marker, "pane alive during stalled SFTP setup");
+
     // The init timeout lands at ~30s — beyond the shared WAIT_TIMEOUT —
     // so poll with a longer, still-bounded deadline.
     let deadline = Instant::now() + Duration::from_secs(75);
@@ -2070,6 +2098,7 @@ fn real_openssh_delayed_sftp_attachment_times_out() {
         "pane alive after stalled attachment",
     );
     wait_for_pane_text(&pane, marker, "pane alive after stalled attachment");
+    attachment_intent_dispose(intent).expect("dispose delayed-sftp intent");
 }
 
 struct PasswordFixtureConfig {

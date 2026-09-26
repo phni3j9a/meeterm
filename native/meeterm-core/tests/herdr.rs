@@ -23,11 +23,11 @@ use meeterm_core::{
     ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentPhase, AttachmentSnapshot, AuthOptions,
     ConnectOptions, ConnectionSnapshot, ConnectionState, SessionSnapshot, SpecialKey,
     attachment_begin, attachment_delete_remote, attachment_dispose, attachment_insert,
-    attachment_snapshot, close_group, close_pane, close_workspace, connect_host,
-    connection_snapshot, create_group, create_pane, create_terminal, create_workspace,
-    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_operation_epoch,
-    meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key, meeterm_scroll_lines,
-    meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
+    attachment_intent, attachment_intent_dispose, attachment_snapshot, close_group, close_pane,
+    close_workspace, connect_host, connection_snapshot, create_group, create_pane, create_terminal,
+    create_workspace, destroy_terminal, disconnect_terminal, meeterm_commit_utf8,
+    meeterm_operation_epoch, meeterm_paste_utf8, meeterm_resize_terminal, meeterm_respond_host_key,
+    meeterm_scroll_lines, meeterm_send_special_key, meeterm_set_terminal_visible, meeterm_snapshot,
     meeterm_snapshot_size, reconnect_terminal, rename_group, rename_pane, rename_workspace,
     runtime_discovery_snapshot, select_group, select_pane, select_runtime, session_snapshot,
     set_foreground, terminal_revision, workspace_snapshot_json,
@@ -422,6 +422,10 @@ struct RusshState {
     /// absolute path `/` maps to this directory, and `realpath(".")`
     /// reports `/home` underneath it.
     sftp_root: PathBuf,
+    /// When >0, the `sftp` subsystem's CHANNEL_SUCCESS reply is deferred
+    /// by this many seconds — the channel is accepted but unanswered so
+    /// the client's launch path must not block the interactive loop.
+    sftp_reply_delay_secs: u64,
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
     commands: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -460,6 +464,10 @@ impl FixtureSsh {
                 .map(|session| session.terminal_id.clone())
                 .collect(),
             sftp_root,
+            sftp_reply_delay_secs: env::var("MEETERM_FIXTURE_SFTP_REPLY_DELAY")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
         });
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let join = thread::spawn(move || {
@@ -784,8 +792,23 @@ impl Handler for FixtureServer {
             session.channel_failure(channel)?;
             return Ok(());
         };
-        session.channel_success(channel)?;
         let root = self.state.sftp_root.clone();
+        let delay = self.state.sftp_reply_delay_secs;
+        if delay > 0 {
+            // Hold CHANNEL_SUCCESS without answering: the reply and the
+            // SFTP server start after the delay, so the client's
+            // channel-open/subsystem wait provably overlaps live input.
+            let handle = session.handle();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                if handle.channel_success(channel).await.is_ok() {
+                    russh_sftp::server::run(channel_object.into_stream(), FixtureSftp::new(root))
+                        .await;
+                }
+            });
+            return Ok(());
+        }
+        session.channel_success(channel)?;
         tokio::spawn(async move {
             russh_sftp::server::run(channel_object.into_stream(), FixtureSftp::new(root)).await;
         });
@@ -1178,6 +1201,7 @@ fn parser_fixture_state(binary: &str) -> RusshState {
             .collect(),
         targets: ["term_root"].into_iter().map(str::to_owned).collect(),
         sftp_root: PathBuf::from("/nonexistent-parser-fixture"),
+        sftp_reply_delay_secs: 0,
         clients: Arc::new(std::sync::Mutex::new(Vec::new())),
         commands: Arc::new(std::sync::Mutex::new(Vec::new())),
     }
@@ -2966,13 +2990,17 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     fs::write(&local, &payload).expect("write picked image");
     let local_path = local.to_str().expect("UTF-8 local path");
 
-    // Upload over a second SFTP channel on the same SSH connection.
+    // Upload over a second SFTP channel on the same SSH connection. The
+    // destination intent binds the selected pane's native terminal; the
+    // core resolves the owning connection and its stable endpoint/runtime
+    // identity from it.
+    let intent = attachment_intent(root.terminal_id).expect("Herdr attachment intent");
     let attachment_id = attachment_begin(
-        id,
+        intent,
         local_path,
         "picked image.png",
-        payload.len() as u64,
         None,
+        payload.len() as u64,
     )
     .expect("begin Herdr attachment");
     let uploaded = wait_attachment_phase(attachment_id, AttachmentPhase::Uploaded, "Herdr upload");
@@ -3003,12 +3031,20 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     let topology = wait_json(id, "second pane for stale check", |value| {
         value["terminals"].as_array().is_some_and(|t| t.len() == 2)
     });
-    let other_pane = topology["terminals"]
+    let (other_pane, other_terminal) = topology["terminals"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|pane| entity_id(&pane["id"]))
-        .find(|pane| *pane != root.pane_id)
+        .filter(|pane| entity_id(&pane["id"]) != root.pane_id)
+        .map(|pane| {
+            let native = pane["terminalId"]
+                .as_str()
+                .and_then(|id| id.strip_prefix("native:"))
+                .and_then(|id| id.parse::<u64>().ok())
+                .expect("other pane native terminal id");
+            (entity_id(&pane["id"]), native)
+        })
+        .next()
         .expect("the newly created Herdr pane");
     select_pane(id, other_pane).expect("select other Herdr pane");
     wait_json(id, "other pane selected", |value| {
@@ -3018,15 +3054,22 @@ fn real_herdr_attachment_upload_insert_and_fence() {
             .iter()
             .any(|pane| entity_id(&pane["id"]) == other_pane && pane["selected"] == true)
     });
+    // Stale-destination rejection, two ways: the operation's own pane is
+    // no longer the selected pane, and a foreign pane terminal cannot
+    // address the operation at all. Both are held — never retargeted.
     assert!(
-        attachment_insert(id, attachment_id).is_err(),
-        "insert after destination change must be rejected"
+        attachment_insert(root.terminal_id, attachment_id).is_err(),
+        "insert while another pane is selected must be held"
     );
     let blocked = attachment_snapshot(attachment_id).expect("blocked snapshot");
     assert_eq!(blocked.phase, AttachmentPhase::Uploaded as u32);
     assert_eq!(
         field(&blocked.error_code, blocked.error_code_len),
         "destination_changed"
+    );
+    assert!(
+        attachment_insert(other_terminal, attachment_id).is_err(),
+        "insert addressed to a foreign pane terminal must be rejected"
     );
 
     // Read-only/input-pending state: hiding the native terminal makes
@@ -3049,7 +3092,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
         value["control"]["terminalInputReady"] == false
     });
     assert!(
-        attachment_insert(id, attachment_id).is_err(),
+        attachment_insert(root.terminal_id, attachment_id).is_err(),
         "insert while input is unready must be held, not sent"
     );
     let held = attachment_snapshot(attachment_id).expect("held snapshot");
@@ -3070,7 +3113,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     // the operation stays Uploaded while the gate is closed, so retry the
     // explicit insert briefly instead of racing it.
     let deadline = Instant::now() + WAIT_TIMEOUT;
-    while let Err(error) = attachment_insert(id, attachment_id) {
+    while let Err(error) = attachment_insert(root.terminal_id, attachment_id) {
         let snapshot = attachment_snapshot(attachment_id).expect("snapshot after failed insert");
         assert!(
             Instant::now() < deadline,
@@ -3099,7 +3142,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
 
     // Explicit remote deletion on the same endpoint; verified by the flag
     // and by the file disappearing from the fixture filesystem.
-    attachment_delete_remote(id, attachment_id).expect("queue remote delete");
+    attachment_delete_remote(root.terminal_id, attachment_id).expect("queue remote delete");
     let removed = wait_attachment_flag(
         attachment_id,
         ATTACHMENT_FLAG_REMOTE_REMOVED,
@@ -3118,11 +3161,11 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     // read-only/failed; insert is held (the op stays Uploaded) instead of
     // landing anywhere else.
     let second_id = attachment_begin(
-        id,
+        intent,
         local_path,
         "picked image.png",
-        payload.len() as u64,
         None,
+        payload.len() as u64,
     )
     .expect("begin second attachment");
     let second_uploaded =
@@ -3142,7 +3185,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
         .expect("takeover controller frame");
     wait_state(id, ConnectionState::Failed, "controller conflict teardown");
     assert!(
-        attachment_insert(id, second_id).is_err(),
+        attachment_insert(root.terminal_id, second_id).is_err(),
         "insert while the connection is torn down must fail"
     );
     let held = attachment_snapshot(second_id).expect("held snapshot after conflict");
@@ -3154,7 +3197,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     // Deletion is endpoint-bound too: with the connection gone it cannot
     // proceed, and the operation still retains its uploaded file state.
     assert!(
-        attachment_delete_remote(id, second_id).is_err(),
+        attachment_delete_remote(root.terminal_id, second_id).is_err(),
         "remote delete without the owning connection must fail"
     );
     let still_held = attachment_snapshot(second_id).expect("held snapshot after refused delete");
@@ -3173,5 +3216,93 @@ fn real_herdr_attachment_upload_insert_and_fence() {
         "remote file should survive the controller conflict: {}",
         second_mirror.display()
     );
+    attachment_intent_dispose(intent).expect("dispose Herdr attachment intent");
     println!("HERDR_ATTACHMENT_OK upload insert stale_reject input_held conflict_held delete");
+}
+
+/// Issue #28 FP-015 over the real Herdr fixture: the `sftp` subsystem's
+/// CHANNEL_SUCCESS reply is deferred for `MEETERM_FIXTURE_SFTP_REPLY_DELAY`
+/// seconds. The queued launch must pend inside the actor's select loop —
+/// pane input keeps echoing while the subsystem wait is outstanding — and
+/// the upload still completes once the reply lands.
+#[test]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1, a real Herdr 0.9.0 binary, and MEETERM_FIXTURE_SFTP_REPLY_DELAY"]
+fn real_herdr_delayed_subsystem_keeps_input_responsive() {
+    assert_eq!(
+        env::var("MEETERM_HERDR_INTEGRATION").ok().as_deref(),
+        Some("1")
+    );
+    let delay: u64 = env::var("MEETERM_FIXTURE_SFTP_REPLY_DELAY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .expect("MEETERM_FIXTURE_SFTP_REPLY_DELAY must be set for this test");
+    assert!(
+        (3..15).contains(&delay),
+        "reply delay must visibly overlap input but stay under the 15s launch bound, got {delay}"
+    );
+    let driver = Driver::start();
+    let ssh = FixtureSsh::start(&driver.manifest);
+
+    let id = create_terminal(60, 20).expect("create delayed-SFTP terminal");
+    let _guard = TerminalGuard { id };
+    connect_host(id, options(&driver.manifest, &ssh, None)).expect("connect delayed-SFTP host");
+    select_herdr_runtime_from_picker(id, "default", "delayed-SFTP picker");
+    let initial = wait_session(id, "delayed-SFTP session");
+    let root = initial
+        .panes
+        .iter()
+        .find(|pane| pane.selected)
+        .expect("selected Herdr pane")
+        .clone();
+
+    let scratch = Path::new(&driver.manifest.root).join("att-delay-scratch");
+    fs::create_dir_all(&scratch).expect("create delayed-SFTP scratch");
+    let local = scratch.join("picked.png");
+    let mut payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    payload.extend((0..16 * 1024_u32).map(|index| (index % 251) as u8));
+    fs::write(&local, &payload).expect("write picked image");
+    let local_path = local.to_str().expect("UTF-8 local path");
+
+    let intent = attachment_intent(root.terminal_id).expect("delayed-SFTP intent");
+    let attachment_id =
+        attachment_begin(intent, local_path, "picked.png", None, payload.len() as u64)
+            .expect("begin delayed-SFTP attachment");
+
+    // CHANNEL_SUCCESS is withheld for `delay` seconds while the queued
+    // launch pends in the actor's select loop — pane input must still
+    // round-trip, and the upload cannot have progressed to Uploaded.
+    let marker = "MEETERM_HERDR_DELAY_7C31";
+    commit_marker(
+        root.terminal_id,
+        marker,
+        "pane alive during deferred subsystem reply",
+    );
+    let mid = attachment_snapshot(attachment_id).expect("snapshot during deferred reply");
+    assert_ne!(
+        mid.phase,
+        AttachmentPhase::Uploaded as u32,
+        "upload cannot have completed while CHANNEL_SUCCESS is still deferred"
+    );
+
+    let uploaded =
+        wait_attachment_phase(attachment_id, AttachmentPhase::Uploaded, "deferred upload");
+    let remote_path = field(&uploaded.remote_path, uploaded.remote_path_len);
+    let mirror = Path::new(&driver.manifest.root)
+        .join("sftp-root")
+        .join(remote_path.trim_start_matches('/'));
+    assert!(
+        mirror.exists(),
+        "deferred upload must still publish: {}",
+        mirror.display()
+    );
+
+    attachment_delete_remote(root.terminal_id, attachment_id).expect("queue remote delete");
+    wait_attachment_flag(
+        attachment_id,
+        ATTACHMENT_FLAG_REMOTE_REMOVED,
+        "deferred remote delete",
+    );
+    attachment_dispose(attachment_id).expect("dispose delayed attachment");
+    attachment_intent_dispose(intent).expect("dispose delayed intent");
+    println!("HERDR_DELAYED_SUBSYSTEM_OK input_held upload_completed delete");
 }

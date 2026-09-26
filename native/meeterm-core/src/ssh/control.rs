@@ -623,6 +623,13 @@ pub(super) async fn run(
     client.verify_attached_session(&selected_identity).await?;
     client.inherit_zoom_cleanup_record().await?;
     client.synchronize(true).await?;
+    // SFTP channel setup (open + subsystem handshake + SUCCESS wait) runs
+    // as queued background jobs polled inside the select loop instead of
+    // blocking serialized command dispatch — a stalled or slow remote can
+    // never freeze interactive input/output. russh's `client::Handle` is
+    // not `Clone`, so each launch future borrows it for the loop lifetime;
+    // jobs run strictly in command order.
+    let mut sftp_jobs: VecDeque<SftpLaunch<'_>> = VecDeque::new();
     loop {
             // Drain every decoded event before blocking on the SSH channel again.
             while let Some(event) = client.events.pop_front() {
@@ -648,6 +655,14 @@ pub(super) async fn run(
                 _ = shared.cancelled() => return Err(FlowFailure::Stale),
                 _ = shared.explicit_cleanup() => return Err(FlowFailure::Stale),
                 _ = shared.retry_notify.notified() => {}
+                _ = async {
+                    match sftp_jobs.front_mut() {
+                        Some(launch) => launch.as_mut().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    sftp_jobs.pop_front();
+                }
                 command = commands.recv() => {
                     let Some(request) = command else {
                         return Err(FlowFailure::Stale);
@@ -801,11 +816,20 @@ pub(super) async fn run(
                         client.refresh_terminal().await?;
                         client.synchronize(false).await?;
                     }
-                    Some(ControlCommand::SftpUpload { attachment_id }) => {
-                        launch_sftp_job(shared, session, attachment_id, SftpJob::Upload).await;
+                    Some(ControlCommand::SftpUpload { attachment_id, attempt }) => {
+                        sftp_jobs.push_back(Box::pin(launch_sftp_job(
+                            shared, session, attachment_id, attempt, SftpJob::Upload,
+                        )));
                     }
-                    Some(ControlCommand::SftpRemove { attachment_id }) => {
-                        launch_sftp_job(shared, session, attachment_id, SftpJob::Remove).await;
+                    Some(ControlCommand::SftpRemove { attachment_id, attempt }) => {
+                        sftp_jobs.push_back(Box::pin(launch_sftp_job(
+                            shared, session, attachment_id, attempt, SftpJob::Remove,
+                        )));
+                    }
+                    Some(ControlCommand::SftpVerify { attachment_id, attempt }) => {
+                        sftp_jobs.push_back(Box::pin(launch_sftp_job(
+                            shared, session, attachment_id, attempt, SftpJob::Verify,
+                        )));
                     }
                     Some(ControlCommand::RefreshRuntimes
                         | ControlCommand::SelectRuntime { .. }

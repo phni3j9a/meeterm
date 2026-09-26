@@ -128,24 +128,33 @@ internal object MeetermNative {
   /*
    * Issue #28 attachment contract (attachment-ffi + Main amendments). jni.rs
    * (W2) implements `Java_dev_meeterm_terminal_MeetermNative_attachment*`
-   * with the same call order as the C API. begin maps to
-   * `meeterm_attachment_begin`; an empty remoteDirectory selects the core
-   * `~/.local/share/meeterm/attachments` default. Returns the opaque
-   * attachment id (>0), or 0 on synchronous rejection.
+   * with the same call order as the C API. attachmentIntent records the
+   * picked pane's destination identity; attachmentBegin maps to
+   * `meeterm_attachment_begin` and takes the intent id. A null
+   * remoteDirectory selects the core `~/.local/share/meeterm/attachments`
+   * default. begin returns the opaque attachment id (>0), or 0 on
+   * synchronous rejection.
    */
+
+  /** Record the destination intent for the picked pane's terminal. */
+  external fun attachmentIntent(targetTerminalId: Long): Long
+
+  /** Drop a recorded intent; live ops keep their captured identity. */
+  external fun attachmentIntentDispose(intentId: Long): Int
+
   external fun attachmentBegin(
-    terminalId: Long,
+    intentId: Long,
     localPath: String,
     displayName: String,
     remoteDirectory: String?,
     sizeBytes: Long,
   ): Long
 
-  /** Explicit transfer retry; re-fences the same destination pane. */
-  external fun attachmentRetryUpload(terminalId: Long, attachmentId: Long): Int
+  /** Explicit retry/re-verify; targetTerminalId must be the intent's pane. */
+  external fun attachmentRetryUpload(targetTerminalId: Long, attachmentId: Long): Int
 
   /** Insert one quoted remote-path line via the native paste path. */
-  external fun attachmentInsert(terminalId: Long, attachmentId: Long): Int
+  external fun attachmentInsert(targetTerminalId: Long, attachmentId: Long): Int
 
   /** Cancel a pending/uploading op; delayed completions are discarded. */
   external fun attachmentCancel(attachmentId: Long): Int
@@ -154,7 +163,7 @@ internal object MeetermNative {
   external fun attachmentDispose(attachmentId: Long): Int
 
   /** Explicit server-side delete of the completed remote file. */
-  external fun attachmentDeleteRemote(terminalId: Long, attachmentId: Long): Int
+  external fun attachmentDeleteRemote(targetTerminalId: Long, attachmentId: Long): Int
 
   /**
    * Flat string snapshot: [phase, flags, attachmentId, bytesUploaded,

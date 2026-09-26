@@ -714,6 +714,9 @@ async fn run_impl(
     };
     client.synchronize().await?;
     client.activate_selected().await?;
+    // SFTP channel setup jobs queued by `command()` are polled as one
+    // select arm so a slow remote never blocks this interactive loop.
+    let mut sftp_jobs: VecDeque<SftpLaunch<'_>> = VecDeque::new();
     if client.controller.is_none() && client.strict_terminal.is_none() {
         // Metadata/runtime readiness is independent from terminal visibility.
         // The picker surface is hidden until this state is published; once it
@@ -747,6 +750,14 @@ async fn run_impl(
                 if shared.is_foreground() {
                     client.activate_selected().await?;
                 }
+            },
+            _ = async {
+                match sftp_jobs.front_mut() {
+                    Some(launch) => launch.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                sftp_jobs.pop_front();
             },
             frame = async {
                 match stream {
@@ -802,7 +813,7 @@ async fn run_impl(
                 }
                 client.command_epoch = (!revoke && !allow_recovery_visibility)
                     .then_some(request.epoch);
-                let result = client.command(command).await;
+                let result = client.command(command, &mut sftp_jobs).await;
                 client.command_epoch = None;
                 result?;
             },
@@ -1495,7 +1506,7 @@ fn apply_projection_state(state: &mut SessionState, projection: &SnapshotProject
     };
 }
 
-impl HerdrClient<'_> {
+impl<'a> HerdrClient<'a> {
     fn cleanup_projection_stale(&self, projection: &SnapshotProjection) {
         for native in &projection.stale {
             registry::detach_transport(*native, self.shared.generation);
@@ -1547,14 +1558,54 @@ impl HerdrClient<'_> {
         self.activate_pane(pane_id).await
     }
 
-    async fn command(&mut self, command: ControlCommand) -> Result<(), FlowFailure> {
+    async fn command(
+        &mut self,
+        command: ControlCommand,
+        sftp_jobs: &mut VecDeque<SftpLaunch<'a>>,
+    ) -> Result<(), FlowFailure> {
         match command {
-            ControlCommand::SftpUpload { attachment_id } => {
-                launch_sftp_job(self.shared, self.session, attachment_id, SftpJob::Upload).await;
+            // SFTP channel setup is queued, never awaited here: the bounded
+            // open + subsystem handshake is polled by the run loop's select
+            // arm so a slow remote cannot stall interactive input/output.
+            // `self.shared`/`self.session` are `&'a` fields — the job borrows
+            // the connection handle, never `self`.
+            ControlCommand::SftpUpload {
+                attachment_id,
+                attempt,
+            } => {
+                sftp_jobs.push_back(Box::pin(launch_sftp_job(
+                    self.shared,
+                    self.session,
+                    attachment_id,
+                    attempt,
+                    SftpJob::Upload,
+                )));
                 return Ok(());
             }
-            ControlCommand::SftpRemove { attachment_id } => {
-                launch_sftp_job(self.shared, self.session, attachment_id, SftpJob::Remove).await;
+            ControlCommand::SftpRemove {
+                attachment_id,
+                attempt,
+            } => {
+                sftp_jobs.push_back(Box::pin(launch_sftp_job(
+                    self.shared,
+                    self.session,
+                    attachment_id,
+                    attempt,
+                    SftpJob::Remove,
+                )));
+                return Ok(());
+            }
+            ControlCommand::SftpVerify {
+                attachment_id,
+                attempt,
+            } => {
+                sftp_jobs.push_back(Box::pin(launch_sftp_job(
+                    self.shared,
+                    self.session,
+                    attachment_id,
+                    attempt,
+                    SftpJob::Verify,
+                )));
                 return Ok(());
             }
             ControlCommand::SetTerminalVisible { visible } => {
@@ -1669,7 +1720,8 @@ impl HerdrClient<'_> {
                 | ControlCommand::RefreshTerminal
                 | ControlCommand::SetTerminalVisible { .. }
                 | ControlCommand::SftpUpload { .. }
-                | ControlCommand::SftpRemove { .. } => unreachable!(),
+                | ControlCommand::SftpRemove { .. }
+                | ControlCommand::SftpVerify { .. } => unreachable!(),
                 ControlCommand::CreateWorkspace { name } => {
                     ("workspace.create", json!({"label":name, "focus":false}))
                 }

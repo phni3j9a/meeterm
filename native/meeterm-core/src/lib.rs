@@ -19,12 +19,13 @@ pub use attachment::{
     ATTACHMENT_FLAG_REMOTE_REMOVED, ATTACHMENT_MSG_CAPACITY, ATTACHMENT_NAME_CAPACITY,
     ATTACHMENT_PATH_CAPACITY, ATTACHMENT_SNAPSHOT_SIZE, AttachmentError, AttachmentPhase,
     AttachmentSnapshot, MAX_ATTACHMENT_BYTES, attachment_begin, attachment_cancel,
-    attachment_delete_remote, attachment_dispose, attachment_insert, attachment_retry_upload,
-    attachment_snapshot,
+    attachment_delete_remote, attachment_dispose, attachment_insert, attachment_intent,
+    attachment_intent_dispose, attachment_retry_upload, attachment_snapshot,
 };
 pub use ffi::{
     meeterm_attachment_begin, meeterm_attachment_cancel, meeterm_attachment_delete_remote,
-    meeterm_attachment_dispose, meeterm_attachment_insert, meeterm_attachment_retry_upload,
+    meeterm_attachment_dispose, meeterm_attachment_insert, meeterm_attachment_intent,
+    meeterm_attachment_intent_dispose, meeterm_attachment_retry_upload,
     meeterm_attachment_snapshot, meeterm_attachment_snapshot_size, meeterm_change_runtime,
     meeterm_clear_selection, meeterm_commit_modified_utf8, meeterm_commit_modified_utf8_at_epoch,
     meeterm_commit_utf8, meeterm_commit_utf8_at_epoch, meeterm_connect, meeterm_connect_host,

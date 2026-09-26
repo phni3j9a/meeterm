@@ -1255,7 +1255,44 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_changeRuntime(
     }))
 }
 
-/// Begin one image attachment on the SSH connection that owns `handle`.
+/// Record the destination intent for the picked pane's native terminal.
+/// Returns the opaque intent id (positive) or zero when the pane is not a
+/// usable destination. The core resolves the owning SSH connection itself;
+/// the adapter never supplies an owner id.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentIntent(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    target_terminal_id: jlong,
+) -> jlong {
+    let Ok(target_terminal_id) = u64::try_from(target_terminal_id) else {
+        return 0;
+    };
+    crate::attachment::attachment_intent(target_terminal_id)
+        .ok()
+        .and_then(|id| jlong::try_from(id).ok())
+        .unwrap_or(0)
+}
+
+/// Drop a recorded intent. Idempotent; live ops keep their own copy of
+/// the captured identity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentIntentDispose(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    intent_id: jlong,
+) -> jint {
+    let Ok(intent_id) = u64::try_from(intent_id) else {
+        return -1;
+    };
+    crate::attachment::attachment_intent_dispose(intent_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Begin one image attachment against the recorded `intent_id`; the core
+/// re-validates the intent's stable destination identity and captures a
+/// fresh fence — it never uploads to whatever pane is currently selected.
 /// Returns the opaque attachment id, or zero when synchronously rejected.
 /// The local path must stay valid until the upload finishes; the core
 /// never writes to or deletes it. `remote_dir` may be null for the
@@ -1264,13 +1301,13 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_changeRuntime(
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentBegin<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _this: JObject<'caller>,
-    handle: jlong,
+    intent_id: jlong,
     local_path: JString<'caller>,
     display_name: JString<'caller>,
     remote_dir: JString<'caller>,
     size_bytes: jlong,
 ) -> jlong {
-    let (Some(handle), Ok(size_bytes)) = (handle_from_jlong(handle), u64::try_from(size_bytes))
+    let (Ok(intent_id), Ok(size_bytes)) = (u64::try_from(intent_id), u64::try_from(size_bytes))
     else {
         return 0;
     };
@@ -1284,11 +1321,11 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentBegin<'
                 Some(string_from_java(env, &remote_dir)?)
             };
             Ok(crate::attachment::attachment_begin(
-                handle,
+                intent_id,
                 &local_path,
                 &display_name,
-                size_bytes,
                 remote_dir.as_deref(),
+                size_bytes,
             )
             .ok()
             .and_then(|id| jlong::try_from(id).ok())
@@ -1301,7 +1338,8 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentBegin<'
     }
 }
 
-/// Explicit transfer retry; re-fences the same destination identity.
+/// Explicit transfer retry / remote re-verification; `handle` must be the
+/// pane terminal the intent captured — the op never retargets.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentRetryUpload(
     _env: EnvUnowned<'_>,
@@ -1319,7 +1357,9 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentRetryUp
         .unwrap_or_else(|error| error.code())
 }
 
-/// One quoted remote-path line into the fenced pane only; never Enter.
+/// One quoted remote-path line into the intent's recorded destination pane
+/// only; never Enter. `handle` must be the pane terminal the intent
+/// captured.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentInsert(
     _env: EnvUnowned<'_>,
@@ -1369,9 +1409,8 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDispose
 }
 
 /// Explicit remote deletion restricted to this operation's generated
-/// names, on the same SSH endpoint owned by `handle` only. Idempotent;
-/// the phase is kept. Renamed from `attachmentRemoveRemote`: the owning
-/// connection handle is now required.
+/// names, on the operation's recorded SSH endpoint only. `handle` must be
+/// the pane terminal the intent captured. Idempotent; the phase is kept.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDeleteRemote(
     _env: EnvUnowned<'_>,
