@@ -18,15 +18,15 @@ use meeterm_core::workspace::{
     Backend, RuntimeDiscoverySnapshot, RuntimeSectionState, RuntimeState,
 };
 use meeterm_core::{
-    ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED, ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentPhase,
-    AttachmentSnapshot, AuthOptions, ConnectOptions, ConnectionSnapshot, ConnectionState,
-    MAX_ATTACHMENT_BYTES, PaneSnapshot, SessionSnapshot, SpecialKey, attachment_begin,
-    attachment_cancel, attachment_delete_remote, attachment_dispose, attachment_insert,
-    attachment_snapshot, close_pane, close_workspace, connect_host, connection_snapshot,
-    create_pane, create_runtime, create_terminal, create_workspace, destroy_terminal,
-    disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count, meeterm_resize_terminal,
-    meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot, meeterm_snapshot_size,
-    reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
+    ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED, ATTACHMENT_FLAG_REMOTE_REMOVED, AttachmentError,
+    AttachmentPhase, AttachmentSnapshot, AuthOptions, ConnectOptions, ConnectionSnapshot,
+    ConnectionState, MAX_ATTACHMENT_BYTES, PaneSnapshot, SessionSnapshot, SpecialKey,
+    attachment_begin, attachment_cancel, attachment_delete_remote, attachment_dispose,
+    attachment_insert, attachment_snapshot, close_pane, close_workspace, connect_host,
+    connection_snapshot, create_pane, create_runtime, create_terminal, create_workspace,
+    destroy_terminal, disconnect_terminal, meeterm_commit_utf8, meeterm_input_commit_count,
+    meeterm_resize_terminal, meeterm_respond_host_key, meeterm_send_special_key, meeterm_snapshot,
+    meeterm_snapshot_size, reconnect_terminal, refresh_terminal, rename_pane, rename_workspace,
     runtime_discovery_snapshot, select_pane, select_runtime, send_bytes, session_snapshot,
 };
 
@@ -1511,8 +1511,16 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     // lifetime; its name must never leak into the remote path. The file is
     // named `.jpg` but carries PNG magic — the remote extension must come
     // from the data, not the picked name.
-    let scratch = std::env::temp_dir().join(format!("meeterm-att-src-{}", std::process::id()));
-    fs::create_dir_all(&scratch).expect("create attachment scratch directory");
+    let scratch = scratch_dir("meeterm-att-src");
+    // Backstop remote cleanup: records the shared default attachments
+    // directory now so a panic can still collect only this run's names.
+    let mut remote_guard = RemoteAttachmentGuard::new(&fixture);
+    // Legs that only exercise upload mechanics — not the default-dir
+    // layout itself — target a dedicated remote dir under /tmp so the
+    // shared real-$HOME directory is touched as little as possible.
+    let remote_scratch = format!("/tmp/meeterm-att-remote-{}", std::process::id());
+    fs::create_dir_all(&remote_scratch).expect("create dedicated remote dir");
+    remote_guard.track(remote_scratch.clone());
     let local = scratch.join("picked image.jpg");
     let mut payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     payload.extend((0..96 * 1024_u32).map(|index| (index % 251) as u8));
@@ -1687,6 +1695,8 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
 
     // An explicit remote directory is validated component-by-component:
     // a symlink inside the chain is refused rather than followed.
+    remote_guard.track("/tmp/meeterm-att-target");
+    remote_guard.track("/tmp/meeterm-att-link");
     run_remote_tmux(
         &fixture,
         "rm -rf /tmp/meeterm-att-target /tmp/meeterm-att-link; \
@@ -1718,6 +1728,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
     // `~/` expands against the SFTP realpath(".") result — never a
     // client-side home guess. The target dir must already exist; we never
     // create or chmod an explicit directory.
+    remote_guard.track("$HOME/meeterm-att-tilde");
     run_remote_tmux(
         &fixture,
         "mkdir -p \"$HOME/meeterm-att-tilde\" && chmod 0700 \"$HOME/meeterm-att-tilde\"",
@@ -1790,6 +1801,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
 
     // A read-only explicit directory fails the exclusive-create writability
     // probe with remote_permission_denied.
+    remote_guard.track("$HOME/meeterm-att-ro");
     run_remote_tmux(
         &fixture,
         "mkdir -p \"$HOME/meeterm-att-ro\" && chmod 0555 \"$HOME/meeterm-att-ro\"",
@@ -1821,21 +1833,46 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "remote read-only cleanup",
     );
 
+    // A sparse file over the product cap is rejected at begin without
+    // touching the remote side.
+    let oversized = scratch.join("picked oversized.bin");
+    fs::File::create(&oversized)
+        .expect("create oversized picked image")
+        .set_len(MAX_ATTACHMENT_BYTES + 1)
+        .expect("size oversized picked image");
+    let oversized_path = oversized.to_str().expect("UTF-8 oversized path");
+    assert!(
+        matches!(
+            attachment_begin(
+                id,
+                oversized_path,
+                "picked oversized.bin",
+                MAX_ATTACHMENT_BYTES + 1,
+                None,
+            ),
+            Err(AttachmentError::SourceTooLarge)
+        ),
+        "over-cap picked file must fail source_too_large"
+    );
+
     // The detached SFTP task must not starve the interactive loop: pane
     // input echoes back within the bounded deadline while a large upload
     // is still streaming on the same connection. The payload uses the
-    // product maximum so the transfer outlasts the echo round trip.
+    // product maximum so the transfer outlasts the echo round trip; a
+    // sparse file is enough — only the byte stream matters here.
     send_raw_retry(pane.terminal_id, b"\x03", "clear inserted input line");
     let responsive = scratch.join("picked large.png");
-    let responsive_payload = vec![0x5A_u8; MAX_ATTACHMENT_BYTES as usize];
-    fs::write(&responsive, &responsive_payload).expect("write large picked image");
+    fs::File::create(&responsive)
+        .expect("create large picked image")
+        .set_len(MAX_ATTACHMENT_BYTES)
+        .expect("size large picked image");
     let responsive_path = responsive.to_str().expect("UTF-8 large path");
     let responsive_id = attachment_begin(
         id,
         responsive_path,
         "picked large.png",
-        responsive_payload.len() as u64,
-        None,
+        MAX_ATTACHMENT_BYTES,
+        Some(remote_scratch.as_str()),
     )
     .expect("begin large attachment");
     let live_marker = format!("MEETERM_ATT_LIVE_{}", std::process::id());
@@ -1871,7 +1908,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         big_path,
         "picked second.png",
         big_payload.len() as u64,
-        None,
+        Some(remote_scratch.as_str()),
     )
     .expect("begin second attachment");
     attachment_cancel(cancelled_id).expect("cancel second attachment");
@@ -1905,7 +1942,7 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         "fixture attachment cleanup",
     );
     send_raw_retry(pane.terminal_id, b"\x03", "discard inserted input line");
-    let _ = fs::remove_dir_all(&scratch);
+    // ScratchDirGuard and RemoteAttachmentGuard collect the rest.
 }
 
 #[test]
@@ -1927,8 +1964,7 @@ fn real_openssh_no_sftp_attachment_fails_visibly() {
     select_pane(id, pane.pane_id).expect("select attachment pane");
     wait_for_selected_pane(id, pane.pane_id, "select attachment pane");
 
-    let scratch = std::env::temp_dir().join(format!("meeterm-att-neg-{}", std::process::id()));
-    fs::create_dir_all(&scratch).expect("create attachment scratch directory");
+    let scratch = scratch_dir("meeterm-att-neg");
     let local = scratch.join("picked.jpg");
     fs::write(&local, b"negative-path-image").expect("write picked image");
     let local_path = local.to_str().expect("UTF-8 local path");
@@ -1955,7 +1991,6 @@ fn real_openssh_no_sftp_attachment_fails_visibly() {
     );
     wait_for_pane_text(&pane, marker, "pane alive after failed attachment");
     attachment_dispose(attachment_id).expect("dispose failed attachment");
-    let _ = fs::remove_dir_all(&scratch);
 }
 
 #[test]
@@ -1985,8 +2020,7 @@ fn real_openssh_delayed_sftp_attachment_times_out() {
     select_pane(id, pane.pane_id).expect("select attachment pane");
     wait_for_selected_pane(id, pane.pane_id, "select attachment pane");
 
-    let scratch = std::env::temp_dir().join(format!("meeterm-att-timeout-{}", std::process::id()));
-    fs::create_dir_all(&scratch).expect("create attachment scratch directory");
+    let scratch = scratch_dir("meeterm-att-timeout");
     let local = scratch.join("picked.png");
     let payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
     fs::write(&local, &payload).expect("write picked image");
@@ -2036,7 +2070,6 @@ fn real_openssh_delayed_sftp_attachment_times_out() {
         "pane alive after stalled attachment",
     );
     wait_for_pane_text(&pane, marker, "pane alive after stalled attachment");
-    let _ = fs::remove_dir_all(&scratch);
 }
 
 struct PasswordFixtureConfig {
@@ -2218,6 +2251,111 @@ fn run_remote_tmux(fixture: &FixtureConfig, command: &str, label: &str) -> Outpu
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+/// Non-panicking remote command used only by cleanup guards: failures
+/// during unwinding must not turn a test panic into an abort.
+fn run_remote_quiet(fixture: &FixtureConfig, command: &str) -> Option<Output> {
+    ssh_command(fixture, false).arg(command).output().ok()
+}
+
+/// The picked-file scratch directory, removed on success, failure and
+/// panic alike.
+struct ScratchDirGuard {
+    path: PathBuf,
+}
+
+fn scratch_dir(prefix: &str) -> ScratchDirGuard {
+    let path = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+    fs::create_dir_all(&path).expect("create attachment scratch directory");
+    ScratchDirGuard { path }
+}
+
+impl std::ops::Deref for ScratchDirGuard {
+    type Target = PathBuf;
+    fn deref(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Backstop cleanup for remote state this test may create on the fixture
+/// host. The fixture sshd acts on the real account `$HOME`, so the
+/// app-private default directory is shared with anything else the account
+/// runs: the guard snapshots its entries at construction and on drop
+/// removes only *new* generated names plus the remote paths the test
+/// explicitly registered, never a pre-existing file.
+struct RemoteAttachmentGuard<'a> {
+    fixture: &'a FixtureConfig,
+    remote_paths: Vec<String>,
+    baseline: Vec<String>,
+}
+
+const REMOTE_DEFAULT_DIR: &str = "$HOME/.local/share/meeterm/attachments";
+
+impl<'a> RemoteAttachmentGuard<'a> {
+    fn new(fixture: &'a FixtureConfig) -> Self {
+        let baseline = remote_attachment_entries(fixture);
+        Self {
+            fixture,
+            remote_paths: Vec::new(),
+            baseline,
+        }
+    }
+
+    /// Register a remote file or directory this test created; it is
+    /// `rm -rf`'d on drop. `$HOME`-relative paths are expanded by the
+    /// remote shell.
+    fn track(&mut self, remote_path: impl Into<String>) {
+        self.remote_paths.push(remote_path.into());
+    }
+}
+
+fn remote_attachment_entries(fixture: &FixtureConfig) -> Vec<String> {
+    let command = format!("ls -A1 {REMOTE_DEFAULT_DIR} 2>/dev/null || true");
+    let Some(output) = run_remote_quiet(fixture, &command) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn remote_partial_name_valid(name: &str) -> bool {
+    name.strip_prefix(".meeterm-partial-")
+        .is_some_and(generated_name_valid)
+}
+
+impl Drop for RemoteAttachmentGuard<'_> {
+    fn drop(&mut self) {
+        let mut script = String::new();
+        // Sweep generated names that appeared after the guard was
+        // created: published files are normally removed by
+        // attachment_delete_remote, but a panic can strand a partial.
+        for name in remote_attachment_entries(self.fixture) {
+            let generated = generated_name_valid(&name) || remote_partial_name_valid(&name);
+            if generated && !self.baseline.iter().any(|seen| seen == &name) {
+                script.push_str(&format!("rm -f -- '{REMOTE_DEFAULT_DIR}/{name}'; "));
+            }
+        }
+        for path in &self.remote_paths {
+            script.push_str(&format!("rm -rf -- \"{path}\"; "));
+        }
+        // Remove the app-private dirs only when empty (no-op otherwise,
+        // and never a force on a shared directory).
+        script.push_str(&format!(
+            "rmdir -- {REMOTE_DEFAULT_DIR} \"$HOME/.local/share/meeterm\" 2>/dev/null || true"
+        ));
+        let _ = run_remote_quiet(self.fixture, &script);
+    }
 }
 
 fn create_fixture_tmux_session(fixture: &FixtureConfig, name: &str) {

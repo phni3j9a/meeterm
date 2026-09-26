@@ -2956,7 +2956,9 @@ fn real_herdr_attachment_upload_insert_and_fence() {
 
     // The picked file is PNG data; the remote extension must come from
     // magic, and the generated name must match meeterm-<ts>-<16hex>.png.
-    let scratch = std::env::temp_dir().join(format!("meeterm-herdr-att-{}", std::process::id()));
+    // The scratch lives inside the disposable driver root so Driver::drop
+    // removes it on success, failure and panic alike.
+    let scratch = Path::new(&driver.manifest.root).join("att-scratch");
     fs::create_dir_all(&scratch).expect("create attachment scratch");
     let local = scratch.join("picked image.png");
     let mut payload: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -3172,5 +3174,4 @@ fn real_herdr_attachment_upload_insert_and_fence() {
         second_mirror.display()
     );
     println!("HERDR_ATTACHMENT_OK upload insert stale_reject input_held conflict_held delete");
-    let _ = fs::remove_dir_all(&scratch);
 }
