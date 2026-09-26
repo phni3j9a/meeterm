@@ -1,0 +1,19 @@
+Real OS picker attempt — BLOCKED (recorded per directive; SSH upload/insert not attempted)
+
+Attempt made:
+1. xcrun simctl addmedia 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 <png> — photo seeded successfully
+   (note: `addphotos` is not a valid verb on this simctl; `addmedia` is the correct subcommand)
+2. xcrun simctl openurl -> "meeterm://smoke?screen=attachment-choose" — sheet rendered
+3. Tapped "Choose from photos" twice via desktop UI — screen stayed on 'choosing'; no picker appeared
+
+Exact blocker (verified in source, not an environment limitation):
+- App.tsx pickAttachment() lines ~2976-2981: `if (smokeFixtureActive) { ...setAttachment(phase: 'choosing'); return; }`
+  — every smoke fixture screen deliberately short-circuits before MeetermTerminal.pickAttachmentImage(source),
+  so the seeded routes can NEVER reach PHPicker/UIDocumentPicker. This is intentional product code
+  ("Fixtures never reach the OS picker").
+- The real (non-fixture) path requires ensureAttachmentSession() -> a live native attachment session bound to a
+  real terminal over an actual connection. The smoke app has no SSH host connection, and SSH upload/insert was
+  explicitly excluded from this run's scope.
+
+Conclusion: the PHPicker -> prepareAttachmentImage -> normalized preview path is not exercised in this run.
+The picker-blocking is a deliberate fixture boundary, not a headless/automation limitation of the simulator.

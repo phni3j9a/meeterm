@@ -1,0 +1,43 @@
+meeterm Issue #28 focused validation run — candidate abc1b2a54e6daaac651ade204e25cdd2d3713a13
+branch: issue-28-image-attachments
+date: 2026-09-26 UTC
+suite scope: focused check only — standard/ssh/full acceptance suites NOT run (per directive)
+
+== Stage results ==
+candidate checkout: CONFIRMED (git reset --hard abc1b2a54e6daaac651ade204e25cdd2d3713a13, HEAD verified)
+npm ci: PASS
+fresh CNG prebuild (iOS only, ios/ cleaned): PASS
+ios-inject-ui-test.sh: PASS (AttachmentTests.swift + TerminalInputViewTests.swift + ClientStoreTests.swift injected; AttachmentStore.swift added to injection list in this commit)
+pod install: PASS
+ios-strip-storage-rust-link.py: applied
+xcodebuild app build (Release, iphonesimulator, arm64): PASS — 90s
+  first real Swift compile of attachment adapter — clean (zero error: lines; AttachmentController/MeetermTerminalModule defects from 5e985f64 and 32a6be37 both resolved)
+ios-typecheck.sh (11 curated sources incl. Attachment*): PASS, exit 0
+build-for-testing: PASS — 23s
+injected XCTest bundle: PASS — 38/38 tests, 0 failures
+  AttachmentTests: 20/20
+  TerminalInputViewTests: 13/13
+  ClientStoreTests (meetermStorageTests bundle): 5/5
+simulator install + launch: PASS (dev.meeterm.app, pid 12498, still alive at capture time)
+native readiness: MEETERM_SMOKE_NATIVE_READY observed
+first rendered frame: MEETERM_SMOKE_FIRST_METAL observed (Metal — NOT the Simulator-only CoreGraphics fallback; ZERO MEETERM_SMOKE_FIRST_FRAME_SOFTWARE markers)
+process alive: PASS
+attachment fixture routes: 11/11 captured
+  attachment-choose.png attachment-ready.png attachment-uploading.png attachment-pending.png
+  attachment-uploaded.png attachment-inserted.png attachment-failed.png attachment-cancelled.png
+  attachment-deleted.png attachment-error.png attachment-blocked.png
+  NOTE: fixtures are seeded presentation captures — they do not prove picker/normalize/upload behavior.
+real OS picker attempt: BLOCKED — see picker-blocker.txt
+standard/ssh suites: NOT RUN (out of scope for this focused check)
+
+== Toolchain ==
+Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64
+Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0
+Simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+Build env: EXPO_PUBLIC_MEETERM_SMOKE=1, CODE_SIGNING_ALLOWED=NO, ENABLE_TESTABILITY=YES, ONLY_ACTIVE_ARCH=YES
+
+== Files ==
+logs/ — full xcodebuild app-build log, build-for-testing log, typecheck log, injected XCTest logs (meetermTests + meetermStorageTests)
+captures/ — foundation-terminal.png, foundation-markers.log, 11 attachment-*.png route captures
+picker-blocker.txt — exact reason the real picker path could not be exercised
+run-record.txt — this file

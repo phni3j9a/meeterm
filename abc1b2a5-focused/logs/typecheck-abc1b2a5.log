@@ -1,0 +1,22 @@
+iOS Swift typecheck: Xcode=/Applications/Xcode.app/Contents/Developer SDK=26.5 target=x86_64-apple-ios16.4-simulator sources=11
+/var/folders/2j/fwfzfr5x639f8rbmqc9t9ym40000gn/T/meeterm-ios-typecheck.hlc4M2/meetermTests/TerminalInputView.swift:356:5: warning: result of call to 'resignFirstResponder()' is unused [#no-usage]
+354 |     // End the old UIKit input session before its callbacks can target a new
+355 |     // pane. The newly selected terminal can be focused with a native tap.
+356 |     resignFirstResponder()
+    |     `- warning: result of call to 'resignFirstResponder()' is unused [#no-usage]
+357 |   }
+358 | 
+
+/var/folders/2j/fwfzfr5x639f8rbmqc9t9ym40000gn/T/meeterm-ios-typecheck.hlc4M2/meetermTests/TerminalInputView.swift:528:9: warning: variable 'configuration' was never mutated; consider changing to 'let' constant
+526 | 
+527 |   private func makePasteControl() -> UIPasteControl {
+528 |     var configuration = UIPasteControl.Configuration()
+    |         `- warning: variable 'configuration' was never mutated; consider changing to 'let' constant
+529 |     configuration.baseForegroundColor = UIColor(
+530 |       red: 219.0 / 255,
+iOS Swift typecheck passed.
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.412s
+
+OK
