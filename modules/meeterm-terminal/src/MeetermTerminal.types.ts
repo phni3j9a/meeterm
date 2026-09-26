@@ -291,6 +291,118 @@ export type RuntimeDiscovery = {
   backends: RuntimeBackendDiscovery[];
 };
 
+/** Attachment entry points offered to the native picker adapter. */
+export type AttachmentSource = 'photos' | 'files';
+
+/** Re-encoded formats accepted by the first attachment milestone. */
+export type AttachmentImageFormat = 'png' | 'jpeg';
+
+/**
+ * Opaque remote-target identity captured when an attachment starts. Every
+ * field is display/metadata only; the native side revalidates its own
+ * terminal identity and operation epoch before any remote operation.
+ */
+export type AttachmentTarget = {
+  terminalId: string;
+  paneId: string;
+  workspaceId: string;
+  backend: RuntimeBackend;
+  runtime: string;
+  host: string;
+  port: number;
+};
+
+/** Attachment open result. `held` means native input composition is active. */
+export type AttachmentBeginResult =
+  | { status: 'ready' }
+  | { status: 'held'; reason: 'composing' };
+
+export type AttachmentPickResult =
+  | { status: 'picked'; token: string; byteCount: number }
+  | { status: 'canceled' }
+  | { status: 'error'; errorCode: string; message: string };
+
+export type AttachmentPrepareResult =
+  | {
+      status: 'prepared';
+      fileId: string;
+      previewUri: string;
+      format: AttachmentImageFormat;
+      width: number;
+      height: number;
+      byteCount: number;
+      sourceByteCount: number;
+    }
+  | { status: 'error'; errorCode: string; message: string };
+
+/**
+ * Rust-owned attachment operation phase (attachment-ffi contract). `pending`
+ * means the op is blocked and `errorCode` carries the pending reason;
+ * `inserted` only proves the native input queue accepted the path line —
+ * never that a CLI or model consumed it.
+ */
+export type AttachmentCorePhase =
+  | 'pending'
+  | 'uploading'
+  | 'uploaded'
+  | 'inserted'
+  | 'failed'
+  | 'cancelled'
+  | 'deleted';
+
+/** One complete core snapshot, decoded from the fixed-size C record. */
+export type AttachmentOperationSnapshot = {
+  phase: AttachmentCorePhase;
+  /** Decimal u64; never convert to Number. */
+  attachmentId: string;
+  bytesUploaded: number;
+  sizeBytes: number;
+  remotePath: string;
+  displayName: string;
+  errorCode: string;
+  errorMessage: string;
+  /** flags & 0x1: the input path accepted the line, delivery unconfirmed. */
+  insertUnconfirmed: boolean;
+};
+
+/** Uniform answer for upload/retry/cancel/delete/dispose requests. */
+export type AttachmentActionResult =
+  | { status: 'accepted'; attachmentId: string }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Snapshot poll answer; `idle` means no operation is live. */
+export type AttachmentSnapshotResult =
+  | { status: 'snapshot'; operation: AttachmentOperationSnapshot }
+  | { status: 'idle' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Insertion answer; `held` keeps the composition and reports a reason. */
+export type AttachmentInsertResult =
+  | { status: 'inserted' }
+  | { status: 'held'; reason: 'composing' | 'no_attachment' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Low-frequency native attachment session snapshot for remount recovery. */
+export type AttachmentSessionState = {
+  status: 'idle' | 'staged' | 'prepared';
+  fileId: string;
+  previewUri: string;
+  format: AttachmentImageFormat;
+  width: number;
+  height: number;
+  byteCount: number;
+  sourceByteCount: number;
+  /** Captured destination binding; needed to restore honestly after remount. */
+  target: AttachmentTarget | null;
+  /** Last-known core operation, present only while an op is live. */
+  operation: AttachmentOperationSnapshot | null;
+  errorCode: string;
+  message: string;
+};
+
 export type NativeReadyEvent = {
   terminalId: string;
   native: true;

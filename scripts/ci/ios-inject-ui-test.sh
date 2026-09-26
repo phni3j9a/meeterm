@@ -17,4 +17,10 @@ python3 "${GITHUB_WORKSPACE}/scripts/ci/ios-inject-ui-test.py" \
   "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalInputView.swift" \
   "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalSpecialKey.swift" \
   "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/TerminalScrollGestureDelegate.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/AttachmentLimits.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/AttachmentSession.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/AttachmentInsertionPolicy.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/AttachmentCompositionGuard.swift" \
+  "${GITHUB_WORKSPACE}/modules/meeterm-terminal/ios/AttachmentOperation.swift" \
+  "${GITHUB_WORKSPACE}/scripts/ci/AttachmentTests.swift" \
   "${GITHUB_WORKSPACE}/scripts/ci/ClientStoreTests.swift"

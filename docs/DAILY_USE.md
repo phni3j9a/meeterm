@@ -329,6 +329,76 @@ See [TESTING.md](TESTING.md) for the standard method,
 measured results, and [earlier daily-use evidence](evidence/daily-use-validation-history.md)
 for the preserved investigation history.
 
+## Issue #28 image attachment
+
+Issue #28 adds a smartphone-first image attachment flow to the native terminal.
+One image is picked from the phone, staged in app-owned storage, validated and
+normalized, previewed in a sheet, uploaded to the SSH host by an explicit
+action, and then inserted into the native terminal input as a quoted path
+reference by a second explicit action. Submitting the terminal input is always
+the user's own action; the CLI or AI consuming the image is out of scope.
+
+- The Attach control sits on the terminal screen and is only reachable while a
+  terminal is selected and the runtime is Ready. `beginAttachment` captures
+  the selected terminal/server/session/workspace identity as a destination
+  fence: a later `insertAttachment` call naming a different terminal is
+  rejected, and showing a different terminal only disables insert — it never
+  retargets the attachment.
+- Photos uses `PickVisualMedia` (Android) / `PHPickerViewController` (iOS);
+  Files uses `ACTION_OPEN_DOCUMENT` / `UIDocumentPickerViewController`. Sources
+  stream into app-owned staging under a bounded 24 MiB copy — the provider never
+  hands the pipeline an unbounded buffer, and staging file names are
+  app-generated so provider names cannot traverse the directory.
+- The picked bytes pass magic/dimension checks before any decode: only PNG and
+  JPEG are accepted, HEIC-family brands report a distinct error, and oversized
+  inputs are rejected before pixels are read. EXIF orientation is normalized to
+  an ops model covering all eight values, and the output is re-encoded
+  PNG/JPEG with source metadata dropped.
+- The sheet previews the normalized file with dimensions, format, byte count,
+  the captured destination, and a remote directory field (default
+  `~/.local/share/meeterm/attachments`; an explicit absolute or `~/` path is
+  passed to the core, which validates and may refuse with
+  `remote_unsafe_path`). Explicit **Upload** calls `meeterm_attachment_begin`;
+  progress, Cancel, pending reasons, and failure codes come from the
+  fixed-size operation snapshot (`attachmentSnapshot`, polled ~300 ms only
+  while the sheet is open and the op may still be moving). **Retry upload**
+  and **Insert into terminal input** are separate explicit actions; an
+  `inserted` op whose delivery is unconfirmed (`flags & 0x1`) shows a
+  check-the-terminal notice plus an explicit **Retry insert** — nothing is
+  resent automatically.
+- **Delete from server** calls `meeterm_attachment_delete_remote`, which
+  removes only the file that operation created (published file plus a
+  `.meeterm-partial-*` remnant) on the same authenticated endpoint; the
+  snapshot then reports `deleted`. **Discard** cancels/disposes the core
+  operation and deletes the local staging/prepared files. Nothing is deleted
+  automatically — not on insert, cancel, sheet close, or app exit.
+- IME composition is protected by the real input state, not a flag: Android
+  reads composing spans plus `InputSession.composingText`, iOS reads
+  `markedTextRange`, both through per-terminal providers unregistered on rebind
+  or unmount. While a composition is active, begin/insert return
+  `held` (`reason=composing`) and the composition itself is never committed or
+  cleared. Attachment insertion never routes through the paste or special-key
+  paths.
+- Closing the sheet (including an iOS swipe down) retains the native session,
+  draft, and live operation for same-process reopen; stale picker results are
+  dropped through a generation counter. Choosing a different image retires
+  the old staging/prepared files and the live core operation.
+- All attachment core calls are confined to `AttachmentCoreBridge`
+  (Kotlin/Swift). Until the Rust FFI symbols ship, the Android bridge answers
+  `unavailable` (`core_contract_pending`); the iOS side compiles the declared
+  C ABI once the W2 header/library land.
+
+Manual remote cleanup: files the flow creates live under
+`~/.local/share/meeterm/attachments` (or the explicitly chosen directory) as
+`meeterm-*` published files and `.meeterm-partial-*` remnants, all 0600 under
+0700 directories. To remove them without the app, delete the matching
+`meeterm-*` and `.meeterm-partial-*` names on the SSH host — no other files
+are touched by the flow, and no listing/TTL exists on the app side.
+
+Staging and prepared files are reclaimed on startup when no live session
+references them. Ordinary paste, special keys, and existing native input
+behavior are unchanged by the attachment path.
+
 ## User behavior and storage boundary
 
 The server list manages local profiles; only one server/runtime actor is

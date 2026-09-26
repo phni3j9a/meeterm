@@ -188,6 +188,61 @@ session を変更しません。ローカル成功とGitHub CIの結果は区別
 画像だけから保存・接続・コピー・名前変更の成功を主張しません。seedされた画面と実操作の証拠を区別します。
 未確認の操作と既知の失敗は [DAILY_USE.md](DAILY_USE.md) に残します。
 
+## Issue #28 image attachment の確認項目
+
+Issue #28 のmobile側（picker、画像正規化、preview、IME保護、添付シート、
+operation-state UI）は実装済みです。Rust core への呼び出しは
+`AttachmentCoreBridge` に隔離され、C ABI / JNI `external fun` は
+attachment-ffi 契約＋Main修正（`remote_directory`、`delete_remote`、`deleted`
+phase）どおりに宣言されています。W2 の Rust 実装がこの branch に無い間は
+Android が `unavailable`（`core_contract_pending`）を返し、iOS は契約 header が
+揃ってから compile されます。この節の確認はその境界を前提にします。
+
+- picker は photos（Android `PickVisualMedia` / iOS `PHPickerViewController`）と
+  files（Android `ACTION_OPEN_DOCUMENT` / iOS `UIDocumentPickerViewController`）の
+  2 route で1枚だけを返すこと。選択は stream で app-owned staging に bounded copy
+  され、上限（source 24 MiB、入力辺 16,384px、入力 100Mpx、出力辺 4,096px、出力
+  16 MiB）を超える input は decode 前に拒否されること。
+- PNG/JPEG の magic と header 寸法を decode 前に検査し、GIF 等は
+  `attachment_unsupported_format`、HEIC 系 brand は `attachment_unsupported_heic`
+  で区別すること。EXIF orientation は 8値すべてが ops（rotate + flip）に正規化され、
+  output には metadata を残さないこと。
+- IME composition 保護は実 view の状態を読むこと。Android は composing spans と
+  `InputSession.composingText`、iOS は `markedTextRange` を provider 経由で確認し、
+  composing 中の begin/insert は `held`（`reason=composing`）を返すだけで、
+  composition を commit も clear もしないこと。terminal の rebind/unmount で
+  provider が unregister され、stale view が stale terminalId に答えないこと。
+- attachment sheet は preview に normalize 済みの app-owned file だけを使い、
+  寸法・format・byte count・宛先（Server/Session/Workspace/Terminal）・保存先
+  （既定 `~/.local/share/meeterm/attachments`、明示入力可）を表示すること。
+  Upload と Insert は別の明示操作であり、insert は terminal input への参照
+  挿入のみで submit は常に利用者の明示操作であること。operation phase は
+  `pending`/`uploading`/`uploaded`/`inserted`/`failed`/`cancelled`/`deleted`
+  を理由・進捗付きで表示し、Retry upload / Cancel / Retry insert /
+  Delete from server / Discard は capability どおりにのみ有効であること。
+  表示中の terminal が capture 済み宛先と異なる場合は insert が無効化され、
+  別宛先への自動挿入はないこと。sheet の dismiss（iOS の swipe down を含む）は
+  draft/session を保持し、再オープンで `getAttachmentState` から復元されること。
+  Discard または別の1枚の選択だけが local file と core operation を破棄すること。
+- focused 回帰は Kotlin 単体 test（sniffer、limits、sample-size math、8 EXIF
+  orientation、filename、insertion policy、session 遷移、operation machine:
+  固定長 snapshot decode・stale id 破棄・cancel 後の遅延完了非復活・二重
+  upload 拒否・capability 表）と、注入 XCTest `AttachmentTests.swift`（同じ
+  operation machine 検証＋実 `TerminalInputView` の marked text による insert
+  hold）で確認します。`ios-typecheck.sh` と `ios-inject-ui-test.sh` の manifest
+  は `AttachmentOperation.swift` を含む同じ attachment source 群を含みます。
+- smoke fixture は `attachment-choose` / `attachment-ready` /
+  `attachment-uploading` / `attachment-pending` / `attachment-uploaded` /
+  `attachment-inserted` / `attachment-failed` / `attachment-cancelled` /
+  `attachment-deleted` / `attachment-error` / `attachment-blocked` の11 route
+  で表示確認のみを行います。fixture は OS picker や native session に触れず、
+  picker/normalize/upload 実行の証拠にはしません。
+
+この時点で実際の upload/insert の end-to-end 動作は W2 の Rust 実装待ちのため
+未検証であり、Android では `unavailable` がユーザー向け文言として表示される
+ことを確認します。Mobile full/standard run の real-device picker 挙動も、実行
+された run が存在するまで主張しません。
+
 ## 変更に応じた実行範囲
 
 | 変更 | 最初の確認 | Mobile検証 |
