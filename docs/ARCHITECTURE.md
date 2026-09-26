@@ -241,6 +241,94 @@ immediately before execution. Workspace close and terminal close that could
 remove the final pane are included. If exact cross-session safety cannot be
 proved at execution time, the operation fails closed with a clear error.
 
+## Issue #28 image attachment
+
+One photo or file image picked on the phone can be delivered to the selected
+remote terminal so an already-open Codex or Claude Code conversation can read
+it from a remote path. The whole operation is Rust-owned
+(`native/meeterm-core/src/attachment.rs`); the platform adapters only start,
+poll, insert, retry, cancel, and dispose operations through the explicit
+`meeterm_attachment_*` ABI. Image bytes never cross JavaScript.
+
+```text
+picked local file (adapter-owned, read-only for Rust)
+  ↓ intent: attachment_intent(target pane's native terminal)
+       records the stable destination identity once
+  ↓ begin: validate + re-resolve intent into a fresh fence + enqueue
+actor opens a second SSH session channel → "sftp" subsystem
+  ↓ queued non-blocking launch in the actor loop, then a
+    detached transfer task (never the interactive command loop)
+<realpath(".")>/.local/share/meeterm/attachments/
+    meeterm-<YYYYMMDD>-<HHMMSS>-<16hex>.<ext>   (dir 0700, file 0600)
+  ↓ explicit insert request only
+one single-quoted remote-path line → paste_utf8_at_epoch → pane input
+  ↓ the user reviews and presses Enter — the core never sends it
+```
+
+Only one attachment operation per connection is live at a time
+(`begin` while one is live is rejected; `failed`/`cancelled` records do
+not count). The remote directory is resolved from the SFTP start
+directory (`realpath(".")`), never a client-side `~` guess; every
+component is lstat-checked (symlinks rejected) and the meeterm-owned
+`meeterm`/`attachments` components are created or verified `0700`. A
+user-specified `remote_dir` accepts a clean absolute path or `~/…`
+(server-side expansion only) — `'`, CR/LF, control characters, `..` and
+empty components fail `remote_unsafe_path`; it must exist, must not end
+in a symlink, and must pass an exclusive-create writability probe
+(`remote_permission_denied`), keeping its own modes. Remote file names
+are generated — `meeterm-<YYYYMMDD>-<HHMMSS>-<16 lowercase hex>.<ext>`
+with the extension taken from the image magic; the picked filename never
+appears remotely. Uploads persist until an explicit
+`attachment_delete_remote` deletes only the operation's generated names
+(`meeterm-*` file, `.meeterm-partial-*` remnant, empty app-private dir)
+on the same authenticated endpoint owned by the same terminal; nothing is
+auto-deleted on insert, cancel, dispose, or exit. Manual cleanup is an
+ordinary `rm -f` of those generated names — see SSH.md.
+
+The destination identity lives in an `attachment_intent` recorded from the
+*picked pane's* native terminal — any pane, not only the connection owner;
+the core resolves the owning connection itself. The intent binds only
+stable identities: the credential-free endpoint (host/port/username/
+verified host-key context, backend, runtime — for tmux the exact session
+identity: session id + server pid + server start, so a replaced tmux
+server reusing a session name is rejected), the remote pane, and Herdr's
+stable `terminal_id` rather than its mutable alias. Generation and epochs
+are deliberately excluded: **every** job (`begin`, `retry`, `insert`,
+`delete_remote`) re-resolves the intent against the live actor into a
+fresh execution fence, so a recovered connection works again without a
+new intent while a Server/Session/runtime switch, a replaced tmux server,
+a replaced or vanished pane, or a foreign terminal id fails closed with a
+recorded pending reason (`destination_changed`, `destination_missing`,
+`stale_operation`, …) instead of retargeting whatever is now selected.
+At most one job is in flight per operation (a second request is refused
+`busy`, and snapshot flag `0x4` reports in-flight state; the synchronous
+return only means *accepted*).
+
+The upload writes a private `.meeterm-partial-*` staging file and publishes
+the final name by rename only after the SFTP `CLOSE` reply reports success
+and an `lstat` byte/metadata check of the staged file passes; cancellation
+removes the partial best-effort, and a delayed completion cannot mutate a
+cancelled operation. `insert` is itself one asynchronous *verified-insert*
+job: it lstat-verifies the recorded remote file (generated name, canonical
+base, regular file, exact size, `0600`) — no path pastes before or without
+verification — then re-checks the fence under the session lock and pastes
+one quoted path; a missing/replaced file clears the stale `remote_path`
+and lands `pending(remote_missing)` for an explicit re-upload, and
+`retry_upload` always re-uploads (short-circuiting on a verified
+same-endpoint file). Every launch/transfer/insert/delete job carries the
+operation's attempt identity, so a superseded detached job's late progress
+or completion is discarded instead of disturbing the current attempt. An
+SFTP-refusing server, a missing subsystem, or a dead actor surfaces as an
+operation-level `failed`/`pending` snapshot — never as a connection
+failure.
+
+Uploaded, inserted, and model-observed are deliberately distinct milestones.
+The `inserted` phase only means the native input queue accepted one line;
+nothing claims the CLI or model consumed the image, and no shell command,
+Enter, or CLI session is ever generated. The same fence and insert path serve
+the tmux and Herdr backends because insertion goes through the shared
+epoch-guarded native input queue, not a backend-specific channel.
+
 ## Architectural rule: JavaScript is not the terminal data plane
 
 React Native owns app chrome and product interaction. Rust/native owns terminal transport, terminal state, input composition, and rendering.

@@ -233,6 +233,114 @@ int32_t meeterm_forget_host_key(
 /* Monotonic native terminal-content revision; zero is valid for a new term. */
 uint64_t meeterm_terminal_revision(uint64_t terminal_id);
 
+/*
+ * Image attachment operations (Issue #28). Rust owns the whole operation:
+ * a bounded SFTP upload over the existing authenticated SSH connection,
+ * a fenced destination identity, and — only on explicit request — one
+ * quoted remote-path line through the epoch-guarded native paste path.
+ * No image bytes cross JavaScript; no Enter is ever generated; uploaded,
+ * inserted, and CLI/model-observed are distinct milestones.
+ */
+enum {
+  MEETERM_ATTACHMENT_PATH_CAPACITY = 512,
+  MEETERM_ATTACHMENT_NAME_CAPACITY = 128,
+  MEETERM_ATTACHMENT_CODE_CAPACITY = 64,
+  MEETERM_ATTACHMENT_MSG_CAPACITY = 256
+};
+
+enum {
+  MEETERM_ATTACHMENT_PENDING = 0,
+  MEETERM_ATTACHMENT_UPLOADING = 1,
+  MEETERM_ATTACHMENT_UPLOADED = 2,
+  MEETERM_ATTACHMENT_INSERTED = 3,
+  MEETERM_ATTACHMENT_FAILED = 4,
+  MEETERM_ATTACHMENT_CANCELLED = 5
+};
+
+enum {
+  MEETERM_ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED = 0x1,
+  /* The meeterm-created remote file was explicitly deleted. Composes with
+   * the phase: inserted is not revoked; uploaded+removed = path is gone. */
+  MEETERM_ATTACHMENT_FLAG_REMOTE_REMOVED = 0x2,
+  /* One attachment job (upload / verified insert / remote delete) is
+   * queued or running. Synchronous calls return job *acceptance*, never
+   * the job result — poll until this flag clears, then read phase and
+   * error_code. UI should show Uploading/Inserting/Deleting while set. */
+  MEETERM_ATTACHMENT_FLAG_JOB_IN_FLIGHT = 0x4
+};
+
+typedef struct meeterm_attachment_snapshot {
+  uint32_t phase;
+  uint32_t flags;
+  uint64_t attachment_id;
+  uint64_t bytes_uploaded;
+  uint64_t size_bytes;
+  uint16_t remote_path_len;
+  uint8_t remote_path[MEETERM_ATTACHMENT_PATH_CAPACITY];
+  uint16_t display_name_len;
+  uint8_t display_name[MEETERM_ATTACHMENT_NAME_CAPACITY];
+  uint16_t error_code_len;
+  uint8_t error_code[MEETERM_ATTACHMENT_CODE_CAPACITY];
+  uint16_t error_message_len;
+  uint8_t error_message[MEETERM_ATTACHMENT_MSG_CAPACITY];
+} meeterm_attachment_snapshot_t;
+
+/* Record the destination intent when the attachment sheet is confirmed:
+ * pass the *picked pane's* native terminal id (any pane, not just the
+ * connection owner); the core resolves the owning SSH connection and
+ * stores the stable endpoint/backend/runtime/pane identity. Returns an
+ * opaque positive intent id; zero = not a usable destination. */
+uint64_t meeterm_attachment_intent(uint64_t target_terminal_id);
+/* Drop a recorded intent. Idempotent; live ops keep their own copy. */
+int32_t meeterm_attachment_intent_dispose(uint64_t intent_id);
+/* Opaque positive attachment id; zero = synchronously rejected.
+ * `intent_id` is a live meeterm_attachment_intent handle.
+ * `remote_dir` is an optional explicit remote directory (clean absolute
+ * or ~/-prefixed path expanded against realpath(".")); NULL/0 selects the
+ * app-private default under the SFTP start dir
+ * (.local/share/meeterm/attachments). */
+uint64_t meeterm_attachment_begin(
+  uint64_t intent_id,
+  const uint8_t *local_path,
+  size_t local_path_length,
+  const uint8_t *display_name,
+  size_t display_name_length,
+  const uint8_t *remote_dir,
+  size_t remote_dir_length,
+  uint64_t size_bytes);
+/* Explicit transfer retry for pending/failed, or for an uploaded op
+ * whose remote file was removed (remote_missing / remote_removed).
+ * Re-fences the same intent identity; target_terminal_id must be the
+ * intent's pane. 0 = the upload job was queued; poll the snapshot. */
+int32_t meeterm_attachment_retry_upload(uint64_t target_terminal_id, uint64_t attachment_id);
+/* Queue the verified-insert job: remote lstat + generated-name/base
+ * checks first, then — only on success — one quoted path line into the
+ * intent's recorded pane under the session lock; never sends Enter,
+ * never retargets to the currently selected pane. 0 = job accepted;
+ * the result is read from the snapshot once JOB_IN_FLIGHT clears
+ * (inserted, or pending/failed with remote_missing / remote_unsafe_path
+ * / sftp_* / timeout / a paste-gate reason). -8 = another job in
+ * flight; target_terminal_id must be the intent's pane. */
+int32_t meeterm_attachment_insert(uint64_t target_terminal_id, uint64_t attachment_id);
+/* Cancels in-flight work and discards delayed completion idempotently. */
+int32_t meeterm_attachment_cancel(uint64_t attachment_id);
+/* Drops the operation record, cancelling active work first; remote files
+ * are never auto-deleted — see meeterm_attachment_delete_remote. */
+int32_t meeterm_attachment_dispose(uint64_t attachment_id);
+/* Explicit remote deletion of only this operation's generated
+ * meeterm-* / .meeterm-partial-* names. Like every job it re-resolves
+ * the recorded intent and captures a fresh fence, so it runs on the
+ * same endpoint/runtime/pane the upload targeted — a changed or missing
+ * destination is refused. target_terminal_id must be the intent's pane.
+ * 0 = job queued; idempotent; phase kept, REMOTE_REMOVED set on success.
+ * -8 = another job in flight. */
+int32_t meeterm_attachment_delete_remote(uint64_t target_terminal_id, uint64_t attachment_id);
+/* Poll: fills one complete sanitized snapshot; negative = unknown id. */
+int32_t meeterm_attachment_snapshot(
+  uint64_t attachment_id,
+  meeterm_attachment_snapshot_t *output);
+size_t meeterm_attachment_snapshot_size(void);
+
 #ifdef __cplusplus
 }
 #endif

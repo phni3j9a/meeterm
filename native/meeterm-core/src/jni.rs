@@ -1254,3 +1254,218 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_changeRuntime(
         Ok(crate::ffi::meeterm_change_runtime(handle, operation_epoch))
     }))
 }
+
+/// Record the destination intent for the picked pane's native terminal.
+/// Returns the opaque intent id (positive) or zero when the pane is not a
+/// usable destination. The core resolves the owning SSH connection itself;
+/// the adapter never supplies an owner id.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentIntent(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    target_terminal_id: jlong,
+) -> jlong {
+    let Ok(target_terminal_id) = u64::try_from(target_terminal_id) else {
+        return 0;
+    };
+    crate::attachment::attachment_intent(target_terminal_id)
+        .ok()
+        .and_then(|id| jlong::try_from(id).ok())
+        .unwrap_or(0)
+}
+
+/// Drop a recorded intent. Idempotent; live ops keep their own copy of
+/// the captured identity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentIntentDispose(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    intent_id: jlong,
+) -> jint {
+    let Ok(intent_id) = u64::try_from(intent_id) else {
+        return -1;
+    };
+    crate::attachment::attachment_intent_dispose(intent_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Begin one image attachment against the recorded `intent_id`; the core
+/// re-validates the intent's stable destination identity and captures a
+/// fresh fence — it never uploads to whatever pane is currently selected.
+/// Returns the opaque attachment id, or zero when synchronously rejected.
+/// The local path must stay valid until the upload finishes; the core
+/// never writes to or deletes it. `remote_dir` may be null for the
+/// app-private default directory.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentBegin<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    intent_id: jlong,
+    local_path: JString<'caller>,
+    display_name: JString<'caller>,
+    remote_dir: JString<'caller>,
+    size_bytes: jlong,
+) -> jlong {
+    let (Ok(intent_id), Ok(size_bytes)) = (u64::try_from(intent_id), u64::try_from(size_bytes))
+    else {
+        return 0;
+    };
+    let outcome = unowned_env
+        .with_env(|env| -> jni::errors::Result<jlong> {
+            let local_path = string_from_java(env, &local_path)?;
+            let display_name = string_from_java(env, &display_name)?;
+            let remote_dir = if remote_dir.is_null() {
+                None
+            } else {
+                Some(string_from_java(env, &remote_dir)?)
+            };
+            Ok(crate::attachment::attachment_begin(
+                intent_id,
+                &local_path,
+                &display_name,
+                remote_dir.as_deref(),
+                size_bytes,
+            )
+            .ok()
+            .and_then(|id| jlong::try_from(id).ok())
+            .unwrap_or(0))
+        })
+        .into_outcome();
+    match outcome {
+        Outcome::Ok(id) => id,
+        Outcome::Err(_) | Outcome::Panic(_) => 0,
+    }
+}
+
+/// Explicit transfer retry / remote re-verification; `handle` must be the
+/// pane terminal the intent captured — the op never retargets.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentRetryUpload(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    attachment_id: jlong,
+) -> jint {
+    let (Some(handle), Ok(attachment_id)) =
+        (handle_from_jlong(handle), u64::try_from(attachment_id))
+    else {
+        return -1;
+    };
+    crate::attachment::attachment_retry_upload(handle, attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// One quoted remote-path line into the intent's recorded destination pane
+/// only; never Enter. `handle` must be the pane terminal the intent
+/// captured.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentInsert(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    attachment_id: jlong,
+) -> jint {
+    let (Some(handle), Ok(attachment_id)) =
+        (handle_from_jlong(handle), u64::try_from(attachment_id))
+    else {
+        return -1;
+    };
+    crate::attachment::attachment_insert(handle, attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Cancel the operation; delayed completion is discarded idempotently.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentCancel(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    attachment_id: jlong,
+) -> jint {
+    let Ok(attachment_id) = u64::try_from(attachment_id) else {
+        return -1;
+    };
+    crate::attachment::attachment_cancel(attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Drop the operation record, cancelling active work first. Remote files
+/// survive disposal; explicit removal is `attachmentDeleteRemote`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDispose(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    attachment_id: jlong,
+) -> jint {
+    let Ok(attachment_id) = u64::try_from(attachment_id) else {
+        return -1;
+    };
+    crate::attachment::attachment_dispose(attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Explicit remote deletion restricted to this operation's generated
+/// names, on the operation's recorded SSH endpoint only. `handle` must be
+/// the pane terminal the intent captured. Idempotent; the phase is kept.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentDeleteRemote(
+    _env: EnvUnowned<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    attachment_id: jlong,
+) -> jint {
+    let (Some(handle), Ok(attachment_id)) =
+        (handle_from_jlong(handle), u64::try_from(attachment_id))
+    else {
+        return -1;
+    };
+    crate::attachment::attachment_delete_remote(handle, attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Low-frequency attachment snapshot as a flat string array:
+/// [phase, flags, attachmentId, bytesUploaded, sizeBytes, remotePath,
+///  displayName, errorCode, errorMessage]. Empty array for an unknown id.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentSnapshot<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    attachment_id: jlong,
+) -> JObjectArray<'caller> {
+    let Ok(attachment_id) = u64::try_from(attachment_id) else {
+        return JObjectArray::default();
+    };
+    let result = unowned_env
+        .with_env(|env| -> Result<_, JniError> {
+            let snapshot = crate::attachment::attachment_snapshot(attachment_id)
+                .map_err(|error| JniError::ParseFailed(error.to_string()))?;
+            let array =
+                env.new_object_array(9, jni::jni_str!("java/lang/String"), JObject::null())?;
+            let values = [
+                snapshot.phase.to_string(),
+                snapshot.flags.to_string(),
+                snapshot.attachment_id.to_string(),
+                snapshot.bytes_uploaded.to_string(),
+                snapshot.size_bytes.to_string(),
+                snapshot_string(&snapshot.remote_path, snapshot.remote_path_len),
+                snapshot_string(&snapshot.display_name, snapshot.display_name_len),
+                snapshot_string(&snapshot.error_code, snapshot.error_code_len),
+                snapshot_string(&snapshot.error_message, snapshot.error_message_len),
+            ];
+            for (index, value) in values.iter().enumerate() {
+                let java_value = env.new_string(value)?;
+                array.set_element(env, index, &java_value)?;
+            }
+            Ok(array)
+        })
+        .into_outcome();
+    match result {
+        Outcome::Ok(array) => array,
+        Outcome::Err(_) | Outcome::Panic(_) => JObjectArray::default(),
+    }
+}

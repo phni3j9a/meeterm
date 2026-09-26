@@ -487,6 +487,21 @@ function makeNativeEnvironment() {
       environment.calls.push({ method: 'closePane', paneId });
       closePane(environment.snapshot, paneId);
     },
+    // Issue #28 attachment surface: benign defaults so screens that merely
+    // consult the attachment gate never hit an undefined binding. Focused
+    // attachment tests replace these via `configureAttachment`.
+    async attachmentCompositionStatus() { return { status: 'ok' }; },
+    async getAttachmentState() { return { status: 'idle' }; },
+    async beginAttachment() { return { status: 'unavailable' }; },
+    async pickAttachmentImage() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
+    async prepareAttachmentImage() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
+    async discardAttachment() {},
+    async uploadAttachment() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
+    async attachmentSnapshot() { return { status: 'idle' }; },
+    async retryAttachmentUpload() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
+    async cancelAttachment() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
+    async insertAttachment() { return { status: 'unavailable' }; },
+    async deleteRemoteAttachment() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
   };
   environment.resolvePendingSelection = outcome => {
     assert.ok(environment.pendingSelection, 'a runtime selection should be pending');
@@ -626,6 +641,7 @@ function makeReactNativeMocks(environment) {
     AppState,
     BackHandler,
     FlatList,
+    Image: 'Image',
     Keyboard,
     Linking,
     Modal,
@@ -852,7 +868,10 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
     'session-switcher', 'session-switcher-sessions',
     'recovery-progress', 'recovery-exhausted', 'recovery-mismatch',
-    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
+    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
+    'attachment-choose', 'attachment-ready', 'attachment-uploading', 'attachment-pending',
+    'attachment-uploaded', 'attachment-inserted', 'attachment-failed', 'attachment-cancelled',
+    'attachment-deleted', 'attachment-error', 'attachment-blocked']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
@@ -1519,7 +1538,9 @@ async function connectSavedProfileToRuntime(t, profile, candidate, extraProfiles
 }
 
 async function poll(env) {
-  assert.equal(env.intervalCallbacks.length, 1, 'App should register one metadata polling interval');
+  // The metadata poll is always interval 0; attachment transfer/delete polls
+  // may legitimately register alongside it while an operation is live.
+  assert.ok(env.intervalCallbacks.length >= 1, 'App should register the metadata polling interval');
   await act(async () => {
     env.intervalCallbacks[0]();
   });
@@ -3737,4 +3758,409 @@ test('absence of a selected pane hides and releases the native terminal view', a
   assert.equal(fixture.environment.visibility.slice(visibilityBeforeRelease).includes(false), true, 'native visibility should be released when no terminal is selected');
   assert.equal(fixture.environment.visibility.at(-1), false);
   assert.equal(all(fixture.root, node => node.props && node.props.accessibilityLabel === 'Terminal unavailable').length, 1);
+});
+
+// ---- Issue #28 attachment UI flow (review-round cases, adapted) ----
+
+const ATTACHMENT_PREPARED = {
+  status: 'prepared',
+  fileId: 'att_review001.png',
+  previewUri: 'file:///review.png',
+  format: 'png',
+  width: 100,
+  height: 100,
+  byteCount: 1000,
+  sourceByteCount: 1000,
+};
+
+const ATTACHMENT_UPLOADED = {
+  phase: 'uploaded',
+  attachmentId: '42',
+  bytesUploaded: 1000,
+  sizeBytes: 1000,
+  remotePath: '/home/u/meeterm-review.png',
+  displayName: 'review',
+  errorCode: '',
+  errorMessage: '',
+  insertUnconfirmed: false,
+  remoteRemoved: false,
+  jobInFlight: false,
+};
+
+/**
+ * Double the native attachment surface. `environment.attachmentOp` is the
+ * live core record — tests mutate it to drive snapshot-poll transitions.
+ */
+function configureAttachment(environment, native, initialOp) {
+  environment.attachmentOp = initialOp;
+  native.attachmentCompositionStatus = async () => environment.compositionHeld
+    ? { status: 'held', reason: 'composing' }
+    : { status: 'ok' };
+  native.getAttachmentState = async () => ({
+    status: 'idle',
+    fileId: '',
+    previewUri: '',
+    format: '',
+    width: 0,
+    height: 0,
+    byteCount: 0,
+    sourceByteCount: 0,
+    target: null,
+    operation: null,
+    errorCode: '',
+    errorMessage: '',
+  });
+  native.beginAttachment = async (id, target) => {
+    environment.attachmentTarget = target;
+    environment.attachmentTargetId = id;
+    // The core records the intent's *stable identity* at sheet-open —
+    // endpoint + backend/runtime + the remote pane — not the snapshot object
+    // itself (a mere pane selection swap keeps the same identity).
+    environment.attachmentIntentEndpoint = `${environment.connection.host}:${environment.connection.port}`;
+    environment.attachmentIntentRuntime = `${environment.snapshot.backend}:${environment.snapshot.runtime}`;
+    return { status: 'ready' };
+  };
+  native.pickAttachmentImage = async () => ({ status: 'picked', token: 'att_review001.bin', byteCount: 1000 });
+  native.prepareAttachmentImage = async () => ATTACHMENT_PREPARED;
+  native.uploadAttachment = async (terminalId, remoteDirectory) => {
+    environment.attachmentUploadTarget = terminalId;
+    environment.attachmentRemoteDirectory = remoteDirectory;
+    // Re-resolve the intent against current state, like the core does:
+    // changed endpoint/session fails `destination_changed`, a gone pane
+    // fails `destination_missing`, and neither writes to the new selection.
+    const paneAlive = environment.snapshot.terminals
+      .some(item => item.terminalId === environment.attachmentTargetId);
+    const endpoint = `${environment.connection.host}:${environment.connection.port}`;
+    const runtime = `${environment.snapshot.backend}:${environment.snapshot.runtime}`;
+    if (!paneAlive || endpoint !== environment.attachmentIntentEndpoint
+      || runtime !== environment.attachmentIntentRuntime) {
+      return {
+        status: 'error',
+        errorCode: paneAlive ? 'destination_changed' : 'destination_missing',
+        message: 'The attachment destination changed since the image was picked. It is never retargeted — return to the original terminal or discard and attach again.',
+      };
+    }
+    environment.attachmentOp = environment.attachmentOp && environment.attachmentOp.phase !== 'cancelled'
+      ? environment.attachmentOp
+      : { ...ATTACHMENT_UPLOADED, phase: 'uploading', bytesUploaded: 0, remotePath: '', jobInFlight: true };
+    return { status: 'accepted', attachmentId: '42' };
+  };
+  native.attachmentSnapshot = async () => environment.attachmentOp
+    ? { status: 'snapshot', operation: environment.attachmentOp }
+    : { status: 'idle' };
+  native.retryAttachmentUpload = async () => {
+    environment.attachmentRetries = (environment.attachmentRetries || 0) + 1;
+    if (environment.attachmentOp) {
+      environment.attachmentOp = { ...environment.attachmentOp, jobInFlight: true, errorCode: '', errorMessage: '' };
+    }
+    return { status: 'accepted', attachmentId: '42' };
+  };
+  native.cancelAttachment = async () => ({ status: 'accepted', attachmentId: '42' });
+  native.insertAttachment = async terminalId => {
+    environment.insertedInto = terminalId;
+    // The verify+insert job is accepted; its outcome lands when the
+    // snapshot's jobInFlight drops. Job start clears the previous reason.
+    if (environment.attachmentOp) {
+      environment.attachmentOp = { ...environment.attachmentOp, jobInFlight: true, errorCode: '', errorMessage: '' };
+    }
+    return { status: 'accepted', attachmentId: '42' };
+  };
+  native.deleteRemoteAttachment = async () => {
+    environment.deleteCalls = (environment.deleteCalls || 0) + 1;
+    // Same job contract: JOB_IN_FLIGHT up and the stale error cleared at
+    // start; the outcome (remoteRemoved or a new error) arrives when it
+    // drops — an accepted delete is never instantly complete.
+    if (environment.attachmentOp) {
+      environment.attachmentOp = { ...environment.attachmentOp, jobInFlight: true, errorCode: '', errorMessage: '' };
+    }
+    return { status: 'accepted', attachmentId: '42' };
+  };
+}
+
+/** Mount → open W1 terminal → open the attachment sheet → pick → ready. */
+async function openPrepared(t, op) {
+  const fixture = await mountForTest(t, makeSnapshot(), (e, n) => configureAttachment(e, n, op));
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
+  await settleAsync();
+  return fixture;
+}
+
+test('attachment: opening the sheet keeps the terminal input surface alive', async t => {
+  const fixture = await openPrepared(t, null);
+  assert.equal(fixture.environment.visibility.at(-1), true, 'the input surface must stay reported visible under the attachment sheet');
+  assert.equal(terminalViews(fixture.root).length, 1, 'the terminal view stays mounted while the sheet is open');
+  assert.ok(findTestId(fixture.root, 'attachment-remote-dir'), 'the ready-phase sheet should render');
+});
+
+test('attachment: a composing IME holds the sheet open request', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), (e, n) => {
+    configureAttachment(e, n, null);
+    e.compositionHeld = true;
+  });
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentTarget, undefined, 'beginAttachment must not run while composition is held');
+  assert.ok(findText(fixture.root, 'Finish IME composition before attaching.'), 'the hold notice should explain the block');
+  assert.equal(fixture.environment.visibility.at(-1), true, 'the terminal surface stays live while composition is held');
+});
+
+test('attachment: upload stays bound to the intent pane, not the selected pane', async t => {
+  const fixture = await openPrepared(t, null);
+  // Switch the selected pane under the open sheet: the upload still carries
+  // the intent's recorded pane terminal — the selected pane never retargets it.
+  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentUploadTarget, 'native:P1');
+});
+
+test('attachment: a non-owner pane records its own pane TerminalId for intent and upload', async t => {
+  // P2 is a second pane — on Herdr every pane is a non-owner of the owning
+  // connection; the adapter passes its TerminalId and the core resolves it.
+  const fixture = await mountForTest(t, makeSnapshot({
+    selectedPane: 'P2',
+    terminals: [
+      pane('P1', 'W1', 'G1', 'native:P1', false, false, 'P1'),
+      pane('P2', 'W1', 'G1', 'native:P2', false, true, 'P2'),
+      pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
+    ],
+  }), (e, n) => configureAttachment(e, n, null));
+  await settleAsync();
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentTargetId, 'native:P2', 'the pane TerminalId, not an owner id, drives the intent');
+  assert.deepEqual(Object.keys(fixture.environment.attachmentTarget).sort(), ['paneId', 'terminalId', 'workspaceId'],
+    'the adapter sends pane-scoped identity only — never a captured SSH owner');
+  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentUploadTarget, 'native:P2', 'upload is addressed by the pane TerminalId');
+});
+
+test('attachment: switching server/session mid-preview surfaces destination_changed and never saves elsewhere', async t => {
+  const fixture = await openPrepared(t, null);
+  // Switch the Session wholesale — different runtime identity means the
+  // recorded intent no longer resolves, so the core (double) rejects the
+  // upload with destination_changed instead of writing to the new session.
+  await updateSnapshot(fixture.environment, { ...makeSnapshot({ selectedPane: 'P1' }), runtime: 'other-session' });
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp, null, 'a rejected upload must not create an operation on the new destination');
+  assert.ok(findText(fixture.root, 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again. (destination_changed)'),
+    'the sheet explains the fenced rejection');
+  // A switched Server behaves identically — the recorded endpoint differs.
+  fixture.environment.connection = { ...fixture.environment.connection, host: 'other.example', port: 2222 };
+  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P1' }));
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp, null, 'a server switch must also refuse to save elsewhere');
+  assert.ok(findText(fixture.root, 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again. (destination_changed)'),
+    'the sheet keeps explaining the fenced rejection');
+});
+
+test('attachment: an accepted delete stays pending until remoteRemoved', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  const timersBefore = fixture.environment.intervalCallbacks.length;
+  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'an accepted delete shows the pending Deleting state');
+  assert.ok(fixture.environment.intervalCallbacks.length > timersBefore, 'deletion keeps a snapshot poll running');
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
+    'the toolbar insert action is hidden while a job is in flight');
+  // The flag arrives through the poll — only then does the removed state show.
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, remoteRemoved: true };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'verified removal shows the deleted state');
+});
+
+test('attachment: Upload again after verified removal invokes transfer retry', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
+  await settleAsync();
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, remoteRemoved: true };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-retry-upload'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentRetries, 1, 'Upload again after verified removal must call retryAttachmentUpload');
+});
+
+test('attachment: toolbar insert appears only for the captured terminal and taps through the input gate', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  // Uploaded guidance replaces the in-sheet Insert action.
+  assert.ok(findTestId(fixture.root, 'attachment-insert-guidance'), 'the uploaded sheet should point at the terminal toolbar');
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 1, 'the toolbar insert action is rendered for the captured terminal');
+  // Close the sheet — the toolbar action is the only insert path.
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
+  await settleAsync();
+  assert.equal(fixture.environment.insertedInto, 'native:P1', 'insert targets the captured destination terminal');
+  // `accepted` only means the verify job started — the button hides and the
+  // inserting notice shows until the snapshot's jobInFlight drops.
+  assert.ok(findText(fixture.root, 'Inserting… verifying the remote file first.'), 'acceptance announces the verification wait, not completion');
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
+    'the action hides while the insert job is in flight');
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, phase: 'inserted' };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Inserted into terminal input. Review it before sending.'), 'the landed snapshot announces insertion');
+});
+
+test('attachment: toolbar insert is hidden on other terminals and gated when input is not ready', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  // Stopped recovery while the destination terminal is retained: the surface
+  // stays up in cached mode, the input gate is down, and the tap explains
+  // itself without reaching the core.
+  await updateSnapshot(fixture.environment, makeSnapshot({
+    selectedPane: 'P1',
+    control: workspaceControl({
+      operationEpoch: '2',
+      hasRetainedWork: true,
+      runtimeOperationsReady: false,
+      terminalInputReady: false,
+      recovery: { phase: 'stopped', reason: 'runtime_missing', attempt: 6, maxAttempts: 6 },
+    }),
+  }));
+  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
+  await settleAsync();
+  assert.equal(fixture.environment.insertedInto, undefined, 'a blocked input gate must not reach the core insert');
+  assert.ok(findText(fixture.root, 'The terminal input is not ready. Finish recovery and keep this terminal open before inserting.'), 'the blocked tap should explain itself');
+  // A different selected pane hides the action — never retargets it.
+  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0, 'insert must not appear for a non-destination terminal');
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2: the verify+insert/delete job contract — `accepted` means the
+// job started; the outcome lands only when the snapshot's jobInFlight drops.
+// ---------------------------------------------------------------------------
+
+test('attachment: insert after an epoch change is one verified job whose outcome arrives by snapshot', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  // The connection epoch rolled over while the sheet was closed — the fence
+  // the op was uploaded under is stale, but Insert itself is the reverify
+  // job, so the action still reaches the core and carries the displayed pane.
+  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '2' }) }));
+  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
+  await settleAsync();
+  assert.equal(fixture.environment.insertedInto, 'native:P1', 'the verify+insert job is addressed to the captured terminal');
+  assert.ok(findText(fixture.root, 'Inserting… verifying the remote file first.'), 'the UI stays busy while jobInFlight is set');
+  // A failed verification lands as a pending operation with its reason — the
+  // path must not be silently pasted and must not claim insertion.
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, errorCode: 'destination_not_ready', errorMessage: 'the captured operation epoch is no longer current' };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'the captured operation epoch is no longer current'), 'a failed verification surfaces the pending reason');
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 1,
+    'the uploaded op is insertable again once the failed job lands');
+});
+
+test('attachment: discard permits a new attachment on another pane without retargeting the draft', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
+  await press(fixture.root, findTestId(fixture.root, 'attachment-discard'));
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentTargetId, 'native:P2', 'the discarded intent is disposed and a fresh one binds the visible pane');
+});
+
+test('attachment: an inserted operation offers no insert action again', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, phase: 'inserted' };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Inserted into terminal input. Review it before sending.'), 'the inserted state keeps the review-before-send guidance');
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
+    'a duplicate insert is a no-op, so the UI must not offer it');
+});
+
+test('attachment: a delete retry stays pending while its job is in flight', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  // The previous attempt failed — its stale reason must not end the wait for
+  // the new accepted delete: the core cleared it at job start.
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, errorCode: 'sftp_error', errorMessage: 'previous delete failed' };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'the accepted retry shows Deleting until its own outcome lands');
+  // A poll while the flag is still up must not clear the wait.
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'an in-flight flag keeps the Deleting state');
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, remoteRemoved: true };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'the dropped flag carries the verified removal');
 });

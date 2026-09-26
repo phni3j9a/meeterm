@@ -157,6 +157,116 @@ that mode off until the application emits it again. A static alternate-screen
 recovery test is useful evidence, but arbitrary full-screen TUI process-death
 recovery still needs application-specific validation and may require a redraw.
 
+## Image attachment over SFTP (Issue #28)
+
+`attachment_intent(target_terminal_id)` records the destination intent
+when the attachment sheet is confirmed: the adapter passes the *target
+pane's* native terminal id — any pane, not just the connection owner —
+and the core resolves the owning SSH connection itself and stores the
+stable identity (SSH endpoint + verified host key, backend/runtime, the
+remote pane, the exact tmux session identity — session id + server pid +
+server start, so a replaced server never passes even with a reused
+session name — and for Herdr the stable remote `terminal_id` rather than
+its mutable alias). `attachment_begin(intent_id, local_path,
+display_name, remote_dir, size_bytes)` then starts one Rust-owned
+operation against that intent — at most one live operation per
+connection (`pending`/`uploading`/`uploaded`/`inserted` count;
+`failed`/`cancelled` records do not) and at most one job in flight per
+operation (a second request is refused `busy`; snapshot flag `0x4`
+reports the in-flight state while the phase still shows the last settled
+result). Every job — `begin`, `retry`, `insert`, `delete_remote` —
+re-resolves the intent into a fresh execution fence (generation,
+operation epoch, pane binding, tmux session identity); a
+Server/Session/runtime switch during preview, a replaced tmux server, a
+replaced or vanished pane, or a foreign terminal id fails closed instead
+of running against whatever is now selected. The picked file stays
+adapter-owned and read-only for the core; it is re-validated immediately
+before streaming.
+
+The upload multiplexes a second SSH **session channel** running the `sftp`
+subsystem on the already-authenticated connection — no second TCP session,
+no credentials, no meeterm daemon. Channel open, the subsystem request,
+and the definitive `CHANNEL_SUCCESS`/`CHANNEL_FAILURE` wait
+(`request_subsystem` only *sends* the request) all run as a queued
+background launch inside the actor task, polled as one `select!` arm —
+a stalled or slow subsystem can never freeze the interactive
+input/output loop, and launch order stays in command order. Byte
+streaming then moves to a detached task. Every launch/transfer/insert/
+delete job carries the op's *attempt* identity; progress, completion,
+failure and stall apply only to the current attempt, so a superseded
+detached job's late result is discarded, and every failure is folded
+into the operation's snapshot rather than failing the connection.
+
+Remote layout: `<realpath(".")>/.local/share/meeterm/attachments/` — the
+SFTP start directory is resolved server-side (no client-side `~`
+assumption), `.local`/`.local/share` are created when missing, and the
+meeterm-owned `meeterm`/`attachments` components are created or verified
+`0700` with symlinks rejected. A `.meeterm-partial-*` staging file
+written `0600` is published by a plain SFTP v3 rename (never an
+overwrite) as the generated name
+`meeterm-<YYYYMMDD>-<HHMMSS>-<16 lowercase hex>.<ext>` (`[a-z0-9.-]`,
+extension from the actual PNG/JPEG magic) only after the `CLOSE` reply
+reports `Ok` and `lstat` re-verifies the staged bytes — a failed or
+timed-out close keeps the op `pending` with its partial retained for
+cleanup; the picked filename never appears remotely. An explicit
+`remote_dir` may override the base: clean absolute paths and `~/…`
+(expanded against the server-returned `realpath(".")`, never client-side)
+are accepted; `'`, CR/LF, control characters, `..` and empty components
+are refused as `remote_unsafe_path`. The directory must already exist,
+its final component must not be a symlink, and an exclusive-create probe
+must succeed (`remote_permission_denied` otherwise); its modes are never
+changed. Cancellation and failures remove the partial best-effort; a
+verified same-endpoint final file short-circuits a later retry without
+re-sending bytes.
+
+Remote files persist until `attachment_delete_remote` runs — itself one
+accepted job that re-resolves the *whole* recorded intent (endpoint,
+backend/runtime incl. tmux session identity, remote pane) into a fresh
+fence, not merely a stale endpoint match: it deletes
+only the operation's generated names (the published `meeterm-*` file, its
+`.meeterm-partial-*` remnant, and the app-private attachments directory
+when empty) on the same authenticated endpoint recorded by the intent —
+the canonical base directory captured at upload must re-resolve
+byte-for-byte and every component is lstat-verified as a real directory
+(a symlinked or replaced parent is refused, never followed), and each
+name is re-validated against the generated grammar. Verified deletion
+sets the snapshot's `remote_removed` flag while
+keeping the phase — an `inserted` reference is not revoked. A
+user-specified `remote_dir` is never removed, only the generated names
+inside it. Nothing is auto-deleted on insert, cancel, dispose, or process
+exit; there is no TTL and no list API.
+
+Manual cleanup, if ever needed, is an ordinary shell step on the remote
+host — only the generated names under the app-private directory:
+
+```sh
+rm -f ~/.local/share/meeterm/attachments/meeterm-* \
+      ~/.local/share/meeterm/attachments/.meeterm-partial-*
+rmdir ~/.local/share/meeterm/attachments ~/.local/share/meeterm 2>/dev/null
+```
+
+(`rmdir` fails harmlessly if the directory is not empty.)
+
+`attachment_insert` is a separate explicit step on the intent's pane —
+one asynchronous *verified-insert* job. A `0` return only means the job
+was accepted (`0x4` set); the job re-resolves the intent onto a fresh
+fence, lstat-verifies the recorded remote file over SFTP (generated
+basename, recorded canonical base, regular file, exact size, `0600`),
+and only on success re-checks the whole fence under the session lock and
+pastes exactly one single-quoted remote-path line through
+`paste_utf8_at_epoch`. No path pastes before or without verification.
+Verification loss clears the stale `remote_path` and lands
+`pending(remote_missing)` — the next move is a real `retry_upload`
+re-upload, not an insert retry; a paste-gate refusal keeps `uploaded`
+with the reason. Enter is never sent and no shell command is
+constructed; the user reviews and submits the line to whatever is running
+in the pane. `inserted` in the snapshot means only "the native input
+queue accepted the line" — it is not a CLI or model delivery
+acknowledgement. `attachment_retry_upload` always re-uploads after
+re-fencing (`pending`/`failed`, or `uploaded` ops whose file was verified
+gone or deleted); the detached upload short-circuits on a verified
+same-endpoint file, so it doubles as the post-recovery path.
+
 ## Disposable fixture
 
 `scripts/ssh/fixture.py` starts a temporary OpenSSH server as the current
@@ -200,6 +310,49 @@ Run the deterministic driver regressions:
 ```sh
 python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
 ```
+
+The fixture disables SFTP by default so negative-path tests exercise a
+server that rejects the subsystem. `--sftp` adds `Subsystem sftp
+internal-sftp` and exports `MEETERM_SSH_SFTP=1`. `--sftp-delay SECONDS`
+(requires `--sftp`) instead installs an external `sftp-server` behind a
+wrapper that sleeps before `exec`, so SSH_FXP_INIT outlives the
+per-request timeout; it exports the value as `MEETERM_SSH_SFTP_DELAY`.
+The three attachment integration targets each require one mode:
+
+```sh
+python3 scripts/ssh/fixture.py --sftp -- \
+  cargo test --manifest-path native/meeterm-core/Cargo.toml \
+  --test openssh real_openssh_sftp_attachment_upload_and_insert -- --ignored
+
+python3 scripts/ssh/fixture.py -- \
+  cargo test --manifest-path native/meeterm-core/Cargo.toml \
+  --test openssh real_openssh_no_sftp_attachment_fails_visibly -- --ignored
+
+python3 scripts/ssh/fixture.py --sftp --sftp-delay 45 -- \
+  cargo test --manifest-path native/meeterm-core/Cargo.toml \
+  --test openssh real_openssh_delayed_sftp_attachment_times_out -- --ignored
+```
+
+The positive target verifies the full upload (byte equality, `0600` file /
+`0700` directory modes, generated names under
+`.local/share/meeterm/attachments`, close-gated rename publish), the
+one-live-op rejection, stale-destination insert rejection and
+reselect-then-insert recovery via the re-verification retry, single-quoted
+no-Enter input, `~/` and unsafe `remote_dir`
+handling, read-only-directory `remote_permission_denied`, pane
+responsiveness during a maximum-size upload, explicit remote deletion
+with the phase kept, and cancel/dispose cleanup. The negative target
+verifies the `sftp_unavailable` failure is an attachment-level state that
+leaves the interactive connection `Ready`. The delayed target verifies a
+stalled subsystem start surfaces a retryable `pending`/`timeout` state
+that can still be cancelled without harming the connection.
+
+Note the fixture sshd acts on the real account `$HOME`, so the default-dir
+leg does write generated names under `~/.local/share/meeterm/attachments`
+on the dev host; the test deletes them via `attachment_delete_remote` and
+a `RemoteAttachmentGuard` removes any new generated names it finds on
+unwind — other legs target a dedicated remote dir under `/tmp`. Local
+scratch dirs are `Drop`-guarded the same way.
 
 The Rust integration target exercises the real SSH/tmux/native-terminal path.
 Assertions cover explicit trust and encrypted-key authentication, pane-specific
