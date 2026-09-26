@@ -29,7 +29,7 @@ enum AttachmentInsertionPolicy {
     }
     guard sessionTerminalId == requestTerminalId else {
       return .rejected(
-        AttachmentLimits.errorTarget,
+        AttachmentLimits.errorDestinationChanged,
         "The attachment belongs to a different terminal."
       )
     }

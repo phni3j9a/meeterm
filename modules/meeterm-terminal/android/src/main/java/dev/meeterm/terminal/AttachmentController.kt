@@ -60,10 +60,24 @@ internal object AttachmentController {
     if (AttachmentCompositionGuard.isComposing(terminalId)) {
       return AttachmentResults.held(AttachmentLimits.REASON_COMPOSING)
     }
+    // Record the destination intent with the picked pane's native terminal;
+    // the core resolves the owning SSH connection itself. A fresh begin
+    // retires the previous session's intent and live op.
+    val created = AttachmentSession(target)
+    val intentId = AttachmentCoreBridge.intent(ensureNativeHandle(terminalId))
+    if (intentId == 0L) {
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_DESTINATION_MISSING,
+        "The attachment destination is not available on this connection.",
+      )
+    }
     synchronized(lock) {
       val previous = session
-      session = AttachmentSession(target)
+      created.intentId = intentId ?: 0L
+      session = created
       previous?.let {
+        retireOperationLocked(it)
+        if (it.intentId != 0L) AttachmentCoreBridge.intentDispose(it.intentId)
         store(context).delete(it.stagingFileName, it.prepared?.fileName)
       }
     }
@@ -126,7 +140,8 @@ internal object AttachmentController {
     }
   }
 
-  /** Explicit Discard: cancel/dispose the core op, then delete local files. */
+  /** Explicit Discard: cancel/dispose the core op and the recorded intent,
+   * then delete local files. */
   fun discard(context: Context) {
     val active = synchronized(lock) {
       val current = session
@@ -138,6 +153,7 @@ internal object AttachmentController {
       if (op.canCancel) AttachmentCoreBridge.cancel(op.attachmentId)
       AttachmentCoreBridge.dispose(op.attachmentId)
     }
+    if (active.intentId != 0L) AttachmentCoreBridge.intentDispose(active.intentId)
     active.machine.clear()
     store(context).delete(active.stagingFileName, active.prepared?.fileName)
   }
@@ -183,7 +199,9 @@ internal object AttachmentController {
   }
 
   /**
-   * Explicit Upload: `meeterm_attachment_begin` over the fenced connection.
+   * Explicit Upload: `meeterm_attachment_begin` against the recorded intent.
+   * The core re-resolves the intent's stable identity into a fresh fence; a
+   * switched server/session/runtime or vanished pane fails closed there.
    * A second upload is refused while the previous operation is live.
    */
   fun upload(terminalId: String, remoteDirectory: String, context: Context): Map<String, Any?> {
@@ -196,9 +214,12 @@ internal object AttachmentController {
       )
     if (active.target.terminalId != terminalId) {
       return AttachmentResults.error(
-        AttachmentLimits.ERROR_TARGET,
+        AttachmentLimits.ERROR_DESTINATION_CHANGED,
         "The attachment belongs to a different terminal.",
       )
+    }
+    if (active.intentId == 0L) {
+      return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
     }
     val previousOpId = synchronized(lock) { active.machine.operation?.attachmentId }
     if (!active.machine.canBeginUpload()) {
@@ -213,7 +234,7 @@ internal object AttachmentController {
         "The prepared image is missing; prepare it again.",
       )
     val attachmentId = AttachmentCoreBridge.begin(
-      ensureNativeHandle(active.target.terminalId),
+      active.intentId,
       file.absolutePath,
       prepared.fileName,
       // The JNI `remote_dir` is nullable: null selects the app-private
@@ -222,10 +243,10 @@ internal object AttachmentController {
       prepared.byteCount,
     ) ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
     if (attachmentId == 0L) {
-      return AttachmentResults.error(
-        AttachmentLimits.ERROR_STATE,
-        "The core could not start the upload; check the connection.",
-      )
+      // `begin` flattens its rejection to 0; a fresh probe intent for the
+      // same pane separates a still-resolving destination (recorded identity
+      // changed) from one that no longer resolves at all.
+      return probeDestination(active.target.terminalId)
     }
     val recorded = synchronized(lock) {
       val ok = active.machine.recordBegin(attachmentId, prepared.byteCount, prepared.fileName)
@@ -264,12 +285,16 @@ internal object AttachmentController {
     return AttachmentResults.snapshotResult(fresh)
   }
 
-  /** Explicit transfer retry on a pending/failed operation. */
+  /**
+   * Explicit transfer retry on a pending/failed operation. The passed pane
+   * terminal must be the intent's recorded pane — the core refuses any
+   * other terminal with `destination_changed`.
+   */
   fun retryUpload(terminalId: String, context: Context): Map<String, Any?> {
     val active = synchronized(lock) { session }
     if (active == null || active.target.terminalId != terminalId) {
       return AttachmentResults.error(
-        AttachmentLimits.ERROR_TARGET,
+        AttachmentLimits.ERROR_DESTINATION_CHANGED,
         "The attachment belongs to a different terminal.",
       )
     }
@@ -311,7 +336,7 @@ internal object AttachmentController {
     val active = synchronized(lock) { session }
     if (active == null || active.target.terminalId != terminalId) {
       return AttachmentResults.error(
-        AttachmentLimits.ERROR_TARGET,
+        AttachmentLimits.ERROR_DESTINATION_CHANGED,
         "The attachment belongs to a different terminal.",
       )
     }
@@ -323,7 +348,7 @@ internal object AttachmentController {
       )
     }
     val result = AttachmentCoreBridge.deleteRemote(
-      ensureNativeHandle(active.target.terminalId),
+      ensureNativeHandle(terminalId),
       op.attachmentId,
     )
     if (result["status"] == "accepted") refreshSnapshot(active)
@@ -378,6 +403,29 @@ internal object AttachmentController {
     if (op.canCancel) AttachmentCoreBridge.cancel(op.attachmentId)
     AttachmentCoreBridge.dispose(op.attachmentId)
     active.machine.clear()
+  }
+
+  /**
+   * Distinguish a `begin` rejection (which carries no code) by probing a
+   * fresh intent for the recorded pane: a still-resolving destination means
+   * the recorded identity changed; an unresolvable one is missing.
+   */
+  private fun probeDestination(terminalId: String): Map<String, Any?> {
+    val probe = AttachmentCoreBridge.intent(ensureNativeHandle(terminalId))
+      ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
+    if (probe != 0L) {
+      AttachmentCoreBridge.intentDispose(probe)
+      return AttachmentResults.error(
+        AttachmentLimits.ERROR_DESTINATION_CHANGED,
+        "The attachment destination changed since the image was picked. " +
+          "It is never retargeted — return to the original terminal or discard and attach again.",
+      )
+    }
+    return AttachmentResults.error(
+      AttachmentLimits.ERROR_DESTINATION_MISSING,
+      "The attachment destination is no longer available. " +
+        "It is never retargeted — return to the original terminal or discard and attach again.",
+    )
   }
 
   private fun ensureNativeHandle(terminalId: String): Long {

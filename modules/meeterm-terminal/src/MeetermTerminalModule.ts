@@ -73,8 +73,11 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   ): Promise<void>;
   forgetHostKey(host: string, port: number): Promise<void>;
   /**
-   * Start one attachment session against the captured remote target. Held
-   * while native input composition is active; it never commits or clears it.
+   * Start one attachment session bound to the pane's native terminal id.
+   * The core records the destination intent and resolves the owning SSH
+   * connection itself — `target` carries pane-scoped display identity only.
+   * Held while native input composition is active; it never commits or
+   * clears it.
    */
   beginAttachment(terminalId: string, target: AttachmentTarget): Promise<AttachmentBeginResult>;
   /**

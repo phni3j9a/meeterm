@@ -7,34 +7,28 @@ import Foundation
  * kept here, and `snapshot` exposes display metadata plus the app-local
  * preview file URL.
  */
+/**
+ * Pane-scoped identity for display and session binding. The Rust core
+ * resolves the owning SSH endpoint/runtime/remote pane itself from the
+ * pane's native terminal id (`meeterm_attachment_intent`), so the adapter
+ * never records or reuses an SSH owner id.
+ */
 struct AttachmentTargetIdentity {
   let terminalId: String
   let paneId: String
   let workspaceId: String
-  let backend: String
-  let runtime: String
-  let host: String
-  let port: Int
 
   static func from(_ raw: [String: Any]?) -> AttachmentTargetIdentity? {
     guard let raw = raw,
           let terminalId = raw["terminalId"] as? String,
           let paneId = raw["paneId"] as? String,
-          let workspaceId = raw["workspaceId"] as? String,
-          let backend = raw["backend"] as? String,
-          let runtime = raw["runtime"] as? String,
-          let host = raw["host"] as? String,
-          let port = raw["port"] as? Int ?? (raw["port"] as? NSNumber)?.intValue else {
+          let workspaceId = raw["workspaceId"] as? String else {
       return nil
     }
     return AttachmentTargetIdentity(
       terminalId: terminalId,
       paneId: paneId,
-      workspaceId: workspaceId,
-      backend: backend,
-      runtime: runtime,
-      host: host,
-      port: port
+      workspaceId: workspaceId
     )
   }
 }
@@ -60,6 +54,10 @@ final class AttachmentSession {
   var prepared: AttachmentPreparedImage?
   var lastErrorCode = ""
   var lastMessage = ""
+  /// Live `meeterm_attachment_intent` id for the recorded pane terminal; 0
+  /// means no intent is held. Kept for the process lifetime across sheet
+  /// unmounts; released only by Discard or a fresh `begin`.
+  var intentId: UInt64 = 0
 
   /// Live Rust-owned operation; its snapshot stays authoritative.
   let machine = AttachmentOpMachine()
@@ -96,10 +94,6 @@ final class AttachmentSession {
         "terminalId": target.terminalId,
         "paneId": target.paneId,
         "workspaceId": target.workspaceId,
-        "backend": target.backend,
-        "runtime": target.runtime,
-        "host": target.host,
-        "port": target.port,
       ],
       "operation": machine.operation.map(AttachmentResults.operation) ?? NSNull(),
       "errorCode": lastErrorCode,
@@ -181,6 +175,9 @@ enum AttachmentResults {
     case -7: return "destination_not_ready"
     case -8: return "busy"
     case -9: return "internal_error"
+    case -10: return "unknown_intent"
+    case -11: return "destination_changed"
+    case -12: return "destination_missing"
     default: return "native_error"
     }
   }

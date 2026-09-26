@@ -262,7 +262,7 @@ class AttachmentLimitsTest {
     )
     assertEquals(
       AttachmentInsertionPolicy.Verdict.Rejected(
-        AttachmentLimits.ERROR_TARGET,
+        AttachmentLimits.ERROR_DESTINATION_CHANGED,
         "The attachment belongs to a different terminal.",
       ),
       AttachmentInsertionPolicy.insert(
@@ -302,7 +302,7 @@ class AttachmentLimitsTest {
   @Test
   fun sessionSnapshotCarriesOnlyDisplayMetadata() {
     val session = AttachmentSession(
-      AttachmentTargetIdentity("poc-main", "%1", "@1", "tmux", "meeterm", "host", 22),
+      AttachmentTargetIdentity("poc-main", "%1", "@1"),
     )
     assertEquals("idle", session.snapshot("")["status"])
     session.stagingFileName = "att_0011223344556677.bin"

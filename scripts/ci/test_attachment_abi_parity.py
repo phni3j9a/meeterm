@@ -25,6 +25,8 @@ IOS_DIR = ROOT / 'modules/meeterm-terminal/ios'
 SWIFT_OP = IOS_DIR / 'AttachmentOperation.swift'
 
 ATTACHMENT_JNI = {
+    'attachmentIntent',
+    'attachmentIntentDispose',
     'attachmentBegin',
     'attachmentRetryUpload',
     'attachmentInsert',
@@ -34,6 +36,8 @@ ATTACHMENT_JNI = {
     'attachmentSnapshot',
 }
 ATTACHMENT_C = {
+    'meeterm_attachment_intent',
+    'meeterm_attachment_intent_dispose',
     'meeterm_attachment_begin',
     'meeterm_attachment_retry_upload',
     'meeterm_attachment_insert',

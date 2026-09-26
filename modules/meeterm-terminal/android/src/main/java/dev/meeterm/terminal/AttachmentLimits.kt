@@ -42,11 +42,16 @@ internal object AttachmentLimits {
   const val ERROR_IO = "attachment_io_failed"
   const val ERROR_STATE = "attachment_invalid_state"
   const val ERROR_MISSING = "attachment_missing"
-  const val ERROR_TARGET = "attachment_target_mismatch"
   const val ERROR_ARGUMENT = "attachment_invalid_argument"
   const val REASON_COMPOSING = "composing"
   const val REASON_NO_ATTACHMENT = "no_attachment"
   const val REASON_CORE_PENDING = "core_contract_pending"
+
+  // Contract error names (attachment-ffi.md) surfaced for destination
+  // fencing; kept unprefixed so JS sees one vocabulary end to end.
+  const val ERROR_UNKNOWN_INTENT = "unknown_intent"
+  const val ERROR_DESTINATION_CHANGED = "destination_changed"
+  const val ERROR_DESTINATION_MISSING = "destination_missing"
 }
 
 internal enum class AttachmentImageFormat(val extension: String) {

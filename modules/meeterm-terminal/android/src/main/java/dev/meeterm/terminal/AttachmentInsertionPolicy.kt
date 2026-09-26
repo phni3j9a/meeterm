@@ -39,7 +39,7 @@ internal object AttachmentInsertionPolicy {
     composing -> Verdict.HeldComposing
     sessionTerminalId == null || !hasActiveSession -> Verdict.HeldNoAttachment
     sessionTerminalId != requestTerminalId -> Verdict.Rejected(
-      AttachmentLimits.ERROR_TARGET,
+      AttachmentLimits.ERROR_DESTINATION_CHANGED,
       "The attachment belongs to a different terminal.",
     )
     hasUploadedPath || hasPreparedImage -> Verdict.ReadyToInsert
