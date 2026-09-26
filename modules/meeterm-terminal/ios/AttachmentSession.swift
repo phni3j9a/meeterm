@@ -140,8 +140,6 @@ enum AttachmentResults {
     ["status": "accepted", "attachmentId": String(attachmentId)]
   }
 
-  static func inserted() -> [String: Any] { ["status": "inserted"] }
-
   /// Core snapshot fields, mirroring AttachmentOperationSnapshot (TS).
   static func operation(_ op: AttachmentOperation) -> [String: Any] {
     [
@@ -155,6 +153,7 @@ enum AttachmentResults {
       "errorMessage": op.errorMessage,
       "insertUnconfirmed": op.insertUnconfirmed,
       "remoteRemoved": op.remoteRemoved,
+      "jobInFlight": op.jobInFlight,
     ]
   }
 

@@ -375,6 +375,13 @@ export type AttachmentOperationSnapshot = {
   insertUnconfirmed: boolean;
   /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
   remoteRemoved: boolean;
+  /**
+   * flags & 0x4: a job (upload / verify+insert / remove) is in flight.
+   * The core clears the previous reason at job start and drops this bit
+   * when the attempt's outcome lands — UI busy display and polling key
+   * off it, never off a stale errorCode.
+   */
+  jobInFlight: boolean;
 };
 
 /** Uniform answer for upload/retry/cancel/delete/dispose requests. */
@@ -392,6 +399,7 @@ export type AttachmentSnapshotResult =
 
 /** Insertion answer; `held` keeps the composition and reports a reason. */
 export type AttachmentInsertResult =
+  | { status: 'accepted'; attachmentId: string }
   | { status: 'inserted' }
   | { status: 'held'; reason: 'composing' | 'no_attachment' }
   | { status: 'unavailable'; reason: string }

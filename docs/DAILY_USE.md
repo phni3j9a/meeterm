@@ -371,22 +371,32 @@ scope.
 - An uploaded op makes the sheet show "Close and insert from the terminal"
   guidance. The actual insertion is **Insert attachment** on the terminal
   toolbar — visible only while the captured destination terminal is the
-  displayed pane and the op still owns a remote file (`uploaded`/`inserted`,
-  not `remoteRemoved`). The tap passes the normal terminal input gate; when
-  input is not ready the tap explains itself instead of reaching the core.
-  **Retry upload** is a separate explicit action for `pending`/`failed`, and
-  for `uploaded` after verified removal. An `inserted` op whose delivery is
-  unconfirmed (`flags & 0x1`) shows a check-the-terminal notice — nothing is
-  resent automatically and no ambiguous retry is offered.
+  displayed pane and the op is `uploaded` with a live remote file and no
+  job in flight (`inserted` ops never offer it again). The tap passes the
+  normal terminal input gate; when input is not ready the tap explains
+  itself instead of reaching the core. Insert is one core verification
+  job — intent re-check, a fresh fence, an SFTP lstat of the recorded file,
+  then the single quoted-path paste — so `accepted` only means the job
+  started: the toolbar shows **Inserting…** and polls until the
+  snapshot's `jobInFlight` (`flags & 0x4`) drops, landing `inserted` or
+  a pending reason (a failed verification never pastes). **Retry upload**
+  is a separate explicit action for `pending`/`failed`, and for `uploaded`
+  after verified removal. An `inserted` op whose delivery is unconfirmed
+  (`flags & 0x1`) shows a check-the-terminal notice — nothing is resent
+  automatically and no ambiguous retry is offered.
 - **Delete from server** calls `meeterm_attachment_delete_remote`, which
   removes only the file that operation created (published file plus a
   `.meeterm-partial-*` remnant) on the same authenticated endpoint. Acceptance
   only queues the request: the sheet shows **Deleting…** and keeps polling
-  until the snapshot reports `remoteRemoved` (`flags & 0x2`) or a failure;
-  insert stays disabled while deletion is pending. **Discard**
-  cancels/disposes the core operation and deletes the local staging/prepared
-  files. Nothing is deleted automatically — not on insert, cancel, sheet
-  close, or app exit.
+  until the snapshot reports `remoteRemoved` (`flags & 0x2`) or a failure.
+  Every job clears the previous attempt's reason at start and at most one
+  job per operation is in flight — a new upload/insert/delete is refused
+  (`busy`) until the flag drops; the toolbar insert hides while any job
+  runs. **Discard** disposes the recorded intent, cancels/disposes the core
+  operation, and deletes the local staging/prepared files; the next
+  explicit Choose binds a fresh intent to the then-visible terminal — a
+  draft is never silently retargeted. Nothing is deleted automatically —
+  not on insert, cancel, sheet close, or app exit.
 - IME composition is protected by the real input state, not a flag: Android
   reads composing spans plus `InputSession.composingText`, iOS reads
   `markedTextRange`, both through per-terminal providers unregistered on rebind

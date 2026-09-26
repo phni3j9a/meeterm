@@ -43,6 +43,14 @@ internal data class AttachmentOperation(
   /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
   val remoteRemoved: Boolean get() = flags and 0x2 != 0
 
+  /**
+   * flags & 0x4: a job (upload / verify+insert / remove) is in flight on
+   * this operation. The core clears the previous reason at job start and
+   * drops the flag when that attempt's outcome lands — UI busy/pending
+   * display and polling key off this bit, never off a stale errorCode.
+   */
+  val jobInFlight: Boolean get() = flags and 0x4 != 0
+
   val wirePhase: String get() = when (phase) {
     AttachmentOpPhase.PENDING -> "pending"
     AttachmentOpPhase.UPLOADING -> "uploading"
@@ -55,28 +63,33 @@ internal data class AttachmentOperation(
   /**
    * Explicit Retry upload: pending/failed ops, plus an uploaded op whose
    * remote file was deleted — the core falls that case through to a
-   * re-upload of the same operation.
+   * re-upload of the same operation. Refused while a job is in flight.
    */
   val canRetryUpload: Boolean
-    get() = phase == AttachmentOpPhase.PENDING ||
-      phase == AttachmentOpPhase.FAILED ||
-      (phase == AttachmentOpPhase.UPLOADED && remoteRemoved)
+    get() = !jobInFlight &&
+      (phase == AttachmentOpPhase.PENDING ||
+        phase == AttachmentOpPhase.FAILED ||
+        (phase == AttachmentOpPhase.UPLOADED && remoteRemoved))
 
   /**
-   * Insert is allowed while uploaded; an inserted op accepts it
-   * idempotently. A removed remote file can never be inserted.
+   * Insert is one verified job: intent check → fresh fence → remote
+   * lstat → single-line paste. It is allowed on an uploaded op only —
+   * an inserted op is never re-inserted (the path stays in the terminal
+   * input for the user to review) — and never while another job runs.
    */
   val canInsert: Boolean
-    get() = !remoteRemoved &&
-      (phase == AttachmentOpPhase.UPLOADED || phase == AttachmentOpPhase.INSERTED)
+    get() = !remoteRemoved && !jobInFlight && phase == AttachmentOpPhase.UPLOADED
 
   /** Cancel applies while transfer work may still be running. */
   val canCancel: Boolean
     get() = phase == AttachmentOpPhase.PENDING || phase == AttachmentOpPhase.UPLOADING
 
-  /** M4 remote delete covers every phase that may still own a file. */
+  /**
+   * Remote delete covers every phase that may still own a file; refused
+   * while a job is in flight (one in-flight job per operation).
+   */
   val canDeleteRemote: Boolean
-    get() = !remoteRemoved &&
+    get() = !remoteRemoved && !jobInFlight &&
       (phase == AttachmentOpPhase.UPLOADED ||
         phase == AttachmentOpPhase.INSERTED ||
         phase == AttachmentOpPhase.FAILED ||

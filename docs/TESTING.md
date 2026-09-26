@@ -227,27 +227,43 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   input gate を通ること。input gate が落ちている tap は理由を通知し core に
   到達しないこと。operation phase は
   `pending`/`uploading`/`uploaded`/`inserted`/`failed`/`cancelled`
-  を理由・進捗付きで表示し、明示削除の accept は `Deleting…` と継続 poll で
-  表し、snapshot の `remoteRemoved`（`flags & 0x2`）または failure を見て初めて
-  解消すること。Retry upload は `pending`/`failed` と verify 済み削除後の
+  を理由・進捗付きで表示し、各 job（upload / insert / remote delete）の
+  accept は処理受理のみを意味し、snapshot の `jobInFlight`（`flags & 0x4`）
+  が降りるまで `Uploading…`/`Inserting…`/`Deleting…` と継続 poll で表し、
+  降りた時点の結果（`remoteRemoved`（`flags & 0x2`）/ `inserted` /
+  pending reason / failure）を見て初めて解消すること。前回 attempt の
+  stale reason/error は job 開始時に core が消し、UI は途中の flag 未降りで
+  解消しないこと。Retry upload は `pending`/`failed` と verify 済み削除後の
   `uploaded` のみ、Cancel / Delete from server / Discard は capability どおりに
-  のみ有効であること。`inserted` で配送未確認（`flags & 0x1`）のときは
-  check-the-terminal 通知のみで、自動再送も不確実な retry もしないこと。
+  のみ有効であること。insert は verify+insert の1 job（intent 再確認 →
+  新しい fence → remote lstat → 単一行 paste）で、verify 失敗は paste 前に
+  pending として返ること。`inserted` op には insert action が出ず
+  review-before-send の案内のみを表示し、`inserted` で配送未確認
+  （`flags & 0x1`）のときは check-the-terminal 通知のみで、自動再送も
+  不確実な retry もしないこと。
   表示中の terminal が capture 済み宛先と異なる場合は insert が出ず、
   別宛先への自動挿入はないこと。sheet の dismiss（iOS の swipe down を含む）は
   draft/session を保持し、再オープンで `getAttachmentState` から復元されること。
-  Discard または別の1枚の選択だけが local file と core operation を破棄すること。
+  Discard は記録済み intent を dispose し、次の明示 Choose がその時点の
+  terminal に新しい intent を結ぶこと — 破棄した draft が別 terminal へ
+  自動 retarget されないこと。Discard または別の1枚の選択だけが local file
+  と core operation を破棄すること。
 - focused 回帰は Kotlin 単体 test（sniffer、limits、sample-size math、8 EXIF
   orientation、filename、insertion policy、session 遷移、operation machine:
   固定長 snapshot decode・stale id 破棄・cancel 後の遅延完了非復活・二重
-  upload 拒否・capability 表）と、注入 XCTest `AttachmentTests.swift`（同じ
-  operation machine 検証＋実 `TerminalInputView` の marked text による insert
-  hold＋cold-start reclaim が store 作成後に走り前プロセスの app-owned file を
-  回収すること）と、app-selection test の attachment 節（sheet を開いても
-  terminal input surface が生きること・held composition での拒否・upload が
-  capture 済み宛先へ行くこと・accept 済み delete が `remoteRemoved` まで poll
-  されること・verify 済み削除後の Upload again が transfer retry を呼ぶこと・
-  toolbar insert の宛先/input gate・inserted notice）で確認します。
+  upload 拒否・capability 表・`flags & 0x4` で全 action が閉じること）と、
+  注入 XCTest `AttachmentTests.swift`（同じ operation machine 検証＋実
+  `TerminalInputView` の marked text による insert hold＋cold-start reclaim
+  が store 作成後に走り前プロセスの app-owned file を回収すること）と、
+  app-selection test の attachment 節（sheet を開いても terminal input
+  surface が生きること・held composition での拒否・upload が capture 済み
+  宛先へ行くこと・accept 済み delete が `remoteRemoved` まで poll される
+  こと・verify 済み削除後の Upload again が transfer retry を呼ぶこと・
+  toolbar insert の宛先/input gate・inserted notice・epoch 切替後の insert
+  が verify job として受理され `jobInFlight` 降下で成否が確定すること・
+  Discard 後の別 pane での新 intent・inserted での insert 非表示・stale
+  error を持つ op への delete retry が flag 降下まで pending のままである
+  こと）で確認します。
   `ios-typecheck.sh` と `ios-inject-ui-test.sh` の manifest は
   `AttachmentOperation.swift` を含む同じ attachment source 群を含みます。
 - smoke fixture は `attachment-choose` / `attachment-ready` /
