@@ -194,6 +194,32 @@ client と direct controller が同時に存在できることと、同時編集
 ボタンや、専用の閲覧モードへ切り替えるUIはありません。
 Issue の初期 product scope は simultaneous phone/PC editing の保証ではなく、hand-off です。
 
+## 画像 attachment（Issue #28）
+
+Herdr backend でも tmux と同じ Rust-owned attachment 操作を使います。upload は既存の
+認証済み SSH 接続上に multiplex した第二 session channel の `sftp` subsystem で行い、
+Herdr の controller stream や direct socket とは独立です。byte streaming は detached
+task に逃がすため、大きな画像が Herdr の interactive command loop を止めません。
+
+destination fence には Herdr 側の安定 `terminal_id` も含まれます。pane が別 Workspace へ
+移動して handle が変わった場合は `destination_changed` の pending reason になり、insert
+は retarget せず失敗します。upload 自体は pane 存在と endpoint 一致だけを要求するため、
+選択中でなくても retry できます。
+
+insert は backend 固有の経路ではなく、epoch guard 付きの共通 native input queue
+（Herdr では `pane.send_input`、先に `pane.scroll` offset 0）を通して単一引用符付きの
+remote path 1行だけを送ります。Enter は送らず、shell command も組み立てず、CLI session
+も作りません。`inserted` は「native input queue が行を受け付けた」という意味だけで、
+Codex/Claude が画像を読んだことの acknowledgement ではありません。
+
+remote 側のファイルは `<realpath(".")>/.local/share/meeterm/attachments/` 以下に
+生成名 `meeterm-<YYYYMMDD>-<HHMMSS>-<16 hex>.<ext>`（拡張子は画像 magic 由来、
+picked filename は使いません）で保存され、`attachment_delete_remote` の明示削除まで
+残ります。削除対象は operation が生成した名前だけで、同じ SSH endpoint を持つ同一
+terminal の SFTP channel から実行します。live operation は接続ごとに同時 1件です。
+自動削除・TTL はなく、手動削除は既定 dir 配下の `meeterm-*` / `.meeterm-partial-*`
+を `rm -f` するだけです（SSH.md 参照）。
+
 ## lifecycle と PC handoff
 
 Terminal画面はnative snapshotの選択端末を表示します。PCなどから端末が別のWorkspaceや
