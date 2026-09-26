@@ -381,9 +381,9 @@ scope.
   snapshot's `jobInFlight` (`flags & 0x4`) drops, landing `inserted` or
   a pending reason (a failed verification never pastes). **Retry upload**
   is a separate explicit action for `pending`/`failed`, and for `uploaded`
-  after verified removal. An `inserted` op whose delivery is unconfirmed
-  (`flags & 0x1`) shows a check-the-terminal notice — nothing is resent
-  automatically and no ambiguous retry is offered.
+  after verified removal. An `inserted` op keeps the neutral review-before-
+  send guidance — meeterm can't see what the CLI does with the path, so
+  nothing is resent automatically and no ambiguous retry is offered.
 - **Delete from server** calls `meeterm_attachment_delete_remote`, which
   removes only the file that operation created (published file plus a
   `.meeterm-partial-*` remnant) on the same authenticated endpoint. Acceptance
@@ -392,7 +392,9 @@ scope.
   Every job clears the previous attempt's reason at start and at most one
   job per operation is in flight — a new upload/insert/delete is refused
   (`busy`) until the flag drops; the toolbar insert hides while any job
-  runs. **Discard** disposes the recorded intent, cancels/disposes the core
+  runs. **Cancel** is the exception: it stays reachable while a
+  pending/uploading job is in flight, so the transfer can always be
+  stopped, and a second tap never queues a duplicate request. **Discard** disposes the recorded intent, cancels/disposes the core
   operation, and deletes the local staging/prepared files; the next
   explicit Choose binds a fresh intent to the then-visible terminal — a
   draft is never silently retargeted. Nothing is deleted automatically —

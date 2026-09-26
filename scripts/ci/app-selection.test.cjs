@@ -4037,7 +4037,7 @@ test('attachment: toolbar insert appears only for the captured terminal and taps
     fixture.environment.intervalCallbacks.at(-1)();
   });
   await settleAsync();
-  assert.ok(findText(fixture.root, 'Inserted into terminal input. Review it before sending.'), 'the landed snapshot announces insertion');
+  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'), 'the landed snapshot announces insertion');
 });
 
 test('attachment: toolbar insert is hidden on other terminals and gated when input is not ready', async t => {
@@ -4131,7 +4131,7 @@ test('attachment: an inserted operation offers no insert action again', async t 
     fixture.environment.intervalCallbacks.at(-1)();
   });
   await settleAsync();
-  assert.ok(findText(fixture.root, 'Inserted into terminal input. Review it before sending.'), 'the inserted state keeps the review-before-send guidance');
+  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'), 'the inserted state keeps the review-before-send guidance');
   await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
   await settleAsync();
   assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
@@ -4163,4 +4163,72 @@ test('attachment: a delete retry stays pending while its job is in flight', asyn
   });
   await settleAsync();
   assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'the dropped flag carries the verified removal');
+});
+
+test('attachment: cancel stays enabled while the upload job is in flight', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  // The upload job is still running — JOB_IN_FLIGHT gates Upload/Insert/
+  // Delete but never Cancel.
+  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
+  // A deferred native cancel keeps busyAction='cancel' observable.
+  let resolveCancel;
+  fixture.native.cancelAttachment = () => new Promise(resolve => { resolveCancel = resolve; });
+  const cancel = findTestId(fixture.root, 'attachment-cancel');
+  assert.equal(cancel.props.disabled, false, 'cancel is the exception to the one-in-flight-job gate');
+  await press(fixture.root, cancel);
+  await settleAsync();
+  assert.equal(findTestId(fixture.root, 'attachment-cancel').props.disabled, true,
+    'a cancel already in flight must not queue a duplicate request');
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, phase: 'cancelled' };
+  await act(async () => { resolveCancel({ status: 'accepted', attachmentId: '42' }); });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
+});
+
+test('attachment: a pre-insert snapshot cannot finish a newer insert job', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  // A snapshot read that began while no insert job existed stays unresolved.
+  let resolveOld;
+  const oldSnapshot = { status: 'snapshot', operation: { ...fixture.environment.attachmentOp } };
+  const oldPromise = new Promise(resolve => { resolveOld = resolve; });
+  let first = true;
+  fixture.native.attachmentSnapshot = async () => {
+    if (first) { first = false; return oldPromise; }
+    return { status: 'snapshot', operation: { ...fixture.environment.attachmentOp } };
+  };
+  // Reopen the sheet — this starts the read captured above.
+  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  // Toolbar Insert starts the verify+insert job: the real op goes
+  // jobInFlight while the old read is still pending.
+  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
+  await act(async () => { resolveOld(oldSnapshot); });
+  await settleAsync();
+  assert.equal(
+    all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length,
+    0,
+    'a stale response must not clear busy state or restore the Insert action'
+  );
+  // Polling keeps running until the current job's flag actually drops.
+  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'inserted', jobInFlight: false };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'),
+    'the current job completion still lands once the stale read is ignored');
 });
