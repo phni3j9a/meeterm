@@ -369,7 +369,8 @@ the user's own action; the CLI or AI consuming the image is out of scope.
 - **Delete from server** calls `meeterm_attachment_delete_remote`, which
   removes only the file that operation created (published file plus a
   `.meeterm-partial-*` remnant) on the same authenticated endpoint; the
-  snapshot then reports `deleted`. **Discard** cancels/disposes the core
+  snapshot then reports `remoteRemoved` (`flags & 0x2`) while keeping its
+  phase. **Discard** cancels/disposes the core
   operation and deletes the local staging/prepared files. Nothing is deleted
   automatically — not on insert, cancel, sheet close, or app exit.
 - IME composition is protected by the real input state, not a flag: Android

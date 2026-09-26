@@ -193,10 +193,12 @@ session を変更しません。ローカル成功とGitHub CIの結果は区別
 Issue #28 のmobile側（picker、画像正規化、preview、IME保護、添付シート、
 operation-state UI）は実装済みです。Rust core への呼び出しは
 `AttachmentCoreBridge` に隔離され、C ABI / JNI `external fun` は
-attachment-ffi 契約＋Main修正（`remote_directory`、`delete_remote`、`deleted`
-phase）どおりに宣言されています。W2 の Rust 実装がこの branch に無い間は
-Android が `unavailable`（`core_contract_pending`）を返し、iOS は契約 header が
-揃ってから compile されます。この節の確認はその境界を前提にします。
+attachment-ffi 契約＋Main修正（`remote_directory`、`delete_remote`、削除は
+`flags & 0x2` の REMOTE_REMOVED で phase 維持）どおりに宣言されています。
+W2 の Rust 実装はこの branch に統合済みで、機械照合 test
+（`scripts/ci/test_attachment_abi_parity.py`）が `jni.rs` export ↔ Kotlin
+`external fun`、snapshot 配列長、header 宣言 ↔ Swift 呼出、phase enum
+範囲の一致を継続確認します。この節の確認はその境界を前提にします。
 
 - picker は photos（Android `PickVisualMedia` / iOS `PHPickerViewController`）と
   files（Android `ACTION_OPEN_DOCUMENT` / iOS `UIDocumentPickerViewController`）の
@@ -217,8 +219,10 @@ Android が `unavailable`（`core_contract_pending`）を返し、iOS は契約 
   （既定 `~/.local/share/meeterm/attachments`、明示入力可）を表示すること。
   Upload と Insert は別の明示操作であり、insert は terminal input への参照
   挿入のみで submit は常に利用者の明示操作であること。operation phase は
-  `pending`/`uploading`/`uploaded`/`inserted`/`failed`/`cancelled`/`deleted`
-  を理由・進捗付きで表示し、Retry upload / Cancel / Retry insert /
+  `pending`/`uploading`/`uploaded`/`inserted`/`failed`/`cancelled`
+  を理由・進捗付きで表示し、明示削除は phase を維持したまま
+  `remoteRemoved`（`flags & 0x2`）として表れること。Retry upload /
+  Cancel / Retry insert /
   Delete from server / Discard は capability どおりにのみ有効であること。
   表示中の terminal が capture 済み宛先と異なる場合は insert が無効化され、
   別宛先への自動挿入はないこと。sheet の dismiss（iOS の swipe down を含む）は
