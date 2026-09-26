@@ -144,8 +144,6 @@ internal object AttachmentResults {
     "attachmentId" to java.lang.Long.toUnsignedString(attachmentId),
   )
 
-  fun inserted(): Map<String, Any?> = mapOf("status" to "inserted")
-
   /** Core snapshot fields, mirroring AttachmentOperationSnapshot (TS). */
   fun operation(op: AttachmentOperation): Map<String, Any?> = mapOf(
     "phase" to op.wirePhase,
@@ -158,6 +156,7 @@ internal object AttachmentResults {
     "errorMessage" to op.errorMessage,
     "insertUnconfirmed" to op.insertUnconfirmed,
     "remoteRemoved" to op.remoteRemoved,
+    "jobInFlight" to op.jobInFlight,
   )
 
   fun snapshotResult(op: AttachmentOperation?): Map<String, Any?> =

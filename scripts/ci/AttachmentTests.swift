@@ -240,7 +240,10 @@ final class AttachmentTests: XCTestCase {
       func field(_ value: String, _ lengthOffset: Int, _ dataOffset: Int, _ capacity: Int) {
         let utf8 = Array(value.utf8.prefix(capacity))
         raw.storeBytes(of: UInt16(utf8.count).littleEndian, toByteOffset: lengthOffset, as: UInt16.self)
-        raw.copyBytes(from: utf8, toByteRange: dataOffset ..< dataOffset + utf8.count)
+        utf8.withUnsafeBytes { src in
+          UnsafeMutableRawBufferPointer(rebasing: raw[dataOffset ..< dataOffset + src.count])
+            .copyMemory(from: src)
+        }
       }
       field(remotePath, 32, 34, 512)
       field(displayName, 546, 548, 128)
@@ -341,7 +344,7 @@ final class AttachmentTests: XCTestCase {
     XCTAssertTrue(operation(1, .failed).canRetryUpload)
     XCTAssertFalse(operation(1, .uploaded).canRetryUpload)
     XCTAssertTrue(operation(1, .uploaded).canInsert)
-    XCTAssertTrue(operation(1, .inserted).canInsert)
+    XCTAssertFalse(operation(1, .inserted).canInsert)
     XCTAssertFalse(operation(1, .uploading).canInsert)
     XCTAssertTrue(operation(1, .pending).canCancel)
     XCTAssertTrue(operation(1, .uploading).canCancel)
@@ -373,6 +376,24 @@ final class AttachmentTests: XCTestCase {
     let removedFailed = operation(1, .failed, flags: 0x2)
     XCTAssertTrue(removedFailed.canRetryUpload)
     XCTAssertFalse(removedFailed.canDeleteRemote)
+  }
+
+  func testInFlightJobBlocksEveryAction() {
+    // `flags & 0x4` (JOB_IN_FLIGHT) means a request is already running — no
+    // second job may start on the operation until the flag drops.
+    let busyUploaded = operation(1, .uploaded, flags: 0x4)
+    XCTAssertTrue(busyUploaded.jobInFlight)
+    XCTAssertFalse(busyUploaded.canInsert)
+    XCTAssertFalse(busyUploaded.canDeleteRemote)
+    XCTAssertFalse(busyUploaded.canRetryUpload)
+
+    let busyFailed = operation(1, .failed, flags: 0x4)
+    XCTAssertFalse(busyFailed.canRetryUpload)
+    XCTAssertFalse(busyFailed.canDeleteRemote)
+
+    // A stale reason from an earlier attempt never re-enables the gates.
+    let busyWithError = operation(1, .pending, flags: 0x4)
+    XCTAssertFalse(busyWithError.canRetryUpload)
   }
 
   func testClearDropsOperationForDiscardAndNewPick() {
@@ -486,7 +507,7 @@ final class AttachmentTests: XCTestCase {
     )
     // The composition itself must still be owned by the IME — the attachment
     // path holds rather than committing or clearing it.
-    XCTAssertEqual(inputView.markedText(in: inputView.markedTextRange!), "あい")
+    XCTAssertEqual(inputView.text(in: inputView.markedTextRange!), "あい")
   }
 
   /// FP-014: a cold-start reclaim must create the store/directory first —
@@ -501,10 +522,11 @@ final class AttachmentTests: XCTestCase {
     try Data("orphan".utf8).write(to: orphanPrepared)
     try Data("not in the attachment dir".utf8).write(to: foreign)
     defer { try? FileManager.default.removeItem(at: foreign) }
-    // A fresh controller models the post-process-restart state: no store,
-    // no session — reclaim must still build the store and sweep.
-    let controller = AttachmentController()
-    controller.reclaimStaleFiles()
+    // A fresh store models the post-process-restart state — the controller's
+    // startup reclaim (AttachmentController.reclaimStaleFiles) (re)creates it
+    // and runs exactly this sweep with no live session keeping names.
+    let freshStore = try AttachmentStore()
+    freshStore.reclaimStale(keeping: [])
     XCTAssertFalse(FileManager.default.fileExists(atPath: orphanStaging.path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: orphanPrepared.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path),

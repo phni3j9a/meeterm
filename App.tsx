@@ -160,6 +160,7 @@ const ATTACHMENT_BEGIN_COMPOSING_NOTICE = 'Finish IME composition before attachi
 const ATTACHMENT_COMPOSING_NOTICE = 'Finish IME composition before inserting.';
 const ATTACHMENT_DEFAULT_REMOTE_DIRECTORY = '~/.local/share/meeterm/attachments';
 const ATTACHMENT_INSERTED_NOTICE = 'Inserted into terminal input. Review it before sending.';
+const ATTACHMENT_INSERTING_NOTICE = 'Inserting… verifying the remote file first.';
 const ATTACHMENT_INSERT_GUIDANCE = 'Close and insert from the terminal: tap Insert attachment in the terminal toolbar to add the image path.';
 const ATTACHMENT_INSERT_NOT_READY = 'The terminal input is not ready. Finish recovery and keep this terminal open before inserting.';
 const ATTACHMENT_INSERT_UNCONFIRMED_NOTICE = 'Insert delivery is unconfirmed — check the terminal input yourself; it is not resent automatically.';
@@ -518,6 +519,7 @@ function smokeAttachmentDraft(screen: SmokeScreen): AttachmentDraftState {
     errorMessage: '',
     insertUnconfirmed: false,
     remoteRemoved: false,
+    jobInFlight: false,
     ...extra,
   });
   const draft = (phase: AttachmentPhase, operation: AttachmentOperationSnapshot | null, preparedInfo: AttachmentPreparedInfo | null = prepared): AttachmentDraftState => ({
@@ -823,22 +825,26 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
 }) {
   const busyAction = draft?.busyAction ?? null;
   const localBusy = draft?.phase === 'picking' || draft?.phase === 'normalizing';
-  const busy = localBusy || busyAction !== null;
   const operation = draft?.operation ?? null;
+  const busy = localBusy || busyAction !== null || operation?.jobInFlight === true;
   const deleting = busyAction === 'deleteRemote';
+  const inserting = busyAction === 'insert';
   const destinationMatches = !draft || draft.destination.terminalId === currentTerminalId;
   const destinationBlock = draft ? <View testID="attachment-destination" style={[styles.attachmentDestination, { borderColor: colors.border, backgroundColor: colors.surface }]}>
     <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Server · ${draft.destination.server}`}</Text>
     <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Session · ${draft.destination.session}`}</Text>
     <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Workspace · ${draft.destination.workspace}`}</Text>
     <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Terminal · ${draft.destination.terminal}`}</Text>
-    <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Remote directory · ${draft.remoteDirectory.trim() || ATTACHMENT_DEFAULT_REMOTE_DIRECTORY}`}</Text>
   </View> : null;
   const destinationWarning = !destinationMatches ? <Text accessibilityRole="alert" style={[styles.runtimeHint, { color: colors.danger }]}>This attachment is bound to a different terminal. Return to that terminal to insert, or discard and start again here — it is never inserted into the wrong destination automatically.</Text> : null;
   return <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
     {deleting ? <View testID="attachment-deleting" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}>
       <View style={styles.horizontal}><ActivityIndicator color={colors.accent} /><Text style={[styles.emptyBody, { color: colors.text }]}>Deleting…</Text></View>
       <Text style={[styles.noticeBody, { color: colors.muted }]}>The remote file stays listed until the server confirms removal.</Text>
+    </View> : null}
+    {inserting ? <View testID="attachment-inserting" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+      <View style={styles.horizontal}><ActivityIndicator color={colors.accent} /><Text style={[styles.emptyBody, { color: colors.text }]}>Inserting…</Text></View>
+      <Text style={[styles.noticeBody, { color: colors.muted }]}>The remote file is verified before its path reaches the terminal input.</Text>
     </View> : null}
     {draft?.notice ? <View testID="attachment-notice" accessibilityLiveRegion="polite" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}><Text style={[styles.emptyBody, { color: colors.text }]}>{draft.notice}</Text></View> : null}
     {draft?.phase === 'error' ? <View style={styles.gone}>
@@ -2804,11 +2810,28 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       const fresh = result.operation;
       setAttachment(current => {
         if (!current || (current.operation && current.operation.attachmentId !== fresh.attachmentId)) return current;
-        // An accepted delete resolves only when the core flags remote removal
-        // or reports a failure — never when the request was merely accepted.
-        if (current.busyAction !== 'deleteRemote') return { ...current, operation: fresh };
-        if (fresh.remoteRemoved) return { ...current, busyAction: null, operation: fresh };
-        if (fresh.errorCode) return { ...current, busyAction: null, operation: fresh, notice: fresh.errorMessage || ATTACHMENT_DELETE_FAILED_NOTICE };
+        // An accepted job (delete / verify+insert) resolves only when the
+        // core drops jobInFlight — never on acceptance, and a stale error
+        // from a previous attempt no longer ends the wait (the core clears
+        // it at job start). The dropped flag carries the real outcome.
+        if (fresh.jobInFlight) return { ...current, operation: fresh };
+        if (current.busyAction === 'deleteRemote') {
+          if (fresh.remoteRemoved) return { ...current, busyAction: null, operation: fresh };
+          if (fresh.errorCode) return { ...current, busyAction: null, operation: fresh, notice: fresh.errorMessage || ATTACHMENT_DELETE_FAILED_NOTICE };
+          return { ...current, busyAction: null, operation: fresh };
+        }
+        if (current.busyAction === 'insert') {
+          if (fresh.phase === 'inserted') {
+            setControlMessage(ATTACHMENT_INSERTED_NOTICE);
+            return { ...current, busyAction: null, operation: fresh };
+          }
+          setControlMessage(fresh.errorMessage || fresh.errorCode || ATTACHMENT_INSERT_UNCONFIRMED_NOTICE);
+          return { ...current, busyAction: null, operation: fresh };
+        }
+        if (current.busyAction === 'retryUpload' || current.busyAction === 'cancel') {
+          return { ...current, busyAction: null, operation: fresh,
+            notice: fresh.errorCode ? (fresh.errorMessage || 'The attachment job failed.') : '' };
+        }
         return { ...current, operation: fresh };
       });
     }).catch(() => {});
@@ -2820,14 +2843,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   // even if the sheet was closed while the delete was in flight.
   const attachmentOperationPhase = attachment?.operation?.phase ?? null;
   const attachmentDeleting = attachment?.busyAction === 'deleteRemote';
+  const attachmentInserting = attachment?.busyAction === 'insert';
   useEffect(() => {
     if (smokeFixtureActive) return;
     const transferLive = sheet === 'attachment'
       && (attachmentOperationPhase === 'pending' || attachmentOperationPhase === 'uploading');
-    if (!transferLive && !attachmentDeleting) return;
+    if (!transferLive && !attachmentDeleting && !attachmentInserting) return;
     const timer = setInterval(refreshAttachmentSnapshot, 300);
     return () => clearInterval(timer);
-  }, [attachmentDeleting, attachmentOperationPhase, refreshAttachmentSnapshot, sheet, smokeFixtureActive]);
+  }, [attachmentDeleting, attachmentInserting, attachmentOperationPhase, refreshAttachmentSnapshot, sheet, smokeFixtureActive]);
 
   /** Closing the sheet retains the draft and native session for remount. */
   const closeAttachmentSheet = useCallback(() => {
@@ -2921,12 +2945,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (attachment?.sessionReady) return true;
     const pane = selectedPane;
     if (!pane) return false;
-    // An existing draft is bound to its recorded destination — a different
-    // visible pane must never rebind it to the wrong destination.
-    if (attachment && attachment.destination.terminalId !== pane.terminalId) {
-      setAttachment(current => current ? { ...current, notice: attachmentFailureNotice('destination_changed', '') } : current);
-      return false;
-    }
     try {
       const result = await MeetermTerminal.beginAttachment(pane.terminalId, attachmentTargetFor(pane));
       if (result.status === 'held') {
@@ -3023,6 +3041,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             errorMessage: '',
             insertUnconfirmed: false,
             remoteRemoved: false,
+            jobInFlight: true,
           } } : current);
           refreshAttachmentSnapshot();
           return;
@@ -3051,11 +3070,13 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     void MeetermTerminal.retryAttachmentUpload(selectedPane?.terminalId ?? '')
       .then(result => {
         if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, busyAction: null } : current);
         if (result.status === 'accepted') {
+          // Keep busyAction — the retry is an in-flight job; the snapshot's
+          // dropped jobInFlight flag carries its real outcome.
           refreshAttachmentSnapshot();
           return;
         }
+        setAttachment(current => current ? { ...current, busyAction: null } : current);
         setAttachment(current => current ? { ...current, notice:
           result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
             : attachmentFailureNotice(result.errorCode, result.message) } : current);
@@ -3101,8 +3122,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!attachment || !operation || attachment.busyAction || !pane) return;
     // Destination protection: insertion goes only to the captured terminal.
     if (pane.terminalId !== attachment.destination.terminalId) return;
-    if (operation.remoteRemoved
-      || (operation.phase !== 'uploaded' && operation.phase !== 'inserted')) return;
+    // Insert is one verified job (intent + fresh fence + remote lstat +
+    // paste) on an uploaded op — an inserted op is never re-inserted, and
+    // no job may start while another is in flight.
+    if (operation.remoteRemoved || operation.jobInFlight || operation.phase !== 'uploaded') return;
     if (sheet === 'attachment') return;
     if (!terminalInputReady || !surfaceVisible) {
       setControlMessage(ATTACHMENT_INSERT_NOT_READY);
@@ -3113,10 +3136,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     void MeetermTerminal.insertAttachment(pane.terminalId)
       .then(result => {
         if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'inserted') {
-          setAttachment(current => current?.operation ? { ...current, busyAction: null, operation: { ...current.operation, phase: 'inserted' } } : current);
-          setControlMessage(ATTACHMENT_INSERTED_NOTICE);
-          // The next snapshot carries the authoritative insert flag.
+        if (result.status === 'accepted' || result.status === 'inserted') {
+          // `accepted` only means the verify+insert job started — keep
+          // busyAction until the snapshot's jobInFlight drops, then show
+          // the landed outcome (inserted phase or the Pending reason).
+          setControlMessage(ATTACHMENT_INSERTING_NOTICE);
           refreshAttachmentSnapshot();
           return;
         }
@@ -3143,6 +3167,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const deleteRemoteAttachment = useCallback(() => {
     const operation = attachment?.operation;
     if (!attachment || !operation || attachment.busyAction) return;
+    // One in-flight job per operation — a new delete is refused while a
+    // job is still running, and the wait ends when its flag drops.
+    if (operation.jobInFlight) return;
     if (operation.phase !== 'uploaded' && operation.phase !== 'inserted' && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
     setAttachment(current => current ? { ...current, busyAction: 'deleteRemote', notice: '' } : current);
@@ -3167,17 +3194,18 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       });
   }, [attachment, refreshAttachmentSnapshot, selectedPane]);
 
-  // Toolbar Insert: visible only while a captured uploaded/inserted op for
-  // the displayed terminal still owns a remote file. Readiness is checked on
-  // tap — a merely disabled button cannot explain why it refused.
+  // Toolbar Insert: visible only while a captured uploaded op for the
+  // displayed terminal still owns a remote file. An inserted op is never
+  // re-inserted — the path stays in the terminal input for review.
+  // Readiness is checked on tap — a merely disabled button cannot explain
+  // why it refused.
   const attachmentInsertVisible = Boolean(
     attachment?.operation
     && !attachment.operation.remoteRemoved
-    && (attachment.operation.phase === 'uploaded' || attachment.operation.phase === 'inserted')
+    && !attachment.operation.jobInFlight
+    && attachment.operation.phase === 'uploaded'
     && attachment.destination.terminalId === selectedPane?.terminalId
     && screen === 'terminal');
-  const attachmentInsertLabel = attachment?.operation?.phase === 'inserted'
-    ? 'Insert attachment again' : 'Insert attachment';
 
   /** Explicit Discard: cancels/disposes the core op and removes local files. */
   const discardAttachmentDraft = useCallback(() => {
@@ -3196,12 +3224,16 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         operation: null,
         busyAction: null,
         sessionReady: false,
+        // Discard ended the old intent and destination — the draft now
+        // floats to the current pane, and the next explicit Choose binds a
+        // fresh intent there (the core disposes the old intent itself).
+        destination: selectedPane ? attachmentDestinationFor(selectedPane) : current.destination,
         notice: '',
         errorCode: '',
         errorMessage: '',
       } : current);
     })();
-  }, [attachment, smokeFixtureActive]);
+  }, [attachment, attachmentDestinationFor, selectedPane, smokeFixtureActive]);
 
   const reopenAttachmentPicker = useCallback(() => {
     setAttachment(current => current ? { ...current, phase: 'choosing', notice: '', errorCode: '', errorMessage: '' } : current);
@@ -3833,7 +3865,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         {attachmentInsertVisible ? <IconButton
           testID="attachment-insert"
           icon="attach"
-          label={attachmentInsertLabel}
+          label="Insert attachment"
           colors={DARK}
           disabled={attachment?.busyAction != null}
           onPress={insertAttachmentFromToolbar}

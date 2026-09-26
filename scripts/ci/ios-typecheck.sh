@@ -25,6 +25,7 @@ readonly native_input_source="${repository_root}/modules/meeterm-terminal/ios/Te
 readonly native_key_source="${repository_root}/modules/meeterm-terminal/ios/TerminalSpecialKey.swift"
 readonly native_scroll_source="${repository_root}/modules/meeterm-terminal/ios/TerminalScrollGestureDelegate.swift"
 readonly attachment_limits_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentLimits.swift"
+readonly attachment_store_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentStore.swift"
 readonly attachment_session_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentSession.swift"
 readonly attachment_policy_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentInsertionPolicy.swift"
 readonly attachment_guard_source="${repository_root}/modules/meeterm-terminal/ios/AttachmentCompositionGuard.swift"
@@ -88,6 +89,7 @@ cp "${native_input_source}" "${staged_source_directory}/TerminalInputView.swift"
 cp "${native_key_source}" "${staged_source_directory}/TerminalSpecialKey.swift"
 cp "${native_scroll_source}" "${staged_source_directory}/TerminalScrollGestureDelegate.swift"
 cp "${attachment_limits_source}" "${staged_source_directory}/AttachmentLimits.swift"
+cp "${attachment_store_source}" "${staged_source_directory}/AttachmentStore.swift"
 cp "${attachment_session_source}" "${staged_source_directory}/AttachmentSession.swift"
 cp "${attachment_policy_source}" "${staged_source_directory}/AttachmentInsertionPolicy.swift"
 cp "${attachment_guard_source}" "${staged_source_directory}/AttachmentCompositionGuard.swift"
@@ -95,7 +97,7 @@ cp "${attachment_operation_source}" "${staged_source_directory}/AttachmentOperat
 
 selected_developer_directory="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
 readonly selected_developer_directory
-printf 'iOS Swift typecheck: Xcode=%s SDK=%s target=%s sources=10\n' \
+printf 'iOS Swift typecheck: Xcode=%s SDK=%s target=%s sources=11\n' \
   "${selected_developer_directory:-unavailable}" \
   "${sdk_version}" \
   "${swift_target}"
@@ -116,6 +118,7 @@ xcrun swiftc \
   "${staged_source_directory}/TerminalSpecialKey.swift" \
   "${staged_source_directory}/TerminalScrollGestureDelegate.swift" \
   "${staged_source_directory}/AttachmentLimits.swift" \
+  "${staged_source_directory}/AttachmentStore.swift" \
   "${staged_source_directory}/AttachmentSession.swift" \
   "${staged_source_directory}/AttachmentInsertionPolicy.swift" \
   "${staged_source_directory}/AttachmentCompositionGuard.swift" \

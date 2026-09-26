@@ -140,7 +140,7 @@ class AttachmentOperationTest {
     assertFalse(op(AttachmentOpPhase.UPLOADED).canRetryUpload)
 
     assertTrue(op(AttachmentOpPhase.UPLOADED).canInsert)
-    assertTrue(op(AttachmentOpPhase.INSERTED).canInsert)
+    assertFalse(op(AttachmentOpPhase.INSERTED).canInsert)
     assertFalse(op(AttachmentOpPhase.UPLOADING).canInsert)
 
     assertTrue(op(AttachmentOpPhase.PENDING).canCancel)
@@ -178,6 +178,25 @@ class AttachmentOperationTest {
     val removedFailed = operation(1L, AttachmentOpPhase.FAILED, flags = 0x2)
     assertTrue(removedFailed.canRetryUpload)
     assertFalse(removedFailed.canDeleteRemote)
+  }
+
+  @Test
+  fun inFlightJobBlocksEveryAction() {
+    // `flags & 0x4` (JOB_IN_FLIGHT) means a request is already running — no
+    // second job may start on the operation until the flag drops.
+    val busyUploaded = operation(1L, AttachmentOpPhase.UPLOADED, flags = 0x4)
+    assertTrue(busyUploaded.jobInFlight)
+    assertFalse(busyUploaded.canInsert)
+    assertFalse(busyUploaded.canDeleteRemote)
+    assertFalse(busyUploaded.canRetryUpload)
+
+    val busyFailed = operation(1L, AttachmentOpPhase.FAILED, flags = 0x4)
+    assertFalse(busyFailed.canRetryUpload)
+    assertFalse(busyFailed.canDeleteRemote)
+
+    // A stale reason from an earlier attempt never re-enables the gates.
+    val busyWithError = operation(1L, AttachmentOpPhase.PENDING, flags = 0x4)
+    assertFalse(busyWithError.canRetryUpload)
   }
 
   @Test

@@ -45,25 +45,35 @@ struct AttachmentOperation: Equatable {
   /// flags & 0x2: the meeterm-created remote file was explicitly deleted.
   var remoteRemoved: Bool { flags & 0x2 != 0 }
 
+  /// flags & 0x4: a job (upload / verify+insert / remove) is in flight on
+  /// this operation. The core clears the previous reason at job start and
+  /// drops the flag when that attempt's outcome lands — UI busy display
+  /// and polling key off this bit, never off a stale errorCode.
+  var jobInFlight: Bool { flags & 0x4 != 0 }
+
   /// Explicit Retry upload: pending/failed ops, plus an uploaded op whose
   /// remote file was deleted — the core re-uploads that same operation.
+  /// Refused while a job is in flight.
   var canRetryUpload: Bool {
-    phase == .pending || phase == .failed ||
-      (phase == .uploaded && remoteRemoved)
+    !jobInFlight && (phase == .pending || phase == .failed ||
+      (phase == .uploaded && remoteRemoved))
   }
 
-  /// Insert is allowed while uploaded; an inserted op accepts it
-  /// idempotently. A removed remote file can never be inserted.
+  /// Insert is one verified job: intent check → fresh fence → remote
+  /// lstat → single-line paste. It is allowed on an uploaded op only —
+  /// an inserted op is never re-inserted — and never while another job
+  /// runs.
   var canInsert: Bool {
-    !remoteRemoved && (phase == .uploaded || phase == .inserted)
+    !remoteRemoved && !jobInFlight && phase == .uploaded
   }
 
   /// Cancel applies while transfer work may still be running.
   var canCancel: Bool { phase == .pending || phase == .uploading }
 
-  /// M4 remote delete covers every phase that may still own a file.
+  /// Remote delete covers every phase that may still own a file; refused
+  /// while a job is in flight (one in-flight job per operation).
   var canDeleteRemote: Bool {
-    !remoteRemoved &&
+    !remoteRemoved && !jobInFlight &&
       (phase == .uploaded || phase == .inserted || phase == .failed || phase == .cancelled)
   }
 }

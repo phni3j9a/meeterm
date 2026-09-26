@@ -113,22 +113,33 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   the sheet shows "Close and insert from the terminal" guidance and no
   Insert action of its own — insertion is the separate "Insert attachment"
   action on the terminal toolbar, visible only while the captured
-  destination terminal is displayed and still owns the remote file. Tapping
-  it passes the normal terminal input gate and places a quoted path
-  reference on the input line; the user still reviews and sends it
-  themselves. Pending and failed states show the core reason and "Retry
-  upload" is a separate explicit action; an unconfirmed insert shows a
-  check-the-terminal notice and is never resent automatically. "Delete from
-  server" removes only the file the operation created: after acceptance the
-  sheet shows "Deleting…" and keeps polling until the snapshot reports
-  `remoteRemoved` (`flags & 0x2`) or a failure; insert stays disabled while
-  deletion is pending. "Discard" drops the local staging/prepared files and
-  the core operation. While an IME composition is active insertion returns a
-  held "Finish IME composition before inserting." notice and never touches
-  the composition. The attachment stays bound to its captured terminal:
-  showing a different terminal hides insert rather than retargeting it, and
-  closing the sheet retains the draft for same-process reopen — only Discard
-  or a new pick releases it.
+  destination terminal is displayed and the op is `uploaded` with a live
+  remote file and no job in flight. Tapping it passes the normal terminal
+  input gate and starts one verify+insert job in the core (fresh intent
+  check, SFTP lstat of the recorded file, then a single quoted-path paste).
+  Acceptance only means the job started: the UI stays on the
+  "Inserting…" state and polls until the snapshot's `jobInFlight`
+  (`flags & 0x4`) drops — landing `inserted`, or a pending reason when
+  verification fails before any paste. An inserted op never offers insert
+  again; it shows "Inserted into terminal input. Review it before
+  sending." and the user still sends it themselves. Every job clears the
+  previous reason at start and at most one job per operation is in flight —
+  upload, insert, and delete refuse to overlap. Pending and failed states
+  show the core reason and "Retry upload" is a separate explicit action;
+  an unconfirmed insert shows a check-the-terminal notice and is never
+  resent automatically. "Delete from server" removes only the file the
+  operation created: after acceptance the sheet shows "Deleting…" and
+  keeps polling until the snapshot reports `remoteRemoved` (`flags & 0x2`)
+  or a failure; insert stays hidden while any job is in flight. "Discard"
+  disposes the recorded intent, drops the local staging/prepared files and
+  the core operation, and the next explicit Choose binds a fresh intent to
+  the then-visible terminal — a draft is never silently retargeted. While
+  an IME composition is active insertion returns a held "Finish IME
+  composition before inserting." notice and never touches the composition.
+  The attachment stays bound to its captured terminal: showing a different
+  terminal hides insert rather than retargeting it, and closing the sheet
+  retains the draft for same-process reopen — only Discard or a new pick
+  releases it.
 
 ### Agent status metadata
 

@@ -379,8 +379,10 @@ internal object AttachmentController {
           op!!.attachmentId,
         )
         if (result["status"] == "accepted") {
+          // rc=0 accepts the verify+insert job only — the paste outcome
+          // (inserted phase or a Pending reason) lands in the snapshot
+          // under JOB_IN_FLIGHT. Report acceptance, never "inserted".
           refreshSnapshot(active!!)
-          return AttachmentResults.inserted()
         }
         result
       }
