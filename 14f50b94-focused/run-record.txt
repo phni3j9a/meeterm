@@ -1,0 +1,78 @@
+14f50b94 focused validation run record — iOS Simulator (Issue #28 image attachments, Draft PR #43)
+==================================================================================================
+
+commit: 14f50b94e68cc9a9e40ec1c7fa261c5b1cc4357b (issue-28-image-attachments)
+delta vs 32a6be37: modules/meeterm-terminal/ios/MeetermTerminalModule.swift ONLY
+  (the missing `try` on normalizeTerminalId — verified: git diff --stat,
+  4 insertions/2 deletions).
+date: 2026-09-26 UTC
+host toolchain: Xcode 26.6 (17F113), iphonesimulator26.5 SDK, arm64, RN 0.86.3,
+  Expo ~57.0.25, Rust 1.96.0, Node 22.23.2 / npm 10.9.8, CocoaPods 1.17.0.
+simulator: iPhone 18 Pro Max, iOS 27.0, UDID 7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+env: EXPO_PUBLIC_MEETERM_SMOKE=1. No source/test patching.
+
+STAGE RESULTS
+  candidate commit confirmed : YES (HEAD == 14f50b94e68cc9a9e40ec1c7fa261c5b1cc4357b)
+  npm ci                     : PASS (515 packages, 1m)
+  fresh CNG prebuild         : PASS (rm -rf ios; expo prebuild iOS only)
+  ios-inject-ui-test.sh      : PASS (meetermTests + meetermStorageTests injected)
+  pod install                : PASS
+  strip storage rust link    : PASS
+  sim boot                   : PASS (manual bootstatus after VM restart)
+
+  [stage 3] xcodebuild app build (plain `build`, Release/iphonesimulator,
+            arm64) : PASSED — 178s. **THE ATTACHMENT ADAPTER NOW COMPILES**
+            on the real toolchain (both prior blockers fixed: the :174
+            optional-chaining flatMap AND the :278 missing `try`).
+
+  [stage 4] ios-typecheck.sh : FAILED — 4 error sites, ALL in the injected
+    test source scripts/ci/AttachmentTests.swift (identical failures when the
+    real test bundle is compiled — see build-for-testing below):
+
+      AttachmentTests.swift:243:59: error: extra argument 'toByteRange' in call
+        raw.copyBytes(from: utf8, toByteRange: dataOffset ..< dataOffset + utf8.count)
+        (UnsafeMutableRawBufferPointer has no copyBytes(from:toByteRange:) —
+         the API is copyMemory(from:byteOffset:byteCount:) / initializeMemory)
+      AttachmentTests.swift:489:30: error: value of type 'TerminalInputView' has no member 'markedText'
+        XCTAssertEqual(inputView.markedText(in: inputView.markedTextRange!), "あい")
+        (UITextInput exposes markedTextRange + text(in:); there is no
+         markedText(in:) member)
+      AttachmentTests.swift:495:21: error: cannot find 'AttachmentStore' in scope
+        let store = try AttachmentStore()
+      AttachmentTests.swift:506:22: error: cannot find 'AttachmentController' in scope
+        let controller = AttachmentController()
+
+    Bundle-composition defect proven (not a typecheck-harness artifact):
+      AttachmentTests.swift has NO `import MeetermTerminal` — it relies on the
+      curated source copies injected beside it (comment: "injected into the
+      disposable UI-test target beside the production sources it exercises").
+      Neither scripts/ci/ios-inject-ui-test.sh (copy list lines 16-26) nor
+      ios-typecheck.sh (same list, lines 35-46) includes
+      AttachmentStore.swift or AttachmentController.swift, so both types are
+      absent from the test target's compile unit. Build-for-testing of the
+      REAL injected bundle reproduces the identical 4 errors
+      (xcodebuild-b4t-failed.log; meetermTests target failed in 19s —
+      everything else in the workspace compiled clean).
+
+    Per-test pass/fail counts: 0 executed — the meetermTests bundle never
+    built, so AttachmentTests/TerminalInputViewTests/ClientStoreTests all
+    unexecuted (not runtime failures).
+
+  [stage 5] install/launch/readiness/frame gates : NOT RUN — the app .app
+    itself built, but stop rule applies after stage-4 failure.
+  [stage 6] 11 attachment fixture routes : NOT RUN.
+  [stage 7] picker attempt : NOT RUN.
+
+FIRST-FAILURE SUMMARY
+  APP/ADAPTER: compiles clean (stage 3 PASSED — milestone).
+  TEST BUNDLE: 4 compile errors in scripts/ci/AttachmentTests.swift —
+  2 real API misuses (copyBytes label, markedText member) + 2 missing-type
+  errors caused by the injection lists not including AttachmentStore.swift /
+  AttachmentController.swift. Product-vs-harness: the app product is fine;
+  this is a test-source/injection-list defect in scripts/ci.
+
+evidence layout:
+  run-record.txt
+  xcodebuild-app-build.log        stage-3 app build (PASSED)
+  xcodebuild-b4t-failed.log       stage-4 injected-bundle build (FAILED)
+  ios-typecheck-failed.log        typecheck output

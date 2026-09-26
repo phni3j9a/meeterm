@@ -1,0 +1,32 @@
+iOS Swift typecheck: Xcode=/Applications/Xcode.app/Contents/Developer SDK=26.5 target=x86_64-apple-ios16.4-simulator sources=10
+/Users/devin/repos/meeterm/scripts/ci/AttachmentTests.swift:243:59: error: extra argument 'toByteRange' in call
+241 |         let utf8 = Array(value.utf8.prefix(capacity))
+242 |         raw.storeBytes(of: UInt16(utf8.count).littleEndian, toByteOffset: lengthOffset, as: UInt16.self)
+243 |         raw.copyBytes(from: utf8, toByteRange: dataOffset ..< dataOffset + utf8.count)
+    |                                                           `- error: extra argument 'toByteRange' in call
+244 |       }
+245 |       field(remotePath, 32, 34, 512)
+
+/Users/devin/repos/meeterm/scripts/ci/AttachmentTests.swift:489:30: error: value of type 'TerminalInputView' has no member 'markedText'
+487 |     // The composition itself must still be owned by the IME — the attachment
+488 |     // path holds rather than committing or clearing it.
+489 |     XCTAssertEqual(inputView.markedText(in: inputView.markedTextRange!), "あい")
+    |                              `- error: value of type 'TerminalInputView' has no member 'markedText'
+490 |   }
+491 | 
+
+/Users/devin/repos/meeterm/scripts/ci/AttachmentTests.swift:495:21: error: cannot find 'AttachmentStore' in scope
+493 |   /// files left behind by a previous process are app-owned and swept.
+494 |   func testStartupReclaimSweepsPreviousProcessFiles() throws {
+495 |     let store = try AttachmentStore()
+    |                     `- error: cannot find 'AttachmentStore' in scope
+496 |     let orphanStaging = store.directoryURL.appendingPathComponent("att_orphanstaging.bin")
+497 |     let orphanPrepared = store.directoryURL.appendingPathComponent("att_orphanprepared.png")
+
+/Users/devin/repos/meeterm/scripts/ci/AttachmentTests.swift:506:22: error: cannot find 'AttachmentController' in scope
+504 |     // A fresh controller models the post-process-restart state: no store,
+505 |     // no session — reclaim must still build the store and sweep.
+506 |     let controller = AttachmentController()
+    |                      `- error: cannot find 'AttachmentController' in scope
+507 |     controller.reclaimStaleFiles()
+508 |     XCTAssertFalse(FileManager.default.fileExists(atPath: orphanStaging.path))
