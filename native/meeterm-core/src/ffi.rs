@@ -406,12 +406,36 @@ pub unsafe extern "C" fn meeterm_paste_utf8_at_epoch(
         .unwrap_or_else(terminal_error_code)
 }
 
-/// Begin one image attachment: validate the picked file, fence the current
-/// SSH destination, and enqueue its SFTP upload on the same authenticated
-/// connection. The returned id is opaque and positive; zero means the call
-/// was synchronously rejected (no connection, unreadable file, no fenced
-/// destination). Progress and pending reasons are polled through
-/// `meeterm_attachment_snapshot`; nothing proceeds without explicit calls.
+/// Record the destination intent for the attachment sheet: the adapter
+/// passes the *picked pane's* native terminal id; the core resolves the
+/// owning SSH connection itself and stores the stable identity (endpoint,
+/// backend/runtime, remote pane / Herdr `terminal_id`). The returned id is
+/// opaque and positive; zero means the pane is not a usable destination
+/// right now. Dispose it with `meeterm_attachment_intent_dispose` when the
+/// sheet closes, before or after any `meeterm_attachment_begin` calls.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_intent(target_terminal_id: u64) -> u64 {
+    crate::attachment::attachment_intent(target_terminal_id).unwrap_or(0)
+}
+
+/// Drop a recorded intent. Idempotent — live operations keep their own
+/// copy of the captured identity.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_intent_dispose(intent_id: u64) -> i32 {
+    crate::attachment::attachment_intent_dispose(intent_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Begin one image attachment against a destination intent created by
+/// `meeterm_attachment_intent`: validate the picked file, re-validate the
+/// intent's stable identity against the *current* connection state,
+/// capture a fresh execution fence, and enqueue its SFTP upload on the
+/// owning connection. The returned id is opaque and positive; zero means
+/// the call was synchronously rejected (unknown intent, unreadable file,
+/// changed or missing destination). Progress and pending reasons are
+/// polled through `meeterm_attachment_snapshot`; nothing proceeds without
+/// explicit calls.
 ///
 /// `remote_dir` is an optional explicit remote directory (clean absolute
 /// or `~/`-prefixed path, expanded against `realpath(".")`); a null
@@ -424,7 +448,7 @@ pub unsafe extern "C" fn meeterm_paste_utf8_at_epoch(
 /// returning.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn meeterm_attachment_begin(
-    terminal_id: u64,
+    intent_id: u64,
     local_path: *const u8,
     local_path_length: usize,
     display_name: *const u8,
@@ -448,33 +472,39 @@ pub unsafe extern "C" fn meeterm_attachment_begin(
         }
     };
     crate::attachment::attachment_begin(
-        terminal_id,
+        intent_id,
         &local_path,
         &display_name,
-        size_bytes,
         remote_dir.as_deref(),
+        size_bytes,
     )
     .unwrap_or(0)
 }
 
-/// Explicit transfer retry for a pending/failed operation. Re-fences the
-/// same destination pane identity against the current connection and
-/// reuses an already-verified remote file on the same endpoint. Zero is
-/// accepted, negative is a stable native error code.
+/// Explicit transfer retry / re-validation for a pending/failed operation,
+/// or remote re-verification for an uploaded one whose destination was
+/// re-fenced after recovery. `target_terminal_id` must be the pane
+/// terminal the operation's intent captured — the call never retargets.
+/// Zero is accepted, negative is a stable native error code.
 #[unsafe(no_mangle)]
-pub extern "C" fn meeterm_attachment_retry_upload(terminal_id: u64, attachment_id: u64) -> i32 {
-    crate::attachment::attachment_retry_upload(terminal_id, attachment_id)
+pub extern "C" fn meeterm_attachment_retry_upload(
+    target_terminal_id: u64,
+    attachment_id: u64,
+) -> i32 {
+    crate::attachment::attachment_retry_upload(target_terminal_id, attachment_id)
         .map(|()| 0)
         .unwrap_or_else(|error| error.code())
 }
 
-/// Explicit insert: one quoted remote-path line into the still-fenced pane
-/// through the epoch-guarded native paste path. Never sends Enter; a stale
-/// or changed destination records a pending reason on the snapshot instead
-/// of retargeting. Zero is accepted, negative is a native error code.
+/// Explicit insert: one quoted remote-path line into the operation's
+/// recorded destination pane through the epoch-guarded native paste path.
+/// `target_terminal_id` must be the pane terminal the intent captured.
+/// Never sends Enter; a stale or changed destination records a pending
+/// reason on the snapshot instead of retargeting to the selected pane.
+/// Zero is accepted, negative is a native error code.
 #[unsafe(no_mangle)]
-pub extern "C" fn meeterm_attachment_insert(terminal_id: u64, attachment_id: u64) -> i32 {
-    crate::attachment::attachment_insert(terminal_id, attachment_id)
+pub extern "C" fn meeterm_attachment_insert(target_terminal_id: u64, attachment_id: u64) -> i32 {
+    crate::attachment::attachment_insert(target_terminal_id, attachment_id)
         .map(|()| 0)
         .unwrap_or_else(|error| error.code())
 }
@@ -501,16 +531,19 @@ pub extern "C" fn meeterm_attachment_dispose(attachment_id: u64) -> i32 {
 
 /// Explicit remote deletion of the meeterm-generated names this operation
 /// owns (published file and `.meeterm-partial-*` remnant; the app-private
-/// attachments directory is removed only when empty). `terminal_id` must
-/// be the connection that owns the operation and the SSH endpoint must
-/// still match. Only names matching the generated grammar are deleted —
-/// never a caller-supplied path. The op keeps its phase — an inserted
-/// reference is not revoked — while the snapshot's `remote_removed` flag
-/// records the verified deletion. Zero is accepted/queued, negative is a
-/// native error code.
+/// attachments directory is removed only when empty).
+/// `target_terminal_id` must be the pane terminal the operation's intent
+/// captured, and the SSH endpoint must still match. Only names matching
+/// the generated grammar are deleted — never a caller-supplied path. The
+/// op keeps its phase — an inserted reference is not revoked — while the
+/// snapshot's `remote_removed` flag records the verified deletion. Zero is
+/// accepted/queued, negative is a native error code.
 #[unsafe(no_mangle)]
-pub extern "C" fn meeterm_attachment_delete_remote(terminal_id: u64, attachment_id: u64) -> i32 {
-    crate::attachment::attachment_delete_remote(terminal_id, attachment_id)
+pub extern "C" fn meeterm_attachment_delete_remote(
+    target_terminal_id: u64,
+    attachment_id: u64,
+) -> i32 {
+    crate::attachment::attachment_delete_remote(target_terminal_id, attachment_id)
         .map(|()| 0)
         .unwrap_or_else(|error| error.code())
 }

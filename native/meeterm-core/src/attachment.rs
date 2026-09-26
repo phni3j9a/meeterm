@@ -108,6 +108,14 @@ pub enum AttachmentError {
     DestinationNotReady,
     Busy,
     Internal,
+    /// The intent id passed to `attachment_begin` was never created by
+    /// `attachment_intent` or was already disposed.
+    UnknownIntent,
+    /// The recorded destination identity no longer matches the current
+    /// connection/runtime/pane — the operation is never retargeted.
+    DestinationChanged,
+    /// The recorded destination pane/terminal no longer exists.
+    DestinationMissing,
 }
 
 impl AttachmentError {
@@ -122,6 +130,9 @@ impl AttachmentError {
             Self::DestinationNotReady => -7,
             Self::Busy => -8,
             Self::Internal => -9,
+            Self::UnknownIntent => -10,
+            Self::DestinationChanged => -11,
+            Self::DestinationMissing => -12,
         }
     }
 
@@ -136,6 +147,9 @@ impl AttachmentError {
             Self::DestinationNotReady => "destination_not_ready",
             Self::Busy => "busy",
             Self::Internal => "internal_error",
+            Self::UnknownIntent => "unknown_intent",
+            Self::DestinationChanged => "destination_changed",
+            Self::DestinationMissing => "destination_missing",
         }
     }
 }
@@ -152,6 +166,9 @@ impl fmt::Display for AttachmentError {
             Self::DestinationNotReady => "the fenced destination is not currently usable",
             Self::Busy => "the connection command queue cannot accept the request",
             Self::Internal => "native attachment state is unavailable",
+            Self::UnknownIntent => "the attachment intent id is not registered",
+            Self::DestinationChanged => "the recorded destination no longer matches",
+            Self::DestinationMissing => "the recorded destination pane no longer exists",
         })
     }
 }
@@ -174,6 +191,10 @@ pub(crate) enum AttachmentBlock {
     InputQueueFull,
     TransportClosed,
     StaleTerminal,
+    /// The uploaded remote file failed its re-verification — it is gone or
+    /// was replaced. The op drops to `Pending` so an explicit retry can
+    /// upload again on the still-matching intent.
+    RemoteMissing,
     Internal,
 }
 
@@ -191,6 +212,7 @@ impl AttachmentBlock {
             Self::InputQueueFull => "input_queue_full",
             Self::TransportClosed => "transport_closed",
             Self::StaleTerminal => "stale_terminal",
+            Self::RemoteMissing => "remote_missing",
             Self::Internal => "internal_error",
         }
     }
@@ -208,8 +230,22 @@ impl AttachmentBlock {
             Self::InputQueueFull => "the native input queue is full",
             Self::TransportClosed => "the terminal input transport is closed",
             Self::StaleTerminal => "the terminal input binding was replaced",
+            Self::RemoteMissing => "the remote file is gone; retry uploads it again",
             Self::Internal => "native attachment state is unavailable",
         }
+    }
+}
+
+/// An `AttachmentBlock` raised while synchronously handling a public call
+/// maps onto the public error enum. `destination_changed` and
+/// `destination_missing` keep their precise codes so the adapter can tell
+/// "reselect the pane" from "the pane is gone".
+fn block_as_error(block: AttachmentBlock) -> AttachmentError {
+    match block {
+        AttachmentBlock::DestinationChanged => AttachmentError::DestinationChanged,
+        AttachmentBlock::DestinationMissing => AttachmentError::DestinationMissing,
+        AttachmentBlock::Busy => AttachmentError::Busy,
+        _ => AttachmentError::DestinationNotReady,
     }
 }
 
@@ -245,6 +281,31 @@ pub(crate) struct DestinationFence {
     pub(crate) endpoint: AttachmentEndpoint,
 }
 
+/// The durable destination intent captured when the attachment sheet was
+/// opened: which pane the user picked, resolved to the SSH connection
+/// owning it. Every operation and later call re-validates this stable
+/// identity against the *current* connection state — connection
+/// generation, operation epoch, and native terminal epoch are never part
+/// of the identity; they are re-bound into a fresh `DestinationFence` per
+/// call. Nothing ever retargets to the currently-selected pane.
+#[derive(Clone)]
+pub(crate) struct AttachmentIntent {
+    /// Adapter-created intent id (registry key; not part of the identity).
+    pub(crate) id: u64,
+    /// Native terminal id the adapter passed for the picked pane.
+    pub(crate) target_terminal: u64,
+    /// Owning SSH connection's terminal id, resolved by core at creation.
+    pub(crate) owner_terminal: u64,
+    /// Credential-free SSH endpoint identity.
+    pub(crate) endpoint: AttachmentEndpoint,
+    /// Remote pane identity at capture (tmux `%N` handle / Herdr alias).
+    pub(crate) pane_id: u64,
+    /// Herdr's stable remote `terminal_id`; `None` for tmux whose pane id
+    /// is already the stable identity. Herdr aliases change on workspace
+    /// moves, so resolution keys on this value when present.
+    pub(crate) herdr_terminal_id: Option<String>,
+}
+
 #[derive(Clone)]
 struct TransferSpec {
     local_path: String,
@@ -261,8 +322,16 @@ struct TransferSpec {
 
 pub(crate) struct AttachmentOperation {
     id: u64,
-    owner: u64,
+    /// The destination intent this op was created for. `owner_terminal`
+    /// identifies the SSH connection; `target_terminal` is the pane
+    /// terminal all caller-side calls must repeat for verification.
+    intent: AttachmentIntent,
     fence: DestinationFence,
+    /// Monotonically increasing per-op attempt identity. Every actor-side
+    /// job (upload/remove/verify) carries the attempt it was launched for;
+    /// outcomes and progress from an earlier attempt are discarded so a
+    /// stale detached task can never mutate a retried operation.
+    attempt: u64,
     spec: TransferSpec,
     display_name: String,
     phase: AttachmentPhase,
@@ -273,14 +342,23 @@ pub(crate) struct AttachmentOperation {
     error_code: Option<&'static str>,
     error_message: Option<String>,
     remote_path: Option<String>,
+    /// Canonical resolved remote directory captured when the upload
+    /// established it. Deletion verifies the *current* resolution equals
+    /// this base — a replaced/redirected parent is never followed.
+    remote_base: Option<String>,
     bytes_uploaded: u64,
     cancel_requested: bool,
     insert_enqueued: bool,
     /// The uploaded remote file was explicitly deleted.
     removed: bool,
-    /// A `SftpRemove` request owns this op right now; guards against
-    /// duplicate remove enqueues.
-    remove_in_flight: bool,
+    /// Attempt id of the `SftpRemove` request owning this op right now;
+    /// `Some` guards against duplicate remove enqueues, and the recorded
+    /// attempt identifies which job's completion may land.
+    remove_in_flight: Option<u64>,
+    /// Attempt id of the `SftpVerify` re-verification request owning this
+    /// op (`Uploaded` retry re-verifies the remote file instead of
+    /// re-uploading). `Some` while the job is queued/running.
+    verify_in_flight: Option<u64>,
 }
 
 impl AttachmentOperation {
@@ -340,10 +418,21 @@ impl AttachmentOperation {
 
 static ATTACHMENTS: OnceLock<Mutex<HashMap<u64, Arc<Mutex<AttachmentOperation>>>>> =
     OnceLock::new();
+static INTENTS: OnceLock<Mutex<HashMap<u64, AttachmentIntent>>> = OnceLock::new();
 static NEXT_ATTACHMENT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_INTENT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Bound on registered-but-never-used intents so a crashed adapter cannot
+/// grow the map without bound. Ops keep their own copy of the intent's
+/// stable identity, so disposing the intent never affects live ops.
+const MAX_LIVE_INTENTS: usize = 32;
 
 fn operations() -> &'static Mutex<HashMap<u64, Arc<Mutex<AttachmentOperation>>>> {
     ATTACHMENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn intents() -> &'static Mutex<HashMap<u64, AttachmentIntent>> {
+    INTENTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub(crate) fn operation(id: u64) -> Option<Arc<Mutex<AttachmentOperation>>> {
@@ -359,12 +448,86 @@ fn lock_operation(
     op.lock().map_err(|_| AttachmentError::Internal)
 }
 
-/// Mark one in-flight op pending after its actor-side request was dropped
-/// (stale epoch, not-ready gate, or a dead command channel). A cancelled op
-/// keeps its cancelled outcome.
-pub(crate) fn mark_pending(id: u64, block: AttachmentBlock) {
+/// Test-only: stand in for the detached transfer's `Uploaded` outcome so
+/// fence/intent tests can exercise the post-upload paths without SFTP.
+#[cfg(test)]
+pub(crate) fn test_mark_uploaded(id: u64, remote_path: &str) {
     if let Some(op) = operation(id)
         && let Ok(mut op) = op.lock()
+    {
+        op.phase = AttachmentPhase::Uploaded;
+        op.remote_path = Some(remote_path.to_owned());
+    }
+}
+
+/// Capture the stable destination intent for the pane terminal the user
+/// picked. Core resolves the owning SSH connection itself — the adapter
+/// never needs the owner id, and non-owner panes (every Herdr pane, tmux
+/// second-and-later panes) resolve to their owning connection the same
+/// way. The recorded identity is the SSH endpoint, backend/runtime, and
+/// the remote pane identity — *not* the current generation/epochs, which
+/// are re-bound into a fresh fence at each later call.
+pub fn attachment_intent(target_terminal_id: u64) -> Result<u64, AttachmentError> {
+    registry::shared_terminal(target_terminal_id).map_err(|_| AttachmentError::UnknownTerminal)?;
+    let (owner, shared) = crate::ssh::connection_for_terminal(target_terminal_id)
+        .ok_or(AttachmentError::DestinationNotReady)?;
+    let mut intent = shared
+        .attachment_intent_identity(owner, target_terminal_id)
+        .map_err(block_as_error)?;
+    let id = NEXT_INTENT_ID.fetch_add(1, Ordering::AcqRel).max(1);
+    intent.id = id;
+    let mut intents = intents().lock().map_err(|_| AttachmentError::Internal)?;
+    if intents.len() >= MAX_LIVE_INTENTS {
+        return Err(AttachmentError::Busy);
+    }
+    intents.insert(id, intent);
+    Ok(id)
+}
+
+/// Drop a recorded intent. Idempotent — the sheet may be closed before or
+/// after operations were created from it; live ops keep their own copy of
+/// the captured identity.
+pub fn attachment_intent_dispose(intent_id: u64) -> Result<(), AttachmentError> {
+    intents()
+        .lock()
+        .map_err(|_| AttachmentError::Internal)?
+        .remove(&intent_id);
+    Ok(())
+}
+
+/// Reject a `target_terminal_id` that is not the pane terminal the
+/// operation's intent recorded. A live-but-different native terminal means
+/// the caller addressed a different destination, so the operation is held
+/// with `destination_changed` — never silently retargeted. An id that is
+/// not a terminal at all is a plain argument error.
+fn reject_foreign_target(op: &mut AttachmentOperation, target_terminal_id: u64) -> AttachmentError {
+    if registry::shared_terminal(target_terminal_id).is_ok() {
+        op.note_block(AttachmentBlock::DestinationChanged);
+        AttachmentError::DestinationChanged
+    } else {
+        AttachmentError::InvalidArgument
+    }
+}
+
+/// Look up an intent id for `attachment_begin`.
+fn intent(intent_id: u64) -> Result<AttachmentIntent, AttachmentError> {
+    intents()
+        .lock()
+        .map_err(|_| AttachmentError::Internal)?
+        .get(&intent_id)
+        .cloned()
+        .ok_or(AttachmentError::UnknownIntent)
+}
+
+/// Mark one in-flight op pending after its actor-side request was dropped
+/// (stale epoch, not-ready gate, a dead command channel, or a queued
+/// launch the actor never reached). The attempt must still be current —
+/// a stale-attempt request that never ran must not disturb the retried op.
+/// A cancelled op keeps its cancelled outcome.
+pub(crate) fn mark_pending(id: u64, attempt: u64, block: AttachmentBlock) {
+    if let Some(op) = operation(id)
+        && let Ok(mut op) = op.lock()
+        && op.attempt == attempt
     {
         op.pend(block);
     }
@@ -372,27 +535,46 @@ pub(crate) fn mark_pending(id: u64, block: AttachmentBlock) {
 
 /// The command loop dropped a `SftpRemove` request before executing it.
 /// The op keeps its phase; the in-flight marker clears so an explicit
-/// remove retry can enqueue again.
-pub(crate) fn mark_remove_expired(id: u64, block: AttachmentBlock) {
+/// remove retry can enqueue again. Only the owning attempt is released.
+pub(crate) fn mark_remove_expired(id: u64, attempt: u64, block: AttachmentBlock) {
     if let Some(op) = operation(id)
         && let Ok(mut op) = op.lock()
+        && op.remove_in_flight == Some(attempt)
     {
-        op.remove_in_flight = false;
+        op.remove_in_flight = None;
         op.note_block(block);
     }
 }
 
-/// Actor gate for `ControlCommand::SftpUpload`: the op must still belong to
-/// this owner and this connection generation and still be awaiting launch.
-/// Returns `true` only when the SFTP channel may be opened for it.
+/// The command loop dropped a `SftpVerify` request before executing it.
+/// The op keeps its `Uploaded` phase; the marker clears so another
+/// explicit re-verification can enqueue.
+pub(crate) fn mark_verify_expired(id: u64, attempt: u64, block: AttachmentBlock) {
+    if let Some(op) = operation(id)
+        && let Ok(mut op) = op.lock()
+        && op.verify_in_flight == Some(attempt)
+    {
+        op.verify_in_flight = None;
+        op.note_block(block);
+    }
+}
+
+/// Actor gate for `ControlCommand::SftpUpload`: the request must be the
+/// current attempt for this owner and this connection generation, and the
+/// op must still be awaiting launch. A request from a superseded attempt
+/// is dropped silently — the newer attempt owns the op's state.
 pub(crate) fn gate_launch(
     op: &Arc<Mutex<AttachmentOperation>>,
     owner: u64,
     generation: u64,
+    attempt: u64,
 ) -> bool {
     let Ok(mut op) = op.lock() else {
         return false;
     };
+    if op.attempt != attempt {
+        return false;
+    }
     if op.cancel_requested {
         op.phase = AttachmentPhase::Cancelled;
         return false;
@@ -400,7 +582,7 @@ pub(crate) fn gate_launch(
     if op.phase != AttachmentPhase::Uploading {
         return false;
     }
-    if op.owner != owner || op.fence.generation != generation {
+    if op.intent.owner_terminal != owner || op.fence.generation != generation {
         op.phase = AttachmentPhase::Pending;
         op.note_block(AttachmentBlock::StaleOperation);
         return false;
@@ -408,32 +590,66 @@ pub(crate) fn gate_launch(
     true
 }
 
-/// Actor gate for `ControlCommand::SftpRemove`: same owner/generation check
-/// as upload, plus the remove request must still be the one in flight.
+/// Actor gate for `ControlCommand::SftpRemove`: the request must still be
+/// the in-flight remove for this attempt on this owner/generation.
 /// A stale request clears its in-flight marker instead of running.
 pub(crate) fn gate_remove(
     op: &Arc<Mutex<AttachmentOperation>>,
     owner: u64,
     generation: u64,
+    attempt: u64,
 ) -> bool {
     let Ok(mut op) = op.lock() else {
         return false;
     };
-    if !op.remove_in_flight {
+    if op.remove_in_flight != Some(attempt) {
         return false;
     }
-    if op.owner != owner || op.fence.generation != generation {
-        op.remove_in_flight = false;
+    if op.intent.owner_terminal != owner || op.fence.generation != generation {
+        op.remove_in_flight = None;
         op.note_block(AttachmentBlock::StaleOperation);
         return false;
     }
     true
 }
 
-/// The actor aborted while preparing this op's SFTP channel. The op may
-/// still be retried on a later connection attempt.
-pub(crate) fn launch_pending(op: &Arc<Mutex<AttachmentOperation>>, block: AttachmentBlock) {
-    if let Ok(mut op) = op.lock() {
+/// Actor gate for `ControlCommand::SftpVerify`: the request must still be
+/// the in-flight re-verification for this attempt on this owner and this
+/// connection generation.
+pub(crate) fn gate_verify(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    owner: u64,
+    generation: u64,
+    attempt: u64,
+) -> bool {
+    let Ok(mut op) = op.lock() else {
+        return false;
+    };
+    if op.verify_in_flight != Some(attempt) {
+        return false;
+    }
+    if op.phase != AttachmentPhase::Uploaded
+        || op.intent.owner_terminal != owner
+        || op.fence.generation != generation
+    {
+        op.verify_in_flight = None;
+        op.note_block(AttachmentBlock::StaleOperation);
+        return false;
+    }
+    true
+}
+
+/// The actor aborted while preparing this op's SFTP channel. Applies only
+/// to the attempt it was launched for; the op may still be retried on a
+/// later connection attempt.
+pub(crate) fn launch_pending(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    attempt: u64,
+    block: AttachmentBlock,
+) {
+    if let Ok(mut op) = op.lock()
+        && op.attempt == attempt
+    {
         op.pend(block);
     }
 }
@@ -441,10 +657,13 @@ pub(crate) fn launch_pending(op: &Arc<Mutex<AttachmentOperation>>, block: Attach
 /// The actor-side channel/subsystem setup failed hard (SFTP unavailable).
 pub(crate) fn launch_failed(
     op: &Arc<Mutex<AttachmentOperation>>,
+    attempt: u64,
     code: &'static str,
     message: impl Into<String>,
 ) {
-    if let Ok(mut op) = op.lock() {
+    if let Ok(mut op) = op.lock()
+        && op.attempt == attempt
+    {
         op.fail(code, message);
     }
 }
@@ -452,9 +671,15 @@ pub(crate) fn launch_failed(
 /// A remote-delete job stalled before its SFTP session existed. The file
 /// state is unchanged; the in-flight marker clears so an explicit retry
 /// can enqueue, and the reason stays visible without touching the phase.
-pub(crate) fn remove_stalled(op: &Arc<Mutex<AttachmentOperation>>, block: AttachmentBlock) {
-    if let Ok(mut op) = op.lock() {
-        op.remove_in_flight = false;
+pub(crate) fn remove_stalled(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    attempt: u64,
+    block: AttachmentBlock,
+) {
+    if let Ok(mut op) = op.lock()
+        && op.remove_in_flight == Some(attempt)
+    {
+        op.remove_in_flight = None;
         op.note_block(block);
     }
 }
@@ -462,11 +687,45 @@ pub(crate) fn remove_stalled(op: &Arc<Mutex<AttachmentOperation>>, block: Attach
 /// The SFTP subsystem was rejected outright for a remote-delete job.
 pub(crate) fn remove_failed(
     op: &Arc<Mutex<AttachmentOperation>>,
+    attempt: u64,
     code: &'static str,
     message: impl Into<String>,
 ) {
-    if let Ok(mut op) = op.lock() {
-        op.remove_in_flight = false;
+    if let Ok(mut op) = op.lock()
+        && op.remove_in_flight == Some(attempt)
+    {
+        op.remove_in_flight = None;
+        op.error_code = Some(code);
+        op.error_message = Some(message.into());
+    }
+}
+
+/// A re-verification job stalled before its SFTP session existed. The op
+/// keeps its uploaded state; the marker clears for a later explicit retry.
+pub(crate) fn verify_stalled(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    attempt: u64,
+    block: AttachmentBlock,
+) {
+    if let Ok(mut op) = op.lock()
+        && op.verify_in_flight == Some(attempt)
+    {
+        op.verify_in_flight = None;
+        op.note_block(block);
+    }
+}
+
+/// The SFTP subsystem was rejected outright for a re-verification job.
+pub(crate) fn verify_failed(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    attempt: u64,
+    code: &'static str,
+    message: impl Into<String>,
+) {
+    if let Ok(mut op) = op.lock()
+        && op.verify_in_flight == Some(attempt)
+    {
+        op.verify_in_flight = None;
         op.error_code = Some(code);
         op.error_message = Some(message.into());
     }
@@ -475,7 +734,9 @@ pub(crate) fn remove_failed(
 /// The connection actor for `generation` ended (flow failure or shutdown)
 /// and silently discarded any queued upload request. Mark surviving
 /// still-`Uploading` ops for that generation pending so they are retryable
-/// on the next actor instead of displaying a dead progress state.
+/// on the next actor instead of displaying a dead progress state. The
+/// attempt counter also bumps so a detached task completing after the
+/// actor died can never mutate the op's visible state.
 pub(crate) fn generation_finished(owner: u64, generation: u64) {
     let Ok(operations) = operations().lock() else {
         return;
@@ -484,9 +745,15 @@ pub(crate) fn generation_finished(owner: u64, generation: u64) {
         let Ok(mut op) = op.lock() else {
             continue;
         };
-        if op.owner == owner && op.fence.generation == generation {
-            if op.remove_in_flight {
-                op.remove_in_flight = false;
+        if op.intent.owner_terminal == owner && op.fence.generation == generation {
+            // A detached task from this attempt is now orphaned; make sure
+            // its eventual outcome is discarded even if the op is retried.
+            op.attempt += 1;
+            if op.remove_in_flight.is_some() {
+                op.remove_in_flight = None;
+                op.note_block(AttachmentBlock::StaleConnection);
+            } else if op.verify_in_flight.is_some() {
+                op.verify_in_flight = None;
                 op.note_block(AttachmentBlock::StaleConnection);
             } else {
                 op.pend(AttachmentBlock::StaleConnection);
@@ -853,7 +1120,7 @@ fn live_op_count(operations: &HashMap<u64, Arc<Mutex<AttachmentOperation>>>, own
         .filter(|op| {
             op.lock().map_or(0, |op| {
                 usize::from(
-                    op.owner == owner
+                    op.intent.owner_terminal == owner
                         && !matches!(
                             op.phase,
                             AttachmentPhase::Failed | AttachmentPhase::Cancelled
@@ -864,29 +1131,36 @@ fn live_op_count(operations: &HashMap<u64, Arc<Mutex<AttachmentOperation>>>, own
         .count()
 }
 
-/// Begin one attachment: validate the picked file, capture the destination
-/// fence, register the operation, and enqueue its SFTP upload on the
-/// current connection actor. The returned id identifies the operation for
-/// polling, insert, retry, cancel, remove, and dispose.
+/// Begin one attachment from a destination intent created by
+/// `attachment_intent`: validate the picked file, re-validate the intent's
+/// stable identity against the *current* connection state, capture a fresh
+/// execution fence, register the operation, and enqueue its SFTP upload on
+/// the owning connection actor. If the recorded destination no longer
+/// matches — a different Server/Session/runtime, a replaced or missing
+/// pane — the call fails with `DestinationChanged`/`DestinationMissing`
+/// and never retargets to whatever pane is currently selected.
 ///
 /// `remote_dir` is the user's explicitly chosen remote directory (clean
-/// absolute path), or `None` for the app-private default
-/// `<sftp-start>/.local/share/meeterm/attachments`.
+/// absolute path, or `~/`-prefixed for the SFTP start dir), or `None` for
+/// the app-private default `<sftp-start>/.local/share/meeterm/attachments`.
+/// The returned id identifies the operation for polling, insert, retry,
+/// cancel, delete, and dispose.
 pub fn attachment_begin(
-    terminal_id: u64,
+    intent_id: u64,
     local_path: &str,
     display_name: &str,
-    size_bytes: u64,
     remote_dir: Option<&str>,
+    size_bytes: u64,
 ) -> Result<u64, AttachmentError> {
     validate_begin_args(local_path, display_name, size_bytes)?;
     let remote_dir = remote_dir.map(validate_remote_dir).transpose()?;
-    registry::shared_terminal(terminal_id).map_err(|_| AttachmentError::UnknownTerminal)?;
-    let shared = crate::ssh::current_connection(terminal_id)
-        .map_err(|_| AttachmentError::DestinationNotReady)?;
+    let intent = intent(intent_id)?;
+    let owner = intent.owner_terminal;
+    let shared =
+        crate::ssh::current_connection(owner).map_err(|_| AttachmentError::DestinationNotReady)?;
     let fence = shared
-        .attachment_capture_fence()
-        .map_err(|_| AttachmentError::DestinationNotReady)?;
+        .attachment_resolve_intent(&intent)
+        .map_err(block_as_error)?;
 
     let id = NEXT_ATTACHMENT_ID.fetch_add(1, Ordering::AcqRel).max(1);
     // The remote extension reflects the file's magic bytes; the picked
@@ -902,8 +1176,9 @@ pub fn attachment_begin(
 
     let op = Arc::new(Mutex::new(AttachmentOperation {
         id,
-        owner: terminal_id,
+        intent,
         fence,
+        attempt: 1,
         spec: TransferSpec {
             local_path: local_path.to_owned(),
             remote_dir,
@@ -918,98 +1193,160 @@ pub fn attachment_begin(
         error_code: None,
         error_message: None,
         remote_path: None,
+        remote_base: None,
         bytes_uploaded: 0,
         cancel_requested: false,
         insert_enqueued: false,
         removed: false,
-        remove_in_flight: false,
+        remove_in_flight: None,
+        verify_in_flight: None,
     }));
     {
         let mut operations = operations().lock().map_err(|_| AttachmentError::Internal)?;
-        if live_op_count(&operations, terminal_id) >= MAX_LIVE_OPS_PER_OWNER {
+        if live_op_count(&operations, owner) >= MAX_LIVE_OPS_PER_OWNER {
             return Err(AttachmentError::Busy);
         }
         operations.insert(id, Arc::clone(&op));
     }
-    if let Err(block) = shared
-        .attachment_enqueue_command(crate::ssh::ControlCommand::SftpUpload { attachment_id: id })
-    {
-        mark_pending(id, block);
+    if let Err(block) = shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpUpload {
+        attachment_id: id,
+        attempt: 1,
+    }) {
+        mark_pending(id, 1, block);
     }
     Ok(id)
 }
 
-/// Explicit transfer retry. The same destination pane identity is
-/// re-fenced against the *current* connection state: the pane must still
-/// exist, the Herdr stable terminal identity must still match, and the
-/// endpoint must still be the one the operation captured. A still-valid
-/// uploaded file on the same endpoint short-circuits through the transfer
-/// task's reuse check instead of re-sending bytes.
+/// Explicit transfer retry / re-validation against the recorded intent.
+/// `target_terminal_id` must be the pane terminal the intent captured —
+/// the call never retargets. The intent's stable identity is resolved
+/// against the *current* connection state and a fresh execution fence is
+/// captured, so a connection recovery (new generation/epoch, same stable
+/// destination) becomes usable again without a new intent.
+///
+/// An `Uploaded` op whose remote file exists is *not* silently accepted:
+/// it is re-verified by a `SftpVerify` job (`lstat` + size + mode) before
+/// it can be trusted again, while keeping `Uploaded` so the user can
+/// insert. If the file is gone or replaced the op drops to `Pending` with
+/// `remote_missing` and a later retry uploads it again. A `Pending`,
+/// `Failed`, or explicitly-removed `Uploaded` op re-runs the full upload
+/// path; the transfer task's same-endpoint reuse check still skips
+/// re-sending a verified remote file.
 pub fn attachment_retry_upload(
-    terminal_id: u64,
+    target_terminal_id: u64,
     attachment_id: u64,
 ) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
-    let (owner, fence) = {
-        let op = lock_operation(&op)?;
-        if op.owner != terminal_id {
-            return Err(AttachmentError::InvalidArgument);
+    enum Next {
+        Upload,
+        Verify,
+    }
+    let (owner, intent) = {
+        let mut op = lock_operation(&op)?;
+        if op.intent.target_terminal != target_terminal_id {
+            return Err(reject_foreign_target(&mut op, target_terminal_id));
+        }
+        if op.cancel_requested {
+            return Err(AttachmentError::InvalidState);
+        }
+        if op.remove_in_flight.is_some() {
+            return Err(AttachmentError::Busy);
         }
         match op.phase {
-            // Still verified remotely: nothing to do. An explicitly removed
-            // file falls through and re-uploads instead.
+            AttachmentPhase::Uploaded
+                if op.remote_path.is_some() && !op.removed && op.verify_in_flight.is_none() =>
+            {
+                Next::Verify
+            }
             AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => {
+                // A verify for this attempt is already queued/running;
+                // treat the repeat call as accepted work already done.
                 return Ok(());
             }
-            AttachmentPhase::Uploaded | AttachmentPhase::Pending | AttachmentPhase::Failed => {}
+            AttachmentPhase::Uploaded | AttachmentPhase::Pending | AttachmentPhase::Failed => {
+                Next::Upload
+            }
             AttachmentPhase::Uploading | AttachmentPhase::Inserted | AttachmentPhase::Cancelled => {
                 return Err(AttachmentError::InvalidState);
             }
-        }
-        (op.owner, op.fence.clone())
+        };
+        (op.intent.owner_terminal, op.intent.clone())
     };
-    let shared = crate::ssh::current_connection(owner).map_err(|error| {
+    let shared = crate::ssh::current_connection(owner).map_err(|_| {
         if let Ok(mut op) = op.lock() {
             op.note_block(AttachmentBlock::StaleConnection);
         }
-        let _ = error;
         AttachmentError::DestinationNotReady
     })?;
-    let fence = match shared.attachment_recheck_fence(&fence) {
+    let fence = match shared.attachment_resolve_intent(&intent) {
         Ok(fence) => fence,
         Err(block) => {
             if let Ok(mut op) = op.lock() {
-                // A Failed op that cannot re-fence stays Failed but shows the
-                // current reason; a Pending op keeps its phase either way.
+                // A Failed op that cannot re-resolve keeps Failed but shows
+                // the current reason; a Pending/Uploaded op keeps its phase.
                 op.note_block(block);
             }
-            return Err(AttachmentError::DestinationNotReady);
+            return Err(block_as_error(block));
         }
     };
-    {
+    let (attachment_attempt, command) = {
         let mut op = lock_operation(&op)?;
         if op.cancel_requested {
             return Err(AttachmentError::InvalidState);
         }
-        match op.phase {
-            AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => {
-                return Ok(());
-            }
-            AttachmentPhase::Uploaded | AttachmentPhase::Pending | AttachmentPhase::Failed => {}
-            _ => return Err(AttachmentError::InvalidState),
+        if op.remove_in_flight.is_some() {
+            return Err(AttachmentError::Busy);
         }
+        let next = match op.phase {
+            AttachmentPhase::Uploaded
+                if op.remote_path.is_some() && !op.removed && op.verify_in_flight.is_none() =>
+            {
+                Next::Verify
+            }
+            AttachmentPhase::Uploaded if op.remote_path.is_some() && !op.removed => return Ok(()),
+            AttachmentPhase::Uploaded | AttachmentPhase::Pending | AttachmentPhase::Failed => {
+                Next::Upload
+            }
+            _ => return Err(AttachmentError::InvalidState),
+        };
+        op.attempt += 1;
+        let attempt = op.attempt;
         op.fence = fence;
-        op.phase = AttachmentPhase::Uploading;
-        op.bytes_uploaded = 0;
-        op.remote_path = None;
-        op.removed = false;
         op.clear_status();
-        op.cancel_requested = false;
-    }
-    if let Err(block) =
-        shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpUpload { attachment_id })
-    {
-        mark_pending(attachment_id, block);
+        match next {
+            Next::Verify => {
+                op.verify_in_flight = Some(attempt);
+                (
+                    attempt,
+                    crate::ssh::ControlCommand::SftpVerify {
+                        attachment_id,
+                        attempt,
+                    },
+                )
+            }
+            Next::Upload => {
+                op.phase = AttachmentPhase::Uploading;
+                op.bytes_uploaded = 0;
+                op.remote_path = None;
+                op.removed = false;
+                op.cancel_requested = false;
+                (
+                    attempt,
+                    crate::ssh::ControlCommand::SftpUpload {
+                        attachment_id,
+                        attempt,
+                    },
+                )
+            }
+        }
+    };
+    if let Err(block) = shared.attachment_enqueue_command(command) {
+        mark_pending(attachment_id, attachment_attempt, block);
+        if let Ok(mut op) = op.lock()
+            && op.attempt == attachment_attempt
+        {
+            op.verify_in_flight = None;
+        }
     }
     Ok(())
 }
@@ -1019,12 +1356,15 @@ pub fn attachment_retry_upload(
 /// Enter is never sent. A destination switch/replacement/disappearance,
 /// transport/controller generation mismatch, or Herdr read-only state
 /// records a pending reason and leaves the operation `Uploaded`.
-pub fn attachment_insert(terminal_id: u64, attachment_id: u64) -> Result<(), AttachmentError> {
+pub fn attachment_insert(
+    target_terminal_id: u64,
+    attachment_id: u64,
+) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
     let (owner, fence, remote_path) = {
-        let op = lock_operation(&op)?;
-        if op.owner != terminal_id {
-            return Err(AttachmentError::InvalidArgument);
+        let mut op = lock_operation(&op)?;
+        if op.intent.target_terminal != target_terminal_id {
+            return Err(reject_foreign_target(&mut op, target_terminal_id));
         }
         match op.phase {
             // A duplicate tap after a successful insert is a no-op.
@@ -1035,7 +1375,7 @@ pub fn attachment_insert(terminal_id: u64, attachment_id: u64) -> Result<(), Att
         let Some(remote_path) = op.remote_path.clone() else {
             return Err(AttachmentError::InvalidState);
         };
-        (op.owner, op.fence.clone(), remote_path)
+        (op.intent.owner_terminal, op.fence.clone(), remote_path)
     };
     let shared = crate::ssh::current_connection(owner).map_err(|_| {
         if let Ok(mut op) = op.lock()
@@ -1117,19 +1457,19 @@ pub fn attachment_dispose(attachment_id: u64) -> Result<(), AttachmentError> {
 /// kept (`inserted` cannot be revoked). There is no automatic deletion:
 /// nothing is removed on insert, cancel, dispose, or app exit.
 pub fn attachment_delete_remote(
-    terminal_id: u64,
+    target_terminal_id: u64,
     attachment_id: u64,
 ) -> Result<(), AttachmentError> {
     let op = operation(attachment_id).ok_or(AttachmentError::UnknownAttachment)?;
-    let (owner, fence) = {
-        let op = lock_operation(&op)?;
-        if op.owner != terminal_id {
-            return Err(AttachmentError::InvalidArgument);
+    let (owner, endpoint) = {
+        let mut op = lock_operation(&op)?;
+        if op.intent.target_terminal != target_terminal_id {
+            return Err(reject_foreign_target(&mut op, target_terminal_id));
         }
         if op.removed {
             return Ok(());
         }
-        if op.remove_in_flight {
+        if op.remove_in_flight.is_some() {
             return Err(AttachmentError::Busy);
         }
         match op.phase {
@@ -1141,7 +1481,7 @@ pub fn attachment_delete_remote(
             | AttachmentPhase::Failed
             | AttachmentPhase::Cancelled => {}
         }
-        (op.owner, op.fence.clone())
+        (op.intent.owner_terminal, op.fence.endpoint.clone())
     };
     let shared = crate::ssh::current_connection(owner).map_err(|_| {
         if let Ok(mut op) = op.lock() {
@@ -1149,24 +1489,36 @@ pub fn attachment_delete_remote(
         }
         AttachmentError::DestinationNotReady
     })?;
-    if let Err(block) = shared.attachment_recheck_endpoint(&fence.endpoint) {
+    // Deletion verifies the endpoint half of the intent only: the pane may
+    // legitimately be gone while the remote file still exists and must be
+    // cleanable. An endpoint/generation switch still refuses — the delete
+    // must run on the same authenticated host that received the upload.
+    if let Err(block) = shared.attachment_recheck_endpoint(&endpoint) {
         if let Ok(mut op) = op.lock() {
             op.note_block(block);
         }
-        return Err(AttachmentError::DestinationNotReady);
+        return Err(block_as_error(block));
     }
-    {
+    let attempt = {
         let mut op = lock_operation(&op)?;
         if op.removed {
             return Ok(());
         }
-        op.remove_in_flight = true;
-    }
-    if let Err(block) =
-        shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpRemove { attachment_id })
-    {
-        if let Ok(mut op) = op.lock() {
-            op.remove_in_flight = false;
+        if op.remove_in_flight.is_some() {
+            return Err(AttachmentError::Busy);
+        }
+        op.attempt += 1;
+        op.remove_in_flight = Some(op.attempt);
+        op.attempt
+    };
+    if let Err(block) = shared.attachment_enqueue_command(crate::ssh::ControlCommand::SftpRemove {
+        attachment_id,
+        attempt,
+    }) {
+        if let Ok(mut op) = op.lock()
+            && op.remove_in_flight == Some(attempt)
+        {
+            op.remove_in_flight = None;
             op.note_block(block);
         }
         return Err(match block {
@@ -1232,6 +1584,12 @@ enum TransferOutcome {
     Uploaded(String),
     /// The generated remote names were deleted (or verified absent).
     Removed,
+    /// The re-verification found the recorded remote file intact —
+    /// same type, size, and private mode at the recorded path.
+    Verified,
+    /// The recorded remote file is gone or no longer matches its
+    /// generated identity — insert must not use the stale path.
+    RemoteMissing,
     /// Transient/structural blockage; the op stays retryable.
     Pending(AttachmentBlock),
     /// Terminal failure.
@@ -1240,10 +1598,20 @@ enum TransferOutcome {
     Cancelled,
 }
 
+/// Which detached job produced an outcome — decided at spawn so a late
+/// result can never be mistaken for a different job's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JobKind {
+    Upload,
+    Remove,
+    Verify,
+}
+
 /// Spawn the detached transfer over an already-initialized SFTP stream.
 /// Called by the connection actor after the subsystem handshake; this task
-/// never blocks the interactive command loop.
-pub(crate) fn start_transfer<S>(op: Arc<Mutex<AttachmentOperation>>, stream: S)
+/// never blocks the interactive command loop. `attempt` identifies which
+/// op attempt owns the result — a stale attempt's outcome is discarded.
+pub(crate) fn start_transfer<S>(op: Arc<Mutex<AttachmentOperation>>, stream: S, attempt: u64)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -1254,7 +1622,7 @@ where
             match session.init().await {
                 Ok(version) => {
                     let statvfs = version.extensions.contains_key("statvfs@openssh.com");
-                    run_transfer(&op, &session, statvfs).await
+                    run_transfer(&op, &session, statvfs, attempt).await
                 }
                 Err(error) => map_transfer_error(error, "sftp_unavailable"),
             }
@@ -1264,14 +1632,14 @@ where
                 Ok(outcome) => outcome,
                 Err(_) => TransferOutcome::Pending(AttachmentBlock::Timeout),
             };
-        apply_outcome(&op, outcome);
+        apply_outcome(&op, outcome, attempt, JobKind::Upload);
         let _ = session.close_session();
     });
 }
 
 /// Spawn the detached remote-delete over an already-initialized SFTP
 /// stream. Removes only the generated names this operation owns.
-pub(crate) fn start_remove<S>(op: Arc<Mutex<AttachmentOperation>>, stream: S)
+pub(crate) fn start_remove<S>(op: Arc<Mutex<AttachmentOperation>>, stream: S, attempt: u64)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -1289,69 +1657,154 @@ where
                 Ok(outcome) => outcome,
                 Err(_) => TransferOutcome::Pending(AttachmentBlock::Timeout),
             };
-        apply_outcome(&op, outcome);
+        apply_outcome(&op, outcome, attempt, JobKind::Remove);
         let _ = session.close_session();
     });
 }
 
-fn apply_outcome(op: &Arc<Mutex<AttachmentOperation>>, outcome: TransferOutcome) {
+/// Spawn the detached remote re-verification for an `Uploaded` op being
+/// re-armed after a destination/connection change — `lstat` + size + mode
+/// on the recorded path, no re-upload.
+pub(crate) fn start_verify<S>(op: Arc<Mutex<AttachmentOperation>>, stream: S, attempt: u64)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let session = RawSftpSession::new(stream);
+        session.set_timeout(REQUEST_TIMEOUT_SECS);
+        let outcome = async {
+            match session.init().await {
+                Ok(_) => run_verify(&op, &session).await,
+                Err(error) => map_transfer_error(error, "sftp_unavailable"),
+            }
+        };
+        let outcome =
+            match tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), outcome).await {
+                Ok(outcome) => outcome,
+                Err(_) => TransferOutcome::Pending(AttachmentBlock::Timeout),
+            };
+        apply_outcome(&op, outcome, attempt, JobKind::Verify);
+        let _ = session.close_session();
+    });
+}
+
+fn apply_outcome(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    outcome: TransferOutcome,
+    attempt: u64,
+    job: JobKind,
+) {
     let Ok(mut op) = op.lock() else {
         return;
     };
-    let was_remove = op.remove_in_flight;
-    op.remove_in_flight = false;
-    if was_remove {
-        // Remote-delete outcome: verified deletion is recorded even when
-        // the user cancelled mid-flight, but the phase itself is untouched
-        // — `inserted` is not revoked and failure keeps the uploaded state.
-        if matches!(outcome, TransferOutcome::Removed) {
-            op.removed = true;
-            op.remote_path = None;
-        }
-        if op.cancel_requested {
-            op.phase = AttachmentPhase::Cancelled;
-            return;
-        }
-        match outcome {
-            TransferOutcome::Removed => op.clear_status(),
-            TransferOutcome::Pending(block) => op.note_block(block),
-            TransferOutcome::Failed(code, message) => {
-                op.error_code = Some(code);
-                op.error_message = Some(message);
+    match job {
+        JobKind::Remove => {
+            // Only the recorded remove attempt may land; a superseded or
+            // expired request's late result is dropped entirely.
+            if op.remove_in_flight != Some(attempt) {
+                return;
             }
-            TransferOutcome::Uploaded(_) | TransferOutcome::Cancelled => {
-                op.note_block(AttachmentBlock::Internal);
+            op.remove_in_flight = None;
+            // Verified deletion is recorded even when the user cancelled
+            // mid-flight, but the phase itself is untouched — `inserted`
+            // is not revoked and failure keeps the uploaded state.
+            if matches!(outcome, TransferOutcome::Removed) {
+                op.removed = true;
+                op.remote_path = None;
             }
-        }
-        return;
-    }
-    if matches!(outcome, TransferOutcome::Removed) {
-        // A remove can never land on an upload op — ignore a stray report.
-        return;
-    }
-    if op.cancel_requested {
-        // A delayed completion must not resurrect a cancelled operation or
-        // change its visible state.
-        op.phase = AttachmentPhase::Cancelled;
-        return;
-    }
-    match outcome {
-        TransferOutcome::Uploaded(path) => {
-            if op.phase == AttachmentPhase::Uploading {
-                op.phase = AttachmentPhase::Uploaded;
-                op.remote_path = Some(path);
-                op.clear_status();
-            }
-        }
-        TransferOutcome::Removed => {}
-        TransferOutcome::Pending(block) => op.pend(block),
-        TransferOutcome::Failed(code, message) => op.fail(code, message),
-        TransferOutcome::Cancelled => {
-            if matches!(
-                op.phase,
-                AttachmentPhase::Uploading | AttachmentPhase::Pending
-            ) {
+            if op.cancel_requested {
                 op.phase = AttachmentPhase::Cancelled;
+                return;
+            }
+            match outcome {
+                TransferOutcome::Removed => op.clear_status(),
+                TransferOutcome::Pending(block) => op.note_block(block),
+                TransferOutcome::Failed(code, message) => {
+                    op.error_code = Some(code);
+                    op.error_message = Some(message);
+                }
+                TransferOutcome::Uploaded(_)
+                | TransferOutcome::Verified
+                | TransferOutcome::RemoteMissing
+                | TransferOutcome::Cancelled => {
+                    op.note_block(AttachmentBlock::Internal);
+                }
+            }
+        }
+        JobKind::Verify => {
+            if op.verify_in_flight != Some(attempt) {
+                return;
+            }
+            op.verify_in_flight = None;
+            if op.cancel_requested {
+                return;
+            }
+            match outcome {
+                // The recorded remote file is still intact: keep the op
+                // `Uploaded` with the re-fenced destination so insert can
+                // proceed — no bytes were re-sent.
+                TransferOutcome::Verified => op.clear_status(),
+                TransferOutcome::RemoteMissing => {
+                    // Gone or replaced — do not let a stale remote path be
+                    // inserted; an explicit retry uploads again.
+                    op.remote_path = None;
+                    op.removed = false;
+                    if op.phase == AttachmentPhase::Uploaded {
+                        op.phase = AttachmentPhase::Pending;
+                    }
+                    op.note_block(AttachmentBlock::RemoteMissing);
+                }
+                TransferOutcome::Pending(block) => op.note_block(block),
+                TransferOutcome::Failed(code, message) => {
+                    op.error_code = Some(code);
+                    op.error_message = Some(message);
+                }
+                TransferOutcome::Uploaded(_)
+                | TransferOutcome::Removed
+                | TransferOutcome::Cancelled => op.note_block(AttachmentBlock::Internal),
+            }
+        }
+        JobKind::Upload => {
+            // A completion/progress from a superseded attempt belongs to a
+            // dead detached task — the retried operation must not move.
+            if op.attempt != attempt {
+                return;
+            }
+            if matches!(
+                outcome,
+                TransferOutcome::Removed
+                    | TransferOutcome::Verified
+                    | TransferOutcome::RemoteMissing
+            ) {
+                return;
+            }
+            if op.cancel_requested {
+                // A delayed completion must not resurrect a cancelled
+                // operation or change its visible state.
+                op.phase = AttachmentPhase::Cancelled;
+                return;
+            }
+            match outcome {
+                TransferOutcome::Uploaded(path) => {
+                    if op.phase == AttachmentPhase::Uploading {
+                        op.phase = AttachmentPhase::Uploaded;
+                        op.remote_path = Some(path);
+                        op.clear_status();
+                    }
+                }
+                TransferOutcome::Pending(block) => op.pend(block),
+                TransferOutcome::Failed(code, message) => op.fail(code, message),
+                TransferOutcome::Cancelled => {
+                    if matches!(
+                        op.phase,
+                        AttachmentPhase::Uploading | AttachmentPhase::Pending
+                    ) {
+                        op.phase = AttachmentPhase::Cancelled;
+                    }
+                }
+                TransferOutcome::Removed
+                | TransferOutcome::Verified
+                | TransferOutcome::RemoteMissing => {}
             }
         }
     }
@@ -1361,8 +1814,13 @@ fn op_cancelled(op: &Arc<Mutex<AttachmentOperation>>) -> bool {
     op.lock().map(|op| op.cancel_requested).unwrap_or(true)
 }
 
-fn op_progress(op: &Arc<Mutex<AttachmentOperation>>, bytes: u64) {
-    if let Ok(mut op) = op.lock() {
+/// Transfer progress reporter — like the outcome itself, progress from a
+/// superseded attempt is discarded so the retried op keeps clean state.
+fn op_progress(op: &Arc<Mutex<AttachmentOperation>>, bytes: u64, attempt: u64) {
+    if let Ok(mut op) = op.lock()
+        && op.attempt == attempt
+        && op.phase == AttachmentPhase::Uploading
+    {
         op.bytes_uploaded = bytes;
     }
 }
@@ -1447,9 +1905,12 @@ fn remote_file_complete(attrs: &FileAttributes, size_bytes: u64) -> bool {
 /// silently. Missing components are created with `0700` only when
 /// `create_missing` is set (the app-private default chain); an explicit
 /// user directory must already exist. The last `restrict_last`
-/// components are app-owned and get forced to `0700` when they deviate;
-/// an explicit directory's modes are never changed. The leaf is
-/// uid-checked against the home owner.
+/// components are app-owned (`meeterm/` and `attachments/`): **each** of
+/// them is uid-checked against the home owner and forced to `0700` when
+/// its mode deviates — a pre-existing `0755` `meeterm/` would otherwise
+/// let a group/other writer replace `attachments/` underneath us.
+/// Modes of non-app-owned components (`.local`, `.local/share`) and of an
+/// explicit user directory are never changed.
 async fn ensure_remote_dir(
     session: &RawSftpSession,
     components: &[String],
@@ -1471,7 +1932,7 @@ async fn ensure_remote_dir(
         }
         let last = index + 1 == components.len();
         let app_owned = index + 1 > components.len().saturating_sub(restrict_last);
-        let attrs = match session.lstat(&path).await {
+        let mut attrs = match session.lstat(&path).await {
             Ok(attrs) => attrs.attrs,
             Err(error) if is_no_such_file(&error) => {
                 if !create_missing {
@@ -1503,21 +1964,22 @@ async fn ensure_remote_dir(
                 "a path component is not a real directory".to_owned(),
             ));
         }
-        if !last {
-            continue;
-        }
-        if expected_uid.is_some() && attrs.uid.is_some() && attrs.uid != expected_uid {
-            return Err(TransferOutcome::Failed(
-                "remote_unsafe_path",
-                "attachment directory is owned by another user".to_owned(),
-            ));
+        if app_owned || last {
+            // App-owned components are restricted wherever they sit; an
+            // explicit leaf still gets the uid check (it is never chmod'd).
+            if expected_uid.is_some() && attrs.uid.is_some() && attrs.uid != expected_uid {
+                return Err(TransferOutcome::Failed(
+                    "remote_unsafe_path",
+                    "attachment directory is owned by another user".to_owned(),
+                ));
+            }
         }
         if app_owned && attrs.permissions.is_none_or(|mode| mode & 0o077 != 0) {
             session
                 .setstat(&path, mode_only(REMOTE_DIR_MODE))
                 .await
                 .map_err(|error| map_transfer_error(error, "sftp_error"))?;
-            let attrs = session
+            attrs = session
                 .lstat(&path)
                 .await
                 .map_err(|error| map_transfer_error(error, "sftp_error"))?
@@ -1543,6 +2005,7 @@ async fn run_transfer(
     op: &Arc<Mutex<AttachmentOperation>>,
     session: &RawSftpSession,
     statvfs_ext: bool,
+    attempt: u64,
 ) -> TransferOutcome {
     let spec = {
         let Ok(op) = op.lock() else {
@@ -1619,6 +2082,14 @@ async fn run_transfer(
     }
     if probe && let Err(outcome) = probe_dir_writable(session, &base).await {
         return outcome;
+    }
+    // Record the canonical base this upload established — the delete path
+    // re-resolves and requires byte equality instead of trusting whatever
+    // the directory resolves to later.
+    if let Ok(mut op) = op.lock()
+        && op.attempt == attempt
+    {
+        op.remote_base = Some(base.clone());
     }
     cancel_check!();
 
@@ -1722,7 +2193,7 @@ async fn run_transfer(
                 return map_transfer_error(error, "sftp_error");
             }
             offset += read as u64;
-            op_progress(op, offset);
+            op_progress(op, offset, attempt);
         }
         if offset != spec.size_bytes {
             return TransferOutcome::Failed(
@@ -1730,7 +2201,15 @@ async fn run_transfer(
                 "the selected image shrank during upload".to_owned(),
             );
         }
-        let _ = session.close(handle.clone()).await;
+        // The CLOSE reply is the only signal the remote flushed/committed
+        // the staged bytes — publish is forbidden until it succeeds.
+        let close = sftp!(session.close(handle.clone()));
+        if close.status_code != StatusCode::Ok {
+            return TransferOutcome::Failed(
+                "sftp_error",
+                "remote did not confirm the file close".to_owned(),
+            );
+        }
         // Confirm the staged bytes before publishing the final name.
         match session.lstat(&partial_path).await {
             Ok(attrs)
@@ -1777,9 +2256,10 @@ async fn run_transfer(
     outcome
 }
 
-/// Resolve the base directory exactly as the upload did — including `~/`
-/// expansion against `realpath(".")` — without failing when it is already
-/// gone: deletion must be idempotent.
+/// Re-resolve the base directory the same way the upload did — including
+/// `~/` expansion against `realpath(".")` — without failing when it is
+/// already gone: deletion must be idempotent. The caller still validates
+/// every resolved component before touching anything inside.
 async fn remove_base(session: &RawSftpSession, spec: &TransferSpec) -> Option<String> {
     let resolve_home = || async {
         let name = session.realpath(".").await.ok()?;
@@ -1807,6 +2287,46 @@ async fn remove_base(session: &RawSftpSession, spec: &TransferSpec) -> Option<St
             Some(components.join("/"))
         }
     }
+}
+
+/// Walk every component of `base` with `lstat` and require a real
+/// directory at each level — the same guarantee `ensure_remote_dir`
+/// established at upload time. A symlink, a non-directory, or a missing
+/// component in the middle means the parent was replaced: deletion must
+/// refuse rather than follow a redirect into foreign files. A base that
+/// vanished entirely is reported as `Ok(false)` — nothing left to delete.
+/// Any other `Ok(true)` means the full chain is verified real.
+async fn remote_base_verified(
+    session: &RawSftpSession,
+    base: &str,
+) -> Result<bool, TransferOutcome> {
+    let components = path_components(base);
+    let mut path = String::new();
+    for (index, component) in components.iter().enumerate() {
+        if index == 0 {
+            path.push_str(component);
+        } else {
+            path.push('/');
+            path.push_str(component);
+        }
+        if path.is_empty() {
+            continue;
+        }
+        match session.lstat(&path).await {
+            Ok(attrs) if attrs.attrs.file_type() == FileType::Dir => {}
+            // A symlink or a non-directory component is a parent swap —
+            // refuse, never follow.
+            Ok(_) => {
+                return Err(TransferOutcome::Failed(
+                    "remote_unsafe_path",
+                    "a remote directory component is not a real directory".to_owned(),
+                ));
+            }
+            Err(error) if is_no_such_file(&error) => return Ok(false),
+            Err(error) => return Err(map_transfer_error(error, "sftp_error")),
+        }
+    }
+    Ok(true)
 }
 
 /// One remote-delete step: the path must be absent, or a regular file
@@ -1844,18 +2364,22 @@ async fn remove_checked(
 /// Explicit remote deletion restricted to the names this operation
 /// generated: the published file and its `.meeterm-partial-*` remnant —
 /// only for names matching the generated grammar — and, only for the
-/// app-private default, the (empty) attachments directory itself. Every
-/// step is idempotent so a repeated remove or a partially cleaned state
-/// still converges to `Removed`.
+/// app-private default, the (empty) attachments directory itself. Before
+/// anything is removed the whole base path is re-validated: the resolved
+/// base must equal the canonical directory the upload recorded, and every
+/// component must still be a real directory — a symlinked or replaced
+/// parent is refused with `remote_unsafe_path` instead of being followed
+/// into a foreign directory. Every step is idempotent so a repeated
+/// remove or a partially cleaned state still converges to `Removed`.
 async fn run_remove(
     op: &Arc<Mutex<AttachmentOperation>>,
     session: &RawSftpSession,
 ) -> TransferOutcome {
-    let spec = {
+    let (spec, recorded_base) = {
         let Ok(op) = op.lock() else {
             return TransferOutcome::Cancelled;
         };
-        op.spec.clone()
+        (op.spec.clone(), op.remote_base.clone())
     };
     // The name grammar is validated before any delete touches the remote;
     // a name we did not generate is never removed by this client.
@@ -1868,6 +2392,23 @@ async fn run_remove(
     let Some(base) = remove_base(session, &spec).await else {
         return TransferOutcome::Pending(AttachmentBlock::StaleConnection);
     };
+    // The upload recorded the canonical directory it wrote into; a base
+    // that resolves differently now (realpath moved, dir replaced) is
+    // never followed.
+    if let Some(recorded) = recorded_base
+        && recorded != base
+    {
+        return TransferOutcome::Failed(
+            "remote_unsafe_path",
+            "remote directory no longer resolves to the recorded base".to_owned(),
+        );
+    }
+    match remote_base_verified(session, &base).await {
+        Ok(true) => {}
+        // The base is gone entirely — nothing of ours can remain.
+        Ok(false) => return TransferOutcome::Removed,
+        Err(outcome) => return outcome,
+    }
     let final_path = format!("{base}/{}", spec.remote_name);
     let partial_path = format!("{base}/{}", spec.partial_name);
 
@@ -1889,6 +2430,38 @@ async fn run_remove(
             "sftp_error",
             "remote file is still present after deletion".to_owned(),
         ),
+        Err(error) => map_transfer_error(error, "sftp_error"),
+    }
+}
+
+/// Remote re-verification for an `Uploaded` op whose destination fence was
+/// refreshed after recovery — the file must still be a regular file with
+/// the recorded size and the private `0600` mode at the recorded path.
+/// Anything else means the file is gone or was replaced: the op drops to
+/// `Pending(remote_missing)` so no stale path is ever inserted, and an
+/// explicit retry uploads it again. No bytes are transferred here.
+async fn run_verify(
+    op: &Arc<Mutex<AttachmentOperation>>,
+    session: &RawSftpSession,
+) -> TransferOutcome {
+    let (remote_path, size_bytes) = {
+        let Ok(op) = op.lock() else {
+            return TransferOutcome::Cancelled;
+        };
+        match (op.remote_path.clone(), op.phase) {
+            (Some(path), AttachmentPhase::Uploaded) => (path, op.spec.size_bytes),
+            // Nothing to verify (removed/never uploaded) — still a clean
+            // verify outcome; apply_outcome leaves the phase untouched.
+            _ => return TransferOutcome::Verified,
+        }
+    };
+    match session.lstat(&remote_path).await {
+        Ok(attrs) if remote_file_complete(&attrs.attrs, size_bytes) => TransferOutcome::Verified,
+        // Exists but wrong type/size/mode — it is not the file we wrote.
+        Ok(_) => TransferOutcome::RemoteMissing,
+        Err(error) if is_no_such_file(&error) => TransferOutcome::RemoteMissing,
+        // Timeouts and channel failures are transient — keep Uploaded and
+        // let a later explicit retry re-verify.
         Err(error) => map_transfer_error(error, "sftp_error"),
     }
 }
@@ -1917,8 +2490,16 @@ mod tests {
     fn test_op(phase: AttachmentPhase) -> Arc<Mutex<AttachmentOperation>> {
         Arc::new(Mutex::new(AttachmentOperation {
             id: 41,
-            owner: 9,
+            intent: AttachmentIntent {
+                id: 1,
+                target_terminal: 90,
+                owner_terminal: 9,
+                endpoint: fence(12, 90).endpoint,
+                pane_id: 12,
+                herdr_terminal_id: None,
+            },
             fence: fence(12, 90),
+            attempt: 1,
             spec: TransferSpec {
                 local_path: "/tmp/picked.jpg".to_owned(),
                 remote_dir: None,
@@ -1934,11 +2515,13 @@ mod tests {
             error_code: None,
             error_message: None,
             remote_path: None,
+            remote_base: None,
             bytes_uploaded: 0,
             cancel_requested: false,
             insert_enqueued: false,
             removed: false,
-            remove_in_flight: false,
+            remove_in_flight: None,
+            verify_in_flight: None,
         }))
     }
 
@@ -2190,7 +2773,12 @@ mod tests {
             let mut op = op.lock().unwrap();
             op.cancel_requested = true;
         }
-        apply_outcome(&op, TransferOutcome::Uploaded("/remote/x".to_owned()));
+        apply_outcome(
+            &op,
+            TransferOutcome::Uploaded("/remote/x".to_owned()),
+            1,
+            JobKind::Upload,
+        );
         let op = op.lock().unwrap();
         assert_eq!(op.phase, AttachmentPhase::Cancelled);
         assert!(op.remote_path.is_none());
@@ -2203,20 +2791,58 @@ mod tests {
             let mut op = op.lock().unwrap();
             op.note_block(AttachmentBlock::Timeout);
         }
-        apply_outcome(&op, TransferOutcome::Uploaded("/remote/final".to_owned()));
+        apply_outcome(
+            &op,
+            TransferOutcome::Uploaded("/remote/final".to_owned()),
+            1,
+            JobKind::Upload,
+        );
         let op = op.lock().unwrap();
         assert_eq!(op.phase, AttachmentPhase::Uploaded);
         assert_eq!(op.remote_path.as_deref(), Some("/remote/final"));
         assert!(op.reason_code.is_none());
     }
 
+    /// FP-008 regression (reviewer repro, attempt-aware): a detached
+    /// transfer task from the superseded attempt must never move the
+    /// retried op — its completion and progress are both dropped.
+    #[test]
+    fn stale_attempt_outcome_cannot_finish_retry() {
+        let op = test_op(AttachmentPhase::Uploading);
+        {
+            let mut op = op.lock().unwrap();
+            op.attempt += 1;
+        }
+        apply_outcome(
+            &op,
+            TransferOutcome::Uploaded("/old-generation/path.png".to_owned()),
+            1,
+            JobKind::Upload,
+        );
+        op_progress(&op, 5, 1);
+        let op = op.lock().unwrap();
+        assert_eq!(op.phase, AttachmentPhase::Uploading);
+        assert!(op.remote_path.is_none());
+        assert_eq!(op.bytes_uploaded, 0);
+    }
+
     #[test]
     fn gate_launch_rejects_wrong_generation() {
         let op = test_op(AttachmentPhase::Uploading);
-        assert!(!gate_launch(&op, 9, 8));
+        assert!(!gate_launch(&op, 9, 8, 1));
         let op = op.lock().unwrap();
         assert_eq!(op.phase, AttachmentPhase::Pending);
         assert_eq!(op.reason_code, Some("stale_operation"));
+    }
+
+    #[test]
+    fn gate_launch_rejects_stale_attempt() {
+        let op = test_op(AttachmentPhase::Uploading);
+        {
+            let mut op = op.lock().unwrap();
+            op.attempt += 1;
+        }
+        assert!(!gate_launch(&op, 9, 7, 1));
     }
 
     #[test]
@@ -2226,14 +2852,77 @@ mod tests {
             let mut op = op.lock().unwrap();
             op.cancel();
         }
-        assert!(!gate_launch(&op, 9, 7));
+        assert!(!gate_launch(&op, 9, 7, 1));
         assert_eq!(op.lock().unwrap().phase, AttachmentPhase::Cancelled);
     }
 
     #[test]
     fn gate_launch_accepts_current() {
         let op = test_op(AttachmentPhase::Uploading);
-        assert!(gate_launch(&op, 9, 7));
+        assert!(gate_launch(&op, 9, 7, 1));
+    }
+
+    #[test]
+    fn verify_outcome_missing_remote_drops_to_pending() {
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.remote_path = Some("/remote/final".to_owned());
+            op.verify_in_flight = Some(2);
+            op.attempt = 2;
+        }
+        apply_outcome(&op, TransferOutcome::RemoteMissing, 2, JobKind::Verify);
+        let op = op.lock().unwrap();
+        assert_eq!(op.phase, AttachmentPhase::Pending);
+        assert_eq!(op.reason_code, Some("remote_missing"));
+        assert!(op.remote_path.is_none());
+        assert!(op.verify_in_flight.is_none());
+    }
+
+    #[test]
+    fn verify_outcome_verified_keeps_uploaded() {
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.remote_path = Some("/remote/final".to_owned());
+            op.verify_in_flight = Some(2);
+            op.attempt = 2;
+            op.note_block(AttachmentBlock::StaleOperation);
+        }
+        apply_outcome(&op, TransferOutcome::Verified, 2, JobKind::Verify);
+        let op = op.lock().unwrap();
+        assert_eq!(op.phase, AttachmentPhase::Uploaded);
+        assert_eq!(op.remote_path.as_deref(), Some("/remote/final"));
+        assert!(op.reason_code.is_none());
+    }
+
+    #[test]
+    fn stale_verify_outcome_is_dropped() {
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.remote_path = Some("/remote/final".to_owned());
+            op.verify_in_flight = Some(2);
+        }
+        // A completion carrying an earlier attempt must not clear the
+        // in-flight marker or the remote-missing state.
+        apply_outcome(&op, TransferOutcome::RemoteMissing, 1, JobKind::Verify);
+        let op = op.lock().unwrap();
+        assert_eq!(op.phase, AttachmentPhase::Uploaded);
+        assert_eq!(op.verify_in_flight, Some(2));
+    }
+
+    #[test]
+    fn stale_remove_outcome_is_dropped() {
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.remove_in_flight = Some(2);
+        }
+        apply_outcome(&op, TransferOutcome::Removed, 1, JobKind::Remove);
+        let op = op.lock().unwrap();
+        assert!(!op.removed);
+        assert_eq!(op.remove_in_flight, Some(2));
     }
 
     #[test]
@@ -2254,5 +2943,404 @@ mod tests {
         );
         assert!(usize::from(snapshot.display_name_len) <= ATTACHMENT_NAME_CAPACITY);
         operations().lock().unwrap().remove(&41);
+    }
+
+    // In-process SFTP server over a duplex stream (the reviewer's repro
+    // harness): it exercises ensure_remote_dir / run_transfer / run_remove /
+    // run_verify against real lstat/mkdir/setstat/close replies instead of
+    // mocked outcomes, so path-security regressions surface end to end.
+    use russh_sftp::protocol::{Attrs, Data, File as SftpFile, Handle, Name, Status};
+    use std::fs::{self, File};
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    struct FixtureSftp {
+        root: PathBuf,
+        files: HashMap<String, File>,
+        next_handle: u64,
+        close_failure: bool,
+    }
+
+    impl FixtureSftp {
+        fn new(root: PathBuf, close_failure: bool) -> Self {
+            Self {
+                root,
+                files: HashMap::new(),
+                next_handle: 0,
+                close_failure,
+            }
+        }
+
+        fn map(&self, path: &str) -> PathBuf {
+            let clean: Vec<&str> = path
+                .split('/')
+                .filter(|part| !part.is_empty() && *part != ".")
+                .collect();
+            self.root.join(clean.join("/"))
+        }
+    }
+
+    fn sftp_status(id: u32, code: StatusCode) -> Status {
+        Status {
+            id,
+            status_code: code,
+            error_message: String::new(),
+            language_tag: String::new(),
+        }
+    }
+
+    fn sftp_io_error(error: &std::io::Error) -> StatusCode {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => StatusCode::NoSuchFile,
+            std::io::ErrorKind::PermissionDenied => StatusCode::PermissionDenied,
+            _ => StatusCode::Failure,
+        }
+    }
+
+    impl russh_sftp::server::Handler for FixtureSftp {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+            let resolved = if path == "." || path.is_empty() {
+                "/home".to_owned()
+            } else {
+                path
+            };
+            Ok(Name {
+                id,
+                files: vec![SftpFile::dummy(resolved)],
+            })
+        }
+
+        async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+            fs::symlink_metadata(self.map(&path))
+                .map(|metadata| Attrs {
+                    id,
+                    attrs: (&metadata).into(),
+                })
+                .map_err(|error| sftp_io_error(&error))
+        }
+
+        async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+            fs::metadata(self.map(&path))
+                .map(|metadata| Attrs {
+                    id,
+                    attrs: (&metadata).into(),
+                })
+                .map_err(|error| sftp_io_error(&error))
+        }
+
+        async fn mkdir(
+            &mut self,
+            id: u32,
+            path: String,
+            attrs: FileAttributes,
+        ) -> Result<Status, Self::Error> {
+            let mapped = self.map(&path);
+            fs::create_dir(&mapped).map_err(|error| sftp_io_error(&error))?;
+            if let Some(mode) = attrs.permissions {
+                let _ = fs::set_permissions(&mapped, fs::Permissions::from_mode(mode));
+            }
+            Ok(sftp_status(id, StatusCode::Ok))
+        }
+
+        async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+            fs::remove_dir(self.map(&path))
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+
+        async fn open(
+            &mut self,
+            id: u32,
+            filename: String,
+            pflags: OpenFlags,
+            attrs: FileAttributes,
+        ) -> Result<Handle, Self::Error> {
+            let mapped = self.map(&filename);
+            self.next_handle += 1;
+            let token = format!("file-{}", self.next_handle);
+            let mut options = fs::OpenOptions::new();
+            options
+                .read(pflags.contains(OpenFlags::READ))
+                .write(pflags.contains(OpenFlags::WRITE))
+                .append(pflags.contains(OpenFlags::APPEND));
+            if pflags.contains(OpenFlags::EXCLUDE) {
+                options.create_new(true);
+            } else {
+                options
+                    .create(pflags.contains(OpenFlags::CREATE))
+                    .truncate(pflags.contains(OpenFlags::TRUNCATE));
+            }
+            match options.open(&mapped) {
+                Ok(file) => {
+                    if let Some(mode) = attrs.permissions {
+                        let _ = fs::set_permissions(&mapped, fs::Permissions::from_mode(mode));
+                    }
+                    self.files.insert(token.clone(), file);
+                    Ok(Handle { id, handle: token })
+                }
+                Err(error) => Err(sftp_io_error(&error)),
+            }
+        }
+
+        async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+            if self.files.remove(&handle).is_some() && !self.close_failure {
+                Ok(sftp_status(id, StatusCode::Ok))
+            } else {
+                Err(StatusCode::Failure)
+            }
+        }
+
+        async fn write(
+            &mut self,
+            id: u32,
+            handle: String,
+            offset: u64,
+            data: Vec<u8>,
+        ) -> Result<Status, Self::Error> {
+            let Some(file) = self.files.get_mut(&handle) else {
+                return Err(StatusCode::Failure);
+            };
+            use std::io::Seek;
+            file.seek(std::io::SeekFrom::Start(offset))
+                .and_then(|_| file.write_all(&data))
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+
+        async fn read(
+            &mut self,
+            id: u32,
+            handle: String,
+            offset: u64,
+            len: u32,
+        ) -> Result<Data, Self::Error> {
+            let Some(file) = self.files.get_mut(&handle) else {
+                return Err(StatusCode::Failure);
+            };
+            use std::io::Seek;
+            let mut buffer = vec![0u8; len as usize];
+            let read = file
+                .seek(std::io::SeekFrom::Start(offset))
+                .and_then(|_| file.read(&mut buffer))
+                .map_err(|error| sftp_io_error(&error))?;
+            buffer.truncate(read);
+            Ok(Data { id, data: buffer })
+        }
+
+        async fn setstat(
+            &mut self,
+            id: u32,
+            path: String,
+            attrs: FileAttributes,
+        ) -> Result<Status, Self::Error> {
+            if let Some(mode) = attrs.permissions {
+                fs::set_permissions(self.map(&path), fs::Permissions::from_mode(mode))
+                    .map_err(|error| sftp_io_error(&error))?;
+            }
+            Ok(sftp_status(id, StatusCode::Ok))
+        }
+
+        async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+            fs::remove_file(self.map(&filename))
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+
+        /// SFTP v3 rename never overwrites — the client relies on this to
+        /// publish the staged partial without clobbering an existing file.
+        async fn rename(
+            &mut self,
+            id: u32,
+            oldpath: String,
+            newpath: String,
+        ) -> Result<Status, Self::Error> {
+            let old_mapped = self.map(&oldpath);
+            let new_mapped = self.map(&newpath);
+            if new_mapped.exists() || new_mapped.symlink_metadata().is_ok() {
+                return Err(StatusCode::Failure);
+            }
+            fs::rename(&old_mapped, &new_mapped)
+                .map(|()| sftp_status(id, StatusCode::Ok))
+                .map_err(|error| sftp_io_error(&error))
+        }
+    }
+
+    async fn fixture_sftp(root: PathBuf, close_failure: bool) -> RawSftpSession {
+        let (client, server) = tokio::io::duplex(65536);
+        let handler = FixtureSftp::new(root, close_failure);
+        tokio::spawn(russh_sftp::server::run(server, handler));
+        let session = RawSftpSession::new(client);
+        session.init().await.expect("fixture sftp init");
+        session
+    }
+
+    fn fixture_root(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("meeterm-att-test-{name}-{}", std::process::id()));
+        fs::create_dir_all(&path).expect("create fixture root");
+        path
+    }
+
+    /// FP-009: a pre-existing `meeterm/` with a permissive mode must be
+    /// forced to 0700 while `.local`/`share` keep their modes untouched.
+    #[tokio::test]
+    async fn app_owned_dir_components_are_restricted() {
+        let root = fixture_root("dir-mode");
+        let local = root.join("home/.local");
+        let share = local.join("share");
+        let meeterm = share.join("meeterm");
+        fs::create_dir_all(meeterm.join("attachments")).unwrap();
+        fs::set_permissions(&local, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&share, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&meeterm, fs::Permissions::from_mode(0o755)).unwrap();
+        let session = fixture_sftp(root.clone(), false).await;
+        let components = path_components("/home/.local/share/meeterm/attachments");
+        ensure_remote_dir(&session, &components, 2, true, APP_DIR_COMPONENTS, None)
+            .await
+            .expect("app-owned components accepted");
+        let mode = |path: &PathBuf| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&meeterm), 0o700, "meeterm/ must be restricted");
+        assert_eq!(mode(&meeterm.join("attachments")), 0o700);
+        assert_eq!(mode(&local), 0o755, ".local mode must not be touched");
+        assert_eq!(mode(&share), 0o755, "share mode must not be touched");
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// FP-009: a symlinked component anywhere in the app chain is refused.
+    #[tokio::test]
+    async fn app_owned_dir_rejects_symlink_component() {
+        let root = fixture_root("dir-symlink");
+        let share = root.join("home/.local/share");
+        fs::create_dir_all(&share).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), share.join("meeterm")).unwrap();
+        let session = fixture_sftp(root.clone(), false).await;
+        let components = path_components("/home/.local/share/meeterm/attachments");
+        let outcome =
+            ensure_remote_dir(&session, &components, 2, true, APP_DIR_COMPONENTS, None).await;
+        assert!(
+            matches!(
+                outcome,
+                Err(TransferOutcome::Failed("remote_unsafe_path", _))
+            ),
+            "symlinked meeterm/ must fail remote_unsafe_path"
+        );
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// FP-010: deletion refuses a symlinked parent and never follows it
+    /// into foreign files; a base that resolves to a different directory
+    /// than the upload recorded is refused the same way.
+    #[tokio::test]
+    async fn delete_rejects_symlink_and_replaced_parent() {
+        let root = fixture_root("delete-symlink");
+        let foreign_dir = root.join("foreign");
+        fs::create_dir_all(&foreign_dir).unwrap();
+        std::os::unix::fs::symlink(&foreign_dir, root.join("chosen")).unwrap();
+        let op = test_op(AttachmentPhase::Uploaded);
+        {
+            let mut op = op.lock().unwrap();
+            op.spec.remote_dir = Some("/chosen".to_owned());
+        }
+        let foreign = foreign_dir.join(&op.lock().unwrap().spec.remote_name);
+        fs::write(&foreign, b"FOREIGN FILE").unwrap();
+        fs::set_permissions(&foreign, fs::Permissions::from_mode(0o600)).unwrap();
+        let session = fixture_sftp(root.clone(), false).await;
+        let outcome = run_remove(&op, &session).await;
+        assert!(
+            matches!(outcome, TransferOutcome::Failed("remote_unsafe_path", _)),
+            "symlink parent must fail remote_unsafe_path, got {outcome:?}"
+        );
+        assert!(foreign.exists(), "foreign file must not be deleted");
+        // A base recorded at upload that no longer resolves identically is
+        // refused even when the current path is a real directory.
+        let real = root.join("real");
+        fs::create_dir_all(&real).unwrap();
+        {
+            let mut op = op.lock().unwrap();
+            op.spec.remote_dir = Some("/real".to_owned());
+            op.remote_base = Some("/home/.local/share/meeterm/attachments".to_owned());
+        }
+        let outcome = run_remove(&op, &session).await;
+        assert!(
+            matches!(outcome, TransferOutcome::Failed("remote_unsafe_path", _)),
+            "replaced base must fail remote_unsafe_path, got {outcome:?}"
+        );
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// FP-011: a failed CLOSE must not publish — the outcome is an error
+    /// and the final generated name never appears remotely.
+    #[tokio::test]
+    async fn upload_requires_successful_close() {
+        let root = fixture_root("close-failure");
+        fs::create_dir_all(root.join("home")).unwrap();
+        let local = root.join("image.png");
+        fs::write(&local, b"1234567890").unwrap();
+        let op = test_op(AttachmentPhase::Uploading);
+        {
+            let mut op = op.lock().unwrap();
+            op.spec.local_path = local.to_str().unwrap().to_owned();
+        }
+        let session = fixture_sftp(root.clone(), true).await;
+        let outcome = run_transfer(&op, &session, false, 1).await;
+        assert!(
+            !matches!(outcome, TransferOutcome::Uploaded(_)),
+            "close failure must not report Uploaded, got {outcome:?}"
+        );
+        let published = root
+            .join("home/.local/share/meeterm/attachments")
+            .join(&op.lock().unwrap().spec.remote_name);
+        assert!(!published.exists(), "final name must not be published");
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// FP-007: a successful close publishes end to end, and a later
+    /// re-verification lstat's the recorded path instead of re-uploading.
+    #[tokio::test]
+    async fn verify_confirms_recorded_file_and_detects_loss() {
+        let root = fixture_root("verify");
+        fs::create_dir_all(root.join("home")).unwrap();
+        let local = root.join("image.png");
+        fs::write(&local, b"1234567890").unwrap();
+        let op = test_op(AttachmentPhase::Uploading);
+        {
+            let mut op = op.lock().unwrap();
+            op.spec.local_path = local.to_str().unwrap().to_owned();
+        }
+        let session = fixture_sftp(root.clone(), false).await;
+        let outcome = run_transfer(&op, &session, false, 1).await;
+        let TransferOutcome::Uploaded(path) = outcome else {
+            panic!("fixture upload must publish, got {outcome:?}");
+        };
+        {
+            let mut op = op.lock().unwrap();
+            op.phase = AttachmentPhase::Uploaded;
+            op.remote_path = Some(path.clone());
+        }
+        assert!(
+            matches!(run_verify(&op, &session).await, TransferOutcome::Verified),
+            "intact remote file verifies"
+        );
+        fs::remove_file(root.join(path.trim_start_matches('/'))).unwrap();
+        assert!(
+            matches!(
+                run_verify(&op, &session).await,
+                TransferOutcome::RemoteMissing
+            ),
+            "vanished remote file must be remote_missing"
+        );
+        let _ = session.close_session();
+        fs::remove_dir_all(&root).ok();
     }
 }

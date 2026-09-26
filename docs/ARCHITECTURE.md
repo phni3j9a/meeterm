@@ -252,9 +252,12 @@ poll, insert, retry, cancel, and dispose operations through the explicit
 
 ```text
 picked local file (adapter-owned, read-only for Rust)
-  ↓ begin: validate + fence destination + enqueue on the actor queue
+  ↓ intent: attachment_intent(target pane's native terminal)
+       records the stable destination identity once
+  ↓ begin: validate + re-resolve intent into a fresh fence + enqueue
 actor opens a second SSH session channel → "sftp" subsystem
-  ↓ detached transfer task (never the interactive command loop)
+  ↓ queued non-blocking launch in the actor loop, then a
+    detached transfer task (never the interactive command loop)
 <realpath(".")>/.local/share/meeterm/attachments/
     meeterm-<YYYYMMDD>-<HHMMSS>-<16hex>.<ext>   (dir 0700, file 0600)
   ↓ explicit insert request only
@@ -282,23 +285,33 @@ on the same authenticated endpoint owned by the same terminal; nothing is
 auto-deleted on insert, cancel, dispose, or exit. Manual cleanup is an
 ordinary `rm -f` of those generated names — see SSH.md.
 
-The destination fence captured at `begin` binds only stable identities:
-connection generation, the session operation epoch, the remote pane ID, the
-native terminal mapped to that pane, Herdr's stable `terminal_id` where
-applicable, and a credential-free endpoint (host/port/username/backend/
-runtime). Insert re-validates every field under the session lock and fails
-closed with a recorded pending reason (`destination_changed`,
-`stale_operation`, …) instead of retargeting; an explicit
-`attachment_retry_upload` re-fences the same pane identity on the *current*
-actor.
+The destination identity lives in an `attachment_intent` recorded from the
+*picked pane's* native terminal — any pane, not only the connection owner;
+the core resolves the owning connection itself. The intent binds only
+stable identities: the credential-free endpoint (host/port/username/
+verified host-key context, backend, runtime), the remote pane, and Herdr's
+stable `terminal_id` rather than its mutable alias. Generation and epochs
+are deliberately excluded: each `begin`/`retry`/`insert` re-resolves the
+intent against the live actor into a fresh execution fence, so a recovered
+connection works again without a new intent while a Server/Session/runtime
+switch, a replaced or vanished pane, or a foreign terminal id fails closed
+with a recorded pending reason (`destination_changed`,
+`destination_missing`, `stale_operation`, …) instead of retargeting
+whatever is now selected. After a recovery revoked an `uploaded` op's
+fence, `attachment_retry_upload` re-verifies the recorded remote file
+(`lstat` type/size/`0600`) without re-uploading; a missing or replaced
+file drops to `pending(remote_missing)` until an explicit retry re-uploads.
 
 The upload writes a private `.meeterm-partial-*` staging file and publishes
-the final name by rename only after an `lstat` byte/metadata check;
-cancellation removes
-the partial best-effort, and a delayed completion cannot mutate a cancelled
-operation. An SFTP-refusing server, a missing subsystem, or a dead actor
-surfaces as an operation-level `failed`/`pending` snapshot — never as a
-connection failure.
+the final name by rename only after the SFTP `CLOSE` reply reports success
+and an `lstat` byte/metadata check of the staged file passes; cancellation
+removes the partial best-effort, and a delayed completion cannot mutate a
+cancelled operation. Every launch/transfer/delete/verify job carries the
+operation's attempt identity, so a superseded detached job's late progress
+or completion is discarded instead of disturbing the current attempt. An
+SFTP-refusing server, a missing subsystem, or a dead actor surfaces as an
+operation-level `failed`/`pending` snapshot — never as a connection
+failure.
 
 Uploaded, inserted, and model-observed are deliberately distinct milestones.
 The `inserted` phase only means the native input queue accepted one line;

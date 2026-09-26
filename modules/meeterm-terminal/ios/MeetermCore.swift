@@ -653,15 +653,26 @@ enum MeetermCore {
   }
 
   // Issue #28 attachment contract (attachment-ffi.md + Main amendments).
-  // The core owns the SFTP operation, remote path, destination fence, and the
+  // The core owns the SFTP operation, remote path, destination intent, and the
   // single-line insert; this adapter only passes the local file and polls the
   // fixed-size snapshot. An empty remoteDirectory selects the core default
   // `~/.local/share/meeterm/attachments`.
 
+  /// `meeterm_attachment_intent`: opaque intent id (>0) for the picked pane's
+  /// terminal, or 0 when the pane is not a usable destination.
+  static func attachmentIntent(targetTerminalId: UInt64) -> UInt64 {
+    meeterm_attachment_intent(targetTerminalId)
+  }
+
+  /// `meeterm_attachment_intent_dispose`: 0 accepted, negative = error code.
+  static func attachmentIntentDispose(intentId: UInt64) -> Int32 {
+    meeterm_attachment_intent_dispose(intentId)
+  }
+
   /// `meeterm_attachment_begin`: attachment id (>0), or 0 on synchronous
-  /// rejection (poll-free errors such as no connection or unreadable file).
+  /// rejection (poll-free errors such as unknown intent or unreadable file).
   static func attachmentBegin(
-    terminalId: UInt64,
+    intentId: UInt64,
     localPath: String,
     displayName: String,
     remoteDirectory: String,
@@ -671,7 +682,7 @@ enum MeetermCore {
       Data(displayName.utf8).withUnsafeBytes { name in
         Data(remoteDirectory.utf8).withUnsafeBytes { directory in
           meeterm_attachment_begin(
-            terminalId,
+            intentId,
             path.bindMemory(to: UInt8.self).baseAddress,
             path.count,
             name.bindMemory(to: UInt8.self).baseAddress,
@@ -686,13 +697,14 @@ enum MeetermCore {
   }
 
   /// `meeterm_attachment_retry_upload`: 0 accepted, negative = error code.
-  static func attachmentRetryUpload(terminalId: UInt64, attachmentId: UInt64) -> Int32 {
-    meeterm_attachment_retry_upload(terminalId, attachmentId)
+  /// `targetTerminalId` must be the pane terminal the intent captured.
+  static func attachmentRetryUpload(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_retry_upload(targetTerminalId, attachmentId)
   }
 
   /// `meeterm_attachment_insert`: 0 accepted, negative = error code.
-  static func attachmentInsert(terminalId: UInt64, attachmentId: UInt64) -> Int32 {
-    meeterm_attachment_insert(terminalId, attachmentId)
+  static func attachmentInsert(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_insert(targetTerminalId, attachmentId)
   }
 
   /// `meeterm_attachment_cancel`: 0 accepted, negative = error code.
@@ -706,8 +718,9 @@ enum MeetermCore {
   }
 
   /// `meeterm_attachment_delete_remote`: 0 accepted, negative = error code.
-  static func attachmentDeleteRemote(terminalId: UInt64, attachmentId: UInt64) -> Int32 {
-    meeterm_attachment_delete_remote(terminalId, attachmentId)
+  /// `targetTerminalId` must be the pane terminal the intent captured.
+  static func attachmentDeleteRemote(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_delete_remote(targetTerminalId, attachmentId)
   }
 
   /// `meeterm_attachment_snapshot_size`: the ABI record size.

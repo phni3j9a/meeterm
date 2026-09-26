@@ -280,13 +280,22 @@ typedef struct meeterm_attachment_snapshot {
   uint8_t error_message[MEETERM_ATTACHMENT_MSG_CAPACITY];
 } meeterm_attachment_snapshot_t;
 
+/* Record the destination intent when the attachment sheet is confirmed:
+ * pass the *picked pane's* native terminal id (any pane, not just the
+ * connection owner); the core resolves the owning SSH connection and
+ * stores the stable endpoint/backend/runtime/pane identity. Returns an
+ * opaque positive intent id; zero = not a usable destination. */
+uint64_t meeterm_attachment_intent(uint64_t target_terminal_id);
+/* Drop a recorded intent. Idempotent; live ops keep their own copy. */
+int32_t meeterm_attachment_intent_dispose(uint64_t intent_id);
 /* Opaque positive attachment id; zero = synchronously rejected.
+ * `intent_id` is a live meeterm_attachment_intent handle.
  * `remote_dir` is an optional explicit remote directory (clean absolute
  * or ~/-prefixed path expanded against realpath(".")); NULL/0 selects the
  * app-private default under the SFTP start dir
  * (.local/share/meeterm/attachments). */
 uint64_t meeterm_attachment_begin(
-  uint64_t terminal_id,
+  uint64_t intent_id,
   const uint8_t *local_path,
   size_t local_path_length,
   const uint8_t *display_name,
@@ -294,10 +303,13 @@ uint64_t meeterm_attachment_begin(
   const uint8_t *remote_dir,
   size_t remote_dir_length,
   uint64_t size_bytes);
-/* Explicit transfer retry; re-fences the same destination identity. */
-int32_t meeterm_attachment_retry_upload(uint64_t terminal_id, uint64_t attachment_id);
-/* One quoted path line into the fenced pane only; never sends Enter. */
-int32_t meeterm_attachment_insert(uint64_t terminal_id, uint64_t attachment_id);
+/* Explicit transfer retry for pending/failed, or remote re-verification
+ * for an uploaded op whose fence was revoked by recovery. Re-fences the
+ * same intent identity; target_terminal_id must be the intent's pane. */
+int32_t meeterm_attachment_retry_upload(uint64_t target_terminal_id, uint64_t attachment_id);
+/* One quoted path line into the intent's recorded pane only; never sends
+ * Enter, never retargets to the currently selected pane. */
+int32_t meeterm_attachment_insert(uint64_t target_terminal_id, uint64_t attachment_id);
 /* Cancels in-flight work and discards delayed completion idempotently. */
 int32_t meeterm_attachment_cancel(uint64_t attachment_id);
 /* Drops the operation record, cancelling active work first; remote files
@@ -305,8 +317,10 @@ int32_t meeterm_attachment_cancel(uint64_t attachment_id);
 int32_t meeterm_attachment_dispose(uint64_t attachment_id);
 /* Explicit remote deletion of only this operation's generated
  * meeterm-* / .meeterm-partial-* names, on the same authenticated SSH
- * endpoint owned by terminal_id. Idempotent; the phase is kept. */
-int32_t meeterm_attachment_delete_remote(uint64_t terminal_id, uint64_t attachment_id);
+ * endpoint recorded by the intent; the canonical upload base is
+ * re-resolved and every component must still be a real directory.
+ * target_terminal_id must be the intent's pane. Idempotent; phase kept. */
+int32_t meeterm_attachment_delete_remote(uint64_t target_terminal_id, uint64_t attachment_id);
 /* Poll: fills one complete sanitized snapshot; negative = unknown id. */
 int32_t meeterm_attachment_snapshot(
   uint64_t attachment_id,

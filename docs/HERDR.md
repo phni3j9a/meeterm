@@ -196,15 +196,22 @@ Issue の初期 product scope は simultaneous phone/PC editing の保証では�
 
 ## 画像 attachment（Issue #28）
 
-Herdr backend でも tmux と同じ Rust-owned attachment 操作を使います。upload は既存の
-認証済み SSH 接続上に multiplex した第二 session channel の `sftp` subsystem で行い、
-Herdr の controller stream や direct socket とは独立です。byte streaming は detached
-task に逃がすため、大きな画像が Herdr の interactive command loop を止めません。
+Herdr backend でも tmux と同じ Rust-owned attachment 操作を使います。宛先は
+`attachment_intent(target_terminal_id)` が対象 pane の native terminal から一度だけ
+記録する intent で、core が接続 owner を内部解決します。upload は既存の認証済み SSH
+接続上に multiplex した第二 session channel の `sftp` subsystem で行い、Herdr の
+controller stream や direct socket とは独立です。channel open・subsystem request・
+`CHANNEL_SUCCESS`/`FAILURE` 待ちは actor 内の queued launch として非同期に poll され、
+byte streaming は detached task に逃がすため、遅い・応答しない subsystem が Herdr の
+interactive command loop を止めることはありません。
 
-destination fence には Herdr 側の安定 `terminal_id` も含まれます。pane が別 Workspace へ
-移動して handle が変わった場合は `destination_changed` の pending reason になり、insert
-は retarget せず失敗します。upload 自体は pane 存在と endpoint 一致だけを要求するため、
-選択中でなくても retry できます。
+intent が保持する安定 identity には Herdr 側の安定 remote `terminal_id` が含まれ、mutable
+な pane alias は使いません。pane が別 Workspace へ移動して alias が変わっても intent は
+安定 `terminal_id` で現在の alias を引き直すため追従します。pane 自体の消失・置換や、
+Server/Session/runtime の切替は `destination_missing`/`destination_changed` の pending
+reason になり、insert は retarget せず失敗します。upload/retry は pane 存在と endpoint
+一致だけを要求するため選択中でなくても retry できますが、insert は対象 pane が
+選択中で input gate が開いた状態でのみ通ります。
 
 insert は backend 固有の経路ではなく、epoch guard 付きの共通 native input queue
 （Herdr では `pane.send_input`、先に `pane.scroll` offset 0）を通して単一引用符付きの
@@ -215,8 +222,10 @@ Codex/Claude が画像を読んだことの acknowledgement ではありませ�
 remote 側のファイルは `<realpath(".")>/.local/share/meeterm/attachments/` 以下に
 生成名 `meeterm-<YYYYMMDD>-<HHMMSS>-<16 hex>.<ext>`（拡張子は画像 magic 由来、
 picked filename は使いません）で保存され、`attachment_delete_remote` の明示削除まで
-残ります。削除対象は operation が生成した名前だけで、同じ SSH endpoint を持つ同一
-terminal の SFTP channel から実行します。live operation は接続ごとに同時 1件です。
+残ります。削除対象は operation が生成した名前だけで、intent が記録した同一 SSH
+endpoint 上の SFTP channel から実行します。削除前に canonical base を byte 一致で
+再解決し、全 path 成分を `lstat` で実 directory と確認するため、symlink 置換や
+parent 差替えは辿らず拒否します。live operation は接続ごとに同時 1件です。
 自動削除・TTL はなく、手動削除は既定 dir 配下の `meeterm-*` / `.meeterm-partial-*`
 を `rm -f` するだけです（SSH.md 参照）。
 
@@ -297,7 +306,10 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 で起動する real Herdr 0.9.0 driver を組み合わせます。普通の OpenSSH server fixture では
 ありません。default/named runtime、snapshot/subscribe、workspace/group CRUD、ANSI frame、
 resize、semantic input、CJK paste、controller conflict、release/reacquire、外部 move と
-stable identity を一つの bounded ケースで確認します。公式 binary の CI job は
+stable identity を一つの bounded ケースで確認します。`MEETERM_FIXTURE_SFTP_REPLY_DELAY=<秒>`
+を足すと fixture の `sftp` subsystem が CHANNEL_SUCCESS を遅延 reply し、
+`real_herdr_delayed_subsystem_keeps_input_responsive` が Success 待ちの間も pane 入力が
+応答すること（queued launch が interactive loop を塞がないこと）を確認します。公式 binary の CI job は
 `RUNNER_TEMP` にだけ pinned digest で取得し、既存環境やユーザーの Herdr session を変更
 しません。既に記録したローカルのproduction native統合テスト結果は、その記録にあるsourceの
 証拠です。更新後の zero-tap recovery の受入には、今回のcandidateでこのignored testを実行して
