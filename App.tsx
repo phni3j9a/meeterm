@@ -497,6 +497,7 @@ function smokeAttachmentDraft(screen: SmokeScreen): AttachmentDraftState {
     errorCode: '',
     errorMessage: '',
     insertUnconfirmed: false,
+    remoteRemoved: false,
     ...extra,
   });
   const draft = (phase: AttachmentPhase, operation: AttachmentOperationSnapshot | null, preparedInfo: AttachmentPreparedInfo | null = prepared): AttachmentDraftState => ({
@@ -540,8 +541,9 @@ function smokeAttachmentDraft(screen: SmokeScreen): AttachmentDraftState {
     case 'attachment-cancelled':
       return draft('ready', operation('cancelled'));
     case 'attachment-deleted':
-      return draft('ready', operation('deleted', {
-        remotePath: '/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png',
+      return draft('ready', operation('uploaded', {
+        bytesUploaded: prepared.byteCount,
+        remoteRemoved: true,
       }));
     case 'attachment-error':
       return {
@@ -862,7 +864,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
         <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={busy} onPress={onCancel}>Cancel</Button>
       </View> : null}
 
-      {operation?.phase === 'uploaded' ? <View testID="attachment-uploaded">
+      {operation?.phase === 'uploaded' && !operation.remoteRemoved ? <View testID="attachment-uploaded">
         <Text style={[styles.emptyTitle, { color: colors.text }]}>Uploaded</Text>
         <Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{operation.remotePath}</Text>
         <Text style={[styles.noticeBody, { color: colors.muted }]}>The image is saved on the SSH host. Sending the terminal request passes it to the AI running there — insert only adds the path reference.</Text>
@@ -876,7 +878,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
         </View>
       </View> : null}
 
-      {operation?.phase === 'inserted' ? <View testID="attachment-inserted">
+      {operation?.phase === 'inserted' && !operation.remoteRemoved ? <View testID="attachment-inserted">
         <Text style={[styles.emptyTitle, { color: colors.text }]}>{ATTACHMENT_INSERTED_NOTICE}</Text>
         {operation.insertUnconfirmed ? <Text testID="attachment-unconfirmed" accessibilityRole="alert" style={[styles.runtimeHint, { color: colors.danger }]}>{ATTACHMENT_INSERT_UNCONFIRMED_NOTICE}</Text> : null}
         {operation.insertUnconfirmed ? <Button testID="attachment-retry-insert" label="Insert again" colors={colors} secondary disabled={busy || !destinationMatches} onPress={onInsert} style={styles.attachmentActionSpacer}>Retry insert</Button> : null}
@@ -887,7 +889,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
         </View>
       </View> : null}
 
-      {operation?.phase === 'failed' ? <View testID="attachment-failed">
+      {operation?.phase === 'failed' && !operation.remoteRemoved ? <View testID="attachment-failed">
         <Text style={[styles.emptyTitle, { color: colors.text }]}>Upload failed</Text>
         <Text accessibilityRole="alert" style={[styles.emptyBody, { color: colors.danger }]}>{operation.errorMessage || operation.errorCode || 'The upload could not be completed.'}</Text>
         <Button testID="attachment-retry-upload" label="Retry upload" colors={colors} disabled={busy} onPress={onRetryUpload}>Retry upload</Button>
@@ -898,7 +900,7 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
         </View>
       </View> : null}
 
-      {operation?.phase === 'cancelled' ? <View testID="attachment-cancelled">
+      {operation?.phase === 'cancelled' && !operation.remoteRemoved ? <View testID="attachment-cancelled">
         <Text style={[styles.emptyTitle, { color: colors.text }]}>Upload cancelled</Text>
         <Text style={[styles.emptyBody, { color: colors.muted }]}>The transfer was stopped; nothing was inserted into the terminal.</Text>
         <Button testID="attachment-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onUpload}>Upload again</Button>
@@ -908,10 +910,17 @@ function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRem
         </View>
       </View> : null}
 
-      {operation?.phase === 'deleted' ? <View testID="attachment-deleted">
+      {operation?.remoteRemoved ? <View testID="attachment-deleted">
         <Text style={[styles.emptyTitle, { color: colors.text }]}>Deleted from server</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>The remote file was removed. Upload again to reattach it.</Text>
-        <Button testID="attachment-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onUpload}>Upload again</Button>
+        <Text style={[styles.emptyBody, { color: colors.muted }]}>{operation.phase === 'inserted'
+          ? 'The remote file was removed. The inserted path line already reached the terminal — edit it there yourself.'
+          : 'The remote file was removed. Upload again to reattach it.'}</Text>
+        {operation.phase === 'uploaded' || operation.phase === 'failed'
+          ? <Button testID="attachment-retry-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onRetryUpload}>Upload again</Button>
+          : null}
+        {operation.phase === 'cancelled'
+          ? <Button testID="attachment-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onUpload}>Upload again</Button>
+          : null}
         <View style={styles.noticeActions}>
           <Pressable testID="attachment-discard" accessibilityRole="button" accessibilityLabel="Discard local image" disabled={busy} onPress={onDiscard} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Discard</Text></Pressable>
         </View>
@@ -2915,7 +2924,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const operation = attachment?.operation;
     if (!attachment || !attachment.prepared || attachment.busyAction || !selectedPane) return;
     // Double-tap guard: a live op must be retried or cancelled, never rebegun.
-    if (operation && operation.phase !== 'failed' && operation.phase !== 'cancelled' && operation.phase !== 'deleted') return;
+    if (operation && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
     setAttachment(current => current ? { ...current, busyAction: 'upload', notice: '', errorCode: '', errorMessage: '' } : current);
     void MeetermTerminal.uploadAttachment(attachment.destination.terminalId, attachment.remoteDirectory.trim())
@@ -2932,6 +2941,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             errorCode: '',
             errorMessage: '',
             insertUnconfirmed: false,
+            remoteRemoved: false,
           } } : current);
           refreshAttachmentSnapshot();
           return;
@@ -3035,7 +3045,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       .then(result => {
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
-          setAttachment(current => current?.operation ? { ...current, busyAction: null, operation: { ...current.operation, phase: 'deleted' } } : current);
+          setAttachment(current => current?.operation ? { ...current, busyAction: null, operation: { ...current.operation, remoteRemoved: true } } : current);
           refreshAttachmentSnapshot();
           return;
         }

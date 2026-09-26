@@ -206,7 +206,9 @@ internal object AttachmentController {
       ensureNativeHandle(active.target.terminalId),
       file.absolutePath,
       prepared.fileName,
-      remoteDirectory,
+      // The JNI `remote_dir` is nullable: null selects the app-private
+      // default, while an empty string is a validation rejection.
+      remoteDirectory.trim().ifEmpty { null },
       prepared.byteCount,
     ) ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
     if (attachmentId == 0L) {

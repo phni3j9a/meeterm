@@ -18,8 +18,7 @@ internal enum class AttachmentOpPhase(val wireValue: Int) {
   UPLOADED(2),
   INSERTED(3),
   FAILED(4),
-  CANCELLED(5),
-  DELETED(6);
+  CANCELLED(5);
 
   companion object {
     fun fromWire(value: Int): AttachmentOpPhase? =
@@ -41,6 +40,9 @@ internal data class AttachmentOperation(
   /** flags & 0x1: the input queue accepted the line; delivery unconfirmed. */
   val insertUnconfirmed: Boolean get() = flags and 0x1 != 0
 
+  /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
+  val remoteRemoved: Boolean get() = flags and 0x2 != 0
+
   val wirePhase: String get() = when (phase) {
     AttachmentOpPhase.PENDING -> "pending"
     AttachmentOpPhase.UPLOADING -> "uploading"
@@ -48,31 +50,37 @@ internal data class AttachmentOperation(
     AttachmentOpPhase.INSERTED -> "inserted"
     AttachmentOpPhase.FAILED -> "failed"
     AttachmentOpPhase.CANCELLED -> "cancelled"
-    AttachmentOpPhase.DELETED -> "deleted"
   }
 
-  /** Explicit Retry upload is offered only for pending/failed ops. */
+  /**
+   * Explicit Retry upload: pending/failed ops, plus an uploaded op whose
+   * remote file was deleted — the core falls that case through to a
+   * re-upload of the same operation.
+   */
   val canRetryUpload: Boolean
-    get() = phase == AttachmentOpPhase.PENDING || phase == AttachmentOpPhase.FAILED
+    get() = phase == AttachmentOpPhase.PENDING ||
+      phase == AttachmentOpPhase.FAILED ||
+      (phase == AttachmentOpPhase.UPLOADED && remoteRemoved)
 
-  /** Insert is allowed while uploaded; an inserted op accepts it idempotently. */
+  /**
+   * Insert is allowed while uploaded; an inserted op accepts it
+   * idempotently. A removed remote file can never be inserted.
+   */
   val canInsert: Boolean
-    get() = phase == AttachmentOpPhase.UPLOADED || phase == AttachmentOpPhase.INSERTED
+    get() = !remoteRemoved &&
+      (phase == AttachmentOpPhase.UPLOADED || phase == AttachmentOpPhase.INSERTED)
 
   /** Cancel applies while transfer work may still be running. */
   val canCancel: Boolean
     get() = phase == AttachmentOpPhase.PENDING || phase == AttachmentOpPhase.UPLOADING
 
-  /** M4 remote delete covers every phase that may own a completed file. */
+  /** M4 remote delete covers every phase that may still own a file. */
   val canDeleteRemote: Boolean
-    get() = phase == AttachmentOpPhase.UPLOADED ||
-      phase == AttachmentOpPhase.INSERTED ||
-      phase == AttachmentOpPhase.FAILED ||
-      phase == AttachmentOpPhase.CANCELLED
-
-  val isTerminal: Boolean
-    get() = phase == AttachmentOpPhase.INSERTED ||
-      phase == AttachmentOpPhase.DELETED
+    get() = !remoteRemoved &&
+      (phase == AttachmentOpPhase.UPLOADED ||
+        phase == AttachmentOpPhase.INSERTED ||
+        phase == AttachmentOpPhase.FAILED ||
+        phase == AttachmentOpPhase.CANCELLED)
 }
 
 /**
@@ -87,7 +95,6 @@ internal class AttachmentOpMachine {
   fun canBeginUpload(): Boolean {
     val op = operation ?: return true
     return op.phase == AttachmentOpPhase.CANCELLED ||
-      op.phase == AttachmentOpPhase.DELETED ||
       op.phase == AttachmentOpPhase.FAILED
   }
 
@@ -133,50 +140,29 @@ internal class AttachmentOpMachine {
   }
 }
 
-/** Fixed-offset decoder for `meeterm_attachment_snapshot_t` (1000 bytes). */
+/**
+ * Decoder for the JNI `attachmentSnapshot` flat string array:
+ * [phase, flags, attachmentId, bytesUploaded, sizeBytes, remotePath,
+ *  displayName, errorCode, errorMessage]. An empty/short array or an
+ * unknown phase returns null.
+ */
 internal object AttachmentOperationCodec {
-  private const val REMOTE_PATH_LEN = 32
-  private const val REMOTE_PATH = 34
-  private const val DISPLAY_NAME_LEN = 546
-  private const val DISPLAY_NAME = 548
-  private const val ERROR_CODE_LEN = 676
-  private const val ERROR_CODE = 678
-  private const val ERROR_MESSAGE_LEN = 742
-  private const val ERROR_MESSAGE = 744
-  const val RECORD_SIZE = 1000
+  const val FIELD_COUNT = 9
 
-  fun decode(bytes: ByteArray): AttachmentOperation? {
-    if (bytes.size < RECORD_SIZE) return null
-    val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-    val phaseValue = buffer.getInt(0)
+  fun decode(fields: Array<String>): AttachmentOperation? {
+    if (fields.size < FIELD_COUNT) return null
+    val phaseValue = fields[0].toIntOrNull() ?: return null
     val phase = AttachmentOpPhase.fromWire(phaseValue) ?: return null
-    val flags = buffer.getInt(4)
-    val attachmentId = buffer.getLong(8)
-    val bytesUploaded = buffer.getLong(16)
-    val sizeBytes = buffer.getLong(24)
     return AttachmentOperation(
-      attachmentId = attachmentId,
+      attachmentId = fields[2].toLongOrNull() ?: return null,
       phase = phase,
-      flags = flags,
-      bytesUploaded = bytesUploaded,
-      sizeBytes = sizeBytes,
-      remotePath = field(buffer, bytes, REMOTE_PATH_LEN, REMOTE_PATH, 512),
-      displayName = field(buffer, bytes, DISPLAY_NAME_LEN, DISPLAY_NAME, 128),
-      errorCode = field(buffer, bytes, ERROR_CODE_LEN, ERROR_CODE, 64),
-      errorMessage = field(buffer, bytes, ERROR_MESSAGE_LEN, ERROR_MESSAGE, 256),
+      flags = fields[1].toIntOrNull() ?: 0,
+      bytesUploaded = fields[3].toLongOrNull() ?: 0L,
+      sizeBytes = fields[4].toLongOrNull() ?: 0L,
+      remotePath = fields[5],
+      displayName = fields[6],
+      errorCode = fields[7],
+      errorMessage = fields[8],
     )
-  }
-
-  private fun field(
-    buffer: ByteBuffer,
-    bytes: ByteArray,
-    lengthOffset: Int,
-    dataOffset: Int,
-    capacity: Int,
-  ): String {
-    val length = (buffer.getShort(lengthOffset).toInt() and 0xFFFF).coerceAtMost(capacity)
-    val end = dataOffset + length
-    if (end > bytes.size) return ""
-    return String(bytes, dataOffset, length, StandardCharsets.UTF_8)
   }
 }

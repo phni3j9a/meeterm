@@ -160,6 +160,7 @@ enum AttachmentResults {
       "errorCode": op.errorCode,
       "errorMessage": op.errorMessage,
       "insertUnconfirmed": op.insertUnconfirmed,
+      "remoteRemoved": op.remoteRemoved,
     ]
   }
 
@@ -179,6 +180,7 @@ enum AttachmentResults {
     case -6: return "source_too_large"
     case -7: return "destination_not_ready"
     case -8: return "busy"
+    case -9: return "internal_error"
     default: return "native_error"
     }
   }

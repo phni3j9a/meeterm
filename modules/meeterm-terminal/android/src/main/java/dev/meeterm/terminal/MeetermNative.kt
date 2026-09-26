@@ -137,7 +137,7 @@ internal object MeetermNative {
     terminalId: Long,
     localPath: String,
     displayName: String,
-    remoteDirectory: String,
+    remoteDirectory: String?,
     sizeBytes: Long,
   ): Long
 
@@ -156,8 +156,12 @@ internal object MeetermNative {
   /** Explicit server-side delete of the completed remote file. */
   external fun attachmentDeleteRemote(terminalId: Long, attachmentId: Long): Int
 
-  /** Fixed-size `meeterm_attachment_snapshot_t` record, or null. */
-  external fun attachmentSnapshot(attachmentId: Long): ByteArray?
+  /**
+   * Flat string snapshot: [phase, flags, attachmentId, bytesUploaded,
+   * sizeBytes, remotePath, displayName, errorCode, errorMessage];
+   * an empty array means an unknown attachment id.
+   */
+  external fun attachmentSnapshot(attachmentId: Long): Array<String>
 }
 
 internal class RustInputSink(

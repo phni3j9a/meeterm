@@ -254,11 +254,15 @@ final class AttachmentTests: XCTestCase {
     return bytes
   }
 
-  private func operation(_ id: UInt64, _ phase: AttachmentOpPhase) -> AttachmentOperation {
+  private func operation(
+    _ id: UInt64,
+    _ phase: AttachmentOpPhase,
+    flags: UInt32 = 0
+  ) -> AttachmentOperation {
     AttachmentOperation(
       attachmentId: id,
       phase: phase,
-      flags: 0,
+      flags: flags,
       bytesUploaded: 0,
       sizeBytes: 100,
       remotePath: "",
@@ -289,12 +293,13 @@ final class AttachmentTests: XCTestCase {
     XCTAssertEqual(decoded?.insertUnconfirmed, false)
   }
 
-  func testDecodesInsertUnconfirmedFlagAndErrors() {
+  func testDecodesFlagsAndErrorFields() {
     let decoded = AttachmentOperationCodec.decode(
-      operationRecord(phase: 3, flags: 1, errorCode: "input_unconfirmed", errorMessage: "unconfirmed")
+      operationRecord(phase: 3, flags: 3, errorCode: "input_unconfirmed", errorMessage: "unconfirmed")
     )
     XCTAssertEqual(decoded?.phase, .inserted)
     XCTAssertEqual(decoded?.insertUnconfirmed, true)
+    XCTAssertEqual(decoded?.remoteRemoved, true)
     XCTAssertEqual(decoded?.errorCode, "input_unconfirmed")
     XCTAssertEqual(decoded?.errorMessage, "unconfirmed")
   }
@@ -302,6 +307,7 @@ final class AttachmentTests: XCTestCase {
   func testRejectsShortRecordsAndUnknownPhases() {
     XCTAssertNil(AttachmentOperationCodec.decode(operationRecord().prefix(512)))
     XCTAssertNil(AttachmentOperationCodec.decode(operationRecord(phase: 99)))
+    XCTAssertNil(AttachmentOperationCodec.decode(operationRecord(phase: 6)))
   }
 
   func testRefusesSecondUploadWhileOperationIsLive() {
@@ -339,6 +345,7 @@ final class AttachmentTests: XCTestCase {
     XCTAssertTrue(operation(1, .failed).canRetryUpload)
     XCTAssertFalse(operation(1, .uploaded).canRetryUpload)
     XCTAssertTrue(operation(1, .uploaded).canInsert)
+    XCTAssertTrue(operation(1, .inserted).canInsert)
     XCTAssertFalse(operation(1, .uploading).canInsert)
     XCTAssertTrue(operation(1, .pending).canCancel)
     XCTAssertTrue(operation(1, .uploading).canCancel)
@@ -348,6 +355,28 @@ final class AttachmentTests: XCTestCase {
     }
     XCTAssertFalse(operation(1, .uploading).canDeleteRemote)
     XCTAssertFalse(operation(1, .pending).canDeleteRemote)
+  }
+
+  func testRemoteRemovalKeepsPhaseAndChangesCapabilities() {
+    // `flags & 0x2` marks the verified remote deletion; the phase itself is
+    // kept (an inserted line is not revoked, a failed op stays failed).
+    let removedUploaded = operation(1, .uploaded, flags: 0x2)
+    XCTAssertTrue(removedUploaded.remoteRemoved)
+    XCTAssertEqual(removedUploaded.phase.wireName, "uploaded")
+    XCTAssertFalse(removedUploaded.canInsert)
+    XCTAssertFalse(removedUploaded.canDeleteRemote)
+    // The core re-uploads the same operation for uploaded+removed.
+    XCTAssertTrue(removedUploaded.canRetryUpload)
+
+    let removedInserted = operation(1, .inserted, flags: 0x2)
+    XCTAssertTrue(removedInserted.remoteRemoved)
+    XCTAssertFalse(removedInserted.canInsert)
+    XCTAssertFalse(removedInserted.canDeleteRemote)
+    XCTAssertFalse(removedInserted.canRetryUpload)
+
+    let removedFailed = operation(1, .failed, flags: 0x2)
+    XCTAssertTrue(removedFailed.canRetryUpload)
+    XCTAssertFalse(removedFailed.canDeleteRemote)
   }
 
   func testClearDropsOperationForDiscardAndNewPick() {
