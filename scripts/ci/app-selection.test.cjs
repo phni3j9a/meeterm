@@ -252,6 +252,7 @@ function makeNativeEnvironment() {
     visibility: [],
     renderedTerminalIds: [],
     intervalCallbacks: [],
+    clearedIntervals: new Set(),
     fakeTimers: false,
     timeoutCallbacks: [],
     nextTimeoutId: 1,
@@ -845,10 +846,18 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     setImmediate,
     clearImmediate,
     setInterval(callback) {
-      environment.intervalCallbacks.push(callback);
-      return environment.intervalCallbacks.length;
+      const id = environment.intervalCallbacks.length + 1;
+      environment.intervalCallbacks.push(() => {
+        if (environment.clearedIntervals.has(id)) {
+          throw new Error(`interval ${id} invoked after clearInterval`);
+        }
+        return callback();
+      });
+      return id;
     },
-    clearInterval() {},
+    clearInterval(id) {
+      environment.clearedIntervals.add(id);
+    },
     globalThis,
   };
   vm.runInNewContext(transpiled, context, { filename: APP_SOURCE });
@@ -4350,4 +4359,39 @@ test('attachment: an accepted retried upload remains cancellable', async t => {
   });
   await settleAsync();
   assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
+});
+
+test('attachment: a cancelled upload keeps polling until the job flag drops', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  await settleAsync();
+  // Cancel lands while the transfer still runs; core reports cancelled but
+  // keeps JOB_IN_FLIGHT up until the detached cleanup finishes.
+  let resolveCancel;
+  fixture.native.cancelAttachment = () => new Promise(resolve => { resolveCancel = resolve; });
+  await press(fixture.root, findTestId(fixture.root, 'attachment-cancel'));
+  await settleAsync();
+  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'cancelled', jobInFlight: true };
+  await act(async () => { resolveCancel({ status: 'accepted', attachmentId: '42' }); });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
+  assert.equal(findTestId(fixture.root, 'attachment-discard').props.disabled, true,
+    'the still-running cleanup keeps the sheet actions gated');
+  // Cleanup finishes later — the flag drop must still reach the UI through
+  // the live poll. With the bug no interval survives the cancelled phase and
+  // invoking it throws under the real clearInterval harness.
+  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'cancelled', jobInFlight: false };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.equal(findTestId(fixture.root, 'attachment-discard').props.disabled, false,
+    'once cleanup drops JOB_IN_FLIGHT the cancelled draft can be discarded');
+  assert.equal(findTestId(fixture.root, 'attachment-upload').props.disabled, false,
+    'Upload again is usable after cleanup');
+  assert.equal(findTestId(fixture.root, 'attachment-delete-remote').props.disabled, false,
+    'Delete from server is usable after cleanup');
+  assert.throws(() => fixture.environment.intervalCallbacks.at(-1)(),
+    /invoked after clearInterval/,
+    'nothing left to track once the flag is down — the poll must stop');
 });

@@ -270,6 +270,8 @@ W2 の Rust 実装はこの branch に統合済みで、機械照合 test
   Discard 後の別 pane での新 intent・inserted での insert 非表示・stale
   error を持つ op への delete retry が flag 降下まで pending のままである
   こと・upload job in-flight 中に Cancel が有効で受理後に重複発行されない
+  こと・cancel 受理後の `cancelled`+`jobInFlight`（cleanup 待ち）も flag
+  降下まで poll され、降下で Discard/Upload again/Delete が再有効になる
   こと・insert 受理前に開始された snapshot read が後着しても insert の
   busy/非表示状態を解除しないこと・insert/delete の native 受理待ち中に
   poll が完了しても要求が終了しない（受理境界で古い read を失効し、受理後の
