@@ -12,7 +12,9 @@ evidence 文書の追加だけです。
 - 正規化: PNG/JPEG を magic bytes で判定し、HEIC などは非対応理由を表示します。入力は stream copy 中に
   24 MiB、header から辺 16,384 px / 100 Mpx を超えるものを full decode 前に拒否します。EXIF の向き（鏡像を含む）を
   画素へ適用し、EXIF/GPS を除いて再 encode します。出力は辺 4,096 px / 16.7 Mpx / 16 MiB が上限で、
-  それを超える写真だけ縮小し、通常のスクリーンショットは縮小しません。preview は実際に転送する正規化後の
+  長辺が 4,096 px を超える画像は種類に関係なく（スクリーンショットでも）縮小します。1290×2796 のような
+  一般的なスマートフォンのスクリーンショットは上限内なので縮小しません。縮小後の文字の読みやすさは、
+  最終確認に使った4枚（最大 2600×900 / 1290×2796）以外では確認していません。preview は実際に転送する正規化後の
   file から表示します。
 - 転送: 既存の認証済み・host-key 検証済み SSH 接続上に SFTP channel を追加します（russh-sftp 3.0.0、
   russh 0.63.2）。新しい認証接続、shell/base64 fallback はありません。channel の setup も interactive
