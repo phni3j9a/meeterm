@@ -4232,3 +4232,89 @@ test('attachment: a pre-insert snapshot cannot finish a newer insert job', async
   assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'),
     'the current job completion still lands once the stale read is ignored');
 });
+
+test('attachment: a read during native Insert acceptance cannot finish that request', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
+  await settleAsync();
+  // Insert runs on the native main queue; a snapshot poll can observe the
+  // pre-job state while the request is still awaiting its verdict.
+  let acceptInsert;
+  fixture.native.insertAttachment = () => new Promise(resolve => {
+    acceptInsert = () => {
+      fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, jobInFlight: true };
+      resolve({ status: 'accepted', attachmentId: '42' });
+    };
+  });
+  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
+  await settleAsync();
+  assert.equal(findTestId(fixture.root, 'attachment-insert').props.disabled, true,
+    'toolbar Insert stays disabled while the native request is pending');
+  // The poll fires during the acceptance window — it must not complete the
+  // pending request or re-enable Insert.
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.equal(findTestId(fixture.root, 'attachment-insert').props.disabled, true,
+    'a read before native acceptance must not finish the pending request');
+  // Acceptance starts the real job; polling keeps running until its flag drops.
+  await act(async () => { acceptInsert(); });
+  await settleAsync();
+  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
+  assert.equal(
+    all(fixture.root, node => node.props && node.props.testID === 'attachment-insert'
+      && node.props.disabled === false).length,
+    0,
+    'Insert must not re-enable once the job is in flight'
+  );
+  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'inserted', jobInFlight: false };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'),
+    'the dropped flag lands the inserted outcome');
+});
+
+test('attachment: a read during native Delete acceptance cannot finish that request', async t => {
+  const fixture = await openPrepared(t, null);
+  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
+  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  let acceptDelete;
+  fixture.native.deleteRemoteAttachment = () => new Promise(resolve => {
+    acceptDelete = () => {
+      fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, jobInFlight: true };
+      resolve({ status: 'accepted', attachmentId: '42' });
+    };
+  });
+  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'Deleting shows while the native request is pending');
+  // A poll during the acceptance window must not end the Deleting state.
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleting'),
+    'a read before native acceptance must not finish the pending delete');
+  await act(async () => { acceptDelete(); });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'the accepted delete keeps waiting for its flag');
+  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, remoteRemoved: true, jobInFlight: false };
+  await act(async () => {
+    fixture.environment.intervalCallbacks.at(-1)();
+  });
+  await settleAsync();
+  assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'the dropped flag carries the verified removal');
+});

@@ -1444,6 +1444,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   // can never land afterwards, clear a live busyAction, or resurrect an
   // action the new job already owns.
   const attachmentSnapshotSeq = useRef(0);
+  // A native request that has been issued but whose accepted/rejected
+  // verdict has not resolved yet. While it is set no snapshot read starts:
+  // a snapshot taken in that window can only describe the pre-job state
+  // (jobInFlight still false) and must never complete the pending
+  // busyAction. The accept/reject resolution clears it, bumps the read
+  // sequence — invalidating anything still in flight — and only reads
+  // made after the boundary may settle the job's outcome.
+  const attachmentPendingAccept = useRef(false);
   const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
   const completedRecoveryEpochRef = useRef('');
   const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2811,7 +2819,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   /** Fold the authoritative core snapshot into the draft, dropping stale ids. */
   const refreshAttachmentSnapshot = useCallback(() => {
-    if (smokeFixtureActive) return;
+    if (smokeFixtureActive || attachmentPendingAccept.current) return;
     const seq = ++attachmentSnapshotSeq.current;
     void MeetermTerminal.attachmentSnapshot().then(result => {
       // A newer read already superseded this one, or a new job/draft intent
@@ -3050,9 +3058,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (operation && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
     attachmentSnapshotSeq.current += 1;
+    attachmentPendingAccept.current = true;
     setAttachment(current => current ? { ...current, busyAction: 'upload', notice: '', errorCode: '', errorMessage: '' } : current);
     void MeetermTerminal.uploadAttachment(attachment.destination.terminalId, attachment.remoteDirectory.trim())
       .then(result => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
           setAttachment(current => current ? { ...current, busyAction: null, operation: {
@@ -3076,6 +3087,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             : attachmentFailureNotice(result.errorCode, result.message) } : current);
       })
       .catch(() => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null, notice: 'The upload could not be started.' } : current);
       });
@@ -3090,11 +3103,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!retryable) return;
     const generation = attachmentGeneration.current;
     attachmentSnapshotSeq.current += 1;
+    attachmentPendingAccept.current = true;
     setAttachment(current => current ? { ...current, busyAction: 'retryUpload', notice: '' } : current);
     // The core verifies the passed pane terminal against the recorded
     // intent — a different visible pane fails with `destination_changed`.
     void MeetermTerminal.retryAttachmentUpload(selectedPane?.terminalId ?? '')
       .then(result => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
           // Keep busyAction — the retry is an in-flight job; the snapshot's
@@ -3108,6 +3124,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             : attachmentFailureNotice(result.errorCode, result.message) } : current);
       })
       .catch(() => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null, notice: 'The retry could not be started.' } : current);
       });
@@ -3120,9 +3138,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (operation.phase !== 'pending' && operation.phase !== 'uploading') return;
     const generation = attachmentGeneration.current;
     attachmentSnapshotSeq.current += 1;
+    attachmentPendingAccept.current = true;
     setAttachment(current => current ? { ...current, busyAction: 'cancel', notice: '' } : current);
     void MeetermTerminal.cancelAttachment()
       .then(result => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
           setAttachment(current => current?.operation ? { ...current, busyAction: null, operation: { ...current.operation, phase: 'cancelled' } } : current);
@@ -3133,6 +3154,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           result.status === 'unavailable' ? 'The attachment backend is not available in this build.' : result.message } : current);
       })
       .catch(() => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null, notice: 'The upload could not be cancelled.' } : current);
       });
@@ -3162,9 +3185,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     // New job starting: reads begun before this point belong to the previous
     // job generation and must never clear the insert busy state.
     attachmentSnapshotSeq.current += 1;
+    // While the native accepted/rejected verdict is still out, snapshot
+    // reads are suppressed — a pre-acceptance snapshot can only describe
+    // the pre-job state and would wrongly end the Inserting… wait.
+    attachmentPendingAccept.current = true;
     setAttachment(current => current ? { ...current, busyAction: 'insert', notice: '' } : current);
     void MeetermTerminal.insertAttachment(pane.terminalId)
       .then(result => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted' || result.status === 'inserted') {
           // `accepted` only means the verify+insert job started — keep
@@ -3183,6 +3212,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
               : attachmentFailureNotice(result.errorCode, result.message));
       })
       .catch(() => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null } : current);
         setControlMessage('The image reference could not be inserted.');
@@ -3203,11 +3234,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (operation.phase !== 'uploaded' && operation.phase !== 'inserted' && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
     const generation = attachmentGeneration.current;
     attachmentSnapshotSeq.current += 1;
+    attachmentPendingAccept.current = true;
     setAttachment(current => current ? { ...current, busyAction: 'deleteRemote', notice: '' } : current);
     // The core verifies the passed pane terminal against the recorded
     // intent — a different visible pane fails with `destination_changed`.
     void MeetermTerminal.deleteRemoteAttachment(selectedPane?.terminalId ?? '')
       .then(result => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         if (result.status === 'accepted') {
           // Keep `busyAction: 'deleteRemote'`: refreshAttachmentSnapshot clears
@@ -3220,6 +3254,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             : attachmentFailureNotice(result.errorCode, result.message) } : current);
       })
       .catch(() => {
+        attachmentPendingAccept.current = false;
+        attachmentSnapshotSeq.current += 1;
         if (attachmentGeneration.current !== generation) return;
         setAttachment(current => current ? { ...current, busyAction: null, notice: ATTACHMENT_DELETE_FAILED_NOTICE } : current);
       });
@@ -3243,11 +3279,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!attachment || attachment.busyAction) return;
     const generation = attachmentGeneration.current;
     attachmentSnapshotSeq.current += 1;
+    attachmentPendingAccept.current = true;
     setAttachment(current => current ? { ...current, busyAction: 'discard', notice: '' } : current);
     void (async () => {
       if (!smokeFixtureActive) {
         try { await MeetermTerminal.discardAttachment(); } catch { /* local cleanup is best-effort */ }
       }
+      attachmentPendingAccept.current = false;
+      attachmentSnapshotSeq.current += 1;
       if (attachmentGeneration.current !== generation) return;
       setAttachment(current => current ? {
         ...current,
