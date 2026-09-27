@@ -3552,6 +3552,60 @@ class TerminalThemeTests(unittest.TestCase):
             visible_to_user=visible,
         )
 
+    # Verbatim uiautomator subtrees captured on the same 99855a2 release APK
+    # whose full-r2 run failed at daily_settings_theme/ui_timeout. Evidence
+    # branch android-20260928-issue37-settings-id-998 @ eda34bc5
+    # (theme-settings-two-rows.xml). This dump emits bare resource ids and
+    # omits visible-to-user; parse_ui_dump defaults it to true.
+    _THEME_ROWS_XML_99855 = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<hierarchy rotation="0">'
+        '<node index="4" text="" resource-id="app-theme" class="android.widget.Button" '
+        'package="dev.meeterm.app" content-desc="Appearance, Light" checkable="false" '
+        'checked="false" clickable="true" enabled="true" focusable="true" focused="false" '
+        'scrollable="false" long-clickable="false" password="false" selected="false" '
+        'bounds="[63,654][1017,870]" drawing-order="5" hint="">'
+        '<node index="0" text="Appearance" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,696][897,759]" '
+        'drawing-order="1" hint="" />'
+        '<node index="1" text="Light" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,769][897,827]" '
+        'drawing-order="2" hint="" />'
+        '</node>'
+        '<node index="5" text="" resource-id="terminal-theme" class="android.widget.Button" '
+        'package="dev.meeterm.app" content-desc="Terminal theme, Dark" checkable="false" '
+        'checked="false" clickable="true" enabled="true" focusable="true" focused="false" '
+        'scrollable="false" long-clickable="false" password="false" selected="false" '
+        'bounds="[63,870][1017,1086]" drawing-order="6" hint="">'
+        '<node index="0" text="Terminal theme" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,912][897,975]" '
+        'drawing-order="1" hint="" />'
+        '<node index="1" text="Dark" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,985][897,1043]" '
+        'drawing-order="2" hint="" />'
+        '</node>'
+        '</hierarchy>'
+    )
+
+    def test_theme_row_matches_real_dump_bare_resource_ids(self) -> None:
+        nodes = smoke.parse_ui_dump(self._THEME_ROWS_XML_99855.encode("utf-8"))
+        appearance = smoke.find_theme_row(nodes, "Appearance")
+        terminal = smoke.find_theme_row(nodes, "Terminal theme")
+        self.assertIsNotNone(appearance)
+        self.assertIsNotNone(terminal)
+        self.assertEqual(appearance.resource_id, "app-theme")
+        self.assertEqual(terminal.resource_id, "terminal-theme")
+        self.assertEqual(appearance.content_description, "Appearance, Light")
+        self.assertEqual(terminal.content_description, "Terminal theme, Dark")
+
     def test_theme_row_matches_resource_id_with_value_suffix(self) -> None:
         row = self._theme_row(
             "Appearance, Dark",
@@ -3576,6 +3630,9 @@ class TerminalThemeTests(unittest.TestCase):
             (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", enabled=False), "Appearance"),
             (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", visible=False), "Appearance"),
             (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Font size"),
+            (self._theme_row("Appearance, Dark", resource_id="com.example.other:id/app-theme"), "Appearance"),
+            (self._theme_row("Appearance, Dark", resource_id="app-theme-debug"), "Appearance"),
+            (self._theme_row("Terminal theme, Light", resource_id="app-theme"), "Terminal theme"),
         ]
         for row, label in cases:
             with self.subTest(label=label, enabled=row.enabled, visible=row.visible_to_user):

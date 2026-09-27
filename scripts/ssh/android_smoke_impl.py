@@ -1561,16 +1561,18 @@ def find_theme_row(nodes: list[Node], label: str) -> Node | None:
     (for example ``Appearance, Dark``), so row identity comes from the
     stable ``testID`` resource id while the label contract is checked with
     the established label-prefix rule instead of an exact-description match.
+    The uiautomator dump exposes the id bare (``app-theme``) or package
+    qualified (``dev.meeterm.app:id/app-theme``); only this package's prefix
+    is stripped, so another package's ``*:id/app-theme`` stays rejected.
     """
 
     resource = THEME_ROW_RESOURCE_IDS.get(label)
     if resource is None:
         return None
-    full_id = f"{PACKAGE}:id/{resource}"
     for node in nodes:
         if not node.visible_to_user or not node.enabled:
             continue
-        if node.resource_id != full_id:
+        if node.resource_id.removeprefix(f"{PACKAGE}:id/") != resource:
             continue
         if not content_description_has_label(node.content_description, label):
             continue
