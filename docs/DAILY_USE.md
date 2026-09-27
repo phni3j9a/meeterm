@@ -19,7 +19,8 @@ The canonical product and native data-plane invariants remain unchanged.
 - Native Ctrl/Alt combinations and useful navigation keys, including external
   keyboard input, with shared Rust encoding and local IME composition.
 - Configurable bounded scrollback and documented reconnect retention semantics.
-- Persisted font size, app appearance and history settings; deterministic resize.
+- Persisted font size, independent app appearance/terminal theme, and history
+  settings; deterministic resize.
 - tmux mobile zoom is owned per window/generation, preserves pre-existing desktop
   zoom, and performs bounded same-stream cleanup on Disconnect. An
   `layout_restore_unconfirmed` result is surfaced without restoring a stale
@@ -115,6 +116,9 @@ type SavedCredential =
 type TerminalPreferences = {
   fontSize: number; // 10..24 points, default 15
   theme: 'system' | 'light' | 'dark'; // App appearance; new installs default to light
+  // Terminal surface theme, independent from `theme`. Saves that predate this
+  // key and new installs both resolve as the historical dark surface.
+  terminalTheme: 'system' | 'light' | 'dark';
   scrollbackLines: number; // 1000..50000, default 10000
   automaticReconnect: boolean; // default true
 };
@@ -159,10 +163,18 @@ when endpoint, username and auth method still match. No API returns credentials
 to JavaScript. `TmuxPane` gains `paneName`. The native terminal view gains
 `fontSize`, `theme` (`light` or `dark`) and `scrollbackLines` props. History
 preferences are applied to the Rust terminal registry, including hidden panes.
-Since [the Issue #19 interface refinement](UI_UX.md), the app's saved `theme`
-controls its chrome and auxiliary screens; the product terminal view is always
-dark for consistent ANSI colors. The native view still supports both palettes,
-and the historical light/dark evidence below describes its tested source.
+App appearance and terminal theme are independent Settings rows. The saved
+`theme` controls app chrome, navigation, sheets, status and recovery surfaces;
+the saved `terminalTheme` controls only the native terminal surface's light or
+dark palette and the matching backgrounded placeholder. `terminalTheme` values
+of `light` or `dark` resolve directly, `system` follows the OS appearance, and
+saves that predate the key resolve as the historical dark surface. A theme
+change reaches the existing native view as an appearance prop update through
+its `setTheme` boundary: the same terminal binding is kept, no surface or
+connection is recreated, and opening Settings still unmounts the surface and
+clears composition exactly as before. The Android external-IME strip colors
+are supplied by the input method and stay outside this guarantee. The
+historical light/dark evidence below describes the renderer's tested source.
 
 `connectHost` stops after host-key/authentication and runtime discovery;
 `selectRuntime` performs the explicit backend binding. `createTmuxSession` is

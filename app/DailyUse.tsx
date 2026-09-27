@@ -8,11 +8,11 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ServerProfile, TerminalPreferences } from '../modules/meeterm-terminal';
-import { Button, DARK, Icon, IconButton, MONO, useReducedMotion } from './ui';
-import type { Palette } from './ui';
+import { Button, DARK, Icon, IconButton, MONO, TERMINAL_SURFACE, useReducedMotion, useTerminalTheme } from './ui';
+import type { Palette, ThemePreference } from './ui';
 
 export const DEFAULT_PREFERENCES: TerminalPreferences = {
-  fontSize: 15, theme: 'light', scrollbackLines: 10000, automaticReconnect: true,
+  fontSize: 15, theme: 'light', terminalTheme: 'dark', scrollbackLines: 10000, automaticReconnect: true,
 };
 
 export function itemActions(title: string, edit: () => void, remove: () => void, kind: 'profile' | 'workspace' = 'profile') {
@@ -131,25 +131,28 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
   const [fontSize, setFontSize] = useState(String(preferences.fontSize));
   const [scrollback, setScrollback] = useState(String(preferences.scrollbackLines));
   const [theme, setTheme] = useState(preferences.theme);
+  const [terminalTheme, setTerminalTheme] = useState(preferences.terminalTheme);
   const [automaticReconnect, setAutomaticReconnect] = useState(preferences.automaticReconnect);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
+  const previewTheme = useTerminalTheme(terminalTheme);
+  const previewSurface = TERMINAL_SURFACE[previewTheme];
   useEffect(() => {
     if (!visible) return;
     setFontSize(String(preferences.fontSize)); setScrollback(String(preferences.scrollbackLines));
-    setTheme(preferences.theme); setAutomaticReconnect(preferences.automaticReconnect); setError('');
+    setTheme(preferences.theme); setTerminalTheme(preferences.terminalTheme); setAutomaticReconnect(preferences.automaticReconnect); setError('');
     setBusy(false); pending.current = false;
   }, [preferences, visible]);
   const dirty = fontSize !== String(preferences.fontSize) || scrollback !== String(preferences.scrollbackLines)
-    || theme !== preferences.theme || automaticReconnect !== preferences.automaticReconnect;
-  const chooseTheme = () => {
+    || theme !== preferences.theme || terminalTheme !== preferences.terminalTheme || automaticReconnect !== preferences.automaticReconnect;
+  const chooseTheme = (title: string, onPick: (value: ThemePreference) => void) => {
     Keyboard.dismiss();
     const themes = ['system', 'light', 'dark'] as const;
     if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions({ title: 'Appearance', options: [...themes.map(item => THEME_LABELS[item]), 'Cancel'], cancelButtonIndex: 3 }, index => { if (index < 3) setTheme(themes[index]); });
+      ActionSheetIOS.showActionSheetWithOptions({ title, options: [...themes.map(item => THEME_LABELS[item]), 'Cancel'], cancelButtonIndex: 3 }, index => { if (index < 3) onPick(themes[index]); });
     } else {
-      Alert.alert('Appearance', undefined, themes.map(value => ({ text: THEME_LABELS[value], onPress: () => setTheme(value) })), { cancelable: true });
+      Alert.alert(title, undefined, themes.map(value => ({ text: THEME_LABELS[value], onPress: () => onPick(value) })), { cancelable: true });
     }
   };
   const submit = async () => {
@@ -158,7 +161,7 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
     if (!/^\d+$/.test(fontSize) || size < 10 || size > 24) { setError('Enter a whole number from 10 to 24 for text size.'); return; }
     if (!/^\d+$/.test(scrollback) || lines < 1000 || lines > 50000) { setError('Enter a whole number from 1,000 to 50,000 for scrollback.'); return; }
     pending.current = true; setBusy(true); setError(''); Keyboard.dismiss();
-    try { if (!await onSave({ fontSize: size, theme, scrollbackLines: lines, automaticReconnect })) setError('Could not save settings. Please try again.'); }
+    try { if (!await onSave({ fontSize: size, theme, terminalTheme, scrollbackLines: lines, automaticReconnect })) setError('Could not save settings. Please try again.'); }
     catch { setError('Could not save settings. Please try again.'); }
     finally { pending.current = false; setBusy(false); }
   };
@@ -167,13 +170,14 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>DISPLAY</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}>
         <View style={[styles.settingRow, { borderBottomColor: colors.border }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Text size</Text><Text style={[styles.caption, { color: colors.muted }]}>10–24 pt</Text></View><TextInput accessibilityLabel="Terminal font size" testID="terminal-font-size" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={2} value={fontSize} onChangeText={setFontSize} selectionColor={colors.accent} style={numericStyle} /></View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Appearance" testID="terminal-theme" onPress={chooseTheme} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Appearance</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Appearance" testID="app-theme" onPress={() => chooseTheme('Appearance', setTheme)} style={({ pressed }) => [styles.settingRow, { borderBottomColor: colors.border }, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Appearance</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Terminal theme" testID="terminal-theme" onPress={() => chooseTheme('Terminal theme', setTerminalTheme)} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Terminal theme</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[terminalTheme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
       </View>
-      <View style={[styles.previewCard, { backgroundColor: DARK.terminal }]}>
-        <Text style={[styles.caption, { color: DARK.muted }]}>Text size preview</Text>
-        <Text style={[styles.preview, { color: DARK.text, fontSize: Math.min(24, Math.max(10, Number(fontSize) || 15)) }]}>Aa 0123 日本語</Text>
+      <View testID="terminal-preview" style={[styles.previewCard, { backgroundColor: previewSurface.background }]}>
+        <Text style={[styles.caption, { color: previewSurface.muted }]}>Terminal text size preview</Text>
+        <Text style={[styles.preview, { color: previewSurface.foreground, fontSize: Math.min(24, Math.max(10, Number(fontSize) || 15)) }]}>Aa 0123 日本語</Text>
       </View>
-      <Text style={[styles.helper, { color: colors.muted }]}>Appearance applies to the app. Terminals keep a dark background for consistent command-line colors.</Text>
+      <Text style={[styles.helper, { color: colors.muted }]}>Appearance recolors the app. Terminal theme recolors only the terminal surface.</Text>
     </View>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>HISTORY</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Scrollback lines</Text><Text style={[styles.caption, { color: colors.muted }]}>1,000–50,000 lines</Text></View><TextInput accessibilityLabel="Scrollback lines" testID="scrollback-lines" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={5} value={scrollback} onChangeText={setScrollback} selectionColor={colors.accent} style={[numericStyle, { minWidth: 96 }]} /></View></View>

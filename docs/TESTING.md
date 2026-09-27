@@ -347,7 +347,12 @@ Herdr `default` candidate の `Last used` hint を示すpicker stateです。
 `recovery-progress`、`recovery-exhausted`、`recovery-mismatch`、
 `layout-restore-unconfirmed`、
 `runtime-layout-restore-unconfirmed`、`connection-error`です。
-撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
+撮影用設定は既定でアプリ外観ライト・端末テーマダークに固定します。
+外観の組み合わせを確認する場合だけ、起動URLのscreenの直後に
+`&app=<system|light|dark>` と `&terminal=<system|light|dark>` をこの順で追加できます。
+両方とも任意で、fixtureのseedされた設定値だけを上書きし、接続・pane・lifecycle状態は変えません。
+不明な値・未知のパラメータ・順序の入れ替えは従来どおり経路を無効にします。
+最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
 追加診断の `polish` は、初回起動、空の一覧、検索結果なし、切断、再接続中、認証エラー、
 長いworkspace名の7状態を `polish-<名前>.png` に保存します。起動URL名は

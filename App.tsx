@@ -30,8 +30,8 @@ import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
 import { DEFAULT_PREFERENCES, itemActions, NameForm, ProfileList, SettingsForm } from './app/DailyUse';
-import { Button, Companion, DARK, Icon, IconButton, MONO, usePalette, useReducedMotion } from './app/ui';
-import type { Palette } from './app/ui';
+import { Button, Companion, DARK, Icon, IconButton, MONO, TERMINAL_SURFACE, usePalette, useReducedMotion, useTerminalTheme } from './app/ui';
+import type { Palette, ThemePreference } from './app/ui';
 
 type StartupPhase =
   | 'js_module_loaded'
@@ -144,7 +144,7 @@ type PendingRuntimeRefresh = {
   clearSelectionErrors: boolean;
 };
 type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff' | 'attachment-choose' | 'attachment-ready' | 'attachment-uploading' | 'attachment-pending' | 'attachment-uploaded' | 'attachment-inserted' | 'attachment-failed' | 'attachment-cancelled' | 'attachment-deleted' | 'attachment-error' | 'attachment-blocked';
-type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen } | null;
+type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen; appTheme?: ThemePreference; terminalTheme?: ThemePreference } | null;
 
 // This is the native message published after an explicit disconnect cannot
 // prove that its old tmux layout was restored. The smoke fixtures display the
@@ -601,9 +601,9 @@ function smokeRouteForUrl(url: string | null): SmokeRoute | undefined {
   if (!url || process.env.EXPO_PUBLIC_MEETERM_SMOKE !== '1') return undefined;
   if (url === 'meeterm://foundation?foundation=1') return { kind: 'foundation' };
   if (!url.startsWith('meeterm://smoke?')) return undefined;
-  const match = /^meeterm:\/\/smoke\?screen=([^&]+)$/.exec(url);
+  const match = /^meeterm:\/\/smoke\?screen=([^&]+)(?:&app=(system|light|dark))?(?:&terminal=(system|light|dark))?$/.exec(url);
   if (!match || !SMOKE_SCREEN_NAMES.includes(match[1] as SmokeScreen)) return undefined;
-  return { kind: 'screen', screen: match[1] as SmokeScreen };
+  return { kind: 'screen', screen: match[1] as SmokeScreen, appTheme: match[2] as ThemePreference | undefined, terminalTheme: match[3] as ThemePreference | undefined };
 }
 
 function sameConnection(a: SshConnectionState, b: SshConnectionState) {
@@ -1302,9 +1302,9 @@ function RecoveryRail({ copy, colors, busy, onRetry, onReview, onConnectionDetai
 }) {
   const accessibilityLabel = `${copy.title}. ${copy.detail}. ${copy.meta.replace(' · ', '. ')}.`;
   const reducedMotion = useReducedMotion();
-  return <View testID="recovery-rail" style={[styles.recoveryRail, { backgroundColor: DARK.surface, borderTopColor: DARK.border, borderBottomColor: DARK.border }]}>
+  return <View testID="recovery-rail" style={[styles.recoveryRail, { backgroundColor: colors.surface, borderTopColor: colors.border, borderBottomColor: colors.border }]}>
     <View accessible={false} importantForAccessibility="no-hide-descendants" style={styles.recoveryRailIcon}>
-      {copy.progress && !reducedMotion ? <ActivityIndicator accessibilityElementsHidden color={DARK.agentStatus.working} /> : <Icon name={copy.danger ? 'key' : 'terminal'} color={copy.danger ? DARK.danger : DARK.agentStatus.working} size={20} />}
+      {copy.progress && !reducedMotion ? <ActivityIndicator accessibilityElementsHidden color={colors.agentStatus.working} /> : <Icon name={copy.danger ? 'key' : 'terminal'} color={copy.danger ? colors.danger : colors.agentStatus.working} size={20} />}
     </View>
     <View style={styles.recoveryRailBody}>
       <View accessible accessibilityRole="text" accessibilityLabel={accessibilityLabel} accessibilityLiveRegion={copy.assertive ? 'assertive' : 'polite'} style={styles.recoveryRailText}>
@@ -1339,6 +1339,15 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const smokeScreen = smokeRoute?.kind === 'screen' ? smokeRoute.screen : null;
   const smokeFixtureActive = smokeScreen !== null;
   const fixture = smokeScreen ? smokeFixture(smokeScreen) : undefined;
+  // Optional smoke URL parameters override only the seeded appearance values;
+  // the fixture's connection, pane, and lifecycle state stays identical.
+  if (fixture && smokeRoute?.kind === 'screen' && (smokeRoute.appTheme || smokeRoute.terminalTheme)) {
+    fixture.preferences = {
+      ...fixture.preferences,
+      theme: smokeRoute.appTheme ?? fixture.preferences.theme,
+      terminalTheme: smokeRoute.terminalTheme ?? fixture.preferences.terminalTheme,
+    };
+  }
   const [preferences, setPreferences] = useState<TerminalPreferences>(() => fixture?.preferences ?? DEFAULT_PREFERENCES);
   const homeColors = usePalette(preferences.theme);
   const insets = useSafeAreaInsets();
@@ -1819,10 +1828,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [control.recovery.phase, recoveryPhaseActive, retainedWorkAvailable, selectedPaneCandidate]);
   const activeWorkspaceId = selectedWorkspaceId
     ?? session.groups.find(group => group.workspaceId === workspaceId && group.selected)?.workspaceId;
-  // App appearance and terminal contrast are independent. Remote ANSI palettes
-  // remain readable on a dark work surface, including in the light app theme.
-  const colors = screen === 'terminal' ? DARK : homeColors;
-  const resolvedTheme = 'dark';
+  // App appearance and the terminal surface theme resolve independently.
+  // Chrome, navigation, status, and recovery UI follow the app palette; the
+  // native terminal surface and its placeholder follow the terminal theme.
+  const resolvedTheme = useTerminalTheme(preferences.terminalTheme);
   const currentProfile = profiles.find(profile => profile.id === profileId);
   const effectiveRuntimeHint = runtimeHint ?? runtimeHintForProfile(currentProfile);
   runtimeHintRef.current = effectiveRuntimeHint;
@@ -3816,30 +3825,29 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [connection, removedHostKeyId, runCommand]);
 
   const showRecoveryRail = Boolean(recoveryPhaseActive && retainedWorkAvailable && surfaceAvailable && recoveryCopy);
-  const statusNotice = attempted && !ready && (!showRecoveryRail || canRetryRetainedFromList) ? <View style={[styles.notice, { backgroundColor: colors.surface }]}>
-    <Text style={[styles.noticeTitle, { color: colors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'Verify this server' : connection.state === 'Disconnected' ? 'Disconnected' : presentation.label}</Text>
-    <Text style={[styles.noticeBody, { color: colors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'Your work is still running on the server. Reconnect to pick up where you left off.' : 'Enter your connection details to get started.' : closing ? hasConnected ? 'Disconnecting. Your work will keep running on the server.' : 'Canceling the connection.' : 'Checking your remote workspaces.'}</Text>
+  const statusNotice = attempted && !ready && (!showRecoveryRail || canRetryRetainedFromList) ? <View style={[styles.notice, { backgroundColor: homeColors.surface }]}>
+    <Text style={[styles.noticeTitle, { color: homeColors.text }]}>{connection.state === 'Failed' && connection.errorCode === 'host_key_changed' ? 'Verify this server' : connection.state === 'Disconnected' ? 'Disconnected' : presentation.label}</Text>
+    <Text style={[styles.noticeBody, { color: homeColors.muted }]}>{connection.state === 'Failed' ? connectionError(connection) : connection.state === 'Disconnected' ? hasConnected ? 'Your work is still running on the server. Reconnect to pick up where you left off.' : 'Enter your connection details to get started.' : closing ? hasConnected ? 'Disconnecting. Your work will keep running on the server.' : 'Canceling the connection.' : 'Checking your remote workspaces.'}</Text>
     <View style={styles.noticeActions}>
-      {canShowReconnect ? <Button testID="workspaces-reconnect" label="Reconnect" colors={colors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
-      {!active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={openForm} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Connection details</Text></Pressable> : null}
-      {active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel connection" disabled={commandBusy} onPress={disconnect} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Cancel</Text></Pressable> : null}
-      {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Review key change</Text></Pressable> : null}
+      {canShowReconnect ? <Button testID="workspaces-reconnect" label="Reconnect" colors={homeColors} disabled={commandBusy || recoveryPending.retry} onPress={reconnect}>Reconnect</Button> : null}
+      {!active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Connect" onPress={openForm} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Connection details</Text></Pressable> : null}
+      {active && !closing ? <Pressable accessibilityRole="button" accessibilityLabel="Cancel connection" disabled={commandBusy} onPress={disconnect} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Cancel</Text></Pressable> : null}
+      {keyChangeId(connection) && keyChangeId(connection) !== removedHostKeyId ? <Pressable accessibilityRole="button" accessibilityLabel="Review key change" onPress={reviewChangedHostKey} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Review key change</Text></Pressable> : null}
     </View>
   </View> : null;
 
-  const feedbackColors = sheet ? homeColors : colors;
-  const cleanupWarningNotice = cleanupWarning ? <View testID="cleanup-warning" accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
-    <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{cleanupWarning.message}</Text>
-    <IconButton icon="close" label="Dismiss desktop layout warning" testID="cleanup-warning-dismiss" colors={feedbackColors} onPress={dismissCleanupWarning} />
+  const cleanupWarningNotice = cleanupWarning ? <View testID="cleanup-warning" accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: homeColors.surface }]}>
+    <Text style={[styles.noticeBody, { color: homeColors.danger, flex: 1 }]}>{cleanupWarning.message}</Text>
+    <IconButton icon="close" label="Dismiss desktop layout warning" testID="cleanup-warning-dismiss" colors={homeColors} onPress={dismissCleanupWarning} />
   </View> : null;
-  const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: feedbackColors.surface }]}>
-    <Text style={[styles.noticeBody, { color: feedbackColors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
-    {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={feedbackColors} onPress={() => setControlMessage('')} /> : null}
+  const feedback = controlMessage || pollProblem ? <View accessibilityLiveRegion="polite" style={[styles.feedback, { backgroundColor: homeColors.surface }]}>
+    <Text style={[styles.noticeBody, { color: homeColors.danger, flex: 1 }]}>{controlMessage || 'Connection status is unavailable. Wait a moment, then reconnect.'}</Text>
+    {controlMessage ? <IconButton icon="close" label="Dismiss message" colors={homeColors} onPress={() => setControlMessage('')} /> : null}
   </View> : null;
 
   const recoveryRail = showRecoveryRail
-    ? <RecoveryRail copy={recoveryCopy!} colors={DARK} busy={{ retry: recoveryPending.retry, change: recoveryPending.change }} onRetry={retryRecovery} onReview={reviewChangedHostKey} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} />
-    : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={DARK} busy={{ retry: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
+    ? <RecoveryRail copy={recoveryCopy!} colors={homeColors} busy={{ retry: recoveryPending.retry, change: recoveryPending.change }} onRetry={retryRecovery} onReview={reviewChangedHostKey} onConnectionDetails={openForm} onChooseTerminal={() => setControlMessage('Choose another terminal after recovery finishes.')} onChange={openRecoveryChange} />
+    : recoveredCopy ? <RecoveryRail copy={recoveredCopy} colors={homeColors} busy={{ retry: false, change: false }} onRetry={() => {}} onReview={() => {}} onConnectionDetails={() => {}} onChooseTerminal={() => {}} onChange={() => {}} />
     : null;
 
   const listHeader = <View>
@@ -3911,7 +3919,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   </SafeAreaView>;
 
   return <View style={[styles.flex, { backgroundColor: homeColors.background }]}>
-    <StatusBar hidden={false} backgroundColor={colors.background} barStyle={colors === DARK ? 'light-content' : 'dark-content'} />
+    <StatusBar hidden={false} backgroundColor={homeColors.background} barStyle={homeColors === DARK ? 'light-content' : 'dark-content'} />
     <WorkspaceNavigation screen={screen} colors={homeColors} onScreenChange={next => { if (next === 'workspaces') Keyboard.dismiss(); setScreen(next); }}
       workspaces={<SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: homeColors.background }]}><FlatList
       key={searching ? 'workspace-search' : 'workspace-list'}
@@ -3936,43 +3944,43 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
     /></SafeAreaView>}
-      terminal={<SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: DARK.background }]}><View style={styles.flex}>
+      terminal={<SafeAreaView edges={['top', 'left', 'right']} style={[styles.flex, { backgroundColor: homeColors.background }]}><View style={styles.flex}>
       <View style={styles.terminalHeader}>
-        <IconButton icon="back" label="Back to workspaces" colors={DARK} onPress={backToWorkspaces} />
+        <IconButton icon="back" label="Back to workspaces" colors={homeColors} onPress={backToWorkspaces} />
         <View style={styles.terminalHeading}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} accessibilityState={{ disabled: !runtimeReady }} disabled={!runtimeReady} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: DARK.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={DARK.muted} size={12} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Switch workspace" accessibilityHint={workspace?.name} accessibilityState={{ disabled: !runtimeReady }} disabled={!runtimeReady} onPress={() => openSheet('workspaces')} style={({ pressed }) => [styles.terminalTitleRow, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}><Text numberOfLines={1} style={[styles.terminalTitle, { color: homeColors.text }]}>{workspace?.name ?? 'Workspaces'}</Text><Icon name="down" color={homeColors.muted} size={12} /></Pressable>
           <View style={styles.terminalStatusRow}>
             <Pressable testID="switch-server-session" accessibilityRole="button" accessibilityLabel="Switch server or session" accessibilityHint={`${currentSessionDescription}. Opens the server and session switcher.`} onPress={openSwitcher} style={styles.terminalServerSession}>
-              <Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
-              <Text numberOfLines={1} style={[styles.terminalHost, { color: DARK.muted }]}>{currentSessionDescription}</Text>
+              <Text numberOfLines={1} style={[styles.terminalHost, { color: homeColors.muted }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
+              <Text numberOfLines={1} style={[styles.terminalHost, { color: homeColors.muted }]}>{currentSessionDescription}</Text>
             </Pressable>
-            <ConnectionStatus connection={connection} colors={DARK} />
+            <ConnectionStatus connection={connection} colors={homeColors} />
           </View>
         </View>
-        <IconButton testID="attach-image" icon="attach" label="Attach image" colors={DARK} disabled={!runtimeReady || commandBusy || !surfaceAvailable} onPress={openAttachment} />
+        <IconButton testID="attach-image" icon="attach" label="Attach image" colors={homeColors} disabled={!runtimeReady || commandBusy || !surfaceAvailable} onPress={openAttachment} />
         {attachmentInsertVisible ? <IconButton
           testID="attachment-insert"
           icon="attach"
           label="Insert attachment"
-          colors={DARK}
+          colors={homeColors}
           disabled={attachment?.busyAction != null}
           onPress={insertAttachmentFromToolbar}
         /> : null}
-        <IconButton icon="menu" label="Terminal menu" colors={DARK} onPress={() => openSheet('server')} />
+        <IconButton icon="menu" label="Terminal menu" colors={homeColors} onPress={() => openSheet('server')} />
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
-        <Text style={[styles.groupLabel, { color: DARK.muted }]}>Group</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, strongReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: DARK.surface }, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}>
-          <AgentStatusIndicator status={group?.agentStatus} live={strongReady} colors={DARK} testID={group ? `group-agent-status-${group.id}` : undefined} />
-          <Text numberOfLines={1} style={[styles.groupName, { color: DARK.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={DARK.muted} size={12} />
+        <Text style={[styles.groupLabel, { color: homeColors.muted }]}>Group</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, strongReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: homeColors.surface }, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}>
+          <AgentStatusIndicator status={group?.agentStatus} live={strongReady} colors={homeColors} testID={group ? `group-agent-status-${group.id}` : undefined} />
+          <Text numberOfLines={1} style={[styles.groupName, { color: homeColors.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={homeColors.muted} size={12} />
         </Pressable>
       </View> : null}
-      {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: DARK.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, strongReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={strongReady ? name : `${name}. Cached output, read only. Input is paused until recovery finishes.`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? DARK.accent : 'transparent' }, pressed && { backgroundColor: DARK.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? DARK.accent : DARK.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={strongReady} colors={DARK} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? DARK.accent : DARK.muted }]}>{name}</Text></Pressable>; })}
-      </ScrollView><IconButton icon="plus" label="Create terminal" colors={DARK} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
+      {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: homeColors.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
+        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, strongReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={strongReady ? name : `${name}. Cached output, read only. Input is paused until recovery finishes.`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? homeColors.accent : 'transparent' }, pressed && { backgroundColor: homeColors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? homeColors.accent : homeColors.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={strongReady} colors={homeColors} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? homeColors.accent : homeColors.muted }]}>{name}</Text></Pressable>; })}
+      </ScrollView><IconButton icon="plus" label="Create terminal" colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
       {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, strongReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
-        <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: DARK.muted }]}>{selectedPane.agent.name}</Text>
-        <AgentStatusIndicator status={selectedPane.agent.status} live={strongReady} colors={DARK} showLabel testID="selected-agent-status" />
+        <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: homeColors.muted }]}>{selectedPane.agent.name}</Text>
+        <AgentStatusIndicator status={selectedPane.agent.status} live={strongReady} colors={homeColors} showLabel testID="selected-agent-status" />
       </View>; })() : null}
       {recoveryRail}
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
@@ -3980,14 +3988,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       {surfaceAvailable ? (
         // Unmounting a surface cancels composition; the shared native registry
         // still owns the SSH connection and each terminal's retained state.
-        (recoveryPhaseActive && retainedWorkAvailable) || ((sheet === null || sheet === 'attachment') && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active') ? <TerminalView key={selectedPane!.terminalId} terminalId={selectedPane!.terminalId} interactionMode={strongReady ? 'live' : 'cachedReadOnly'} accessibilityLabel={strongReady ? 'Terminal' : 'Terminal, cached output, read only'} accessibilityHint={strongReady ? undefined : 'Input is paused until recovery finishes.'} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View style={[styles.flex, { backgroundColor: DARK.terminal }]} />
+        (recoveryPhaseActive && retainedWorkAvailable) || ((sheet === null || sheet === 'attachment') && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active') ? <TerminalView key={selectedPane!.terminalId} terminalId={selectedPane!.terminalId} interactionMode={strongReady ? 'live' : 'cachedReadOnly'} accessibilityLabel={strongReady ? 'Terminal' : 'Terminal, cached output, read only'} accessibilityHint={strongReady ? undefined : 'Input is paused until recovery finishes.'} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View testID="terminal-placeholder" style={[styles.flex, { backgroundColor: TERMINAL_SURFACE[resolvedTheme].background }]} />
       ) : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.terminalUnavailable, { paddingBottom: Math.max(insets.bottom, 24) }]}>
         {statusNotice}
         {runtimeReady ? <View style={styles.gone}>
-          <Icon name="terminal" color={DARK.muted} size={32} />
-          <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: DARK.text }]}>{workspace ? 'This terminal has closed' : 'This workspace has closed'}</Text>
-          <Text style={[styles.emptyBody, { color: DARK.muted }]}>{workspace ? 'Select another terminal to keep working.' : 'Choose another workspace from the list.'}</Text>
-          <Button label="Back to workspaces" colors={DARK} secondary onPress={backToWorkspaces}>Back to workspaces</Button>
+          <Icon name="terminal" color={homeColors.muted} size={32} />
+          <Text accessibilityLabel="Terminal unavailable" style={[styles.emptyTitle, { color: homeColors.text }]}>{workspace ? 'This terminal has closed' : 'This workspace has closed'}</Text>
+          <Text style={[styles.emptyBody, { color: homeColors.muted }]}>{workspace ? 'Select another terminal to keep working.' : 'Choose another workspace from the list.'}</Text>
+          <Button label="Back to workspaces" colors={homeColors} secondary onPress={backToWorkspaces}>Back to workspaces</Button>
         </View> : null}
       </ScrollView>}
     </View></SafeAreaView>}

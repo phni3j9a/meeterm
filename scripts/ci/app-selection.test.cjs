@@ -33,6 +33,7 @@ const APP_SOURCE = process.env.APP_SELECTION_SOURCE || path.join(REPO_ROOT, 'App
 const PREFERENCES = {
   fontSize: 14,
   theme: 'light',
+  terminalTheme: 'dark',
   scrollbackLines: 10000,
   automaticReconnect: true,
 };
@@ -40,7 +41,6 @@ const PREFERENCES = {
 const LIGHT = {
   background: '#fbf7ef',
   surface: '#f1eadf',
-  terminal: '#17130f',
   text: '#352b22',
   muted: '#7b6a5a',
   border: '#d8cbbb',
@@ -58,7 +58,6 @@ const LIGHT = {
 const DARK = {
   background: '#241f1b',
   surface: '#332b25',
-  terminal: '#0c0a08',
   text: '#f7eee3',
   muted: '#c3b5a6',
   border: '#51443a',
@@ -235,6 +234,12 @@ function makeNativeEnvironment() {
     initialURLBehavior: 'resolve',
     profilesShouldFail: false,
     profiles: [],
+    preferences: null,
+    savedPreferences: null,
+    colorScheme: 'light',
+    colorSchemeListeners: new Set(),
+    actionSheet: null,
+    terminalViewMounts: 0,
     selectRuntimeShouldFail: false,
     selectRuntimeMode: 'ready',
     pendingSelection: null,
@@ -279,6 +284,10 @@ function makeNativeEnvironment() {
     assert.equal(typeof dismiss, 'function', 'an iOS page sheet should be awaiting dismissal');
     dismiss();
   };
+  environment.emitColorScheme = next => {
+    environment.colorScheme = next;
+    for (const listener of [...environment.colorSchemeListeners]) listener(next);
+  };
 
   const native = {
     recordStartupPhase(phase) {
@@ -292,9 +301,11 @@ function makeNativeEnvironment() {
     },
     async getPreferences() {
       environment.nativeCalls.push('getPreferences');
-      return { ...PREFERENCES };
+      return { ...(environment.preferences ?? PREFERENCES) };
     },
-    async setPreferences() {},
+    async setPreferences(preferences) {
+      environment.savedPreferences = clone(preferences);
+    },
     async setAutomaticReconnect() {},
     async connectHost(_connectionId, options) {
       environment.nativeCalls.push({ method: 'connectHost', options });
@@ -583,6 +594,20 @@ function completeRefresh(environment) {
   environment.runtimeDiscovery.revision += 1;
 }
 
+// The OS appearance is a subscribed value on both axes: App appearance and
+// Terminal theme resolve it independently through this hook double.
+function makeColorSchemeHook(environment) {
+  return function useColorScheme() {
+    const [scheme, setScheme] = React.useState(environment.colorScheme);
+    React.useEffect(() => {
+      const listener = next => setScheme(next);
+      environment.colorSchemeListeners.add(listener);
+      return () => { environment.colorSchemeListeners.delete(listener); };
+    }, []);
+    return scheme;
+  };
+}
+
 function makeReactNativeMocks(environment) {
   const noOpSubscription = { remove() {} };
   const AppState = {
@@ -636,14 +661,20 @@ function makeReactNativeMocks(environment) {
   };
 
   return {
-    ActivityIndicator: 'ActivityIndicator',
-    Alert,
     AccessibilityInfo,
+    ActivityIndicator: 'ActivityIndicator',
+    ActionSheetIOS: {
+      showActionSheetWithOptions(options, callback) {
+        environment.actionSheet = { options, callback };
+      },
+    },
+    Alert,
     AppState,
     BackHandler,
     FlatList,
     Image: 'Image',
     Keyboard,
+    KeyboardAvoidingView: 'KeyboardAvoidingView',
     Linking,
     Modal,
     Platform,
@@ -651,9 +682,11 @@ function makeReactNativeMocks(environment) {
     ScrollView: 'ScrollView',
     StatusBar,
     StyleSheet,
+    Switch: 'Switch',
     Text: 'Text',
     TextInput: 'TextInput',
     View: 'View',
+    useColorScheme: makeColorSchemeHook(environment),
     useWindowDimensions() { return { width: 390, height: 844, scale: 1, fontScale: 1 }; },
   };
 }
@@ -666,7 +699,14 @@ function makeSafeAreaMocks() {
   };
 }
 
-function makeUiMocks() {
+// Sentinel surface colors intentionally differ from the real native values:
+// assertions must read them through TERMINAL_SURFACE rather than a literal.
+const TERMINAL_SURFACE = {
+  light: { background: '#e6eef0', foreground: '#182625', muted: '#5a6c69' },
+  dark: { background: '#17110d', foreground: '#d9cfc0', muted: '#93836f' },
+};
+
+function makeUiMocks(environment) {
   function Button({ label, children, onPress, disabled, ...props }) {
     return React.createElement('Button', {
       ...props,
@@ -688,7 +728,19 @@ function makeUiMocks() {
   }
   function Icon(props) { return React.createElement('Icon', props); }
   function Companion(props) { return React.createElement('Companion', props, props.children); }
-  function usePalette(theme) { return theme === 'dark' ? DARK : LIGHT; }
+  const useColorScheme = makeColorSchemeHook(environment);
+  function usePalette(preference = 'system') {
+    const system = useColorScheme();
+    return (preference === 'system' ? system : preference) === 'dark' ? DARK : LIGHT;
+  }
+  function resolveTerminalTheme(preference, system) {
+    if (preference === 'light') return 'light';
+    if (preference === 'system') return system === 'dark' ? 'dark' : 'light';
+    return 'dark';
+  }
+  function useTerminalTheme(preference) {
+    return resolveTerminalTheme(preference, useColorScheme());
+  }
   return {
     __esModule: true,
     Button,
@@ -697,8 +749,11 @@ function makeUiMocks() {
     Icon,
     IconButton,
     MONO: 'MONO',
+    TERMINAL_SURFACE,
+    resolveTerminalTheme,
     usePalette,
     useReducedMotion: () => true,
+    useTerminalTheme,
   };
 }
 
@@ -769,6 +824,9 @@ function makeFormMocks() {
 function makeTerminalModule(native, environment) {
   function TerminalView({ terminalId, ...props }) {
     environment.renderedTerminalIds.push(terminalId);
+    // A mount effect approximates a real surface mount: prop-only theme
+    // updates re-render in place and must not increment this counter.
+    React.useEffect(() => { environment.terminalViewMounts += 1; }, []);
     return React.createElement('TerminalView', { ...props, terminalId });
   }
   const module = {
@@ -781,7 +839,91 @@ function makeTerminalModule(native, environment) {
   return module;
 }
 
-function loadApp(environment, native, presentationOnly = false, smokeEnabled = false) {
+// Compile a sibling app module the same way App.tsx is compiled, against the
+// same doubles, so tests can exercise the real Settings form or ui helpers.
+function loadModuleFromSource(filename, moduleMap) {
+  const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: {
+      target: TypeScript.ScriptTarget.ES2022,
+      module: TypeScript.ModuleKind.CommonJS,
+      jsx: TypeScript.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+    },
+    fileName: filename,
+  }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    module: { exports },
+    require: name => {
+      assert.ok(moduleMap.has(name), `unexpected module request ${name}`);
+      return moduleMap.get(name);
+    },
+  }, { filename });
+  return exports;
+}
+
+function loadDailyUseModule(environment, overrides = {}) {
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/DailyUse.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', overrides.reactNative ?? makeReactNativeMocks(environment)],
+    ['react-native-safe-area-context', overrides.safeArea ?? makeSafeAreaMocks()],
+    ['./ui', overrides.ui ?? makeUiMocks(environment)],
+    ['../modules/meeterm-terminal', overrides.terminal ?? { __esModule: true, default: {} }],
+  ]));
+}
+
+function loadUiModule(environment) {
+  const icons = new Proxy({}, { get: () => 'LucideIcon' });
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/ui.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', makeReactNativeMocks(environment)],
+    ['lucide-react-native', icons],
+    ['./assets/meerkat-companion-v2.png', 'meerkat-companion-v2.png'],
+  ]));
+}
+
+// Captures each Stack.Screen's evaluated options plus the container theme so
+// tests can assert the real native-stack navigation contract, not strings.
+function makeNavigationMocks() {
+  const captured = { screens: new Map(), theme: null };
+  function Screen({ name, options }) {
+    captured.screens.set(name, options);
+    return null;
+  }
+  function Navigator({ children }) {
+    return React.createElement(React.Fragment, null, children);
+  }
+  function NavigationContainer({ children, theme, onReady }) {
+    captured.theme = theme;
+    React.useEffect(() => { onReady?.(); }, []);
+    return React.createElement(React.Fragment, null, children);
+  }
+  return {
+    captured,
+    native: {
+      DefaultTheme: { dark: false, colors: { primary: '#007', background: '#fff', card: '#fff', text: '#000', border: '#ccc' } },
+      NavigationContainer,
+      StackActions: { popToTop: () => ({ type: 'POP_TO_TOP' }) },
+      useNavigationContainerRef: () => ({ navigate() {}, dispatch() {}, getCurrentRoute: () => ({ name: 'workspaces' }) }),
+    },
+    nativeStack: { createNativeStackNavigator: () => ({ Navigator, Screen }) },
+  };
+}
+
+function loadWorkspaceNavigationModule(environment, navigationMocks = makeNavigationMocks()) {
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/WorkspaceNavigation.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['@react-navigation/native', navigationMocks.native],
+    ['@react-navigation/native-stack', navigationMocks.nativeStack],
+    ['./ui', makeUiMocks(environment)],
+  ]));
+}
+
+function loadApp(environment, native, presentationOnly = false, smokeEnabled = false, realDailyUse = false) {
   const source = fs.readFileSync(APP_SOURCE, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
     compilerOptions: {
@@ -796,9 +938,12 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const appModule = { exports: {} };
   const rn = makeReactNativeMocks(environment);
   const safeArea = makeSafeAreaMocks();
-  const ui = makeUiMocks();
-  const forms = makeFormMocks();
+  const ui = makeUiMocks(environment);
   const terminal = makeTerminalModule(native, environment);
+  const dailyUse = realDailyUse ? loadDailyUseModule(environment, { reactNative: rn, safeArea, ui, terminal }) : null;
+  const forms = realDailyUse
+    ? { ...makeFormMocks(), SettingsForm: dailyUse.SettingsForm, DEFAULT_PREFERENCES: dailyUse.DEFAULT_PREFERENCES }
+    : makeFormMocks();
   const scheduleTimeout = environment.fakeTimers
     ? (callback, delay) => {
       const id = environment.nextTimeoutId++;
@@ -1168,33 +1313,318 @@ test('disabled workspace rows keep the unavailable mark at full contrast', async
   assert.equal(hasOpacity(status.props.style), false, 'unavailable status mark must remain at full opacity');
 });
 
-test('settings appearance has the same visible and accessible meaning', async () => {
-  const filename = path.join(REPO_ROOT, 'app/DailyUse.tsx');
-  const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {
-    compilerOptions: { module: TypeScript.ModuleKind.CommonJS, jsx: TypeScript.JsxEmit.ReactJSX },
-  }).outputText;
+function flattened(style) {
+  const value = typeof style === 'function' ? style({ pressed: false }) : style;
+  if (Array.isArray(value)) return value.reduce((merged, item) => ({ ...merged, ...flattened(item) }), {});
+  return value && typeof value === 'object' ? value : {};
+}
+
+async function pickActionSheetOption(environment, index) {
+  const sheet = environment.actionSheet;
+  environment.actionSheet = null;
+  assert.ok(sheet, 'an iOS action sheet should be presented');
+  await act(async () => {
+    sheet.callback(index);
+  });
+}
+
+test('settings keeps app appearance and terminal theme as independent labeled rows', async () => {
   const { environment } = makeNativeEnvironment();
-  const rn = { ...makeReactNativeMocks(environment), KeyboardAvoidingView: 'KeyboardAvoidingView', Switch: 'Switch' };
-  const modules = new Map([
-    ['react', React], ['react/jsx-runtime', require('react/jsx-runtime')],
-    ['react-native', rn], ['react-native-safe-area-context', makeSafeAreaMocks()],
-    ['./ui', makeUiMocks()],
-  ]);
-  const dailyUse = { exports: {} };
-  vm.runInNewContext(compiled, {
-    exports: dailyUse.exports,
-    require: name => { assert.ok(modules.has(name), name); return modules.get(name); },
-  }, { filename });
+  const dailyUse = loadDailyUseModule(environment);
+  const saved = [];
   const root = createRoot();
   try {
     await act(async () => {
-      root.render(React.createElement(dailyUse.exports.SettingsForm, {
-        visible: true, preferences: PREFERENCES, colors: LIGHT,
-        onClose() {}, async onSave() { return true; },
+      root.render(React.createElement(dailyUse.SettingsForm, {
+        visible: true, preferences: { ...PREFERENCES, theme: 'light', terminalTheme: 'system' }, colors: LIGHT,
+        onClose() {}, async onSave(next) { saved.push(clone(next)); return true; },
       }));
     });
-    assert.equal(findTestId(root, 'terminal-theme').props.accessibilityLabel, 'Appearance');
-    assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 0);
+    // Two distinct, independently labeled rows drive two distinct drafts.
+    const appRow = findTestId(root, 'app-theme');
+    const terminalRow = findTestId(root, 'terminal-theme');
+    assert.equal(appRow.props.accessibilityLabel, 'Appearance');
+    assert.equal(terminalRow.props.accessibilityLabel, 'Terminal theme');
+    assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 1);
+    assert.equal(textContent(appRow), 'AppearanceLight');
+    assert.equal(textContent(terminalRow), 'Terminal themeSystem');
+
+    await press(root, appRow);
+    assert.equal(environment.actionSheet.options.title, 'Appearance');
+    await pickActionSheetOption(environment, 2);
+    assert.equal(textContent(appRow), 'AppearanceDark');
+    assert.equal(textContent(terminalRow), 'Terminal themeSystem');
+
+    await press(root, terminalRow);
+    assert.equal(environment.actionSheet.options.title, 'Terminal theme');
+    await pickActionSheetOption(environment, 1);
+    assert.equal(textContent(terminalRow), 'Terminal themeLight');
+    assert.equal(textContent(appRow), 'AppearanceDark');
+
+    // The preview resolves the edited terminal theme, never the app choice.
+    assert.equal(flattened(findTestId(root, 'terminal-preview').props.style).backgroundColor, TERMINAL_SURFACE.light.background);
+    await press(root, terminalRow);
+    await pickActionSheetOption(environment, 0);
+    await act(async () => { environment.emitColorScheme('dark'); });
+    assert.equal(flattened(findTestId(root, 'terminal-preview').props.style).backgroundColor, TERMINAL_SURFACE.dark.background);
+
+    await press(root, findTestId(root, 'settings-submit'));
+    assert.deepEqual(saved, [{ ...PREFERENCES, theme: 'dark', terminalTheme: 'system' }]);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test('theme resolution contract keeps missing values dark and follows the OS scheme', async () => {
+  const { environment } = makeNativeEnvironment();
+  const ui = loadUiModule(environment);
+  // Migration seam: a save without terminalTheme resolves as the historical
+  // dark surface, and the new-install default keeps it there.
+  assert.equal(ui.resolveTerminalTheme(undefined, 'dark'), 'dark');
+  assert.equal(ui.resolveTerminalTheme('dark', 'light'), 'dark');
+  assert.equal(ui.resolveTerminalTheme('light', 'dark'), 'light');
+  assert.equal(ui.resolveTerminalTheme('system', 'dark'), 'dark');
+  assert.equal(ui.resolveTerminalTheme('system', 'light'), 'light');
+  // The JS placeholder/preview colors mirror the native surface contract.
+  assert.equal(ui.TERMINAL_SURFACE.light.background, '#FBF7EF');
+  assert.equal(ui.TERMINAL_SURFACE.dark.background, '#24211D');
+  const dailyUse = loadDailyUseModule(environment);
+  assert.equal(dailyUse.DEFAULT_PREFERENCES.terminalTheme, 'dark');
+  assert.equal(dailyUse.DEFAULT_PREFERENCES.theme, 'light');
+
+  // The real hooks follow OS appearance changes through the shared scheme.
+  let resolved = null;
+  let palette = null;
+  function Probe() {
+    resolved = ui.useTerminalTheme('system');
+    palette = ui.usePalette('system');
+    return null;
+  }
+  const root = createRoot();
+  try {
+    await act(async () => { root.render(React.createElement(Probe)); });
+    assert.equal(resolved, 'light');
+    assert.equal(palette, ui.LIGHT);
+    await act(async () => { environment.emitColorScheme('dark'); });
+    assert.equal(resolved, 'dark');
+    assert.equal(palette, ui.DARK);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test('smoke theme parameters stay release-gated and only override seeded appearances', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const smoke = loadApp(environment, native, true, true);
+  const production = loadApp(environment, native, true, false);
+  assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=terminal&app=dark&terminal=light'), undefined);
+  for (const [url, appTheme, terminalTheme] of [
+    ['meeterm://smoke?screen=terminal&app=light&terminal=light', 'light', 'light'],
+    ['meeterm://smoke?screen=terminal&app=light&terminal=dark', 'light', 'dark'],
+    ['meeterm://smoke?screen=terminal&app=dark&terminal=light', 'dark', 'light'],
+    ['meeterm://smoke?screen=terminal&app=dark&terminal=dark', 'dark', 'dark'],
+    ['meeterm://smoke?screen=terminal&app=system&terminal=system', 'system', 'system'],
+    ['meeterm://smoke?screen=settings&terminal=light', undefined, 'light'],
+    ['meeterm://smoke?screen=terminal', undefined, undefined],
+  ]) {
+    const route = smoke.smokeRouteForUrl(url);
+    assert.ok(route, `expected ${url} to parse`);
+    assert.equal(route.appTheme, appTheme);
+    assert.equal(route.terminalTheme, terminalTheme);
+  }
+  // Unknown values, unknown parameters, and reordered parameters stay rejected.
+  for (const url of [
+    'meeterm://smoke?screen=terminal&app=sepia',
+    'meeterm://smoke?screen=terminal&terminal=sepia',
+    'meeterm://smoke?screen=terminal&host=untrusted',
+    'meeterm://smoke?screen=terminal&terminal=dark&app=light',
+  ]) {
+    assert.equal(smoke.smokeRouteForUrl(url), undefined, `expected ${url} to stay rejected`);
+  }
+  // Default fixture appearances remain deterministic: light app, dark terminal.
+  const fixture = smoke.smokeFixture('terminal');
+  assert.equal(fixture.preferences.theme, 'light');
+  assert.equal(fixture.preferences.terminalTheme, 'dark');
+});
+
+test('smoke theme parameters render independent fixture combinations end to end', async t => {
+  for (const [appTheme, terminalTheme] of [['light', 'light'], ['light', 'dark'], ['dark', 'light'], ['dark', 'dark']]) {
+    const { environment, native } = makeNativeEnvironment();
+    environment.initialURL = `meeterm://smoke?screen=terminal&app=${appTheme}&terminal=${terminalTheme}`;
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      const view = terminalViews(root)[0];
+      assert.equal(view.props.theme, terminalTheme, `terminal theme for ${appTheme}/${terminalTheme}`);
+      assert.equal(view.props.terminalId, 'poc-main');
+      const palette = appTheme === 'dark' ? DARK : LIGHT;
+      assert.equal(first(root, node => node.type === 'StatusBar').props.barStyle, appTheme === 'dark' ? 'light-content' : 'dark-content');
+      assert.equal(flattened(findText(root, 'Main workspace').props.style).color, palette.text);
+      // Navigation/container backgrounds stay on the app palette.
+      let container = findLabel(root, 'Back to workspaces');
+      while (container && flattened(container.props.style).backgroundColor === undefined) container = container.parent;
+      assert.equal(flattened(container?.props.style).backgroundColor, palette.background);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  }
+});
+
+test('terminal chrome follows the app palette while the surface and placeholder follow the terminal theme', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.preferences = { ...PREFERENCES, theme: 'dark', terminalTheme: 'light' };
+  });
+  await openWorkspace(fixture.root, 'W1');
+  const view = terminalViews(fixture.root)[0];
+  assert.equal(view.props.theme, 'light');
+  assert.equal(view.props.terminalId, 'native:P1');
+  // Chrome, navigation, and status colors resolve from the app palette, not
+  // the terminal theme.
+  assert.equal(first(fixture.root, node => node.type === 'StatusBar', 'missing StatusBar').props.barStyle, 'light-content');
+  assert.equal(flattened(findText(fixture.root, 'Workspace One').props.style).color, DARK.text);
+  // Backgrounding swaps the surface for a placeholder in the same color the
+  // native view draws for the resolved terminal theme — no mismatched flash.
+  await act(async () => { fixture.environment.emitAppState('background'); });
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(flattened(findTestId(fixture.root, 'terminal-placeholder').props.style).backgroundColor, TERMINAL_SURFACE.light.background);
+  await act(async () => { fixture.environment.emitAppState('active'); });
+  assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+});
+
+const CONNECTION_METHODS = new Set([
+  'connectHost', 'connectProfileHost', 'connect', 'disconnect', 'reconnect',
+  'respondToHostKey', 'forgetHostKey', 'selectRuntime', 'createTmuxSession',
+  'changeRuntime', 'disconnectForSwitcher', 'retryRecovery', 'refreshRuntimes',
+  'setForeground', 'selectPane', 'createWorkspace', 'renameWorkspace',
+  'closeWorkspace', 'createPane', 'renamePane', 'closePane', 'refreshTerminal',
+]);
+
+function connectionEffectDelta(environment, callsBefore, nativeBefore) {
+  return [...environment.calls.slice(callsBefore), ...environment.nativeCalls.slice(nativeBefore)]
+    .map(entry => typeof entry === 'string' ? entry : entry.method)
+    .filter(method => CONNECTION_METHODS.has(method));
+}
+
+test('a saved theme change reapplies to the same terminal without connection work', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.preferences = { ...PREFERENCES };
+  }, { realDailyUse: true });
+  const { root, environment } = fixture;
+  await openWorkspace(root, 'W1');
+  assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(root)[0].props.theme, 'dark');
+  const mountsBefore = environment.terminalViewMounts;
+  const callsBefore = environment.calls.length;
+  const nativeBefore = environment.nativeCalls.length;
+
+  // Terminal menu → Terminal settings (the real iOS page-sheet handoff).
+  await press(root, findLabel(root, 'Terminal menu'));
+  await press(root, findLabel(root, 'Terminal settings'));
+  await act(async () => { environment.dismissPresentedModal(); });
+  assert.equal(terminalViews(root).length, 0, 'opening Settings keeps the existing surface unmount');
+
+  await press(root, findTestId(root, 'terminal-theme'));
+  assert.equal(environment.actionSheet.options.title, 'Terminal theme');
+  await pickActionSheetOption(environment, 1);
+  await press(root, findTestId(root, 'settings-submit'));
+  await settleAsync();
+
+  assert.deepEqual(environment.savedPreferences, { ...PREFERENCES, terminalTheme: 'light' });
+  // The same borrowed terminal binding comes back with the new theme prop;
+  // exactly one remount is the existing Settings close lifecycle, not churn.
+  assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(root)[0].props.theme, 'light');
+  assert.equal(environment.terminalViewMounts, mountsBefore + 1);
+  assert.deepEqual(connectionEffectDelta(environment, callsBefore, nativeBefore), []);
+  // The app appearance side stayed untouched.
+  assert.equal(first(root, node => node.type === 'StatusBar').props.barStyle, 'dark-content');
+  assert.equal(flattened(findText(root, 'Workspace One').props.style).color, LIGHT.text);
+});
+
+test('system themes follow the OS appearance in place while a fixed side stays put', async t => {
+  await t.test('both axes follow the same OS switch independently', async t => {
+    const fixture = await mountForTest(t, makeSnapshot(), environment => {
+      environment.preferences = { ...PREFERENCES, theme: 'system', terminalTheme: 'system' };
+    });
+    await openWorkspace(fixture.root, 'W1');
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+    const mountsBefore = fixture.environment.terminalViewMounts;
+    await act(async () => { fixture.environment.emitColorScheme('dark'); });
+    // The theme prop updates in place: same binding, no remount, no new
+    // surface; app chrome flips to the dark palette at the same time.
+    assert.equal(terminalViews(fixture.root).length, 1);
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'dark');
+    assert.equal(terminalViews(fixture.root)[0].props.terminalId, 'native:P1');
+    assert.equal(fixture.environment.terminalViewMounts, mountsBefore);
+    assert.equal(first(fixture.root, node => node.type === 'StatusBar').props.barStyle, 'light-content');
+    assert.equal(flattened(findText(fixture.root, 'Workspace One').props.style).color, DARK.text);
+    await act(async () => { fixture.environment.emitColorScheme('light'); });
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+    assert.equal(fixture.environment.terminalViewMounts, mountsBefore);
+  });
+
+  await t.test('a fixed terminal theme ignores the OS switch the app follows', async t => {
+    const fixture = await mountForTest(t, makeSnapshot(), environment => {
+      environment.preferences = { ...PREFERENCES, theme: 'system', terminalTheme: 'light' };
+    });
+    await openWorkspace(fixture.root, 'W1');
+    await act(async () => { fixture.environment.emitColorScheme('dark'); });
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+    assert.equal(first(fixture.root, node => node.type === 'StatusBar').props.barStyle, 'light-content');
+  });
+
+  await t.test('a fixed app appearance ignores the OS switch the terminal follows', async t => {
+    const fixture = await mountForTest(t, makeSnapshot(), environment => {
+      environment.preferences = { ...PREFERENCES, theme: 'light', terminalTheme: 'system' };
+    });
+    await openWorkspace(fixture.root, 'W1');
+    await act(async () => { fixture.environment.emitColorScheme('dark'); });
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'dark');
+    assert.equal(first(fixture.root, node => node.type === 'StatusBar').props.barStyle, 'dark-content');
+    assert.equal(flattened(findText(fixture.root, 'Workspace One').props.style).color, LIGHT.text);
+  });
+});
+
+test('terminal native-stack screen options follow the app palette like workspaces', async () => {
+  // The real WorkspaceNavigation.tsx renders into capturing navigation
+  // doubles; assertions read the evaluated screen options, not source text.
+  const { environment } = makeNativeEnvironment();
+  const navigationMocks = makeNavigationMocks();
+  const navigation = loadWorkspaceNavigationModule(environment, navigationMocks);
+  // Options objects are created inside the VM realm; copy the asserted fields
+  // into host objects so deepEqual compares values, not realm prototypes.
+  const screenOptions = name => {
+    const options = navigationMocks.captured.screens.get(name);
+    return options
+      ? { backgroundColor: options.contentStyle?.backgroundColor, statusBarStyle: options.statusBarStyle }
+      : options;
+  };
+  const root = createRoot();
+  try {
+    await act(async () => {
+      root.render(React.createElement(navigation.WorkspaceNavigation, {
+        screen: 'workspaces', colors: LIGHT,
+        onScreenChange() {}, workspaces: 'workspaces-content', terminal: 'terminal-content',
+      }));
+    });
+    // Under a light app appearance the terminal screen must not keep the dark
+    // navigation background or light status bar it used to hardcode.
+    assert.deepEqual(screenOptions('workspaces'), { backgroundColor: LIGHT.background, statusBarStyle: 'dark' });
+    assert.deepEqual(screenOptions('terminal'), { backgroundColor: LIGHT.background, statusBarStyle: 'dark' });
+    assert.equal(navigationMocks.captured.theme.dark, false);
+    assert.equal(navigationMocks.captured.theme.colors.background, LIGHT.background);
+
+    await act(async () => {
+      root.render(React.createElement(navigation.WorkspaceNavigation, {
+        screen: 'terminal', colors: DARK,
+        onScreenChange() {}, workspaces: 'workspaces-content', terminal: 'terminal-content',
+      }));
+    });
+    assert.deepEqual(screenOptions('workspaces'), screenOptions('terminal'));
+    assert.deepEqual(screenOptions('terminal'), { backgroundColor: DARK.background, statusBarStyle: 'light' });
+    assert.equal(navigationMocks.captured.theme.dark, true);
+    assert.equal(navigationMocks.captured.theme.colors.background, DARK.background);
   } finally {
     await act(async () => { root.unmount(); });
   }
@@ -1322,7 +1752,7 @@ test('agent status palette keeps every non-text mark at three-to-one contrast', 
   };
   for (const [name, palette] of Object.entries(palettes)) {
     assert.ok(palette.agentStatus, `${name} agentStatus tokens are missing`);
-    const backgrounds = name === 'DARK' ? [palette.background, palette.surface, palette.terminal] : [palette.background, palette.surface];
+    const backgrounds = [palette.background, palette.surface];
     for (const [status, color] of Object.entries(palette.agentStatus)) {
       for (const background of backgrounds) {
         const values = [luminance(color), luminance(background)].sort((a, b) => b - a);
@@ -1450,11 +1880,11 @@ function groupTitle(root) {
   return switcher ? textContent(switcher) : '';
 }
 
-async function mountApp(snapshot, configure) {
+async function mountApp(snapshot, configure, options) {
   const { environment, native } = makeNativeEnvironment();
   environment.snapshot = clone(snapshot);
   configure?.(environment, native);
-  const App = loadApp(environment, native);
+  const App = loadApp(environment, native, false, false, options?.realDailyUse === true);
   const root = createRoot();
   await act(async () => {
     root.render(React.createElement(App));
@@ -1462,8 +1892,8 @@ async function mountApp(snapshot, configure) {
   return { root, environment, native };
 }
 
-async function mountForTest(t, snapshot, configure) {
-  const fixture = await mountApp(snapshot, configure);
+async function mountForTest(t, snapshot, configure, options) {
+  const fixture = await mountApp(snapshot, configure, options);
   t.after(async () => {
     await act(async () => {
       fixture.root.unmount();
@@ -1472,10 +1902,10 @@ async function mountForTest(t, snapshot, configure) {
   return fixture;
 }
 
-async function mountConfiguredForTest(t, configure) {
+async function mountConfiguredForTest(t, configure, options) {
   const { environment, native } = makeNativeEnvironment();
   configure(environment, native);
-  const App = loadApp(environment, native);
+  const App = loadApp(environment, native, false, false, options?.realDailyUse === true);
   const root = createRoot();
   await act(async () => {
     root.render(React.createElement(App));
