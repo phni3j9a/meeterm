@@ -1,0 +1,41 @@
+16:41:59 transitions-998 supplemental clips on 99855a2 APK (no rebuild)
+16:41:59 scope=seeded presentation routes + real uimode flips; NOT real SSH/recovery
+16:41:59 clip1 start: uimode->light, then screen=terminal&app=dark&terminal=system
+16:42:03 launched meeterm://smoke?screen=terminal&app=dark&terminal=system pid=11469
+16:42:09 still trans998-c1-01-mounted-oslight.png captured
+16:42:13 still trans998-c1-02-flip-osdark.png captured
+16:42:18 still trans998-c1-03-flip-oslight.png captured
+16:42:21 still trans998-c1-04-after-back.png captured
+16:42:23 workspace row lookup found=True xy=(440, 419)
+16:42:27 still trans998-c1-05-workspace-reopened.png captured
+16:42:29 launched meeterm://smoke?screen=recovery-progress&app=dark&terminal=light pid=11807
+16:42:34 still trans998-c1-06-recovery-progress-seeded.png captured
+16:44:00 clip trans998-c1.mp4 pulled 1863126 bytes
+16:44:00 clip1 pids across steps=['11469', '11469', '11469', '11807'] (unchanged through flips expected)
+16:44:00 clip2 start: screen=terminal&app=system&terminal=dark, OS light->dark->light
+16:44:04 launched meeterm://smoke?screen=terminal&app=system&terminal=dark pid=12035
+16:44:10 still trans998-c2-01-oslight.png captured
+16:44:14 still trans998-c2-02-osdark.png captured
+16:44:19 still trans998-c2-03-oslight-again.png captured
+16:45:31 clip trans998-c2.mp4 pulled 865724 bytes
+16:45:31 clip2 pids=['12035', '12035', '12035']
+16:45:31 theme markers in slice: 10
+
+--- post-run notes (honest observations) ---
+clip1 stills c1-02 (osdark) and c1-03 (oslight) are byte-identical: app=dark is
+pinned so app chrome correctly stays dark; the terminal=system surface shows no
+visible repaint in the 4s capture window. MEETERM_SMOKE_THEME slice for the
+seeded fixture terminal emits only the mount 'dark' marker per pid — the seeded
+route did not emit resolved-theme markers on OS flips (observed, reported as-is;
+resolved-marker coverage lives in the real SSH suite legs).
+c1-04 after-back == c1-05: first workspace-row tap matched the 'Workspaces'
+title text bounds and missed the row -> stayed on workspaces list. Re-done
+outside the clip window: tap on workspace-row-@smoke-main [63,988][891,1225]
+reopened the native terminal view (tabs terminal-tab-%smoke-main-1/2) ->
+c1-05b-workspace-reopened.png (still-only, outside clip).
+clip2: c2-02 (osdark) and c2-03 (oslight-again) byte-identical — re-light had
+not rendered within the 4s settle. Post-capture still c2-04-settled-oslight.png
+(pid 12035 still, OS light) shows app chrome light again with pinned dark
+terminal -> flip-back did land, just slower than the capture window.
+seeded presentation only: these are meeterm://smoke fixture routes (real native
+Term demo content, no SSH). No credentials entered, no remote actions.
