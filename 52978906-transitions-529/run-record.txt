@@ -1,0 +1,51 @@
+run=ios-transitions-529-supplement (visual-only; NOT a suite rerun)
+source=52978906e45c91eb5404e3b25e7c9d5413c26a01 (strict C4 checkout; NOT tip de8a4e6)
+app=dev.meeterm.app already installed on sim from C4 pristine restore
+  (runner-temp-ios37-r3/ios-test-products -> r3-ssh derived-data; no rebuild)
+session=devin-7a32a4e6ed984961b5194e22feeba407 (devin-swe-2-max)
+date_utc=2026-09-27 17:31:56-17:33:45
+simulator=iPhone 18 Pro Max 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iOS 27.0
+os_appearance=light throughout (original; never flipped — nothing to restore)
+evidence_branch=evidence/ios-20260928-issue37-transitions-529
+accepted_suites_untouched=standard-r3 @3f15e9b, ssh @ce28537
+
+[actions — actual commands/UI]
+- xcrun simctl io <udid> recordVideo --codec h264 transitions-529.mp4 (bg pid 30637)
+- cold launch (app already terminated; terminate call found nothing running):
+  simctl openurl 'meeterm://smoke?screen=terminal&app=dark&terminal=light' @17:32:04
+  -> dark splash/launch then seeded native terminal mounted (labeled cold fixture launch)
+- real Back tap (top-left nav chevron) -> Workspaces list @~17:32:52
+- tap existing "Main workspace" row -> SAME pane remounted (identical scrollback
+  content; no app.open reseed, no relaunch) @17:33:00
+- Settings leg skipped: no credential-free path reached it inside the time budget
+  (server settings opens a credential form) — recorded as not attempted
+- cold seeded launch:
+  simctl openurl 'meeterm://smoke?screen=recovery-progress&app=dark&terminal=light' @17:33:14
+  -> "Reconnecting…" badge + "Verifying this workspace…" rail over the same
+  scrollback. COLD SEEDED PRESENTATION ONLY — not an actual SSH recovery.
+- kill -INT -> recording finalized
+
+[video]
+transitions-529.mp4 = 87.3s (<=90s) h264, trimmed from a 105.7s capture:
+  cut ~3s idle springboard head + ~15s static tail; full leg sequence preserved
+  (tail frame verified = recovery rail visible). Original untrimmed kept locally.
+
+[ordered PNGs]
+01-cold-terminal-appdark-termlight.png  (17:32:22) mounted seeded terminal
+02-workspaces-list.png                  (17:32:55) after real Back nav
+03-reopened-same-pane.png               (17:33:13) same pane reopened via UI
+04-recovery-progress-seeded.png         (17:33:27) seeded recovery rail
+
+[native markers — sanitized slice, suite window only]
+pid 30671 (single process, ALL mounts — no crash, no relaunch):
+  17:32:07 THEME light x2 + NATIVE_READY + FIRST_FRAME_METAL   (cold fixture)
+  17:33:00 THEME dark + THEME light + NATIVE_READY + FIRST_FRAME_METAL (reopen)
+  17:33:14 THEME light x2 + NATIVE_READY + FIRST_FRAME_METAL   (recovery seed)
+renderer=metal on every mount; zero SOFTWARE/CoreGraphics fallback markers
+no_crash=single pid across clip; app responsive to all taps
+
+[scope / non-claims]
+- Demo fixture terminal + seeded recovery presentation only; NO real SSH.
+- No JS terminal bytes/cells, no secrets, no other-app footage in the video.
+- Visual supplement only; does not modify or relabel accepted suite verdicts.
+- Simulator-only; no physical device / external IME claims.
