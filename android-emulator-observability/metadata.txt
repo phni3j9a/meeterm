@@ -1,0 +1,10 @@
+commit=aa2249ce2f18ad416551ea5a42948d82fb23f6bc
+branch=issue-37-independent-themes
+suite=android-full-issue37
+result=pass
+date=2026-09-27T15:50Z
+build=fresh-cng-release-2m49s
+screen_fixtures=31/32 (empty baseline-unavailable)
+ssh_suite=passed (disconnect_after_resume)
+theme_matrix=6/6; os_scheme=tracked; dialog=app-scoped-resolved
+node=22.22.2 npm=10.9.7 jdk=17.0.19 ndk=27.1.12297006 rust=1.96.0

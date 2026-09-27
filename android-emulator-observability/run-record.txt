@@ -1,0 +1,26 @@
+issue-37 Android FULL suite — independent themes (native)
+commit: aa2249ce2f18ad416551ea5a42948d82fb23f6bc (issue-37-independent-themes)
+date: 2026-09-27
+model session: devin-swe-2-max (existing session 9429c00e8cc14fb2b140b3e23bb28ec1)
+
+toolchain (recorded): node v22.22.2 (.nvmrc), npm 10.9.7, JDK 17.0.19,
+  NDK 27.1.12297006, rustc 1.96.0, gradle 9.3.1, emulator-5554 api36 headless
+
+build: fresh CNG (prebuild --clean over deleted android/) ->
+  assembleRelease pipefail+tee gradle-build.log -> BUILD SUCCESSFUL 2m49s, 668 tasks
+gates: android-smoke.sh PASS (install/launch/nativeReady/first frame/process alive)
+screen fixtures: 31/32 captured — empty=unavailable:missing_screen_element_*
+  (pre-existing baseline since 32-route manifest)
+full ssh suite (fixture.py -> android-smoke.py): result=passed,
+  stage=disconnect_after_resume reason=ok transport_loss_evidence=passed,
+  ~30min, screenrecord daily-use.mp4 11MB
+theme legs: daily_theme_matrix 6/6 pairs; daily_theme_os_scheme light->dark->light
+  same pid; daily_theme_os_independence pinned dark terminal; daily_theme_dialog_fixed
+  (4 captures) + daily_theme_dialog_system; daily_theme_restored
+dialog markers (device logcat, tag MeetermTerminalDialog):
+  presented appearance=dark resolved=dark x13 (OS light, app dark wins)
+  presented appearance=light resolved=light x11 (OS dark, app light wins)
+  presented appearance=system resolved=light x7 / resolved=dark x1
+  result=selected index=0 x10 / index=1 x8 / index=2 x11 / result=dismissed x3
+  (KEEP EDITING=0, DISCARD=1 semantics; Back -> dismissed; no process replacement)
+note: screenshot existence/pixels are human evidence; not machine gates.

@@ -1,0 +1,4 @@
+package=dev.meeterm.app
+launch_method=am_start_foundation_url
+launch_uri=meeterm://foundation?foundation=1
+launcher_stabilizer=forced_stop_before_launch
