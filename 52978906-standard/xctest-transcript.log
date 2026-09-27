@@ -1,0 +1,1743 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp-ios37-r3/meeterm-derived-data/Build/Products/.meeterm-b5qcgweg.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO "-only-testing:meetermTests/MeetermSmokeUITests/testStandardSeededScreensAndFoundation" "-only-testing:meetermTests/TerminalInputViewTests" -resultBundlePath /Users/devin/runner-temp-ios37-r3/meeterm-ios-standard.xcresult
+
+Build settings from command line:
+    CODE_SIGNING_ALLOWED = NO
+    CODE_SIGNING_REQUIRED = NO
+
+2026-09-27 09:51:14.502 xcodebuild[26844:221149] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+Writing result bundle at path:
+	/Users/devin/runner-temp-ios37-r3/meeterm-ios-standard.xcresult
+
+2026-09-27 09:51:14.507 xcodebuild[26844:221149] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-27 09:51:14.772 xcodebuild[26844:221149] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-27 09:51:15.142 xcodebuild[26844:221149] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-27 16:51:16.854177+0000 meetermTests-Runner[26857:221435] [Default] Running tests...
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-09-27 16:51:19.409.
+Test Suite 'meetermTests.xctest' started at 2026-09-27 16:51:19.410.
+Test Suite 'MeetermSmokeUITests' started at 2026-09-27 16:51:19.410.
+Test Case '-[meetermTests.MeetermSmokeUITests testStandardSeededScreensAndFoundation]' started.
+    t =     0.01s Start Test at 2026-09-27 16:51:19.416
+    t =     0.03s Set Up
+    t =     0.04s     Open dev.meeterm.app
+    t =     0.04s         Launch dev.meeterm.app
+2026-09-27 09:51:19.491 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:19.492 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =     0.91s             Setting up automation session
+objc[26857]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x107860398) and /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x107a40310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =     3.14s             Wait for dev.meeterm.app to idle
+    t =     4.53s     Wait for dev.meeterm.app to become Running Foreground
+    t =     5.18s Open dev.meeterm.app with URL meeterm://smoke?screen=home
+    t =     5.18s     Launch dev.meeterm.app
+2026-09-27 09:51:24.596 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:24.596 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =     5.42s         Setting up automation session
+    t =     7.73s         Wait for dev.meeterm.app to idle
+    t =     9.02s Wait for dev.meeterm.app to become Running Foreground
+    t =     9.02s Waiting 30.0s for "Workspaces" StaticText to exist
+    t =    10.08s     Checking `Expect predicate `existsNoRetry == 1` for object "Workspaces" StaticText`
+    t =    10.08s         Checking existence of `"Workspaces" StaticText`
+    t =    10.11s Checking existence of `Button (First Match)`
+    t =    10.14s Find the Button (First Match)
+    t =    10.21s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    10.30s Open dev.meeterm.app with URL meeterm://smoke?screen=servers
+    t =    10.30s     Launch dev.meeterm.app
+2026-09-27 09:51:29.712 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:29.712 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    10.52s         Setting up automation session
+    t =    12.70s         Wait for dev.meeterm.app to idle
+    t =    13.98s Wait for dev.meeterm.app to become Running Foreground
+    t =    13.98s Waiting 30.0s for "Saved servers" StaticText to exist
+    t =    15.05s     Checking `Expect predicate `existsNoRetry == 1` for object "Saved servers" StaticText`
+    t =    15.05s         Checking existence of `"Saved servers" StaticText`
+    t =    15.09s Checking existence of `Button (First Match)`
+    t =    15.15s Find the Button (First Match)
+    t =    15.28s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    15.40s Open dev.meeterm.app with URL meeterm://smoke?screen=connection
+    t =    15.40s     Launch dev.meeterm.app
+2026-09-27 09:51:34.808 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:34.808 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    15.61s         Setting up automation session
+    t =    18.04s         Wait for dev.meeterm.app to idle
+    t =    19.33s Wait for dev.meeterm.app to become Running Foreground
+    t =    19.33s Waiting 30.0s for "Connect to server" StaticText to exist
+    t =    20.33s     Checking `Expect predicate `existsNoRetry == 1` for object "Connect to server" StaticText`
+    t =    20.33s         Checking existence of `"Connect to server" StaticText`
+    t =    20.42s Checking existence of `TextField (First Match)`
+    t =    20.48s Find the TextField (First Match)
+    t =    20.54s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    20.64s Open dev.meeterm.app with URL meeterm://smoke?screen=password
+    t =    20.65s     Launch dev.meeterm.app
+2026-09-27 09:51:40.057 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:40.057 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    20.86s         Setting up automation session
+    t =    22.85s         Wait for dev.meeterm.app to idle
+    t =    24.13s Wait for dev.meeterm.app to become Running Foreground
+    t =    24.13s Waiting 30.0s for "Connect to server" StaticText to exist
+    t =    25.18s     Checking `Expect predicate `existsNoRetry == 1` for object "Connect to server" StaticText`
+    t =    25.18s         Checking existence of `"Connect to server" StaticText`
+    t =    25.24s Checking existence of `"SSH password" SecureTextField`
+    t =    25.26s Find the "SSH password" SecureTextField
+    t =    25.28s Find the "ssh-password" SecureTextField
+    t =    25.32s Checking existence of `"ssh-password" SecureTextField`
+    t =    25.35s Checking existence of `ScrollView (First Match)`
+    t =    25.41s Find the ScrollView (First Match)
+    t =    25.47s Find the Target Application 'dev.meeterm.app'
+    t =    25.48s Checking existence of `Keyboard (First Match)`
+    t =    25.57s Find the "ssh-password" SecureTextField
+    t =    25.61s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    25.72s Open dev.meeterm.app with URL meeterm://smoke?screen=workspaces
+    t =    25.72s     Launch dev.meeterm.app
+2026-09-27 09:51:45.132 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:45.133 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    25.93s         Setting up automation session
+    t =    27.92s         Wait for dev.meeterm.app to idle
+    t =    29.21s Wait for dev.meeterm.app to become Running Foreground
+    t =    29.21s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "workspace-row-" AND label BEGINSWITH "Workspace "'
+    t =    29.24s Find the Button (Element at index 0)
+    t =    29.25s Find the Button (Element at index 1)
+    t =    29.27s Checking existence of `Button (First Match)`
+    t =    29.30s Find the Button (First Match)
+    t =    29.36s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    29.45s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal
+    t =    29.45s     Launch dev.meeterm.app
+2026-09-27 09:51:48.863 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:48.863 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    29.67s         Setting up automation session
+    t =    31.61s         Wait for dev.meeterm.app to idle
+    t =    32.91s Wait for dev.meeterm.app to become Running Foreground
+    t =    32.91s Waiting 30.0s for StaticText (First Match) to exist
+    t =    33.97s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =    33.98s         Checking existence of `StaticText (First Match)`
+    t =    34.02s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =    34.04s Checking existence of `Other (Element at index 0)`
+    t =    34.06s Find the Other (Element at index 0)
+    t =    34.07s Checking existence of `Other (Element at index 1)`
+    t =    34.09s Find the Other (Element at index 1)
+    t =    34.10s Find the "Terminal" Other
+    t =    34.13s Checking existence of `"Terminal" Other`
+    t =    34.15s Find the "Terminal" Other
+    t =    34.17s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    34.26s Open dev.meeterm.app with URL meeterm://smoke?screen=settings
+    t =    34.26s     Launch dev.meeterm.app
+2026-09-27 09:51:53.673 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:53.673 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    34.48s         Setting up automation session
+    t =    36.43s         Wait for dev.meeterm.app to idle
+    t =    37.67s Wait for dev.meeterm.app to become Running Foreground
+    t =    37.67s Waiting 30.0s for "Settings" StaticText to exist
+    t =    38.75s     Checking `Expect predicate `existsNoRetry == 1` for object "Settings" StaticText`
+    t =    38.75s         Checking existence of `"Settings" StaticText`
+    t =    38.82s Checking existence of `"settings-submit" Button`
+    t =    38.85s Find the "settings-submit" Button
+    t =    38.88s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    39.00s Open dev.meeterm.app with URL meeterm://smoke?screen=workspace-name
+    t =    39.00s     Launch dev.meeterm.app
+2026-09-27 09:51:58.414 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:51:58.414 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    39.22s         Setting up automation session
+    t =    41.30s         Wait for dev.meeterm.app to idle
+    t =    42.63s Wait for dev.meeterm.app to become Running Foreground
+    t =    42.63s Waiting 30.0s for "Rename workspace" StaticText to exist
+    t =    43.70s     Checking `Expect predicate `existsNoRetry == 1` for object "Rename workspace" StaticText`
+    t =    43.70s         Checking existence of `"Rename workspace" StaticText`
+    t =    43.77s Checking existence of `TextField (First Match)`
+    t =    43.86s Find the TextField (First Match)
+    t =    43.98s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    44.11s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal-name
+    t =    44.11s     Launch dev.meeterm.app
+2026-09-27 09:52:03.525 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:03.525 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    44.33s         Setting up automation session
+    t =    46.54s         Wait for dev.meeterm.app to idle
+    t =    47.90s Wait for dev.meeterm.app to become Running Foreground
+    t =    47.90s Waiting 30.0s for "Rename terminal" StaticText to exist
+    t =    48.99s     Checking `Expect predicate `existsNoRetry == 1` for object "Rename terminal" StaticText`
+    t =    48.99s         Checking existence of `"Rename terminal" StaticText`
+    t =    49.05s Checking existence of `TextField (First Match)`
+    t =    49.16s Find the TextField (First Match)
+    t =    49.32s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    49.44s Open dev.meeterm.app with URL meeterm://smoke?screen=handoff
+    t =    49.44s     Launch dev.meeterm.app
+2026-09-27 09:52:08.853 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:08.853 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    49.66s         Setting up automation session
+    t =    51.98s         Wait for dev.meeterm.app to idle
+    t =    53.29s Wait for dev.meeterm.app to become Running Foreground
+    t =    53.29s Waiting 30.0s for "Continue on your computer" StaticText to exist
+    t =    54.36s     Checking `Expect predicate `existsNoRetry == 1` for object "Continue on your computer" StaticText`
+    t =    54.36s         Checking existence of `"Continue on your computer" StaticText`
+    t =    54.39s Get number of matches for: Elements matching predicate 'identifier == "Disconnect" OR label == "Disconnect"'
+    t =    54.41s Get number of matches for: Elements matching predicate 'identifier == "Disconnect" OR label == "Disconnect"'
+    t =    54.43s Checking existence of `Button (Element at index 0)`
+    t =    54.45s Find the Button (Element at index 0)
+    t =    54.50s Checking existence of `"Disconnect" Button`
+    t =    54.52s Find the "Disconnect" Button
+    t =    54.55s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    54.66s Open dev.meeterm.app with URL meeterm://smoke?screen=runtime-picker
+    t =    54.66s     Launch dev.meeterm.app
+2026-09-27 09:52:14.070 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:14.070 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    54.87s         Setting up automation session
+    t =    57.05s         Wait for dev.meeterm.app to idle
+    t =    58.33s Wait for dev.meeterm.app to become Running Foreground
+    t =    58.33s Waiting 30.0s for "Choose a runtime for Smoke server" StaticText to exist
+    t =    59.39s     Checking `Expect predicate `existsNoRetry == 1` for object "Choose a runtime for Smoke server" StaticText`
+    t =    59.39s         Checking existence of `"Choose a runtime for Smoke server" StaticText`
+    t =    59.43s Get number of matches for: Elements matching predicate 'identifier == "tmux runtime meeterm" OR label == "tmux runtime meeterm"'
+    t =    59.46s Get number of matches for: Elements matching predicate 'identifier == "tmux runtime meeterm" OR label == "tmux runtime meeterm"'
+    t =    59.48s Checking existence of `Button (Element at index 0)`
+    t =    59.50s Find the Button (Element at index 0)
+    t =    59.56s Checking existence of `"runtime-row-tmux-smoke-tmux-meeterm" Button`
+    t =    59.59s Find the "runtime-row-tmux-smoke-tmux-meeterm" Button
+    t =    59.62s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime default" OR label == "Herdr runtime default"'
+    t =    59.64s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime default" OR label == "Herdr runtime default"'
+    t =    59.67s Checking existence of `Button (Element at index 0)`
+    t =    59.69s Find the Button (Element at index 0)
+    t =    59.72s Checking existence of `"runtime-row-herdr-smoke-herdr-default" Button`
+    t =    59.75s Find the "runtime-row-herdr-smoke-herdr-default" Button
+    t =    59.78s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime paused" OR label == "Herdr runtime paused"'
+    t =    59.81s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime paused" OR label == "Herdr runtime paused"'
+    t =    59.83s Checking existence of `Button (Element at index 0)`
+    t =    59.85s Find the Button (Element at index 0)
+    t =    59.89s Waiting 30.0s for "runtime-row-herdr-smoke-herdr-paused" Button to exist
+    t =    60.91s     Checking `Expect predicate `existsNoRetry == 1` for object "runtime-row-herdr-smoke-herdr-paused" Button`
+    t =    60.91s         Checking existence of `"runtime-row-herdr-smoke-herdr-paused" Button`
+    t =    60.93s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    61.04s Open dev.meeterm.app with URL meeterm://smoke?screen=runtime-partial-error
+    t =    61.04s     Launch dev.meeterm.app
+2026-09-27 09:52:20.455 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:20.455 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    61.26s         Setting up automation session
+    t =    63.35s         Wait for dev.meeterm.app to idle
+    t =    64.65s Wait for dev.meeterm.app to become Running Foreground
+    t =    64.65s Waiting 30.0s for "Herdr is not available over SSH. Open Herdr on your computer or check its installation." StaticText to exist
+    t =    65.71s     Checking `Expect predicate `existsNoRetry == 1` for object "Herdr is not available over SSH. Open Herdr on your computer or check its installation." StaticText`
+    t =    65.71s         Checking existence of `"Herdr is not available over SSH. Open Herdr on your computer or check its installation." StaticText`
+    t =    65.75s Get number of matches for: Elements matching predicate 'identifier == "tmux runtime meeterm" OR label == "tmux runtime meeterm"'
+    t =    65.77s Get number of matches for: Elements matching predicate 'identifier == "tmux runtime meeterm" OR label == "tmux runtime meeterm"'
+    t =    65.80s Checking existence of `Button (Element at index 0)`
+    t =    65.82s Find the Button (Element at index 0)
+    t =    65.88s Checking existence of `"runtime-row-tmux-smoke-tmux-meeterm" Button`
+    t =    65.90s Find the "runtime-row-tmux-smoke-tmux-meeterm" Button
+    t =    65.94s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    66.05s Open dev.meeterm.app with URL meeterm://smoke?screen=runtime-empty
+    t =    66.05s     Launch dev.meeterm.app
+2026-09-27 09:52:25.457 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:25.457 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    66.26s         Setting up automation session
+    t =    68.35s         Wait for dev.meeterm.app to idle
+    t =    69.66s Wait for dev.meeterm.app to become Running Foreground
+    t =    69.66s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime paused" OR label == "Herdr runtime paused"'
+    t =    69.73s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime paused" OR label == "Herdr runtime paused"'
+    t =    69.75s Checking existence of `Button (Element at index 0)`
+    t =    69.77s Find the Button (Element at index 0)
+    t =    69.83s Waiting 30.0s for "No running tmux sessions found." StaticText to exist
+    t =    70.84s     Checking `Expect predicate `existsNoRetry == 1` for object "No running tmux sessions found." StaticText`
+    t =    70.84s         Checking existence of `"No running tmux sessions found." StaticText`
+    t =    70.88s Waiting 30.0s for "runtime-row-herdr-smoke-herdr-paused" Button to exist
+    t =    71.91s     Checking `Expect predicate `existsNoRetry == 1` for object "runtime-row-herdr-smoke-herdr-paused" Button`
+    t =    71.91s         Checking existence of `"runtime-row-herdr-smoke-herdr-paused" Button`
+    t =    71.94s Find the "runtime-row-herdr-smoke-herdr-paused" Button
+    t =    71.96s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    72.07s Open dev.meeterm.app with URL meeterm://smoke?screen=runtime-create
+    t =    72.07s     Launch dev.meeterm.app
+2026-09-27 09:52:31.481 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:31.481 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    72.29s         Setting up automation session
+    t =    74.45s         Wait for dev.meeterm.app to idle
+    t =    75.74s Wait for dev.meeterm.app to become Running Foreground
+    t =    75.74s Waiting 30.0s for "Create tmux session" StaticText to exist
+    t =    76.81s     Checking `Expect predicate `existsNoRetry == 1` for object "Create tmux session" StaticText`
+    t =    76.81s         Checking existence of `"Create tmux session" StaticText`
+    t =    76.85s Waiting 30.0s for TextField (First Match) to exist
+    t =    77.93s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    77.93s         Checking existence of `TextField (First Match)`
+    t =    77.98s Checking existence of `"runtime-tmux-create-submit" Button`
+    t =    78.00s Find the "runtime-tmux-create-submit" Button
+    t =    78.03s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    78.14s Open dev.meeterm.app with URL meeterm://smoke?screen=session-switcher
+    t =    78.14s     Launch dev.meeterm.app
+2026-09-27 09:52:37.550 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:37.550 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    78.37s         Setting up automation session
+    t =    80.52s         Wait for dev.meeterm.app to idle
+    t =    81.87s Wait for dev.meeterm.app to become Running Foreground
+    t =    81.87s Get number of matches for: Elements matching predicate 'identifier == "Browse sessions on Smoke server" OR label == "Browse sessions on Smoke server"'
+    t =    81.93s Get number of matches for: Elements matching predicate 'identifier == "Browse sessions on Smoke server" OR label == "Browse sessions on Smoke server"'
+    t =    81.95s Checking existence of `Button (Element at index 0)`
+    t =    81.98s Find the Button (Element at index 0)
+    t =    82.03s Waiting 30.0s for "Switch server or session" StaticText to exist
+    t =    83.11s     Checking `Expect predicate `existsNoRetry == 1` for object "Switch server or session" StaticText`
+    t =    83.11s         Checking existence of `"Switch server or session" StaticText`
+    t =    83.14s Checking existence of `"switcher-server-smoke-profile" Button`
+    t =    83.15s Find the "switcher-server-smoke-profile" Button
+    t =    83.18s Checking existence of `"Choose a runtime for Smoke server" StaticText`
+    t =    83.20s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    83.30s Open dev.meeterm.app with URL meeterm://smoke?screen=session-switcher-sessions
+    t =    83.30s     Launch dev.meeterm.app
+2026-09-27 09:52:42.714 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:42.714 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    83.52s         Setting up automation session
+    t =    85.43s         Wait for dev.meeterm.app to idle
+    t =    86.68s Wait for dev.meeterm.app to become Running Foreground
+    t =    86.68s Get number of matches for: Elements matching predicate 'identifier == "tmux session meeterm" OR label == "tmux session meeterm"'
+    t =    86.74s Get number of matches for: Elements matching predicate 'identifier == "tmux session meeterm" OR label == "tmux session meeterm"'
+    t =    86.76s Checking existence of `Button (Element at index 0)`
+    t =    86.79s Find the Button (Element at index 0)
+    t =    86.84s Get number of matches for: Elements matching predicate 'identifier == "Herdr session default" OR label == "Herdr session default"'
+    t =    86.86s Get number of matches for: Elements matching predicate 'identifier == "Herdr session default" OR label == "Herdr session default"'
+    t =    86.88s Checking existence of `Button (Element at index 0)`
+    t =    86.90s Find the Button (Element at index 0)
+    t =    86.94s Get number of matches for: Elements matching predicate 'identifier == "Herdr session paused" OR label == "Herdr session paused"'
+    t =    86.96s Get number of matches for: Elements matching predicate 'identifier == "Herdr session paused" OR label == "Herdr session paused"'
+    t =    86.98s Checking existence of `Button (Element at index 0)`
+    t =    87.00s Find the Button (Element at index 0)
+    t =    87.03s Waiting 30.0s for "Sessions on Smoke server" StaticText to exist
+    t =    88.11s     Checking `Expect predicate `existsNoRetry == 1` for object "Sessions on Smoke server" StaticText`
+    t =    88.11s         Checking existence of `"Sessions on Smoke server" StaticText`
+    t =    88.14s Checking existence of `"runtime-row-tmux-smoke-tmux-meeterm" Button`
+    t =    88.16s Find the "runtime-row-tmux-smoke-tmux-meeterm" Button
+    t =    88.19s Checking existence of `"runtime-row-herdr-smoke-herdr-default" Button`
+    t =    88.21s Find the "runtime-row-herdr-smoke-herdr-default" Button
+    t =    88.24s Waiting 30.0s for "runtime-row-herdr-smoke-herdr-paused" Button to exist
+    t =    89.31s     Checking `Expect predicate `existsNoRetry == 1` for object "runtime-row-herdr-smoke-herdr-paused" Button`
+    t =    89.31s         Checking existence of `"runtime-row-herdr-smoke-herdr-paused" Button`
+    t =    89.33s Checking existence of `"Choose a runtime for Smoke server" StaticText`
+    t =    89.36s Checking existence of `"Current" StaticText`
+    t =    89.38s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    89.48s Open dev.meeterm.app with URL meeterm://smoke?screen=herdr-connection
+    t =    89.48s     Launch dev.meeterm.app
+2026-09-27 09:52:48.896 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:48.896 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    89.69s         Setting up automation session
+    t =    91.62s         Wait for dev.meeterm.app to idle
+    t =    92.94s Wait for dev.meeterm.app to become Running Foreground
+    t =    92.94s Waiting 30.0s for "Choose a runtime for Smoke server" StaticText to exist
+    t =    94.01s     Checking `Expect predicate `existsNoRetry == 1` for object "Choose a runtime for Smoke server" StaticText`
+    t =    94.01s         Checking existence of `"Choose a runtime for Smoke server" StaticText`
+    t =    94.05s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime default" OR label == "Herdr runtime default"'
+    t =    94.07s Get number of matches for: Elements matching predicate 'identifier == "Herdr runtime default" OR label == "Herdr runtime default"'
+    t =    94.09s Checking existence of `Button (Element at index 0)`
+    t =    94.11s Find the Button (Element at index 0)
+    t =    94.16s Checking existence of `"runtime-row-herdr-smoke-herdr-default" Button`
+    t =    94.18s Find the "runtime-row-herdr-smoke-herdr-default" Button
+    t =    94.21s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =    94.31s Open dev.meeterm.app with URL meeterm://smoke?screen=herdr-groups
+    t =    94.31s     Launch dev.meeterm.app
+2026-09-27 09:52:53.717 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:52:53.717 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =    94.52s         Setting up automation session
+    t =    96.51s         Wait for dev.meeterm.app to idle
+    t =    97.78s Wait for dev.meeterm.app to become Running Foreground
+    t =    97.78s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "Group Development" OR label BEGINSWITH "Group Development"'
+    t =    97.82s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "Group Development" OR label BEGINSWITH "Group Development"'
+    t =    97.84s Checking existence of `Button (Element at index 0)`
+    t =    97.86s Find the Button (Element at index 0)
+    t =    97.91s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "Group Tests & review" OR label BEGINSWITH "Group Tests & review"'
+    t =    97.93s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "Group Tests & review" OR label BEGINSWITH "Group Tests & review"'
+    t =    97.95s Checking existence of `Button (Element at index 0)`
+    t =    97.97s Find the Button (Element at index 0)
+    t =    98.00s Waiting 30.0s for "Switch group" StaticText to exist
+    t =    99.00s     Checking `Expect predicate `existsNoRetry == 1` for object "Switch group" StaticText`
+    t =    99.00s         Checking existence of `"Switch group" StaticText`
+    t =    99.07s Waiting 30.0s for "Group Development, Agent status: working" Button to exist
+    t =   100.11s     Checking `Expect predicate `existsNoRetry == 1` for object "Group Development, Agent status: working" Button`
+    t =   100.11s         Checking existence of `"Group Development, Agent status: working" Button`
+    t =   100.15s Waiting 30.0s for "Group Tests & review, Agent status: finished, not yet viewed" Button to exist
+    t =   101.20s     Checking `Expect predicate `existsNoRetry == 1` for object "Group Tests & review, Agent status: finished, not yet viewed" Button`
+    t =   101.20s         Checking existence of `"Group Tests & review, Agent status: finished, not yet viewed" Button`
+    t =   101.25s Find the "Group Development, Agent status: working" Button
+    t =   101.27s Find the "Group Tests & review, Agent status: finished, not yet viewed" Button
+    t =   101.29s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   101.39s Open dev.meeterm.app with URL meeterm://smoke?screen=herdr-terminal
+    t =   101.39s     Launch dev.meeterm.app
+2026-09-27 09:53:00.803 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:00.803 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   101.60s         Setting up automation session
+    t =   103.61s         Wait for dev.meeterm.app to idle
+    t =   104.94s Wait for dev.meeterm.app to become Running Foreground
+    t =   104.94s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "Switch terminal group" OR label BEGINSWITH "Switch terminal group"'
+    t =   105.02s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "Switch terminal group" OR label BEGINSWITH "Switch terminal group"'
+    t =   105.03s Checking existence of `Button (Element at index 0)`
+    t =   105.05s Find the Button (Element at index 0)
+    t =   105.07s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   105.09s Checking existence of `Other (Element at index 0)`
+    t =   105.10s Find the Other (Element at index 0)
+    t =   105.13s Checking existence of `Other (Element at index 1)`
+    t =   105.15s Find the Other (Element at index 1)
+    t =   105.17s Find the "Terminal" Other
+    t =   105.20s Checking existence of `"Switch terminal group, Group Development, Agent status: working" Button`
+    t =   105.21s Find the "Switch terminal group, Group Development, Agent status: working" Button
+    t =   105.24s Checking existence of `"Terminal" Other`
+    t =   105.25s Find the "Terminal" Other
+    t =   106.33s Checking existence of `Any (First Match)`
+    t =   106.37s Find the Any (First Match)
+    t =   106.41s Find the "selected-agent-line" StaticText
+    t =   106.44s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   106.54s Open dev.meeterm.app with URL meeterm://smoke?screen=herdr-workspaces
+    t =   106.54s     Launch dev.meeterm.app
+2026-09-27 09:53:05.955 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:05.955 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   106.75s         Setting up automation session
+    t =   108.80s         Wait for dev.meeterm.app to idle
+    t =   110.06s Wait for dev.meeterm.app to become Running Foreground
+    t =   110.07s Get number of matches for: Elements matching predicate 'identifier BEGINSWITH "workspace-row-" AND label BEGINSWITH "Workspace "'
+    t =   110.09s Find the Button (Element at index 0)
+    t =   110.11s Find the Button (Element at index 1)
+    t =   110.12s Waiting 30.0s for StaticText (First Match) to exist
+    t =   111.18s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   111.18s         Checking existence of `StaticText (First Match)`
+    t =   111.23s Checking existence of `Button (First Match)`
+    t =   111.26s Find the Button (First Match)
+    t =   111.31s Checking existence of `Button (First Match)`
+    t =   111.34s Find the Button (First Match)
+    t =   111.39s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   111.48s Open dev.meeterm.app with URL meeterm://smoke?screen=recovery-progress
+    t =   111.48s     Launch dev.meeterm.app
+2026-09-27 09:53:10.895 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:10.895 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   111.70s         Setting up automation session
+    t =   113.58s         Wait for dev.meeterm.app to idle
+    t =   114.88s Wait for dev.meeterm.app to become Running Foreground
+    t =   114.88s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   114.92s Checking existence of `Other (Element at index 0)`
+    t =   114.93s Find the Other (Element at index 0)
+    t =   114.95s Checking existence of `Other (Element at index 1)`
+    t =   114.97s Find the Other (Element at index 1)
+    t =   114.99s Find the "Terminal, cached output, read only" Other
+    t =   115.02s Checking existence of `Any (First Match)`
+    t =   115.05s Find the Any (First Match)
+    t =   115.09s Find the "recovery-rail" Other
+    t =   115.13s Find the "recovery-rail" Other
+    t =   115.17s Find the "recovery-rail" Other
+    t =   115.21s Checking existence of `Any (First Match)`
+    t =   115.24s Find the Any (First Match)
+    t =   115.29s Find the "recovery-title" StaticText
+    t =   115.33s Find the "recovery-title" StaticText
+    t =   115.39s Find the "recovery-title" StaticText
+    t =   115.43s Checking existence of `Any (First Match)`
+    t =   115.46s Find the Any (First Match)
+    t =   115.51s Find the "recovery-detail" StaticText
+    t =   115.56s Find the "recovery-detail" StaticText
+    t =   115.61s Find the "recovery-detail" StaticText
+    t =   115.64s Checking existence of `Any (First Match)`
+    t =   115.68s Find the Any (First Match)
+    t =   115.72s Find the "recovery-meta" StaticText
+    t =   115.78s Find the "recovery-meta" StaticText
+    t =   115.82s Find the "recovery-meta" StaticText
+    t =   115.87s Checking existence of `"Terminal, cached output, read only" Other`
+    t =   115.88s Find the "Terminal, cached output, read only" Other
+    t =   115.91s Find the "Terminal, cached output, read only" Other
+    t =   115.93s Find the "Terminal, cached output, read only" Other
+    t =   115.96s Find the "Terminal, cached output, read only" Other
+    t =   115.98s Waiting 30.0s for "Verifying this workspace…" StaticText to exist
+    t =   117.04s     Checking `Expect predicate `existsNoRetry == 1` for object "Verifying this workspace…" StaticText`
+    t =   117.04s         Checking existence of `"Verifying this workspace…" StaticText`
+    t =   117.06s Waiting 30.0s for "Checking the server, runtime, and terminal." StaticText to exist
+    t =   118.12s     Checking `Expect predicate `existsNoRetry == 1` for object "Checking the server, runtime, and terminal." StaticText`
+    t =   118.12s         Checking existence of `"Checking the server, runtime, and terminal." StaticText`
+    t =   118.14s Waiting 30.0s for "Last received output · Input paused" StaticText to exist
+    t =   119.19s     Checking `Expect predicate `existsNoRetry == 1` for object "Last received output · Input paused" StaticText`
+    t =   119.19s         Checking existence of `"Last received output · Input paused" StaticText`
+    t =   119.22s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   119.31s Open dev.meeterm.app with URL meeterm://smoke?screen=recovery-exhausted
+    t =   119.31s     Launch dev.meeterm.app
+2026-09-27 09:53:18.725 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:18.725 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   119.53s         Setting up automation session
+    t =   121.49s         Wait for dev.meeterm.app to idle
+    t =   122.79s Wait for dev.meeterm.app to become Running Foreground
+    t =   122.79s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   122.82s Checking existence of `Other (Element at index 0)`
+    t =   122.84s Find the Other (Element at index 0)
+    t =   122.86s Checking existence of `Other (Element at index 1)`
+    t =   122.87s Find the Other (Element at index 1)
+    t =   122.89s Find the "Terminal, cached output, read only" Other
+    t =   122.92s Checking existence of `Any (First Match)`
+    t =   122.95s Find the Any (First Match)
+    t =   122.98s Find the "recovery-rail" Other
+    t =   123.03s Find the "recovery-rail" Other
+    t =   123.07s Find the "recovery-rail" Other
+    t =   123.10s Checking existence of `Any (First Match)`
+    t =   123.14s Find the Any (First Match)
+    t =   123.18s Find the "recovery-title" StaticText
+    t =   123.23s Find the "recovery-title" StaticText
+    t =   123.28s Find the "recovery-title" StaticText
+    t =   123.32s Checking existence of `Any (First Match)`
+    t =   123.36s Find the Any (First Match)
+    t =   123.40s Find the "recovery-detail" StaticText
+    t =   123.45s Find the "recovery-detail" StaticText
+    t =   123.50s Find the "recovery-detail" StaticText
+    t =   123.54s Checking existence of `Any (First Match)`
+    t =   123.58s Find the Any (First Match)
+    t =   123.63s Find the "recovery-meta" StaticText
+    t =   123.68s Find the "recovery-meta" StaticText
+    t =   123.72s Find the "recovery-meta" StaticText
+    t =   123.77s Checking existence of `"Terminal, cached output, read only" Other`
+    t =   123.78s Find the "Terminal, cached output, read only" Other
+    t =   123.80s Find the "Terminal, cached output, read only" Other
+    t =   123.83s Find the "Terminal, cached output, read only" Other
+    t =   123.85s Find the "Terminal, cached output, read only" Other
+    t =   123.87s Waiting 30.0s for "Still offline" StaticText to exist
+    t =   124.91s     Checking `Expect predicate `existsNoRetry == 1` for object "Still offline" StaticText`
+    t =   124.91s         Checking existence of `"Still offline" StaticText`
+    t =   124.93s Waiting 30.0s for "Couldn’t reach Smoke server." StaticText to exist
+    t =   126.01s     Checking `Expect predicate `existsNoRetry == 1` for object "Couldn’t reach Smoke server." StaticText`
+    t =   126.01s         Checking existence of `"Couldn’t reach Smoke server." StaticText`
+    t =   126.02s Waiting 30.0s for "Last received output · Input paused" StaticText to exist
+    t =   127.08s     Checking `Expect predicate `existsNoRetry == 1` for object "Last received output · Input paused" StaticText`
+    t =   127.08s         Checking existence of `"Last received output · Input paused" StaticText`
+    t =   127.11s Checking existence of `Any (First Match)`
+    t =   127.15s Find the Any (First Match)
+    t =   127.19s Find the "recovery-retry" Button
+    t =   127.23s Checking existence of `Any (First Match)`
+    t =   127.26s Find the Any (First Match)
+    t =   127.30s Find the "recovery-change" Button
+    t =   127.35s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   127.45s Open dev.meeterm.app with URL meeterm://smoke?screen=recovery-mismatch
+    t =   127.45s     Launch dev.meeterm.app
+2026-09-27 09:53:26.866 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:26.866 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   127.67s         Setting up automation session
+    t =   129.71s         Wait for dev.meeterm.app to idle
+    t =   130.99s Wait for dev.meeterm.app to become Running Foreground
+    t =   130.99s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   131.03s Checking existence of `Other (Element at index 0)`
+    t =   131.05s Find the Other (Element at index 0)
+    t =   131.07s Checking existence of `Other (Element at index 1)`
+    t =   131.08s Find the Other (Element at index 1)
+    t =   131.10s Find the "Terminal, cached output, read only" Other
+    t =   131.13s Checking existence of `Any (First Match)`
+    t =   131.16s Find the Any (First Match)
+    t =   131.20s Find the "recovery-rail" Other
+    t =   131.23s Find the "recovery-rail" Other
+    t =   131.27s Find the "recovery-rail" Other
+    t =   131.31s Checking existence of `Any (First Match)`
+    t =   131.34s Find the Any (First Match)
+    t =   131.40s Find the "recovery-title" StaticText
+    t =   131.44s Find the "recovery-title" StaticText
+    t =   131.49s Find the "recovery-title" StaticText
+    t =   131.55s Checking existence of `Any (First Match)`
+    t =   131.58s Find the Any (First Match)
+    t =   131.63s Find the "recovery-detail" StaticText
+    t =   131.67s Find the "recovery-detail" StaticText
+    t =   131.72s Find the "recovery-detail" StaticText
+    t =   131.76s Checking existence of `Any (First Match)`
+    t =   131.80s Find the Any (First Match)
+    t =   131.85s Find the "recovery-meta" StaticText
+    t =   131.89s Find the "recovery-meta" StaticText
+    t =   131.94s Find the "recovery-meta" StaticText
+    t =   131.99s Checking existence of `"Terminal, cached output, read only" Other`
+    t =   132.00s Find the "Terminal, cached output, read only" Other
+    t =   132.03s Find the "Terminal, cached output, read only" Other
+    t =   132.05s Find the "Terminal, cached output, read only" Other
+    t =   132.07s Find the "Terminal, cached output, read only" Other
+    t =   132.09s Waiting 30.0s for "This runtime can’t be restored" StaticText to exist
+    t =   133.15s     Checking `Expect predicate `existsNoRetry == 1` for object "This runtime can’t be restored" StaticText`
+    t =   133.15s         Checking existence of `"This runtime can’t be restored" StaticText`
+    t =   133.18s Waiting 30.0s for "The runtime named “meeterm” is not the same instance as before." StaticText to exist
+    t =   134.21s     Checking `Expect predicate `existsNoRetry == 1` for object "The runtime named “meeterm” is not the same instance as before." StaticText`
+    t =   134.21s         Checking existence of `"The runtime named “meeterm” is not the same instance as before." StaticText`
+    t =   134.23s Waiting 30.0s for "Last received output · Input paused" StaticText to exist
+    t =   135.29s     Checking `Expect predicate `existsNoRetry == 1` for object "Last received output · Input paused" StaticText`
+    t =   135.29s         Checking existence of `"Last received output · Input paused" StaticText`
+    t =   135.31s Checking existence of `Any (First Match)`
+    t =   135.35s Find the Any (First Match)
+    t =   135.38s Find the "recovery-retry" Button
+    t =   135.42s Checking existence of `Any (First Match)`
+    t =   135.45s Find the Any (First Match)
+    t =   135.48s Find the "recovery-change" Button
+    t =   135.52s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   135.62s Open dev.meeterm.app with URL meeterm://smoke?screen=layout-restore-unconfirmed
+    t =   135.62s     Launch dev.meeterm.app
+2026-09-27 09:53:35.034 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:35.034 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   135.84s         Setting up automation session
+    t =   137.75s         Wait for dev.meeterm.app to idle
+    t =   139.04s Wait for dev.meeterm.app to become Running Foreground
+    t =   139.04s Waiting 30.0s for "Disconnected" StaticText to exist
+    t =   140.11s     Checking `Expect predicate `existsNoRetry == 1` for object "Disconnected" StaticText`
+    t =   140.11s         Checking existence of `"Disconnected" StaticText`
+    t =   140.16s Waiting 30.0s for "The old connection's desktop layout restore could not be confirmed." StaticText to exist
+    t =   141.20s     Checking `Expect predicate `existsNoRetry == 1` for object "The old connection's desktop layout restore could not be confirmed." StaticText`
+    t =   141.20s         Checking existence of `"The old connection's desktop layout restore could not be confirmed." StaticText`
+    t =   141.22s Get number of matches for: Elements matching predicate 'identifier == "Dismiss desktop layout warning" OR label == "Dismiss desktop layout warning"'
+    t =   141.24s Get number of matches for: Elements matching predicate 'identifier == "Dismiss desktop layout warning" OR label == "Dismiss desktop layout warning"'
+    t =   141.26s Checking existence of `Button (Element at index 0)`
+    t =   141.27s Find the Button (Element at index 0)
+    t =   141.33s Checking existence of `"cleanup-warning-dismiss" Button`
+    t =   141.34s Find the "cleanup-warning-dismiss" Button
+    t =   141.37s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   141.48s Open dev.meeterm.app with URL meeterm://smoke?screen=runtime-layout-restore-unconfirmed
+    t =   141.48s     Launch dev.meeterm.app
+2026-09-27 09:53:40.889 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:40.889 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   141.69s         Setting up automation session
+    t =   143.73s         Wait for dev.meeterm.app to idle
+    t =   145.02s Wait for dev.meeterm.app to become Running Foreground
+    t =   145.02s Waiting 30.0s for "Choose a runtime for Smoke server" StaticText to exist
+    t =   146.05s     Checking `Expect predicate `existsNoRetry == 1` for object "Choose a runtime for Smoke server" StaticText`
+    t =   146.05s         Checking existence of `"Choose a runtime for Smoke server" StaticText`
+    t =   146.10s Waiting 30.0s for "The old connection's desktop layout restore could not be confirmed." StaticText to exist
+    t =   147.18s     Checking `Expect predicate `existsNoRetry == 1` for object "The old connection's desktop layout restore could not be confirmed." StaticText`
+    t =   147.18s         Checking existence of `"The old connection's desktop layout restore could not be confirmed." StaticText`
+    t =   147.21s Get number of matches for: Elements matching predicate 'identifier == "Dismiss desktop layout warning" OR label == "Dismiss desktop layout warning"'
+    t =   147.23s Get number of matches for: Elements matching predicate 'identifier == "Dismiss desktop layout warning" OR label == "Dismiss desktop layout warning"'
+    t =   147.26s Checking existence of `Button (Element at index 0)`
+    t =   147.28s Find the Button (Element at index 0)
+    t =   147.34s Checking existence of `"cleanup-warning-dismiss" Button`
+    t =   147.36s Find the "cleanup-warning-dismiss" Button
+    t =   147.40s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   147.50s Open dev.meeterm.app with URL meeterm://smoke?screen=connection-error
+    t =   147.50s     Launch dev.meeterm.app
+2026-09-27 09:53:46.915 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:46.915 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   147.72s         Setting up automation session
+    t =   149.79s         Wait for dev.meeterm.app to idle
+    t =   151.07s Wait for dev.meeterm.app to become Running Foreground
+    t =   151.07s Waiting 30.0s for StaticText (First Match) to exist
+    t =   152.11s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   152.11s         Checking existence of `StaticText (First Match)`
+    t =   152.20s Get number of matches for: Elements matching predicate 'identifier == "Reconnect" OR label == "Reconnect"'
+    t =   152.22s Get number of matches for: Elements matching predicate 'identifier == "Reconnect" OR label == "Reconnect"'
+    t =   152.24s Checking existence of `Button (Element at index 0)`
+    t =   152.25s Find the Button (Element at index 0)
+    t =   152.30s Checking existence of `"workspaces-reconnect" Button`
+    t =   152.31s Find the "workspaces-reconnect" Button
+    t =   152.34s Waiting 30.0s for "Authentication failed. Check your username and the password or private key for your chosen sign-in method." StaticText to exist
+    t =   153.40s     Checking `Expect predicate `existsNoRetry == 1` for object "Authentication failed. Check your username and the password or private key for your chosen sign-in method." StaticText`
+    t =   153.40s         Checking existence of `"Authentication failed. Check your username and the password or private key for your chosen sign-in method." StaticText`
+    t =   153.44s Waiting 30.0s for "The old connection's desktop layout restore could not be confirmed." StaticText to exist
+    t =   154.49s     Checking `Expect predicate `existsNoRetry == 1` for object "The old connection's desktop layout restore could not be confirmed." StaticText`
+    t =   154.50s         Checking existence of `"The old connection's desktop layout restore could not be confirmed." StaticText`
+    t =   154.55s Get number of matches for: Elements matching predicate 'identifier == "Dismiss desktop layout warning" OR label == "Dismiss desktop layout warning"'
+    t =   154.57s Get number of matches for: Elements matching predicate 'identifier == "Dismiss desktop layout warning" OR label == "Dismiss desktop layout warning"'
+    t =   154.58s Checking existence of `Button (Element at index 0)`
+    t =   154.60s Find the Button (Element at index 0)
+    t =   154.63s Checking existence of `"cleanup-warning-dismiss" Button`
+    t =   154.64s Find the "cleanup-warning-dismiss" Button
+    t =   154.67s Checking existence of `"Speed up your typing by sliding your finger across the letters to compose a word." StaticText`
+    t =   155.18s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=light&terminal=light
+    t =   155.18s     Launch dev.meeterm.app
+2026-09-27 09:53:54.590 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:54.590 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   155.39s         Setting up automation session
+    t =   157.31s         Wait for dev.meeterm.app to idle
+    t =   158.63s Wait for dev.meeterm.app to become Running Foreground
+    t =   158.63s Waiting 30.0s for StaticText (First Match) to exist
+    t =   159.70s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   159.70s         Checking existence of `StaticText (First Match)`
+    t =   159.76s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   159.78s Checking existence of `Other (Element at index 0)`
+    t =   159.79s Find the Other (Element at index 0)
+    t =   159.81s Checking existence of `Other (Element at index 1)`
+    t =   159.83s Find the Other (Element at index 1)
+    t =   159.84s Find the "Terminal" Other
+    t =   159.87s Checking existence of `"Terminal" Other`
+    t =   159.88s Find the "Terminal" Other
+    t =   159.90s Checking existence of `Any (First Match)`
+    t =   159.93s Find the Any (First Match)
+    t =   159.97s Find the "native-terminal-surface" Other
+    t =   160.02s Find the "native-terminal-surface" Other
+    t =   160.06s Find the "native-terminal-surface" Other
+    t =   160.10s Find the "native-terminal-surface" Other
+    t =   160.21s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=light&terminal=dark
+    t =   160.21s     Launch dev.meeterm.app
+2026-09-27 09:53:59.622 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:53:59.622 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   160.42s         Setting up automation session
+    t =   162.37s         Wait for dev.meeterm.app to idle
+    t =   163.69s Wait for dev.meeterm.app to become Running Foreground
+    t =   163.69s Waiting 30.0s for StaticText (First Match) to exist
+    t =   164.73s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   164.73s         Checking existence of `StaticText (First Match)`
+    t =   164.78s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   164.79s Checking existence of `Other (Element at index 0)`
+    t =   164.81s Find the Other (Element at index 0)
+    t =   164.83s Checking existence of `Other (Element at index 1)`
+    t =   164.84s Find the Other (Element at index 1)
+    t =   164.86s Find the "Terminal" Other
+    t =   164.89s Checking existence of `"Terminal" Other`
+    t =   164.90s Find the "Terminal" Other
+    t =   164.92s Checking existence of `Any (First Match)`
+    t =   164.95s Find the Any (First Match)
+    t =   164.99s Find the "native-terminal-surface" Other
+    t =   165.03s Find the "native-terminal-surface" Other
+    t =   165.08s Find the "native-terminal-surface" Other
+    t =   165.11s Find the "native-terminal-surface" Other
+    t =   165.23s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=light&terminal=system
+    t =   165.23s     Launch dev.meeterm.app
+2026-09-27 09:54:04.639 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:04.639 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   165.44s         Setting up automation session
+    t =   167.44s         Wait for dev.meeterm.app to idle
+    t =   168.79s Wait for dev.meeterm.app to become Running Foreground
+    t =   168.79s Waiting 30.0s for StaticText (First Match) to exist
+    t =   169.84s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   169.84s         Checking existence of `StaticText (First Match)`
+    t =   169.89s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   169.91s Checking existence of `Other (Element at index 0)`
+    t =   169.92s Find the Other (Element at index 0)
+    t =   169.94s Checking existence of `Other (Element at index 1)`
+    t =   169.96s Find the Other (Element at index 1)
+    t =   169.98s Find the "Terminal" Other
+    t =   170.01s Checking existence of `"Terminal" Other`
+    t =   170.02s Find the "Terminal" Other
+    t =   170.04s Checking existence of `Any (First Match)`
+    t =   170.07s Find the Any (First Match)
+    t =   170.10s Find the "native-terminal-surface" Other
+    t =   170.15s Find the "native-terminal-surface" Other
+    t =   170.19s Find the "native-terminal-surface" Other
+    t =   170.23s Find the "native-terminal-surface" Other
+    t =   170.35s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=dark&terminal=light
+    t =   170.35s     Launch dev.meeterm.app
+2026-09-27 09:54:09.759 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:09.759 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   170.56s         Setting up automation session
+    t =   172.62s         Wait for dev.meeterm.app to idle
+    t =   173.96s Wait for dev.meeterm.app to become Running Foreground
+    t =   173.96s Waiting 30.0s for StaticText (First Match) to exist
+    t =   175.02s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   175.02s         Checking existence of `StaticText (First Match)`
+    t =   175.08s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   175.10s Checking existence of `Other (Element at index 0)`
+    t =   175.11s Find the Other (Element at index 0)
+    t =   175.13s Checking existence of `Other (Element at index 1)`
+    t =   175.14s Find the Other (Element at index 1)
+    t =   175.16s Find the "Terminal" Other
+    t =   175.19s Checking existence of `"Terminal" Other`
+    t =   175.20s Find the "Terminal" Other
+    t =   175.23s Checking existence of `Any (First Match)`
+    t =   175.26s Find the Any (First Match)
+    t =   175.30s Find the "native-terminal-surface" Other
+    t =   175.35s Find the "native-terminal-surface" Other
+    t =   175.40s Find the "native-terminal-surface" Other
+    t =   175.44s Find the "native-terminal-surface" Other
+    t =   175.56s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=dark&terminal=dark
+    t =   175.56s     Launch dev.meeterm.app
+2026-09-27 09:54:14.976 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:14.976 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   175.78s         Setting up automation session
+    t =   177.86s         Wait for dev.meeterm.app to idle
+    t =   179.16s Wait for dev.meeterm.app to become Running Foreground
+    t =   179.16s Waiting 30.0s for StaticText (First Match) to exist
+    t =   180.22s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   180.22s         Checking existence of `StaticText (First Match)`
+    t =   180.26s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   180.28s Checking existence of `Other (Element at index 0)`
+    t =   180.30s Find the Other (Element at index 0)
+    t =   180.32s Checking existence of `Other (Element at index 1)`
+    t =   180.35s Find the Other (Element at index 1)
+    t =   180.38s Find the "Terminal" Other
+    t =   180.40s Checking existence of `"Terminal" Other`
+    t =   180.42s Find the "Terminal" Other
+    t =   180.45s Checking existence of `Any (First Match)`
+    t =   180.48s Find the Any (First Match)
+    t =   180.55s Find the "native-terminal-surface" Other
+    t =   180.61s Find the "native-terminal-surface" Other
+    t =   180.66s Find the "native-terminal-surface" Other
+    t =   180.70s Find the "native-terminal-surface" Other
+    t =   180.84s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=dark&terminal=system
+    t =   180.84s     Launch dev.meeterm.app
+2026-09-27 09:54:20.247 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:20.247 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   181.05s         Setting up automation session
+    t =   183.26s         Wait for dev.meeterm.app to idle
+    t =   184.57s Wait for dev.meeterm.app to become Running Foreground
+    t =   184.57s Waiting 30.0s for StaticText (First Match) to exist
+    t =   185.60s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   185.60s         Checking existence of `StaticText (First Match)`
+    t =   185.64s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   185.66s Checking existence of `Other (Element at index 0)`
+    t =   185.68s Find the Other (Element at index 0)
+    t =   185.70s Checking existence of `Other (Element at index 1)`
+    t =   185.71s Find the Other (Element at index 1)
+    t =   185.73s Find the "Terminal" Other
+    t =   185.77s Checking existence of `"Terminal" Other`
+    t =   185.78s Find the "Terminal" Other
+    t =   185.80s Checking existence of `Any (First Match)`
+    t =   185.84s Find the Any (First Match)
+    t =   185.89s Find the "native-terminal-surface" Other
+    t =   185.94s Find the "native-terminal-surface" Other
+    t =   185.98s Find the "native-terminal-surface" Other
+    t =   186.03s Find the "native-terminal-surface" Other
+    t =   186.16s Open dev.meeterm.app with URL meeterm://smoke?screen=settings&app=dark&terminal=light
+    t =   186.16s     Launch dev.meeterm.app
+2026-09-27 09:54:25.576 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:25.576 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   186.38s         Setting up automation session
+    t =   188.67s         Wait for dev.meeterm.app to idle
+    t =   190.01s Wait for dev.meeterm.app to become Running Foreground
+    t =   190.01s Waiting 30.0s for "Settings" StaticText to exist
+    t =   191.04s     Checking `Expect predicate `existsNoRetry == 1` for object "Settings" StaticText`
+    t =   191.04s         Checking existence of `"Settings" StaticText`
+    t =   191.09s Checking existence of `"settings-submit" Button`
+    t =   191.12s Find the "settings-submit" Button
+    t =   191.16s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   191.19s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   191.22s Checking existence of `Button (Element at index 0)`
+    t =   191.24s Find the Button (Element at index 0)
+    t =   191.28s Checking existence of `"app-theme" Button`
+    t =   191.31s Find the "app-theme" Button
+    t =   191.34s Get number of matches for: Elements matching predicate 'identifier == "terminal-theme" OR label == "terminal-theme"'
+    t =   191.37s Get number of matches for: Elements matching predicate 'identifier == "terminal-theme" OR label == "terminal-theme"'
+    t =   191.39s Checking existence of `Button (Element at index 0)`
+    t =   191.42s Find the Button (Element at index 0)
+    t =   191.46s Checking existence of `"terminal-theme" Button`
+    t =   191.49s Find the "terminal-theme" Button
+    t =   191.53s Waiting 10.0s for Any (First Match) to exist
+    t =   192.58s     Checking `Expect predicate `existsNoRetry == 1` for object Any (First Match)`
+    t =   192.58s         Checking existence of `Any (First Match)`
+    t =   192.71s Open dev.meeterm.app with URL meeterm://smoke?screen=recovery-progress&app=dark&terminal=light
+    t =   192.71s     Launch dev.meeterm.app
+2026-09-27 09:54:32.126 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:32.126 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   192.95s         Setting up automation session
+    t =   195.13s         Wait for dev.meeterm.app to idle
+    t =   196.43s Wait for dev.meeterm.app to become Running Foreground
+    t =   196.43s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   196.49s Checking existence of `Other (Element at index 0)`
+    t =   196.51s Find the Other (Element at index 0)
+    t =   196.53s Checking existence of `Other (Element at index 1)`
+    t =   196.58s Find the Other (Element at index 1)
+    t =   196.60s Find the "Terminal, cached output, read only" Other
+    t =   196.63s Checking existence of `Any (First Match)`
+    t =   196.68s Find the Any (First Match)
+    t =   196.73s Find the "recovery-rail" Other
+    t =   196.77s Find the "recovery-rail" Other
+    t =   196.81s Find the "recovery-rail" Other
+    t =   196.86s Checking existence of `Any (First Match)`
+    t =   196.91s Find the Any (First Match)
+    t =   196.96s Find the "recovery-title" StaticText
+    t =   197.02s Find the "recovery-title" StaticText
+    t =   197.07s Find the "recovery-title" StaticText
+    t =   197.12s Checking existence of `Any (First Match)`
+    t =   197.18s Find the Any (First Match)
+    t =   197.23s Find the "recovery-detail" StaticText
+    t =   197.28s Find the "recovery-detail" StaticText
+    t =   197.34s Find the "recovery-detail" StaticText
+    t =   197.39s Checking existence of `Any (First Match)`
+    t =   197.43s Find the Any (First Match)
+    t =   197.49s Find the "recovery-meta" StaticText
+    t =   197.55s Find the "recovery-meta" StaticText
+    t =   197.60s Find the "recovery-meta" StaticText
+    t =   197.66s Checking existence of `"Terminal, cached output, read only" Other`
+    t =   197.68s Find the "Terminal, cached output, read only" Other
+    t =   197.71s Find the "Terminal, cached output, read only" Other
+    t =   197.73s Find the "Terminal, cached output, read only" Other
+    t =   197.76s Find the "Terminal, cached output, read only" Other
+    t =   197.78s Waiting 30.0s for "Verifying this workspace…" StaticText to exist
+    t =   198.84s     Checking `Expect predicate `existsNoRetry == 1` for object "Verifying this workspace…" StaticText`
+    t =   198.84s         Checking existence of `"Verifying this workspace…" StaticText`
+    t =   198.86s Waiting 30.0s for "Checking the server, runtime, and terminal." StaticText to exist
+    t =   199.94s     Checking `Expect predicate `existsNoRetry == 1` for object "Checking the server, runtime, and terminal." StaticText`
+    t =   199.94s         Checking existence of `"Checking the server, runtime, and terminal." StaticText`
+    t =   199.96s Waiting 30.0s for "Last received output · Input paused" StaticText to exist
+    t =   200.99s     Checking `Expect predicate `existsNoRetry == 1` for object "Last received output · Input paused" StaticText`
+    t =   200.99s         Checking existence of `"Last received output · Input paused" StaticText`
+    t =   201.01s Checking existence of `Any (First Match)`
+    t =   201.05s Find the Any (First Match)
+    t =   201.11s Find the "native-terminal-surface" Other
+    t =   201.16s Find the "native-terminal-surface" Other
+    t =   201.22s Find the "native-terminal-surface" Other
+    t =   201.27s Find the "native-terminal-surface" Other
+    t =   201.41s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=system&terminal=system
+    t =   201.41s     Launch dev.meeterm.app
+2026-09-27 09:54:40.823 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:40.823 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   201.62s         Setting up automation session
+    t =   203.88s         Wait for dev.meeterm.app to idle
+    t =   205.28s Wait for dev.meeterm.app to become Running Foreground
+    t =   205.28s Waiting 30.0s for StaticText (First Match) to exist
+    t =   206.31s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   206.31s         Checking existence of `StaticText (First Match)`
+    t =   206.35s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   206.37s Checking existence of `Other (Element at index 0)`
+    t =   206.38s Find the Other (Element at index 0)
+    t =   206.40s Checking existence of `Other (Element at index 1)`
+    t =   206.41s Find the Other (Element at index 1)
+    t =   206.44s Find the "Terminal" Other
+    t =   206.47s Checking existence of `"Terminal" Other`
+    t =   206.48s Find the "Terminal" Other
+    t =   206.51s Checking existence of `Any (First Match)`
+    t =   206.55s Find the Any (First Match)
+    t =   206.61s Find the "native-terminal-surface" Other
+    t =   206.65s Find the "native-terminal-surface" Other
+    t =   206.70s Find the "native-terminal-surface" Other
+    t =   206.74s Find the "native-terminal-surface" Other
+    t =   206.78s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   206.80s Checking existence of `Other (Element at index 0)`
+    t =   206.81s Find the Other (Element at index 0)
+    t =   206.83s Checking existence of `Other (Element at index 1)`
+    t =   206.85s Find the Other (Element at index 1)
+    t =   206.87s Find the "Terminal" Other
+    t =   206.90s Press "Terminal" Other[0.10, 0.30] for 0.7 seconds, then drag to "Terminal" Other[0.60, 0.50] with velocity of 500.00 pixels per second, and then hold for 0.0 seconds 
+    t =   206.90s     Wait for dev.meeterm.app to idle
+    t =   206.91s     Find the "Terminal" Other
+    t =   206.92s     Check for interrupting elements affecting "Terminal" Other
+    t =   206.95s     Synthesize event
+    t =   206.95s         Find the "Terminal" Other
+    t =   206.98s         Find the "Terminal" Other
+    t =   207.00s         Find the "Terminal" Other
+    t =   207.02s         Find the "Terminal" Other
+    t =   207.05s         Find the "Terminal" Other
+    t =   208.55s     Wait for dev.meeterm.app to idle
+    t =   208.55s Get number of matches for: Elements matching predicate 'identifier == "Copy selection" OR label == "Copy selection"'
+    t =   208.57s Get number of matches for: Elements matching predicate 'identifier == "Copy selection" OR label == "Copy selection"'
+    t =   208.59s Checking existence of `Button (Element at index 0)`
+    t =   208.61s Find the Button (Element at index 0)
+    t =   208.64s Waiting 10.0s for "Copy selection" Button to exist
+    t =   209.69s     Checking `Expect predicate `existsNoRetry == 1` for object "Copy selection" Button`
+    t =   209.69s         Checking existence of `"Copy selection" Button`
+    t =   210.11s Wait for dev.meeterm.app to become Running Foreground
+    t =   210.11s Checking existence of `Any (First Match)`
+    t =   210.16s Find the Any (First Match)
+    t =   210.21s Find the "native-terminal-surface" Other
+    t =   210.26s Find the "native-terminal-surface" Other
+    t =   210.30s Find the "native-terminal-surface" Other
+    t =   210.37s Find the "native-terminal-surface" Other
+    t =   210.40s Get number of matches for: Elements matching predicate 'identifier == "Copy selection" OR label == "Copy selection"'
+    t =   210.42s Get number of matches for: Elements matching predicate 'identifier == "Copy selection" OR label == "Copy selection"'
+    t =   210.45s Checking existence of `Button (Element at index 0)`
+    t =   210.48s Find the Button (Element at index 0)
+    t =   210.51s Checking existence of `"Copy selection" Button`
+    t =   211.02s Checking existence of `Any (First Match)`
+    t =   211.11s Find the Any (First Match)
+    t =   211.17s Find the "native-terminal-surface" Other
+    t =   211.24s Find the "native-terminal-surface" Other
+    t =   211.32s Find the "native-terminal-surface" Other
+    t =   211.36s Find the "native-terminal-surface" Other
+    t =   211.41s Get number of matches for: Elements matching predicate 'identifier == "Copy selection" OR label == "Copy selection"'
+    t =   211.43s Get number of matches for: Elements matching predicate 'identifier == "Copy selection" OR label == "Copy selection"'
+    t =   211.45s Checking existence of `Button (Element at index 0)`
+    t =   211.47s Find the Button (Element at index 0)
+    t =   211.51s Checking existence of `"Copy selection" Button`
+    t =   211.62s Get number of matches for: Elements matching predicate 'identifier == "Cancel selection" OR label == "Cancel selection"'
+    t =   211.63s Get number of matches for: Elements matching predicate 'identifier == "Cancel selection" OR label == "Cancel selection"'
+    t =   211.65s Checking existence of `Button (Element at index 0)`
+    t =   211.67s Find the Button (Element at index 0)
+    t =   211.70s Tap "Cancel selection" Button
+    t =   211.70s     Wait for dev.meeterm.app to idle
+    t =   211.70s     Find the "Cancel selection" Button
+    t =   211.72s     Check for interrupting elements affecting "Cancel selection" Button
+    t =   211.75s     Synthesize event
+    t =   212.05s     Wait for dev.meeterm.app to idle
+    t =   212.11s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=system&terminal=dark
+    t =   212.12s     Launch dev.meeterm.app
+2026-09-27 09:54:51.527 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:54:51.527 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   212.33s         Setting up automation session
+    t =   214.58s         Wait for dev.meeterm.app to idle
+    t =   215.93s Wait for dev.meeterm.app to become Running Foreground
+    t =   215.93s Waiting 30.0s for StaticText (First Match) to exist
+    t =   216.95s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   216.96s         Checking existence of `StaticText (First Match)`
+    t =   217.00s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   217.02s Checking existence of `Other (Element at index 0)`
+    t =   217.03s Find the Other (Element at index 0)
+    t =   217.05s Checking existence of `Other (Element at index 1)`
+    t =   217.07s Find the Other (Element at index 1)
+    t =   217.09s Find the "Terminal" Other
+    t =   217.12s Checking existence of `"Terminal" Other`
+    t =   217.14s Find the "Terminal" Other
+    t =   217.16s Checking existence of `Any (First Match)`
+    t =   217.20s Find the Any (First Match)
+    t =   217.24s Find the "native-terminal-surface" Other
+    t =   217.29s Find the "native-terminal-surface" Other
+    t =   217.34s Find the "native-terminal-surface" Other
+    t =   217.38s Find the "native-terminal-surface" Other
+    t =   217.83s Checking existence of `Any (First Match)`
+    t =   217.87s Find the Any (First Match)
+    t =   217.93s Find the "native-terminal-surface" Other
+    t =   217.98s Find the "native-terminal-surface" Other
+    t =   218.04s Find the "native-terminal-surface" Other
+    t =   218.09s Find the "native-terminal-surface" Other
+    t =   218.57s Checking existence of `Any (First Match)`
+    t =   218.60s Find the Any (First Match)
+    t =   218.65s Find the "native-terminal-surface" Other
+    t =   218.70s Find the "native-terminal-surface" Other
+    t =   218.76s Find the "native-terminal-surface" Other
+    t =   218.81s Find the "native-terminal-surface" Other
+    t =   218.94s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   218.96s Checking existence of `Other (Element at index 0)`
+    t =   218.97s Find the Other (Element at index 0)
+    t =   218.99s Checking existence of `Other (Element at index 1)`
+    t =   219.00s Find the Other (Element at index 1)
+    t =   219.03s Find the "Terminal" Other
+    t =   219.06s Tap "Terminal" Other
+    t =   219.06s     Wait for dev.meeterm.app to idle
+    t =   219.06s     Find the "Terminal" Other
+    t =   219.08s     Check for interrupting elements affecting "Terminal" Other
+    t =   219.11s     Synthesize event
+    t =   219.40s     Wait for dev.meeterm.app to idle
+    t =   219.63s Waiting 10.0s for Keyboard (First Match) to exist
+    t =   220.68s     Checking `Expect predicate `existsNoRetry == 1` for object Keyboard (First Match)`
+    t =   220.68s         Checking existence of `Keyboard (First Match)`
+    t =   220.71s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   220.76s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   220.79s Checking existence of `Button (Element at index 0)`
+    t =   220.83s Find the Button (Element at index 0)
+    t =   220.88s Checking existence of `"Hide keyboard" Button`
+    t =   220.92s Find the "Hide keyboard" Button
+    t =   221.06s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   221.09s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   221.13s Checking existence of `Button (Element at index 0)`
+    t =   221.16s Find the Button (Element at index 0)
+    t =   221.22s Tap "Hide keyboard" Button
+    t =   221.22s     Wait for dev.meeterm.app to idle
+    t =   221.22s     Find the "Hide keyboard" Button
+    t =   221.27s     Check for interrupting elements affecting "Hide keyboard" Button
+    t =   221.30s     Synthesize event
+    t =   221.60s     Wait for dev.meeterm.app to idle
+    t =   221.88s Checking existence of `Keyboard (First Match)`
+    t =   221.98s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=dark&terminal=system
+    t =   221.98s     Launch dev.meeterm.app
+2026-09-27 09:55:01.392 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:55:01.392 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   222.40s         Setting up automation session
+    t =   224.56s         Wait for dev.meeterm.app to idle
+    t =   225.92s Wait for dev.meeterm.app to become Running Foreground
+    t =   225.92s Waiting 30.0s for StaticText (First Match) to exist
+    t =   226.98s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   226.98s         Checking existence of `StaticText (First Match)`
+    t =   227.02s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   227.04s Checking existence of `Other (Element at index 0)`
+    t =   227.05s Find the Other (Element at index 0)
+    t =   227.07s Checking existence of `Other (Element at index 1)`
+    t =   227.09s Find the Other (Element at index 1)
+    t =   227.11s Find the "Terminal" Other
+    t =   227.14s Checking existence of `"Terminal" Other`
+    t =   227.15s Find the "Terminal" Other
+    t =   227.18s Checking existence of `Any (First Match)`
+    t =   227.21s Find the Any (First Match)
+    t =   227.28s Find the "native-terminal-surface" Other
+    t =   227.33s Find the "native-terminal-surface" Other
+    t =   227.38s Find the "native-terminal-surface" Other
+    t =   227.42s Find the "native-terminal-surface" Other
+    t =   227.46s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   227.48s Checking existence of `Other (Element at index 0)`
+    t =   227.49s Find the Other (Element at index 0)
+    t =   227.51s Checking existence of `Other (Element at index 1)`
+    t =   227.52s Find the Other (Element at index 1)
+    t =   227.55s Find the "Terminal" Other
+    t =   227.58s Tap "Terminal" Other
+    t =   227.58s     Wait for dev.meeterm.app to idle
+    t =   227.58s     Find the "Terminal" Other
+    t =   227.60s     Check for interrupting elements affecting "Terminal" Other
+    t =   227.63s     Synthesize event
+    t =   227.93s     Wait for dev.meeterm.app to idle
+    t =   228.08s Waiting 10.0s for Keyboard (First Match) to exist
+    t =   229.14s     Checking `Expect predicate `existsNoRetry == 1` for object Keyboard (First Match)`
+    t =   229.14s         Checking existence of `Keyboard (First Match)`
+    t =   229.17s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   229.21s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   229.24s Checking existence of `Button (Element at index 0)`
+    t =   229.28s Find the Button (Element at index 0)
+    t =   229.33s Checking existence of `"Hide keyboard" Button`
+    t =   229.36s Find the "Hide keyboard" Button
+    t =   229.91s Wait for dev.meeterm.app to become Running Foreground
+    t =   229.91s Checking existence of `Any (First Match)`
+    t =   230.74s Find the Any (First Match)
+    t =   231.05s Find the "native-terminal-surface" Other
+    t =   231.20s Find the "native-terminal-surface" Other
+    t =   231.35s Find the "native-terminal-surface" Other
+    t =   231.49s Find the "native-terminal-surface" Other
+    t =   231.61s Waiting 10.0s for Keyboard (First Match) to exist
+    t =   232.67s     Checking `Expect predicate `existsNoRetry == 1` for object Keyboard (First Match)`
+    t =   232.67s         Checking existence of `Keyboard (First Match)`
+    t =   232.69s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   232.72s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   232.76s Checking existence of `Button (Element at index 0)`
+    t =   232.79s Find the Button (Element at index 0)
+    t =   232.85s Checking existence of `"Hide keyboard" Button`
+    t =   233.41s Checking existence of `Any (First Match)`
+    t =   233.56s Find the Any (First Match)
+    t =   233.76s Find the "native-terminal-surface" Other
+    t =   233.89s Find the "native-terminal-surface" Other
+    t =   234.04s Find the "native-terminal-surface" Other
+    t =   234.17s Find the "native-terminal-surface" Other
+    t =   234.30s Waiting 10.0s for Keyboard (First Match) to exist
+    t =   235.38s     Checking `Expect predicate `existsNoRetry == 1` for object Keyboard (First Match)`
+    t =   235.38s         Checking existence of `Keyboard (First Match)`
+    t =   235.40s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   235.43s Get number of matches for: Elements matching predicate 'identifier == "Hide keyboard" OR label == "Hide keyboard"'
+    t =   235.47s Checking existence of `Button (Element at index 0)`
+    t =   235.50s Find the Button (Element at index 0)
+    t =   235.55s Tap "Hide keyboard" Button
+    t =   235.55s     Wait for dev.meeterm.app to idle
+    t =   235.56s     Find the "Hide keyboard" Button
+    t =   235.59s     Check for interrupting elements affecting "Hide keyboard" Button
+    t =   235.63s     Synthesize event
+    t =   235.92s     Wait for dev.meeterm.app to idle
+    t =   236.19s Checking existence of `Keyboard (First Match)`
+    t =   236.27s Open dev.meeterm.app with URL meeterm://smoke?screen=settings&app=dark&terminal=system
+    t =   236.27s     Launch dev.meeterm.app
+2026-09-27 09:55:15.684 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:55:15.684 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   236.49s         Setting up automation session
+    t =   238.79s         Wait for dev.meeterm.app to idle
+    t =   240.09s Wait for dev.meeterm.app to become Running Foreground
+    t =   240.09s Waiting 30.0s for "Settings" StaticText to exist
+    t =   241.11s     Checking `Expect predicate `existsNoRetry == 1` for object "Settings" StaticText`
+    t =   241.11s         Checking existence of `"Settings" StaticText`
+    t =   241.15s Checking existence of `"settings-submit" Button`
+    t =   241.18s Find the "settings-submit" Button
+    t =   241.22s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   241.25s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   241.27s Checking existence of `Button (Element at index 0)`
+    t =   241.30s Find the Button (Element at index 0)
+    t =   241.34s Tap "app-theme" Button
+    t =   241.34s     Wait for dev.meeterm.app to idle
+    t =   241.35s     Find the "app-theme" Button
+    t =   241.37s     Check for interrupting elements affecting "app-theme" Button
+    t =   241.40s     Synthesize event
+    t =   241.71s     Wait for dev.meeterm.app to idle
+    t =   241.99s Waiting 10.0s for Sheet (First Match) to exist
+    t =   243.04s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   243.04s         Checking existence of `Sheet (First Match)`
+    t =   243.15s Checking existence of `"Cancel" Button`
+    t =   243.18s Find the "Cancel" Button
+    t =   243.21s Tap "Cancel" Button
+    t =   243.21s     Wait for dev.meeterm.app to idle
+    t =   243.21s     Find the "Cancel" Button
+    t =   243.24s     Check for interrupting elements affecting "Cancel" Button
+    t =   243.28s     Synthesize event
+    t =   243.58s     Wait for dev.meeterm.app to idle
+    t =   243.82s Checking existence of `Sheet (First Match)`
+    t =   243.93s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   243.96s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   243.99s Checking existence of `Button (Element at index 0)`
+    t =   244.01s Find the Button (Element at index 0)
+    t =   244.05s Checking existence of `"app-theme" Button`
+    t =   244.08s Find the "app-theme" Button
+    t =   244.12s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   244.14s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   244.17s Checking existence of `Button (Element at index 0)`
+    t =   244.20s Find the Button (Element at index 0)
+    t =   244.24s Tap "app-theme" Button
+    t =   244.24s     Wait for dev.meeterm.app to idle
+    t =   244.24s     Find the "app-theme" Button
+    t =   244.27s     Check for interrupting elements affecting "app-theme" Button
+    t =   244.31s     Synthesize event
+    t =   244.61s     Wait for dev.meeterm.app to idle
+    t =   244.86s Waiting 10.0s for Sheet (First Match) to exist
+    t =   245.91s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   245.91s         Checking existence of `Sheet (First Match)`
+    t =   245.93s Checking existence of `"Light" Button`
+    t =   245.95s Find the "Light" Button
+    t =   245.98s Tap "Light" Button
+    t =   245.98s     Wait for dev.meeterm.app to idle
+    t =   245.98s     Find the "Light" Button
+    t =   246.01s     Check for interrupting elements affecting "Light" Button
+    t =   246.05s     Synthesize event
+    t =   246.34s     Wait for dev.meeterm.app to idle
+    t =   246.58s Checking existence of `Sheet (First Match)`
+    t =   246.71s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   246.75s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   246.77s Checking existence of `Button (Element at index 0)`
+    t =   246.80s Find the Button (Element at index 0)
+    t =   246.84s Checking existence of `"app-theme" Button`
+    t =   246.86s Find the "app-theme" Button
+    t =   246.89s Get number of matches for: Elements matching predicate 'identifier == "terminal-theme" OR label == "terminal-theme"'
+    t =   246.92s Get number of matches for: Elements matching predicate 'identifier == "terminal-theme" OR label == "terminal-theme"'
+    t =   246.94s Checking existence of `Button (Element at index 0)`
+    t =   246.96s Find the Button (Element at index 0)
+    t =   247.00s Tap "terminal-theme" Button
+    t =   247.00s     Wait for dev.meeterm.app to idle
+    t =   247.00s     Find the "terminal-theme" Button
+    t =   247.03s     Check for interrupting elements affecting "terminal-theme" Button
+    t =   247.06s     Synthesize event
+    t =   247.36s     Wait for dev.meeterm.app to idle
+    t =   247.61s Waiting 10.0s for Sheet (First Match) to exist
+    t =   248.66s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   248.66s         Checking existence of `Sheet (First Match)`
+    t =   248.77s Checking existence of `"Cancel" Button`
+    t =   248.79s Find the "Cancel" Button
+    t =   248.82s Tap "Cancel" Button
+    t =   248.83s     Wait for dev.meeterm.app to idle
+    t =   248.83s     Find the "Cancel" Button
+    t =   248.85s     Check for interrupting elements affecting "Cancel" Button
+    t =   248.89s     Synthesize event
+    t =   249.19s     Wait for dev.meeterm.app to idle
+    t =   249.43s Checking existence of `Sheet (First Match)`
+    t =   249.55s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   249.58s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   249.61s Checking existence of `Button (Element at index 0)`
+    t =   249.63s Find the Button (Element at index 0)
+    t =   249.67s Tap "Cancel" Button
+    t =   249.67s     Wait for dev.meeterm.app to idle
+    t =   249.68s     Find the "Cancel" Button
+    t =   249.71s     Check for interrupting elements affecting "Cancel" Button
+    t =   249.74s     Synthesize event
+    t =   250.04s     Wait for dev.meeterm.app to idle
+    t =   250.30s Waiting 10.0s for Alert (First Match) to exist
+    t =   251.35s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   251.35s         Checking existence of `Alert (First Match)`
+    t =   251.38s Checking existence of `"Discard changes?" StaticText`
+    t =   251.51s Checking existence of `"Keep editing" Button`
+    t =   251.53s Find the "Keep editing" Button
+    t =   251.56s Tap "Keep editing" Button
+    t =   251.56s     Wait for dev.meeterm.app to idle
+    t =   251.56s     Find the "Keep editing" Button
+    t =   251.59s     Check for interrupting elements affecting "Keep editing" Button
+    t =   251.64s     Synthesize event
+    t =   251.95s     Wait for dev.meeterm.app to idle
+    t =   252.18s Checking existence of `Alert (First Match)`
+    t =   252.30s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   252.33s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   252.35s Checking existence of `Button (Element at index 0)`
+    t =   252.38s Find the Button (Element at index 0)
+    t =   252.42s Checking existence of `"app-theme" Button`
+    t =   252.45s Find the "app-theme" Button
+    t =   252.49s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   252.51s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   252.54s Checking existence of `Button (Element at index 0)`
+    t =   252.57s Find the Button (Element at index 0)
+    t =   252.61s Checking existence of `"app-theme" Button`
+    t =   252.64s Find the "app-theme" Button
+    t =   252.66s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   252.69s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   252.71s Checking existence of `Button (Element at index 0)`
+    t =   252.74s Find the Button (Element at index 0)
+    t =   252.77s Tap "Cancel" Button
+    t =   252.77s     Wait for dev.meeterm.app to idle
+    t =   252.78s     Find the "Cancel" Button
+    t =   252.81s     Check for interrupting elements affecting "Cancel" Button
+    t =   252.83s     Synthesize event
+    t =   253.14s     Wait for dev.meeterm.app to idle
+    t =   253.38s Waiting 10.0s for Alert (First Match) to exist
+    t =   254.44s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   254.44s         Checking existence of `Alert (First Match)`
+    t =   254.46s Checking existence of `"Discard" Button`
+    t =   254.48s Find the "Discard" Button
+    t =   254.51s Tap "Discard" Button
+    t =   254.51s     Wait for dev.meeterm.app to idle
+    t =   254.51s     Find the "Discard" Button
+    t =   254.54s     Check for interrupting elements affecting "Discard" Button
+    t =   254.58s     Synthesize event
+    t =   254.89s     Wait for dev.meeterm.app to idle
+    t =   255.14s Checking existence of `Alert (First Match)`
+    t =   255.29s Checking existence of `"settings-submit" Button`
+    t =   255.58s Checking existence of `"settings-submit" Button`
+    t =   255.86s Checking existence of `"settings-submit" Button`
+    t =   255.88s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   255.89s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   255.91s Checking existence of `Button (Element at index 0)`
+    t =   255.92s Find the Button (Element at index 0)
+    t =   255.94s Checking existence of `"open-settings" Button`
+    t =   255.96s Find the "open-settings" Button
+    t =   255.99s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   256.00s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   256.02s Checking existence of `Button (Element at index 0)`
+    t =   256.03s Find the Button (Element at index 0)
+    t =   256.06s Tap "open-settings" Button
+    t =   256.06s     Wait for dev.meeterm.app to idle
+    t =   256.07s     Find the "open-settings" Button
+    t =   256.08s     Check for interrupting elements affecting "open-settings" Button
+    t =   256.11s     Synthesize event
+    t =   256.42s     Wait for dev.meeterm.app to idle
+    t =   256.74s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   256.77s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   256.80s Checking existence of `Button (Element at index 0)`
+    t =   256.83s Find the Button (Element at index 0)
+    t =   256.87s Checking existence of `"app-theme" Button`
+    t =   256.90s Find the "app-theme" Button
+    t =   256.94s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   256.96s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   256.99s Checking existence of `Button (Element at index 0)`
+    t =   257.01s Find the Button (Element at index 0)
+    t =   257.06s Checking existence of `"app-theme" Button`
+    t =   257.08s Find the "app-theme" Button
+    t =   257.11s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   257.14s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   257.17s Checking existence of `Button (Element at index 0)`
+    t =   257.19s Find the Button (Element at index 0)
+    t =   257.24s Tap "Cancel" Button
+    t =   257.24s     Wait for dev.meeterm.app to idle
+    t =   257.25s     Find the "Cancel" Button
+    t =   257.27s     Check for interrupting elements affecting "Cancel" Button
+    t =   257.31s     Synthesize event
+    t =   257.62s     Wait for dev.meeterm.app to idle
+    t =   257.93s Waiting 2.0s for Alert (First Match) to exist
+    t =   259.00s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   259.00s         Checking existence of `Alert (First Match)`
+    t =   259.05s         Capturing element debug description
+    t =   259.94s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   259.94s         Checking existence of `Alert (First Match)`
+    t =   259.98s         Capturing element debug description
+    t =   259.98s     Checking existence of `Alert (First Match)`
+    t =   260.02s Collecting debug information to assist test failure triage
+    t =   260.02s     Requesting snapshot of accessibility hierarchy for app with pid 27300
+    t =   260.04s Checking existence of `"settings-submit" Button`
+    t =   260.06s Open dev.meeterm.app with URL meeterm://smoke?screen=terminal&app=light&terminal=system
+    t =   260.06s     Launch dev.meeterm.app
+2026-09-27 09:55:39.467 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:55:39.467 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   260.27s         Setting up automation session
+    t =   262.65s         Wait for dev.meeterm.app to idle
+    t =   264.00s Wait for dev.meeterm.app to become Running Foreground
+    t =   264.00s Waiting 30.0s for StaticText (First Match) to exist
+    t =   265.04s     Checking `Expect predicate `existsNoRetry == 1` for object StaticText (First Match)`
+    t =   265.04s         Checking existence of `StaticText (First Match)`
+    t =   265.08s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   265.11s Checking existence of `Other (Element at index 0)`
+    t =   265.12s Find the Other (Element at index 0)
+    t =   265.15s Checking existence of `Other (Element at index 1)`
+    t =   265.16s Find the Other (Element at index 1)
+    t =   265.19s Find the "Terminal" Other
+    t =   265.22s Checking existence of `"Terminal" Other`
+    t =   265.23s Find the "Terminal" Other
+    t =   265.26s Checking existence of `Any (First Match)`
+    t =   265.30s Find the Any (First Match)
+    t =   265.35s Find the "native-terminal-surface" Other
+    t =   265.39s Find the "native-terminal-surface" Other
+    t =   265.45s Find the "native-terminal-surface" Other
+    t =   265.50s Find the "native-terminal-surface" Other
+    t =   265.95s Wait for dev.meeterm.app to become Running Foreground
+    t =   265.95s Checking existence of `Any (First Match)`
+    t =   265.99s Find the Any (First Match)
+    t =   266.05s Find the "native-terminal-surface" Other
+    t =   266.12s Find the "native-terminal-surface" Other
+    t =   266.16s Find the "native-terminal-surface" Other
+    t =   266.22s Find the "native-terminal-surface" Other
+    t =   266.33s Open dev.meeterm.app with URL meeterm://smoke?screen=settings&app=light&terminal=system
+    t =   266.33s     Launch dev.meeterm.app
+2026-09-27 09:55:45.745 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:55:45.745 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   266.54s         Setting up automation session
+    t =   268.63s         Wait for dev.meeterm.app to idle
+    t =   269.95s Wait for dev.meeterm.app to become Running Foreground
+    t =   269.95s Waiting 30.0s for "Settings" StaticText to exist
+    t =   271.01s     Checking `Expect predicate `existsNoRetry == 1` for object "Settings" StaticText`
+    t =   271.01s         Checking existence of `"Settings" StaticText`
+    t =   271.05s Checking existence of `"settings-submit" Button`
+    t =   271.07s Find the "settings-submit" Button
+    t =   271.12s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   271.14s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   271.17s Checking existence of `Button (Element at index 0)`
+    t =   271.20s Find the Button (Element at index 0)
+    t =   271.23s Tap "app-theme" Button
+    t =   271.23s     Wait for dev.meeterm.app to idle
+    t =   271.24s     Find the "app-theme" Button
+    t =   271.28s     Check for interrupting elements affecting "app-theme" Button
+    t =   271.31s     Synthesize event
+    t =   271.62s     Wait for dev.meeterm.app to idle
+    t =   271.89s Waiting 10.0s for Sheet (First Match) to exist
+    t =   272.91s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   272.91s         Checking existence of `Sheet (First Match)`
+    t =   273.01s Checking existence of `"Cancel" Button`
+    t =   273.03s Find the "Cancel" Button
+    t =   273.06s Tap "Cancel" Button
+    t =   273.06s     Wait for dev.meeterm.app to idle
+    t =   273.07s     Find the "Cancel" Button
+    t =   273.08s     Check for interrupting elements affecting "Cancel" Button
+    t =   273.12s     Synthesize event
+    t =   273.41s     Wait for dev.meeterm.app to idle
+    t =   273.65s Checking existence of `Sheet (First Match)`
+    t =   273.75s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   273.78s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   273.81s Checking existence of `Button (Element at index 0)`
+    t =   273.83s Find the Button (Element at index 0)
+    t =   273.87s Checking existence of `"app-theme" Button`
+    t =   273.89s Find the "app-theme" Button
+    t =   273.93s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   273.95s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   273.98s Checking existence of `Button (Element at index 0)`
+    t =   274.00s Find the Button (Element at index 0)
+    t =   274.04s Tap "app-theme" Button
+    t =   274.04s     Wait for dev.meeterm.app to idle
+    t =   274.04s     Find the "app-theme" Button
+    t =   274.07s     Check for interrupting elements affecting "app-theme" Button
+    t =   274.09s     Synthesize event
+    t =   274.40s     Wait for dev.meeterm.app to idle
+    t =   274.64s Waiting 10.0s for Sheet (First Match) to exist
+    t =   275.70s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   275.70s         Checking existence of `Sheet (First Match)`
+    t =   275.71s Checking existence of `"Dark" Button`
+    t =   275.74s Find the "Dark" Button
+    t =   275.76s Tap "Dark" Button
+    t =   275.76s     Wait for dev.meeterm.app to idle
+    t =   275.77s     Find the "Dark" Button
+    t =   275.79s     Check for interrupting elements affecting "Dark" Button
+    t =   275.82s     Synthesize event
+    t =   276.12s     Wait for dev.meeterm.app to idle
+    t =   276.36s Checking existence of `Sheet (First Match)`
+    t =   276.48s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   276.51s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   276.54s Checking existence of `Button (Element at index 0)`
+    t =   276.56s Find the Button (Element at index 0)
+    t =   276.60s Checking existence of `"app-theme" Button`
+    t =   276.63s Find the "app-theme" Button
+    t =   276.66s Get number of matches for: Elements matching predicate 'identifier == "terminal-theme" OR label == "terminal-theme"'
+    t =   276.69s Get number of matches for: Elements matching predicate 'identifier == "terminal-theme" OR label == "terminal-theme"'
+    t =   276.72s Checking existence of `Button (Element at index 0)`
+    t =   276.74s Find the Button (Element at index 0)
+    t =   276.78s Tap "terminal-theme" Button
+    t =   276.78s     Wait for dev.meeterm.app to idle
+    t =   276.78s     Find the "terminal-theme" Button
+    t =   276.81s     Check for interrupting elements affecting "terminal-theme" Button
+    t =   276.83s     Synthesize event
+    t =   277.14s     Wait for dev.meeterm.app to idle
+    t =   277.40s Waiting 10.0s for Sheet (First Match) to exist
+    t =   278.46s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   278.46s         Checking existence of `Sheet (First Match)`
+    t =   278.57s Checking existence of `"Cancel" Button`
+    t =   278.60s Find the "Cancel" Button
+    t =   278.63s Tap "Cancel" Button
+    t =   278.63s     Wait for dev.meeterm.app to idle
+    t =   278.63s     Find the "Cancel" Button
+    t =   278.65s     Check for interrupting elements affecting "Cancel" Button
+    t =   278.68s     Synthesize event
+    t =   278.98s     Wait for dev.meeterm.app to idle
+    t =   279.21s Checking existence of `Sheet (First Match)`
+    t =   279.31s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   279.34s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   279.37s Checking existence of `Button (Element at index 0)`
+    t =   279.40s Find the Button (Element at index 0)
+    t =   279.44s Tap "Cancel" Button
+    t =   279.44s     Wait for dev.meeterm.app to idle
+    t =   279.44s     Find the "Cancel" Button
+    t =   279.47s     Check for interrupting elements affecting "Cancel" Button
+    t =   279.50s     Synthesize event
+    t =   279.80s     Wait for dev.meeterm.app to idle
+    t =   280.04s Waiting 10.0s for Alert (First Match) to exist
+    t =   281.07s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   281.07s         Checking existence of `Alert (First Match)`
+    t =   281.09s Checking existence of `"Discard changes?" StaticText`
+    t =   281.20s Checking existence of `"Keep editing" Button`
+    t =   281.22s Find the "Keep editing" Button
+    t =   281.25s Tap "Keep editing" Button
+    t =   281.25s     Wait for dev.meeterm.app to idle
+    t =   281.25s     Find the "Keep editing" Button
+    t =   281.28s     Check for interrupting elements affecting "Keep editing" Button
+    t =   281.33s     Synthesize event
+    t =   281.63s     Wait for dev.meeterm.app to idle
+    t =   281.87s Checking existence of `Alert (First Match)`
+    t =   281.98s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   282.00s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   282.03s Checking existence of `Button (Element at index 0)`
+    t =   282.06s Find the Button (Element at index 0)
+    t =   282.09s Checking existence of `"app-theme" Button`
+    t =   282.12s Find the "app-theme" Button
+    t =   282.16s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   282.18s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   282.20s Checking existence of `Button (Element at index 0)`
+    t =   282.22s Find the Button (Element at index 0)
+    t =   282.27s Checking existence of `"app-theme" Button`
+    t =   282.29s Find the "app-theme" Button
+    t =   282.31s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   282.34s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   282.36s Checking existence of `Button (Element at index 0)`
+    t =   282.38s Find the Button (Element at index 0)
+    t =   282.42s Tap "Cancel" Button
+    t =   282.42s     Wait for dev.meeterm.app to idle
+    t =   282.42s     Find the "Cancel" Button
+    t =   282.45s     Check for interrupting elements affecting "Cancel" Button
+    t =   282.47s     Synthesize event
+    t =   282.78s     Wait for dev.meeterm.app to idle
+    t =   283.02s Waiting 10.0s for Alert (First Match) to exist
+    t =   284.04s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   284.05s         Checking existence of `Alert (First Match)`
+    t =   284.06s Checking existence of `"Discard" Button`
+    t =   284.08s Find the "Discard" Button
+    t =   284.11s Tap "Discard" Button
+    t =   284.11s     Wait for dev.meeterm.app to idle
+    t =   284.11s     Find the "Discard" Button
+    t =   284.13s     Check for interrupting elements affecting "Discard" Button
+    t =   284.18s     Synthesize event
+    t =   284.49s     Wait for dev.meeterm.app to idle
+    t =   284.73s Checking existence of `Alert (First Match)`
+    t =   284.85s Checking existence of `"settings-submit" Button`
+    t =   285.13s Checking existence of `"settings-submit" Button`
+    t =   285.41s Checking existence of `"settings-submit" Button`
+    t =   285.43s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   285.44s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   285.45s Checking existence of `Button (Element at index 0)`
+    t =   285.47s Find the Button (Element at index 0)
+    t =   285.49s Checking existence of `"open-settings" Button`
+    t =   285.51s Find the "open-settings" Button
+    t =   285.53s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   285.54s Get number of matches for: Elements matching predicate 'identifier == "Terminal settings" OR label == "Terminal settings"'
+    t =   285.56s Checking existence of `Button (Element at index 0)`
+    t =   285.57s Find the Button (Element at index 0)
+    t =   285.60s Tap "open-settings" Button
+    t =   285.60s     Wait for dev.meeterm.app to idle
+    t =   285.60s     Find the "open-settings" Button
+    t =   285.62s     Check for interrupting elements affecting "open-settings" Button
+    t =   285.64s     Synthesize event
+    t =   285.94s     Wait for dev.meeterm.app to idle
+    t =   286.27s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   286.31s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   286.35s Checking existence of `Button (Element at index 0)`
+    t =   286.37s Find the Button (Element at index 0)
+    t =   286.41s Checking existence of `"app-theme" Button`
+    t =   286.44s Find the "app-theme" Button
+    t =   286.48s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   286.50s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   286.53s Checking existence of `Button (Element at index 0)`
+    t =   286.55s Find the Button (Element at index 0)
+    t =   286.59s Checking existence of `"app-theme" Button`
+    t =   286.63s Find the "app-theme" Button
+    t =   286.66s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   286.68s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   286.71s Checking existence of `Button (Element at index 0)`
+    t =   286.74s Find the Button (Element at index 0)
+    t =   286.78s Tap "Cancel" Button
+    t =   286.78s     Wait for dev.meeterm.app to idle
+    t =   286.78s     Find the "Cancel" Button
+    t =   286.82s     Check for interrupting elements affecting "Cancel" Button
+    t =   286.84s     Synthesize event
+    t =   287.14s     Wait for dev.meeterm.app to idle
+    t =   287.47s Waiting 2.0s for Alert (First Match) to exist
+    t =   288.55s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   288.55s         Checking existence of `Alert (First Match)`
+    t =   288.60s         Capturing element debug description
+    t =   289.47s     Checking `Expect predicate `existsNoRetry == 1` for object Alert (First Match)`
+    t =   289.47s         Checking existence of `Alert (First Match)`
+    t =   289.51s         Capturing element debug description
+    t =   289.51s     Checking existence of `Alert (First Match)`
+    t =   289.55s Collecting debug information to assist test failure triage
+    t =   289.55s     Requesting snapshot of accessibility hierarchy for app with pid 27340
+    t =   289.57s Checking existence of `"settings-submit" Button`
+    t =   289.58s Open dev.meeterm.app with URL meeterm://smoke?screen=settings&app=system&terminal=dark
+    t =   289.58s     Launch dev.meeterm.app
+2026-09-27 09:56:08.993 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:56:08.993 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   289.80s         Setting up automation session
+    t =   291.97s         Wait for dev.meeterm.app to idle
+    t =   293.28s Wait for dev.meeterm.app to become Running Foreground
+    t =   293.28s Waiting 30.0s for "Settings" StaticText to exist
+    t =   294.33s     Checking `Expect predicate `existsNoRetry == 1` for object "Settings" StaticText`
+    t =   294.33s         Checking existence of `"Settings" StaticText`
+    t =   294.37s Checking existence of `"settings-submit" Button`
+    t =   294.40s Find the "settings-submit" Button
+    t =   294.43s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   294.45s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   294.48s Checking existence of `Button (Element at index 0)`
+    t =   294.51s Find the Button (Element at index 0)
+    t =   294.54s Tap "app-theme" Button
+    t =   294.54s     Wait for dev.meeterm.app to idle
+    t =   294.55s     Find the "app-theme" Button
+    t =   294.57s     Check for interrupting elements affecting "app-theme" Button
+    t =   294.59s     Synthesize event
+    t =   294.90s     Wait for dev.meeterm.app to idle
+    t =   295.17s Waiting 10.0s for Sheet (First Match) to exist
+    t =   296.20s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   296.20s         Checking existence of `Sheet (First Match)`
+    t =   296.30s Checking existence of `"Cancel" Button`
+    t =   296.32s Find the "Cancel" Button
+    t =   296.35s Tap "Cancel" Button
+    t =   296.35s     Wait for dev.meeterm.app to idle
+    t =   296.35s     Find the "Cancel" Button
+    t =   296.38s     Check for interrupting elements affecting "Cancel" Button
+    t =   296.41s     Synthesize event
+    t =   296.71s     Wait for dev.meeterm.app to idle
+    t =   296.95s Checking existence of `Sheet (First Match)`
+    t =   297.45s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   297.48s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   297.51s Checking existence of `Button (Element at index 0)`
+    t =   297.53s Find the Button (Element at index 0)
+    t =   297.57s Checking existence of `"app-theme" Button`
+    t =   297.59s Find the "app-theme" Button
+    t =   297.63s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   297.65s Get number of matches for: Elements matching predicate 'identifier == "app-theme" OR label == "app-theme"'
+    t =   297.68s Checking existence of `Button (Element at index 0)`
+    t =   297.70s Find the Button (Element at index 0)
+    t =   297.75s Tap "app-theme" Button
+    t =   297.75s     Wait for dev.meeterm.app to idle
+    t =   297.75s     Find the "app-theme" Button
+    t =   297.78s     Check for interrupting elements affecting "app-theme" Button
+    t =   297.81s     Synthesize event
+    t =   298.12s     Wait for dev.meeterm.app to idle
+    t =   298.36s Waiting 10.0s for Sheet (First Match) to exist
+    t =   299.40s     Checking `Expect predicate `existsNoRetry == 1` for object Sheet (First Match)`
+    t =   299.40s         Checking existence of `Sheet (First Match)`
+    t =   299.50s Tap "Cancel" Button
+    t =   299.50s     Wait for dev.meeterm.app to idle
+    t =   299.50s     Find the "Cancel" Button
+    t =   299.52s     Check for interrupting elements affecting "Cancel" Button
+    t =   299.55s     Synthesize event
+    t =   299.85s     Wait for dev.meeterm.app to idle
+    t =   300.08s Checking existence of `Sheet (First Match)`
+    t =   300.17s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   300.20s Get number of matches for: Elements matching predicate 'identifier == "Cancel" OR label == "Cancel"'
+    t =   300.22s Checking existence of `Button (Element at index 0)`
+    t =   300.24s Find the Button (Element at index 0)
+    t =   300.27s Tap "Cancel" Button
+    t =   300.27s     Wait for dev.meeterm.app to idle
+    t =   300.28s     Find the "Cancel" Button
+    t =   300.30s     Check for interrupting elements affecting "Cancel" Button
+    t =   300.32s     Synthesize event
+    t =   300.63s     Wait for dev.meeterm.app to idle
+    t =   300.95s Checking existence of `"settings-submit" Button`
+    t =   300.97s Terminate dev.meeterm.app:27375
+    t =   302.01s Open dev.meeterm.app
+    t =   302.01s     Launch dev.meeterm.app
+2026-09-27 09:56:21.423 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:56:21.423 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   302.22s         Setting up automation session
+    t =   304.06s         Wait for dev.meeterm.app to idle
+    t =   305.36s Wait for dev.meeterm.app to become Running Foreground
+    t =   305.36s Open dev.meeterm.app with URL meeterm://foundation?foundation=1
+    t =   305.36s     Launch dev.meeterm.app
+2026-09-27 09:56:24.775 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-27 09:56:24.775 xcodebuild[26844:221149] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =   305.59s         Setting up automation session
+    t =   307.47s         Wait for dev.meeterm.app to idle
+    t =   308.76s Wait for dev.meeterm.app to become Running Foreground
+    t =   308.76s Waiting 60.0s for "Native foundation preview" StaticText to exist
+    t =   309.78s     Checking `Expect predicate `existsNoRetry == 1` for object "Native foundation preview" StaticText`
+    t =   309.79s         Checking existence of `"Native foundation preview" StaticText`
+    t =   309.82s Get all elements bound by index for: Elements matching predicate 'identifier == "Terminal" OR label == "Terminal" OR label == "Terminal, cached output, read only"'
+    t =   309.83s Checking existence of `Other (Element at index 0)`
+    t =   309.84s Find the Other (Element at index 0)
+    t =   309.85s Find the "native-terminal-surface" Other
+    t =   310.94s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   310.94s     Capturing element debug description
+    t =   311.02s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   311.87s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   311.87s     Capturing element debug description
+    t =   311.87s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   312.91s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   312.91s     Capturing element debug description
+    t =   312.91s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   313.91s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   313.91s     Capturing element debug description
+    t =   313.91s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   314.87s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   314.87s     Capturing element debug description
+    t =   314.87s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   315.93s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   315.93s     Capturing element debug description
+    t =   315.93s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   316.92s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   316.92s     Capturing element debug description
+    t =   316.93s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   317.88s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   317.88s     Capturing element debug description
+    t =   317.88s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   318.94s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   318.94s     Capturing element debug description
+    t =   318.95s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   319.87s Checking `Expect predicate `BLOCKPREDICATE(0x11410f0f0)` for object Target Application 'dev.meeterm.app'`
+    t =   319.87s     Capturing element debug description
+    t =   319.87s         Requesting snapshot of accessibility hierarchy for app with pid 27404
+    t =   319.98s Terminate dev.meeterm.app:27404
+    t =   321.08s Tear Down
+Test Case '-[meetermTests.MeetermSmokeUITests testStandardSeededScreensAndFoundation]' passed (322.179 seconds).
+Test Suite 'MeetermSmokeUITests' passed at 2026-09-27 16:56:41.595.
+	 Executed 1 test, with 0 failures (0 unexpected) in 322.179 (322.185) seconds
+Test Suite 'TerminalInputViewTests' started at 2026-09-27 16:56:41.596.
+Test Case '-[meetermTests.TerminalInputViewTests testAsyncPasteCarriesStartEpochAndDropsAfterEpochChange]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:41.596
+    t =     0.03s Set Up
+2026-09-27 16:56:41.695388+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1075af320>; layer = <UIWindowLayer: 0x1155746c0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:41.713586+0000 meetermTests-Runner[26857:221435] [XPCErrors] non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
+2026-09-27 16:56:41.716982+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1075af320>; layer = <UIWindowLayer: 0x1155746c0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:41.719111+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1075af320>; layer = <UIWindowLayer: 0x1155746c0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.13s Tear Down
+Test Case '-[meetermTests.TerminalInputViewTests testAsyncPasteCarriesStartEpochAndDropsAfterEpochChange]' passed (0.135 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testCachedReadOnlyCancelsInputButPreservesBindingAndCopy]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:41.732
+    t =     0.02s Set Up
+2026-09-27 16:56:41.766289+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x107da0700>; layer = <UIWindowLayer: 0x107589040>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.05s Tear Down
+2026-09-27 16:56:41.785036+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5400>.
+Test Case '-[meetermTests.TerminalInputViewTests testCachedReadOnlyCancelsInputButPreservesBindingAndCopy]' passed (0.072 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testControlModifierAppliesToOneCommitAndIsCancelledOnRebind]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:41.804
+    t =     0.02s Set Up
+2026-09-27 16:56:41.831438+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x107da0240>; layer = <UIWindowLayer: 0x111535e00>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.04s Tear Down
+Test Case '-[meetermTests.TerminalInputViewTests testControlModifierAppliesToOneCommitAndIsCancelledOnRebind]' passed (0.073 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareControlUsesModifiedInputWithoutDoubleCommit]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:41.877
+    t =     0.02s Set Up
+2026-09-27 16:56:41.900934+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x107da0260>; layer = <UIWindowLayer: 0x107589d40>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.03s Tear Down
+2026-09-27 16:56:41.919378+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5000>.
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareControlUsesModifiedInputWithoutDoubleCommit]' passed (0.070 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareShiftCombinationsAreRegisteredAndCommitOnce]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:41.949
+    t =     0.03s Set Up
+2026-09-27 16:56:41.993118+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x113452420>; layer = <UIWindowLayer: 0x111537d80>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.05s Tear Down
+2026-09-27 16:56:42.004006+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5400>.
+Test Case '-[meetermTests.TerminalInputViewTests testHardwareShiftCombinationsAreRegisteredAndCommitOnce]' passed (0.082 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testHistoryScrollYieldsToHorizontalNavigation]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.030
+    t =     0.02s Set Up
+2026-09-27 16:56:42.057056+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1076d39a0>; layer = <UIWindowLayer: 0x10758b700>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.03s Tear Down
+2026-09-27 16:56:42.069349+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5000>.
+Test Case '-[meetermTests.TerminalInputViewTests testHistoryScrollYieldsToHorizontalNavigation]' passed (0.074 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testMarkedCompositionIsLocalAndCommitsOnce]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.104
+    t =     0.02s Set Up
+2026-09-27 16:56:42.135089+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x1134507e0>; layer = <UIWindowLayer: 0x1115346c0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.04s Tear Down
+2026-09-27 16:56:42.152697+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5400>.
+Test Case '-[meetermTests.TerminalInputViewTests testMarkedCompositionIsLocalAndCommitsOnce]' passed (0.075 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testMultilinePasteCallsOnPasteOnceWithoutCommit]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.179
+    t =     0.03s Set Up
+2026-09-27 16:56:42.209743+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c87040>; layer = <UIWindowLayer: 0x10758b600>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.04s Tear Down
+2026-09-27 16:56:42.219825+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5000>.
+Test Case '-[meetermTests.TerminalInputViewTests testMultilinePasteCallsOnPasteOnceWithoutCommit]' passed (0.081 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedAfterCancelComposition]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.260
+    t =     0.03s Set Up
+2026-09-27 16:56:42.294624+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x107da0860>; layer = <UIWindowLayer: 0x111535b80>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:42.297935+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x107da0860>; layer = <UIWindowLayer: 0x111535b80>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.04s Tear Down
+2026-09-27 16:56:42.302955+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5400>.
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedAfterCancelComposition]' passed (0.080 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedWhenInputLeavesWindow]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.340
+    t =     0.03s Set Up
+2026-09-27 16:56:42.379580+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c846a0>; layer = <UIWindowLayer: 0x10758b800>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.04s Tear Down
+2026-09-27 16:56:42.386201+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5000>.
+Test Case '-[meetermTests.TerminalInputViewTests testPendingPasteIsDroppedWhenInputLeavesWindow]' passed (0.085 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testRecoveryBridgeArgumentsAreDecimalAndBounded]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.425
+    t =     0.03s Set Up
+2026-09-27 16:56:42.456278+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x107da0440>; layer = <UIWindowLayer: 0x111537980>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.03s Tear Down
+2026-09-27 16:56:42.469670+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5400>.
+Test Case '-[meetermTests.TerminalInputViewTests testRecoveryBridgeArgumentsAreDecimalAndBounded]' passed (0.078 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testReturningLiveDoesNotAutoFocusAndUsesFreshEpoch]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.503
+    t =     0.02s Set Up
+2026-09-27 16:56:42.531540+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c84840>; layer = <UIWindowLayer: 0x10758b900>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:42.534217+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c84840>; layer = <UIWindowLayer: 0x10758b900>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:42.535442+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c84840>; layer = <UIWindowLayer: 0x10758b900>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.03s Tear Down
+2026-09-27 16:56:42.539595+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5000>.
+Test Case '-[meetermTests.TerminalInputViewTests testReturningLiveDoesNotAutoFocusAndUsesFreshEpoch]' passed (0.075 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testRuntimeBoundaryBridgePreservesNativeAndPreCallResults]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.578
+    t =     0.02s Set Up
+2026-09-27 16:56:42.604422+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5000; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c87620>; layer = <UIWindowLayer: 0x111534740>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.03s Tear Down
+2026-09-27 16:56:42.621529+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5400>.
+Test Case '-[meetermTests.TerminalInputViewTests testRuntimeBoundaryBridgePreservesNativeAndPreCallResults]' passed (0.069 seconds).
+Test Case '-[meetermTests.TerminalInputViewTests testThemeRefreshPreservesCompositionSelectionAndResponder]' started.
+    t =     0.00s Start Test at 2026-09-27 16:56:42.647
+    t =     0.02s Set Up
+2026-09-27 16:56:42.677049+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c85b60>; layer = <UIWindowLayer: 0x107588fc0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:42.683716+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c85b60>; layer = <UIWindowLayer: 0x107588fc0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+2026-09-27 16:56:42.684612+0000 meetermTests-Runner[26857:221435] [View] First responder issue detected: non-key window attempting reload - allowing due to manual keyboard (first responder window is <UIWindow: 0x1045e5400; frame = (0 0; 390 844); gestureRecognizers = <NSArray: 0x114c85b60>; layer = <UIWindowLayer: 0x107588fc0>>, key window is <UIWindow: 0x1045e4000; frame = (0 0; 320 480); gestureRecognizers = <NSArray: 0x1046831a0>; layer = <UIWindowLayer: 0x104646880>>)
+    t =     0.04s Tear Down
+2026-09-27 16:56:42.688248+0000 meetermTests-Runner[26857:221435] Unbalanced calls to begin/end appearance transitions for <UIViewController: 0x1045e5000>.
+Test Case '-[meetermTests.TerminalInputViewTests testThemeRefreshPreservesCompositionSelectionAndResponder]' passed (0.074 seconds).
+Test Suite 'TerminalInputViewTests' passed at 2026-09-27 16:56:42.722.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 1.121 (1.126) seconds
+Test Suite 'meetermTests.xctest' passed at 2026-09-27 16:56:42.722.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 323.300 (323.312) seconds
+Test Suite 'Selected tests' passed at 2026-09-27 16:56:42.723.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 323.300 (323.314) seconds
+** BUILD INTERRUPTED **

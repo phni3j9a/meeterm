@@ -1,0 +1,69 @@
+run=ios-standard-issue37-r3
+candidate=52978906e45c91eb5404e3b25e7c9d5413c26a01
+branch_checked_out=issue-37-independent-themes (local validation checkout; no product-branch commits/pushes)
+session=devin-7a32a4e6ed984961b5194e22feeba407 (devin-swe-2-max)
+date_utc=2026-09-27
+runner_temp=/Users/devin/runner-temp-ios37-r3 (fresh unique; preserved for later same-commit ssh reuse)
+ios_test_products_package=/Users/devin/runner-temp-ios37-r3/ios-test-products (pristine pack BEFORE runtime tests; manifest verified)
+evidence_branch=evidence/ios-20260928-issue37-standard-r3
+prior_evidence=evidence/ios-20260928-issue37-standard @ 5b71dfb (aa2249ce r1) + evidence/ios-20260928-issue37-standard-r2 @ 052b34c (99855a25 r2), both preserved untouched
+change_scope=validator-only vs r2: scripts/ci/ios-validate-foundation.py (THEME_DIAGNOSTICS light|dark whitelist) + scripts/ssh/test_ios_foundation.py (20 regression tests, pass under python3.12; note: file uses py>=3.10 syntax — suite validator itself still runs under system python3.9)
+
+[toolchain — verified actual]
+node=v22.22.2 (session-local official tarball)
+npm=10.9.7
+rust=1.96.0 (aarch64-apple-ios-sim)
+xcode=26.6 (17F113), iOS Simulator SDK 26.5
+cocoapods=1.17.0 (ran with LANG=LC_ALL=en_US.UTF-8 exported per MAIN-009)
+host=macOS 26.5.2 arm64
+simulator=iPhone 18 Pro Max 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iOS 27.0
+
+[stages]
+swift_preflight_ios_typecheck=pass (before CNG/build)
+npm_ci=pass
+rustup_target_add=pass
+cng=pass (expo prebuild --platform ios --non-interactive --no-install --clean)
+inject_ui_test=pass
+pod_install=pass (locale exported before CocoaPods — no crash)
+strip_storage_rust_link=pass
+build_for_testing=pass (Release, iphonesimulator, unsigned, arm64, TEST BUILD SUCCEEDED)
+entitlements_verify=pass (__entitlements + __ents_der present)
+test_products_pack=pass (before any runtime test)
+simulator_select=pass (7EE2EBC1, booted)
+standard_suite=PASS — suite exit 0:
+  "iOS standard UI smoke passed."
+  "iOS foundation validation passed."     <- THEME diagnostic now accepted
+  "iOS standard seeded-screen and fresh native foundation smoke passed."
+standard_xctest=pass — testStandardSeededScreensAndFoundation reached
+  theme_verification_complete, foundation_verified, standard_complete, teardown_complete
+  (26/26 routes, 6/6 theme matrix, settings preview, recovery rail,
+  real OS flips same-handle, pinned terminal, keyboard leg,
+  all 11 theme_dialog legs incl. ActionSheet/draft/discard/reopen/system)
+native_storage_xctest=pass (all cases incl. legacy_preferences_migration)
+native_input_xctest=pass (all cases incl. theme_refresh)
+appearance_observer=pass (ios-appearance-validation.txt; restored to light)
+foundation_validator=pass (the r2 malformed_marker on MEETERM_SMOKE_THEME is gone;
+  simulator.log still contains the THEME marker — now whitelisted as
+  light|dark diagnostic only, never readiness/frame evidence)
+native_readiness=pass (MEETERM_SMOKE_NATIVE_READY, fresh pid)
+first_frame=METAL (MEETERM_SMOKE_FIRST_FRAME_METAL; zero SOFTWARE markers)
+recording=theme-transitions.mp4 captured through theme_verification_complete
+
+[evidence contents]
+suite/  — full ios-simulator-observability dir for THIS run only
+          (50 png: 26 standard routes, 6 theme matrix, 4 os/pinned/keyboard,
+          settings-preview, recovery, all 11 theme-dialog captures;
+          theme-transitions.mp4; theme-recording.txt recording=captured;
+          ios-standard-validation.txt result=passed stage=complete;
+          ios-foundation-validation.txt result=passed;
+          ios-ui-stages.txt complete; simulator.log sanitized slice w/ THEME marker;
+          storage/input/appearance validations all passed; diagnostics txt)
+build/  — xcode-version.txt, toolchain-versions.txt, ios-simulator-entitlements.txt,
+          xcodebuild.log (build-for-testing transcript)
+xctest-transcript.log — xcuitest_standard transcript
+run-record.txt — this file
+
+[non-claims]
+- Simulator only; no physical device; no Android/externalIME parity claims.
+- No product source edited/committed/pushed.
+- Old products/evidence preserved; no reuse claimed for this run.
