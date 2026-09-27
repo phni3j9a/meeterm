@@ -1105,11 +1105,10 @@ class RunnerDiagnosticsTests(unittest.TestCase):
     @staticmethod
     def write_storage_success(root):
         (root / "ios-native-storage-validation.txt").write_text(
-            "case=interrupted_write_cleanup result=passed\n"
-            "case=credential_endpoint_binding result=passed\n"
-            "case=remove_saved_credential result=passed\n"
-            "case=preferences_validation result=passed\n"
-            "case=runtime_hint_validation result=passed\n"
+            "".join(
+                f"case={case} result=passed\n"
+                for case in smoke.STORAGE_CASES
+            )
         )
 
     @staticmethod
@@ -1139,7 +1138,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
     @staticmethod
     def write_standard_stages(root):
         (root / "ios-ui-stages.txt").write_text(
-            "standard_complete\nfoundation_verified\n"
+            "theme_verification_complete\nstandard_complete\nfoundation_verified\n"
         )
 
     @staticmethod
@@ -1368,6 +1367,65 @@ class RunnerDiagnosticsTests(unittest.TestCase):
                 "ui_last_stage=complete\n",
             )
 
+    def test_standard_main_records_the_bounded_theme_section(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            environment = {"RUNNER_TEMP": str(root / "runner")}
+
+            with mock.patch.dict(smoke.os.environ, environment, clear=False), \
+                 mock.patch.object(sys, "argv", [
+                     "ios-smoke.py",
+                     "--artifact-dir",
+                     str(artifact_dir),
+                     "--derived-data",
+                     str(root / "derived-data"),
+                     "--simulator-udid",
+                     "fixture-simulator",
+                     "--suite",
+                     "standard",
+                 ]), \
+                 mock.patch.object(smoke, "run_xcuitest", return_value=0) as run, \
+                 mock.patch.object(
+                     smoke,
+                     "record_daily_interactions",
+                     return_value=contextlib.nullcontext(),
+                 ) as recording, \
+                 mock.patch.object(
+                     smoke,
+                     "observe_appearance_requests",
+                     return_value=contextlib.nullcontext(),
+                 ) as appearance:
+                status = smoke.main()
+
+            self.assertEqual(status, 0)
+            run.assert_called_once()
+            self.assertEqual(run.call_args.kwargs["suite"], "standard")
+            recording.assert_called_once_with(
+                "fixture-simulator",
+                artifact_dir / "ios-ui-stages.txt",
+                artifact_dir,
+                trigger_markers=("theme_matrix_open",),
+                stop_markers=("theme_verification_complete",),
+                video_name="theme-transitions.mp4",
+                result_name="theme-recording.txt",
+                max_seconds=420,
+            )
+            appearance.assert_called_once()
+            self.assertEqual(
+                appearance.call_args.args[:2],
+                ("fixture-simulator", mock.ANY),
+            )
+            self.assertEqual(
+                (artifact_dir / "ios-standard-validation.txt").read_text(),
+                "result=passed\n"
+                "suite=standard\n"
+                "stage=complete\n"
+                "reason=none\n"
+                "ui_last_stage=complete\n",
+            )
+
     @staticmethod
     def write_ssh_success(root):
         (root / "ios-ui-ssh-validation.txt").write_text("case=ssh result=passed\n")
@@ -1434,7 +1492,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual(standard_validation.read_text(), "case=standard result=passed\n")
             self.assertEqual(
                 (root / "ios-ui-stages.txt").read_text(),
-                "standard_complete\nfoundation_verified\n",
+                "theme_verification_complete\nstandard_complete\nfoundation_verified\n",
             )
 
     def test_standard_missing_native_input_case_cannot_pass_with_ui_stage(self):

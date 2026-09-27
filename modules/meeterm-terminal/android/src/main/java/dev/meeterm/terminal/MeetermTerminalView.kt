@@ -64,6 +64,7 @@ class MeetermTerminalView(
   private var interactionMode = "live"
   private var lastOperationEpoch: String? = null
   private val remoteInputControls = mutableListOf<View>()
+  private val themedKeyButtons = mutableListOf<TextView>()
   private var lastColumns = 0
   private var lastRows = 0
   private var attached = false
@@ -776,12 +777,24 @@ class MeetermTerminalView(
   }
 
   private fun keyBackground(selected: Boolean = false): RippleDrawable {
+    val light = themeName == "light"
     val fill = GradientDrawable().apply {
-      setColor(if (selected) Color.rgb(117, 83, 39) else Color.rgb(48, 44, 38))
+      setColor(
+        when {
+          selected && light -> Color.rgb(230, 214, 174)
+          selected -> Color.rgb(117, 83, 39)
+          light -> Color.rgb(250, 248, 244)
+          else -> Color.rgb(48, 44, 38)
+        },
+      )
       cornerRadius = dp(8).toFloat()
     }
-    return RippleDrawable(ColorStateList.valueOf(Color.argb(46, 219, 179, 120)), fill, null)
+    val ripple = if (light) Color.argb(46, 139, 94, 48) else Color.argb(46, 219, 179, 120)
+    return RippleDrawable(ColorStateList.valueOf(ripple), fill, null)
   }
+
+  private fun keyTextColor(): Int =
+    if (themeName == "light") Color.rgb(139, 94, 48) else Color.rgb(219, 179, 120)
 
   private fun syncModifierButtons() {
     listOf(
@@ -818,6 +831,7 @@ class MeetermTerminalView(
         inputSession.toggleModifier(modifier)
       }
       remoteInputControls += this
+      themedKeyButtons += this
     }
 
   private fun createSpecialKeyRow(context: Context): LinearLayout {
@@ -876,6 +890,7 @@ class MeetermTerminalView(
           if (inputSession.sendSpecial(key)) surface.requestRender()
         }
         remoteInputControls += this
+        themedKeyButtons += this
       }
       keys.addView(button, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
         marginStart = dp(1)
@@ -909,6 +924,7 @@ class MeetermTerminalView(
       }
     }
     remoteInputControls += pasteButton
+    themedKeyButtons += pasteButton
     row.addView(pasteButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
@@ -934,6 +950,7 @@ class MeetermTerminalView(
         copySelection()
       }
     }
+    themedKeyButtons += copyButton
     row.addView(copyButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
@@ -952,7 +969,9 @@ class MeetermTerminalView(
   }
 
   fun setTheme(value: String) {
-    themeName = if (value.equals("light", ignoreCase = true)) "light" else "dark"
+    val next = if (value.equals("light", ignoreCase = true)) "light" else "dark"
+    if (next == themeName) return
+    themeName = next
     applyThemeColors()
     applyNativeSettings(terminalHandle)
     surface.requestRender()
@@ -1042,9 +1061,15 @@ class MeetermTerminalView(
       specialKeyRow.setBackgroundColor(
         if (themeName == "light") Color.rgb(242, 237, 226) else Color.rgb(33, 31, 27),
       )
+      val keyText = keyTextColor()
+      themedKeyButtons.forEach { button ->
+        button.setTextColor(keyText)
+        button.background = keyBackground()
+      }
       syncModifierButtons()
     }
     renderer.setTheme(themeName == "light")
+    Log.i(TAG, "MEETERM_SMOKE_THEME $themeName")
   }
 
   private fun dp(value: Int): Int =

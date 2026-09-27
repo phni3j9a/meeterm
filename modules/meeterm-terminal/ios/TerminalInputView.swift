@@ -71,6 +71,9 @@ final class TerminalInputView: UITextView {
   private var modifiers: UInt32 = 0
   private weak var controlButton: UIButton?
   private weak var altButton: UIButton?
+  private var accessoryButtons: [UIButton] = []
+  private var lightTheme = false
+  private var themeApplied = false
 
   private var isReplacingMarkedText = false
   private var pasteGeneration: UInt64 = 0
@@ -342,6 +345,53 @@ final class TerminalInputView: UITextView {
     return text(in: range) ?? ""
   }
 
+  /// Follow the resolved terminal theme for the accessory row and the system
+  /// keyboard appearance. When the effective theme actually changes while the
+  /// keyboard is visible, reloadInputViews refreshes the presented input views
+  /// in place: the responder is never resigned, and the marked-text
+  /// composition, the selection and every pending input callback stay in this
+  /// view's document instead of being discarded with a focus round-trip.
+  func setTheme(light: Bool) {
+    let changed = !themeApplied || lightTheme != light
+    themeApplied = true
+    lightTheme = light
+    keyboardAppearance = light ? .light : .dark
+    applyAccessoryTheme()
+    if changed && isFirstResponder {
+      reloadInputViews()
+    }
+  }
+
+  private func applyAccessoryTheme() {
+    terminalAccessoryView.backgroundColor = lightTheme
+      ? UIColor(red: 242.0 / 255, green: 237.0 / 255, blue: 226.0 / 255, alpha: 1)
+      : UIColor(red: 33.0 / 255, green: 31.0 / 255, blue: 27.0 / 255, alpha: 1)
+    let foreground = accessoryForegroundColor
+    let background = accessoryButtonBackgroundColor
+    for button in accessoryButtons {
+      button.configuration?.baseForegroundColor = foreground
+      button.configuration?.background.backgroundColor = background
+    }
+    // UIPasteControl's configuration is read-only after construction. Its
+    // colors are dynamic values resolved against the control's own trait
+    // collection, so pinning the control-only interface style repaints it for
+    // the terminal theme without touching the window or resigning focus.
+    terminalPasteControl.overrideUserInterfaceStyle = lightTheme ? .light : .dark
+    updateModifierButtons()
+  }
+
+  private var accessoryForegroundColor: UIColor {
+    lightTheme
+      ? UIColor(red: 139.0 / 255, green: 94.0 / 255, blue: 48.0 / 255, alpha: 1)
+      : UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
+  }
+
+  private var accessoryButtonBackgroundColor: UIColor {
+    lightTheme
+      ? UIColor(red: 250.0 / 255, green: 248.0 / 255, blue: 244.0 / 255, alpha: 1)
+      : UIColor(white: 1, alpha: 0.05)
+  }
+
   /// Cancel local preedit before borrowing a different native terminal.
   func cancelCompositionForBinding() {
     if observesInputLifecycle { NSLog("MEETERM_SMOKE_INPUT_BINDING_CANCEL") }
@@ -526,16 +576,20 @@ final class TerminalInputView: UITextView {
 
   private func makePasteControl() -> UIPasteControl {
     var configuration = UIPasteControl.Configuration()
-    configuration.baseForegroundColor = UIColor(
-      red: 219.0 / 255,
-      green: 179.0 / 255,
-      blue: 120.0 / 255,
-      alpha: 1
-    )
-    configuration.baseBackgroundColor = UIColor(white: 1, alpha: 0.05)
+    configuration.baseForegroundColor = UIColor(dynamicProvider: { traits in
+      traits.userInterfaceStyle == .light
+        ? UIColor(red: 139.0 / 255, green: 94.0 / 255, blue: 48.0 / 255, alpha: 1)
+        : UIColor(red: 219.0 / 255, green: 179.0 / 255, blue: 120.0 / 255, alpha: 1)
+    })
+    configuration.baseBackgroundColor = UIColor(dynamicProvider: { traits in
+      traits.userInterfaceStyle == .light
+        ? UIColor(red: 250.0 / 255, green: 248.0 / 255, blue: 244.0 / 255, alpha: 1)
+        : UIColor(white: 1, alpha: 0.05)
+    })
     configuration.cornerStyle = .capsule
     configuration.displayMode = .labelOnly
     let control = UIPasteControl(configuration: configuration)
+    control.overrideUserInterfaceStyle = .dark
     control.target = self
     control.accessibilityLabel = "Paste"
     control.accessibilityIdentifier = "terminal-paste"
@@ -559,6 +613,7 @@ final class TerminalInputView: UITextView {
     button.translatesAutoresizingMaskIntoConstraints = false
     button.accessibilityLabel = title == "^C" ? "Ctrl-C" : title == "⌄" ? "Hide keyboard" : title
     button.addTarget(self, action: action, for: .touchUpInside)
+    accessoryButtons.append(button)
     if remote {
       remoteInputControls.append(button)
     }
@@ -630,7 +685,10 @@ final class TerminalInputView: UITextView {
       button?.isSelected = selected
       button?.accessibilityValue = selected ? "On" : "Off"
       button?.configuration?.background.backgroundColor = selected
-        ? UIColor(red: 0.57, green: 0.38, blue: 0.13, alpha: 0.65) : UIColor(white: 1, alpha: 0.05)
+        ? (lightTheme
+          ? UIColor(red: 230.0 / 255, green: 214.0 / 255, blue: 174.0 / 255, alpha: 0.95)
+          : UIColor(red: 0.57, green: 0.38, blue: 0.13, alpha: 0.65))
+        : accessoryButtonBackgroundColor
     }
   }
 

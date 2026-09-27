@@ -85,6 +85,7 @@ DAILY_SELECTION_MARKER = "COPY29F7"
 TERMINAL_SURFACE_ACCESSIBILITY_LABEL = "Terminal"
 DAILY_GLYPH_STRESS_COUNT = 1024
 DAILY_GLYPH_STRESS_COLUMNS = 16
+TERMINAL_THEME_PATTERN = re.compile(r"MEETERM_SMOKE_THEME (light|dark)")
 GLYPH_ATLAS_RESET_PATTERN = re.compile(
     r"\bMEETERM_GLYPH_ATLAS_RESET count=[1-9][0-9]*\b"
 )
@@ -3221,6 +3222,57 @@ def renderer_atlas_reset_events(device: AndroidDevice, stage: str) -> int:
     return len(GLYPH_ATLAS_RESET_PATTERN.findall(output))
 
 
+def terminal_theme_events(device: AndroidDevice, stage: str) -> list[str]:
+    """Return the ordered resolved-theme markers logged by the native view."""
+
+    output = device.run(
+        ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalView:I"),
+        stage,
+        timeout=20.0,
+    ).decode("utf-8", errors="replace")
+    return TERMINAL_THEME_PATTERN.findall(output)
+
+
+def wait_for_terminal_theme(
+    device: AndroidDevice,
+    expected: str,
+    baseline: int,
+    stage: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> int:
+    """Wait for a new resolved-theme marker that equals the expected value.
+
+    Every mount logs its initial dark surface first; a later resolved value
+    can therefore arrive after an intermediate line. Keep waiting until the
+    newest marker equals the expected theme or the deadline expires.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events = terminal_theme_events(device, stage)
+        if len(events) > baseline and events[-1] == expected:
+            # A mount's initial dark marker could briefly satisfy a dark
+            # expectation just before the resolved prop lands. Require the
+            # marker to remain stable across a short settle window.
+            time.sleep(1.0)
+            settled = terminal_theme_events(device, stage)
+            if settled[-1:] == [expected]:
+                return len(settled)
+        time.sleep(0.3)
+    raise SmokeFailure(stage, "resolved_theme_mismatch")
+
+
+def set_night_mode(device: AndroidDevice, enabled: bool, stage: str) -> None:
+    """Toggle the emulator's real OS dark scheme through the system service."""
+
+    device.run(
+        ("shell", "cmd", "uimode", "night", "yes" if enabled else "no"),
+        stage,
+        timeout=15.0,
+    )
+
+
 def wait_for_new_atlas_reset(
     device: AndroidDevice,
     baseline_events: int,
@@ -4350,6 +4402,26 @@ def reconnect_saved_profile_after_restart(
     return restarted_pid
 
 
+def pick_theme_option(
+    device: AndroidDevice,
+    stage: str,
+    row_label: str,
+    option: str,
+) -> None:
+    """Pick a value from one Settings theme row's native option dialog."""
+
+    tap_action(device, stage, (row_label,))
+    # Android's native AlertDialog uppercases its action captions. Match the
+    # actual native button, not the mixed-case value behind the dialog.
+    node = wait_for_node(
+        device,
+        stage,
+        text=option.upper(),
+        class_fragment="Button",
+    )
+    tap_node(device, node, stage)
+
+
 def exercise_daily_settings(
     device: AndroidDevice,
     artifact_dir: Path,
@@ -4362,11 +4434,11 @@ def exercise_daily_settings(
     wait_for_text_input(device, stage, "Terminal font size")
 
     stage = "daily_settings_theme"
-    tap_action(device, stage, ("Appearance",))
-    # Android's native AlertDialog uppercases its action captions. Match the
-    # actual native button, not the mixed-case value behind the dialog.
-    light = wait_for_node(device, stage, text="LIGHT", class_fragment="Button")
-    tap_node(device, light, stage)
+    # The app appearance and the terminal surface theme are independent rows.
+    # Setting both to Light here exercises each native dialog once; the matrix
+    # below covers the remaining combinations and restores the dark terminal.
+    pick_theme_option(device, stage, "Appearance", "light")
+    pick_theme_option(device, stage, "Terminal theme", "light")
 
     fill_field(
         device,
@@ -4401,6 +4473,13 @@ def exercise_daily_settings(
     tap_action(device, stage, ("Terminal settings",))
     wait_for_field_value(device, stage, "Terminal font size", "18")
     wait_for_node(device, stage, text="Light")
+    # Both independent rows must redisplay the persisted Light value.
+    light_rows = [
+        node for node in device.dump_ui()
+        if node.visible_to_user and node.text == "Light"
+    ]
+    if len(light_rows) < 2:
+        raise SmokeFailure(stage, "theme_values_not_redisplayed")
     capture_optional_screenshot(
         device,
         artifact_dir / "daily-settings.png",
@@ -4422,6 +4501,186 @@ def exercise_daily_settings(
         content_description="Terminal settings",
         timeout=RECONNECT_TIMEOUT,
     )
+
+
+def set_theme_preferences(
+    device: AndroidDevice,
+    stage: str,
+    app_theme: str,
+    terminal_theme: str,
+) -> None:
+    """Persist one app/terminal theme pair through the real Settings form."""
+
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_text_input(device, stage, "Terminal font size")
+    pick_theme_option(device, stage, "Appearance", app_theme)
+    pick_theme_option(device, stage, "Terminal theme", terminal_theme)
+    tap_action(device, stage, ("Save settings",))
+    wait_for_node(
+        device,
+        stage,
+        content_description="Terminal settings",
+        timeout=RECONNECT_TIMEOUT,
+    )
+
+
+def open_workspace_terminal(
+    device: AndroidDevice,
+    stage: str,
+    workspace_label: str,
+) -> None:
+    workspace = wait_for_workspace(
+        device,
+        stage,
+        label=workspace_label,
+        timeout=RECONNECT_TIMEOUT,
+    )
+    tap_node(device, workspace, stage)
+    wait_for_terminal(device, stage, timeout=RECONNECT_TIMEOUT)
+
+
+def leave_workspace_terminal(
+    device: AndroidDevice,
+    stage: str,
+    workspace_label: str,
+) -> None:
+    tap_action(device, stage, BACK_TO_WORKSPACES_LABELS)
+    wait_for_workspace(
+        device,
+        stage,
+        label=workspace_label,
+        timeout=RECONNECT_TIMEOUT,
+    )
+
+
+def exercise_terminal_themes(
+    device: AndroidDevice,
+    workspace_label: str,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    """Drive all six app/terminal combinations through real Settings saves.
+
+    Every pass re-enters the terminal through the normal workspace
+    navigation, so mount and unmount transitions are observed under each
+    pair. The resolved theme is verified against the native surface marker,
+    not by pixels; captures remain optional review evidence.
+    """
+
+    stage = "daily_theme_matrix"
+    # Keep the OS scheme light for this leg so the `system` rows resolve
+    # deterministically; the dedicated exercise below flips the real scheme
+    # behind the live terminal instead of relying on the ambient mode.
+    set_night_mode(device, False, stage)
+    combos = (
+        ("light", "light"),
+        ("light", "dark"),
+        ("light", "system"),
+        ("dark", "light"),
+        ("dark", "dark"),
+        ("dark", "system"),
+    )
+    for app_theme, terminal_theme in combos:
+        leg = f"{stage}_{app_theme}_{terminal_theme}"
+        baseline = len(terminal_theme_events(device, leg))
+        set_theme_preferences(device, leg, app_theme, terminal_theme)
+        open_workspace_terminal(device, leg, workspace_label)
+        # `system` resolves to the OS scheme pinned above.
+        expected = "dark" if terminal_theme == "dark" else "light"
+        wait_for_terminal_theme(device, expected, baseline, leg)
+        wait_for_node(device, leg, text="Esc")
+        capture_optional_screenshot(
+            device,
+            artifact_dir / f"daily-theme-app-{app_theme}-terminal-{terminal_theme}.png",
+            completed,
+            leg,
+        )
+        leave_workspace_terminal(device, leg, workspace_label)
+    completed.append("daily_theme_matrix")
+
+
+def exercise_terminal_theme_os_scheme(
+    device: AndroidDevice,
+    workspace_label: str,
+    artifact_dir: Path,
+    completed: list[str],
+) -> None:
+    """Flip the real OS dark scheme behind the live terminal in place.
+
+    The process identity, the native surface and the terminal binding must
+    survive each uiMode change; a pinned dark terminal must not follow the
+    scheme while a `system` terminal must track it.
+    """
+
+    stage = "daily_theme_os"
+    set_night_mode(device, False, stage)
+    process_before = device.process_id(stage)
+    set_theme_preferences(device, stage, "system", "system")
+    baseline = len(terminal_theme_events(device, stage))
+    open_workspace_terminal(device, stage, workspace_label)
+    # The `system` rows resolve to the pinned light OS scheme on mount; only
+    # then does each real uiMode flip own one marker transition.
+    baseline = wait_for_terminal_theme(device, "light", baseline, stage)
+
+    set_night_mode(device, True, stage)
+    baseline = wait_for_terminal_theme(device, "dark", baseline, stage)
+    if device.process_id(stage) != process_before:
+        raise SmokeFailure(stage, "process_replaced_on_scheme_change")
+    wait_for_terminal(device, stage)
+    wait_for_node(device, stage, text="Esc")
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-theme-os-dark.png",
+        completed,
+        "daily_theme_os_dark",
+    )
+
+    set_night_mode(device, False, stage)
+    baseline = wait_for_terminal_theme(device, "light", baseline, stage)
+    if device.process_id(stage) != process_before:
+        raise SmokeFailure(stage, "process_replaced_on_scheme_change")
+    wait_for_terminal(device, stage)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-theme-os-light.png",
+        completed,
+        "daily_theme_os_light",
+    )
+    leave_workspace_terminal(device, stage, workspace_label)
+    completed.append("daily_theme_os_scheme")
+
+    stage = "daily_theme_os_independence"
+    # A pinned dark terminal stays dark across OS flips while the system
+    # appearance still repaints the app chrome around it.
+    set_theme_preferences(device, stage, "system", "dark")
+    baseline = len(terminal_theme_events(device, stage))
+    open_workspace_terminal(device, stage, workspace_label)
+    baseline = wait_for_terminal_theme(device, "dark", baseline, stage)
+    for enabled in (True, False):
+        set_night_mode(device, enabled, stage)
+        time.sleep(2.0)
+        if device.process_id(stage) != process_before:
+            raise SmokeFailure(stage, "process_replaced_on_scheme_change")
+        wait_for_terminal(device, stage)
+        events = terminal_theme_events(device, stage)
+        if len(events) != baseline:
+            raise SmokeFailure(stage, "pinned_terminal_followed_scheme")
+        wait_for_node(device, stage, text="Esc")
+        capture_optional_screenshot(
+            device,
+            artifact_dir
+            / f"daily-theme-os-{'dark' if enabled else 'light'}-pinned.png",
+            completed,
+            "daily_theme_os_pinned",
+        )
+    leave_workspace_terminal(device, stage, workspace_label)
+    completed.append("daily_theme_os_independence")
+
+    # Restore the persisted pair the remaining daily legs expect: a light app
+    # chrome around the default dark terminal under a light OS scheme.
+    stage = "daily_theme_restore"
+    set_theme_preferences(device, stage, "light", "dark")
+    completed.append("daily_theme_restored")
 
 
 def fixture_workspace_label(fixture_layout: list[TmuxPaneRecord]) -> str:
@@ -5147,6 +5406,19 @@ def main(argv: list[str] | None = None) -> int:
             completed.append("daily_video_started")
 
         exercise_daily_settings(device, args.artifact_dir, completed)
+        theme_workspace_label = fixture_workspace_label(fixture_layout)
+        exercise_terminal_themes(
+            device,
+            theme_workspace_label,
+            args.artifact_dir,
+            completed,
+        )
+        exercise_terminal_theme_os_scheme(
+            device,
+            theme_workspace_label,
+            args.artifact_dir,
+            completed,
+        )
         exercise_daily_workspace_and_selection(
             device,
             tmux_socket,

@@ -86,6 +86,7 @@ STORAGE_CASES = (
     "credential_endpoint_binding",
     "remove_saved_credential",
     "preferences_validation",
+    "legacy_preferences_migration",
     "runtime_hint_validation",
 )
 NATIVE_INPUT_CASES = (
@@ -96,6 +97,7 @@ NATIVE_INPUT_CASES = (
     "hardware_control",
     "hardware_shift_combinations",
     "marked_commit",
+    "theme_refresh",
     "scroll_gesture",
     "async_paste_epoch",
     "cached_read_only",
@@ -1013,6 +1015,128 @@ def observe_selection_copy(
             path.unlink(missing_ok=True)
 
 
+def appearance_contract(marker_path: Path) -> tuple[Path, Path]:
+    """Derive the per-run OS appearance handshake without an extra contract."""
+
+    return (
+        Path(str(marker_path) + ".appearance-request"),
+        Path(str(marker_path) + ".appearance-result"),
+    )
+
+
+@contextmanager
+def observe_appearance_requests(
+    simulator_udid: str,
+    marker_path: Path,
+    diagnostics_path: Path,
+):
+    """Apply real OS scheme flips requested by the XCTest through simctl.
+
+    The test writes `light\n` or `dark\n` to the request path; this observer
+    runs `xcrun simctl ui <udid> appearance <value>` and answers with a fixed
+    `appearance-<value>-<status>` token. Requests can repeat so a single test
+    can flip the scheme both ways without restarting the app.
+    """
+
+    request_path, result_path = appearance_contract(marker_path)
+    temporary_result = Path(str(result_path) + ".tmp")
+    for path in (request_path, result_path, temporary_result):
+        path.unlink(missing_ok=True)
+    diagnostics_path.unlink(missing_ok=True)
+    stopped = threading.Event()
+
+    def finish(status: str, value: str) -> None:
+        result = "passed" if status == "passed" else "failed"
+        reason = "none" if status == "passed" else status
+        write_text(
+            diagnostics_path,
+            f"result={result}\nreason={reason}\nappearance={value}\n",
+        )
+        try:
+            _write_atomic_result(
+                result_path,
+                f"appearance-{value}-{status}\n",
+            )
+        except OSError:
+            # A missing result makes the XCTest gate fail closed.
+            write_text(
+                diagnostics_path,
+                f"result=failed\nreason=result_write_failed\nappearance={value}\n",
+            )
+
+    def monitor() -> None:
+        while not stopped.wait(0.1):
+            try:
+                request = request_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError):
+                finish("request_rejected", "unknown")
+                continue
+            value = request.rstrip("\n")
+            # Consume the request before acting on it: the result token is
+            # only written after this unlink, so a later XCTest request can
+            # never be removed by a stale cleanup pass.
+            try:
+                request_path.unlink()
+            except OSError:
+                pass
+            if value not in ("light", "dark") or request != f"{value}\n":
+                finish("request_rejected", "unknown")
+                continue
+
+            xcrun = shutil.which("xcrun")
+            if xcrun is None:
+                finish("command_unavailable", value)
+            else:
+                try:
+                    completed = subprocess.run(
+                        [xcrun, "simctl", "ui", simulator_udid, "appearance", value],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                        check=False,
+                    )
+                    if completed.returncode == 0:
+                        finish("passed", value)
+                    else:
+                        finish("command_failed", value)
+                except subprocess.TimeoutExpired:
+                    finish("command_timeout", value)
+                except OSError:
+                    finish("command_failed", value)
+
+    thread = threading.Thread(target=monitor, name="appearance-observer", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=15)
+        if not diagnostics_path.exists():
+            write_text(
+                diagnostics_path,
+                "result=unavailable\nreason=request_not_observed\nappearance=none\n",
+            )
+        for path in (request_path, result_path, temporary_result):
+            path.unlink(missing_ok=True)
+        # Leave the shared Simulator in its default scheme for later suites.
+        xcrun = shutil.which("xcrun")
+        if xcrun is not None:
+            try:
+                subprocess.run(
+                    [xcrun, "simctl", "ui", simulator_udid, "appearance", "light"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
 def validation_lines(
     *,
     result: str,
@@ -1181,15 +1305,25 @@ def write_xcuitest_diagnostics(
 
 
 @contextmanager
-def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_dir: Path):
-    """Record only safe daily-use or public navigation sections, never credentials."""
+def record_daily_interactions(
+    simulator_udid: str,
+    stage_path: Path,
+    artifact_dir: Path,
+    *,
+    trigger_markers: tuple = ("daily_selection", "names_started", "polish_navigation_open"),
+    stop_markers: tuple = ("daily_complete", "names_complete", "polish_navigation_complete"),
+    video_name: str = "daily-interactions.mp4",
+    result_name: str = "daily-recording.txt",
+    max_seconds: float = 180,
+):
+    """Record only safe daily-use, theme or public navigation sections, never credentials."""
     stopped = threading.Event()
 
     def monitor() -> None:
         recorder = None
         result = "unavailable"
-        reason = "daily_section_not_reached"
-        video = artifact_dir / "daily-interactions.mp4"
+        reason = "recorded_section_not_reached"
+        video = artifact_dir / video_name
         try:
             while not stopped.wait(0.5):
                 try:
@@ -1199,7 +1333,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                 # These markers are emitted after authentication, with the
                 # native terminal/workspace UI already visible. No later
                 # focused operation opens an authentication form.
-                if not any(marker in stages for marker in ("daily_selection", "names_started", "polish_navigation_open")):
+                if not any(marker in stages for marker in trigger_markers):
                     continue
                 xcrun = shutil.which("xcrun")
                 if xcrun is None:
@@ -1209,13 +1343,13 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                     [xcrun, "simctl", "io", simulator_udid, "recordVideo", "--codec=h264", str(video)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
-                deadline = time.monotonic() + 180
+                deadline = time.monotonic() + max_seconds
                 while not stopped.wait(0.5) and time.monotonic() < deadline:
                     if recorder.poll() is not None:
                         break
                     try:
                         completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
-                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete", "polish_navigation_complete")):
+                        if any(marker in completed_stages for marker in stop_markers):
                             break
                     except OSError:
                         pass
@@ -1239,7 +1373,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                     result, reason = "captured", "none"
                 else:
                     video.unlink(missing_ok=True)
-            write_text(artifact_dir / "daily-recording.txt", f"recording={result}\nreason={reason}\n")
+            write_text(artifact_dir / result_name, f"recording={result}\nreason={reason}\n")
 
     thread = threading.Thread(target=monitor, name="daily-interaction-evidence", daemon=True)
     thread.start()
@@ -1622,7 +1756,7 @@ def run_xcuitest(
                 raise SmokeFailure("xcuitest_standard", "native_cases_incomplete") from error
             _require_stage_markers(
                 diagnostics_path.parent / "ios-ui-stages.txt",
-                ("standard_complete", "foundation_verified"),
+                ("standard_complete", "foundation_verified", "theme_verification_complete"),
                 "xcuitest_standard",
             )
         elif suite == "polish":
@@ -1969,12 +2103,39 @@ def main() -> int:
             if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
                 os.environ.pop(environment_name, None)
         stage = "xcuitest"
+        # The standard theme section is a bounded public-fixture window: it
+        # opens seeded opposite-theme pairs, performs real OS scheme flips and
+        # shows the native keyboard. Record it so theme transitions can be
+        # inspected beyond still captures; no credentials appear on screen.
         recording = (
             record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir)
             if suite in ("polish", "polish-navigation")
+            else record_daily_interactions(
+                args.simulator_udid,
+                stage_path,
+                args.artifact_dir,
+                trigger_markers=("theme_matrix_open",),
+                stop_markers=("theme_verification_complete",),
+                video_name="theme-transitions.mp4",
+                result_name="theme-recording.txt",
+                max_seconds=420,
+            )
+            if suite == "standard"
             else nullcontext()
         )
-        with recording:
+        # The standard suite owns the seeded theme pass: its XCTest requests
+        # real OS scheme flips through this observer so the `system` terminal
+        # theme can be verified in place instead of simulated.
+        appearance = (
+            observe_appearance_requests(
+                args.simulator_udid,
+                marker_path,
+                args.artifact_dir / "ios-appearance-validation.txt",
+            )
+            if suite == "standard" and marker_path is not None
+            else nullcontext()
+        )
+        with recording, appearance:
             run_status = run_xcuitest(
                 derived_data=args.derived_data,
                 simulator_udid=args.simulator_udid,
@@ -2067,6 +2228,8 @@ def main() -> int:
                 marker_path,
                 Path(str(marker_path) + ".selection-copy-request"),
                 Path(str(marker_path) + ".selection-copy-result"),
+                Path(str(marker_path) + ".appearance-request"),
+                Path(str(marker_path) + ".appearance-result"),
             ):
                 try:
                     path.unlink()

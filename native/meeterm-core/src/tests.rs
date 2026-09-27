@@ -16,7 +16,7 @@ use crate::registry::{
     with_terminal_for_test,
 };
 use crate::snapshot::{
-    SNAPSHOT_CELL_METADATA_SIZE, SNAPSHOT_HEADER_SIZE, SNAPSHOT_MAGIC, SNAPSHOT_VERSION,
+    SNAPSHOT_CELL_METADATA_SIZE, SNAPSHOT_HEADER_SIZE, SNAPSHOT_MAGIC, SNAPSHOT_VERSION, Theme,
 };
 use crate::terminal::{
     DEFAULT_SCROLLBACK_LINES, FIXED_DEMO_BYTES, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES,
@@ -226,6 +226,150 @@ fn theme_changes_named_fallbacks_but_preserves_explicit_ansi_colors() {
     assert_eq!(light_default.background, [251, 247, 239, 255]);
     assert_eq!(light_explicit.foreground, dark_explicit.foreground);
     assert_eq!(light_explicit.background, dark_explicit.background);
+}
+
+#[test]
+fn theme_preserves_indexed_truecolor_and_osc_color_overrides() {
+    let mut terminal = Terminal::new(24, 3).expect("valid dimensions");
+    // I: 256-color indexed fg. T: explicit truecolor fg/bg. O: a cell that
+    // still refers to the named fallbacks after OSC 10/11 overrode them.
+    // P: a cell whose indexed color slot was replaced by OSC 4.
+    terminal.feed(b"\x1b[2J\x1b[H");
+    terminal.feed(b"\x1b[38;5;196mI\x1b[0m");
+    terminal.feed(b"\x1b[38;2;9;10;11;48;2;12;13;14mT\x1b[0m");
+    terminal.feed(b"\x1b]10;rgb:12/34/56\x07\x1b]11;rgb:78/9a/bc\x07");
+    terminal.feed(b"\x1b]4;9;rgb:aa/bb/cc\x07");
+    terminal.feed(b"O\x1b[38;5;9mP\x1b[0m");
+
+    let dark = decode_cells(terminal.snapshot().unwrap().as_bytes());
+    let dark_indexed = dark
+        .iter()
+        .find(|cell| cell.base == "I")
+        .expect("indexed-colored cell");
+    // Index 196 resolves through the fixed 6x6x6 cube to pure red.
+    assert_eq!(dark_indexed.foreground, [255, 0, 0, 255]);
+    let dark_truecolor = dark
+        .iter()
+        .find(|cell| cell.base == "T")
+        .expect("truecolor cell");
+    assert_eq!(dark_truecolor.foreground, [9, 10, 11, 255]);
+    assert_eq!(dark_truecolor.background, [12, 13, 14, 255]);
+    let dark_osc_named = dark
+        .iter()
+        .find(|cell| cell.base == "O")
+        .expect("OSC named-fallback cell");
+    assert_eq!(dark_osc_named.foreground, [0x12, 0x34, 0x56, 255]);
+    assert_eq!(dark_osc_named.background, [0x78, 0x9a, 0xbc, 255]);
+    let dark_osc_indexed = dark
+        .iter()
+        .find(|cell| cell.base == "P")
+        .expect("OSC palette cell");
+    assert_eq!(dark_osc_indexed.foreground, [0xaa, 0xbb, 0xcc, 255]);
+
+    terminal.set_theme(true);
+    let light = decode_cells(terminal.snapshot().unwrap().as_bytes());
+    for base in ["I", "T", "O", "P"] {
+        let before = dark
+            .iter()
+            .find(|cell| cell.base == base)
+            .expect("explicit-colored cell");
+        let after = light
+            .iter()
+            .find(|cell| cell.base == base)
+            .expect("explicit-colored cell");
+        assert_eq!(
+            after.foreground, before.foreground,
+            "{base} foreground must not follow the theme"
+        );
+        assert_eq!(
+            after.background, before.background,
+            "{base} background must not follow the theme"
+        );
+    }
+}
+
+#[test]
+fn selection_colors_follow_the_active_theme() {
+    let mut terminal = Terminal::new(10, 3).unwrap();
+    terminal.feed(b"\x1b[2J\x1b[Hselect me");
+    terminal.select_start(0, 0).unwrap();
+    terminal.select_update(0, 5).unwrap();
+
+    let dark = decode_cells(terminal.snapshot().unwrap().as_bytes());
+    let dark_selected = dark
+        .iter()
+        .find(|cell| cell.base == "s")
+        .expect("selected cell");
+    let dark_unselected = dark
+        .iter()
+        .find(|cell| cell.base == "m")
+        .expect("unselected cell");
+    assert_eq!(dark_selected.foreground, [255, 255, 255, 255]);
+    assert_eq!(dark_selected.background, [78, 105, 132, 255]);
+    assert_eq!(dark_unselected.background, [36, 33, 29, 255]);
+
+    terminal.set_theme(true);
+    let light = decode_cells(terminal.snapshot().unwrap().as_bytes());
+    let light_selected = light
+        .iter()
+        .find(|cell| cell.base == "s")
+        .expect("selected cell");
+    let light_unselected = light
+        .iter()
+        .find(|cell| cell.base == "m")
+        .expect("unselected cell");
+    assert_eq!(light_selected.foreground, [20, 30, 42, 255]);
+    assert_eq!(light_selected.background, [187, 211, 238, 255]);
+    assert_eq!(light_unselected.background, [251, 247, 239, 255]);
+}
+
+#[test]
+fn theme_change_retains_term_history_scroll_and_selection() {
+    let mut terminal = Terminal::new(20, 4).unwrap();
+    terminal.begin_remote(105).unwrap();
+    terminal
+        .restore_screen(
+            105,
+            20,
+            4,
+            b"history-one\r\nhistory-two\r\nhistory-three\r\nhistory-four\r\nhistory-five",
+        )
+        .unwrap();
+    terminal.feed(b"\r\nlive-line");
+    terminal.scroll_lines(2);
+    terminal.select_start(1, 0).unwrap();
+    terminal.select_update(1, 3).unwrap();
+    let selected = terminal.selection_text();
+
+    let before_term = terminal.term() as *const _ as usize;
+    let before_history = terminal.term().grid().history_size();
+    let before_offset = terminal.term().grid().display_offset();
+    let before_text = grid_text(&terminal);
+    let before_snapshot = terminal.snapshot().unwrap();
+    assert!(before_history > 0);
+    assert!(terminal.term().selection.is_some());
+
+    // A theme update must repaint the same Term rather than recreate it:
+    // history, viewport position, remote content and the live selection all
+    // stay where they were.
+    terminal.set_theme(true);
+    assert_eq!(terminal.theme(), Theme::Light);
+    assert_eq!(terminal.term() as *const _ as usize, before_term);
+    assert_eq!(terminal.term().grid().history_size(), before_history);
+    assert_eq!(terminal.term().grid().display_offset(), before_offset);
+    assert_eq!(grid_text(&terminal), before_text);
+    assert_eq!(terminal.selection_text(), selected);
+    assert!(terminal.term().selection.is_some());
+    assert_ne!(terminal.snapshot().unwrap(), before_snapshot);
+
+    terminal.set_theme(false);
+    assert_eq!(terminal.theme(), Theme::Dark);
+    assert_eq!(terminal.term() as *const _ as usize, before_term);
+    assert_eq!(terminal.term().grid().history_size(), before_history);
+    assert_eq!(terminal.term().grid().display_offset(), before_offset);
+    assert_eq!(grid_text(&terminal), before_text);
+    assert_eq!(terminal.selection_text(), selected);
+    assert_eq!(terminal.snapshot().unwrap(), before_snapshot);
 }
 
 #[test]

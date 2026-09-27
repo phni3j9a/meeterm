@@ -352,6 +352,9 @@ Herdr `default` candidate の `Last used` hint を示すpicker stateです。
 `&app=<system|light|dark>` と `&terminal=<system|light|dark>` をこの順で追加できます。
 両方とも任意で、fixtureのseedされた設定値だけを上書きし、接続・pane・lifecycle状態は変えません。
 不明な値・未知のパラメータ・順序の入れ替えは従来どおり経路を無効にします。
+iOS `standard` はこの仕組みで6組合せ（light/dark全4組＋terminal=system 2組）を
+`theme-app-<a>-terminal-<t>.png` として撮影し、Settings preview、seedされた
+recovery表示、実 `simctl ui` 外観切替での同一native handle・selection維持を確認します。
 最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
 追加診断の `polish` は、初回起動、空の一覧、検索結果なし、切断、再接続中、認証エラー、
@@ -414,11 +417,11 @@ fixtureも実際のAppState通知に追従しますが、Rustへの接続・再�
 
 | `ios_suite` | 用途 |
 | --- | --- |
-| `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
+| `standard` | 通常の保存・入力・画面撮影・native foundation・独立theme確認（組合せ撮影と実OS外観切替）。既定値 |
 | `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
 | `polish-navigation` | 同じ操作helperとfresh foundationを、7状態の巡回から独立して確認 |
-| `ssh` | 実SSH接続と短いnative入出力の確認 |
-| `native` | 保存4件（legacy profileのbackend/runtimeをlast-used hintへ移行する境界を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
+| `ssh` | 実SSH接続と短いnative入出力、接続維持中のtheme in-place確認 |
+| `native` | 保存6件（legacy profileのbackend/runtime移行・旧4キーpreferencesのterminalTheme補完を含む）とnative入力14件（marked text・theme refresh・scroll gestureを含む）の限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |

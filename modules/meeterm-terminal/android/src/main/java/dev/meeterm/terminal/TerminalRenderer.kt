@@ -316,7 +316,7 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     val right = cellRight(column, 1, snapshot.columns)
     val top = cellTop(row, snapshot.rows)
     val bottom = cellBottom(row, snapshot.rows)
-    val cursorColor = Color.argb(220, 232, 238, 246)
+    val cursorColor = if (lightTheme) Color.argb(220, 48, 43, 37) else Color.argb(220, 232, 238, 246)
     drawSolid(left, top, min(right, left + lineWidth), bottom, cursorColor)
     drawSolid(max(left, right - lineWidth), top, right, bottom, cursorColor)
     drawSolid(left, top, right, min(bottom, top + lineHeight), cursorColor)
@@ -329,6 +329,9 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     val row = snapshot.cursorRow
     if (row !in 0 until snapshot.rows) return
 
+    // Amber preedit text is unreadable on the light surface; keep the visible
+    // composition legible without changing what reaches the IME contract.
+    val preeditColor = if (lightTheme) Color.rgb(139, 94, 48) else Color.rgb(255, 201, 92)
     var index = 0
     while (index < preedit.length && column < snapshot.columns) {
       val codePoint = preedit.codePointAt(index)
@@ -342,11 +345,11 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
         width = width,
         columns = snapshot.columns,
         rows = snapshot.rows,
-        color = Color.rgb(255, 201, 92),
+        color = preeditColor,
         bold = false,
       )
-      val underline = TerminalCell(row, column, width, FLAG_UNDERLINE, Color.rgb(255, 201, 92), Color.TRANSPARENT, text, "")
-      drawUnderline(underline, snapshot.columns, snapshot.rows, Color.rgb(255, 201, 92))
+      val underline = TerminalCell(row, column, width, FLAG_UNDERLINE, preeditColor, Color.TRANSPARENT, text, "")
+      drawUnderline(underline, snapshot.columns, snapshot.rows, preeditColor)
       column += width
       index += count
     }

@@ -357,6 +357,47 @@ final class TerminalInputViewTests: XCTestCase {
     if !recordedIssue { appendValidation("case=marked_commit result=passed") }
   }
 
+  /// A live keyboard appearance refresh must not bounce first responder or
+  /// drop the in-flight IME composition. reloadInputViews refreshes the
+  /// presented input views in place; the marked text, the caret position and
+  /// the pending callbacks all belong to this view's document and survive.
+  @MainActor func testThemeRefreshPreservesCompositionSelectionAndResponder() throws {
+    var preedit: [String] = []
+    inputView.onPreeditChanged = { preedit.append($0) }
+    guard let accessory = inputView.inputAccessoryView else {
+      XCTFail("The native input accessory is missing.")
+      return
+    }
+    XCTAssertTrue(inputView.isFirstResponder)
+    XCTAssertEqual(inputView.keyboardAppearance, .dark)
+
+    inputView.setMarkedText("きょう", selectedRange: NSRange(location: 2, length: 1))
+    XCTAssertNotNil(inputView.markedTextRange)
+    XCTAssertEqual(preedit.last, "きょう")
+    let markedEvents = preedit.count
+
+    inputView.setTheme(light: true)
+    XCTAssertEqual(inputView.keyboardAppearance, .light)
+    XCTAssertTrue(inputView.isFirstResponder, "Theme refresh resigned the native responder.")
+    XCTAssertNotNil(inputView.markedTextRange, "Theme refresh dropped the marked composition.")
+    XCTAssertEqual(
+      inputView.text(in: try XCTUnwrap(inputView.markedTextRange)), "きょう")
+    XCTAssertEqual(inputView.selectedRange, NSRange(location: 2, length: 1),
+      "Theme refresh moved the composing selection.")
+    XCTAssertEqual(preedit.count, markedEvents,
+      "Theme refresh must not emit synthetic preedit updates.")
+    XCTAssertTrue(inputView.inputAccessoryView === accessory,
+      "Theme refresh replaced the accessory view instance.")
+    XCTAssertEqual(inputView.inputAccessoryView?.backgroundColor,
+      UIColor(red: 242.0 / 255, green: 237.0 / 255, blue: 226.0 / 255, alpha: 1))
+
+    inputView.setTheme(light: false)
+    XCTAssertEqual(inputView.keyboardAppearance, .dark)
+    XCTAssertTrue(inputView.isFirstResponder)
+    XCTAssertNotNil(inputView.markedTextRange)
+    if !recordedIssue { appendValidation("case=theme_refresh result=passed") }
+  }
+
   @MainActor private func findButton(title: String, in view: UIView?) -> UIButton? {
     if let button = view as? UIButton, button.configuration?.title == title { return button }
     for child in view?.subviews ?? [] {

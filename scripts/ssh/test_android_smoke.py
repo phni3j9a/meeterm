@@ -3281,5 +3281,145 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(repeated_error.exception.reason, "marker_repeated")
 
 
+class TerminalThemeTests(unittest.TestCase):
+    def test_terminal_theme_events_parses_only_native_markers(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.run.return_value = (
+            b"I/MeetermTerminalView(1234): MEETERM_SMOKE_THEME dark\n"
+            b"D/OtherTag(1234): an unrelated native log line\n"
+            b"I/MeetermTerminalView(1234): MEETERM_SMOKE_THEME light\n"
+        )
+        self.assertEqual(
+            smoke.terminal_theme_events(device, "theme_stage"),
+            ["dark", "light"],
+        )
+        self.assertEqual(
+            device.run.call_args.args[0],
+            ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalView:I"),
+        )
+
+    def test_wait_for_terminal_theme_waits_past_the_initial_dark_marker(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        snapshots = iter((["dark"], ["dark", "light"], ["dark", "light"]))
+        with mock.patch.object(
+            smoke, "terminal_theme_events", side_effect=lambda *_a, **_k: next(snapshots)
+        ), mock.patch.object(smoke.time, "sleep"):
+            self.assertEqual(
+                smoke.wait_for_terminal_theme(device, "light", 0, "theme_stage"),
+                2,
+            )
+
+    def test_wait_for_terminal_theme_fails_closed_on_mismatch(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with mock.patch.object(
+            smoke, "terminal_theme_events", return_value=["dark"]
+        ), mock.patch.object(smoke.time, "sleep"), mock.patch.object(
+            smoke.time, "monotonic", side_effect=[0, 0, 100]
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_terminal_theme(device, "light", 0, "theme_stage")
+            self.assertEqual(error.exception.reason, "resolved_theme_mismatch")
+
+    def test_theme_matrix_drives_all_six_pairs_and_resolves_system_to_pinned_os(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        saved: list[tuple[str, str]] = []
+        expected: list[str] = []
+        with (
+            mock.patch.object(smoke, "set_night_mode") as night,
+            mock.patch.object(smoke, "terminal_theme_events", return_value=["dark"]),
+            mock.patch.object(
+                smoke, "set_theme_preferences",
+                side_effect=lambda _d, _s, app, terminal: saved.append((app, terminal)),
+            ),
+            mock.patch.object(smoke, "open_workspace_terminal"),
+            mock.patch.object(
+                smoke, "wait_for_terminal_theme",
+                side_effect=lambda _d, want, _b, _s: expected.append(want) or 1,
+            ),
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(smoke, "leave_workspace_terminal"),
+        ):
+            completed: list[str] = []
+            smoke.exercise_terminal_themes(device, "Workspace ios-main", Path("/tmp/art"), completed)
+
+        night.assert_called_once_with(device, False, "daily_theme_matrix")
+        self.assertEqual(
+            saved,
+            [
+                ("light", "light"), ("light", "dark"), ("light", "system"),
+                ("dark", "light"), ("dark", "dark"), ("dark", "system"),
+            ],
+        )
+        self.assertEqual(
+            expected,
+            ["light", "dark", "light", "light", "dark", "light"],
+        )
+        self.assertEqual(completed, ["daily_theme_matrix"])
+
+    def test_os_scheme_rejects_a_pinned_terminal_that_follows_the_scheme(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.process_id.return_value = "4242"
+        # The system leg resolves light, dark, light; the pinned leg mounts
+        # once more with its own dark marker and must then keep exactly that
+        # count. This fixture leaks one extra marker on the first OS flip,
+        # which the independence check must reject.
+        snapshots = iter((
+            ["dark"],
+            ["dark", "light"],
+            ["dark", "light"],
+            ["dark", "light", "dark"],
+            ["dark", "light", "dark"],
+            ["dark", "light", "dark", "light"],
+            ["dark", "light", "dark", "light"],
+            ["dark", "light", "dark", "light", "dark"],
+            ["dark", "light", "dark", "light", "dark", "dark"],
+            ["dark", "light", "dark", "light", "dark", "dark"],
+            ["dark", "light", "dark", "light", "dark", "dark", "light"],
+        ))
+        with (
+            mock.patch.object(smoke, "set_night_mode"),
+            mock.patch.object(smoke.time, "sleep"),
+            mock.patch.object(
+                smoke, "terminal_theme_events", side_effect=lambda *_a, **_k: next(snapshots)
+            ),
+            mock.patch.object(smoke, "set_theme_preferences"),
+            mock.patch.object(smoke, "open_workspace_terminal"),
+            mock.patch.object(smoke, "wait_for_terminal"),
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(smoke, "leave_workspace_terminal"),
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.exercise_terminal_theme_os_scheme(
+                    device, "Workspace ios-main", Path("/tmp/art"), []
+                )
+            self.assertEqual(error.exception.reason, "pinned_terminal_followed_scheme")
+
+    def test_set_night_mode_drives_the_real_system_service(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        smoke.set_night_mode(device, True, "theme_stage")
+        self.assertEqual(
+            device.run.call_args.args[0],
+            ("shell", "cmd", "uimode", "night", "yes"),
+        )
+
+    def test_pick_theme_option_taps_the_native_dialog_button(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        option = smoke.Node("", "LIGHT", "android.widget.Button", (0, 0, 10, 10))
+        with (
+            mock.patch.object(smoke, "tap_action") as action,
+            mock.patch.object(smoke, "wait_for_node", return_value=option) as wait,
+            mock.patch.object(smoke, "tap_node") as tap,
+        ):
+            smoke.pick_theme_option(device, "theme_stage", "Terminal theme", "light")
+        action.assert_called_once_with(device, "theme_stage", ("Terminal theme",))
+        self.assertEqual(
+            wait.call_args.kwargs,
+            {"text": "LIGHT", "class_fragment": "Button"},
+        )
+        tap.assert_called_once_with(device, option, "theme_stage")
+
+
 if __name__ == "__main__":
     unittest.main()

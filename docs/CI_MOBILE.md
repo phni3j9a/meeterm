@@ -143,8 +143,13 @@ accessibility diagnostic simulator profile (SE-class layout, extra-large
 content size); report it separately from normal Pro-class results and never
 substitute a large device for a small one.
 
-- `standard`: four production storage cases, twelve native input/recovery-bridge
-  cases plus one scroll-gesture case, direct screen captures from public deterministic state, and a fresh native foundation
+- `standard`: six production storage cases (including
+  `legacy_preferences_migration`, where a persisted four-key preferences file
+  gains the `dark` terminal theme while the app value is preserved), fourteen
+  native input/recovery-bridge cases (including `scroll_gesture` and
+  `theme_refresh`, an added check awaiting macOS execution that asserts the
+  responder, marked text and selection survive an in-place theme switch),
+  direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
   has 26 routes: the previous 18 plus `session-switcher`,
   `session-switcher-sessions`, `recovery-progress`,
@@ -157,6 +162,20 @@ substitute a large device for a small one.
   retain the native terminal and verify the
   applicable recovery rail copy/action state. Runtime-picker and recovery
   states are seeded only for presentation; no SSH fixture is started.
+  For the Issue #37 theme contract the suite additionally verifies all six
+  `&app=`/`&terminal=` smoke-URL pairs (captured as
+  `theme-app-<a>-terminal-<t>.png`, each with a real native terminal handle),
+  the Settings preview (`app-theme`/`terminal-theme`/`terminal-preview`), a
+  seeded recovery rail under an opposite theme pair, and real `simctl ui`
+  appearance flips that must repaint the same native handle in place with the
+  selection intact. The pinned-dark case also asserts the same native handle
+  across both flips and captures `theme-os-pinned`; the pinned surface's
+  actual appearance stays subject to Main's visual review. (The stricter
+  no-new-resolved-marker assertion is Android-only — see below.) A standard
+  run must end with the `theme_verification_complete`
+  stage marker; `ios-appearance-validation.txt` records the
+  request/result handshake as supplementary observer diagnostics, not a pass
+  gate. These theme cases are additive checks, not new named screen routes.
 - `ssh`: the actual connection and host-key boundary, runtime discovery and
   explicit selection, a healthy same-process app background/foreground return
   while the selected tmux pane remains active, and a resumed native input and
@@ -176,8 +195,23 @@ substitute a large device for a small one.
   CRUD/copy/restart chain; this path does not claim arbitrary packet loss,
   network handover, physical device, or Herdr mobile recovery. The healthy
   foreground cycle and transport-loss case are separate evidence categories.
+  It also performs a live `ssh_theme_light`/`ssh_theme_dark` check before
+  disconnect: saving a terminal theme on the live session must repaint in
+  place with the same native handle and selected pane. The existing remote
+  input acknowledgment precedes the theme changes; a post-theme native SSH
+  fixture marker round trip plus light/dark keyboard captures were accepted
+  (MAIN-003) for the native Worker's next fix and are not yet present.
 - `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
   Full preserves its original assertions and result; a prior failed full remains failed.
+
+For Issue #37 on Android, `full` additionally exercises the theme contract
+through the real Settings rows and navigation — the six app/terminal pairs —
+then real OS night-mode switches (`cmd uimode night`) asserting process
+identity, plus a pinned-dark terminal that must emit no new resolved
+`MEETERM_SMOKE_THEME` logcat marker. These are additive cases inside the
+existing suite; Android's observational `SCREEN_NAMES` stays at 32 routes and
+theme combinations are not new named screen routes. The iOS counterparts are
+the `standard`/`ssh` additions above; remote runs remain pending.
 
 For retained-work recovery (Issues #26 and #41), Android `full` and iOS `standard` plus `ssh` are the applicable
 mobile paths. Shared/native tests separately cover bounded no-side-effect

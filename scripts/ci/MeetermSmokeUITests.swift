@@ -72,6 +72,14 @@ final class MeetermSmokeUITests: XCTestCase {
     markerValue + "-selection-copy-passed\n"
   }
 
+  private var appearanceRequestPath: URL {
+    URL(fileURLWithPath: markerPath.path + ".appearance-request")
+  }
+
+  private var appearanceResultPath: URL {
+    URL(fileURLWithPath: markerPath.path + ".appearance-result")
+  }
+
   private var handoffValue: String {
     requiredEnvironment("MEETERM_IOS_HANDOFF_VALUE")
   }
@@ -202,6 +210,18 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-layout-restore-unconfirmed.png",
       "standard-runtime-layout-restore-unconfirmed.png",
       "standard-connection-error.png",
+      "theme-app-light-terminal-light.png",
+      "theme-app-light-terminal-dark.png",
+      "theme-app-light-terminal-system.png",
+      "theme-app-dark-terminal-light.png",
+      "theme-app-dark-terminal-dark.png",
+      "theme-app-dark-terminal-system.png",
+      "theme-settings-preview.png",
+      "theme-recovery-light-terminal.png",
+      "theme-os-dark-selection.png",
+      "theme-os-light-selection.png",
+      "theme-os-pinned.png",
+      "ssh-terminal-light.png",
       "polish-welcome.png",
       "polish-empty.png",
       "polish-search-empty.png",
@@ -630,12 +650,156 @@ final class MeetermSmokeUITests: XCTestCase {
       record("standard_screen_\(screen)_captured")
     }
 
+    try verifyIndependentTerminalThemes()
+
     // Keep the existing foundation check as a genuinely fresh process after
     // the seeded screen pass. The foundation uses the Rust poc-main fixture.
     app.terminate()
     try verifyFoundationRelaunch()
     writeFixedArtifact("ios-ui-standard-validation.txt", lines: ["case=standard result=passed"])
     record("standard_complete")
+  }
+
+  /// Bounded theme coverage on the seeded fixture: all six app/terminal
+  /// preference pairs through the public smoke URL, the Settings preview
+  /// surface, a seeded recovery rail, and real OS scheme flips that must
+  /// repaint the same native handle in place — selection included.
+  private func verifyIndependentTerminalThemes() throws {
+    record("theme_matrix_open")
+    let combos: [(String, String)] = [
+      ("light", "light"), ("light", "dark"), ("light", "system"),
+      ("dark", "light"), ("dark", "dark"), ("dark", "system"),
+    ]
+    for (appTheme, terminalTheme) in combos {
+      record("theme_\(appTheme)_app_\(terminalTheme)_terminal_open")
+      app.open(try XCTUnwrap(URL(
+        string: "meeterm://smoke?screen=terminal&app=\(appTheme)&terminal=\(terminalTheme)"
+      )))
+      XCTAssertTrue(
+        app.wait(for: .runningForeground, timeout: 30),
+        "The app left the foreground for app=\(appTheme) terminal=\(terminalTheme)."
+      )
+      XCTAssertTrue(
+        waitForStandardScreen("terminal"),
+        "The seeded terminal did not open for app=\(appTheme) terminal=\(terminalTheme)."
+      )
+      XCTAssertFalse(
+        nativeTerminalHandleObservation().isEmpty,
+        "The native terminal handle is unavailable for app=\(appTheme) terminal=\(terminalTheme)."
+      )
+      capture("theme-app-\(appTheme)-terminal-\(terminalTheme)")
+      record("theme_\(appTheme)_app_\(terminalTheme)_terminal_captured")
+    }
+    record("theme_matrix_complete")
+
+    record("theme_settings_preview_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=settings&app=dark&terminal=light"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    XCTAssertTrue(waitForHittable(button("app-theme"), timeout: 10))
+    XCTAssertTrue(waitForHittable(button("terminal-theme"), timeout: 10))
+    XCTAssertTrue(
+      app.descendants(matching: .any).matching(
+        NSPredicate(format: "identifier == %@", "terminal-preview")
+      ).firstMatch.waitForExistence(timeout: 10),
+      "The terminal theme preview is unavailable."
+    )
+    capture("theme-settings-preview")
+    record("theme_settings_preview_captured")
+
+    // A seeded recovery rail retains the terminal under an opposite pair:
+    // mounting through a warning state keeps a real native handle.
+    record("theme_recovery_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=recovery-progress&app=dark&terminal=light"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("recovery-progress"))
+    XCTAssertFalse(nativeTerminalHandleObservation().isEmpty)
+    capture("theme-recovery-light-terminal")
+    record("theme_recovery_captured")
+
+    try verifyAppearanceFlipRetainsTerminal()
+    record("theme_verification_complete")
+  }
+
+  /// One real OS scheme round trip behind the live seeded terminal. The
+  /// `system` pair must follow each flip on the same native handle while an
+  /// active selection survives; a pinned terminal must not be rebound.
+  private func verifyAppearanceFlipRetainsTerminal() throws {
+    record("theme_os_system_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=terminal&app=system&terminal=system"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("terminal"))
+    let systemHandle = nativeTerminalHandleObservation()
+    XCTAssertFalse(systemHandle.isEmpty)
+
+    // Activate a real native selection before the flip so in-place
+    // retention covers the selection controls, not only the surface.
+    let surface = try terminalElement()
+    let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.3))
+    let end = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+    start.press(forDuration: 0.7, thenDragTo: end)
+    XCTAssertTrue(button("Copy selection").waitForExistence(timeout: 10))
+
+    record("theme_os_dark_request")
+    XCTAssertTrue(requestAppearance("dark"), "The host did not apply the dark OS scheme.")
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      systemHandle,
+      "The dark OS flip rebound the native terminal."
+    )
+    XCTAssertTrue(
+      button("Copy selection").exists,
+      "The dark OS flip discarded the native selection."
+    )
+    capture("theme-os-dark-selection")
+    record("theme_os_dark_retained")
+
+    record("theme_os_light_request")
+    XCTAssertTrue(requestAppearance("light"), "The host did not apply the light OS scheme.")
+    XCTAssertEqual(nativeTerminalHandleObservation(), systemHandle)
+    XCTAssertTrue(button("Copy selection").exists)
+    capture("theme-os-light-selection")
+    record("theme_os_light_retained")
+    button("Cancel selection").tap()
+
+    // A pinned terminal preference must ignore the scheme: the app chrome
+    // repaints around the surface while its native handle stays put.
+    record("theme_os_pinned_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=terminal&app=system&terminal=dark"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("terminal"))
+    let pinnedHandle = nativeTerminalHandleObservation()
+    XCTAssertFalse(pinnedHandle.isEmpty)
+    record("theme_os_pinned_dark_request")
+    XCTAssertTrue(requestAppearance("dark"))
+    XCTAssertEqual(nativeTerminalHandleObservation(), pinnedHandle)
+    record("theme_os_pinned_light_request")
+    XCTAssertTrue(requestAppearance("light"))
+    XCTAssertEqual(nativeTerminalHandleObservation(), pinnedHandle)
+    capture("theme-os-pinned")
+    record("theme_os_pinned_retained")
+
+    // Focus the pinned dark terminal once under the light OS scheme: the
+    // native keyboard and accessory must appear in the resolved terminal
+    // theme while the app chrome stays on the opposite appearance.
+    record("theme_keyboard_open")
+    let focusedTerminal = try terminalElement()
+    focusedTerminal.tap()
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    capture("theme-os-keyboard")
+    record("theme_keyboard_shown")
+    button("Hide keyboard").tap()
+    XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
   }
 
   /// Additional states and native navigation, separate from the 27-screen
@@ -1046,6 +1210,43 @@ final class MeetermSmokeUITests: XCTestCase {
       return
     }
     record("ssh_transport_loss_remote_ack")
+
+    // A terminal theme change must repaint the live recovered session in
+    // place: the native handle and selected pane stay identical, and the
+    // remote pane keeps answering after both directions of the flip.
+    record("ssh_theme_light")
+    let themeHandleBefore = nativeTerminalHandleObservation()
+    button("Terminal menu").tap()
+    button("Terminal settings").tap()
+    XCTAssertTrue(button("terminal-theme").waitForExistence(timeout: 15))
+    button("terminal-theme").tap()
+    XCTAssertTrue(app.buttons["Light"].waitForExistence(timeout: 15))
+    app.buttons["Light"].tap()
+    button("settings-submit").tap()
+    XCTAssertTrue(waitForTerminal(), "Saving a terminal theme change dropped the live terminal.")
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      themeHandleBefore,
+      "A terminal theme change rebound the live native terminal."
+    )
+    XCTAssertTrue(
+      terminalTab(identifier: selectedPaneIdentifier).isSelected,
+      "A terminal theme change moved the selected pane."
+    )
+    capture("ssh-terminal-light")
+    record("ssh_theme_light_applied")
+
+    record("ssh_theme_dark")
+    button("Terminal menu").tap()
+    button("Terminal settings").tap()
+    XCTAssertTrue(button("terminal-theme").waitForExistence(timeout: 15))
+    button("terminal-theme").tap()
+    XCTAssertTrue(app.buttons["Dark"].waitForExistence(timeout: 15))
+    app.buttons["Dark"].tap()
+    button("settings-submit").tap()
+    XCTAssertTrue(waitForTerminal(), "Restoring the dark terminal dropped the live terminal.")
+    XCTAssertEqual(nativeTerminalHandleObservation(), themeHandleBefore)
+    record("ssh_theme_dark_applied")
 
     record("ssh_disconnect")
     tapConnectionAction("Disconnect")
@@ -3543,6 +3744,28 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return .timedOut
+  }
+
+  /// Ask the host driver for a real `simctl ui` scheme flip and wait for its
+  /// fixed acknowledgement. Any non-passing token fails closed so a missing
+  /// observer can never fake an OS appearance change.
+  private func requestAppearance(_ value: String) -> Bool {
+    try? FileManager.default.removeItem(at: appearanceResultPath)
+    do {
+      try Data((value + "\n").utf8).write(to: appearanceRequestPath, options: .atomic)
+    } catch {
+      return false
+    }
+    let expected = "appearance-\(value)-passed\n"
+    let deadline = Date().addingTimeInterval(20)
+    while Date() < deadline {
+      if let observed = try? String(contentsOf: appearanceResultPath, encoding: .utf8),
+         observed.hasPrefix("appearance-") {
+        return observed == expected
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    return false
   }
 
   private func shellQuote(_ value: String) -> String {
