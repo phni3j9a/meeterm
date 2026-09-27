@@ -1,0 +1,32 @@
+suite=android-full (daily + transport loss + seeded32 + transitions diagnostics)
+commit=de8a4e6a70845978f2bd4e83b35bfbc20075d672
+branch=issue-37-independent-themes (R3 candidate: driver-only fix, exact
+ own-package prefix normalization for the two theme rows; product/JS unchanged)
+result=passed
+first_failing_stage=none (all 116 stages completed, disconnect_after_resume)
+build_time=2m28s (assembleRelease, BUILD SUCCESSFUL, 668 tasks)
+toolchain=node v22.22.2 (.nvmrc via nvm), npm 10.9.7, JDK 17.0.19,
+ NDK 27.1.12297006, Rust 1.96.0, Gradle 9.3.1
+emulator=emulator-5554 api36 x86_64 headless anims=0.0
+seeded_routes=31/32 (empty route unavailable, same as baseline)
+
+theme legs (R3-validated):
+ daily_settings_theme: PASS (driver row binding now matches bare ids)
+ daily_theme_matrix: 6/6 pairs via real Settings, MEETERM_SMOKE_THEME verified
+ daily_theme_os_scheme: uimode light->dark->light on same pid, system tracked
+ daily_theme_os_independence: pinned dark terminal, no repaint/new marker
+ daily_theme_dialog: app-scoped presentAppAlert markers — appearance=dark
+  resolved=dark x13 (OS light), appearance=light resolved=light x13 (OS dark),
+  system -> resolved=light x7 / resolved=dark x1; results selected
+  index=0 x10, index=1 x9, index=2 x12, dismissed x3; no process replacement
+ daily-use.mp4: recorded (driver 180s cap; covers daily settings + theme legs
+  + workspace/selection window only — later legs beyond its window are covered
+  by PNG stills, as designed)
+
+supplemental transitions/ (same APK, seeded routes, observational):
+ trans-r3-c1.mp4 (~95s capture window): native mount under OS light, OS
+  dark->light flips same pid, native Back -> Workspaces, reopen via
+  workspace-row-@smoke-main, seeded recovery-progress frame
+ trans-r3-c2.mp4 (~65s window): app=system terminal=dark OS light->dark->light
+  same pid; chrome followed dark, re-light visible in post still
+ see transitions/trans-r3-manifest.txt for honest per-frame notes

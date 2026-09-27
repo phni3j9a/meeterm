@@ -1,0 +1,68 @@
+09-27 17:38:19.330 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:38:21.607 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:38:23.797 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:38:26.042 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:38:51.246 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:38:53.391 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:38:55.412 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:38:57.557 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:39:22.888 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:39:25.110 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:39:27.161 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:39:29.791 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:39:54.547 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:39:56.658 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:39:58.695 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:40:00.824 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:40:33.312 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:40:35.391 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:40:37.445 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:40:39.557 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:41:15.579 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:41:17.691 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:41:19.778 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:41:21.891 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:41:32.135 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:41:32.771 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=dismissed
+09-27 17:41:37.096 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:41:39.475 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:41:41.828 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:41:44.214 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:41:46.546 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:41:49.226 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:41:53.530 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:41:55.892 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:42:16.312 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:42:18.407 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:42:20.462 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+09-27 17:42:22.524 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:42:44.629 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:42:45.259 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=dismissed
+09-27 17:42:49.611 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:42:51.976 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:42:54.348 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:42:56.826 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:42:59.195 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:43:01.893 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:43:06.212 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:43:08.591 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:43:19.413 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:43:21.507 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:43:23.579 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:43:25.674 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:43:35.896 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=dark
+09-27 17:43:38.590 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=0
+09-27 17:43:40.978 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:43:41.368 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=dismissed
+09-27 17:43:53.779 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:43:55.874 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:43:57.928 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+09-27 17:44:00.057 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:44:53.629 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:44:55.707 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:46:00.629 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:46:04.674 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1
+09-27 17:46:13.030 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:46:15.107 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=2
+09-27 17:46:15.124 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+09-27 17:46:19.141 24975 24975 I MeetermTerminalDialog: MEETERM_SMOKE_DIALOG result=selected index=1

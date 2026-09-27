@@ -1,0 +1,38 @@
+17:49:22 supplemental transition clips on de8a4e6 APK (fresh build, no reuse)
+17:49:22 scope=seeded presentation routes + real uimode flips; NOT real SSH/recovery
+17:49:22 clip1 start: uimode->light, then screen=terminal&app=dark&terminal=system
+17:49:26 launched meeterm://smoke?screen=terminal&app=dark&terminal=system pid=5974
+17:49:32 still trans-r3-c1-01-mounted-oslight.png captured
+17:49:33 still trans-r3-c1-02-flip-osdark.png captured (frame changed)
+17:49:46 still trans-r3-c1-03-flip-oslight.png captured (UNCHANGED from previous)
+17:49:49 still trans-r3-c1-04-after-back.png captured (frame changed)
+17:49:51 workspace-row lookup found=True xy=(477, 1106)
+17:49:56 still trans-r3-c1-05-workspace-reopened.png captured (frame changed)
+17:49:57 launched meeterm://smoke?screen=recovery-progress&app=dark&terminal=light pid=6465
+17:50:02 still trans-r3-c1-06-recovery-progress-seeded.png captured
+17:51:23 clip trans-r3-c1.mp4 pulled 1675374 bytes
+17:51:23 clip1 pids across steps=['5974', '5974', '5974', '6465'] (unchanged through flips expected)
+17:51:23 clip2 start: screen=terminal&app=system&terminal=dark, OS light->dark->light
+17:51:27 launched meeterm://smoke?screen=terminal&app=system&terminal=dark pid=6711
+17:51:33 still trans-r3-c2-01-oslight.png captured
+17:51:35 still trans-r3-c2-02-osdark.png captured (frame changed)
+17:51:48 still trans-r3-c2-03-oslight-again.png captured (UNCHANGED from previous)
+17:52:54 clip trans-r3-c2.mp4 pulled 881940 bytes
+17:52:54 clip2 pids=['6711', '6711', '6711']
+17:52:55 theme markers in slice: 31
+
+--- post-run notes ---
+c1-02 changed on OS->dark; c1-03 UNCHANGED on OS->light within 12s settle —
+expected: app=dark is pinned so app chrome stays dark; terminal=system seeded
+fixture showed no visible repaint diff in the capture window.
+c1-04 Back -> Workspaces list (changed); c1-05 reopened native terminal via
+workspace-row-@smoke-main tap [63,988][891,1225] center (477,1106) — changed.
+c1-06 seeded recovery-progress presentation frame.
+clip2: c2-02 chrome followed OS dark (changed); c2-03 UNCHANGED on flip back
+to light inside the 12s poll window — same re-light lag seen on C3; post-clip
+still c2-04-settled-oslight.png verifies chrome is light again with the pinned
+dark terminal. Pinned terminal emitted no new resolved marker (slice has only
+mount markers per pid on fixture routes).
+Seeded presentation only: meeterm://smoke fixture routes, real native Term demo
+content, no SSH/credentials. These are diagnostics, not suite evidence; the
+driver's assertions + 180s daily-use.mp4 cap are unchanged.
