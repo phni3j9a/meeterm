@@ -10,6 +10,7 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
   この checkpoint の hosted CI 実行は Rust Unit tests で失敗しました(無変更の
   `network_change_wakes_foreground_backoff…` timeout、232 pass / 1 fail)。通過扱いには
   しません。
+- 統合 checkpoint `b8f457758733b6205d80fa4c28c25c3b08af1dab` は、固定 Node 22.22.2 / npm 10.9.7 を使う hosted CI が push・PR の両方で成功しました([push run](https://github.com/phni3j9a/meeterm/actions/runs/36326478627)、[PR run](https://github.com/phni3j9a/meeterm/actions/runs/36326480765))。App テスト130/130、Swift preflight、Rust/OpenSSH/公式 Herdr 0.9.0 integration、Android 生成ビルドと module tests を含みます。追加する iOS 操作ケースは後続 source で再確認します。
 - その後の native/test 変更を含む checkpoint `a3695600ab9b6a1223f4d220c9665debfe2f6d03`
   の hosted CI は pass しました: JavaScript/Expo、Rust fmt/unit/OpenSSH/clippy/real Herdr
   integration、iOS fast typecheck(`TerminalInputView` と UI/input XCTest の Swift
@@ -79,7 +80,7 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
 
 | 範囲 | 結果 |
 | --- | --- |
-| JS (exact source `20ebcb9` + 未commit の dialog seam) | `npm run typecheck` rc=0、`npm run test:app` 130/130 pass。migration seam(未保存→dark)、App/Terminal 4組合せ、両軸 system の OS scheme 追従と固定側の不変、独立 draft/save payload、a11y 行、preview、実 App の TerminalView props/chrome、Settings 開閉の既存1回だけの mount、保存による接続系 native call なし、WorkspaceNavigation の評価済み screen options に加え、アプリ所有 dialog の適用済み appearance 引数(iOS per-dialog style・Android presenter payload)、元 index 一度だけの dispatch、dismissal/範囲外/失敗の fail-closed、draft ではなく適用値を使う picker、実 App 上の host-key/close/remove/discard/group 呼出経路を確認 |
+| JS (統合 checkpoint `b8f4577`) | `npm run typecheck` rc=0、`npm run test:app` 130/130 pass。migration seam(未保存→dark)、App/Terminal 4組合せ、両軸 system の OS scheme 追従と固定側の不変、独立 draft/save payload、a11y 行、preview、実 App の TerminalView props/chrome、Settings 開閉の既存1回だけの mount、保存による接続系 native call なし、WorkspaceNavigation の評価済み screen options に加え、アプリ所有 dialog の適用済み appearance 引数(iOS per-dialog style・Android presenter payload)、元 index 一度だけの dispatch、dismissal/範囲外/失敗の fail-closed、draft ではなく適用値を使う picker、実 App 上の host-key/close/remove/discard/group 呼出経路を確認 |
 | Rust core | `cargo test --locked` 236 pass・0 fail(新規 theme 3件を含む)、`cargo fmt --check` / `cargo clippy --locked --all-targets -- -D warnings` clean。theme が indexed/truecolor/OSC override を維持し、selection 色が theme に従い、Dark→Light→Dark 変更で Term identity・scrollback・display offset・grid・selection が保持されることを確認 |
 | Android JVM | `./gradlew :meeterm-terminal:testDebugUnitTest --offline` BUILD SUCCESSFUL・74 tests pass。legacy 4キー JSON、present-invalid 拒否、dialog の元 button index・一度だけの完了・取消と失敗の拒否・scoped night-mode 選択を含む |
 | Python drivers | `python3 -m unittest discover -s scripts/ssh` 253 OK、`scripts/herdr` 6 OK、`scripts/ci` 47 OK (1 skipped)。post-theme SSH marker と Android dialog driver の回帰を含む |
@@ -89,7 +90,7 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
 ローカルの Node v22.23.2 / npm 10.9.8 は固定版 22.22.2 / 10.9.7 と異なり、
 通常コマンドで成功した run と SIGSEGV/SIGTRAP で落ちた run の両方があります。
 原因は未確定です。再実行や `--stack-size` を変えた成功を原因解決の証拠とはせず、
-最終候補は固定版を使用する hosted CI で独立に確認します。
+統合 checkpoint `b8f4577` は固定版の hosted CI で独立に成功しています。後続の最終候補もその source に対応する CI 結果を記録します。
 
 ## suite 契約の変更 (source-level、remote 実行は pending)
 
@@ -123,8 +124,7 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
   XCTest の Swift preflight は実 compile 済みです。これは型チェック段であり、
   generated iOS production build・CNG・Simulator runtime の受入ではありません。
 - iOS の native dialog の逆 App/OS 組合せと App 固定・Terminal System の実操作を
-  `standard` に追加する source 修正は pending です。JS の per-dialog 引数テストを
-  Simulator の実表示確認の代わりとは扱いません。
+  `standard` に追加しました。表示中 keyboard の OS 追従と、Discard 後に再 seed せず Settings を開き直す同一プロセスの操作検証も追加済みです。新しい XCTest source の hosted compile・Simulator 実表示は pending です。JS の per-dialog 引数テストを実表示確認の代わりとは扱いません。
 - Android の app-owned dialog は scoped native `presentAppAlert` に委譲済みです。
   baseline `a369560` での診断 probe では Main が実際の撮影画像で chooser と
   discard 確認を OS/App 逆組合せの両方で確認し、constraint(現行 dialog が OS

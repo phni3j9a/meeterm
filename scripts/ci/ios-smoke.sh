@@ -80,6 +80,17 @@ rm -f \
   "${artifact_dir}/theme-os-dark-selection.png" \
   "${artifact_dir}/theme-os-light-selection.png" \
   "${artifact_dir}/theme-os-pinned.png" \
+  "${artifact_dir}/theme-dialog-app-dark-os-light.png" \
+  "${artifact_dir}/theme-dialog-app-dark-os-dark.png" \
+  "${artifact_dir}/theme-dialog-chooser-app-dark-os-light.png" \
+  "${artifact_dir}/theme-dialog-chooser-draft-dark.png" \
+  "${artifact_dir}/theme-dialog-discard-app-dark-os-light.png" \
+  "${artifact_dir}/theme-dialog-app-light-os-dark.png" \
+  "${artifact_dir}/theme-dialog-chooser-app-light-os-dark.png" \
+  "${artifact_dir}/theme-dialog-chooser-draft-light.png" \
+  "${artifact_dir}/theme-dialog-discard-app-light-os-dark.png" \
+  "${artifact_dir}/theme-dialog-system-os-dark.png" \
+  "${artifact_dir}/theme-dialog-system-os-light.png" \
   "${artifact_dir}/theme-os-keyboard.png" \
   "${artifact_dir}/theme-transitions.mp4" \
   "${artifact_dir}/theme-recording.txt" \

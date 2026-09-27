@@ -2239,7 +2239,9 @@ def main() -> int:
                 stop_markers=("theme_verification_complete",),
                 video_name="theme-transitions.mp4",
                 result_name="theme-recording.txt",
-                max_seconds=420,
+                # The dialog evidence legs extend the same bounded window;
+                # the bound is sized for the full theme section, not per leg.
+                max_seconds=540,
             )
             if suite == "standard"
             else nullcontext()

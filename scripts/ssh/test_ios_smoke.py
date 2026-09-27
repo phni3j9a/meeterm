@@ -1309,6 +1309,8 @@ class RunnerDiagnosticsTests(unittest.TestCase):
     @staticmethod
     def write_standard_stages(root):
         (root / "ios-ui-stages.txt").write_text(
+            "theme_os_baseline\ntheme_dialog_dark_complete\n"
+            "theme_dialog_light_complete\ntheme_dialog_system_complete\n"
             "theme_verification_complete\nstandard_complete\nfoundation_verified\n"
         )
 
@@ -1581,7 +1583,7 @@ class RunnerDiagnosticsTests(unittest.TestCase):
                 stop_markers=("theme_verification_complete",),
                 video_name="theme-transitions.mp4",
                 result_name="theme-recording.txt",
-                max_seconds=420,
+                max_seconds=540,
             )
             appearance.assert_called_once()
             self.assertEqual(
@@ -1663,6 +1665,8 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             self.assertEqual(standard_validation.read_text(), "case=standard result=passed\n")
             self.assertEqual(
                 (root / "ios-ui-stages.txt").read_text(),
+                "theme_os_baseline\ntheme_dialog_dark_complete\n"
+                "theme_dialog_light_complete\ntheme_dialog_system_complete\n"
                 "theme_verification_complete\nstandard_complete\nfoundation_verified\n",
             )
 
