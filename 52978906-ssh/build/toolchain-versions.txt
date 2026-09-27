@@ -1,0 +1,7 @@
+date_utc=2026-09-27T16:45:57Z
+node=v22.22.2
+npm=10.9.7
+rustc=rustc 1.96.0 (ac68faa20 2026-05-25)
+arch=arm64
+macos=26.5.2
+cocoapods=1.17.0

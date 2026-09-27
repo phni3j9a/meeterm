@@ -1,0 +1,68 @@
+run=ios-ssh-issue37
+candidate=52978906e45c91eb5404e3b25e7c9d5413c26a01 (exact; NOT branch tip de8a4e6)
+branch_checked_out=issue-37-independent-themes (local validation checkout; no product-branch commits/pushes)
+session=devin-7a32a4e6ed984961b5194e22feeba407 (devin-swe-2-max)
+date_utc=2026-09-27
+evidence_branch=evidence/ios-20260928-issue37-ssh
+prior_evidence=evidence/ios-20260928-issue37-standard @ 5b71dfb (r1),
+  -r2 @ 052b34c, -r3 @ 3f15e9b (C4 standard PASS) — preserved untouched
+
+[build provenance — REUSE, not fresh]
+strategy=pristine-package-reuse (explicitly NOT a fresh CNG/build)
+package=/Users/devin/runner-temp-ios37-r3/ios-test-products
+  scope=pristine-build-products, sha256=5caf8f4588bd5ecee26df0b9d929a00cb10500db3297b600dc20534606ede784
+  manifest: source_sha=52978906…, xcode="Xcode 26.6 / 17F113", arch=arm64, config=Release-iphonesimulator
+restore=ios-test-products.py restore -> $RUNNER_TEMP/meeterm-derived-data/Build (empty before restore)
+  strict checks passed: manifest checksums + source-sha + xcode-version-file
+original_fresh_build_reference=evidence/ios-20260928-issue37-standard-r3 @ 3f15e9b (C4 standard run artifacts + xcodebuild.log)
+this_runner_temp=/Users/devin/runner-temp-ios37-r3-ssh (unique per-suite; prevents stale xcresult)
+
+[toolchain — verified actual]
+node=v22.22.2 / npm=10.9.7 / rust=1.96.0
+xcode=26.6 (17F113) — matches package manifest xcode-version.txt
+host=macOS 26.5.2 arm64 / cocoapods=1.17.0 (not invoked; reuse only)
+simulator=iPhone 18 Pro Max 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iOS 27.0 (ios-select-simulator.sh)
+
+[suite]
+invocation=MEETERM_IOS_SUITE=ssh scripts/ci/ios-smoke.sh (single run; suite exit 0)
+fixture_preflight=pass — OpenSSH fixture launched fresh on 127.0.0.1:61560,
+  meeterm-ssh.env in ssh RUNNER_TEMP; real_openssh_existing_tmux_runtime_selection passed
+ssh_ui_smoke="iOS short SSH UI smoke passed." (printed twice — two legs)
+ios-ssh-validation.txt: result=passed suite=ssh stage=complete
+ios-theme-marker-validation.txt:
+  theme_markers=passed, light_marker_exactly_once=yes, dark_marker_exactly_once=yes,
+  same_pane=yes, same_pane_pid=yes, other_panes_clean=yes
+transport_loss=passed — pre/post marker exactly once, same pane/PID,
+  native_terminal_identifier_same=yes, native_handle_same=yes,
+  selected_pane_identifier_same=yes, cached_read_only_surface=yes,
+  picker_visible_during_loss=no, input_during_loss=none
+stages_end=ssh_disconnect → ssh_complete → teardown_started → teardown_complete
+renderer_backend=metal (metadata.txt ssh_renderer_backend=metal;
+  simulator.log: 8x FIRST_FRAME_METAL, zero SOFTWARE markers)
+markers_observed=NATIVE_READY x8, THEME x9 (light/dark live ACKs),
+  PASTE_REQUEST/RESULT/DELIVERY x10 each, INPUT_FOCUS/RESIGN/WINDOW/BINDING_CANCEL,
+  STARTUP x7 — sanitized slice in suite/simulator.log (186 lines)
+
+[evidence contents — this run only]
+suite/  — artifacts/ios-simulator-observability: ios-ssh-validation.txt,
+          ios-theme-marker-validation.txt, ios-transport-loss-validation.txt,
+          ios-ui-transport-loss-observation.txt, ios-ui-ssh-validation.txt,
+          ios-ui-stages.txt, ios-ui-timing.txt, ios-ui-clock.txt,
+          ios-ssh-input-diagnostics.json, diagnostics txt set, metadata.txt,
+          boot-request.txt/bootstatus.log, fixture-validation.txt,
+          simulator.log (sanitized MEETERM_SMOKE_* slice), simulator.txt,
+          7 pngs: ssh-entry-initial, ssh-terminal-input, ssh-terminal-light(+keyboard),
+          ssh-terminal-dark(+keyboard), switcher_alternate_password-form-keyboard,
+          ssh-disconnected
+build/  — xcode-version.txt + toolchain-versions.txt + ios-simulator-entitlements.txt
+          (from the original C4 fresh build dir; that build's full xcodebuild.log
+          lives in evidence r3 @3f15e9b — referenced, not duplicated)
+xctest-transcript.log — this run's xcodebuild test-without-building log
+run-record.txt — this file
+recording_status=still-sequence evidence (no bounded mp4 section in ssh suite;
+  ordered png captures are the inspection record)
+
+[non-claims]
+- Simulator only; no physical device; no Android parity claims.
+- IME/hardware-keyboard path not exercised beyond the suite's on-screen accessory captures.
+- No product source edited/committed/pushed; no assertion/deadline changes; no blind rerun.
