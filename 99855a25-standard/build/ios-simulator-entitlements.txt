@@ -1,0 +1,13 @@
+  sectname __entitlements
+   segname __TEXT
+      addr 0x00000001008ff6e4
+      size 0x000000000000016e
+    offset 9434852
+     align 2^0 (1)
+--
+  sectname __ents_der
+   segname __TEXT
+      addr 0x00000001008ff852
+      size 0x0000000000000073
+    offset 9435218
+     align 2^0 (1)

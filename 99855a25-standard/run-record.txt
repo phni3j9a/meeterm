@@ -1,0 +1,68 @@
+run=ios-standard-issue37-r2
+candidate=99855a25d1c69113851927d6a7ae17c3ec1f84ef
+branch_checked_out=issue-37-independent-themes (local validation checkout; no product-branch commits/pushes)
+session=devin-7a32a4e6ed984961b5194e22feeba407 (devin-swe-2-max)
+date_utc=2026-09-27
+runner_temp=/Users/devin/runner-temp-ios37-r2 (fresh unique; preserved for later same-commit ssh reuse)
+ios_test_products_package=/Users/devin/runner-temp-ios37-r2/ios-test-products (pristine pack, manifest verified)
+evidence_branch=evidence/ios-20260928-issue37-standard-r2
+prior_round_evidence=evidence/ios-20260928-issue37-standard @ 5b71dfb (aa2249ce, preserved untouched)
+
+[toolchain — verified actual]
+node=v22.22.2 (session-local official tarball)
+npm=10.9.7
+rust=1.96.0 (aarch64-apple-ios-sim)
+xcode=26.6 (17F113), iOS Simulator SDK 26.5
+cocoapods=1.17.0
+host=macOS 26.5.2 arm64
+simulator=iPhone 18 Pro Max 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iOS 27.0
+
+[stages]
+swift_preflight_ios_typecheck=pass (before CNG/build)
+npm_ci=pass
+rustup_target_add=pass
+cng=pass (expo prebuild --platform ios --non-interactive --no-install --clean)
+inject_ui_test=pass
+pod_install=pass (env fix: LANG/LC_ALL=en_US.UTF-8 required for CocoaPods on this host)
+strip_storage_rust_link=pass
+build_for_testing=pass (Release, iphonesimulator, unsigned, arm64, TEST BUILD SUCCEEDED)
+entitlements_verify=pass (__entitlements + __ents_der present)
+test_products_pack=pass (manifest: source sha + xcode version)
+simulator_select=pass (7EE2EBC1, booted)
+standard_xctest=PASS in full — testStandardSeededScreensAndFoundation reached
+  theme_verification_complete, foundation_verified, standard_complete
+  (26/26 routes, 6/6 theme matrix, settings preview, recovery rail,
+  real OS flips same-handle, pinned terminal, keyboard leg,
+  ALL theme_dialog legs incl. ActionSheet/draft/discard/reopen/system)
+native_storage_xctest=pass (all cases incl. legacy_preferences_migration)
+native_input_xctest=pass (all cases incl. theme_refresh)
+appearance_observer=pass (ios-appearance-validation.txt; restored to light)
+native_readiness=pass (MEETERM_SMOKE_NATIVE_READY, fresh pid)
+first_frame=METAL (MEETERM_SMOKE_FIRST_FRAME_METAL; zero SOFTWARE markers)
+recording=theme-transitions.mp4 captured through theme_verification_complete
+suite_result=FAILED — post-test foundation validator: malformed_marker
+  (ios-validate-foundation.py rejects the candidate's new MEETERM_SMOKE_THEME
+  log line; see FAILURE-ANALYSIS.md — the only unwhitelisted marker in the window)
+
+[timing]
+standard xctest wall≈313s per ios-ui-timing.txt; suite exit 1 at validator stage
+
+[evidence contents]
+suite/  — full ios-simulator-observability dir for THIS run only
+          (50 png: 26 standard routes, 6 theme matrix, 4 os/pinned/keyboard,
+          settings-preview, recovery, all 11 theme-dialog captures;
+          theme-transitions.mp4; theme-recording.txt recording=captured;
+          ios-standard-validation.txt result=passed stage=complete;
+          ios-foundation-validation.txt result=failed malformed_marker;
+          ios-ui-stages.txt complete; simulator.log sanitized slice w/ THEME marker;
+          storage/input/appearance validations all passed; diagnostics txt)
+build/  — xcode-version.txt, toolchain-versions.txt, ios-simulator-entitlements.txt,
+          xcodebuild.log (build-for-testing transcript)
+xctest-transcript.log — xcuitest_standard transcript
+FAILURE-ANALYSIS.md — validator root cause
+run-record.txt — this file
+
+[non-claims]
+- Simulator only; no physical device; no Android/externalIME parity claims.
+- No product source edited/committed/pushed.
+- The XCTest passing ≠ suite pass: reported honestly as validator-stage failure.
