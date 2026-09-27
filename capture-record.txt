@@ -1,0 +1,37 @@
+capture=settings-theme-rows-uiautomator (diagnostic only, NOT a suite pass)
+source_commit=99855a25d1c69113851927d6a7ae17c3ec1f84ef (issue-37-independent-themes, R2 candidate)
+apk=same installed build as full-r2 failure run (assembleRelease 2m27s earlier today; no rebuild)
+device=emulator-5554 sdk_gphone64_x86_64 api=36, OS light
+session=devin-9429c00e8cc14fb2b140b3e23bb28ec1 (SWE-2 / devin-swe-2-max)
+time=2026-09-27 ~16:5x UTC
+
+commands:
+  adb shell am force-stop dev.meeterm.app
+  adb shell am start -W -a android.intent.action.VIEW -d "meeterm://smoke?screen=settings&app=light&terminal=dark" -n dev.meeterm.app/.MainActivity
+  adb shell -tt "uiautomator dump --compressed /dev/tty"   (same dump path the driver uses)
+  then: subtree extraction of the two theme-row nodes only; wrapped in <hierarchy>
+
+row attribute facts (verbatim from the dump, nothing synthesized):
+  app-theme:      resource-id="app-theme" (BARE, no dev.meeterm.app:id/ qualifier),
+                  class=android.widget.Button, package=dev.meeterm.app,
+                  content-desc="Appearance, Light", text="", clickable=true,
+                  enabled=true, selected=false, bounds=[63,654][1017,870];
+                  children: TextView "Appearance" [105,696][897,759],
+                            TextView "Light"      [105,769][897,827]
+  terminal-theme: resource-id="terminal-theme" (BARE),
+                  class=android.widget.Button, package=dev.meeterm.app,
+                  content-desc="Terminal theme, Dark", text="", clickable=true,
+                  enabled=true, selected=false, bounds=[63,870][1017,1086];
+                  children: TextView "Terminal theme" [105,912][897,975],
+                            TextView "Dark"           [105,985][897,1043]
+  note: this uiautomator build does not emit visible-to-user; attribute absent in
+  dump (driver's Node parser defaults it true). No other attribute fabricated.
+
+failure link (full-r2 @ 35c51b4): driver find_theme_row() requires
+  resource_id == "dev.meeterm.app:id/app-theme"; dump yields bare "app-theme"
+  -> no match -> daily_settings_theme ui_timeout. Reproduced offline: feeding
+  theme-settings-two-rows.xml through scripts/ssh/parse_ui_dump + find_theme_row
+  returns None on this file.
+
+scope: two public theme rows only (labels/values are public enums). No whole
+hierarchy, no credential forms, no clipboard/secrets/binaries.
