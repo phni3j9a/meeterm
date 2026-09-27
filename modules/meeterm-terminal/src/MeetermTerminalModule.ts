@@ -1,6 +1,7 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
 import type {
+  AppAlertOptions,
   AttachmentActionResult,
   AttachmentBeginResult,
   AttachmentCompositionStatus,
@@ -36,6 +37,12 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   connectProfile(terminalId: string, profileId: string): Promise<void>;
   getPreferences(): Promise<TerminalPreferences>;
   setPreferences(preferences: TerminalPreferences): Promise<void>;
+  /**
+   * Present an app-owned AlertDialog themed to `options.appearance` without
+   * touching Activity/window/AppCompat globals (Android). Resolves the
+   * original button index, or null on dismissal or presentation failure.
+   */
+  presentAppAlert(options: AppAlertOptions): Promise<number | null>;
   setForeground(terminalId: string, foreground: boolean): Promise<void>;
   setAutomaticReconnect(terminalId: string, enabled: boolean): Promise<void>;
   createWorkspace(terminalId: string, name: string): Promise<void>;

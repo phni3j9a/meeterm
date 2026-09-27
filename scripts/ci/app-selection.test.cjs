@@ -262,6 +262,8 @@ function makeNativeEnvironment() {
     timeoutCallbacks: [],
     nextTimeoutId: 1,
     alert: null,
+    appAlerts: [],
+    appAlertResponder: null,
     accessibilityAnnouncements: [],
     recoveryRetryMode: 'ready',
     recoveryRetryAttempt: 0,
@@ -305,6 +307,11 @@ function makeNativeEnvironment() {
     },
     async setPreferences(preferences) {
       environment.savedPreferences = clone(preferences);
+    },
+    async presentAppAlert(options) {
+      environment.appAlerts.push(clone(options));
+      if (environment.appAlertResponder) return environment.appAlertResponder(options);
+      return null;
     },
     async setAutomaticReconnect() {},
     async connectHost(_connectionId, options) {
@@ -499,6 +506,18 @@ function makeNativeEnvironment() {
       environment.calls.push({ method: 'closePane', paneId });
       closePane(environment.snapshot, paneId);
     },
+    async closeWorkspace(_connectionId, windowId) {
+      environment.calls.push({ method: 'closeWorkspace', windowId });
+    },
+    async closeGroup(_connectionId, groupId) {
+      environment.calls.push({ method: 'closeGroup', groupId });
+    },
+    async deleteProfile(profileId) {
+      environment.calls.push({ method: 'deleteProfile', profileId });
+    },
+    async forgetHostKey(host, port) {
+      environment.calls.push({ method: 'forgetHostKey', host, port });
+    },
     // Issue #28 attachment surface: benign defaults so screens that merely
     // consult the attachment gate never hit an undefined binding. Focused
     // attachment tests replace these via `configureAttachment`.
@@ -628,7 +647,7 @@ function makeReactNativeMocks(environment) {
       return { remove() { if (environment.hardwareBackHandler === listener) environment.hardwareBackHandler = null; } };
     },
   };
-  const Keyboard = { dismiss() {} };
+  const Keyboard = { dismiss() {}, addListener() { return { remove() {} }; } };
   const Linking = {
     async getInitialURL() {
       if (environment.initialURLBehavior === 'pending') return new Promise(() => {});
@@ -638,8 +657,8 @@ function makeReactNativeMocks(environment) {
     addEventListener() { return noOpSubscription; },
   };
   const Alert = {
-    alert(title, message, buttons) {
-      environment.alert = { title, message, buttons: buttons || [] };
+    alert(title, message, buttons, options) {
+      environment.alert = { title, message, buttons: buttons || [], options: options || {} };
     },
   };
   const AccessibilityInfo = {
@@ -863,14 +882,40 @@ function loadModuleFromSource(filename, moduleMap) {
   return exports;
 }
 
+function loadDialogsModule(environment, { reactNative, terminal } = {}) {
+  const rn = reactNative ?? makeReactNativeMocks(environment);
+  const terminalModule = terminal ?? { __esModule: true, default: {} };
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/dialogs.ts'), new Map([
+    ['react-native', rn],
+    ['../modules/meeterm-terminal', terminalModule],
+  ]));
+}
+
 function loadDailyUseModule(environment, overrides = {}) {
+  const rn = overrides.reactNative ?? makeReactNativeMocks(environment);
+  const terminal = overrides.terminal ?? { __esModule: true, default: {} };
   return loadModuleFromSource(path.join(REPO_ROOT, 'app/DailyUse.tsx'), new Map([
     ['react', React],
     ['react/jsx-runtime', require('react/jsx-runtime')],
-    ['react-native', overrides.reactNative ?? makeReactNativeMocks(environment)],
+    ['react-native', rn],
     ['react-native-safe-area-context', overrides.safeArea ?? makeSafeAreaMocks()],
     ['./ui', overrides.ui ?? makeUiMocks(environment)],
-    ['../modules/meeterm-terminal', overrides.terminal ?? { __esModule: true, default: {} }],
+    ['./dialogs', overrides.dialogs ?? loadDialogsModule(environment, { reactNative: rn, terminal })],
+    ['../modules/meeterm-terminal', terminal],
+  ]));
+}
+
+function loadConnectionFormModule(environment, overrides = {}) {
+  const rn = overrides.reactNative ?? makeReactNativeMocks(environment);
+  const terminal = overrides.terminal ?? { __esModule: true, default: {} };
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/ConnectionForm.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn],
+    ['react-native-safe-area-context', overrides.safeArea ?? makeSafeAreaMocks()],
+    ['./ui', overrides.ui ?? makeUiMocks(environment)],
+    ['./dialogs', overrides.dialogs ?? loadDialogsModule(environment, { reactNative: rn, terminal })],
+    ['../modules/meeterm-terminal', terminal],
   ]));
 }
 
@@ -942,7 +987,14 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const terminal = makeTerminalModule(native, environment);
   const dailyUse = realDailyUse ? loadDailyUseModule(environment, { reactNative: rn, safeArea, ui, terminal }) : null;
   const forms = realDailyUse
-    ? { ...makeFormMocks(), SettingsForm: dailyUse.SettingsForm, DEFAULT_PREFERENCES: dailyUse.DEFAULT_PREFERENCES }
+    ? {
+      ...makeFormMocks(),
+      DEFAULT_PREFERENCES: dailyUse.DEFAULT_PREFERENCES,
+      itemActions: dailyUse.itemActions,
+      NameForm: dailyUse.NameForm,
+      ProfileList: dailyUse.ProfileList,
+      SettingsForm: dailyUse.SettingsForm,
+    }
     : makeFormMocks();
   const scheduleTimeout = environment.fakeTimers
     ? (callback, delay) => {
@@ -965,6 +1017,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     ['./modules/meeterm-terminal', terminal],
     ['./app/ConnectionForm', forms],
     ['./app/DailyUse', forms],
+    ['./app/dialogs', loadDialogsModule(environment, { reactNative: rn, terminal })],
     ['./app/ui', ui],
     // Navigation's native view/gesture execution belongs to mobile evidence.
     // These tests retain their real App selection and registry assertions.
@@ -1351,6 +1404,7 @@ test('settings keeps app appearance and terminal theme as independent labeled ro
 
     await press(root, appRow);
     assert.equal(environment.actionSheet.options.title, 'Appearance');
+    assert.equal(environment.actionSheet.options.userInterfaceStyle, 'light', 'the chooser styles to the applied app appearance');
     await pickActionSheetOption(environment, 2);
     assert.equal(textContent(appRow), 'AppearanceDark');
     assert.equal(textContent(terminalRow), 'Terminal themeSystem');
@@ -1628,6 +1682,373 @@ test('terminal native-stack screen options follow the app palette like workspace
   } finally {
     await act(async () => { root.unmount(); });
   }
+});
+
+test('app-owned alerts carry the applied app appearance on each platform', async t => {
+  // Mount a real App wired to a saved profile whose connection resolves to
+  // HostKeyPending, so the trust prompt is presented by real component code.
+  const hostKeyFixture = async (t2, { platform = 'ios', theme = 'light', colorScheme = 'light', alertResponder = null } = {}) => {
+    const profile = pickerProfile();
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = platform;
+      environment.colorScheme = colorScheme;
+      environment.preferences = { ...PREFERENCES, theme };
+      environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+      environment.profiles = [profile];
+      environment.hostKeyPendingProfileId = profile.id;
+      environment.runtimeDiscovery = pickerDiscovery();
+      environment.snapshot = makeSnapshot();
+      environment.appAlertResponder = alertResponder;
+    });
+    await press(fixture.root, findLabel(fixture.root, `Connect saved server ${profile.name}`));
+    await poll(fixture.environment);
+    await settleAsync();
+    return fixture;
+  };
+  const hostKeyApprovals = environment => environment.nativeCalls.filter(call => typeof call === 'object' && call.method === 'respondToHostKey');
+
+  await t.test('iOS maps each applied appearance to a per-dialog style', () => {
+    const { environment } = makeNativeEnvironment();
+    const dialogs = loadDialogsModule(environment);
+    dialogs.appAlert('dark', 'One', 'Body', [{ text: 'OK' }]);
+    assert.equal(environment.alert.options.userInterfaceStyle, 'dark');
+    dialogs.appAlert('light', 'Two', undefined, [{ text: 'OK' }]);
+    assert.equal(environment.alert.options.userInterfaceStyle, 'light');
+    dialogs.appAlert('system', 'Three', undefined, [{ text: 'OK' }], { cancelable: false });
+    assert.equal(environment.alert.options.userInterfaceStyle, 'unspecified');
+    assert.equal(environment.alert.options.cancelable, false);
+    // Omitted options keep the prior RN Alert default of non-cancelable; an
+    // explicit true (the theme chooser) remains the only caller opt-in.
+    dialogs.appAlert('dark', 'Four', undefined, [{ text: 'OK' }]);
+    assert.equal(environment.alert.options.cancelable, false);
+    dialogs.appAlert('dark', 'Five', undefined, [{ text: 'OK' }], { cancelable: true });
+    assert.equal(environment.alert.options.cancelable, true);
+    // ActionSheetIOS typings only accept fixed styles; system omits the override.
+    assert.equal(dialogs.sheetUserInterfaceStyle('system'), undefined);
+    assert.equal(dialogs.sheetUserInterfaceStyle('dark'), 'dark');
+  });
+
+  await t.test('Android delegates to the native presenter and dispatches the original index once', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.platform = 'android';
+    environment.colorScheme = 'light';
+    const dialogs = loadDialogsModule(environment, { terminal: { __esModule: true, default: native } });
+    const calls = [];
+    environment.appAlertResponder = () => Promise.resolve(1);
+    dialogs.appAlert('dark', 'Title', 'Body', [
+      { text: 'Cancel', style: 'cancel', onPress: () => calls.push('cancel') },
+      { text: 'Approve', onPress: () => calls.push('approve') },
+    ], { cancelable: false });
+    // The presenter receives plain descriptors only — no JS callbacks or
+    // message logging; the chosen index maps back to the original button.
+    assert.deepEqual(environment.appAlerts[0], {
+      appearance: 'dark', title: 'Title', message: 'Body', cancelable: false,
+      buttons: [{ text: 'Cancel', style: 'cancel' }, { text: 'Approve', style: 'default' }],
+    });
+    await settleAsync();
+    assert.deepEqual(calls, ['approve']);
+
+    for (const responder of [() => Promise.resolve(null), () => Promise.resolve(7), () => Promise.reject(new Error('presentation failed'))]) {
+      environment.appAlertResponder = responder;
+      dialogs.appAlert('system', 'Again', undefined, [{ text: 'Yes', onPress: () => calls.push('yes') }]);
+      await settleAsync();
+    }
+    assert.deepEqual(calls, ['approve'], 'dismissal, a bad index, or rejection must not dispatch');
+    assert.equal(environment.appAlerts.at(-1).appearance, 'system', 'system inherits the platform configuration');
+    // MAIN-004: omitted options keep the prior non-cancelable Android Alert
+    // default; an explicit true is forwarded verbatim for the chooser.
+    assert.equal(environment.appAlerts.at(-1).cancelable, false);
+    environment.appAlertResponder = () => Promise.resolve(null);
+    dialogs.appAlert('light', 'Dismissible', undefined, [{ text: 'OK' }], { cancelable: true });
+    assert.equal(environment.appAlerts.at(-1).cancelable, true);
+    await settleAsync();
+    assert.deepEqual(calls, ['approve']);
+  });
+
+  await t.test('iOS security dialogs style to the applied appearance under the opposite OS', async t2 => {
+    const fixture = await hostKeyFixture(t2, { platform: 'ios', theme: 'dark', colorScheme: 'light' });
+    assert.equal(fixture.environment.alert?.title, 'Trust this SSH host?');
+    assert.equal(fixture.environment.alert.options.userInterfaceStyle, 'dark', 'fixed App dark presents a dark dialog under a light OS');
+    assert.equal(fixture.environment.alert.options.cancelable, false);
+    assert.equal(fixture.environment.appAlerts.length, 0, 'iOS must not touch the Android presenter');
+    const trust = fixture.environment.alert.buttons.find(button => button.text === 'Trust and connect');
+    await act(async () => { trust.onPress(); });
+    assert.deepEqual(hostKeyApprovals(fixture.environment), [{ method: 'respondToHostKey', fingerprint: 'SHA256:unknownFixtureHost', accept: true }]);
+  });
+
+  await t.test('iOS fixed light under a dark OS and system inheritance', async t2 => {
+    const lightFixture = await hostKeyFixture(t2, { platform: 'ios', theme: 'light', colorScheme: 'dark' });
+    assert.equal(lightFixture.environment.alert.options.userInterfaceStyle, 'light');
+    const systemFixture = await hostKeyFixture(t2, { platform: 'ios', theme: 'system', colorScheme: 'dark' });
+    assert.equal(systemFixture.environment.alert.options.userInterfaceStyle, 'unspecified', 'system leaves the platform style in place');
+  });
+
+  await t.test('Android routes the host-key prompt through the presenter and trusts once', async t2 => {
+    const fixture = await hostKeyFixture(t2, {
+      platform: 'android', theme: 'dark', colorScheme: 'light',
+      alertResponder: options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Trust and connect')),
+    });
+    assert.equal(fixture.environment.alert, null, 'Android must not use the RN Alert path');
+    assert.equal(fixture.environment.appAlerts.length, 1);
+    assert.equal(fixture.environment.appAlerts[0].appearance, 'dark', 'fixed App dark presents dark under a light OS');
+    assert.equal(fixture.environment.appAlerts[0].title, 'Trust this SSH host?');
+    assert.equal(fixture.environment.appAlerts[0].cancelable, false);
+    assert.deepEqual(fixture.environment.appAlerts[0].buttons, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Trust and connect', style: 'default' },
+    ]);
+    await settleAsync();
+    assert.deepEqual(hostKeyApprovals(fixture.environment), [{ method: 'respondToHostKey', fingerprint: 'SHA256:unknownFixtureHost', accept: true }]);
+  });
+
+  for (const [label, alertResponder] of [
+    ['dismissal', () => Promise.resolve(null)],
+    ['an out-of-range index', () => Promise.resolve(9)],
+    ['presentation failure', () => Promise.reject(new Error('dialog failed'))],
+  ]) {
+    await t.test(`Android host-key ${label} never approves trust`, async t2 => {
+      const fixture = await hostKeyFixture(t2, { platform: 'android', alertResponder });
+      assert.equal(fixture.environment.appAlerts.length, 1);
+      await settleAsync();
+      assert.equal(fixture.environment.connection.state, 'HostKeyPending');
+      assert.equal(hostKeyApprovals(fixture.environment).length, 0, `${label} must fail closed without a host-key decision`);
+    });
+  }
+
+  await t.test('Android destructive confirmation fails closed then approves once', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.colorScheme = 'dark';
+      environment.preferences = { ...PREFERENCES, theme: 'light' };
+      environment.snapshot = makeSnapshot();
+    });
+    await openWorkspace(fixture.root, 'W1');
+    await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Close terminal'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Close terminal?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'light', 'fixed App light presents light under a dark OS');
+    assert.equal(fixture.environment.calls.filter(call => call.method === 'closePane').length, 0,
+      'dismissing the close confirmation must not close the pane');
+
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Close'));
+    await press(fixture.root, findLabel(fixture.root, 'Close terminal'));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'closePane'), [{ method: 'closePane', paneId: 'P1' }],
+      'the destructive index dispatches the original callback exactly once');
+  });
+
+  await t.test('Android item actions chain into the applied-appearance confirmation', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'light' };
+      environment.snapshot = makeSnapshot({
+        groups: [group('G1', 'W1', 'Group One', true), group('G9', 'W1', 'Spare', false), group('G2', 'W2', 'Group Two', true)],
+      });
+    }, { realDailyUse: true });
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Close'));
+    await press(fixture.root, findLabel(fixture.root, 'Workspace options Workspace One'));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.appAlerts[0].buttons.map(button => button.text), ['Cancel', 'Rename', 'Close']);
+    assert.equal(fixture.environment.appAlerts[0].appearance, 'light');
+    assert.equal(fixture.environment.appAlerts[1]?.title, 'Close workspace?');
+    assert.equal(fixture.environment.appAlerts[1].appearance, 'light');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'closeWorkspace'), [{ method: 'closeWorkspace', windowId: 'W1' }]);
+
+    // The group options row shares itemActions and its Close confirmation.
+    await openWorkspace(fixture.root, 'W1');
+    const groupPicker = all(fixture.root, node => typeof node.props?.accessibilityLabel === 'string' && node.props.accessibilityLabel.startsWith('Switch terminal group'))[0];
+    assert.ok(groupPicker, 'the terminal screen should offer the group picker');
+    await press(fixture.root, groupPicker);
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Close'));
+    await press(fixture.root, findLabel(fixture.root, 'Group options Group One'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Close group?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'light');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'closeGroup'), [{ method: 'closeGroup', groupId: 'G1' }]);
+  });
+
+  await t.test('Android remove-server confirmation keeps its labels and approves once', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'light' };
+      environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+      environment.profiles = [pickerProfile()];
+      environment.snapshot = makeSnapshot();
+    }, { realDailyUse: true });
+    await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+    // Back-style dismissal of the item menu stays inert; Remove proceeds to
+    // the existing destructive confirmation.
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Server options Queued picker'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Queued picker');
+    assert.deepEqual(fixture.environment.appAlerts.at(-1).buttons.map(button => button.text), ['Cancel', 'Edit server', 'Remove']);
+    assert.equal(fixture.environment.calls.filter(call => call.method === 'deleteProfile').length, 0, 'menu dismissal must not delete');
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Remove'));
+    await press(fixture.root, findLabel(fixture.root, 'Server options Queued picker'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Remove saved server?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'light');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'deleteProfile'), [{ method: 'deleteProfile', profileId: pickerProfile().id }]);
+  });
+
+  await t.test('Android changed-host-key review keeps security wording and stays fail-closed', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'dark' };
+      environment.colorScheme = 'light';
+      environment.connection = {
+        ...environment.connection, state: 'Failed', errorCode: 'host_key_changed',
+        host: 'fixture.example', port: 22, algorithm: 'ssh-ed25519',
+        knownFingerprint: 'SHA256:savedFixtureKey', fingerprint: 'SHA256:changedFixtureKey',
+      };
+      environment.snapshot = makeSnapshot();
+    });
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Review key change'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Host key changed');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'dark');
+    assert.equal(fixture.environment.appAlerts.at(-1).cancelable, false);
+    assert.equal(fixture.environment.calls.filter(call => call.method === 'forgetHostKey').length, 0, 'dismissal must not remove the saved key');
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Remove saved key'));
+    await press(fixture.root, findLabel(fixture.root, 'Review key change'));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'forgetHostKey'),
+      [{ method: 'forgetHostKey', host: 'fixture.example', port: 22 }]);
+  });
+
+  await t.test('Android discard confirmations keep Save/Cancel semantics', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'dark' };
+      environment.colorScheme = 'light';
+      environment.snapshot = makeSnapshot();
+    }, { realDailyUse: true });
+    await press(fixture.root, findLabel(fixture.root, 'Create workspace'));
+    await act(async () => { findTestId(fixture.root, 'workspace-terminal-name').props.onChangeText('Renamed'); });
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Discard changes?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'dark');
+    assert.ok(findTestId(fixture.root, 'workspace-terminal-name'), 'dismissing discard keeps the form open');
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Discard'));
+    await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+    await settleAsync();
+    assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-terminal-name').length, 0, 'discard closes the form');
+  });
+
+  await t.test('Settings pickers and discard prompts use the applied appearance, not the draft', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.platform = 'android';
+    environment.colorScheme = 'dark';
+    const dailyUse = loadDailyUseModule(environment, { terminal: { __esModule: true, default: native } });
+    const saved = [];
+    const root = createRoot();
+    try {
+      await act(async () => {
+        root.render(React.createElement(dailyUse.SettingsForm, {
+          visible: true, preferences: { ...PREFERENCES, theme: 'light' }, colors: LIGHT,
+          onClose() {}, async onSave(next) { saved.push(clone(next)); return true; },
+        }));
+      });
+      environment.appAlertResponder = () => Promise.resolve(2);
+      await press(root, findTestId(root, 'app-theme'));
+      assert.equal(environment.appAlerts[0].appearance, 'light', 'fixed App light presents light under a dark OS');
+      assert.deepEqual(environment.appAlerts[0].buttons.map(button => button.text), ['System', 'Light', 'Dark']);
+      assert.equal(environment.appAlerts[0].cancelable, true, 'the theme chooser keeps its explicit cancelable override');
+      // The draft is now dark, but the Terminal theme chooser still styles to
+      // the applied App appearance until Save commits the draft.
+      environment.appAlertResponder = () => Promise.resolve(0);
+      await press(root, findTestId(root, 'terminal-theme'));
+      assert.equal(environment.appAlerts[1].appearance, 'light', 'the chooser uses the applied appearance, not the edited draft');
+      await press(root, findTestId(root, 'settings-submit'));
+      assert.deepEqual(saved, [{ ...PREFERENCES, theme: 'dark', terminalTheme: 'system' }]);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  await t.test('item action sheets and discard prompts style on both platforms', async () => {
+    // iOS: ActionSheetIOS gets a per-call userInterfaceStyle.
+    const iosEnvironment = makeNativeEnvironment();
+    const iosDailyUse = loadDailyUseModule(iosEnvironment);
+    const removed = [];
+    const iosRoot = createRoot();
+    try {
+      await act(async () => {
+        iosRoot.render(React.createElement(iosDailyUse.ProfileList, {
+          profiles: [pickerProfile()], selectedId: '', loading: false, error: false, busy: false,
+          colors: LIGHT, themePreference: 'dark',
+          onRetry() {}, onAdd() {}, onConnect() {}, onEdit() {}, onDelete: profile => removed.push(profile.id),
+        }));
+      });
+      await press(iosRoot, findLabel(iosRoot, 'Server options Queued picker'));
+      assert.equal(iosEnvironment.actionSheet.options.userInterfaceStyle, 'dark');
+      // The options array is VM-realm; copy it before deepEqual.
+      assert.deepEqual([...iosEnvironment.actionSheet.options.options], ['Edit server', 'Remove', 'Cancel']);
+      await pickActionSheetOption(iosEnvironment, 1);
+      assert.deepEqual(removed, [pickerProfile().id]);
+    } finally {
+      await act(async () => { iosRoot.unmount(); });
+    }
+
+    // Android: the same rows go through the native presenter, and a dirty
+    // NameForm discard confirmation carries the same applied appearance.
+    const { environment: androidEnvironment, native: androidNative } = makeNativeEnvironment();
+    androidEnvironment.platform = 'android';
+    const androidDailyUse = loadDailyUseModule(androidEnvironment, { terminal: { __esModule: true, default: androidNative } });
+    const closed = [];
+    const androidRoot = createRoot();
+    try {
+      await act(async () => {
+        androidRoot.render(React.createElement(androidDailyUse.NameForm, {
+          visible: true, title: 'Rename workspace', initialName: 'One', colors: LIGHT, themePreference: 'dark',
+          onClose: () => closed.push('closed'), async onSave() { return true; },
+        }));
+      });
+      await act(async () => { findTestId(androidRoot, 'workspace-terminal-name').props.onChangeText('Renamed'); });
+      androidEnvironment.appAlertResponder = () => Promise.resolve(null);
+      await press(androidRoot, findLabel(androidRoot, 'Cancel'));
+      assert.equal(androidEnvironment.appAlerts[0].title, 'Discard changes?');
+      assert.equal(androidEnvironment.appAlerts[0].appearance, 'dark');
+      await settleAsync();
+      assert.equal(closed.length, 0, 'dismissal must keep the form open');
+      androidEnvironment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Discard'));
+      await press(androidRoot, findLabel(androidRoot, 'Cancel'));
+      await settleAsync();
+      assert.deepEqual(closed, ['closed']);
+    } finally {
+      await act(async () => { androidRoot.unmount(); });
+    }
+
+    // iOS ConnectionForm discard: the per-dialog style follows the applied
+    // appearance and the destructive button still discards.
+    const formEnvironment = makeNativeEnvironment();
+    const connectionForms = loadConnectionFormModule(formEnvironment);
+    const formCloses = [];
+    const formRoot = createRoot();
+    try {
+      await act(async () => {
+        formRoot.render(React.createElement(connectionForms.ConnectionForm, {
+          visible: true, colors: LIGHT, themePreference: 'dark',
+          onClose: () => formCloses.push('closed'), async onSubmit() { return true; },
+        }));
+      });
+      await act(async () => { findTestId(formRoot, 'ssh-host').props.onChangeText('changed.example'); });
+      await press(formRoot, findLabel(formRoot, 'Cancel'));
+      assert.equal(formEnvironment.alert.title, 'Discard changes?');
+      assert.equal(formEnvironment.alert.options.userInterfaceStyle, 'dark');
+      const discard = formEnvironment.alert.buttons.find(button => button.text === 'Discard');
+      await act(async () => { discard.onPress(); });
+      assert.deepEqual(formCloses, ['closed']);
+    } finally {
+      await act(async () => { formRoot.unmount(); });
+    }
+  });
 });
 
 test('an inactive fixture deep link follows UI foreground changes without reconnecting', async () => {

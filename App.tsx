@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   BackHandler,
   AccessibilityInfo,
@@ -26,6 +25,7 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
 import type { AgentStatus, AttachmentCorePhase, AttachmentOperationSnapshot, AttachmentSource, AttachmentTarget, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
+import { appAlert } from './app/dialogs';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
 import type { ConnectionSubmission } from './app/ConnectionForm';
@@ -1778,11 +1778,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         setControlMessage('Your host-key decision could not be sent. Connect again.');
       });
     };
-    Alert.alert('Trust this SSH host?', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\nSHA256 fingerprint:\n${connection.fingerprint}\n\nCompare this fingerprint with your server using another trusted channel. The approved key will be saved on this device.`, [
+    appAlert(preferences.theme, 'Trust this SSH host?', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\nSHA256 fingerprint:\n${connection.fingerprint}\n\nCompare this fingerprint with your server using another trusted channel. The approved key will be saved on this device.`, [
       { text: 'Cancel', style: 'cancel', onPress: () => respond(false) },
       { text: 'Trust and connect', onPress: () => respond(true) },
     ], { cancelable: false });
-  }, [connection, formVisible, hostPromptDeferred, smokeFixtureActive]);
+  }, [connection, formVisible, hostPromptDeferred, preferences.theme, smokeFixtureActive]);
 
   const recoveryPhaseActive = !recoveryInvalidated && control.recovery.phase !== 'none';
   const retainedWorkAvailable = !recoveryInvalidated && control.hasRetainedWork;
@@ -3654,7 +3654,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [cancelSwitcher]);
 
   const deleteProfile = useCallback((profile: ServerProfile) => {
-    Alert.alert('Remove saved server?', `${profile.name}\n\nThis removes the server and its saved credentials from this device. Your remote work stays on the server.`, [
+    appAlert(preferences.theme, 'Remove saved server?', `${profile.name}\n\nThis removes the server and its saved credentials from this device. Your remote work stays on the server.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Remove', style: 'destructive', onPress: () => {
         void runCommand(async () => {
@@ -3664,7 +3664,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         }, 'Could not remove this saved server. Please try again.');
       } },
     ]);
-  }, [profileId, runCommand]);
+  }, [preferences.theme, profileId, runCommand]);
 
   const openSettings = useCallback(() => {
     if (commandPending.current) return;
@@ -3718,7 +3718,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
 
   const closeWorkspace = useCallback((item: Workspace) => {
     if (!runtimeReady || commandPending.current) return;
-    Alert.alert('Close workspace?', `${item.name}\n\n${item.panes.length} terminals and their running processes will close. Unsaved work will be lost.`, [
+    appAlert(preferences.theme, 'Close workspace?', `${item.name}\n\n${item.panes.length} terminals and their running processes will close. Unsaved work will be lost.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
         void runCommand(() => MeetermTerminal.closeWorkspace(CONNECTION_ID, item.id), 'Could not close this workspace. Check your connection.').then(success => {
@@ -3726,12 +3726,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ]);
-  }, [backToWorkspaces, runCommand, runtimeReady, workspaceId]);
+  }, [backToWorkspaces, preferences.theme, runCommand, runtimeReady, workspaceId]);
 
   const workspaceOptions = useCallback((item: Workspace) => {
     if (!runtimeReady || commandPending.current) return;
-    itemActions(item.name, () => openName({ kind: 'renameWorkspace', workspace: item }), () => closeWorkspace(item), 'workspace');
-  }, [closeWorkspace, openName, runtimeReady]);
+    itemActions(preferences.theme, item.name, () => openName({ kind: 'renameWorkspace', workspace: item }), () => closeWorkspace(item), 'workspace');
+  }, [closeWorkspace, openName, preferences.theme, runtimeReady]);
 
   const createPane = useCallback(() => {
     if (!workspace || !runtimeReady) return;
@@ -3752,7 +3752,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     const pane = selectedPane;
     const consequence = workspace.panes.length === 1 ? 'This is the last terminal, so its workspace will also close.'
       : session.groupsSupported && groupPanes.length === 1 ? 'This is the last terminal in its group, so the group will also close.' : '';
-    Alert.alert('Close terminal?', `${pane.name || pane.id}\n\nThe running process will stop. Unsaved work will be lost.${consequence}`, [
+    appAlert(preferences.theme, 'Close terminal?', `${pane.name || pane.id}\n\nThe running process will stop. Unsaved work will be lost.${consequence}`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
         void runCommand(() => MeetermTerminal.closePane(CONNECTION_ID, pane.id), 'Could not close this terminal. Check your connection.').then(success => {
@@ -3764,7 +3764,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ]);
-  }, [backToWorkspaces, runCommand, runtimeReady, selectedPane, workspace, session.groupsSupported, groupPanes.length]);
+  }, [backToWorkspaces, preferences.theme, runCommand, runtimeReady, selectedPane, workspace, session.groupsSupported, groupPanes.length]);
 
   const chooseGroup = useCallback((item: TerminalGroup) => {
     if (!runtimeReady || commandPending.current) return;
@@ -3777,7 +3777,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (!runtimeReady || commandPending.current) return;
     const terminals = panes.filter(pane => pane.groupId === item.id);
     const last = session.groups.filter(group => group.workspaceId === item.workspaceId).length === 1;
-    Alert.alert('Close group?', `${item.name}\n\n${terminals.length} terminals and their running processes will close. Unsaved work will be lost.${last ? 'This is the last group, so its workspace will also close.' : ''}`, [
+    appAlert(preferences.theme, 'Close group?', `${item.name}\n\n${terminals.length} terminals and their running processes will close. Unsaved work will be lost.${last ? 'This is the last group, so its workspace will also close.' : ''}`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Close', style: 'destructive', onPress: () => {
         void runCommand(() => MeetermTerminal.closeGroup(CONNECTION_ID, item.id), 'Could not close this group. Check your connection.').then(success => {
@@ -3785,7 +3785,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ]);
-  }, [panes, runtimeReady, session.groups, runCommand, backToWorkspaces]);
+  }, [panes, preferences.theme, runtimeReady, session.groups, runCommand, backToWorkspaces]);
 
   const refreshTerminal = useCallback(() => {
     if (!runtimeReady || commandPending.current) return;
@@ -3811,7 +3811,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const reviewChangedHostKey = useCallback(() => {
     const changeId = keyChangeId(connection);
     if (!changeId || changeId === removedHostKeyId) return;
-    Alert.alert('Host key changed', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\n\nSaved fingerprint:\n${connection.knownFingerprint || '(unavailable)'}\n\nReceived fingerprint:\n${connection.fingerprint || '(unavailable)'}\n\nThe server may have been rebuilt, or someone may be impersonating it. Remove the saved key only after verifying the change with your administrator through another trusted channel.`, [
+    appAlert(preferences.theme, 'Host key changed', `${connection.host}:${connection.port}\n\nAlgorithm: ${connection.algorithm || '(unavailable)'}\n\nSaved fingerprint:\n${connection.knownFingerprint || '(unavailable)'}\n\nReceived fingerprint:\n${connection.fingerprint || '(unavailable)'}\n\nThe server may have been rebuilt, or someone may be impersonating it. Remove the saved key only after verifying the change with your administrator through another trusted channel.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Remove saved key', style: 'destructive', onPress: () => {
         void runCommand(() => MeetermTerminal.forgetHostKey(connection.host, connection.port), 'Could not remove the saved host key.').then(success => {
@@ -3822,7 +3822,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         });
       } },
     ], { cancelable: false });
-  }, [connection, removedHostKeyId, runCommand]);
+  }, [connection, preferences.theme, removedHostKeyId, runCommand]);
 
   const showRecoveryRail = Boolean(recoveryPhaseActive && retainedWorkAvailable && surfaceAvailable && recoveryCopy);
   const statusNotice = attempted && !ready && (!showRecoveryRail || canRetryRetainedFromList) ? <View style={[styles.notice, { backgroundColor: homeColors.surface }]}>
@@ -4027,9 +4027,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       onCreate={createTmuxSession}
       colors={homeColors}
     />
-    <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
+    <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} themePreference={preferences.theme} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
-    <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} onClose={() => setNameRequest(null)} onSave={saveName} />
+    <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} themePreference={preferences.theme} onClose={() => setNameRequest(null)} onSave={saveName} />
     <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'attachment' ? 'Attach image' : sheet === 'servers' ? 'Saved servers' : sheet === 'switcher' ? switcherTarget ? `Sessions on ${switcherSessionServerName}` : 'Switch server or session' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={sheet === 'switcher' ? closeSwitcher : sheet === 'attachment' ? closeAttachmentSheet : () => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : sheet === 'switcher' ? 'Cancel server or session switch' : sheet === 'attachment' ? 'Close attachment sheet' : 'Close sheet'} busy={sheet === 'switcher' ? switcherAccepting : commandBusy || recoveryPending.change} allowDismissWhileBusy={sheet === 'switcher' && !switcherAccepting} onDismiss={switcherDismissed} colors={homeColors}>
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
@@ -4104,7 +4104,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Pressable testID="recovery-change-server" accessibilityRole="button" accessibilityLabel="Choose another server" accessibilityState={{ disabled: recoveryPending.change }} disabled={recoveryPending.change} onPress={() => { void changeRecoveryDestination('server'); }} style={({ pressed }) => [styles.menuRow, { borderColor: homeColors.border }, pressed && { backgroundColor: homeColors.surface }]}>
           <Text style={[styles.rowTitle, { color: homeColors.text }]}>Choose another server</Text><Icon name="chevron" color={homeColors.muted} size={18} />
         </Pressable>
-      </ScrollView> : sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
+      </ScrollView> : sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} themePreference={preferences.theme} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
         <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
         <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={strongReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
@@ -4114,7 +4114,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             <View style={styles.groupNameRow}><AgentStatusIndicator status={item.agentStatus} live={strongReady} colors={homeColors} testID={`group-agent-status-${item.id}`} /><Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text></View>
             <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} {panes.filter(pane => pane.groupId === item.id).length === 1 ? 'terminal' : 'terminals'}{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
-          <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={() => itemActions(item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
+          <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={() => itemActions(preferences.theme, item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />
         </View>; })}
         {workspace ? <Button label="Create group" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createGroup', workspace })}>Create group</Button> : null}
       </ScrollView> : sheet === 'handoff' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>

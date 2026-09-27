@@ -166,7 +166,15 @@ preferences are applied to the Rust terminal registry, including hidden panes.
 App appearance and terminal theme are independent Settings rows. The saved
 `theme` controls app chrome, navigation, sheets, status and recovery surfaces;
 the saved `terminalTheme` controls only the native terminal surface's light or
-dark palette and the matching backgrounded placeholder. `terminalTheme` values
+dark palette and the matching backgrounded placeholder. App-owned alerts and
+item sheets (discard confirmations, host-key trust and change review, the
+destructive close/remove prompts, and the theme pickers) also follow the
+applied `theme`: on Android they are presented through the native
+`presentAppAlert` bridge, which themes only the dialog context and resolves
+the tapped button index — back/outside dismissal or a presentation failure
+invokes no callback, so destructive and trust actions stay fail-closed; on iOS
+they use the per-dialog `userInterfaceStyle`, with `system` inheriting the
+platform setting. Neither path changes global OS or app appearance. `terminalTheme` values
 of `light` or `dark` resolve directly, `system` follows the OS appearance, and
 saves that predate the key resolve as the historical dark surface. A theme
 change reaches the existing native view as an appearance prop update through

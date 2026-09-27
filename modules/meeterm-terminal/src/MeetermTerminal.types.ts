@@ -55,6 +55,26 @@ export type SavedCredential =
 /** Persisted appearance selection; `system` follows the OS appearance. */
 export type ThemePreference = 'system' | 'light' | 'dark';
 
+/** Button descriptor for the app-owned alert presenter. */
+export type AppAlertButton = {
+  text: string;
+  style?: 'default' | 'cancel' | 'destructive';
+};
+
+/**
+ * Android-only native dialog presenter input. `appearance` carries the
+ * currently applied App appearance preference: `system` inherits the
+ * platform configuration and fixed values theme only this dialog. Resolves
+ * the original button index on selection, or null on dismissal/failure.
+ */
+export type AppAlertOptions = {
+  appearance: ThemePreference;
+  title: string;
+  message?: string;
+  buttons: AppAlertButton[];
+  cancelable: boolean;
+};
+
 export type TerminalPreferences = {
   fontSize: number;
   /** App appearance: chrome, navigation, sheets, and dialogs. */

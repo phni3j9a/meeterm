@@ -96,6 +96,18 @@ final class MeetermSmokeUITests: XCTestCase {
     requiredEnvironment("MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE")
   }
 
+  private var themeMarkerPath: URL {
+    URL(fileURLWithPath: requiredEnvironment("MEETERM_IOS_THEME_MARKER_PATH"))
+  }
+
+  private var themeLightValue: String {
+    requiredEnvironment("MEETERM_IOS_THEME_LIGHT_VALUE")
+  }
+
+  private var themeDarkValue: String {
+    requiredEnvironment("MEETERM_IOS_THEME_DARK_VALUE")
+  }
+
   override func setUpWithError() throws {
     continueAfterFailure = false
     preCredentialObservationAllowed = false
@@ -121,6 +133,7 @@ final class MeetermSmokeUITests: XCTestCase {
     try? FileManager.default.removeItem(at: markerPath)
     if observesInitialConnectionEntry {
       try? FileManager.default.removeItem(at: transportLossMarkerPath)
+      try? FileManager.default.removeItem(at: themeMarkerPath)
       try? FileManager.default.removeItem(
         at: artifactDirectory.appendingPathComponent("ios-ui-transport-loss-observation.txt")
       )
@@ -222,6 +235,9 @@ final class MeetermSmokeUITests: XCTestCase {
       "theme-os-light-selection.png",
       "theme-os-pinned.png",
       "ssh-terminal-light.png",
+      "ssh-terminal-light-keyboard.png",
+      "ssh-terminal-dark.png",
+      "ssh-terminal-dark-keyboard.png",
       "polish-welcome.png",
       "polish-empty.png",
       "polish-search-empty.png",
@@ -1236,6 +1252,42 @@ final class MeetermSmokeUITests: XCTestCase {
     capture("ssh-terminal-light")
     record("ssh_theme_light_applied")
 
+    // Focus the repainted terminal so the keyboard and accessory appear in
+    // the applied light theme, then prove the same remote pane still answers
+    // a real native input round trip.
+    let lightTerminal = try terminalElement()
+    lightTerminal.tap()
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The light-themed terminal keyboard did not appear."
+    )
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    capture("ssh-terminal-light-keyboard")
+    guard let lightThemeCommand = themeMarkerCommand(
+      value: themeLightValue,
+      paneIdentifier: selectedPaneIdentifier,
+      shellPid: oldShellPid
+    ) else {
+      XCTFail("The selected fixture pane identity is unavailable for the post-light marker.")
+      return
+    }
+    enterTerminalCommand(lightThemeCommand, stage: "ssh_theme_light_input")
+    XCTAssertTrue(
+      waitForPaneMarkerLines(
+        at: themeMarkerPath,
+        values: [themeLightValue],
+        paneIdentifier: selectedPaneIdentifier,
+        timeout: 30
+      ),
+      "The post-light fixture marker did not reach the same pane exactly once."
+    )
+    record("ssh_theme_light_remote_ack")
+    button("Hide keyboard").tap()
+    XCTAssertTrue(
+      waitForDisappearance(app.keyboards.firstMatch, timeout: 10),
+      "The terminal keyboard stayed visible after the post-light marker."
+    )
+
     record("ssh_theme_dark")
     button("Terminal menu").tap()
     button("Terminal settings").tap()
@@ -1245,8 +1297,50 @@ final class MeetermSmokeUITests: XCTestCase {
     app.buttons["Dark"].tap()
     button("settings-submit").tap()
     XCTAssertTrue(waitForTerminal(), "Restoring the dark terminal dropped the live terminal.")
-    XCTAssertEqual(nativeTerminalHandleObservation(), themeHandleBefore)
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      themeHandleBefore,
+      "Restoring the dark terminal rebound the live native terminal."
+    )
+    XCTAssertTrue(
+      terminalTab(identifier: selectedPaneIdentifier).isSelected,
+      "Restoring the dark terminal moved the selected pane."
+    )
+    capture("ssh-terminal-dark")
     record("ssh_theme_dark_applied")
+
+    let darkTerminal = try terminalElement()
+    darkTerminal.tap()
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The restored dark terminal keyboard did not appear."
+    )
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    capture("ssh-terminal-dark-keyboard")
+    guard let darkThemeCommand = themeMarkerCommand(
+      value: themeDarkValue,
+      paneIdentifier: selectedPaneIdentifier,
+      shellPid: oldShellPid
+    ) else {
+      XCTFail("The selected fixture pane identity is unavailable for the post-dark marker.")
+      return
+    }
+    enterTerminalCommand(darkThemeCommand, stage: "ssh_theme_dark_input")
+    XCTAssertTrue(
+      waitForPaneMarkerLines(
+        at: themeMarkerPath,
+        values: [themeLightValue, themeDarkValue],
+        paneIdentifier: selectedPaneIdentifier,
+        timeout: 30
+      ),
+      "The post-dark fixture marker did not reach the same pane exactly once."
+    )
+    record("ssh_theme_dark_remote_ack")
+    button("Hide keyboard").tap()
+    XCTAssertTrue(
+      waitForDisappearance(app.keyboards.firstMatch, timeout: 10),
+      "The terminal keyboard stayed visible after the post-dark marker."
+    )
 
     record("ssh_disconnect")
     tapConnectionAction("Disconnect")
@@ -1640,7 +1734,32 @@ final class MeetermSmokeUITests: XCTestCase {
     return "printf '%s:%s:%s\\n' '\(value)' '\(pane.dropFirst())' \"$$\" \(redirect) \(shellQuote(transportLossMarkerPath.path))"
   }
 
-  private func waitForTransportLossMarkerLines(
+  private func themeMarkerCommand(
+    value: String,
+    paneIdentifier: String,
+    shellPid: String
+  ) -> String? {
+    let validValue = value.range(
+      of: #"^ios-ssh-theme-(light|dark)-[0-9a-f]{16}$"#,
+      options: .regularExpression
+    ) != nil
+    guard validValue,
+          !value.contains("'"), !value.contains("\n"), !value.contains("\r"),
+          !shellPid.isEmpty, shellPid.allSatisfy({ $0.isNumber }),
+          paneIdentifier.hasPrefix("terminal-tab-") else {
+      return nil
+    }
+    let pane = String(paneIdentifier.dropFirst("terminal-tab-".count))
+    guard pane.hasPrefix("%"), pane.dropFirst().allSatisfy({ $0.isNumber }) else {
+      return nil
+    }
+    // Gating on the captured shell PID makes the round trip fail remote-side
+    // if a theme change rebound the pane or replaced its shell.
+    return "test \"$$\" = '\(shellPid)' && printf '%s:%s:%s\\n' '\(value)' '\(pane.dropFirst())' \"$$\" >> \(shellQuote(themeMarkerPath.path))"
+  }
+
+  private func waitForPaneMarkerLines(
+    at path: URL,
     values: [String],
     paneIdentifier: String,
     timeout: TimeInterval
@@ -1649,7 +1768,7 @@ final class MeetermSmokeUITests: XCTestCase {
     guard !pane.isEmpty, pane.allSatisfy({ $0.isNumber }) else { return false }
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-      if let contents = try? String(contentsOf: transportLossMarkerPath, encoding: .utf8) {
+      if let contents = try? String(contentsOf: path, encoding: .utf8) {
         let lines = contents.split(whereSeparator: { $0.isNewline }).map(String.init)
         let valid = lines.count == values.count && zip(lines, values).allSatisfy { line, value in
           let fields = line.split(separator: ":", omittingEmptySubsequences: false)
@@ -1664,6 +1783,19 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return false
+  }
+
+  private func waitForTransportLossMarkerLines(
+    values: [String],
+    paneIdentifier: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    waitForPaneMarkerLines(
+      at: transportLossMarkerPath,
+      values: values,
+      paneIdentifier: paneIdentifier,
+      timeout: timeout
+    )
   }
 
   private func waitForTransportLossStale(

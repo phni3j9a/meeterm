@@ -294,7 +294,7 @@ class DiagnosticSourceContractTests(unittest.TestCase):
         self.assertIn("accessibilityLabel={`Browse sessions on ${profile.name}`}", app_source)
         self.assertIn("switcherTarget ? 'session' : 'runtime'", app_source)
         self.assertIn("const accessibilityLabel = `Workspace ${workspace.name}", app_source)
-        self.assertIn("Alert.alert('Trust this SSH host?'", app_source)
+        self.assertIn("appAlert(preferences.theme, 'Trust this SSH host?'", app_source)
         self.assertIn("`${connection.host}:${connection.port}", app_source)
         self.assertIn("'Trust and connect'", app_source)
         self.assertIn('accessibilityLabel={`Connect saved server ${item.name}`}', profile_list_source)
@@ -702,6 +702,177 @@ class TransportLossContractTests(unittest.TestCase):
             with self.assertRaises(smoke.SmokeFailure) as error:
                 smoke.require_transport_loss_stage_sequence(root)
             self.assertEqual(error.exception.reason, "stage_sequence_invalid")
+
+
+class ThemeMarkerContractTests(unittest.TestCase):
+    LIGHT_VALUE = "ios-ssh-theme-light-0123456789abcdef"
+    DARK_VALUE = "ios-ssh-theme-dark-0123456789abcdef"
+
+    def test_ssh_theme_block_round_trips_through_same_pane_after_each_flip(self):
+        source = IOS_UI_TEST_SOURCE.read_text(encoding="utf-8")
+        light = source.index('record("ssh_theme_light_applied")')
+        light_ack = source.index('record("ssh_theme_light_remote_ack")', light)
+        dark = source.index('record("ssh_theme_dark_applied")', light_ack)
+        dark_ack = source.index('record("ssh_theme_dark_remote_ack")', dark)
+        disconnect = source.index('record("ssh_disconnect")', dark_ack)
+
+        light_segment = source[light:light_ack]
+        self.assertIn("enterTerminalCommand", light_segment)
+        self.assertIn("waitForPaneMarkerLines", light_segment)
+        self.assertIn('capture("ssh-terminal-light-keyboard")', light_segment)
+        self.assertIn("themeLightValue", light_segment)
+
+        dark_segment = source[dark:dark_ack]
+        self.assertIn("enterTerminalCommand", dark_segment)
+        self.assertIn("waitForPaneMarkerLines", dark_segment)
+        self.assertIn("themeLightValue, themeDarkValue", dark_segment)
+        self.assertIn('capture("ssh-terminal-dark-keyboard")', dark_segment)
+
+        theme_block = source[source.index('record("ssh_theme_light")'):disconnect]
+        self.assertEqual(
+            theme_block.count("terminalTab(identifier: selectedPaneIdentifier).isSelected"), 2
+        )
+        self.assertIn("nativeTerminalHandleObservation()", theme_block)
+
+        command_helper = source[
+            source.index("private func themeMarkerCommand"):source.index("private func waitForPaneMarkerLines")
+        ]
+        self.assertIn('\\"$$\\"', command_helper)
+        self.assertIn("shellPid", command_helper)
+        self.assertIn("themeMarkerPath", command_helper)
+
+        driver = (Path(__file__).with_name("ios-smoke.py")).read_text(encoding="utf-8")
+        self.assertIn("validate_theme_markers", driver)
+        self.assertIn("require_theme_stage_sequence", driver)
+        for name in (
+            "MEETERM_IOS_THEME_MARKER_PATH",
+            "MEETERM_IOS_THEME_LIGHT_VALUE",
+            "MEETERM_IOS_THEME_DARK_VALUE",
+        ):
+            self.assertIn(name, smoke.SSH_TEST_ENVIRONMENT_NAMES)
+            self.assertIn(name, smoke.RUNTIME_ENVIRONMENT_NAMES)
+
+    def test_theme_stage_validation_requires_each_stage_once_and_in_order(self):
+        expected = (
+            "ssh_theme_light",
+            "ssh_theme_light_applied",
+            "ssh_theme_light_remote_ack",
+            "ssh_theme_dark",
+            "ssh_theme_dark_applied",
+            "ssh_theme_dark_remote_ack",
+        )
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            stages = root / "ios-ui-stages.txt"
+            stages.write_text("ssh_complete\n" + "\n".join(expected) + "\n", encoding="utf-8")
+            smoke.require_theme_stage_sequence(root)
+            stages.write_text("\n".join(reversed(expected)) + "\n", encoding="utf-8")
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.require_theme_stage_sequence(root)
+            self.assertEqual(error.exception.reason, "stage_sequence_invalid")
+
+    def test_theme_marker_validation_writes_only_fixed_sanitized_artifact(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            socket = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            marker = root / "theme-marker"
+            marker.write_text(
+                f"{self.LIGHT_VALUE}:12:1201\n{self.DARK_VALUE}:12:1201\n",
+                encoding="utf-8",
+            )
+            panes = [("%12", 1201), ("%13", 1202), ("%14", 1203)]
+            with (
+                mock.patch.object(smoke, "fixture_socket", return_value=socket),
+                mock.patch.object(smoke, "fixture_pane_processes", return_value=panes),
+                mock.patch.object(
+                    smoke,
+                    "run_tmux",
+                    return_value=subprocess.CompletedProcess([], 0, "clean\n", ""),
+                ),
+            ):
+                smoke.validate_theme_markers(
+                    artifact_dir,
+                    socket,
+                    marker,
+                    self.LIGHT_VALUE,
+                    self.DARK_VALUE,
+                )
+
+            validation = (artifact_dir / smoke.THEME_MARKER_VALIDATION_NAME).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("theme_markers=passed\n", validation)
+            self.assertIn("same_pane=yes\n", validation)
+            self.assertIn("same_pane_pid=yes\n", validation)
+            self.assertIn("other_panes_clean=yes\n", validation)
+            self.assertNotIn(self.LIGHT_VALUE, validation)
+            self.assertNotIn(self.DARK_VALUE, validation)
+            self.assertNotIn(str(marker), validation)
+            self.assertNotIn("1201", validation)
+            self.assertNotIn("%12", validation)
+
+    def test_theme_marker_validation_rejects_wrong_order_and_other_pane(self):
+        with tempfile.TemporaryDirectory(prefix="meeterm-ssh-fixture-") as directory:
+            root = Path(directory)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            socket = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            marker = root / "theme-marker"
+            panes = [("%12", 1201), ("%13", 1202), ("%14", 1203)]
+            with mock.patch.object(smoke, "fixture_socket", return_value=socket):
+                marker.write_text(
+                    f"{self.DARK_VALUE}:12:1201\n{self.LIGHT_VALUE}:12:1201\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(smoke.SmokeFailure) as reordered:
+                    smoke.validate_theme_markers(
+                        artifact_dir,
+                        socket,
+                        marker,
+                        self.LIGHT_VALUE,
+                        self.DARK_VALUE,
+                    )
+                self.assertEqual(reordered.exception.reason, "marker_sequence_invalid")
+
+                marker.write_text(
+                    f"{self.LIGHT_VALUE}:12:1201\n{self.DARK_VALUE}:12:1202\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(smoke.SmokeFailure) as changed:
+                    smoke.validate_theme_markers(
+                        artifact_dir,
+                        socket,
+                        marker,
+                        self.LIGHT_VALUE,
+                        self.DARK_VALUE,
+                    )
+                self.assertEqual(changed.exception.reason, "pane_identity_changed")
+
+                marker.write_text(
+                    f"{self.LIGHT_VALUE}:12:1201\n{self.DARK_VALUE}:12:1201\n",
+                    encoding="utf-8",
+                )
+                with (
+                    mock.patch.object(smoke, "fixture_pane_processes", return_value=panes),
+                    mock.patch.object(
+                        smoke,
+                        "run_tmux",
+                        return_value=subprocess.CompletedProcess(
+                            [], 0, f"{self.LIGHT_VALUE}\n", ""
+                        ),
+                    ),
+                ):
+                    with self.assertRaises(smoke.SmokeFailure) as other_pane:
+                        smoke.validate_theme_markers(
+                            artifact_dir,
+                            socket,
+                            marker,
+                            self.LIGHT_VALUE,
+                            self.DARK_VALUE,
+                        )
+                self.assertEqual(other_pane.exception.reason, "marker_in_other_pane")
 
 
 class SmokeLogProducerTests(unittest.TestCase):

@@ -68,6 +68,7 @@ rm -f \
   "${artifact_dir}/ios-ui-names-validation.txt" \
   "${artifact_dir}/ios-names-validation.txt" \
   "${artifact_dir}/ios-appearance-validation.txt" \
+  "${artifact_dir}/ios-theme-marker-validation.txt" \
   "${artifact_dir}/theme-app-light-terminal-light.png" \
   "${artifact_dir}/theme-app-light-terminal-dark.png" \
   "${artifact_dir}/theme-app-light-terminal-system.png" \
@@ -83,6 +84,9 @@ rm -f \
   "${artifact_dir}/theme-transitions.mp4" \
   "${artifact_dir}/theme-recording.txt" \
   "${artifact_dir}/ssh-terminal-light.png" \
+  "${artifact_dir}/ssh-terminal-light-keyboard.png" \
+  "${artifact_dir}/ssh-terminal-dark.png" \
+  "${artifact_dir}/ssh-terminal-dark-keyboard.png" \
   "${artifact_dir}/terminal.png" \
   "${artifact_dir}/standard-home.png" \
   "${artifact_dir}/standard-servers.png" \

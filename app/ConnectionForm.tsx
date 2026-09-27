@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -19,8 +18,9 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import type { SavedCredential, ServerProfile } from '../modules/meeterm-terminal';
+import { appAlert } from './dialogs';
 import { DARK, MONO, useReducedMotion } from './ui';
-import type { Palette } from './ui';
+import type { Palette, ThemePreference } from './ui';
 
 type AuthMethod = 'publicKey' | 'password';
 type FormErrors = Partial<Record<'name' | 'host' | 'port' | 'username' | 'privateKey' | 'password', string>>;
@@ -55,7 +55,7 @@ function Field({ label, error, optional, action, children, colors }: {
   </View>;
 }
 
-export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialProfile, mode = 'connect', colors }: {
+export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialProfile, mode = 'connect', colors, themePreference }: {
   visible: boolean;
   onClose: () => void;
   onDismiss?: () => void;
@@ -63,6 +63,7 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   initialProfile?: ServerProfile;
   mode?: 'connect' | 'save';
   colors: Palette;
+  themePreference: ThemePreference;
 }) {
   const reducedMotion = useReducedMotion();
   const [name, setName] = useState('');
@@ -165,11 +166,11 @@ export function ConnectionForm({ visible, onClose, onSubmit, onDismiss, initialP
   const close = useCallback(() => {
     if (submitting.current) return;
     if (!dirty) { discard(); return; }
-    Alert.alert('Discard changes?', 'Your changes have not been saved.', [
+    appAlert(themePreference, 'Discard changes?', 'Your changes have not been saved.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: discard },
     ]);
-  }, [dirty, discard]);
+  }, [dirty, discard, themePreference]);
 
   const changeAuthMethod = useCallback((next: AuthMethod) => {
     if (next === authMethod) return;

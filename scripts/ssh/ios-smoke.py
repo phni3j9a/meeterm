@@ -125,6 +125,9 @@ RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH",
     "MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE",
     "MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE",
+    "MEETERM_IOS_THEME_MARKER_PATH",
+    "MEETERM_IOS_THEME_LIGHT_VALUE",
+    "MEETERM_IOS_THEME_DARK_VALUE",
 )
 COMMON_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_ARTIFACT_DIR",
@@ -162,11 +165,15 @@ SSH_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH",
     "MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE",
     "MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE",
+    "MEETERM_IOS_THEME_MARKER_PATH",
+    "MEETERM_IOS_THEME_LIGHT_VALUE",
+    "MEETERM_IOS_THEME_DARK_VALUE",
 )
 
 CONNECTION_FAILURE_DIAGNOSTICS_NAME = "ios-ui-connection-diagnostics.txt"
 INPUT_DIAGNOSTICS_NAME = "ios-ssh-input-diagnostics.json"
 TRANSPORT_LOSS_VALIDATION_NAME = "ios-transport-loss-validation.txt"
+THEME_MARKER_VALIDATION_NAME = "ios-theme-marker-validation.txt"
 SSH_PROBE_NONCE = "meeterm-ios-ssh-probe-v1"
 FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -503,6 +510,96 @@ def require_transport_loss_stage_sequence(artifact_dir: Path) -> None:
         positions.append(stages.index(stage))
     if positions != sorted(positions):
         raise SmokeFailure("transport_loss_stages", "stage_sequence_invalid")
+
+
+def require_theme_stage_sequence(artifact_dir: Path) -> None:
+    expected = (
+        "ssh_theme_light",
+        "ssh_theme_light_applied",
+        "ssh_theme_light_remote_ack",
+        "ssh_theme_dark",
+        "ssh_theme_dark_applied",
+        "ssh_theme_dark_remote_ack",
+    )
+    try:
+        stages = (artifact_dir / "ios-ui-stages.txt").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("theme_stages", "stage_file_unavailable") from error
+    positions: list[int] = []
+    for stage in expected:
+        if stages.count(stage) != 1:
+            raise SmokeFailure("theme_stages", "stage_sequence_invalid")
+        positions.append(stages.index(stage))
+    if positions != sorted(positions):
+        raise SmokeFailure("theme_stages", "stage_sequence_invalid")
+
+
+def validate_theme_markers(
+    artifact_dir: Path,
+    socket_path: Path,
+    marker_path: Path,
+    light_value: str,
+    dark_value: str,
+) -> None:
+    """Validate the post-change theme marker pair against one live tmux pane.
+
+    A separate marker path keeps the transport-loss two-line contract intact.
+    Marker text is used only in memory; the artifact records fixed booleans so
+    pane ids, shell pids, and terminal output never enter the evidence bundle.
+    """
+
+    if socket_path != fixture_socket():
+        raise SmokeFailure("theme_marker", "socket_path_invalid")
+    if not re.fullmatch(r"ios-ssh-theme-light-[0-9a-f]{16}", light_value):
+        raise SmokeFailure("theme_marker", "light_marker_invalid")
+    if not re.fullmatch(r"ios-ssh-theme-dark-[0-9a-f]{16}", dark_value):
+        raise SmokeFailure("theme_marker", "dark_marker_invalid")
+    if not marker_path.is_file():
+        raise SmokeFailure("theme_marker", "marker_unavailable")
+    try:
+        lines = marker_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("theme_marker", "marker_unavailable") from error
+    if len(lines) != 2:
+        raise SmokeFailure("theme_marker", "marker_sequence_invalid")
+    pair_pattern = re.compile(
+        r"(?P<value>ios-ssh-theme-(?:light|dark)-[0-9a-f]{16}):(?P<pane>[0-9]+):(?P<pid>[0-9]+)\Z"
+    )
+    matches = [pair_pattern.fullmatch(line) for line in lines]
+    if any(match is None for match in matches):
+        raise SmokeFailure("theme_marker", "marker_sequence_invalid")
+    assert matches[0] is not None and matches[1] is not None
+    light_match, dark_match = matches
+    if light_match.group("value") != light_value or dark_match.group("value") != dark_value:
+        raise SmokeFailure("theme_marker", "marker_sequence_invalid")
+    if light_match.group("pane") != dark_match.group("pane") or light_match.group("pid") != dark_match.group("pid"):
+        raise SmokeFailure("theme_marker", "pane_identity_changed")
+    expected_pane = f"%{light_match.group('pane')}"
+    expected_pid = int(light_match.group("pid"))
+    panes = fixture_pane_processes(socket_path, "theme_marker")
+    if (expected_pane, expected_pid) not in panes:
+        raise SmokeFailure("theme_marker", "pane_identity_missing")
+    light_line = lines[0]
+    dark_line = lines[1]
+    for pane_id, _ in panes:
+        if pane_id == expected_pane:
+            continue
+        capture = run_tmux(
+            socket_path,
+            ("capture-pane", "-p", "-J", "-S", "-30", "-t", pane_id),
+            "theme_marker",
+        ).stdout
+        if light_value in capture or dark_value in capture or light_line in capture or dark_line in capture:
+            raise SmokeFailure("theme_marker", "marker_in_other_pane")
+    write_text(
+        artifact_dir / THEME_MARKER_VALIDATION_NAME,
+        "theme_markers=passed\n"
+        "light_marker_exactly_once=yes\n"
+        "dark_marker_exactly_once=yes\n"
+        "same_pane=yes\n"
+        "same_pane_pid=yes\n"
+        "other_panes_clean=yes\n",
+    )
 
 
 def write_short_ssh_input_diagnostics(
@@ -1891,6 +1988,7 @@ def main() -> int:
     socket_path: Path | None = None
     marker_path: Path | None = None
     transport_loss_marker_path: Path | None = None
+    theme_marker_path: Path | None = None
     validation_filename = {
         "full": "ios-validation.txt",
         "standard": "ios-standard-validation.txt",
@@ -1947,6 +2045,18 @@ def main() -> int:
                     )
                     os.environ["MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE"] = (
                         f"ios-ssh-loss-post-{secrets.token_hex(8)}"
+                    )
+                    theme_marker_path = marker_root / (
+                        f"meeterm-ios-theme-{os.getpid()}-{secrets.token_hex(6)}"
+                    )
+                    os.environ["MEETERM_IOS_THEME_MARKER_PATH"] = str(
+                        theme_marker_path
+                    )
+                    os.environ["MEETERM_IOS_THEME_LIGHT_VALUE"] = (
+                        f"ios-ssh-theme-light-{secrets.token_hex(8)}"
+                    )
+                    os.environ["MEETERM_IOS_THEME_DARK_VALUE"] = (
+                        f"ios-ssh-theme-dark-{secrets.token_hex(8)}"
                     )
                 if suite == "full":
                     handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
@@ -2048,6 +2158,17 @@ def main() -> int:
                     transport_loss_marker_path,
                     required("MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE"),
                     required("MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE"),
+                )
+                stage = "theme_marker"
+                if theme_marker_path is None:
+                    raise SmokeFailure(stage, "marker_unavailable")
+                require_theme_stage_sequence(args.artifact_dir)
+                validate_theme_markers(
+                    args.artifact_dir,
+                    socket_path,
+                    theme_marker_path,
+                    required("MEETERM_IOS_THEME_LIGHT_VALUE"),
+                    required("MEETERM_IOS_THEME_DARK_VALUE"),
                 )
 
                 write_text(
@@ -2240,6 +2361,13 @@ def main() -> int:
         if transport_loss_marker_path is not None:
             try:
                 transport_loss_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if theme_marker_path is not None:
+            try:
+                theme_marker_path.unlink()
             except FileNotFoundError:
                 pass
             except OSError:

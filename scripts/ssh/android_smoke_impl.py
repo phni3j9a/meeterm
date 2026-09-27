@@ -86,6 +86,7 @@ TERMINAL_SURFACE_ACCESSIBILITY_LABEL = "Terminal"
 DAILY_GLYPH_STRESS_COUNT = 1024
 DAILY_GLYPH_STRESS_COLUMNS = 16
 TERMINAL_THEME_PATTERN = re.compile(r"MEETERM_SMOKE_THEME (light|dark)")
+DIALOG_EVENT_PATTERN = re.compile(r"MEETERM_SMOKE_DIALOG \S.*")
 GLYPH_ATLAS_RESET_PATTERN = re.compile(
     r"\bMEETERM_GLYPH_ATLAS_RESET count=[1-9][0-9]*\b"
 )
@@ -3263,6 +3264,36 @@ def wait_for_terminal_theme(
     raise SmokeFailure(stage, "resolved_theme_mismatch")
 
 
+def dialog_events(device: AndroidDevice, stage: str) -> list[str]:
+    """Return the ordered app-alert markers logged by the native presenter."""
+
+    output = device.run(
+        ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalDialog:I"),
+        stage,
+        timeout=20.0,
+    ).decode("utf-8", errors="replace")
+    return DIALOG_EVENT_PATTERN.findall(output)
+
+
+def wait_for_dialog_event(
+    device: AndroidDevice,
+    expected: str,
+    baseline: int,
+    stage: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> int:
+    """Wait for a new dialog marker whose tail contains the expected text."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events = dialog_events(device, stage)
+        if len(events) > baseline and events[-1].endswith(expected):
+            return len(events)
+        time.sleep(0.3)
+    raise SmokeFailure(stage, "dialog_event_mismatch")
+
+
 def set_night_mode(device: AndroidDevice, enabled: bool, stage: str) -> None:
     """Toggle the emulator's real OS dark scheme through the system service."""
 
@@ -4553,6 +4584,99 @@ def leave_workspace_terminal(
     )
 
 
+def tap_app_dialog_button(
+    device: AndroidDevice,
+    stage: str,
+    label: str,
+) -> None:
+    """Tap one platform alert button; captions are uppercased natively."""
+
+    node = wait_for_node(
+        device,
+        stage,
+        text=label.upper(),
+        class_fragment="Button",
+    )
+    tap_node(device, node, stage)
+
+
+def exercise_app_alert_fixed(
+    device: AndroidDevice,
+    artifact_dir: Path,
+    completed: list[str],
+    stage: str,
+    baseline: int,
+    *,
+    appearance: str,
+    screenshot: str,
+) -> int:
+    """Exercise the Settings pickers and discard confirmation once.
+
+    The Settings form must already be open. Every app alert must resolve the
+    applied App appearance — never the OS scheme and never an edited draft —
+    and each settled alert reports how it ended: a button returns its
+    original JS index, while Back dismissal returns `null`. The applied
+    terminal theme is `system` here, so picking DARK is what leaves the
+    form dirty for the discard leg. The form is left closed.
+    """
+
+    presented = f"presented appearance={appearance} resolved={appearance}"
+    tap_action(device, stage, ("Appearance",))
+    baseline = wait_for_dialog_event(device, presented, baseline, stage)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / screenshot,
+        completed,
+        stage,
+    )
+    # Back dismissal resolves `null`; it must never surface as an index.
+    device.input_keyevent(KEYCODE_BACK, stage)
+    baseline = wait_for_dialog_event(device, "result=dismissed", baseline, stage)
+    wait_for_text_input(device, stage, "Terminal font size")
+
+    # Picking a different draft Appearance must not retheme the next chooser:
+    # the Terminal theme dialog still resolves the applied App appearance.
+    draft = "light" if appearance == "dark" else "dark"
+    tap_action(device, stage, ("Appearance",))
+    baseline = wait_for_dialog_event(device, presented, baseline, stage)
+    tap_app_dialog_button(device, stage, draft)
+    baseline = wait_for_dialog_event(
+        device,
+        f"result=selected index={1 if draft == 'light' else 2}",
+        baseline,
+        stage,
+    )
+    tap_action(device, stage, ("Terminal theme",))
+    baseline = wait_for_dialog_event(device, presented, baseline, stage)
+    tap_app_dialog_button(device, stage, "dark")
+    baseline = wait_for_dialog_event(
+        device, "result=selected index=2", baseline, stage,
+    )
+
+    # The discard confirmation resolves under the same applied appearance.
+    # KEEP EDITING retains the draft; DISCARD drops it and closes the form.
+    tap_action(device, stage, ("Cancel",))
+    baseline = wait_for_dialog_event(device, presented, baseline, stage)
+    capture_optional_screenshot(
+        device,
+        artifact_dir / f"daily-theme-discard-{appearance}.png",
+        completed,
+        stage,
+    )
+    tap_app_dialog_button(device, stage, "keep editing")
+    baseline = wait_for_dialog_event(
+        device, "result=selected index=0", baseline, stage,
+    )
+    wait_for_text_input(device, stage, "Terminal font size")
+    tap_action(device, stage, ("Cancel",))
+    baseline = wait_for_dialog_event(device, presented, baseline, stage)
+    tap_app_dialog_button(device, stage, "discard")
+    baseline = wait_for_dialog_event(
+        device, "result=selected index=1", baseline, stage,
+    )
+    return baseline
+
+
 def exercise_terminal_themes(
     device: AndroidDevice,
     workspace_label: str,
@@ -4676,9 +4800,109 @@ def exercise_terminal_theme_os_scheme(
     leave_workspace_terminal(device, stage, workspace_label)
     completed.append("daily_theme_os_independence")
 
+    # App-scoped alerts resolve their own scheme: a fixed App appearance must
+    # win over the real OS scheme and over an unsaved draft, while `system`
+    # keeps inheriting the platform configuration. The native presenter
+    # reports the requested appearance, the scheme its dialog context
+    # actually resolved, and how each alert settled.
+    stage = "daily_theme_dialog"
+    dialog_baseline = len(dialog_events(device, stage))
+
+    # Fixed dark App under a light OS scheme: picker and discard dialogs.
+    set_night_mode(device, False, stage)
+    set_theme_preferences(device, stage, "dark", "system")
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_text_input(device, stage, "Terminal font size")
+    dialog_baseline = exercise_app_alert_fixed(
+        device,
+        artifact_dir,
+        completed,
+        stage,
+        dialog_baseline,
+        appearance="dark",
+        screenshot="daily-theme-dialog-app-dark-os-light.png",
+    )
+    wait_for_node(
+        device, stage, content_description="Terminal settings",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    # Discard really dropped the draft: the persisted rows are unchanged.
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_text_input(device, stage, "Terminal font size")
+    wait_for_node(device, stage, text="Dark")
+    wait_for_node(device, stage, text="System")
+    tap_action(device, stage, ("Cancel",))
+    wait_for_node(
+        device, stage, content_description="Terminal settings",
+        timeout=RECONNECT_TIMEOUT,
+    )
+
+    # Fixed light App while the real OS scheme flips dark behind it and the
+    # `system` terminal tracks that flip: the dialog still resolves light.
+    set_theme_preferences(device, stage, "light", "system")
+    theme_baseline = len(terminal_theme_events(device, stage))
+    open_workspace_terminal(device, stage, workspace_label)
+    theme_baseline = wait_for_terminal_theme(device, "light", theme_baseline, stage)
+    set_night_mode(device, True, stage)
+    theme_baseline = wait_for_terminal_theme(device, "dark", theme_baseline, stage)
+    if device.process_id(stage) != process_before:
+        raise SmokeFailure(stage, "process_replaced_on_scheme_change")
+    tap_action(device, stage, TERMINAL_MENU_LABELS)
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_text_input(device, stage, "Terminal font size")
+    dialog_baseline = exercise_app_alert_fixed(
+        device,
+        artifact_dir,
+        completed,
+        stage,
+        dialog_baseline,
+        appearance="light",
+        screenshot="daily-theme-dialog-app-light-os-dark.png",
+    )
+    leave_workspace_terminal(device, stage, workspace_label)
+    completed.append("daily_theme_dialog_fixed")
+
+    # `system` App appearance inherits the live OS scheme on each present.
+    set_theme_preferences(device, stage, "system", "dark")
+    tap_action(device, stage, ("Terminal settings",))
+    wait_for_text_input(device, stage, "Terminal font size")
+    tap_action(device, stage, ("Appearance",))
+    dialog_baseline = wait_for_dialog_event(
+        device, "presented appearance=system resolved=dark",
+        dialog_baseline, stage,
+    )
+    capture_optional_screenshot(
+        device,
+        artifact_dir / "daily-theme-dialog-system-os-dark.png",
+        completed,
+        stage,
+    )
+    tap_app_dialog_button(device, stage, "system")
+    dialog_baseline = wait_for_dialog_event(
+        device, "result=selected index=0", dialog_baseline, stage,
+    )
+    set_night_mode(device, False, stage)
+    tap_action(device, stage, ("Appearance",))
+    dialog_baseline = wait_for_dialog_event(
+        device, "presented appearance=system resolved=light",
+        dialog_baseline, stage,
+    )
+    device.input_keyevent(KEYCODE_BACK, stage)
+    dialog_baseline = wait_for_dialog_event(
+        device, "result=dismissed", dialog_baseline, stage,
+    )
+    wait_for_text_input(device, stage, "Terminal font size")
+    tap_action(device, stage, ("Cancel",))
+    wait_for_node(
+        device, stage, content_description="Terminal settings",
+        timeout=RECONNECT_TIMEOUT,
+    )
+    completed.append("daily_theme_dialog_system")
+
     # Restore the persisted pair the remaining daily legs expect: a light app
     # chrome around the default dark terminal under a light OS scheme.
     stage = "daily_theme_restore"
+    set_night_mode(device, False, stage)
     set_theme_preferences(device, stage, "light", "dark")
     completed.append("daily_theme_restored")
 

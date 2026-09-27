@@ -7,11 +7,16 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
 
 - JS 側の実装は checkpoint `20ebcb9c48166269a5d57d859bbb6881218ecaba` に保存されています
   (Main が JS 所有 path だけを commit)。下の JS source 結果はこの exact source のものです。
-- Android/iOS/Rust native 側は peer Worker report 到着済みで、実装と host 上の
-  source 検証は完了しています。ただし Swift はこの host で未 compile(初 compile は
-  cloud `standard`)、Android Emulator / iOS Simulator の受入と Main の
-  画像・遷移レビューは未実施です。review fix(getter-only UIKit API と
-  fresh-file legacy test fixture)が進行中のため、下の件数は最終確定ではありません。
+  この checkpoint の hosted CI 実行は Rust Unit tests で失敗しました(無変更の
+  `network_change_wakes_foreground_backoff…` timeout、232 pass / 1 fail)。通過扱いには
+  しません。
+- その後の native/test 変更を含む checkpoint `a3695600ab9b6a1223f4d220c9665debfe2f6d03`
+  の hosted CI は pass しました: JavaScript/Expo、Rust fmt/unit/OpenSSH/clippy/real Herdr
+  integration、iOS fast typecheck(`TerminalInputView` と UI/input XCTest の Swift
+  preflight を実際に compile)、generated Android native build + module tests。この host
+  には Swift compiler がないため手元では未 compile ですが、初 compile は済んでいます。
+  ただし fast typecheck は generated iOS app build・Simulator runtime・Main の
+  画像・遷移レビューの受入ではなく、それらは依然 pending です。
 
 ## 実装した境界
 
@@ -39,6 +44,19 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
   sheets/dialogs は App palette。実 Terminal surface とその unmount 中の placeholder
   (`terminal-placeholder`) は解決済み Terminal theme に従い、`TERMINAL_SURFACE` が
   native surface と同じ Light `#FBF7EF` / Dark `#24211D` を使います。
+- アプリ所有 dialog (AC36): Alert/item action/discard/host-key/close/remove の
+  各確認は app 内の `appAlert` seam (`app/dialogs.ts`) を通り、適用済み App
+  appearance を引数として渡します。Android は native `presentAppAlert(options)`
+  (既存 native module 内の scoped `AlertDialog` 実装) に
+  title/message/buttons/cancelable/appearance を委譲し、返却された元 index を
+  一度だけ元 callback へ dispatch します。dismissal・範囲外 index・提示失敗は
+  callback を呼ばず fail-closed のため、host trust や destructive 操作を
+  承認しません。最大3ボタンの Android Alert 意味論と既存ラベル・文言・
+  callback 順序を維持します。iOS は既存 RN `Alert`/`ActionSheetIOS` に
+  per-dialog `userInterfaceStyle` を渡し、`system` は `unspecified` (sheet は
+  省略)で OS 継承します。Activity/window/AppCompat の global appearance や
+  `useColorScheme` には触れず、queue/registry/persisted dialog state は
+  追加していません。
 - Terminal 境界: theme 更新は既存 native `theme` prop → `setTheme` →
   `MeetermNative`/`MeetermCore.setTheme` による in-place 更新で、view の key・
   mount 条件・SSH 接続・registry・scrollback・選択・retained/recovery 状態を
@@ -61,14 +79,17 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
 
 | 範囲 | 結果 |
 | --- | --- |
-| JS (exact source `20ebcb9`) | `npm run typecheck` rc=0、`npm run test:app` 114/114 pass。migration seam(未保存→dark)、App/Terminal 4組合せ、両軸 system の OS scheme 追従と固定側の不変、独立 draft/save payload、a11y 行、preview、実 App の TerminalView props/chrome、Settings 開閉の既存1回だけの mount、保存による接続系 native call なし、WorkspaceNavigation の評価済み screen options |
+| JS (exact source `20ebcb9` + 未commit の dialog seam) | `npm run typecheck` rc=0、`npm run test:app` 130/130 pass。migration seam(未保存→dark)、App/Terminal 4組合せ、両軸 system の OS scheme 追従と固定側の不変、独立 draft/save payload、a11y 行、preview、実 App の TerminalView props/chrome、Settings 開閉の既存1回だけの mount、保存による接続系 native call なし、WorkspaceNavigation の評価済み screen options に加え、アプリ所有 dialog の適用済み appearance 引数(iOS per-dialog style・Android presenter payload)、元 index 一度だけの dispatch、dismissal/範囲外/失敗の fail-closed、draft ではなく適用値を使う picker、実 App 上の host-key/close/remove/discard/group 呼出経路を確認 |
 | Rust core | `cargo test --locked` 236 pass・0 fail(新規 theme 3件を含む)、`cargo fmt --check` / `cargo clippy --locked --all-targets -- -D warnings` clean。theme が indexed/truecolor/OSC override を維持し、selection 色が theme に従い、Dark→Light→Dark 変更で Term identity・scrollback・display offset・grid・selection が保持されることを確認 |
-| Android JVM | `./gradlew :meeterm-terminal:testDebugUnitTest`(pinned NDK install 済み) BUILD SUCCESSFUL・68 tests pass。legacy 4キー JSON → dark 補完と present-invalid 拒否を含む |
-| Python drivers | `python3 -m unittest discover -s scripts/ssh` 237 OK(Android driver 126 / iOS 81)、`scripts/herdr` 6 OK、`scripts/ci` の関連 Python green |
+| Android JVM | `./gradlew :meeterm-terminal:testDebugUnitTest --offline` BUILD SUCCESSFUL・74 tests pass。legacy 4キー JSON、present-invalid 拒否、dialog の元 button index・一度だけの完了・取消と失敗の拒否・scoped night-mode 選択を含む |
+| Python drivers | `python3 -m unittest discover -s scripts/ssh` 253 OK、`scripts/herdr` 6 OK、`scripts/ci` 47 OK (1 skipped)。post-theme SSH marker と Android dialog driver の回帰を含む |
 | diff hygiene | `git diff --check` clean |
 
 これらは source 上の unit/harness 検証であり、モバイル受入の証拠ではありません。
-native 側件数は review fix 前の実測値で、最終確定は peer の最終 report に従います。
+ローカルの Node v22.23.2 / npm 10.9.8 は固定版 22.22.2 / 10.9.7 と異なり、
+通常コマンドで成功した run と SIGSEGV/SIGTRAP で落ちた run の両方があります。
+原因は未確定です。再実行や `--stack-size` を変えた成功を原因解決の証拠とはせず、
+最終候補は固定版を使用する hosted CI で独立に確認します。
 
 ## suite 契約の変更 (source-level、remote 実行は pending)
 
@@ -83,22 +104,33 @@ native 側件数は review fix 前の実測値で、最終確定は peer の最�
   `ios-appearance-validation.txt` は request/result handshake の補助診断で合格条件では
   ありません。`ssh` では切断前に live `ssh_theme_light`/`ssh_theme_dark` の
   in-place 確認(同一 handle・選択 pane 維持)を行います。theme 変更後の
-  remote fixture marker round trip と light/dark keyboard 撮影は MAIN-003 として
-  承認済みで、native Worker の次の fix を待つ pending source です。
+  remote fixture marker round trip を各方向で行い、同じ pane と shell PID から
+  Light→Dark の順に応答したことを独立した marker file で検証します。
+  light/dark keyboard 撮影も追加済みで、実行結果は pending です。
 - Android `full`: 実 Settings 行と navigation から6組合せを操作し、`cmd uimode night`
   による実 OS 切替で process identity を確認、pinned-dark は新規 resolved
-  `MEETERM_SMOKE_THEME` marker を出さないことを要求します。
+  `MEETERM_SMOKE_THEME` marker を出さないことを要求します。App と OS が逆の
+  chooser/discard、適用値と draft の区別、App System の OS 継承も確認し、
+  `MEETERM_SMOKE_DIALOG` の表示・選択・取消 marker と撮影を残します。
 - 画面 manifest は iOS `standard` 26 route・Android `SCREEN_NAMES` 32 route のままで、
   theme 組合せは既存 suite 内の追加 case であり新しい named screen route ではありません。
   撮影物の機械的な pixel 判定は行わず、Main の画像確認まで視覚的成功は保留です。
 
 ## 未検証・保留 (pending)
 
-- Swift はこの host で未 compile です。初 compile は cloud `standard` 実行時で、
-  review fix(getter-only UIKit API・fresh-file legacy test fixture)適用中です。
-- MAIN-003(承認済み)の post-theme remote fixture marker round trip と
-  light/dark keyboard capture は native Worker の次の fix を待つ pending source で、
-  現行の remote input ack は theme 変更前に完了する既存動作です。
+- Swift はこの host(非 macOS・compiler なし)では未 compile ですが、checkpoint
+  `a369560` の hosted CI `iOS fast typecheck` で `TerminalInputView` と UI/input
+  XCTest の Swift preflight は実 compile 済みです。これは型チェック段であり、
+  generated iOS production build・CNG・Simulator runtime の受入ではありません。
+- iOS の native dialog の逆 App/OS 組合せと App 固定・Terminal System の実操作を
+  `standard` に追加する source 修正は pending です。JS の per-dialog 引数テストを
+  Simulator の実表示確認の代わりとは扱いません。
+- Android の app-owned dialog は scoped native `presentAppAlert` に委譲済みです。
+  baseline `a369560` での診断 probe では Main が実際の撮影画像で chooser と
+  discard 確認を OS/App 逆組合せの両方で確認し、constraint(現行 dialog が OS
+  appearance だけに従う)を pixel 上で実証しました(evidence branch
+  `evidence/android-20260927-dialog-probe`)。修正後の generated app での
+  theme 組合せ検証・OS 非依存・machine gates の全確認は依然 pending です。
 - 最終 exact-source での Android full、iOS standard + ssh suite、証跡 branch・
   capture は未実施です(Main の検証 session と最終 commit 確定後)。
 - Main による実画像レビューと画面遷移レビューは未到着です。
