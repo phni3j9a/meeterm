@@ -1,0 +1,30 @@
+suite=android-full (daily + transport loss + seeded32)
+commit=99855a25d1c69113851927d6a7ae17c3ec1f84ef
+branch=issue-37-independent-themes (R2 corrected candidate)
+result=failed
+first_failing_stage=daily_settings_theme
+first_failing_reason=ui_timeout
+build_time=2m27s (assembleRelease, BUILD SUCCESSFUL, 668 tasks)
+toolchain=node v22.22.2 (.nvmrc via nvm), npm 10.9.7, JDK 17.0.19, NDK 27.1.12297006, Rust 1.96.0, Gradle 9.3.1
+emulator=emulator-5554 api36 x86_64 headless anims=0.0
+
+ROOT CAUSE (driver regression inside this candidate, not app):
+99855a2 replaced tap_action(("Appearance",)) label-match with find_theme_row()
+which requires resource_id == "dev.meeterm.app:id/app-theme". uiautomator dump
+on this build returns BARE ids "app-theme"/"terminal-theme" (no :id/ qualifier),
+so find_theme_row never matches and the 30s row wait expires -> ui_timeout.
+Verified post-run on the same APK with the driver's own parse_ui_dump +
+find_theme_row: returns None; node shows resource_id='app-theme',
+content_desc='Appearance, Light', enabled+visible. Manual tap on the row DOES
+open the platform chooser (SYSTEM/LIGHT/DARK android:id/button*) and logs
+MEETERM_SMOKE_DIALOG presented appearance=light resolved=light.
+Prior candidate aa2249ce used tap_action(label) and passed this stage.
+
+stages_completed=connected,profile persistence+edit+delete-cancelled+delete,
+same-server session switch, cross-endpoint, app background/foreground native
+rebind, transport_loss(inject->stale read-only->restored->remote ack)=passed,
+process restart, daily_video started
+stages_not_run=daily_settings_theme and everything after (theme matrix, OS
+scheme, app-alert dialog legs, workspace/selection/paste, CJK)
+artifacts=partial run only; daily-use.mp4 is the bounded recording up to the
+failure point; screenshot at failure shows Settings open with both theme rows

@@ -1,0 +1,3 @@
+Supplemental transition clips run AFTER this failure bundle was pushed; they
+are published separately on evidence/android-20260928-issue37-transitions-998
+and are observational seeded-route captures (not real SSH/recovery), same APK.
