@@ -1,0 +1,60 @@
+Issue #37 bounded Android dialog probe — diagnostic only (not full acceptance)
+baseline: a3695600ab9b6a1223f4d220c9665debfe2f6d03 (origin/issue-37-independent-themes)
+device: emulator-5554 (meeterm_api36, Android API 36, headless) — emulator only, no physical device
+date: 2026-09-26
+
+TOOLCHAIN (recorded, not assumed)
+  node v22.22.2 (nvm — matches .nvmrc pin; earlier sessions ran v24.19.0, this run used the pin)
+  npm 10.9.7
+  JDK openjdk 17.0.19
+  Android SDK platform-tools, NDK 27.1.12297006
+  rustc 1.96.0 (RUSTUP_TOOLCHAIN=1.96.0)
+  gradle 9.3.1 (wrapper)
+  expo prebuild note: "android: userInterfaceStyle: Install expo-system-ui in your project
+    to enable this feature" — the app's userInterfaceStyle config is INERT on Android in
+    this baseline (no expo-system-ui); OS uiMode is the only signal native windows see.
+
+BUILD
+  fresh build: YES — npm ci, clean CNG (prebuild --platform android --non-interactive
+    --no-install --clean over deleted android/), NODE_ENV=production
+    EXPO_PUBLIC_MEETERM_SMOKE=1 assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64
+    -PmeetermRustProfile=release — BUILD SUCCESSFUL in 2m38s, 668 tasks
+  install: PASS (adb install -r)
+  launch: PASS (pid alive throughout probe)
+  native readiness / first frame: NOT REACHED — probe never connects to SSH, so no native
+    terminal surface is shown; not fabricated.
+
+PROBE A — OS Light (cmd uimode night no), app Appearance saved Dark
+  steps: pm clear -> install -> launch (home light, i37-a-home-light-os.png)
+    -> gear 'Terminal settings' -> Settings modal LIGHT (i37-a-settings-light.png)
+    -> Appearance row -> native Alert 'SYSTEM/LIGHT/DARK' (i37-a-appearance-chooser-oslight.png)
+    -> pick DARK -> row shows Dark (draft) -> Save -> home renders DARK
+       (i37-a-home-dark-applied.png)
+    -> reopen Settings -> Appearance row persisted 'Dark', modal DARK
+       (i37-a-settings-dark-saved.png)
+    -> Terminal theme row -> native chooser: WHITE dialog over DARK Settings
+       (i37-a-terminal-chooser-dark-app-oslight.png) *** constraint confirmed ***
+    -> dismissed via outside tap (cancelable)
+    -> Text size draft 15->16 -> Cancel -> 'Discard changes?' native alert WHITE over DARK
+       Settings (i37-a-discard-confirm-dark-app-oslight.png) *** confirmed ***
+    -> Keep editing -> Cancel -> Discard -> settings closed, draft dropped
+       (i37-a-after-discard.png)
+
+PROBE B — OS Dark (cmd uimode night yes), app Appearance saved Light
+  same flow: Settings LIGHT while OS dark (i37-b-settings-dark-app-osdark.png shows the
+    pre-save dark state; appearance chooser DARK over it: i37-b-appearance-chooser-osdark.png)
+    -> save Light -> home LIGHT under OS dark (i37-b-home-light-applied-osdark.png)
+    -> reopen: Appearance persisted 'Light', modal LIGHT (i37-b-settings-light-saved-osdark.png)
+    -> Terminal theme chooser: DARK dialog over LIGHT Settings
+       (i37-b-terminal-chooser-light-app-osdark.png) *** confirmed ***
+    -> draft edit 15->16 -> Cancel -> 'Discard changes?' DARK over LIGHT Settings
+       (i37-b-discard-confirm-light-app-osdark.png) *** confirmed ***
+    -> Discard -> closed (i37-b-after-discard.png)
+
+RESULT
+  Source prediction verified BOTH directions: RN-rendered surfaces follow the saved app
+  Appearance; native Alert.alert dialogs (theme chooser AND discard confirm) follow ONLY the
+  OS uiMode. No scoped Android dialog adapter exists in this baseline.
+  ui-hierarchy-chooser.xml: dialog buttons are platform android.widget.Button
+  (android:id/button1/button3) inside dev.meeterm.app — framework AlertDialog, no RN dialog window.
+  first failed stage: none. No source/assertion/deadline changes. No SSH host touched.

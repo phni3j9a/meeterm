@@ -1,0 +1,54 @@
+09-27 13:49:26.685  5119  5119 D AndroidRuntime: Shutting down VM
+09-27 13:49:27.593   689  1471 D CoreBackPreview: Window{b286c21 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@75e4a07, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
+09-27 13:49:30.126  5148  5148 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+09-27 13:49:30.129  5148  5148 I AndroidRuntime: Using default boot image
+09-27 13:49:30.129  5148  5148 I AndroidRuntime: Leaving lock profiling enabled
+09-27 13:49:30.208  5148  5148 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+09-27 13:49:31.226  5148  5148 D AndroidRuntime: Shutting down VM
+09-27 13:49:32.498  5169  5169 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+09-27 13:49:32.501  5169  5169 I AndroidRuntime: Using default boot image
+09-27 13:49:32.501  5169  5169 I AndroidRuntime: Leaving lock profiling enabled
+09-27 13:49:32.585  5169  5169 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+09-27 13:49:33.604  5169  5169 D AndroidRuntime: Shutting down VM
+09-27 13:49:34.500   689  1460 D CoreBackPreview: Window{b286c21 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback null
+09-27 13:49:34.514  4802  4802 I ImeTracker: dev.meeterm.app:8afab7ab: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+09-27 13:49:34.519   689  1460 D CoreBackPreview: Window{f18e25d u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@718753a, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
+09-27 13:49:34.521   689  1460 D CoreBackPreview: Window{f18e25d u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback null
+09-27 13:49:34.521  4802  4802 I ImeTracker: dev.meeterm.app:8afab7ab: onCancelled at PHASE_CLIENT_ANIMATION_CANCEL
+09-27 13:49:34.569  4802  4802 E FrameTracker: force finish cuj, time out: J<IME_INSETS_SHOW_ANIMATION::0@0@dev.meeterm.app>
+09-27 13:49:34.569  4802  4802 W FrameTracker: Missed SF frame:JANK_COMPOSER, 130097, 2359226, CUJ=J<IME_INSETS_SHOW_ANIMATION::0@0@dev.meeterm.app>
+09-27 13:49:34.589   689   820 I ImeTracker: dev.meeterm.app:502c8b88: onRequestHide at ORIGIN_SERVER reason HIDE_UNSPECIFIED_WINDOW fromUser false
+09-27 13:49:34.589  4802  4802 I ImeTracker: dev.meeterm.app:502c8b88: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+09-27 13:49:34.594  1490  1490 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1293 onStartInput(EditorInfo{EditorInfo{packageName=dev.meeterm.app, inputType=0, inputTypeString=NULL, enableLearning=false, autoCorrection=false, autoComplete=false, imeOptions=0, privateImeOptions=null, actionName=UNSPECIFIED, actionLabel=null, initialSelStart=-1, initialSelEnd=-1, initialCapsMode=0, label=null, fieldId=0, fieldName=null, extras=null, hintText=null, hintLocales=[]}}, false)
+09-27 13:49:34.597   689  2033 W PackageConfigPersister: App-specific configuration not found for packageName: dev.meeterm.app and userId: 0
+09-27 13:49:36.535  5191  5191 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+09-27 13:49:36.540  5191  5191 I AndroidRuntime: Using default boot image
+09-27 13:49:36.540  5191  5191 I AndroidRuntime: Leaving lock profiling enabled
+09-27 13:49:36.620  5191  5191 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+09-27 13:49:37.638  5191  5191 D AndroidRuntime: Shutting down VM
+09-27 13:50:03.673  5216  5216 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+09-27 13:50:03.676  5216  5216 I AndroidRuntime: Using default boot image
+09-27 13:50:03.676  5216  5216 I AndroidRuntime: Leaving lock profiling enabled
+09-27 13:50:03.757  5216  5216 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+09-27 13:50:04.777  5216  5216 D AndroidRuntime: Shutting down VM
+09-27 13:50:05.681   689  2085 D CoreBackPreview: Window{8b33998 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@83425d6, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
+09-27 13:50:06.586   689   820 I ImeTracker: dev.meeterm.app:d83857dc: onRequestHide at ORIGIN_SERVER reason HIDE_UNSPECIFIED_WINDOW fromUser false
+09-27 13:50:06.588  4802  4802 I ImeTracker: dev.meeterm.app:d83857dc: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+09-27 13:50:06.595  1490  1490 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1293 onStartInput(EditorInfo{EditorInfo{packageName=dev.meeterm.app, inputType=0, inputTypeString=NULL, enableLearning=false, autoCorrection=false, autoComplete=false, imeOptions=0, privateImeOptions=null, actionName=UNSPECIFIED, actionLabel=null, initialSelStart=-1, initialSelEnd=-1, initialCapsMode=0, label=null, fieldId=0, fieldName=null, extras=null, hintText=null, hintLocales=[]}}, false)
+09-27 13:50:06.596   689  2085 W PackageConfigPersister: App-specific configuration not found for packageName: dev.meeterm.app and userId: 0
+09-27 13:50:07.696  5240  5240 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+09-27 13:50:07.699  5240  5240 I AndroidRuntime: Using default boot image
+09-27 13:50:07.699  5240  5240 I AndroidRuntime: Leaving lock profiling enabled
+09-27 13:50:07.778  5240  5240 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+09-27 13:50:08.799  5240  5240 D AndroidRuntime: Shutting down VM
+09-27 13:50:09.677   689  2073 D CoreBackPreview: Window{84b63f8 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@7db4736, mPriority=0, mIsAnimationCallback=false, mOverrideBehavior=0}
+09-27 13:50:12.221  5264  5264 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+09-27 13:50:12.223  5264  5264 I AndroidRuntime: Using default boot image
+09-27 13:50:12.224  5264  5264 I AndroidRuntime: Leaving lock profiling enabled
+09-27 13:50:12.304  5264  5264 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+09-27 13:50:13.327  5264  5264 D AndroidRuntime: Shutting down VM
+09-27 13:50:27.618   689  1471 D CoreBackPreview: Window{84b63f8 u0 dev.meeterm.app/dev.meeterm.app.MainActivity}: Setting back callback null
+09-27 13:50:27.855   689   820 I ImeTracker: dev.meeterm.app:429bddc5: onRequestHide at ORIGIN_SERVER reason HIDE_SAME_WINDOW_FOCUSED_WITHOUT_EDITOR fromUser false
+09-27 13:50:27.855  4802  4802 I ImeTracker: dev.meeterm.app:429bddc5: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+09-27 13:50:27.857  1490  1490 I GoogleInputMethodService: GoogleInputMethodService.onStartInput():1293 onStartInput(EditorInfo{EditorInfo{packageName=dev.meeterm.app, inputType=0, inputTypeString=NULL, enableLearning=false, autoCorrection=false, autoComplete=false, imeOptions=0, privateImeOptions=null, actionName=UNSPECIFIED, actionLabel=null, initialSelStart=-1, initialSelEnd=-1, initialCapsMode=0, label=null, fieldId=0, fieldName=null, extras=null, hintText=null, hintLocales=[]}}, false)
+09-27 13:50:27.858   689  2092 W PackageConfigPersister: App-specific configuration not found for packageName: dev.meeterm.app and userId: 0

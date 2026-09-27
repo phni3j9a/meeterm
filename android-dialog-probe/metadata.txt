@@ -1,0 +1,9 @@
+commit=a3695600ab9b6a1223f4d220c9665debfe2f6d03
+branch=issue-37-independent-themes
+suite=android-dialog-probe
+result=constraint-confirmed-both-directions
+date=2026-09-26T23:05Z
+build=fresh-cng-release-2m38s
+node=22.22.2 npm=10.9.7 jdk=17.0.19 ndk=27.1.12297006 rust=1.96.0
+probe_a=os-light+app-dark: native dialogs LIGHT over dark app
+probe_b=os-dark+app-light: native dialogs DARK over light app
