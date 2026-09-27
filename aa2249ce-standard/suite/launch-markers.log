@@ -1,0 +1,5 @@
+native_ready=MEETERM_SMOKE_NATIVE_READY
+first_frame=MEETERM_SMOKE_FIRST_FRAME_METAL
+coregraphics_fallback_markers=0
+process_alive=yes (pid 17667)
+sim=7EE2EBC1 iPhone 18 Pro Max iOS 27.0

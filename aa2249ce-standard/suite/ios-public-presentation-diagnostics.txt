@@ -1,0 +1,7 @@
+app_foreground=1
+terminal_exists=0
+terminal_hittable=0
+keyboard_exists=0
+keyboard_hittable=0
+hide_keyboard_exists=0
+hide_keyboard_hittable=0

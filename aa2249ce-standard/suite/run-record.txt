@@ -1,0 +1,10 @@
+source_sha=d62e43b2f87df8f48b42d57faefd462abd86a354
+suites=standard,ssh,switcher-drive
+toolchain=Xcode 26.6 (17F113), SDKROOT iphonesimulator26.5, ARCHS=arm64, Rust 1.96.0, Node 22.23.2/npm 10.9.8, CocoaPods 1.17.0, tmux 3.7c
+build=fresh CNG build-for-testing; ssh + drive reused same-commit products (pack manifest d62e43b verified)
+simulator_authoritative=iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377), iOS 27.0
+simulator_note=ALL stages targeted this device: ios-smoke.py -destination platform=iOS Simulator,id=$IOS_SIMULATOR_UDID; drive script id=$UDID; app install/test/log capture on 7EE2EBC1.
+metadata_discrepancy=simulator.txt/metadata.txt may record iPhone 18 Pro (1308A109): ios-select-simulator.sh auto-picks the first 'iPhone * Pro' device for boot; it does NOT determine the test destination.
+xctest_elapsed=drive 715.5s; standard/ssh per ios-*-validation.txt
+delta_vs_ef6bb5e=d62e43b adds promote_terminal operation-token rotation at promotion boundary (product code) — full fresh acceptance, no reuse shortcuts.
+sysdiagnose=skipped: wedged collector subsystem (simctl diagnose hits 600s cap; killed ~46s in by session watchdog). Tests complete before diagnostics; results unaffected.

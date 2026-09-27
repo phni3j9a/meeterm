@@ -1,0 +1,70 @@
+run=ios-standard-issue37
+candidate=aa2249ce2f18ad416551ea5a42948d82fb23f6bc
+branch_checked_out=issue-37-independent-themes (local validation checkout; no product-branch commits/pushes)
+session=devin-7a32a4e6ed984961b5194e22feeba407 (devin-swe-2-max)
+date_utc=2026-09-27
+runner_temp=/Users/devin/runner-temp-ios37 (fresh unique; preserved for later same-commit ssh reuse)
+ios_test_products_package=/Users/devin/runner-temp-ios37/ios-test-products (pristine pack, manifest verified)
+evidence_branch=evidence/ios-20260928-issue37-standard
+
+[toolchain — verified actual]
+node=v22.22.2 (session-local official tarball; provisioned node 22.23.2 was NOT used)
+npm=10.9.7
+rust=1.96.0 (aarch64-apple-ios-sim target added for 1.96.0)
+xcode=26.6 (17F113), iOS Simulator SDK 26.5
+cocoapods=1.17.0
+host=macOS 26.5.2 arm64
+simulator=iPhone 18 Pro Max 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iOS 27.0
+(second booted device iPhone Air DE19DC37-0561-418D-B558-B3B66EBFDEC6 used only for manual repro — same product)
+
+[stages]
+swift_preflight_ios_typecheck=pass (before CNG/build)
+npm_ci=pass
+rustup_target_add=pass
+cng=pass (expo prebuild --platform ios --non-interactive --no-install --clean; generated ios/ removed first)
+inject_ui_test=pass
+pod_install=pass
+strip_storage_rust_link=pass (only storage target)
+build_for_testing=pass (Release, iphonesimulator, unsigned, arm64, TEST BUILD SUCCEEDED; log in build/xcodebuild.log)
+entitlements_verify=pass (__entitlements 0x16e + __ents_der 0x73 present in meeterm binary; ios-simulator-entitlements.txt)
+test_products_pack=pass (source sha + xcode version recorded in manifest)
+simulator_select=pass (7EE2EBC1, booted)
+standard_suite=FAILED at xcuitest_standard: ui_test_failed (xcodebuild exit 65)
+  - injected XCTest bundle ran: MeetermSmokeUITests.testStandardSeededScreensAndFoundation
+  - 26/26 seeded standard routes opened+ready+captured
+  - theme_matrix 6/6 pairs captured w/ native-terminal-surface handle asserts
+  - theme_os_baseline + system flip light→dark→light on same handle: pass
+  - theme_os_pinned (system app + pinned dark terminal across flips): pass
+  - theme_keyboard focused pinned dark terminal under light OS: pass
+  - theme_settings_preview, theme_recovery: pass
+  - theme_dialog_dark: FAILED — see FAILURE-ANALYSIS.md (test-side observability bug at MeetermSmokeUITests.swift:1049; product draft pick verified working via manual repro)
+  - theme_dialog_light + theme_dialog_system legs: NOT REACHED
+native_storage_xctest=pass (all cases incl. legacy_preferences_migration)
+native_input_xctest=pass (all cases incl. theme_refresh)
+appearance_observer=pass (ios-appearance-validation.txt; final appearance restored to light)
+native_readiness=pass (MEETERM_SMOKE_NATIVE_READY per launch)
+first_frame=METAL (MEETERM_SMOKE_FIRST_FRAME_METAL; zero CoreGraphics/SOFTWARE fallback markers)
+recording=theme-transitions.mp4 captured (bounded theme section up to failure point; theme-recording.txt: recording=captured)
+foundation_relaunch=not reached (suite stops at the failed test)
+
+[timing]
+xcodebuild_test_elapsed_ms=335679 (~5.6 min for the failing test; 15-min budget NOT exceeded)
+storage/input xcresult runs passed earlier in the same suite window
+
+[evidence contents]
+suite/          — full ios-simulator-observability artifact dir (56 png incl. 26 standard routes,
+                  6 theme matrix, os/pinned/keyboard/settings/recovery, 3 dialog-leg captures taken
+                  before failure; theme-transitions.mp4; validations txt; simulator.log sanitized
+                  MEETERM_SMOKE_ slice incl. 26 MEETERM_SMOKE_THEME markers; diagnostics)
+build/          — xcode-version.txt, toolchain-versions.txt, ios-simulator-entitlements.txt,
+                  xcodebuild.log (build-for-testing transcript)
+xctest-transcript.log — xcuitest_standard transcript (assertion failure at line 1049 visible)
+manual-repro-draft-light-applied.png — manual same-product repro: Appearance row shows Light after pick
+FAILURE-ANALYSIS.md — first failing stage + root cause
+run-record.txt — this file
+
+[non-claims]
+- No physical-device evidence; Simulator-only (CoreGraphics fallback was NOT observed — Metal reported).
+- No Android/externalIME parity claims.
+- No product source edited/committed/pushed; only generated ios/ tree rebuilt.
+- Repro screenshots are human evidence; no machine gates added.

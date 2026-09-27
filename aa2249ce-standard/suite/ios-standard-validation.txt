@@ -1,0 +1,5 @@
+result=failed
+suite=standard
+stage=xcuitest_standard
+reason=ui_test_failed
+ui_last_stage=teardown_complete
