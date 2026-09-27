@@ -124,6 +124,66 @@ internal object MeetermNative {
   external fun refreshRuntimes(handle: Long): Int
   external fun selectRuntime(handle: Long, candidateId: String): Int
   external fun createTmuxSession(handle: Long, name: String): Int
+
+  /*
+   * Issue #28 attachment contract (attachment-ffi + Main amendments). jni.rs
+   * (W2) implements `Java_dev_meeterm_terminal_MeetermNative_attachment*`
+   * with the same call order as the C API. attachmentIntent records the
+   * picked pane's destination identity; attachmentBegin maps to
+   * `meeterm_attachment_begin` and takes the intent id. A null
+   * remoteDirectory selects the core `~/.local/share/meeterm/attachments`
+   * default. begin returns the opaque attachment id (>0), or 0 on
+   * synchronous rejection.
+   */
+
+  /** Record the destination intent for the picked pane's terminal. */
+  external fun attachmentIntent(targetTerminalId: Long): Long
+
+  /** Drop a recorded intent; live ops keep their captured identity. */
+  external fun attachmentIntentDispose(intentId: Long): Int
+
+  external fun attachmentBegin(
+    intentId: Long,
+    localPath: String,
+    displayName: String,
+    remoteDirectory: String?,
+    sizeBytes: Long,
+  ): Long
+
+  /**
+   * Re-upload for pending/failed (and uploaded+removed) ops;
+   * targetTerminalId must be the intent's pane. 0 = job queued; poll the
+   * snapshot while JOB_IN_FLIGHT (0x4) is set.
+   */
+  external fun attachmentRetryUpload(targetTerminalId: Long, attachmentId: Long): Int
+
+  /**
+   * Queue the verified-insert job — remote verify first, then one quoted
+   * remote-path line via the native paste path; never sends Enter.
+   * 0 = job accepted (not inserted); the result lands in the snapshot
+   * once JOB_IN_FLIGHT clears. -8 = another job in flight.
+   */
+  external fun attachmentInsert(targetTerminalId: Long, attachmentId: Long): Int
+
+  /** Cancel a pending/uploading op; delayed completions are discarded. */
+  external fun attachmentCancel(attachmentId: Long): Int
+
+  /** Drop the operation record; cancels first when still active. */
+  external fun attachmentDispose(attachmentId: Long): Int
+
+  /**
+   * Queue remote deletion of this op's generated names on the recorded
+   * destination (fresh intent resolution + fence). 0 = job queued;
+   * -8 = another job in flight; phase kept, REMOTE_REMOVED on success.
+   */
+  external fun attachmentDeleteRemote(targetTerminalId: Long, attachmentId: Long): Int
+
+  /**
+   * Flat string snapshot: [phase, flags, attachmentId, bytesUploaded,
+   * sizeBytes, remotePath, displayName, errorCode, errorMessage];
+   * an empty array means an unknown attachment id.
+   */
+  external fun attachmentSnapshot(attachmentId: Long): Array<String>
 }
 
 internal class RustInputSink(

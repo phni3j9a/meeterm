@@ -11,7 +11,7 @@ import {
   useColorScheme,
 } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
-import { Search, Server, Terminal, ChevronLeft, ChevronRight, ChevronDown, X, Ellipsis, Check, Plus, Settings2, Layers, Monitor, KeyRound, ArrowRight } from 'lucide-react-native';
+import { Search, Server, Terminal, ChevronLeft, ChevronRight, ChevronDown, X, Ellipsis, Check, Plus, Settings2, Layers, Monitor, KeyRound, ArrowRight, ImagePlus } from 'lucide-react-native';
 
 export const LIGHT = {
   background: '#FAF8F4',
@@ -76,7 +76,7 @@ export function usePalette(preference: 'system' | 'light' | 'dark' = 'system') {
   return (preference === 'system' ? system : preference) === 'dark' ? DARK : LIGHT;
 }
 
-const ICONS = { search: Search, server: Server, terminal: Terminal, back: ChevronLeft, chevron: ChevronRight, down: ChevronDown, close: X, menu: Ellipsis, check: Check, plus: Plus, settings: Settings2, group: Layers, computer: Monitor, key: KeyRound, arrow: ArrowRight };
+const ICONS = { search: Search, server: Server, terminal: Terminal, back: ChevronLeft, chevron: ChevronRight, down: ChevronDown, close: X, menu: Ellipsis, check: Check, plus: Plus, settings: Settings2, group: Layers, computer: Monitor, key: KeyRound, arrow: ArrowRight, attach: ImagePlus };
 type IconName = keyof typeof ICONS;
 
 /** A single restrained line vocabulary, matching the existing mock's chrome. */

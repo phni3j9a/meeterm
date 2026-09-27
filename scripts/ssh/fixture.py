@@ -147,8 +147,13 @@ def _choose_port(excluded: set[int] | None = None) -> int:
 class Fixture:
     """The files and process for one temporary OpenSSH server."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, sftp: bool = False, sftp_delay: float = 0.0) -> None:
         self.root = root
+        # SFTP is opt-in so the default fixture keeps exercising the
+        # subsystem-unavailable path.  ``internal-sftp`` is built into sshd
+        # and works without locating an sftp-server binary on each platform.
+        self.sftp = sftp
+        self.sftp_delay = sftp_delay if sftp else 0.0
         self.port = _choose_port()
         self.alternate_port = _choose_port({self.port})
         self.user = getpass.getuser()
@@ -239,6 +244,41 @@ class Fixture:
 
         # Use only this file.  No system sshd configuration, user ssh config,
         # or ~/.ssh path is read or modified by the fixture server.
+        sftp_directives = ()
+        if self.sftp:
+            if self.sftp_delay > 0:
+                # Route the subsystem through a wrapper that sleeps before
+                # exec'ing the real server so client request timeouts are
+                # exercised deterministically.  ``internal-sftp`` cannot be
+                # delayed or stopped in isolation because it is served
+                # in-process by the connection sshd.
+                server = next(
+                    (
+                        candidate
+                        for candidate in (
+                            "/usr/lib/openssh/sftp-server",
+                            "/usr/libexec/sftp-server",
+                            "/usr/lib/ssh/sftp-server",
+                        )
+                        if Path(candidate).is_file()
+                    ),
+                    None,
+                )
+                if server is None:
+                    raise FixtureError(
+                        "no external sftp-server binary for --sftp-delay"
+                    )
+                wrapper = self.root / "sftp-delay.sh"
+                wrapper.write_text(
+                    f"#!/bin/sh\nsleep {self.sftp_delay}\nexec {server}\n",
+                    encoding="utf-8",
+                )
+                wrapper.chmod(0o700)
+                sftp_directives = (f"Subsystem sftp {wrapper}",)
+            else:
+                # ``internal-sftp`` is built into sshd and works without
+                # locating an sftp-server binary on each platform.
+                sftp_directives = ("Subsystem sftp internal-sftp",)
         self.config.write_text(
             "\n".join(
                 (
@@ -271,6 +311,9 @@ class Fixture:
                     "PermitTunnel no",
                     "PermitUserEnvironment no",
                     "LogLevel QUIET",
+                    # Subsystem is not a Match keyword; it must be declared
+                    # before the per-listener Match blocks below.
+                    *sftp_directives,
                     f"Match LocalPort {self.port}",
                     f"SetEnv TMUX_TMPDIR={self.tmux_tmpdir}",
                     f"Match LocalPort {self.alternate_port}",
@@ -912,6 +955,11 @@ class Fixture:
             "MEETERM_SSH_UNENCRYPTED_PRIVATE_KEY_FILE": str(self.client_key),
             "MEETERM_SSH_HOST_KEY_FILE": str(host_public_key),
             "MEETERM_SSH_ALTERNATE_HOST_KEY_FILE": str(alternate_host_public_key),
+            # "1" only when the fixture sshd exposes the SFTP subsystem.
+            "MEETERM_SSH_SFTP": "1" if self.sftp else "0",
+            # Seconds the subsystem wrapper sleeps before exec'ing the real
+            # sftp-server; "0" means the ordinary internal-sftp path.
+            "MEETERM_SSH_SFTP_DELAY": f"{self.sftp_delay:g}",
             # These are useful to shell-level integration checks and make the
             # isolation contract explicit.  The SSH server receives the same
             # endpoint-specific path through Match/SetEnv above.
@@ -1208,13 +1256,25 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         choices=("stop", "start"),
         help="request stop/start of the inherited fixture sshd without creating a new fixture",
     )
+    parser.add_argument(
+        "--sftp",
+        action="store_true",
+        help="expose the OpenSSH SFTP subsystem (default keeps it unavailable for negative tests)",
+    )
+    parser.add_argument(
+        "--sftp-delay",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="delay the real sftp-server start by SECONDS so client request timeouts are exercised; requires --sftp",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     parser.add_argument("--check", action="store_true", help="verify real SSH authentication and remote tmux, then clean up")
     args = parser.parse_args(argv)
     if args.command and args.command[0] == "--":
         args.command = args.command[1:]
     if args.control is not None and (
-        args.env_file is not None or args.command or args.check or args.print_fingerprint
+        args.env_file is not None or args.command or args.check or args.print_fingerprint or args.sftp
     ):
         parser.error("--control cannot be combined with fixture startup options")
     if args.control is not None:
@@ -1225,6 +1285,8 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("--check cannot be combined with a command or --env-file")
     if args.env_file is None and not args.command and not args.check:
         parser.error("provide a command, or use --env-file for persistent mode")
+    if args.sftp_delay > 0 and not args.sftp:
+        parser.error("--sftp-delay requires --sftp")
     return args
 
 
@@ -1241,7 +1303,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(
             prefix="meeterm-ssh-fixture-", dir=Path.home()
         ) as temporary_root:
-            fixture = Fixture(Path(temporary_root))
+            fixture = Fixture(
+                Path(temporary_root), sftp=args.sftp, sftp_delay=args.sftp_delay
+            )
             try:
                 fixture.prepare()
                 fixture.start()

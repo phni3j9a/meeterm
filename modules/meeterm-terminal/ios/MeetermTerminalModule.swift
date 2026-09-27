@@ -15,6 +15,7 @@ public final class MeetermTerminalModule: Module {
       }
       monitor.start(queue: DispatchQueue(label: "dev.meeterm.terminal.network-monitor"))
       self.networkPathMonitor = monitor
+      AttachmentController.shared.reclaimStaleFiles()
     }
 
     OnDestroy {
@@ -259,6 +260,72 @@ public final class MeetermTerminalModule: Module {
       ) == 0 else {
         throw Self.error("The trusted host key could not be removed.")
       }
+    }
+
+    // Issue #28 attachment flow. Composition state is read on the main
+    // thread; a held result means the IME still owns marked text and the
+    // caller must not dismiss it.
+    AsyncFunction("beginAttachment") { (terminalId: String, target: [String: Any]) throws -> [String: Any] in
+      guard let identity = AttachmentTargetIdentity.from(target) else {
+        throw Self.error("The attachment target is invalid.")
+      }
+      return try AttachmentController.shared.begin(
+        terminalId: Self.normalizeTerminalId(terminalId),
+        target: identity
+      )
+    }.runOnQueue(.main)
+    AsyncFunction("attachmentCompositionStatus") { (terminalId: String) throws -> [String: Any] in
+      if AttachmentCompositionGuard.shared.isComposing(terminalId: try Self.normalizeTerminalId(terminalId)) {
+        return AttachmentResults.held(AttachmentLimits.reasonComposing)
+      }
+      return ["status": "ok"]
+    }.runOnQueue(.main)
+    // Presenter lookup and `present` are main-thread operations; the bounded
+    // staging copy inside the picker stays off the main queue.
+    AsyncFunction("pickAttachmentImage") { (source: String, promise: Promise) in
+      do {
+        try AttachmentController.shared.pick(source: source, promise: promise) { [weak self] in
+          self?.appContext?.utilities?.currentViewController()
+        }
+      } catch {
+        promise.reject(error)
+      }
+    }.runOnQueue(.main)
+    AsyncFunction("prepareAttachmentImage") { (token: String) throws -> [String: Any] in
+      try AttachmentController.shared.prepare(token: token)
+    }
+    AsyncFunction("discardAttachment") {
+      try AttachmentController.shared.discard()
+    }
+    AsyncFunction("getAttachmentState") { () throws -> [String: Any] in
+      try AttachmentController.shared.snapshot()
+    }
+    AsyncFunction("uploadAttachment") { (terminalId: String, remoteDirectory: String) throws -> [String: Any] in
+      try AttachmentController.shared.upload(
+        terminalId: Self.normalizeTerminalId(terminalId),
+        remoteDirectory: remoteDirectory
+      )
+    }
+    AsyncFunction("attachmentSnapshot") { () -> [String: Any] in
+      AttachmentController.shared.attachmentSnapshot()
+    }
+    AsyncFunction("retryAttachmentUpload") { (terminalId: String) throws -> [String: Any] in
+      try AttachmentController.shared.retryUpload(
+        terminalId: Self.normalizeTerminalId(terminalId)
+      )
+    }
+    AsyncFunction("cancelAttachment") { () -> [String: Any] in
+      AttachmentController.shared.cancel()
+    }
+    // Dedicated attachment insertion — never routed through paste or special
+    // keys, and held while the native IME owns a marked-text composition.
+    AsyncFunction("insertAttachment") { (terminalId: String) throws -> [String: Any] in
+      try AttachmentController.shared.insert(terminalId: Self.normalizeTerminalId(terminalId))
+    }.runOnQueue(.main)
+    AsyncFunction("deleteRemoteAttachment") { (terminalId: String) throws -> [String: Any] in
+      try AttachmentController.shared.deleteRemote(
+        terminalId: Self.normalizeTerminalId(terminalId)
+      )
     }
 
     View(MeetermTerminalView.self) {

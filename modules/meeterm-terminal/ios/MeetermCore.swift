@@ -652,6 +652,99 @@ enum MeetermCore {
     terminalId != 0 && meeterm_destroy_terminal(terminalId) == 1
   }
 
+  // Issue #28 attachment contract (attachment-ffi.md + Main amendments).
+  // The core owns the SFTP operation, remote path, destination intent, and the
+  // single-line insert; this adapter only passes the local file and polls the
+  // fixed-size snapshot. An empty remoteDirectory selects the core default
+  // `~/.local/share/meeterm/attachments`.
+
+  /// `meeterm_attachment_intent`: opaque intent id (>0) for the picked pane's
+  /// terminal, or 0 when the pane is not a usable destination.
+  static func attachmentIntent(targetTerminalId: UInt64) -> UInt64 {
+    meeterm_attachment_intent(targetTerminalId)
+  }
+
+  /// `meeterm_attachment_intent_dispose`: 0 accepted, negative = error code.
+  static func attachmentIntentDispose(intentId: UInt64) -> Int32 {
+    meeterm_attachment_intent_dispose(intentId)
+  }
+
+  /// `meeterm_attachment_begin`: attachment id (>0), or 0 on synchronous
+  /// rejection (poll-free errors such as unknown intent or unreadable file).
+  static func attachmentBegin(
+    intentId: UInt64,
+    localPath: String,
+    displayName: String,
+    remoteDirectory: String,
+    sizeBytes: UInt64
+  ) -> UInt64 {
+    Data(localPath.utf8).withUnsafeBytes { path in
+      Data(displayName.utf8).withUnsafeBytes { name in
+        Data(remoteDirectory.utf8).withUnsafeBytes { directory in
+          meeterm_attachment_begin(
+            intentId,
+            path.bindMemory(to: UInt8.self).baseAddress,
+            path.count,
+            name.bindMemory(to: UInt8.self).baseAddress,
+            name.count,
+            directory.bindMemory(to: UInt8.self).baseAddress,
+            directory.count,
+            sizeBytes
+          )
+        }
+      }
+    }
+  }
+
+  /// `meeterm_attachment_retry_upload`: 0 = re-upload job queued (pending/
+  /// failed/uploaded+removed only), negative = error code.
+  /// `targetTerminalId` must be the pane terminal the intent captured.
+  static func attachmentRetryUpload(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_retry_upload(targetTerminalId, attachmentId)
+  }
+
+  /// `meeterm_attachment_insert`: queues the verified-insert job — remote
+  /// lstat + name/base checks first, then one quoted path line; never
+  /// sends Enter. 0 = job accepted (not inserted); the result lands in the
+  /// snapshot once JOB_IN_FLIGHT (0x4) clears. -8 = another job in flight.
+  static func attachmentInsert(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_insert(targetTerminalId, attachmentId)
+  }
+
+  /// `meeterm_attachment_cancel`: 0 accepted, negative = error code.
+  static func attachmentCancel(attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_cancel(attachmentId)
+  }
+
+  /// `meeterm_attachment_dispose`: 0 accepted, negative = error code.
+  static func attachmentDispose(attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_dispose(attachmentId)
+  }
+
+  /// `meeterm_attachment_delete_remote`: queues the remote-delete job —
+  /// the recorded intent is re-resolved and a fresh fence captured, so it
+  /// runs on the same endpoint/runtime/pane the upload targeted. 0 = job
+  /// queued, -8 = another job in flight; REMOTE_REMOVED set on success.
+  /// `targetTerminalId` must be the pane terminal the intent captured.
+  static func attachmentDeleteRemote(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {
+    meeterm_attachment_delete_remote(targetTerminalId, attachmentId)
+  }
+
+  /// `meeterm_attachment_snapshot_size`: the ABI record size.
+  static func attachmentSnapshotSize() -> Int {
+    meeterm_attachment_snapshot_size()
+  }
+
+  /// `meeterm_attachment_snapshot`: raw record bytes for the pure codec.
+  /// The record size stays consistent with `meetterm_attachment_snapshot_size`.
+  static func attachmentSnapshot(attachmentId: UInt64) -> Data? {
+    var native = meeterm_attachment_snapshot_t()
+    guard meeterm_attachment_snapshot(attachmentId, &native) == 0 else {
+      return nil
+    }
+    return withUnsafeBytes(of: &native) { Data($0) }
+  }
+
   private static func withUTF8(
     _ value: String,
     _ body: (UnsafePointer<UInt8>?, Int) -> Int32

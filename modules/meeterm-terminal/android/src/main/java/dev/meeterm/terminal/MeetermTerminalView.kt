@@ -127,6 +127,10 @@ class MeetermTerminalView(
 
   private var inputSession = createInputSession(null)
 
+  // Attachment insertion asks this provider whether the IME still owns an
+  // uncommitted composition; it must never observe a stale session.
+  private var compositionProvider: (() -> Boolean)? = null
+
   private fun createInputSession(operationEpoch: String?): InputSession = InputSession(
     sink = RustInputSink { terminalHandle },
     onPreeditChanged = { value ->
@@ -242,6 +246,12 @@ class MeetermTerminalView(
     Log.i(TAG, "bound terminalId=$terminalId handle=$terminalHandle")
     lastOperationEpoch = readOperationEpoch()
     inputSession = createInputSession(lastOperationEpoch)
+    val provider = {
+      BaseInputConnection.getComposingSpanStart(editable) >= 0 ||
+        inputSession.composingText.isNotEmpty()
+    }
+    compositionProvider = provider
+    AttachmentCompositionGuard.register(terminalId, provider)
     renderer.attachTerminal(terminalHandle)
     applyNativeSettings(terminalHandle)
     (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.restartInput(this)
@@ -1041,6 +1051,8 @@ class MeetermTerminalView(
     (value * resources.displayMetrics.density).toInt().coerceAtLeast(value)
 
   private fun releaseBinding() {
+    compositionProvider?.let { AttachmentCompositionGuard.unregister(terminalId, it) }
+    compositionProvider = null
     inputGeneration += 1
     inputSession.cancel()
     inputSession = createInputSession(null)

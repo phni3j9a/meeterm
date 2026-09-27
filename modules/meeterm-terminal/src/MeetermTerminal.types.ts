@@ -291,6 +291,138 @@ export type RuntimeDiscovery = {
   backends: RuntimeBackendDiscovery[];
 };
 
+/** Attachment entry points offered to the native picker adapter. */
+export type AttachmentSource = 'photos' | 'files';
+
+/** Re-encoded formats accepted by the first attachment milestone. */
+export type AttachmentImageFormat = 'png' | 'jpeg';
+
+/**
+ * Pane-scoped identity recorded when an attachment starts, for restore
+ * display only. The core resolves the owning SSH endpoint, runtime, and
+ * remote pane itself from `terminalId` (`meeterm_attachment_intent`); the
+ * adapter never captures or reuses an SSH owner id.
+ */
+export type AttachmentTarget = {
+  terminalId: string;
+  paneId: string;
+  workspaceId: string;
+};
+
+/**
+ * Attachment open result. `held` means native input composition is active;
+ * `error` means the core refused the destination intent (`destination_*`
+ * codes carry the reason).
+ */
+export type AttachmentBeginResult =
+  | { status: 'ready' }
+  | { status: 'held'; reason: 'composing' }
+  | { status: 'error'; errorCode: string; message: string };
+
+/**
+ * Answer to the main-thread composition query. Callers must not dismiss the
+ * keyboard, present the sheet, or unmount the view while `held`.
+ */
+export type AttachmentCompositionStatus =
+  | { status: 'ok' }
+  | { status: 'held'; reason: 'composing' };
+
+export type AttachmentPickResult =
+  | { status: 'picked'; token: string; byteCount: number }
+  | { status: 'canceled' }
+  | { status: 'error'; errorCode: string; message: string };
+
+export type AttachmentPrepareResult =
+  | {
+      status: 'prepared';
+      fileId: string;
+      previewUri: string;
+      format: AttachmentImageFormat;
+      width: number;
+      height: number;
+      byteCount: number;
+      sourceByteCount: number;
+    }
+  | { status: 'error'; errorCode: string; message: string };
+
+/**
+ * Rust-owned attachment operation phase (attachment-ffi contract). `pending`
+ * means the op is blocked and `errorCode` carries the pending reason;
+ * `inserted` only proves the native input queue accepted the path line —
+ * never that a CLI or model consumed it. Deletion is not a phase: the core
+ * keeps the phase and sets the `remoteRemoved` flag instead.
+ */
+export type AttachmentCorePhase =
+  | 'pending'
+  | 'uploading'
+  | 'uploaded'
+  | 'inserted'
+  | 'failed'
+  | 'cancelled';
+
+/** One complete core snapshot, decoded from the fixed-size C record. */
+export type AttachmentOperationSnapshot = {
+  phase: AttachmentCorePhase;
+  /** Decimal u64; never convert to Number. */
+  attachmentId: string;
+  bytesUploaded: number;
+  sizeBytes: number;
+  remotePath: string;
+  displayName: string;
+  errorCode: string;
+  errorMessage: string;
+  /** flags & 0x1: the input path accepted the line, delivery unconfirmed. */
+  insertUnconfirmed: boolean;
+  /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
+  remoteRemoved: boolean;
+  /**
+   * flags & 0x4: a job (upload / verify+insert / remove) is in flight.
+   * The core clears the previous reason at job start and drops this bit
+   * when the attempt's outcome lands — UI busy display and polling key
+   * off it, never off a stale errorCode.
+   */
+  jobInFlight: boolean;
+};
+
+/** Uniform answer for upload/retry/cancel/delete/dispose requests. */
+export type AttachmentActionResult =
+  | { status: 'accepted'; attachmentId: string }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Snapshot poll answer; `idle` means no operation is live. */
+export type AttachmentSnapshotResult =
+  | { status: 'snapshot'; operation: AttachmentOperationSnapshot }
+  | { status: 'idle' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Insertion answer; `held` keeps the composition and reports a reason. */
+export type AttachmentInsertResult =
+  | { status: 'accepted'; attachmentId: string }
+  | { status: 'inserted' }
+  | { status: 'held'; reason: 'composing' | 'no_attachment' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; errorCode: string; message: string };
+
+/** Low-frequency native attachment session snapshot for remount recovery. */
+export type AttachmentSessionState = {
+  status: 'idle' | 'staged' | 'prepared';
+  fileId: string;
+  previewUri: string;
+  format: AttachmentImageFormat;
+  width: number;
+  height: number;
+  byteCount: number;
+  sourceByteCount: number;
+  /** Captured destination binding; needed to restore honestly after remount. */
+  target: AttachmentTarget | null;
+  /** Last-known core operation, present only while an op is live. */
+  operation: AttachmentOperationSnapshot | null;
+  errorCode: string;
+  message: string;
+};
+
 export type NativeReadyEvent = {
   terminalId: string;
   native: true;

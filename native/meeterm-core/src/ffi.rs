@@ -406,6 +406,186 @@ pub unsafe extern "C" fn meeterm_paste_utf8_at_epoch(
         .unwrap_or_else(terminal_error_code)
 }
 
+/// Record the destination intent for the attachment sheet: the adapter
+/// passes the *picked pane's* native terminal id; the core resolves the
+/// owning SSH connection itself and stores the stable identity (endpoint,
+/// backend/runtime, remote pane / Herdr `terminal_id`). The returned id is
+/// opaque and positive; zero means the pane is not a usable destination
+/// right now. Dispose it with `meeterm_attachment_intent_dispose` when the
+/// sheet closes, before or after any `meeterm_attachment_begin` calls.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_intent(target_terminal_id: u64) -> u64 {
+    crate::attachment::attachment_intent(target_terminal_id).unwrap_or(0)
+}
+
+/// Drop a recorded intent. Idempotent — live operations keep their own
+/// copy of the captured identity.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_intent_dispose(intent_id: u64) -> i32 {
+    crate::attachment::attachment_intent_dispose(intent_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Begin one image attachment against a destination intent created by
+/// `meeterm_attachment_intent`: validate the picked file, re-validate the
+/// intent's stable identity against the *current* connection state,
+/// capture a fresh execution fence, and enqueue its SFTP upload on the
+/// owning connection. The returned id is opaque and positive; zero means
+/// the call was synchronously rejected (unknown intent, unreadable file,
+/// changed or missing destination). Progress and pending reasons are
+/// polled through `meeterm_attachment_snapshot`; nothing proceeds without
+/// explicit calls.
+///
+/// `remote_dir` is an optional explicit remote directory (clean absolute
+/// or `~/`-prefixed path, expanded against `realpath(".")`); a null
+/// pointer or zero length selects the app-private default
+/// `<sftp-start>/.local/share/meeterm/attachments`.
+///
+/// # Safety
+/// For nonzero lengths, `local_path`, `display_name`, and `remote_dir`
+/// must point to that many readable UTF-8 bytes; all are copied before
+/// returning.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_attachment_begin(
+    intent_id: u64,
+    local_path: *const u8,
+    local_path_length: usize,
+    display_name: *const u8,
+    display_name_length: usize,
+    remote_dir: *const u8,
+    remote_dir_length: usize,
+    size_bytes: u64,
+) -> u64 {
+    let Ok(local_path) = (unsafe { utf8_argument(local_path, local_path_length) }) else {
+        return 0;
+    };
+    let Ok(display_name) = (unsafe { utf8_argument(display_name, display_name_length) }) else {
+        return 0;
+    };
+    let remote_dir = if remote_dir.is_null() || remote_dir_length == 0 {
+        None
+    } else {
+        match unsafe { utf8_argument(remote_dir, remote_dir_length) } {
+            Ok(dir) => Some(dir),
+            Err(_) => return 0,
+        }
+    };
+    crate::attachment::attachment_begin(
+        intent_id,
+        &local_path,
+        &display_name,
+        remote_dir.as_deref(),
+        size_bytes,
+    )
+    .unwrap_or(0)
+}
+
+/// Explicit transfer retry for a pending/failed operation — or for an
+/// uploaded one whose remote file was verified gone (`remote_missing`)
+/// or explicitly deleted. `target_terminal_id` must be the pane terminal
+/// the operation's intent captured — the call never retargets. Zero means
+/// the upload job was queued; negative is a stable native error code.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_retry_upload(
+    target_terminal_id: u64,
+    attachment_id: u64,
+) -> i32 {
+    crate::attachment::attachment_retry_upload(target_terminal_id, attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Queue the verified-insert job: the recorded remote file is re-verified
+/// over SFTP (regular file, exact size, `0600`, generated name under the
+/// recorded base) before one quoted remote-path line is pasted into the
+/// operation's recorded destination pane through the epoch-guarded native
+/// paste path under the session lock. `target_terminal_id` must be the
+/// pane terminal the intent captured. Never sends Enter; never retargets
+/// to the selected pane. Zero means the job was *accepted* — the result
+/// is the snapshot after `JOB_IN_FLIGHT` (`0x4`) clears: `inserted`, or
+/// pending/failed with a verification reason (`remote_missing`,
+/// `remote_unsafe_path`, `sftp_*`, `timeout`) or a paste-gate reason.
+/// `-8` (`busy`) while any job is in flight.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_insert(target_terminal_id: u64, attachment_id: u64) -> i32 {
+    crate::attachment::attachment_insert(target_terminal_id, attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Cancel the operation. An in-flight transfer removes its remote partial
+/// best-effort; a delayed completion is discarded and cannot change the
+/// visible state. `inserted` is already irrevocable.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_cancel(attachment_id: u64) -> i32 {
+    crate::attachment::attachment_cancel(attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Drop the operation record; an active transfer is cancelled first.
+/// Disposal never deletes remote files — call
+/// `meeterm_attachment_delete_remote` first when remote cleanup is wanted.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_dispose(attachment_id: u64) -> i32 {
+    crate::attachment::attachment_dispose(attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Explicit remote deletion of the meeterm-generated names this operation
+/// owns (published file and `.meeterm-partial-*` remnant; the app-private
+/// attachments directory is removed only when empty). Like every job it
+/// re-resolves the recorded intent against the current connection and
+/// captures a fresh fence — the whole recorded destination identity
+/// (endpoint, backend/runtime, pane identity, exact tmux session) must
+/// still match, so a recovered same-destination connection deletes
+/// normally while a changed one is refused.
+/// `target_terminal_id` must be the pane terminal the operation's intent
+/// captured. Only names matching the generated grammar are deleted —
+/// never a caller-supplied path. The op keeps its phase — an inserted
+/// reference is not revoked — while the snapshot's `remote_removed` flag
+/// records the verified deletion. Zero means the job was queued; `-8`
+/// (`busy`) while any job is in flight.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_delete_remote(
+    target_terminal_id: u64,
+    attachment_id: u64,
+) -> i32 {
+    crate::attachment::attachment_delete_remote(target_terminal_id, attachment_id)
+        .map(|()| 0)
+        .unwrap_or_else(|error| error.code())
+}
+
+/// Copy the current fixed-size snapshot into the caller-owned record.
+/// Zero is success; negative means an unknown attachment id or a null
+/// output pointer.
+///
+/// # Safety
+/// `output` must point to a writable `meeterm_attachment_snapshot`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meeterm_attachment_snapshot(
+    attachment_id: u64,
+    output: *mut crate::attachment::AttachmentSnapshot,
+) -> i32 {
+    if output.is_null() {
+        return -1;
+    }
+    let Ok(snapshot) = crate::attachment::attachment_snapshot(attachment_id) else {
+        return -3;
+    };
+    // SAFETY: the caller promises a writable record of this exact type.
+    unsafe { output.write(snapshot) };
+    0
+}
+
+/// Return the fixed ABI record size for adapter-side buffer sizing.
+#[unsafe(no_mangle)]
+pub extern "C" fn meeterm_attachment_snapshot_size() -> usize {
+    crate::attachment::ATTACHMENT_SNAPSHOT_SIZE
+}
+
 /// Positive lines scroll toward history; negative lines toward live output.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_scroll_lines(id: u64, lines: i32) -> i32 {

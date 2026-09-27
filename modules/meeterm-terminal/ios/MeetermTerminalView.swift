@@ -185,6 +185,7 @@ final class MeetermTerminalView: ExpoView {
 
   deinit {
     stopRevisionPolling()
+    AttachmentCompositionGuard.shared.unregister(terminalId: terminalId)
     NotificationCenter.default.removeObserver(self)
   }
 
@@ -196,9 +197,16 @@ final class MeetermTerminalView: ExpoView {
     }
 
     clearSelection()
+    AttachmentCompositionGuard.shared.unregister(terminalId: terminalId)
     terminalInputView.cancelCompositionForBinding()
     renderer.attachTerminal(0)
     terminalId = nextId
+    // Attachment insertion asks this provider whether the IME still owns an
+    // uncommitted marked-text composition for this terminal.
+    AttachmentCompositionGuard.shared.register(terminalId: nextId) { [weak self] in
+      guard let view = self else { return false }
+      return view.terminalInputView.markedTextRange != nil
+    }
     lastColumns = 0
     lastRows = 0
     terminalHandle = TerminalRegistry.acquire(
