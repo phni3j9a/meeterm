@@ -1955,6 +1955,10 @@ test('app-owned alerts carry the applied app appearance on each platform', async
           onClose() {}, async onSave(next) { saved.push(clone(next)); return true; },
         }));
       });
+      // The grouped row exposes its current selection through
+      // accessibilityValue so assistive tech and native UI tests can read it.
+      assert.equal(findTestId(root, 'app-theme').props.accessibilityValue.text, 'Light');
+      assert.equal(findTestId(root, 'terminal-theme').props.accessibilityValue.text, 'Dark');
       environment.appAlertResponder = () => Promise.resolve(2);
       await press(root, findTestId(root, 'app-theme'));
       assert.equal(environment.appAlerts[0].appearance, 'light', 'fixed App light presents light under a dark OS');
@@ -1962,9 +1966,13 @@ test('app-owned alerts carry the applied app appearance on each platform', async
       assert.equal(environment.appAlerts[0].cancelable, true, 'the theme chooser keeps its explicit cancelable override');
       // The draft is now dark, but the Terminal theme chooser still styles to
       // the applied App appearance until Save commits the draft.
+      assert.equal(findTestId(root, 'app-theme').props.accessibilityValue.text, 'Dark', 'the row value tracks the selected draft');
+      assert.equal(findTestId(root, 'terminal-theme').props.accessibilityValue.text, 'Dark', 'the Terminal row is independent of the App draft');
       environment.appAlertResponder = () => Promise.resolve(0);
       await press(root, findTestId(root, 'terminal-theme'));
       assert.equal(environment.appAlerts[1].appearance, 'light', 'the chooser uses the applied appearance, not the edited draft');
+      assert.equal(findTestId(root, 'terminal-theme').props.accessibilityValue.text, 'System', 'the Terminal row tracks its own draft');
+      assert.equal(findTestId(root, 'app-theme').props.accessibilityValue.text, 'Dark', 'the App row keeps its draft');
       await press(root, findTestId(root, 'settings-submit'));
       assert.deepEqual(saved, [{ ...PREFERENCES, theme: 'dark', terminalTheme: 'system' }]);
     } finally {

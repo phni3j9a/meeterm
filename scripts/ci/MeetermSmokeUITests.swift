@@ -1047,7 +1047,7 @@ final class MeetermSmokeUITests: XCTestCase {
     appearanceSheet.buttons[draft].tap()
     XCTAssertTrue(waitForDisappearance(appearanceSheet, timeout: 10))
     XCTAssertTrue(
-      app.staticTexts[draft].waitForExistence(timeout: 10),
+      waitForElementValue(button("app-theme"), expected: draft, timeout: 10),
       "The draft Appearance row did not update after selection."
     )
 
@@ -1089,7 +1089,7 @@ final class MeetermSmokeUITests: XCTestCase {
       "Keep editing closed the settings form."
     )
     XCTAssertTrue(
-      app.staticTexts[draft].waitForExistence(timeout: 10),
+      waitForElementValue(button("app-theme"), expected: draft, timeout: 10),
       "Keep editing dropped the \(draft) draft appearance row."
     )
 
@@ -1122,7 +1122,7 @@ final class MeetermSmokeUITests: XCTestCase {
       "The settings form did not reopen from the workspaces control."
     )
     XCTAssertTrue(
-      app.staticTexts[applied].waitForExistence(timeout: 10),
+      waitForElementValue(button("app-theme"), expected: applied, timeout: 10),
       "The reopened form did not show the applied \(applied) appearance row."
     )
     button("Cancel").tap()
@@ -4013,6 +4013,23 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return element.exists && element.isHittable
+  }
+
+  /// Bounded wait on an element's accessibility value. Theme rows carry the
+  /// current selection in `accessibilityValue.text` because the row's value
+  /// Text is not exposed inside the accessible Pressable — `staticTexts`
+  /// queries can never see it.
+  private func waitForElementValue(
+    _ element: XCUIElement,
+    expected: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if element.exists && element.value as? String == expected { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return element.exists && element.value as? String == expected
   }
 
   private func waitForHittableElement(

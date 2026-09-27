@@ -3475,6 +3475,7 @@ class TerminalThemeTests(unittest.TestCase):
             mock.patch.object(smoke, "capture_optional_screenshot"),
             mock.patch.object(smoke, "leave_workspace_terminal"),
             mock.patch.object(smoke, "tap_action"),
+            mock.patch.object(smoke, "tap_theme_row"),
             mock.patch.object(smoke, "tap_app_dialog_button"),
             mock.patch.object(
                 smoke, "wait_for_dialog_event",
@@ -3521,17 +3522,75 @@ class TerminalThemeTests(unittest.TestCase):
         device = mock.Mock(spec=smoke.AndroidDevice)
         option = smoke.Node("", "LIGHT", "android.widget.Button", (0, 0, 10, 10))
         with (
-            mock.patch.object(smoke, "tap_action") as action,
+            mock.patch.object(smoke, "tap_theme_row") as action,
             mock.patch.object(smoke, "wait_for_node", return_value=option) as wait,
             mock.patch.object(smoke, "tap_node") as tap,
         ):
             smoke.pick_theme_option(device, "theme_stage", "Terminal theme", "light")
-        action.assert_called_once_with(device, "theme_stage", ("Terminal theme",))
+        action.assert_called_once_with(device, "theme_stage", "Terminal theme")
         self.assertEqual(
             wait.call_args.kwargs,
             {"text": "LIGHT", "class_fragment": "Button"},
         )
         tap.assert_called_once_with(device, option, "theme_stage")
+
+    @staticmethod
+    def _theme_row(
+        description: str,
+        *,
+        resource_id: str = "",
+        enabled: bool = True,
+        visible: bool = True,
+    ) -> smoke.Node:
+        return smoke.Node(
+            "",
+            description,
+            "android.view.ViewGroup",
+            (0, 0, 100, 50),
+            resource_id=resource_id,
+            enabled=enabled,
+            visible_to_user=visible,
+        )
+
+    def test_theme_row_matches_resource_id_with_value_suffix(self) -> None:
+        row = self._theme_row(
+            "Appearance, Dark",
+            resource_id="dev.meeterm.app:id/app-theme",
+        )
+        self.assertIs(
+            smoke.find_theme_row([row], "Appearance"),
+            row,
+        )
+
+    def test_theme_row_matches_bare_label_description(self) -> None:
+        row = self._theme_row(
+            "Terminal theme",
+            resource_id="dev.meeterm.app:id/terminal-theme",
+        )
+        self.assertIs(smoke.find_theme_row([row], "Terminal theme"), row)
+
+    def test_theme_row_rejects_wrong_id_label_or_state(self) -> None:
+        cases = [
+            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/terminal-theme"), "Appearance"),
+            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Terminal theme"),
+            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", enabled=False), "Appearance"),
+            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", visible=False), "Appearance"),
+            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Font size"),
+        ]
+        for row, label in cases:
+            with self.subTest(label=label, enabled=row.enabled, visible=row.visible_to_user):
+                self.assertIsNone(smoke.find_theme_row([row], label))
+
+    def test_tap_theme_row_taps_the_identified_row(self) -> None:
+        row = self._theme_row(
+            "Terminal theme, Dark",
+            resource_id="dev.meeterm.app:id/terminal-theme",
+        )
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [row]
+        with mock.patch.object(smoke, "tap_node") as tap:
+            self.assertIs(smoke.tap_theme_row(device, "theme_stage", "Terminal theme"), row)
+        tap.assert_called_once_with(device, row, "theme_stage")
 
 
 if __name__ == "__main__":

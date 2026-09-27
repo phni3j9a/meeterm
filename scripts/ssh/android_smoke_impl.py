@@ -1548,6 +1548,75 @@ def accessible_label(node: Node) -> str:
     return node.content_description or node.text
 
 
+THEME_ROW_RESOURCE_IDS = {
+    "Appearance": "app-theme",
+    "Terminal theme": "terminal-theme",
+}
+
+
+def find_theme_row(nodes: list[Node], label: str) -> Node | None:
+    """Match one Settings theme row by testID plus its public a11y label.
+
+    Android joins RN ``accessibilityValue.text`` into ``contentDescription``
+    (for example ``Appearance, Dark``), so row identity comes from the
+    stable ``testID`` resource id while the label contract is checked with
+    the established label-prefix rule instead of an exact-description match.
+    """
+
+    resource = THEME_ROW_RESOURCE_IDS.get(label)
+    if resource is None:
+        return None
+    full_id = f"{PACKAGE}:id/{resource}"
+    for node in nodes:
+        if not node.visible_to_user or not node.enabled:
+            continue
+        if node.resource_id != full_id:
+            continue
+        if not content_description_has_label(node.content_description, label):
+            continue
+        return node
+    return None
+
+
+def wait_for_theme_row(
+    device: AndroidDevice,
+    stage: str,
+    label: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    deadline = time.monotonic() + timeout
+    last_dump_failure: SmokeFailure | None = None
+    hierarchy_seen = False
+    while time.monotonic() < deadline:
+        try:
+            nodes = device.dump_ui()
+            hierarchy_seen = True
+        except SmokeFailure as error:
+            last_dump_failure = error
+            time.sleep(0.2)
+            continue
+        node = find_theme_row(nodes, label)
+        if node is not None:
+            return node
+        time.sleep(0.2)
+    if not hierarchy_seen and last_dump_failure is not None:
+        raise SmokeFailure(stage, last_dump_failure.reason)
+    raise SmokeFailure(stage, "ui_timeout")
+
+
+def tap_theme_row(
+    device: AndroidDevice,
+    stage: str,
+    label: str,
+    *,
+    timeout: float = DEFAULT_UI_TIMEOUT,
+) -> Node:
+    node = wait_for_theme_row(device, stage, label, timeout=timeout)
+    tap_node(device, node, stage)
+    return node
+
+
 def pane_id_from_node(node: Node) -> str | None:
     """Extract a tmux pane ID from the non-spoken terminal tab test ID."""
 
@@ -4441,7 +4510,7 @@ def pick_theme_option(
 ) -> None:
     """Pick a value from one Settings theme row's native option dialog."""
 
-    tap_action(device, stage, (row_label,))
+    tap_theme_row(device, stage, row_label)
     # Android's native AlertDialog uppercases its action captions. Match the
     # actual native button, not the mixed-case value behind the dialog.
     node = wait_for_node(
@@ -4503,13 +4572,15 @@ def exercise_daily_settings(
     stage = "daily_settings_reopen"
     tap_action(device, stage, ("Terminal settings",))
     wait_for_field_value(device, stage, "Terminal font size", "18")
-    wait_for_node(device, stage, text="Light")
-    # Both independent rows must redisplay the persisted Light value.
-    light_rows = [
-        node for node in device.dump_ui()
-        if node.visible_to_user and node.text == "Light"
-    ]
-    if len(light_rows) < 2:
+    wait_for_node(device, stage, content_description="Appearance, Light")
+    # Both independent rows must redisplay the persisted Light value. The
+    # semantic accessibilityValue rides in the row's content description as
+    # "<label>, <value>", which is an exact match here.
+    redisplay_nodes = device.dump_ui()
+    if not all(
+        find_node(redisplay_nodes, content_description=description) is not None
+        for description in ("Appearance, Light", "Terminal theme, Light")
+    ):
         raise SmokeFailure(stage, "theme_values_not_redisplayed")
     capture_optional_screenshot(
         device,
@@ -4621,7 +4692,7 @@ def exercise_app_alert_fixed(
     """
 
     presented = f"presented appearance={appearance} resolved={appearance}"
-    tap_action(device, stage, ("Appearance",))
+    tap_theme_row(device, stage, "Appearance")
     baseline = wait_for_dialog_event(device, presented, baseline, stage)
     capture_optional_screenshot(
         device,
@@ -4637,7 +4708,7 @@ def exercise_app_alert_fixed(
     # Picking a different draft Appearance must not retheme the next chooser:
     # the Terminal theme dialog still resolves the applied App appearance.
     draft = "light" if appearance == "dark" else "dark"
-    tap_action(device, stage, ("Appearance",))
+    tap_theme_row(device, stage, "Appearance")
     baseline = wait_for_dialog_event(device, presented, baseline, stage)
     tap_app_dialog_button(device, stage, draft)
     baseline = wait_for_dialog_event(
@@ -4646,7 +4717,7 @@ def exercise_app_alert_fixed(
         baseline,
         stage,
     )
-    tap_action(device, stage, ("Terminal theme",))
+    tap_theme_row(device, stage, "Terminal theme")
     baseline = wait_for_dialog_event(device, presented, baseline, stage)
     tap_app_dialog_button(device, stage, "dark")
     baseline = wait_for_dialog_event(
@@ -4827,10 +4898,12 @@ def exercise_terminal_theme_os_scheme(
         timeout=RECONNECT_TIMEOUT,
     )
     # Discard really dropped the draft: the persisted rows are unchanged.
+    # The semantic accessibilityValue rides in each row's content
+    # description as "<label>, <value>".
     tap_action(device, stage, ("Terminal settings",))
     wait_for_text_input(device, stage, "Terminal font size")
-    wait_for_node(device, stage, text="Dark")
-    wait_for_node(device, stage, text="System")
+    wait_for_node(device, stage, content_description="Appearance, Dark")
+    wait_for_node(device, stage, content_description="Terminal theme, System")
     tap_action(device, stage, ("Cancel",))
     wait_for_node(
         device, stage, content_description="Terminal settings",
@@ -4866,7 +4939,7 @@ def exercise_terminal_theme_os_scheme(
     set_theme_preferences(device, stage, "system", "dark")
     tap_action(device, stage, ("Terminal settings",))
     wait_for_text_input(device, stage, "Terminal font size")
-    tap_action(device, stage, ("Appearance",))
+    tap_theme_row(device, stage, "Appearance")
     dialog_baseline = wait_for_dialog_event(
         device, "presented appearance=system resolved=dark",
         dialog_baseline, stage,
@@ -4882,7 +4955,7 @@ def exercise_terminal_theme_os_scheme(
         device, "result=selected index=0", dialog_baseline, stage,
     )
     set_night_mode(device, False, stage)
-    tap_action(device, stage, ("Appearance",))
+    tap_theme_row(device, stage, "Appearance")
     dialog_baseline = wait_for_dialog_event(
         device, "presented appearance=system resolved=light",
         dialog_baseline, stage,

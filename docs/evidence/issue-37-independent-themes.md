@@ -19,6 +19,27 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
   ただし fast typecheck は generated iOS app build・Simulator runtime・Main の
   画像・遷移レビューの受入ではなく、それらは依然 pending です。
 
+## 現在の受入候補と最初のモバイル結果
+
+統合候補 `aa2249ce2f18ad416551ea5a42948d82fb23f6bc` の一般 CI は
+[push](https://github.com/phni3j9a/meeterm/actions/runs/36328494218) と
+[PR](https://github.com/phni3j9a/meeterm/actions/runs/36328497348) とも成功しました。
+追加 XCTest source の Swift preflight、App 130件、Rust/OpenSSH/公式 Herdr、
+Android 生成ビルドと module tests を含みます。
+
+iOS `standard` の最初の実行は **失敗**です。fresh CNG/build、storage/input、
+26画面、6テーマ組合せと OS 外観切替まで到達し、Metal first frame を報告しましたが、
+`theme_dialog_dark` の draft 行確認で止まり、後続の逆ダイアログと foundation relaunch
+には到達していません。証跡は
+[`5b71dfb` の失敗解析](https://github.com/phni3j9a/meeterm/blob/5b71dfbdb7012f51a48b0eb88fe5c3a18b2a894c/aa2249ce-standard/FAILURE-ANALYSIS.md)
+にあります。accessible な設定ボタンの子テキストを XCTest が探していたため、
+現在値をボタンの `accessibilityValue.text` で公開し、ボタン自身の値を読む修正を追加しました。
+[React Native の値公開 API](https://reactnative.dev/docs/accessibility#accessibilityvalue) を
+使用し、別のテスト専用表示や状態は追加しません。15分のテスト予算は超過していません。
+手動で draft が Light に変わった画像と、表示中 keyboard の Light/Dark 画像は Main が
+実見しましたが、失敗した suite の合格や最終候補の視覚的受入とは扱いません。
+Android `full` は同じ候補で機械ゲートと実 SSH・テーマ操作が通りました([`909e58b`](https://github.com/phni3j9a/meeterm/tree/909e58bcf9f71b9ca6cf1e999cd9680820cc5c10))。観察用の画面撮影は31/32で、empty は unavailable と記録されています。これは source manifest32画面や全画面撮影の合格を意味しません。画像の最終レビューと修正後 source の受入結果は別途記録します。
+
 ## 実装した境界
 
 - 設定契約: `TerminalPreferences` に `terminalTheme: 'system' | 'light' | 'dark'` を追加しました。
