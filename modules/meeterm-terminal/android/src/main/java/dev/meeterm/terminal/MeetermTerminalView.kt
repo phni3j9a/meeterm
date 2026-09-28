@@ -15,6 +15,7 @@ import android.text.SpannableStringBuilder
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewConfiguration
@@ -55,6 +56,11 @@ class MeetermTerminalView(
   private val surface: GLSurfaceView = GLSurfaceView(context)
   private val content: LinearLayout = LinearLayout(context)
   private val renderer = TerminalRenderer(context)
+  // A recreated/created GL surface has no presented buffer and is composited
+  // black until the first swap. This themed sibling covers the viewport until
+  // the renderer reports a valid snapshot frame for the current generation.
+  private val terminalCover = View(context)
+  private val coverGate = SurfaceCoverGate()
   private lateinit var specialKeyRow: LinearLayout
   private var controlModifierButton: TextView? = null
   private var altModifierButton: TextView? = null
@@ -194,6 +200,35 @@ class MeetermTerminalView(
         1f,
       ),
     )
+
+    terminalCover.setBackgroundColor(terminalBackgroundColor())
+    terminalCover.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    // Never clickable or focusable: touches fall through to the terminal.
+    terminalCover.isClickable = false
+    terminalCover.isFocusable = false
+    addView(
+      terminalCover,
+      ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      ),
+    )
+    renderer.onNewSurfaceGeneration = { generation ->
+      post { armTerminalCover(generation) }
+    }
+    renderer.onValidSurfaceFrame = { generation ->
+      post { revealTerminalCover(generation) }
+    }
+    // surfaceDestroyed is the only holder event that empties the presented
+    // buffer. Resize keeps the existing buffer, so surfaceChanged does not
+    // re-raise the cover.
+    surface.holder.addCallback(object : SurfaceHolder.Callback {
+      override fun surfaceCreated(holder: SurfaceHolder) {}
+      override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+      override fun surfaceDestroyed(holder: SurfaceHolder) {
+        armTerminalCover(renderer.surfaceGeneration + 1)
+      }
+    })
     setOnApplyWindowInsetsListener { _, insets ->
       val (leftInset, rightInset, bottomInset) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         val ime = insets.getInsets(WindowInsets.Type.ime())
@@ -335,6 +370,7 @@ class MeetermTerminalView(
     val contentLeft = systemInsetLeft
     val contentRight = max(contentLeft + renderer.cellWidthPx, width - systemInsetRight)
     surface.layout(contentLeft, 0, contentRight, desiredHeight)
+    terminalCover.layout(contentLeft, 0, contentRight, desiredHeight)
     specialKeyRow.layout(contentLeft, desiredHeight, contentRight, desiredHeight + dp(48))
   }
 
@@ -1053,10 +1089,25 @@ class MeetermTerminalView(
     }
   }
 
+  private fun terminalBackgroundColor(): Int =
+    if (themeName == "light") Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
+
+  private fun armTerminalCover(generation: Long) {
+    coverGate.arm(generation)
+    terminalCover.setBackgroundColor(terminalBackgroundColor())
+    terminalCover.visibility = View.VISIBLE
+  }
+
+  private fun revealTerminalCover(generation: Long) {
+    coverGate.onValidFrame(generation)
+    if (!coverGate.covered) terminalCover.visibility = View.GONE
+  }
+
   private fun applyThemeColors() {
-    val background = if (themeName == "light") Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
+    val background = terminalBackgroundColor()
     setBackgroundColor(background)
     content.setBackgroundColor(background)
+    terminalCover.setBackgroundColor(background)
     if (::specialKeyRow.isInitialized) {
       specialKeyRow.setBackgroundColor(
         if (themeName == "light") Color.rgb(242, 237, 226) else Color.rgb(33, 31, 27),

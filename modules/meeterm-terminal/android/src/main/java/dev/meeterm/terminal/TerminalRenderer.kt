@@ -68,6 +68,14 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   @Volatile private var terminalHandle = 0L
   @Volatile private var preedit = ""
   @Volatile private var lightTheme = false
+  /** Raised on the GL thread when a new EGL surface generation starts. */
+  @Volatile var onNewSurfaceGeneration: ((Long) -> Unit)? = null
+  /** Raised on the GL thread after a frame that drew a valid snapshot. */
+  @Volatile var onValidSurfaceFrame: ((Long) -> Unit)? = null
+  /** Bumped on the GL thread per EGL surface creation; read cross-thread. */
+  @Volatile var surfaceGeneration = 0L
+    private set
+  private var lastNotifiedGeneration = -1L
   private var atlas: GlyphAtlas? = null
   @Volatile private var latestMetrics = RendererMetrics(
     fontMetrics.cellWidthPx,
@@ -129,6 +137,8 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   }
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+    surfaceGeneration += 1
+    onNewSurfaceGeneration?.invoke(surfaceGeneration)
     solidProgram = createProgram(SOLID_VERTEX_SHADER, SOLID_FRAGMENT_SHADER)
     textureProgram = createProgram(TEXTURE_VERTEX_SHADER, TEXTURE_FRAGMENT_SHADER)
     val metrics = fontMetrics
@@ -237,6 +247,12 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     if (!loggedFirstFrame) {
       Log.i(TAG, "MEETERM_SMOKE_FIRST_FRAME")
       loggedFirstFrame = true
+    }
+
+    val generation = surfaceGeneration
+    if (generation != lastNotifiedGeneration) {
+      lastNotifiedGeneration = generation
+      onValidSurfaceFrame?.invoke(generation)
     }
   }
 
