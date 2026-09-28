@@ -211,10 +211,16 @@ identity, plus a pinned-dark terminal that must emit no new resolved
 `MEETERM_SMOKE_THEME` logcat marker. These are additive cases inside the
 existing suite; Android's observational `SCREEN_NAMES` stays at 32 routes and
 theme combinations are not new named screen routes. The iOS counterparts are
-the `standard`/`ssh` additions above. The Issue #37 remote mobile runs are
-completed at their actual sources — iOS on `52978906` (standard evidence
-`3f15e9be`, ssh evidence `ce285376` with strict same-C4 product reuse) and
-Android `full` on `dca158c` (evidence `cf2db126`). See
+the `standard`/`ssh` additions above. The PR #44 review-fix runs are complete
+on exact product/test source `3f38a91`: fresh Android `full` (evidence
+`c9d3d1e2`) and fresh iOS `standard` (evidence `98299519`). Main downloaded and
+viewed the relevant screenshots and sampled recordings from both runs,
+including the Android recording's final encoded frame rather than only its
+fixed-rate samples. iOS `ssh` was not rerun for this label/render-scheduling
+change; its earlier evidence remains scoped to `52978906` (`ce285376`, with
+strict same-C4 product reuse), not to the review-fix source. Earlier iOS
+`standard` (`3f15e9be`) and Android `full` on `dca158c` (`cf2db126`) remain
+historical runs. See
 [evidence/issue-37-independent-themes.md](evidence/issue-37-independent-themes.md)
 for the verified evidence and scoped limits.
 

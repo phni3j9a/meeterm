@@ -5,6 +5,59 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
 [Issue #37](https://github.com/phni3j9a/meeterm/issues/37) の受入記録です。
 検証は source ごとに分けて記録し、到達していない項目は pending とします。
 
+## PR #44 レビュー修正版（C9 `3f38a91`）
+
+product/test source は `3f38a91a6be954f48fdc09d009514dc6aa29a5f8` です。
+以下の C4–C8 の記録は履歴として保持し、C9 の実行結果へ読み替えません。
+
+- SurfaceHolder create/change は `SurfaceCoverGate` 内で **lifetime 更新 → cover 表示
+  → `requestRender()`** を順に行います。GLSurfaceView の内部 callback が先に開始した
+  古い frame では解除せず、新しい lifetime の frame を明示要求します。destroy は cover
+  表示のみです。500ms の settled-frame 要求や次の端末出力を待つ設計にはしていません。
+- JVM 回帰は create/change の要求順序、旧 frame の拒否、新しい要求 frame による解除、
+  destroy 時の非要求と recreate を確認します。既存6件を含め7件成功。ローカルの一時コピー
+  から `requestRender()` だけを取り除く mutation では追加テストが期待どおり失敗しました。
+- Settings の行・accessibility label・chooser title・説明文を `App appearance` に統一し、
+  App テストと Android 操作ドライバを追従させました。`app-theme` testID と保存キーは不変です。
+- Rust の製品コード・テストは変更していません。指摘された復旧テストはローカル200回で
+  再現せず、旧 head `c2f9cae` の [PR CI attempt 2](https://github.com/phni3j9a/meeterm/actions/runs/36372094105/attempts/2)
+  も成功しました（Rust unit、実 OpenSSH、Clippy、公式 Herdr integration を実行）。
+  attempt 1 の `manual_retry` / `network` 不一致は失敗履歴として残し、再実行成功を根本原因の
+  確定や修正の証明とは扱いません。非同期 actor と状態観測の競合は source 上の可能性です。
+
+| C9 の検証 | 結果・証跡 |
+| --- | --- |
+| ローカル | 固定 Node 22.22.2 で typecheck・App 130件成功、Python SSH driver 260件成功、host JVM の SurfaceCoverGate 7件成功 |
+| 一般 CI | [push `36414482868`](https://github.com/phni3j9a/meeterm/actions/runs/36414482868) / [PR `36414487309`](https://github.com/phni3j9a/meeterm/actions/runs/36414487309) とも全4 job成功 |
+| iOS `standard` | [evidence `98299519`](https://github.com/phni3j9a/meeterm/tree/98299519ceb4db7ccff90546eab644a941242a9d)、fresh CNG/unsigned build、131 stages、storage 6/native input 14、26 presentation routes、theme 6組・dialog 11 captures、OS切替、readiness/Metal first frame/no-crash 成功 |
+| Android `full` | [evidence `c9d3d1e2`](https://github.com/phni3j9a/meeterm/tree/c9d3d1e27b175410c8a186c3f635bd15419a0842)、fresh CNG/release build、116 stages、theme 6組、実 OS 切替・dialog・実 SSH/tmux/transport-loss、readiness/first frame/no-crash 成功。module JVM 81件（gate 7件を含む）成功 |
+
+iOS は `3f38a91a-standard/suite/` の関連24 PNG（Settings＋theme 23枚）と156.338秒の動画から
+1fpsで抽出した全156サンプル・6 sheetを Main が実見しました。両配色の `App appearance`
+行と chooser、独立テーマを確認しています。動画中の明示的な fixture 再起動の起動画面は
+定常 terminal の描画と区別し、全 frame/no-flash の保証にはしません。Metal marker は
+Simulator での結果であり、物理端末での GPU/IME 同等性ではありません。
+
+Android は同じ受入 bundle の関連17 PNG（theme/settings）と `focused/` の6 PNGを Main が
+実見しました。Settings の行・chooser の名称と独立配色が確認できました。23.407956秒の
+`focused/pr44-focused.mp4` は全117個の5fps抽出サンプル・5 sheetに加え、最終 encoded frame
+（PTS 23.394911）を直接取り出して確認しました。初回・Backから既存行の再表示・Home復帰は
+Light の一時的な空白を経て本文表示へ戻り、最終PNGと最終encoded frameはともに本文表示です。
+5fps抽出が最後のframeを拾わず、末尾が空白のままに見えた Main の初期判定は訂正しました。
+同一PID 27982での3回のGLES作成/first frameは確認できますが、preserved-EGL-context経路の
+実測や再描画レイテンシ、全frameの無遅延/no-flashは主張しません。観測用routeは31/32で、
+`empty` は `missing_screen_element` の unavailable 記録が残ります（機械ゲートとは別）。
+この修正では実端末や外部IME配色の検証はしていません。
+
+ローカルの未固定 Node 22.23.2 では typecheck と App テストプロセスが SIGSEGV で終了したため、
+その実行を成功件数に含めていません。固定版と CI は成功しましたが、ホスト側の原因は未確定です。
+今回 iOS `ssh` は再実行していません（接続・認証・native input を変えない修正）。
+過去 C4 の `ssh` を C9 の実走と呼びません。最終文書 head の CI と未マージのレビュー状態は
+[PR #44](https://github.com/phni3j9a/meeterm/pull/44) に記録します。
+以前の文書 commit `8a8ba75` の [PR run `36370827290`](https://github.com/phni3j9a/meeterm/actions/runs/36370827290)
+にあった `OpenSSH fixture listener identity changed` も、C9の成功によって原因解明済みには
+しません。同runのClippy/Herdr未実行と、同じtreeのpush成功は旧PR本文の履歴として保持します。
+
 ## 実装範囲
 
 - 設定契約: `TerminalPreferences` に `terminalTheme: 'system' | 'light' | 'dark'` を
@@ -55,9 +108,9 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
   外観だけで、接続・pane・lifecycle 状態は不変です。パラメータなし既定は従来どおり
   light app + dark terminal です。
 
-## 検証対象 source
+## レビュー前の検証対象 source（C4–C8）
 
-検証対象の product/test source は C8 `dca158c0239787e1e0066adbe9e9ff83af14cfc8`
+レビュー前の product/test source は C8 `dca158c0239787e1e0066adbe9e9ff83af14cfc8`
 です。この文書は実際の product/test 証跡と範囲限定を記録するもので、将来の
 ワークフロー完了を記録するものではありません — 現在のレビュー・統合状態は
 [PR #44](https://github.com/phni3j9a/meeterm/pull/44) を参照してください。
@@ -89,7 +142,7 @@ focused probe と合わせて FP-003 は実見範囲で解消しました (下�
 [PR #44](https://github.com/phni3j9a/meeterm/pull/44) を参照し、merge 安全性の
 主張はここではしません。
 
-## 一般 CI (現在 source C8 `dca158c`)
+## レビュー前の一般 CI (C8 `dca158c`)
 
 | source | run | 結果 |
 | --- | --- | --- |
@@ -163,7 +216,7 @@ session `devin-9429c00e…`、emulator-5554 API 36 x86_64 headless (anims=0.0)�
 toolchain 実測: node 22.22.2 / npm 10.9.7 / JDK 17.0.19 / NDK 27.1.12297006 /
 Rust 1.96.0 / Gradle 9.3.1。
 
-**`full` r4** (現行 source C8 `dca158c` の最終実走) — evidence
+**`full` r4** (当時の source C8 `dca158c` の最終実走) — evidence
 [`android-20260928-issue37-full-r4` @ `cf2db126`](https://github.com/phni3j9a/meeterm/tree/cf2db1264fa6ad17f71312c30c80dc3b1f76fd25):
 fresh clean CNG → `assembleRelease` BUILD SUCCESSFUL (2m20s・668 tasks) → install で
 `suite=android-full` が `result=passed`・`first_failing_stage=none`、
@@ -494,7 +547,7 @@ Node 22.22.2 の hosted CI で、App 130件の独立 pass があります。
 
 - fixture の seed 表示と Herdr/recovery route の表示は presentation evidence で、
   実接続・実 Herdr session の証拠ではありません。実 SSH/tmux の mobile 証拠は上記の
-  iOS `ssh` (実 C4 source) と Android `full` (現行 C8 `dca158c` の r4。過去 source
+  iOS `ssh` (実 C4 source) と Android `full` (当時の C8 `dca158c` の r4。過去 source
   C5 `de8a4e6` の r3 は履歴として保持) の両経路です。公式 Herdr 0.9.0 の
   integration は一般 CI の ignored test (隔離 russh endpoint) が別途確認して
   います。
