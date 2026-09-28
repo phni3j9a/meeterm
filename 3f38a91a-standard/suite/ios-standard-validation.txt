@@ -1,0 +1,5 @@
+result=passed
+suite=standard
+stage=complete
+reason=none
+ui_last_stage=complete

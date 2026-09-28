@@ -1,0 +1,62 @@
+run=ios-standard-pr44-review
+candidate=3f38a91a6be954f48fdc09d009514dc6aa29a5f8
+branch_checked_out=issue-37-independent-themes (local validation checkout; no product-branch commits/pushes)
+session=devin-7a32a4e6ed984961b5194e22feeba407 (devin-swe-2-max)
+date_utc=2026-09-28
+runner_temp=/Users/devin/runner-temp-pr44 (fresh unique)
+evidence_branch=evidence/ios-20260928-pr44-review
+change_scope_vs_52978906=Settings "Appearance"→"App appearance" (row/a11y label/
+  chooser title/helper; testID app-theme unchanged) + Android SurfaceCoverGate
+  render scheduling + docs. iOS native/input/build sources unchanged;
+  shared app/DailyUse.tsx changed → fresh build required (prior products ineligible).
+
+[toolchain — verified actual]
+node=v22.22.2 / npm=10.9.7 / rust=1.96.0 (aarch64-apple-ios-sim)
+xcode=26.6 (17F113), iOS Simulator SDK 26.5
+cocoapods=1.17.0 (LANG/LC_ALL=en_US.UTF-8)
+host=macOS 26.5.2 arm64
+simulator=iPhone 18 Pro Max 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iOS 27.0
+
+[stages]
+swift_preflight_ios_typecheck=pass (before CNG/build)
+npm_ci=pass / rustup_target=pass
+cng=pass (expo prebuild --platform ios --non-interactive --no-install --clean)
+inject_ui_test=pass / pod_install=pass / strip_storage_rust_link=pass
+build_for_testing=pass (Release, iphonesimulator, unsigned, arm64, TEST BUILD SUCCEEDED)
+entitlements_verify=pass (__entitlements + __ents_der both present)
+test_products_pack=pass (runner-temp-pr44/ios-test-products; manifest+checksum)
+simulator_select=pass
+standard_suite=PASS — suite exit 0:
+  "iOS standard UI smoke passed."
+  "iOS foundation validation passed."
+  "iOS standard seeded-screen and fresh native foundation smoke passed."
+
+[matrix]
+native_storage_xctest=6/6 cases passed (incl. legacy_preferences_migration)
+native_input_xctest=14/14 cases passed (incl. theme_refresh)
+presentation_routes=26/26 (standard-*.png)
+theme_matrix=6/6 pairs (theme-app-*-terminal-*.png)
+theme_dialog=11/11 captures (ActionSheet/draft/discard Alert/system legs)
+os_flips=pass (same native handle, selection survives, pinned terminal, keyboard leg)
+settings_preview + recovery rail mounts=pass
+stages=theme_verification_complete → foundation_verified → standard_complete → teardown_complete
+appearance_observer=pass (restored to light)
+native_readiness=pass (MEETERM_SMOKE_NATIVE_READY, fresh pid)
+first_frame=METAL (MEETERM_SMOKE_FIRST_FRAME_METAL; zero SOFTWARE markers)
+recording=theme-transitions.mp4 captured (theme_matrix_open → theme_verification_complete)
+
+[evidence contents — this run only]
+suite/  — artifacts/ios-simulator-observability (71 files): all validation txts,
+          ios-ui-stages.txt, ios-ui-timing.txt, simulator.log (sanitized
+          MEETERM_SMOKE_* slice incl. THEME marker), diagnostics set, metadata,
+          theme-transitions.mp4, theme-recording.txt, 50 pngs
+build/  — xcode-version.txt, toolchain-versions.txt, ios-simulator-entitlements.txt,
+          xcodebuild.log (build-for-testing transcript)
+xctest-transcript.log — xcuitest_standard log
+run-record.txt — this file
+
+[not run / bounds]
+- ssh/full/polish NOT run (not requested; no connection/input change in this fix).
+- Simulator only; no physical device; no Android parity claims.
+- No source/test/assertion/deadline changes; no rerun; suite recorded as-is.
+- Video: bounded theme-section mp4 (as built into the suite driver).
