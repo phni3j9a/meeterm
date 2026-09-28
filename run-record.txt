@@ -1,0 +1,11 @@
+== pr44-tail correction record ==
+scope: tail timing/correction record only (per Main correction); original pr44-focused.mp4 UNMODIFIED in evidence/android-20260928-pr44-review @ c9d3d1e
+source/APK: 3f38a91a6be954f48fdc09d009514dc6aa29a5f8 installed on emulator-5554; current app pid 27982 (same process as the focused clip legs)
+
+FINDING (corroborates Main): the apparent "blank tail" in focused/pr44-focused.mp4 is an fps=5 sampling artifact, NOT a stranded cover.
+- clip: 107 video frames, duration 23.408s, variable frame rate (avg ~4.57 fps)
+- last packet pts_time=23.394911 (~13ms before container end); preceding frames at 23.381867 / 22.964078 / 22.129178
+- frames ~22.1-23.38 show a transient themed blank Light viewport (orig-22.5.png); the FINAL encoded frame (ffmpeg -sseof -0.02) shows full terminal text and matches f44-05-resumed.png (orig-true-lastframe.png)
+- an fps=5 contact sheet samples ~23.2s last and never reaches the 23.395 final frame -> looked like the video ended blank
+- current live screen (current-screen.png, pid 27982, ~30+min later): text present, no blank, no stuck cover; markers-tail.txt: last remount emitted 'GLES surface created' + MEETERM_SMOKE_FIRST_FRAME + THEME dark+light
+limits: no per-frame latency claim; transient themed blank during resume settle is real and remains human-reviewed evidence; no preserved-EGL-context claim

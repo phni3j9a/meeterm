@@ -1,0 +1,12 @@
+I/MeetermTerminalView(27982): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView(27982): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView(27982): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView(27982): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer(27982): GLES surface created cell=20x54
+I/MeetermRenderer(27982): MEETERM_SMOKE_FIRST_FRAME
+I/MeetermTerminalView(27982): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView(27982): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView(27982): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView(27982): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer(27982): GLES surface created cell=20x54
+I/MeetermRenderer(27982): MEETERM_SMOKE_FIRST_FRAME
