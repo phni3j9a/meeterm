@@ -213,20 +213,20 @@ class MeetermTerminalView(
         ViewGroup.LayoutParams.MATCH_PARENT,
       ),
     )
-    renderer.onNewSurfaceGeneration = { generation ->
-      post { armTerminalCover(generation) }
+    renderer.onNewSurface = { post { armTerminalCover() } }
+    renderer.onValidSurfaceFrame = { frameSeq ->
+      if (coverGate.covered) post { revealTerminalCover(frameSeq) }
     }
-    renderer.onValidSurfaceFrame = { generation ->
-      post { revealTerminalCover(generation) }
-    }
-    // surfaceDestroyed is the only holder event that empties the presented
-    // buffer. Resize keeps the existing buffer, so surfaceChanged does not
-    // re-raise the cover.
+    // The surface's black background layer also shows while a resize waits
+    // for the first new-size buffer, so surfaceChanged and surfaceDestroyed
+    // re-raise the cover alongside each recreated surface.
     surface.holder.addCallback(object : SurfaceHolder.Callback {
       override fun surfaceCreated(holder: SurfaceHolder) {}
-      override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+      override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        armTerminalCover()
+      }
       override fun surfaceDestroyed(holder: SurfaceHolder) {
-        armTerminalCover(renderer.surfaceGeneration + 1)
+        armTerminalCover()
       }
     })
     setOnApplyWindowInsetsListener { _, insets ->
@@ -1092,14 +1092,15 @@ class MeetermTerminalView(
   private fun terminalBackgroundColor(): Int =
     if (themeName == "light") Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
 
-  private fun armTerminalCover(generation: Long) {
-    coverGate.arm(generation)
+  private fun armTerminalCover() {
+    coverGate.arm(renderer.validFrameSeq)
     terminalCover.setBackgroundColor(terminalBackgroundColor())
     terminalCover.visibility = View.VISIBLE
   }
 
-  private fun revealTerminalCover(generation: Long) {
-    coverGate.onValidFrame(generation)
+  private fun revealTerminalCover(frameSeq: Long) {
+    if (!coverGate.covered) return
+    coverGate.onValidFrame(frameSeq)
     if (!coverGate.covered) terminalCover.visibility = View.GONE
   }
 
