@@ -68,13 +68,10 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   @Volatile private var terminalHandle = 0L
   @Volatile private var preedit = ""
   @Volatile private var lightTheme = false
-  /** Raised on the GL thread when a new EGL surface generation starts. */
-  @Volatile var onNewSurface: (() -> Unit)? = null
+  /** UI-thread holder lifetime, read at the start of every GL frame. */
+  @Volatile var surfaceLifetimeProvider: (() -> Long)? = null
   /** Raised on the GL thread after every frame that drew a valid snapshot. */
   @Volatile var onValidSurfaceFrame: ((Long) -> Unit)? = null
-  /** GL-thread counter of frames that drew a valid snapshot; read cross-thread. */
-  @Volatile var validFrameSeq = 0L
-    private set
   private var atlas: GlyphAtlas? = null
   @Volatile private var latestMetrics = RendererMetrics(
     fontMetrics.cellWidthPx,
@@ -136,7 +133,6 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   }
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-    onNewSurface?.invoke()
     solidProgram = createProgram(SOLID_VERTEX_SHADER, SOLID_FRAGMENT_SHADER)
     textureProgram = createProgram(TEXTURE_VERTEX_SHADER, TEXTURE_FRAGMENT_SHADER)
     val metrics = fontMetrics
@@ -165,6 +161,9 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   }
 
   override fun onDrawFrame(gl: GL10?) {
+    // Captured before the snapshot is fetched so a frame begun on an older
+    // surface lifetime cannot be reported as a new-lifetime completion.
+    val frameLifetime = surfaceLifetimeProvider?.invoke() ?: 0L
     val metrics = fontMetrics
     if (appliedFontGeneration != metrics.generation || atlas == null) {
       val replacement = GlyphAtlas(
@@ -247,8 +246,7 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
       loggedFirstFrame = true
     }
 
-    validFrameSeq += 1
-    onValidSurfaceFrame?.invoke(validFrameSeq)
+    onValidSurfaceFrame?.invoke(frameLifetime)
   }
 
   private fun drawGlyph(

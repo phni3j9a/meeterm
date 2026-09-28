@@ -4,72 +4,91 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Exercises the gate through the same calls the production view and renderer
+ * make: holder callbacks bump the lifetime and arm; the renderer stamps each
+ * valid frame with the lifetime read when the frame started and reports it
+ * through onValidFrame on the UI thread.
+ */
 class SurfaceCoverGateTest {
   @Test
-  fun coveredUntilFirstValidFrame() {
+  fun firstValidFrameOfLifetimeReveals() {
     val gate = SurfaceCoverGate()
     assertTrue(gate.covered)
-    gate.onValidFrame(1)
+    gate.surfaceCreated()
+    val stampedAtStart = gate.currentLifetime
+    gate.onValidFrame(stampedAtStart)
     assertFalse(gate.covered)
   }
 
   @Test
-  fun armRequiresStrictlyNewerFrame() {
+  fun recreateWithoutContextRecreatedStillReveals() {
     val gate = SurfaceCoverGate()
-    gate.onValidFrame(1)
+    // holder create -> EGL context+surface create once -> valid frame reveals
+    gate.surfaceCreated()
+    gate.onValidFrame(gate.currentLifetime)
     assertFalse(gate.covered)
 
-    // A surface lifecycle event at frame 1: the frame that already presented
-    // must not reveal the cover; the next valid frame does.
-    gate.arm(1)
+    // holder destroy with the GL thread drained first (GLSurfaceView's own
+    // callback ordering), then a recreate where the preserved context means
+    // Renderer.onSurfaceCreated never runs again.
+    gate.surfaceDestroyed()
     assertTrue(gate.covered)
-    gate.onValidFrame(1)
+    gate.surfaceCreated()
     assertTrue(gate.covered)
-    gate.onValidFrame(2)
-    assertFalse(gate.covered)
-  }
-
-  @Test
-  fun staleRevealQueuedBeforeArmCannotUncover() {
-    val gate = SurfaceCoverGate()
-    gate.onValidFrame(5)
-    gate.arm(6)
-    gate.onValidFrame(5)
-    assertTrue(gate.covered)
-    gate.onValidFrame(6)
-    assertTrue(gate.covered)
-    gate.onValidFrame(7)
+    gate.onValidFrame(gate.currentLifetime)
     assertFalse(gate.covered)
   }
 
   @Test
-  fun destroyedSurfaceStaysCoveredUntilNextSurfaceFrame() {
+  fun frameStartedBeforeDestroyCannotRevealAfterRecreate() {
     val gate = SurfaceCoverGate()
-    gate.onValidFrame(3)
-    gate.arm(3)
+    gate.surfaceCreated()
+    // Renderer read the lifetime when this frame STARTED, before destroy.
+    val oldSurfaceStamp = gate.currentLifetime
+    gate.surfaceDestroyed()
+    gate.surfaceCreated()
+    // The completion reaches the UI thread only after the new lifetime armed.
+    gate.onValidFrame(oldSurfaceStamp)
     assertTrue(gate.covered)
-    // A destroyed surface draws nothing; only a later frame can reveal.
-    gate.onValidFrame(4)
+    gate.onValidFrame(gate.currentLifetime)
     assertFalse(gate.covered)
   }
 
   @Test
-  fun laterValidFramesNeverReArm() {
+  fun noSurfaceNeverReveals() {
     val gate = SurfaceCoverGate()
-    gate.onValidFrame(1)
-    gate.onValidFrame(2)
-    gate.onValidFrame(3)
+    gate.surfaceCreated()
+    gate.onValidFrame(gate.currentLifetime)
+    gate.surfaceDestroyed()
+    // No draw may claim the destroyed lifetime, not even one stamped with it.
+    gate.onValidFrame(gate.currentLifetime)
+    assertTrue(gate.covered)
+  }
+
+  @Test
+  fun resizeArmsUntilFirstFrameOfThatLifetime() {
+    val gate = SurfaceCoverGate()
+    gate.surfaceCreated()
+    gate.onValidFrame(gate.currentLifetime)
+    assertFalse(gate.covered)
+
+    gate.surfaceChanged()
+    assertTrue(gate.covered)
+    // A frame begun before the change carries the prior lifetime and is stale.
+    gate.onValidFrame(gate.currentLifetime - 1)
+    assertTrue(gate.covered)
+    gate.onValidFrame(gate.currentLifetime)
     assertFalse(gate.covered)
   }
 
   @Test
-  fun reArmMonotonicAcrossRapidEvents() {
+  fun healthyContentFramesNeverReArm() {
     val gate = SurfaceCoverGate()
-    gate.arm(2)
-    gate.arm(5)
-    gate.onValidFrame(4)
-    assertTrue(gate.covered)
-    gate.onValidFrame(6)
+    gate.surfaceCreated()
+    gate.onValidFrame(gate.currentLifetime)
+    gate.onValidFrame(gate.currentLifetime)
+    gate.onValidFrame(gate.currentLifetime)
     assertFalse(gate.covered)
   }
 }
