@@ -1,0 +1,5 @@
+bootstatus_timeout_seconds=900
+simulator_udid=7EE2EBC1-0640-4950-AAFF-B4CDF455F377
+simulator_name=iPhone 18 Pro Max
+layout_profile=default
+renderer_backend=metal

@@ -1,0 +1,8 @@
+Monitoring boot status for iPhone 18 Pro Max (7EE2EBC1-0640-4950-AAFF-B4CDF455F377).
+[2026-09-28 15:00:27 +0000] Status=1, isTerminal=NO, Elapsed=00:01.
+	Waiting on BackBoard
+
+[2026-09-28 15:00:36 +0000] Status=4294967295, isTerminal=YES, Elapsed=00:10.
+	Finished
+
+bootstatus=ready

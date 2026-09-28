@@ -1,0 +1,15 @@
+run=issue45-standard
+candidate=690b09b2e1ad097ad2747922c8d48a04b32c48bd
+suite=standard
+result=passed
+runner_temp=/Users/devin/runner-temp-issue45
+products=/Users/devin/runner-temp-issue45/ios-test-products (pristine, packed before runtime)
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone18ProMax iOS27.0
+xcode=26.6-17F113 arch=arm64 config=Release-iphonesimulator unsigned
+node=22.22.2 npm=10.9.7 rust=1.96.0 cocoapods=1.17.0 macos=26.5.2
+session=devin-swe-2-max devin-7a32a4e6ed984961b5194e22feeba407
+renderer=FIRST_FRAME_METAL (software-first-frame=0)
+build=fresh CNG --clean + fresh build-for-testing; no product reuse
+storage_cases=6/6 native_input_cases=14/14 routes=26/26 theme_matrix=6/6 theme_dialog=11/11
+stage_markers=theme_verification_complete,foundation_verified,standard_complete
+recording=theme-transitions.mp4 captured
