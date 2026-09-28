@@ -147,6 +147,73 @@ resolver filesystem test also compares POSIX sh with outer bash `failglob`, so
 CI covers strict unmatched-glob behavior without requiring a new shell package.
 
 This changes code compiled into the mobile library. The mobile results above
-remain valid for their recorded `690b09b2` source, but fresh Android full and
-iOS standard/ssh on the follow-up candidate are required before final acceptance.
-Their final results will be recorded below.
+remain scoped to their recorded `690b09b2` source. Final acceptance therefore
+uses fresh Android full and iOS standard/ssh runs on the follow-up candidate,
+recorded below.
+
+Follow-up candidate: `1351186c518cddd24a0cc4538c5704712d1c9868`.
+Local fmt/Clippy, 238 unit cases, 4 fixture/parser cases and 1 layout case passed.
+Real Herdr 0.9.0 and 0.9.1 each passed all four ignored cases (41.55 and 41.93
+seconds while the two isolated version runs overlapped). The first local
+invocation omitted `MEETERM_HERDR_INTEGRATION=1`, so three cases stopped at their
+opt-in precondition; those invocations are not counted as successful execution.
+
+[Follow-up Rust CI](https://github.com/phni3j9a/meeterm/actions/runs/36447040511/job/109011907881)
+passed on that exact candidate: all 238 unit cases, 4 fixture/parser cases,
+1 layout case, real OpenSSH/tmux (28.15 seconds), all four SHA-verified 0.9.0
+cases (22.12 seconds), and the SHA-verified 0.9.1 compatibility/recovery case
+(3.13 seconds). JavaScript/Expo, Swift preflight, and Android native build
+(job `109011908110`, 13m43s) also passed. Both
+[PR CI](https://github.com/phni3j9a/meeterm/actions/runs/36447040511) and
+[push CI](https://github.com/phni3j9a/meeterm/actions/runs/36447033610) succeeded.
+
+Final mobile acceptance uses that exact `1351186` candidate and the same SWE-2
+Max platform sessions linked above:
+
+- iOS `standard`: passed with fresh CNG and unsigned build-for-testing, with
+  no reuse of `690b09b2` products. Evidence
+  [`evidence/ios-20260928-issue45-posix-standard`](https://github.com/phni3j9a/meeterm/tree/330b19edca2a4b59d0d439f866dff8fd8bb23f5d/1351186-posix-standard)
+  records the exact source and Xcode 26.6 (17F113), arm64, iOS 27.0 toolchain.
+  All 26 routes, 14 native input cases, 6 app-hosted storage cases, 6 theme
+  combinations and 11 theme/dialog checks passed. Native readiness, Metal
+  first frame and no-crash survival passed. Main downloaded this exact
+  evidence commit and viewed all 26 standard, 23 theme and one foundation PNGs;
+  the picker, Herdr presentation, terminal, recovery, keyboard and theme states showed
+  no visible regression in these captures.
+- iOS `ssh`: passed using pristine products from the same session's fresh
+  `1351186` standard build. The strict restore helper verified source SHA,
+  manifest, checksums and Xcode before reuse. Evidence
+  [`evidence/ios-20260928-issue45-posix-ssh`](https://github.com/phni3j9a/meeterm/tree/52a7d28c3b07d42051e6c88696108dde9f5799e1/1351186-posix-ssh)
+  records real OpenSSH/tmux selection, native input, theme markers and
+  transport-loss success. The native terminal identifier/handle and selected
+  pane remained the same, the cached surface stayed read-only during loss,
+  and pre/post markers occurred once on the same pane/PID with other panes
+  clean. Metal executed. Main downloaded this exact evidence commit and
+  viewed all eight PNGs, including input, keyboard, both terminal themes and
+  disconnect. No visible regression was identified in these captures.
+- Android `full`: passed with fresh CNG and a release build (2m17s). Evidence
+  [`evidence/android-20260928-issue45-posix`](https://github.com/phni3j9a/meeterm/tree/3b4d472344e3f02004527974203d6efc106d78e2)
+  records the exact `1351186` source, API 36 x86_64 emulator, JDK 17.0.19,
+  NDK 27.1.12297006, Rust 1.96.0 and Gradle 9.3.1. Install, launch, native
+  readiness, first frame and no-crash gates passed. The real SSH/tmux suite
+  completed all 116 stages through `disconnect_after_resume` in about 33
+  minutes. Transport loss retained the native handle and pane, blocked input
+  on the stale surface, and produced pre/post markers exactly once with other
+  panes clean. Settings, saved credentials, native copy/paste, CJK atlas,
+  desktop layout restoration, six theme combinations, OS theme changes and
+  dialogs completed. Main downloaded this exact evidence commit and viewed
+  all 59 PNGs: 31 seeded routes and 28 interaction captures. No visible
+  regression was identified in those captures. The observational `empty`
+  route again records `missing_screen_element_0,screen_element_1` in its fresh
+  unavailable diagnostic; it is not counted as a viewed/passing screenshot.
+  The artifact directory was reused, so Main requested a provenance audit
+  before publication. `artifact-provenance.txt` records the post-suite mtime
+  sweep: suite files were overwritten by this run, and two manual summaries
+  were regenerated from its fresh logs. No stale files remained or needed
+  exclusion; no earlier-stage screenshot was back-filled.
+
+Subsequent evidence-only commits do not change the accepted product, native,
+test or build inputs. Their CI status is linked from PR #46. The mobile live
+connection cases above exercise tmux; live Herdr compatibility and zero-tap
+recovery are established by the separate Rust/russh binary cases. Emulator and
+Simulator captures do not establish physical-device GPU or external-IME parity.
