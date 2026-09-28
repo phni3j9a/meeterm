@@ -1,0 +1,1 @@
+      cmd LC_CODE_SIGNATURE

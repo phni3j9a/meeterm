@@ -1,0 +1,6 @@
+theme_markers=passed
+light_marker_exactly_once=yes
+dark_marker_exactly_once=yes
+same_pane=yes
+same_pane_pid=yes
+other_panes_clean=yes
