@@ -14,7 +14,7 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 | 共有コード | TypeScript/Expo、Rustの単体・実OpenSSH/tmux統合テスト、Herdr protocol parser、該当ドライバの回帰テスト | 共有ロジックと接続・端末処理 |
 | Herdr live | 隔離 russh endpoint + real Herdr 0.9.0 の ignored integration test | Herdr direct control、snapshot/events、入力・resize・lease・再同期・PC引き継ぎ |
 | Android | full smoke（healthy foreground と fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker）と画像の実見。source-levelのobservational `SCREEN_NAMES` は32 route（従来25 route＋switcher 2 route＋recovery 3 route＋layout-restore warning 2 route） | Androidの自動操作とnative境界。transport-lossの実証はremote emulator実行に限り、fixtureは表示確認だけの代替ではない |
-| iOS `standard` | production保存4件、native入力／復旧bridge 12件＋scroll gesture 1件、source-level 26画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
+| iOS `standard` | production保存6件（`legacy_preferences_migration`・旧4キーpreferencesのterminalTheme補完を含む）、native入力14件（marked text・`theme_refresh`・scroll gestureを含む）、source-level 26画面の撮影、native起動・readiness・first frame・no-crash | iOSの保存/入力実装、画面表示、実native端末描画 |
 | iOS `polish` | 追加7状態、検索・native keyboard・sheet・戻る・edge gesture、fresh native foundation | UI変更時の明示的な追加診断。SSH入力・保存の証拠にはしない |
 | iOS `polish-navigation` | 上と同じ操作helperを単独実行し、fresh native foundationを確認 | 端末keyboard/navigationだけの独立診断。7状態や旧polish失敗を合格へ置き換えない |
 | iOS `ssh` | 接続、ホスト鍵確認、runtime picker/選択、healthy foreground復帰、fixture sshd の deterministic transport-loss → retained/read-only → same-pane Ready → post-loss marker、切断 | iOSの実SSH、runtime選択、native端末入力とtransport-loss接続境界 |
@@ -347,7 +347,15 @@ Herdr `default` candidate の `Last used` hint を示すpicker stateです。
 `recovery-progress`、`recovery-exhausted`、`recovery-mismatch`、
 `layout-restore-unconfirmed`、
 `runtime-layout-restore-unconfirmed`、`connection-error`です。
-撮影用設定はライト表示に固定します。最後の新規起動によるnative foundationは `terminal.png` に保存します。
+撮影用設定は既定でアプリ外観ライト・端末テーマダークに固定します。
+外観の組み合わせを確認する場合だけ、起動URLのscreenの直後に
+`&app=<system|light|dark>` と `&terminal=<system|light|dark>` をこの順で追加できます。
+両方とも任意で、fixtureのseedされた設定値だけを上書きし、接続・pane・lifecycle状態は変えません。
+不明な値・未知のパラメータ・順序の入れ替えは従来どおり経路を無効にします。
+iOS `standard` はこの仕組みで6組合せ（light/dark全4組＋terminal=system 2組）を
+`theme-app-<a>-terminal-<t>.png` として撮影し、Settings preview、seedされた
+recovery表示、実 `simctl ui` 外観切替での同一native handle・selection維持を確認します。
+最後の新規起動によるnative foundationは `terminal.png` に保存します。
 
 追加診断の `polish` は、初回起動、空の一覧、検索結果なし、切断、再接続中、認証エラー、
 長いworkspace名の7状態を `polish-<名前>.png` に保存します。起動URL名は
@@ -409,11 +417,11 @@ fixtureも実際のAppState通知に追従しますが、Rustへの接続・再�
 
 | `ios_suite` | 用途 |
 | --- | --- |
-| `standard` | 通常の保存・入力・画面撮影・native foundation。既定値 |
+| `standard` | 通常の保存・入力・画面撮影・native foundation・独立theme確認（組合せ撮影と実OS外観切替）。既定値 |
 | `polish` | 追加7状態と検索・native keyboard・sheet・back gestureの表示・操作診断 |
 | `polish-navigation` | 同じ操作helperとfresh foundationを、7状態の巡回から独立して確認 |
-| `ssh` | 実SSH接続と短いnative入出力の確認 |
-| `native` | 保存4件（legacy profileのbackend/runtimeをlast-used hintへ移行する境界を含む）とnative入力7件＋scroll gesture 1件の限定確認 |
+| `ssh` | 実SSH接続と短いnative入出力、接続維持中のtheme in-place確認 |
+| `native` | 保存6件（legacy profileのbackend/runtime移行・旧4キーpreferencesのterminalTheme補完を含む）とnative入力14件（marked text・theme refresh・scroll gestureを含む）の限定確認 |
 | `forms` | 接続フォームの実操作を調べる任意の診断 |
 | `names` | 実SSH経由のworkspace/pane作成・名前変更・終了を調べる任意の診断 |
 | `full` | 従来の全操作、cold restart、copy、設定、名前操作等を連続実行する任意の診断 |

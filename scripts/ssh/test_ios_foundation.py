@@ -127,6 +127,48 @@ class FoundationValidatorTests(unittest.TestCase):
         ])
         self.assert_reason(result, root, "missing_first_frame")
 
+    def test_theme_diagnostics_are_accepted_but_not_foundation_evidence(self) -> None:
+        result, root = self.run_case([
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_THEME dark"),
+            compact_marker(102.5, 1234, "MEETERM_SMOKE_THEME light"),
+            compact_marker(103.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+            compact_marker(104.0, 1234, "MEETERM_SMOKE_FIRST_FRAME_METAL"),
+        ])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("renderer_backend=metal\n", (root / "metadata.txt").read_text())
+
+        result, root = self.run_case([
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_THEME dark"),
+        ])
+        self.assert_reason(result, root, "missing_marker")
+
+        result, root = self.run_case([
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+            compact_marker(103.0, 1234, "MEETERM_SMOKE_THEME dark"),
+        ])
+        self.assert_reason(result, root, "missing_first_frame")
+
+        result, root = self.run_case([
+            compact_marker(102.0, 1234, "MEETERM_SMOKE_THEME dark"),
+            compact_marker(103.0, 1234, "MEETERM_SMOKE_FIRST_FRAME_METAL"),
+        ])
+        self.assert_reason(result, root, "missing_native_ready")
+
+    def test_malformed_theme_diagnostics_remain_invalid(self) -> None:
+        for message in [
+            "MEETERM_SMOKE_THEME",
+            "MEETERM_SMOKE_THEME Dark",
+            "MEETERM_SMOKE_THEME system",
+            "MEETERM_SMOKE_THEME dark extra=1",
+        ]:
+            with self.subTest(message=message):
+                result, root = self.run_case([
+                    compact_marker(102.0, 1234, message),
+                    compact_marker(102.0, 1234, "MEETERM_SMOKE_NATIVE_READY"),
+                    compact_marker(103.0, 1234, "MEETERM_SMOKE_FIRST_FRAME_METAL"),
+                ])
+                self.assert_reason(result, root, "malformed_marker")
+
     def test_unrecognized_or_malformed_diagnostics_remain_invalid(self) -> None:
         for message in [
             "MEETERM_SMOKE_INPUT_UNKNOWN",

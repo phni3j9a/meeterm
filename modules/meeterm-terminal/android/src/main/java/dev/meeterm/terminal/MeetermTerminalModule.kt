@@ -298,6 +298,13 @@ class MeetermTerminalModule : Module() {
       AttachmentController.deleteRemote(normalizeTerminalId(terminalId), storageContext())
     }
 
+    // App-scoped alert presenter (Issue #37 AC36). Android-only by contract:
+    // iOS keeps the existing per-dialog RN APIs. Dialog appearance is scoped
+    // to the dialog context; the app and OS schemes are never touched.
+    AsyncFunction("presentAppAlert") { options: Map<String, Any?>, promise: Promise ->
+      AppAlertPresenter.present(options, appContext.currentActivity, promise)
+    }.runOnQueue(Queues.MAIN)
+
     View(MeetermTerminalView::class) {
       Prop("fontSize", 15.0) { view: MeetermTerminalView, value: Double -> view.setFontSize(value) }
       Prop("theme", "dark") { view: MeetermTerminalView, value: String -> view.setTheme(value) }

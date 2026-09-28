@@ -86,6 +86,7 @@ STORAGE_CASES = (
     "credential_endpoint_binding",
     "remove_saved_credential",
     "preferences_validation",
+    "legacy_preferences_migration",
     "runtime_hint_validation",
 )
 NATIVE_INPUT_CASES = (
@@ -96,6 +97,7 @@ NATIVE_INPUT_CASES = (
     "hardware_control",
     "hardware_shift_combinations",
     "marked_commit",
+    "theme_refresh",
     "scroll_gesture",
     "async_paste_epoch",
     "cached_read_only",
@@ -123,6 +125,9 @@ RUNTIME_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH",
     "MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE",
     "MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE",
+    "MEETERM_IOS_THEME_MARKER_PATH",
+    "MEETERM_IOS_THEME_LIGHT_VALUE",
+    "MEETERM_IOS_THEME_DARK_VALUE",
 )
 COMMON_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_ARTIFACT_DIR",
@@ -160,11 +165,15 @@ SSH_TEST_ENVIRONMENT_NAMES = (
     "MEETERM_IOS_TRANSPORT_LOSS_MARKER_PATH",
     "MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE",
     "MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE",
+    "MEETERM_IOS_THEME_MARKER_PATH",
+    "MEETERM_IOS_THEME_LIGHT_VALUE",
+    "MEETERM_IOS_THEME_DARK_VALUE",
 )
 
 CONNECTION_FAILURE_DIAGNOSTICS_NAME = "ios-ui-connection-diagnostics.txt"
 INPUT_DIAGNOSTICS_NAME = "ios-ssh-input-diagnostics.json"
 TRANSPORT_LOSS_VALIDATION_NAME = "ios-transport-loss-validation.txt"
+THEME_MARKER_VALIDATION_NAME = "ios-theme-marker-validation.txt"
 SSH_PROBE_NONCE = "meeterm-ios-ssh-probe-v1"
 FIXTURE_DIAGNOSTIC_ENVIRONMENT_NAMES = (
     "MEETERM_SSH_HOST",
@@ -501,6 +510,96 @@ def require_transport_loss_stage_sequence(artifact_dir: Path) -> None:
         positions.append(stages.index(stage))
     if positions != sorted(positions):
         raise SmokeFailure("transport_loss_stages", "stage_sequence_invalid")
+
+
+def require_theme_stage_sequence(artifact_dir: Path) -> None:
+    expected = (
+        "ssh_theme_light",
+        "ssh_theme_light_applied",
+        "ssh_theme_light_remote_ack",
+        "ssh_theme_dark",
+        "ssh_theme_dark_applied",
+        "ssh_theme_dark_remote_ack",
+    )
+    try:
+        stages = (artifact_dir / "ios-ui-stages.txt").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("theme_stages", "stage_file_unavailable") from error
+    positions: list[int] = []
+    for stage in expected:
+        if stages.count(stage) != 1:
+            raise SmokeFailure("theme_stages", "stage_sequence_invalid")
+        positions.append(stages.index(stage))
+    if positions != sorted(positions):
+        raise SmokeFailure("theme_stages", "stage_sequence_invalid")
+
+
+def validate_theme_markers(
+    artifact_dir: Path,
+    socket_path: Path,
+    marker_path: Path,
+    light_value: str,
+    dark_value: str,
+) -> None:
+    """Validate the post-change theme marker pair against one live tmux pane.
+
+    A separate marker path keeps the transport-loss two-line contract intact.
+    Marker text is used only in memory; the artifact records fixed booleans so
+    pane ids, shell pids, and terminal output never enter the evidence bundle.
+    """
+
+    if socket_path != fixture_socket():
+        raise SmokeFailure("theme_marker", "socket_path_invalid")
+    if not re.fullmatch(r"ios-ssh-theme-light-[0-9a-f]{16}", light_value):
+        raise SmokeFailure("theme_marker", "light_marker_invalid")
+    if not re.fullmatch(r"ios-ssh-theme-dark-[0-9a-f]{16}", dark_value):
+        raise SmokeFailure("theme_marker", "dark_marker_invalid")
+    if not marker_path.is_file():
+        raise SmokeFailure("theme_marker", "marker_unavailable")
+    try:
+        lines = marker_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SmokeFailure("theme_marker", "marker_unavailable") from error
+    if len(lines) != 2:
+        raise SmokeFailure("theme_marker", "marker_sequence_invalid")
+    pair_pattern = re.compile(
+        r"(?P<value>ios-ssh-theme-(?:light|dark)-[0-9a-f]{16}):(?P<pane>[0-9]+):(?P<pid>[0-9]+)\Z"
+    )
+    matches = [pair_pattern.fullmatch(line) for line in lines]
+    if any(match is None for match in matches):
+        raise SmokeFailure("theme_marker", "marker_sequence_invalid")
+    assert matches[0] is not None and matches[1] is not None
+    light_match, dark_match = matches
+    if light_match.group("value") != light_value or dark_match.group("value") != dark_value:
+        raise SmokeFailure("theme_marker", "marker_sequence_invalid")
+    if light_match.group("pane") != dark_match.group("pane") or light_match.group("pid") != dark_match.group("pid"):
+        raise SmokeFailure("theme_marker", "pane_identity_changed")
+    expected_pane = f"%{light_match.group('pane')}"
+    expected_pid = int(light_match.group("pid"))
+    panes = fixture_pane_processes(socket_path, "theme_marker")
+    if (expected_pane, expected_pid) not in panes:
+        raise SmokeFailure("theme_marker", "pane_identity_missing")
+    light_line = lines[0]
+    dark_line = lines[1]
+    for pane_id, _ in panes:
+        if pane_id == expected_pane:
+            continue
+        capture = run_tmux(
+            socket_path,
+            ("capture-pane", "-p", "-J", "-S", "-30", "-t", pane_id),
+            "theme_marker",
+        ).stdout
+        if light_value in capture or dark_value in capture or light_line in capture or dark_line in capture:
+            raise SmokeFailure("theme_marker", "marker_in_other_pane")
+    write_text(
+        artifact_dir / THEME_MARKER_VALIDATION_NAME,
+        "theme_markers=passed\n"
+        "light_marker_exactly_once=yes\n"
+        "dark_marker_exactly_once=yes\n"
+        "same_pane=yes\n"
+        "same_pane_pid=yes\n"
+        "other_panes_clean=yes\n",
+    )
 
 
 def write_short_ssh_input_diagnostics(
@@ -1013,6 +1112,128 @@ def observe_selection_copy(
             path.unlink(missing_ok=True)
 
 
+def appearance_contract(marker_path: Path) -> tuple[Path, Path]:
+    """Derive the per-run OS appearance handshake without an extra contract."""
+
+    return (
+        Path(str(marker_path) + ".appearance-request"),
+        Path(str(marker_path) + ".appearance-result"),
+    )
+
+
+@contextmanager
+def observe_appearance_requests(
+    simulator_udid: str,
+    marker_path: Path,
+    diagnostics_path: Path,
+):
+    """Apply real OS scheme flips requested by the XCTest through simctl.
+
+    The test writes `light\n` or `dark\n` to the request path; this observer
+    runs `xcrun simctl ui <udid> appearance <value>` and answers with a fixed
+    `appearance-<value>-<status>` token. Requests can repeat so a single test
+    can flip the scheme both ways without restarting the app.
+    """
+
+    request_path, result_path = appearance_contract(marker_path)
+    temporary_result = Path(str(result_path) + ".tmp")
+    for path in (request_path, result_path, temporary_result):
+        path.unlink(missing_ok=True)
+    diagnostics_path.unlink(missing_ok=True)
+    stopped = threading.Event()
+
+    def finish(status: str, value: str) -> None:
+        result = "passed" if status == "passed" else "failed"
+        reason = "none" if status == "passed" else status
+        write_text(
+            diagnostics_path,
+            f"result={result}\nreason={reason}\nappearance={value}\n",
+        )
+        try:
+            _write_atomic_result(
+                result_path,
+                f"appearance-{value}-{status}\n",
+            )
+        except OSError:
+            # A missing result makes the XCTest gate fail closed.
+            write_text(
+                diagnostics_path,
+                f"result=failed\nreason=result_write_failed\nappearance={value}\n",
+            )
+
+    def monitor() -> None:
+        while not stopped.wait(0.1):
+            try:
+                request = request_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError):
+                finish("request_rejected", "unknown")
+                continue
+            value = request.rstrip("\n")
+            # Consume the request before acting on it: the result token is
+            # only written after this unlink, so a later XCTest request can
+            # never be removed by a stale cleanup pass.
+            try:
+                request_path.unlink()
+            except OSError:
+                pass
+            if value not in ("light", "dark") or request != f"{value}\n":
+                finish("request_rejected", "unknown")
+                continue
+
+            xcrun = shutil.which("xcrun")
+            if xcrun is None:
+                finish("command_unavailable", value)
+            else:
+                try:
+                    completed = subprocess.run(
+                        [xcrun, "simctl", "ui", simulator_udid, "appearance", value],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                        check=False,
+                    )
+                    if completed.returncode == 0:
+                        finish("passed", value)
+                    else:
+                        finish("command_failed", value)
+                except subprocess.TimeoutExpired:
+                    finish("command_timeout", value)
+                except OSError:
+                    finish("command_failed", value)
+
+    thread = threading.Thread(target=monitor, name="appearance-observer", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=15)
+        if not diagnostics_path.exists():
+            write_text(
+                diagnostics_path,
+                "result=unavailable\nreason=request_not_observed\nappearance=none\n",
+            )
+        for path in (request_path, result_path, temporary_result):
+            path.unlink(missing_ok=True)
+        # Leave the shared Simulator in its default scheme for later suites.
+        xcrun = shutil.which("xcrun")
+        if xcrun is not None:
+            try:
+                subprocess.run(
+                    [xcrun, "simctl", "ui", simulator_udid, "appearance", "light"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
 def validation_lines(
     *,
     result: str,
@@ -1181,15 +1402,25 @@ def write_xcuitest_diagnostics(
 
 
 @contextmanager
-def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_dir: Path):
-    """Record only safe daily-use or public navigation sections, never credentials."""
+def record_daily_interactions(
+    simulator_udid: str,
+    stage_path: Path,
+    artifact_dir: Path,
+    *,
+    trigger_markers: tuple = ("daily_selection", "names_started", "polish_navigation_open"),
+    stop_markers: tuple = ("daily_complete", "names_complete", "polish_navigation_complete"),
+    video_name: str = "daily-interactions.mp4",
+    result_name: str = "daily-recording.txt",
+    max_seconds: float = 180,
+):
+    """Record only safe daily-use, theme or public navigation sections, never credentials."""
     stopped = threading.Event()
 
     def monitor() -> None:
         recorder = None
         result = "unavailable"
-        reason = "daily_section_not_reached"
-        video = artifact_dir / "daily-interactions.mp4"
+        reason = "recorded_section_not_reached"
+        video = artifact_dir / video_name
         try:
             while not stopped.wait(0.5):
                 try:
@@ -1199,7 +1430,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                 # These markers are emitted after authentication, with the
                 # native terminal/workspace UI already visible. No later
                 # focused operation opens an authentication form.
-                if not any(marker in stages for marker in ("daily_selection", "names_started", "polish_navigation_open")):
+                if not any(marker in stages for marker in trigger_markers):
                     continue
                 xcrun = shutil.which("xcrun")
                 if xcrun is None:
@@ -1209,13 +1440,13 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                     [xcrun, "simctl", "io", simulator_udid, "recordVideo", "--codec=h264", str(video)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
-                deadline = time.monotonic() + 180
+                deadline = time.monotonic() + max_seconds
                 while not stopped.wait(0.5) and time.monotonic() < deadline:
                     if recorder.poll() is not None:
                         break
                     try:
                         completed_stages = stage_path.read_text(encoding="utf-8").splitlines()
-                        if any(marker in completed_stages for marker in ("daily_complete", "names_complete", "polish_navigation_complete")):
+                        if any(marker in completed_stages for marker in stop_markers):
                             break
                     except OSError:
                         pass
@@ -1239,7 +1470,7 @@ def record_daily_interactions(simulator_udid: str, stage_path: Path, artifact_di
                     result, reason = "captured", "none"
                 else:
                     video.unlink(missing_ok=True)
-            write_text(artifact_dir / "daily-recording.txt", f"recording={result}\nreason={reason}\n")
+            write_text(artifact_dir / result_name, f"recording={result}\nreason={reason}\n")
 
     thread = threading.Thread(target=monitor, name="daily-interaction-evidence", daemon=True)
     thread.start()
@@ -1622,7 +1853,7 @@ def run_xcuitest(
                 raise SmokeFailure("xcuitest_standard", "native_cases_incomplete") from error
             _require_stage_markers(
                 diagnostics_path.parent / "ios-ui-stages.txt",
-                ("standard_complete", "foundation_verified"),
+                ("standard_complete", "foundation_verified", "theme_verification_complete"),
                 "xcuitest_standard",
             )
         elif suite == "polish":
@@ -1757,6 +1988,7 @@ def main() -> int:
     socket_path: Path | None = None
     marker_path: Path | None = None
     transport_loss_marker_path: Path | None = None
+    theme_marker_path: Path | None = None
     validation_filename = {
         "full": "ios-validation.txt",
         "standard": "ios-standard-validation.txt",
@@ -1813,6 +2045,18 @@ def main() -> int:
                     )
                     os.environ["MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE"] = (
                         f"ios-ssh-loss-post-{secrets.token_hex(8)}"
+                    )
+                    theme_marker_path = marker_root / (
+                        f"meeterm-ios-theme-{os.getpid()}-{secrets.token_hex(6)}"
+                    )
+                    os.environ["MEETERM_IOS_THEME_MARKER_PATH"] = str(
+                        theme_marker_path
+                    )
+                    os.environ["MEETERM_IOS_THEME_LIGHT_VALUE"] = (
+                        f"ios-ssh-theme-light-{secrets.token_hex(8)}"
+                    )
+                    os.environ["MEETERM_IOS_THEME_DARK_VALUE"] = (
+                        f"ios-ssh-theme-dark-{secrets.token_hex(8)}"
                     )
                 if suite == "full":
                     handoff_value = f"ios-handoff-{secrets.token_hex(8)}"
@@ -1915,6 +2159,17 @@ def main() -> int:
                     required("MEETERM_IOS_TRANSPORT_LOSS_PRE_VALUE"),
                     required("MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE"),
                 )
+                stage = "theme_marker"
+                if theme_marker_path is None:
+                    raise SmokeFailure(stage, "marker_unavailable")
+                require_theme_stage_sequence(args.artifact_dir)
+                validate_theme_markers(
+                    args.artifact_dir,
+                    socket_path,
+                    theme_marker_path,
+                    required("MEETERM_IOS_THEME_LIGHT_VALUE"),
+                    required("MEETERM_IOS_THEME_DARK_VALUE"),
+                )
 
                 write_text(
                     validation_path,
@@ -1969,12 +2224,41 @@ def main() -> int:
             if environment_name not in COMMON_TEST_ENVIRONMENT_NAMES:
                 os.environ.pop(environment_name, None)
         stage = "xcuitest"
+        # The standard theme section is a bounded public-fixture window: it
+        # opens seeded opposite-theme pairs, performs real OS scheme flips and
+        # shows the native keyboard. Record it so theme transitions can be
+        # inspected beyond still captures; no credentials appear on screen.
         recording = (
             record_daily_interactions(args.simulator_udid, stage_path, args.artifact_dir)
             if suite in ("polish", "polish-navigation")
+            else record_daily_interactions(
+                args.simulator_udid,
+                stage_path,
+                args.artifact_dir,
+                trigger_markers=("theme_matrix_open",),
+                stop_markers=("theme_verification_complete",),
+                video_name="theme-transitions.mp4",
+                result_name="theme-recording.txt",
+                # The dialog evidence legs extend the same bounded window;
+                # the bound is sized for the full theme section, not per leg.
+                max_seconds=540,
+            )
+            if suite == "standard"
             else nullcontext()
         )
-        with recording:
+        # The standard suite owns the seeded theme pass: its XCTest requests
+        # real OS scheme flips through this observer so the `system` terminal
+        # theme can be verified in place instead of simulated.
+        appearance = (
+            observe_appearance_requests(
+                args.simulator_udid,
+                marker_path,
+                args.artifact_dir / "ios-appearance-validation.txt",
+            )
+            if suite == "standard" and marker_path is not None
+            else nullcontext()
+        )
+        with recording, appearance:
             run_status = run_xcuitest(
                 derived_data=args.derived_data,
                 simulator_udid=args.simulator_udid,
@@ -2067,6 +2351,8 @@ def main() -> int:
                 marker_path,
                 Path(str(marker_path) + ".selection-copy-request"),
                 Path(str(marker_path) + ".selection-copy-result"),
+                Path(str(marker_path) + ".appearance-request"),
+                Path(str(marker_path) + ".appearance-result"),
             ):
                 try:
                     path.unlink()
@@ -2077,6 +2363,13 @@ def main() -> int:
         if transport_loss_marker_path is not None:
             try:
                 transport_loss_marker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if theme_marker_path is not None:
+            try:
+                theme_marker_path.unlink()
             except FileNotFoundError:
                 pass
             except OSError:

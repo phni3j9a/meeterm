@@ -15,6 +15,7 @@ import android.text.SpannableStringBuilder
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewConfiguration
@@ -55,6 +56,14 @@ class MeetermTerminalView(
   private val surface: GLSurfaceView = GLSurfaceView(context)
   private val content: LinearLayout = LinearLayout(context)
   private val renderer = TerminalRenderer(context)
+  // A recreated/created GL surface has no presented buffer and is composited
+  // black until the first swap. This themed sibling covers the viewport until
+  // the renderer reports a valid snapshot frame for the current generation.
+  private val terminalCover = View(context)
+  private val coverGate = SurfaceCoverGate(
+    showCover = { showTerminalCover() },
+    requestRender = { surface.requestRender() },
+  )
   private lateinit var specialKeyRow: LinearLayout
   private var controlModifierButton: TextView? = null
   private var altModifierButton: TextView? = null
@@ -64,6 +73,7 @@ class MeetermTerminalView(
   private var interactionMode = "live"
   private var lastOperationEpoch: String? = null
   private val remoteInputControls = mutableListOf<View>()
+  private val themedKeyButtons = mutableListOf<TextView>()
   private var lastColumns = 0
   private var lastRows = 0
   private var attached = false
@@ -193,6 +203,39 @@ class MeetermTerminalView(
         1f,
       ),
     )
+
+    terminalCover.setBackgroundColor(terminalBackgroundColor())
+    terminalCover.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    // Never clickable or focusable: touches fall through to the terminal.
+    terminalCover.isClickable = false
+    terminalCover.isFocusable = false
+    addView(
+      terminalCover,
+      ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      ),
+    )
+    // The cover is keyed on the holder surface lifetime, not EGL context
+    // creation: with preserved contexts a recreated surface need not call
+    // Renderer.onSurfaceCreated. GLSurfaceView registers its own holder
+    // callback in its constructor, so ours runs after the GL thread has
+    // already vacated a destroyed surface.
+    renderer.surfaceLifetimeProvider = { coverGate.currentLifetime }
+    renderer.onValidSurfaceFrame = { lifetime ->
+      if (coverGate.covered) post { revealTerminalCover(lifetime) }
+    }
+    surface.holder.addCallback(object : SurfaceHolder.Callback {
+      override fun surfaceCreated(holder: SurfaceHolder) {
+        coverGate.surfaceCreated()
+      }
+      override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        coverGate.surfaceChanged()
+      }
+      override fun surfaceDestroyed(holder: SurfaceHolder) {
+        coverGate.surfaceDestroyed()
+      }
+    })
     setOnApplyWindowInsetsListener { _, insets ->
       val (leftInset, rightInset, bottomInset) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         val ime = insets.getInsets(WindowInsets.Type.ime())
@@ -334,6 +377,7 @@ class MeetermTerminalView(
     val contentLeft = systemInsetLeft
     val contentRight = max(contentLeft + renderer.cellWidthPx, width - systemInsetRight)
     surface.layout(contentLeft, 0, contentRight, desiredHeight)
+    terminalCover.layout(contentLeft, 0, contentRight, desiredHeight)
     specialKeyRow.layout(contentLeft, desiredHeight, contentRight, desiredHeight + dp(48))
   }
 
@@ -776,12 +820,24 @@ class MeetermTerminalView(
   }
 
   private fun keyBackground(selected: Boolean = false): RippleDrawable {
+    val light = themeName == "light"
     val fill = GradientDrawable().apply {
-      setColor(if (selected) Color.rgb(117, 83, 39) else Color.rgb(48, 44, 38))
+      setColor(
+        when {
+          selected && light -> Color.rgb(230, 214, 174)
+          selected -> Color.rgb(117, 83, 39)
+          light -> Color.rgb(250, 248, 244)
+          else -> Color.rgb(48, 44, 38)
+        },
+      )
       cornerRadius = dp(8).toFloat()
     }
-    return RippleDrawable(ColorStateList.valueOf(Color.argb(46, 219, 179, 120)), fill, null)
+    val ripple = if (light) Color.argb(46, 139, 94, 48) else Color.argb(46, 219, 179, 120)
+    return RippleDrawable(ColorStateList.valueOf(ripple), fill, null)
   }
+
+  private fun keyTextColor(): Int =
+    if (themeName == "light") Color.rgb(139, 94, 48) else Color.rgb(219, 179, 120)
 
   private fun syncModifierButtons() {
     listOf(
@@ -818,6 +874,7 @@ class MeetermTerminalView(
         inputSession.toggleModifier(modifier)
       }
       remoteInputControls += this
+      themedKeyButtons += this
     }
 
   private fun createSpecialKeyRow(context: Context): LinearLayout {
@@ -876,6 +933,7 @@ class MeetermTerminalView(
           if (inputSession.sendSpecial(key)) surface.requestRender()
         }
         remoteInputControls += this
+        themedKeyButtons += this
       }
       keys.addView(button, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
         marginStart = dp(1)
@@ -909,6 +967,7 @@ class MeetermTerminalView(
       }
     }
     remoteInputControls += pasteButton
+    themedKeyButtons += pasteButton
     row.addView(pasteButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
@@ -934,6 +993,7 @@ class MeetermTerminalView(
         copySelection()
       }
     }
+    themedKeyButtons += copyButton
     row.addView(copyButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
       marginStart = dp(1)
       marginEnd = dp(1)
@@ -952,7 +1012,9 @@ class MeetermTerminalView(
   }
 
   fun setTheme(value: String) {
-    themeName = if (value.equals("light", ignoreCase = true)) "light" else "dark"
+    val next = if (value.equals("light", ignoreCase = true)) "light" else "dark"
+    if (next == themeName) return
+    themeName = next
     applyThemeColors()
     applyNativeSettings(terminalHandle)
     surface.requestRender()
@@ -1034,17 +1096,38 @@ class MeetermTerminalView(
     }
   }
 
+  private fun terminalBackgroundColor(): Int =
+    if (themeName == "light") Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
+
+  private fun showTerminalCover() {
+    terminalCover.setBackgroundColor(terminalBackgroundColor())
+    terminalCover.visibility = View.VISIBLE
+  }
+
+  private fun revealTerminalCover(lifetime: Long) {
+    if (!coverGate.covered) return
+    coverGate.onValidFrame(lifetime)
+    if (!coverGate.covered) terminalCover.visibility = View.GONE
+  }
+
   private fun applyThemeColors() {
-    val background = if (themeName == "light") Color.rgb(251, 247, 239) else Color.rgb(36, 33, 29)
+    val background = terminalBackgroundColor()
     setBackgroundColor(background)
     content.setBackgroundColor(background)
+    terminalCover.setBackgroundColor(background)
     if (::specialKeyRow.isInitialized) {
       specialKeyRow.setBackgroundColor(
         if (themeName == "light") Color.rgb(242, 237, 226) else Color.rgb(33, 31, 27),
       )
+      val keyText = keyTextColor()
+      themedKeyButtons.forEach { button ->
+        button.setTextColor(keyText)
+        button.background = keyBackground()
+      }
       syncModifierButtons()
     }
     renderer.setTheme(themeName == "light")
+    Log.i(TAG, "MEETERM_SMOKE_THEME $themeName")
   }
 
   private fun dp(value: Int): Int =

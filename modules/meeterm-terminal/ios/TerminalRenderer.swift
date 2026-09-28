@@ -325,6 +325,8 @@ private enum TerminalRasterizer {
   private static let background = TerminalColor(red: 36, green: 33, blue: 29, alpha: 255)
   private static let preeditColor = TerminalColor(red: 255, green: 201, blue: 92, alpha: 255)
   private static let cursorColor = TerminalColor(red: 197, green: 212, blue: 236, alpha: 255)
+  private static let lightPreeditColor = TerminalColor(red: 139, green: 94, blue: 48, alpha: 255)
+  private static let lightCursorColor = TerminalColor(red: 48, green: 43, blue: 37, alpha: 255)
   private static let underlineMask = terminalFlagUnderline
     | terminalFlagDoubleUnderline
     | terminalFlagUndercurl
@@ -415,6 +417,10 @@ private enum TerminalRasterizer {
 
       if let cursorRow = snapshot.cursorRow,
          let cursorColumn = snapshot.cursorColumn {
+        // The light surface needs darker cursor/preedit colors to keep the
+        // caret and the visible IME composition legible.
+        let activeCursorColor = light ? lightCursorColor : cursorColor
+        let activePreeditColor = light ? lightPreeditColor : preeditColor
         let cursorCellRect = cellRect(
           row: cursorRow,
           column: cursorColumn,
@@ -424,7 +430,7 @@ private enum TerminalRasterizer {
           canvasHeight: height
         )
         let cursorRect = cursorCellRect.insetBy(dx: max(1, scale), dy: max(1, scale))
-        context.setStrokeColor(cursorColor.cgColor)
+        context.setStrokeColor(activeCursorColor.cgColor)
         context.setLineWidth(max(1, scale))
         context.stroke(cursorRect)
 
@@ -439,7 +445,7 @@ private enum TerminalRasterizer {
             preedit,
             in: preeditRect,
             font: regularFont,
-            color: preeditColor,
+            color: activePreeditColor,
             context: context
           )
           if preeditWidth > 0 {
@@ -450,7 +456,7 @@ private enum TerminalRasterizer {
                 width: preeditWidth,
                 height: preeditRect.height
               ),
-              color: preeditColor,
+              color: activePreeditColor,
               scale: scale,
               context: context
             )

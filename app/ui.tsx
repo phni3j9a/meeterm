@@ -10,7 +10,7 @@ import {
   View,
   useColorScheme,
 } from 'react-native';
-import type { StyleProp, ViewStyle } from 'react-native';
+import type { ColorSchemeName, StyleProp, ViewStyle } from 'react-native';
 import { Search, Server, Terminal, ChevronLeft, ChevronRight, ChevronDown, X, Ellipsis, Check, Plus, Settings2, Layers, Monitor, KeyRound, ArrowRight, ImagePlus } from 'lucide-react-native';
 
 export const LIGHT = {
@@ -25,7 +25,6 @@ export const LIGHT = {
   accentFill: '#85592E',
   onAccent: '#FFFFFF',
   danger: '#AD4437',
-  terminal: '#211f1b',
   agentStatus: {
     blocked: '#B4232F',
     done: '#087E8B',
@@ -47,7 +46,6 @@ export const DARK: typeof LIGHT = {
   accentFill: '#dbb378',
   onAccent: '#352719',
   danger: '#dfa79a',
-  terminal: '#211f1b',
   agentStatus: {
     blocked: '#F08A91',
     done: '#77D5D1',
@@ -59,6 +57,34 @@ export const DARK: typeof LIGHT = {
 
 export type Palette = typeof LIGHT;
 export const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
+export type ThemePreference = 'system' | 'light' | 'dark';
+export type ResolvedTheme = 'light' | 'dark';
+
+/**
+ * The exact colors the native terminal surface draws for a resolved theme.
+ * They mirror the platform views and the Rust fallback palette, so the
+ * placeholder and Settings preview never flash a mismatched background.
+ */
+export const TERMINAL_SURFACE: Record<ResolvedTheme, { background: string; foreground: string; muted: string }> = {
+  light: { background: '#FBF7EF', foreground: '#352B22', muted: '#73695C' },
+  dark: { background: '#24211D', foreground: '#D0D0D0', muted: '#BFB3A3' },
+};
+
+/**
+ * Resolve a persisted terminal theme to the native light/dark view contract.
+ * `system` follows the OS appearance; anything else, including saves that
+ * predate `terminalTheme`, resolves as the historical dark surface.
+ */
+export function resolveTerminalTheme(preference: ThemePreference | undefined, system: ColorSchemeName): ResolvedTheme {
+  if (preference === 'light') return 'light';
+  if (preference === 'system') return system === 'dark' ? 'dark' : 'light';
+  return 'dark';
+}
+
+/** Resolved terminal surface theme, independent from the app palette. */
+export function useTerminalTheme(preference: ThemePreference | undefined): ResolvedTheme {
+  return resolveTerminalTheme(preference, useColorScheme());
+}
 
 export function useReducedMotion() {
   const [reduced, setReduced] = useState(false);
@@ -71,7 +97,7 @@ export function useReducedMotion() {
   return reduced;
 }
 
-export function usePalette(preference: 'system' | 'light' | 'dark' = 'system') {
+export function usePalette(preference: ThemePreference = 'system') {
   const system = useColorScheme();
   return (preference === 'system' ? system : preference) === 'dark' ? DARK : LIGHT;
 }

@@ -54,7 +54,18 @@ PASTE_DIAGNOSTICS = {
     "MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT": r"",
     "MEETERM_SMOKE_PASTE_RESULT": r"accepted=[01]",
 }
-DIAGNOSTICS = {**INPUT_DIAGNOSTICS, **STARTUP_DIAGNOSTICS, **PASTE_DIAGNOSTICS}
+# Terminal theme application is observable in the shared log but is not
+# readiness/frame evidence. The native source emits exactly the resolved
+# scheme, so the diagnostic accepts only that literal value.
+THEME_DIAGNOSTICS = {
+    "MEETERM_SMOKE_THEME": r"(?:light|dark)",
+}
+DIAGNOSTICS = {
+    **INPUT_DIAGNOSTICS,
+    **STARTUP_DIAGNOSTICS,
+    **PASTE_DIAGNOSTICS,
+    **THEME_DIAGNOSTICS,
+}
 COMPACT_MARKER = re.compile(
     r"^\s*(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
     r"\s+\S+\s+meeterm\[(\d+):([^\]\s]+)\]\s+.*?"

@@ -46,7 +46,7 @@ export function WorkspaceNavigation({ screen, onScreenChange, colors, workspaces
     }}>
     <Stack.Navigator screenOptions={{ headerShown: false, animation: reduceMotion ? 'fade' : 'default', gestureEnabled: true }}>
       <Stack.Screen name="workspaces" options={{ contentStyle: { backgroundColor: colors.background }, statusBarStyle: colors === DARK ? 'light' : 'dark' }}>{() => workspaces}</Stack.Screen>
-      <Stack.Screen name="terminal" options={{ contentStyle: { backgroundColor: DARK.background }, statusBarStyle: 'light' }}>{() => terminal}</Stack.Screen>
+      <Stack.Screen name="terminal" options={{ contentStyle: { backgroundColor: colors.background }, statusBarStyle: colors === DARK ? 'light' : 'dark' }}>{() => terminal}</Stack.Screen>
     </Stack.Navigator>
   </NavigationContainer>;
 }

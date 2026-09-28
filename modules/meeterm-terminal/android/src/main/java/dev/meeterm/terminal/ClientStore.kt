@@ -177,7 +177,7 @@ internal object ClientStore {
   }
 
   @Synchronized fun preferences(context: Context): Map<String, Any> = guarded {
-    read(context).optJSONObject("preferences")?.let { validatePreferences(jsonMap(it)) } ?: defaults()
+    normalizeStoredPreferences(read(context).optJSONObject("preferences"))
   }
 
   @Synchronized fun setPreferences(context: Context, values: Map<String, Any?>) = guarded {
@@ -187,16 +187,28 @@ internal object ClientStore {
   }
 
   internal fun defaults(): Map<String, Any> = mapOf("fontSize" to 15, "theme" to "light",
-    "scrollbackLines" to 10000, "automaticReconnect" to true)
+    "terminalTheme" to "dark", "scrollbackLines" to 10000, "automaticReconnect" to true)
+
+  /** Pure persisted-preferences migration seam covered by the JVM tests. */
+  internal fun normalizeStoredPreferences(stored: JSONObject?): Map<String, Any> =
+    stored?.let { validatePreferences(jsonMap(it)) } ?: defaults()
 
   internal fun validatePreferences(values: Map<String, Any?>): Map<String, Any> {
     val size = integer(values["fontSize"])
     val history = integer(values["scrollbackLines"])
     val theme = values["theme"] as? String
+    // A missing terminalTheme is a legacy stored value and normalizes to the
+    // documented Dark default. A present invalid value is rejected like every
+    // other invalid preference field; absent and invalid are never conflated.
+    val terminalTheme = if (values.containsKey("terminalTheme")) values["terminalTheme"] else "dark"
     val automatic = values["automaticReconnect"] as? Boolean
     require(size != null && size in 10..24 && history != null && history in 1000..50000 &&
-      theme in listOf("system", "light", "dark") && automatic != null) { "The terminal preferences are invalid." }
-    return mapOf("fontSize" to size, "theme" to requireNotNull(theme), "scrollbackLines" to history,
+      theme in listOf("system", "light", "dark") &&
+      terminalTheme in listOf("system", "light", "dark") && automatic != null) {
+      "The terminal preferences are invalid."
+    }
+    return mapOf("fontSize" to size, "theme" to requireNotNull(theme),
+      "terminalTheme" to terminalTheme!!, "scrollbackLines" to history,
       "automaticReconnect" to automatic)
   }
 

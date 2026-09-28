@@ -247,17 +247,21 @@ final class ClientStoreTests: XCTestCase {
     stage("read_preferences")
     let old = try ClientStore.preferences()
     defer { try? ClientStore.setPreferences(old) }
-    let updated: [String: Any] = ["fontSize": 20, "theme": "light", "scrollbackLines": 20000, "automaticReconnect": false]
+    let updated: [String: Any] = ["fontSize": 20, "theme": "light", "terminalTheme": "system",
+      "scrollbackLines": 20000, "automaticReconnect": false]
     stage("write_preferences")
     try ClientStore.setPreferences(updated)
     stage("read_updated_preferences")
     let actual = try ClientStore.preferences()
     XCTAssertEqual(actual["fontSize"] as? Int, 20)
     XCTAssertEqual(actual["theme"] as? String, "light")
+    XCTAssertEqual(actual["terminalTheme"] as? String, "system")
     XCTAssertEqual(actual["scrollbackLines"] as? Int, 20000)
     XCTAssertEqual(actual["automaticReconnect"] as? Bool, false)
     let invalidValues: [(String, Any)] = [("fontSize", 25), ("fontSize", true),
-      ("scrollbackLines", 50001), ("theme", "bad"), ("automaticReconnect", 1)]
+      ("scrollbackLines", 50001), ("theme", "bad"), ("terminalTheme", "bad"),
+      ("terminalTheme", "Dark"), ("terminalTheme", 1), ("terminalTheme", true),
+      ("automaticReconnect", 1)]
     stage("validate_invalid_preferences")
     for (field, value) in invalidValues {
       var invalid = updated
@@ -265,5 +269,44 @@ final class ClientStoreTests: XCTestCase {
       XCTAssertThrowsError(try ClientStore.setPreferences(invalid))
     }
     if !recordedIssue { appendValidation("case=preferences_validation result=passed") }
+  }
+
+  /// A pre-#37 document stores only the original four preference keys. Loading
+  /// it must fill the missing terminal theme with the documented Dark default
+  /// while leaving a present-but-invalid value rejected under the same policy.
+  func testLegacyStoredPreferencesNormalizeTerminalThemeToDark() throws {
+    beginCase("legacy_preferences_migration")
+    stage("read_preferences")
+    let old = try ClientStore.preferences()
+    defer { try? ClientStore.setPreferences(old) }
+    // A missing document returns defaults without writing client-v1.json, so
+    // a focused run of this case alone must first persist through the
+    // production write boundary before it can edit real stored JSON.
+    stage("persist_current_preferences")
+    try ClientStore.setPreferences(old)
+    let support = try XCTUnwrap(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+    let file = support.appendingPathComponent("meeterm/client-v1.json")
+
+    stage("write_legacy_preferences")
+    var state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+    state["preferences"] = ["fontSize": 18, "theme": "dark", "scrollbackLines": 2000,
+      "automaticReconnect": true] as [String: Any]
+    try JSONSerialization.data(withJSONObject: state).write(to: file, options: .atomic)
+    stage("read_migrated_preferences")
+    let migrated = try ClientStore.preferences()
+    XCTAssertEqual(migrated["theme"] as? String, "dark")
+    XCTAssertEqual(migrated["terminalTheme"] as? String, "dark")
+    XCTAssertEqual(migrated["fontSize"] as? Int, 18)
+    XCTAssertEqual(migrated["scrollbackLines"] as? Int, 2000)
+    XCTAssertEqual(migrated["automaticReconnect"] as? Bool, true)
+
+    stage("reject_invalid_stored_terminal_theme")
+    for invalid: Any in ["unknown", "Light", 1, true, NSNull()] {
+      state["preferences"] = ["fontSize": 15, "theme": "light", "terminalTheme": invalid,
+        "scrollbackLines": 10000, "automaticReconnect": true] as [String: Any]
+      try JSONSerialization.data(withJSONObject: state).write(to: file, options: .atomic)
+      XCTAssertThrowsError(try ClientStore.preferences(), "Stored terminalTheme \(invalid) must be rejected")
+    }
+    if !recordedIssue { appendValidation("case=legacy_preferences_migration result=passed") }
   }
 }

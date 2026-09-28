@@ -68,6 +68,10 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   @Volatile private var terminalHandle = 0L
   @Volatile private var preedit = ""
   @Volatile private var lightTheme = false
+  /** UI-thread holder lifetime, read at the start of every GL frame. */
+  @Volatile var surfaceLifetimeProvider: (() -> Long)? = null
+  /** Raised on the GL thread after every frame that drew a valid snapshot. */
+  @Volatile var onValidSurfaceFrame: ((Long) -> Unit)? = null
   private var atlas: GlyphAtlas? = null
   @Volatile private var latestMetrics = RendererMetrics(
     fontMetrics.cellWidthPx,
@@ -157,6 +161,9 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
   }
 
   override fun onDrawFrame(gl: GL10?) {
+    // Captured before the snapshot is fetched so a frame begun on an older
+    // surface lifetime cannot be reported as a new-lifetime completion.
+    val frameLifetime = surfaceLifetimeProvider?.invoke() ?: 0L
     val metrics = fontMetrics
     if (appliedFontGeneration != metrics.generation || atlas == null) {
       val replacement = GlyphAtlas(
@@ -238,6 +245,8 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
       Log.i(TAG, "MEETERM_SMOKE_FIRST_FRAME")
       loggedFirstFrame = true
     }
+
+    onValidSurfaceFrame?.invoke(frameLifetime)
   }
 
   private fun drawGlyph(
@@ -316,7 +325,7 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     val right = cellRight(column, 1, snapshot.columns)
     val top = cellTop(row, snapshot.rows)
     val bottom = cellBottom(row, snapshot.rows)
-    val cursorColor = Color.argb(220, 232, 238, 246)
+    val cursorColor = if (lightTheme) Color.argb(220, 48, 43, 37) else Color.argb(220, 232, 238, 246)
     drawSolid(left, top, min(right, left + lineWidth), bottom, cursorColor)
     drawSolid(max(left, right - lineWidth), top, right, bottom, cursorColor)
     drawSolid(left, top, right, min(bottom, top + lineHeight), cursorColor)
@@ -329,6 +338,9 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
     val row = snapshot.cursorRow
     if (row !in 0 until snapshot.rows) return
 
+    // Amber preedit text is unreadable on the light surface; keep the visible
+    // composition legible without changing what reaches the IME contract.
+    val preeditColor = if (lightTheme) Color.rgb(139, 94, 48) else Color.rgb(255, 201, 92)
     var index = 0
     while (index < preedit.length && column < snapshot.columns) {
       val codePoint = preedit.codePointAt(index)
@@ -342,11 +354,11 @@ internal class TerminalRenderer(context: Context) : GLSurfaceView.Renderer {
         width = width,
         columns = snapshot.columns,
         rows = snapshot.rows,
-        color = Color.rgb(255, 201, 92),
+        color = preeditColor,
         bold = false,
       )
-      val underline = TerminalCell(row, column, width, FLAG_UNDERLINE, Color.rgb(255, 201, 92), Color.TRANSPARENT, text, "")
-      drawUnderline(underline, snapshot.columns, snapshot.rows, Color.rgb(255, 201, 92))
+      val underline = TerminalCell(row, column, width, FLAG_UNDERLINE, preeditColor, Color.TRANSPARENT, text, "")
+      drawUnderline(underline, snapshot.columns, snapshot.rows, preeditColor)
       column += width
       index += count
     }

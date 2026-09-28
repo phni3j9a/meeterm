@@ -17,12 +17,18 @@ Icon buttons are at least 44 × 44 pt. Lucide supplies one consistent line
 family instead of text characters used as icons. It matches the mock's
 stroke vocabulary and renders without loading an icon font.
 
-The active terminal is a separate dark work surface, including its heading
-and pane strip. Bright ANSI colors such as cyan lose contrast on pale
-backgrounds, and remote editors may assume a dark palette. App appearance
-therefore does not recolor the terminal. Existing dark/system app preferences
-remain supported; new installations default to light. The shared native
-renderer and input path still own terminal output, cells, and composition.
+The active terminal is a separate work surface with its own theme, chosen in
+Settings under **Terminal theme**. **Appearance** recolors only the app —
+including the terminal screen's header, pane strip, status and recovery UI —
+while Terminal theme recolors only the native terminal surface. Both offer
+System, Light and Dark; the terminal choice defaults to Dark, where bright
+ANSI colors such as cyan keep their contrast and remote editors keep the
+palette they assume. A `system` terminal theme follows the OS appearance, and
+a surface left by a sheet or backgrounding keeps the resolved surface color so
+the transition does not flash a mismatched background. The theme reaches the
+native view as an appearance update on the existing binding — the surface is
+not recreated for a theme change — and the shared native renderer and input
+path still own terminal output, cells, and composition.
 
 The meerkat is a small companion beside the workspace heading and a larger
 illustration before the first connection. It does not appear in the active

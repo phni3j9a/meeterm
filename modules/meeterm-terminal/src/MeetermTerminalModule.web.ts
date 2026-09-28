@@ -2,6 +2,7 @@ import { registerWebModule, NativeModule } from 'expo';
 import { DEFAULT_WORKSPACE_CONTROL } from './MeetermTerminal.types';
 
 import type {
+  AppAlertOptions,
   AttachmentActionResult,
   AttachmentBeginResult,
   AttachmentCompositionStatus,
@@ -41,8 +42,10 @@ class MeetermTerminalModule extends NativeModule<{}> {
   // The native implementation treats this legacy API as a host-only alias;
   // keep the same unavailable web surface without introducing a runtime bind.
   async connectProfile(_terminalId: string, _profileId: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
-  async getPreferences(): Promise<TerminalPreferences> { return { fontSize: 15, theme: 'system', scrollbackLines: 10000, automaticReconnect: true }; }
+  async getPreferences(): Promise<TerminalPreferences> { return { fontSize: 15, theme: 'system', terminalTheme: 'dark', scrollbackLines: 10000, automaticReconnect: true }; }
   async setPreferences(_preferences: TerminalPreferences): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
+  // App-owned alert presentation is native-only; JS callers must fail closed.
+  async presentAppAlert(_options: AppAlertOptions): Promise<number | null> { throw new Error(WEB_UNAVAILABLE); }
   async setForeground(_terminalId: string, _foreground: boolean): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async setAutomaticReconnect(_terminalId: string, _enabled: boolean): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
   async createWorkspace(_terminalId: string, _name: string): Promise<void> { throw new Error(WEB_UNAVAILABLE); }

@@ -259,7 +259,7 @@ enum ClientStore {
     }
   }
 
-  static let defaultPreferences: [String: Any] = ["fontSize": 15, "theme": "light", "scrollbackLines": 10000, "automaticReconnect": true]
+  static let defaultPreferences: [String: Any] = ["fontSize": 15, "theme": "light", "terminalTheme": "dark", "scrollbackLines": 10000, "automaticReconnect": true]
 
   static func preferences() throws -> [String: Any] {
     try guarded {
@@ -283,7 +283,13 @@ enum ClientStore {
           let theme = values["theme"] as? String, ["system", "light", "dark"].contains(theme),
           let automatic = values["automaticReconnect"] as? NSNumber,
           CFGetTypeID(automatic) == CFBooleanGetTypeID() else { throw Failure.invalid }
-    return ["fontSize": size, "theme": theme, "scrollbackLines": lines, "automaticReconnect": automatic.boolValue]
+    // A missing terminalTheme is a legacy stored value and normalizes to the
+    // documented Dark default. A present invalid value is rejected like every
+    // other invalid preference field; absent and invalid are never conflated.
+    let terminalValue = values.keys.contains("terminalTheme") ? values["terminalTheme"] : "dark"
+    guard let terminalTheme = terminalValue as? String,
+          ["system", "light", "dark"].contains(terminalTheme) else { throw Failure.invalid }
+    return ["fontSize": size, "theme": theme, "terminalTheme": terminalTheme, "scrollbackLines": lines, "automaticReconnect": automatic.boolValue]
   }
 
   private static func validateProfile(_ values: [String: Any], previous: [String: Any]? = nil) throws -> [String: Any] {

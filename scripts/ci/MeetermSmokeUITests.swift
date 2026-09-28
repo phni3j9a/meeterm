@@ -72,6 +72,14 @@ final class MeetermSmokeUITests: XCTestCase {
     markerValue + "-selection-copy-passed\n"
   }
 
+  private var appearanceRequestPath: URL {
+    URL(fileURLWithPath: markerPath.path + ".appearance-request")
+  }
+
+  private var appearanceResultPath: URL {
+    URL(fileURLWithPath: markerPath.path + ".appearance-result")
+  }
+
   private var handoffValue: String {
     requiredEnvironment("MEETERM_IOS_HANDOFF_VALUE")
   }
@@ -86,6 +94,18 @@ final class MeetermSmokeUITests: XCTestCase {
 
   private var transportLossPostValue: String {
     requiredEnvironment("MEETERM_IOS_TRANSPORT_LOSS_POST_VALUE")
+  }
+
+  private var themeMarkerPath: URL {
+    URL(fileURLWithPath: requiredEnvironment("MEETERM_IOS_THEME_MARKER_PATH"))
+  }
+
+  private var themeLightValue: String {
+    requiredEnvironment("MEETERM_IOS_THEME_LIGHT_VALUE")
+  }
+
+  private var themeDarkValue: String {
+    requiredEnvironment("MEETERM_IOS_THEME_DARK_VALUE")
   }
 
   override func setUpWithError() throws {
@@ -113,6 +133,7 @@ final class MeetermSmokeUITests: XCTestCase {
     try? FileManager.default.removeItem(at: markerPath)
     if observesInitialConnectionEntry {
       try? FileManager.default.removeItem(at: transportLossMarkerPath)
+      try? FileManager.default.removeItem(at: themeMarkerPath)
       try? FileManager.default.removeItem(
         at: artifactDirectory.appendingPathComponent("ios-ui-transport-loss-observation.txt")
       )
@@ -202,6 +223,32 @@ final class MeetermSmokeUITests: XCTestCase {
       "standard-layout-restore-unconfirmed.png",
       "standard-runtime-layout-restore-unconfirmed.png",
       "standard-connection-error.png",
+      "theme-app-light-terminal-light.png",
+      "theme-app-light-terminal-dark.png",
+      "theme-app-light-terminal-system.png",
+      "theme-app-dark-terminal-light.png",
+      "theme-app-dark-terminal-dark.png",
+      "theme-app-dark-terminal-system.png",
+      "theme-settings-preview.png",
+      "theme-recovery-light-terminal.png",
+      "theme-os-dark-selection.png",
+      "theme-os-light-selection.png",
+      "theme-os-pinned.png",
+      "theme-dialog-app-dark-os-light.png",
+      "theme-dialog-app-dark-os-dark.png",
+      "theme-dialog-chooser-app-dark-os-light.png",
+      "theme-dialog-chooser-draft-dark.png",
+      "theme-dialog-discard-app-dark-os-light.png",
+      "theme-dialog-app-light-os-dark.png",
+      "theme-dialog-chooser-app-light-os-dark.png",
+      "theme-dialog-chooser-draft-light.png",
+      "theme-dialog-discard-app-light-os-dark.png",
+      "theme-dialog-system-os-dark.png",
+      "theme-dialog-system-os-light.png",
+      "ssh-terminal-light.png",
+      "ssh-terminal-light-keyboard.png",
+      "ssh-terminal-dark.png",
+      "ssh-terminal-dark-keyboard.png",
       "polish-welcome.png",
       "polish-empty.png",
       "polish-search-empty.png",
@@ -630,12 +677,463 @@ final class MeetermSmokeUITests: XCTestCase {
       record("standard_screen_\(screen)_captured")
     }
 
+    try verifyIndependentTerminalThemes()
+
     // Keep the existing foundation check as a genuinely fresh process after
     // the seeded screen pass. The foundation uses the Rust poc-main fixture.
     app.terminate()
     try verifyFoundationRelaunch()
     writeFixedArtifact("ios-ui-standard-validation.txt", lines: ["case=standard result=passed"])
     record("standard_complete")
+  }
+
+  /// Bounded theme coverage on the seeded fixture: all six app/terminal
+  /// preference pairs through the public smoke URL, the Settings preview
+  /// surface, a seeded recovery rail, and real OS scheme flips that must
+  /// repaint the same native handle in place — selection included.
+  private func verifyIndependentTerminalThemes() throws {
+    record("theme_matrix_open")
+    // Pin the real OS scheme before the matrix so `system` resolves
+    // deterministically instead of inheriting ambient Simulator state.
+    XCTAssertTrue(
+      requestAppearance("light"),
+      "The host did not apply the initial light OS scheme."
+    )
+    record("theme_os_baseline")
+    let combos: [(String, String)] = [
+      ("light", "light"), ("light", "dark"), ("light", "system"),
+      ("dark", "light"), ("dark", "dark"), ("dark", "system"),
+    ]
+    for (appTheme, terminalTheme) in combos {
+      record("theme_\(appTheme)_app_\(terminalTheme)_terminal_open")
+      app.open(try XCTUnwrap(URL(
+        string: "meeterm://smoke?screen=terminal&app=\(appTheme)&terminal=\(terminalTheme)"
+      )))
+      XCTAssertTrue(
+        app.wait(for: .runningForeground, timeout: 30),
+        "The app left the foreground for app=\(appTheme) terminal=\(terminalTheme)."
+      )
+      XCTAssertTrue(
+        waitForStandardScreen("terminal"),
+        "The seeded terminal did not open for app=\(appTheme) terminal=\(terminalTheme)."
+      )
+      XCTAssertFalse(
+        nativeTerminalHandleObservation().isEmpty,
+        "The native terminal handle is unavailable for app=\(appTheme) terminal=\(terminalTheme)."
+      )
+      capture("theme-app-\(appTheme)-terminal-\(terminalTheme)")
+      record("theme_\(appTheme)_app_\(terminalTheme)_terminal_captured")
+    }
+    record("theme_matrix_complete")
+
+    record("theme_settings_preview_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=settings&app=dark&terminal=light"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    XCTAssertTrue(waitForHittable(button("app-theme"), timeout: 10))
+    XCTAssertTrue(waitForHittable(button("terminal-theme"), timeout: 10))
+    XCTAssertTrue(
+      app.descendants(matching: .any).matching(
+        NSPredicate(format: "identifier == %@", "terminal-preview")
+      ).firstMatch.waitForExistence(timeout: 10),
+      "The terminal theme preview is unavailable."
+    )
+    capture("theme-settings-preview")
+    record("theme_settings_preview_captured")
+
+    // A seeded recovery rail retains the terminal under an opposite pair:
+    // mounting through a warning state keeps a real native handle.
+    record("theme_recovery_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=recovery-progress&app=dark&terminal=light"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("recovery-progress"))
+    XCTAssertFalse(nativeTerminalHandleObservation().isEmpty)
+    capture("theme-recovery-light-terminal")
+    record("theme_recovery_captured")
+
+    try verifyAppearanceFlipRetainsTerminal()
+    try verifyAppScopedDialogs()
+    record("theme_verification_complete")
+  }
+
+  /// One real OS scheme round trip behind the live seeded terminal. The
+  /// `system` pair must follow each flip on the same native handle while an
+  /// active selection survives; a pinned terminal must not be rebound.
+  private func verifyAppearanceFlipRetainsTerminal() throws {
+    record("theme_os_system_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=terminal&app=system&terminal=system"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("terminal"))
+    let systemHandle = nativeTerminalHandleObservation()
+    XCTAssertFalse(systemHandle.isEmpty)
+
+    // Activate a real native selection before the flip so in-place
+    // retention covers the selection controls, not only the surface.
+    let surface = try terminalElement()
+    let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.3))
+    let end = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+    start.press(forDuration: 0.7, thenDragTo: end)
+    XCTAssertTrue(button("Copy selection").waitForExistence(timeout: 10))
+
+    record("theme_os_dark_request")
+    XCTAssertTrue(requestAppearance("dark"), "The host did not apply the dark OS scheme.")
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      systemHandle,
+      "The dark OS flip rebound the native terminal."
+    )
+    XCTAssertTrue(
+      button("Copy selection").exists,
+      "The dark OS flip discarded the native selection."
+    )
+    capture("theme-os-dark-selection")
+    record("theme_os_dark_retained")
+
+    record("theme_os_light_request")
+    XCTAssertTrue(requestAppearance("light"), "The host did not apply the light OS scheme.")
+    XCTAssertEqual(nativeTerminalHandleObservation(), systemHandle)
+    XCTAssertTrue(button("Copy selection").exists)
+    capture("theme-os-light-selection")
+    record("theme_os_light_retained")
+    button("Cancel selection").tap()
+
+    // A pinned terminal preference must ignore the scheme: the app chrome
+    // repaints around the surface while its native handle stays put.
+    record("theme_os_pinned_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=terminal&app=system&terminal=dark"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("terminal"))
+    let pinnedHandle = nativeTerminalHandleObservation()
+    XCTAssertFalse(pinnedHandle.isEmpty)
+    record("theme_os_pinned_dark_request")
+    XCTAssertTrue(requestAppearance("dark"))
+    XCTAssertEqual(nativeTerminalHandleObservation(), pinnedHandle)
+    record("theme_os_pinned_light_request")
+    XCTAssertTrue(requestAppearance("light"))
+    XCTAssertEqual(nativeTerminalHandleObservation(), pinnedHandle)
+    capture("theme-os-pinned")
+    record("theme_os_pinned_retained")
+
+    // Focus the pinned dark terminal once under the light OS scheme: the
+    // native keyboard and accessory must appear in the resolved terminal
+    // theme while the app chrome stays on the opposite appearance.
+    record("theme_keyboard_open")
+    let focusedTerminal = try terminalElement()
+    focusedTerminal.tap()
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    capture("theme-os-keyboard")
+    record("theme_keyboard_shown")
+    button("Hide keyboard").tap()
+    XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
+  }
+
+  /// Real iOS dialog evidence for the app-scoped appearance contract. The
+  /// Settings theme chooser (an iOS ActionSheet) and the discard Alert are
+  /// per-dialog primitives styled from the APPLIED App appearance — never
+  /// the OS scheme and never an unsaved draft — while a `system` terminal
+  /// keeps tracking the real OS scheme on the same native handle. Settings
+  /// may drop the native surface; the handle evidence is therefore captured
+  /// on the terminal route before Settings opens.
+  private func verifyAppScopedDialogs() throws {
+    // App dark fixed under a light OS scheme: the `system` terminal resolves
+    // light against the fixed dark chrome, then the real OS flip must repaint
+    // it in place while the same native handle survives both directions.
+    record("theme_dialog_dark_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=terminal&app=dark&terminal=system"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("terminal"))
+    let darkAppHandle = nativeTerminalHandleObservation()
+    XCTAssertFalse(darkAppHandle.isEmpty)
+
+    // Focus the real native terminal BEFORE the flips: the already-displayed
+    // keyboard and accessory must refresh in place with the resolved
+    // terminal theme, on the same handle, in both directions.
+    let dialogTerminal = try terminalElement()
+    dialogTerminal.tap()
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The seeded terminal did not show the native keyboard."
+    )
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    record("theme_dialog_dark_keyboard")
+    capture("theme-dialog-app-dark-os-light")
+
+    record("theme_dialog_dark_os_dark_request")
+    XCTAssertTrue(
+      requestAppearance("dark"),
+      "The host did not apply the dark OS scheme for the fixed-dark leg."
+    )
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      darkAppHandle,
+      "The OS flip rebound the native terminal behind the fixed app theme."
+    )
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The OS flip dismissed the displayed keyboard."
+    )
+    XCTAssertTrue(
+      button("Hide keyboard").exists,
+      "The OS flip dropped the keyboard accessory."
+    )
+    capture("theme-dialog-app-dark-os-dark")
+
+    record("theme_dialog_dark_os_light_request")
+    XCTAssertTrue(
+      requestAppearance("light"),
+      "The host did not restore the light OS scheme for the fixed-dark leg."
+    )
+    XCTAssertEqual(nativeTerminalHandleObservation(), darkAppHandle)
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The OS flip dismissed the displayed keyboard."
+    )
+    button("Hide keyboard").tap()
+    XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch, timeout: 10))
+
+    // App dark / OS light: chooser ActionSheet and discard Alert evidence.
+    record("theme_dialog_dark_settings_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=settings&app=dark&terminal=system"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    try exerciseSettingsDialogs(
+      draft: "Light",
+      applied: "Dark",
+      chooserCapture: "theme-dialog-chooser-app-dark-os-light",
+      draftChooserCapture: "theme-dialog-chooser-draft-dark",
+      discardCapture: "theme-dialog-discard-app-dark-os-light"
+    )
+    record("theme_dialog_dark_complete")
+
+    // App light fixed while the real OS scheme flips dark: the `system`
+    // terminal resolves dark inside chrome that stays light — the clearest
+    // split evidence — then the same dialogs run under App light / OS dark.
+    record("theme_dialog_light_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=terminal&app=light&terminal=system"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("terminal"))
+    let lightAppHandle = nativeTerminalHandleObservation()
+    XCTAssertFalse(lightAppHandle.isEmpty)
+
+    record("theme_dialog_light_os_dark_request")
+    XCTAssertTrue(
+      requestAppearance("dark"),
+      "The host did not apply the dark OS scheme for the fixed-light leg."
+    )
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      lightAppHandle,
+      "The OS flip rebound the native terminal behind the fixed app theme."
+    )
+    capture("theme-dialog-app-light-os-dark")
+
+    record("theme_dialog_light_settings_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=settings&app=light&terminal=system"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    try exerciseSettingsDialogs(
+      draft: "Dark",
+      applied: "Light",
+      chooserCapture: "theme-dialog-chooser-app-light-os-dark",
+      draftChooserCapture: "theme-dialog-chooser-draft-light",
+      discardCapture: "theme-dialog-discard-app-light-os-dark"
+    )
+    record("theme_dialog_light_complete")
+
+    // `system` App appearance inherits the live OS scheme on each present.
+    record("theme_dialog_system_open")
+    app.open(try XCTUnwrap(URL(
+      string: "meeterm://smoke?screen=settings&app=system&terminal=dark"
+    )))
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+    XCTAssertTrue(waitForStandardScreen("settings"))
+    button("app-theme").tap()
+    let systemSheet = app.sheets.firstMatch
+    XCTAssertTrue(
+      systemSheet.waitForExistence(timeout: 10),
+      "The Appearance chooser did not open for the system leg."
+    )
+    capture("theme-dialog-system-os-dark")
+    XCTAssertTrue(
+      waitForHittable(systemSheet.buttons["Cancel"], timeout: 10),
+      "The system-leg chooser cancel is unavailable."
+    )
+    systemSheet.buttons["Cancel"].tap()
+    XCTAssertTrue(waitForDisappearance(systemSheet, timeout: 10))
+
+    record("theme_dialog_system_os_light_request")
+    XCTAssertTrue(
+      requestAppearance("light"),
+      "The host did not restore the light OS scheme for the system leg."
+    )
+    XCTAssertTrue(waitForHittable(button("app-theme"), timeout: 10))
+    button("app-theme").tap()
+    XCTAssertTrue(
+      systemSheet.waitForExistence(timeout: 10),
+      "The Appearance chooser did not reopen for the system leg."
+    )
+    capture("theme-dialog-system-os-light")
+    systemSheet.buttons["Cancel"].tap()
+    XCTAssertTrue(waitForDisappearance(systemSheet, timeout: 10))
+    // Nothing was picked, so the form is clean and closes directly.
+    button("Cancel").tap()
+    XCTAssertTrue(
+      waitForDisappearance(app.buttons["settings-submit"], timeout: 10),
+      "The settings form stayed open after the clean close."
+    )
+    record("theme_dialog_system_complete")
+  }
+
+  /// One bounded pass through the real iOS Settings dialogs: the ActionSheet
+  /// chooser must cancel cleanly, a draft pick updates the row without
+  /// re-theming the next chooser (it still uses the applied App appearance),
+  /// and the discard Alert must keep Keep editing / Discard semantics.
+  /// This is same-process draft/discard behavior; the reopen goes through
+  /// the real "Terminal settings" control without an app.open reseed, so it
+  /// is not persisted-storage or cold-start proof.
+  private func exerciseSettingsDialogs(
+    draft: String,
+    applied: String,
+    chooserCapture: String,
+    draftChooserCapture: String,
+    discardCapture: String
+  ) throws {
+    button("app-theme").tap()
+    let appearanceSheet = app.sheets.firstMatch
+    XCTAssertTrue(
+      appearanceSheet.waitForExistence(timeout: 10),
+      "The Appearance theme chooser did not open."
+    )
+    capture(chooserCapture)
+    XCTAssertTrue(
+      waitForHittable(appearanceSheet.buttons["Cancel"], timeout: 10),
+      "The Appearance chooser cancel is unavailable."
+    )
+    appearanceSheet.buttons["Cancel"].tap()
+    XCTAssertTrue(
+      waitForDisappearance(appearanceSheet, timeout: 10),
+      "The Appearance chooser did not dismiss."
+    )
+    XCTAssertTrue(waitForHittable(button("app-theme"), timeout: 10))
+
+    // Pick a different draft Appearance: the row follows, but the NEXT
+    // chooser must still present under the applied — not drafted — theme.
+    button("app-theme").tap()
+    XCTAssertTrue(appearanceSheet.waitForExistence(timeout: 10))
+    XCTAssertTrue(
+      waitForHittable(appearanceSheet.buttons[draft], timeout: 10),
+      "The \(draft) option is unavailable in the Appearance chooser."
+    )
+    appearanceSheet.buttons[draft].tap()
+    XCTAssertTrue(waitForDisappearance(appearanceSheet, timeout: 10))
+    XCTAssertTrue(
+      waitForElementValue(button("app-theme"), expected: draft, timeout: 10),
+      "The draft Appearance row did not update after selection."
+    )
+
+    button("terminal-theme").tap()
+    let terminalSheet = app.sheets.firstMatch
+    XCTAssertTrue(
+      terminalSheet.waitForExistence(timeout: 10),
+      "The Terminal theme chooser did not open."
+    )
+    capture(draftChooserCapture)
+    XCTAssertTrue(
+      waitForHittable(terminalSheet.buttons["Cancel"], timeout: 10),
+      "The Terminal theme chooser cancel is unavailable."
+    )
+    terminalSheet.buttons["Cancel"].tap()
+    XCTAssertTrue(waitForDisappearance(terminalSheet, timeout: 10))
+
+    // The form is dirty now: Cancel asks for confirmation. Keep editing
+    // retains the draft; Discard drops it and closes the form.
+    button("Cancel").tap()
+    let discardAlert = app.alerts.firstMatch
+    XCTAssertTrue(
+      discardAlert.waitForExistence(timeout: 10),
+      "The dirty settings form did not ask for confirmation."
+    )
+    XCTAssertTrue(
+      discardAlert.staticTexts["Discard changes?"].exists,
+      "The confirmation is not the settings discard alert."
+    )
+    capture(discardCapture)
+    XCTAssertTrue(
+      waitForHittable(discardAlert.buttons["Keep editing"], timeout: 10),
+      "The keep-editing action is unavailable."
+    )
+    discardAlert.buttons["Keep editing"].tap()
+    XCTAssertTrue(waitForDisappearance(discardAlert, timeout: 10))
+    XCTAssertTrue(
+      waitForHittable(button("app-theme"), timeout: 10),
+      "Keep editing closed the settings form."
+    )
+    XCTAssertTrue(
+      waitForElementValue(button("app-theme"), expected: draft, timeout: 10),
+      "Keep editing dropped the \(draft) draft appearance row."
+    )
+
+    button("Cancel").tap()
+    XCTAssertTrue(
+      discardAlert.waitForExistence(timeout: 10),
+      "The dirty settings form did not ask for confirmation again."
+    )
+    XCTAssertTrue(
+      waitForHittable(discardAlert.buttons["Discard"], timeout: 10),
+      "The discard action is unavailable."
+    )
+    discardAlert.buttons["Discard"].tap()
+    XCTAssertTrue(waitForDisappearance(discardAlert, timeout: 10))
+    XCTAssertTrue(
+      waitForDisappearance(app.buttons["settings-submit"], timeout: 10),
+      "The settings form stayed open after Discard."
+    )
+
+    // Reopen through the real workspaces "Terminal settings" control — same
+    // process, no smoke URL reseed — so the applied row proves Discard
+    // actually dropped the draft rather than a fresh fixture seeding it.
+    XCTAssertTrue(
+      waitForHittable(button("Terminal settings"), timeout: 10),
+      "The workspaces Terminal settings control is unavailable."
+    )
+    button("Terminal settings").tap()
+    XCTAssertTrue(
+      waitForHittable(button("app-theme"), timeout: 10),
+      "The settings form did not reopen from the workspaces control."
+    )
+    XCTAssertTrue(
+      waitForElementValue(button("app-theme"), expected: applied, timeout: 10),
+      "The reopened form did not show the applied \(applied) appearance row."
+    )
+    button("Cancel").tap()
+    XCTAssertFalse(
+      app.alerts.firstMatch.waitForExistence(timeout: 2),
+      "The clean settings close asked for confirmation."
+    )
+    XCTAssertTrue(
+      waitForDisappearance(app.buttons["settings-submit"], timeout: 10),
+      "The settings form stayed open after the clean close."
+    )
   }
 
   /// Additional states and native navigation, separate from the 27-screen
@@ -1047,6 +1545,121 @@ final class MeetermSmokeUITests: XCTestCase {
     }
     record("ssh_transport_loss_remote_ack")
 
+    // A terminal theme change must repaint the live recovered session in
+    // place: the native handle and selected pane stay identical, and the
+    // remote pane keeps answering after both directions of the flip.
+    record("ssh_theme_light")
+    let themeHandleBefore = nativeTerminalHandleObservation()
+    button("Terminal menu").tap()
+    button("Terminal settings").tap()
+    XCTAssertTrue(button("terminal-theme").waitForExistence(timeout: 15))
+    button("terminal-theme").tap()
+    XCTAssertTrue(app.buttons["Light"].waitForExistence(timeout: 15))
+    app.buttons["Light"].tap()
+    button("settings-submit").tap()
+    XCTAssertTrue(waitForTerminal(), "Saving a terminal theme change dropped the live terminal.")
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      themeHandleBefore,
+      "A terminal theme change rebound the live native terminal."
+    )
+    XCTAssertTrue(
+      terminalTab(identifier: selectedPaneIdentifier).isSelected,
+      "A terminal theme change moved the selected pane."
+    )
+    capture("ssh-terminal-light")
+    record("ssh_theme_light_applied")
+
+    // Focus the repainted terminal so the keyboard and accessory appear in
+    // the applied light theme, then prove the same remote pane still answers
+    // a real native input round trip.
+    let lightTerminal = try terminalElement()
+    lightTerminal.tap()
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The light-themed terminal keyboard did not appear."
+    )
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    capture("ssh-terminal-light-keyboard")
+    guard let lightThemeCommand = themeMarkerCommand(
+      value: themeLightValue,
+      paneIdentifier: selectedPaneIdentifier,
+      shellPid: oldShellPid
+    ) else {
+      XCTFail("The selected fixture pane identity is unavailable for the post-light marker.")
+      return
+    }
+    enterTerminalCommand(lightThemeCommand, stage: "ssh_theme_light_input")
+    XCTAssertTrue(
+      waitForPaneMarkerLines(
+        at: themeMarkerPath,
+        values: [themeLightValue],
+        paneIdentifier: selectedPaneIdentifier,
+        timeout: 30
+      ),
+      "The post-light fixture marker did not reach the same pane exactly once."
+    )
+    record("ssh_theme_light_remote_ack")
+    button("Hide keyboard").tap()
+    XCTAssertTrue(
+      waitForDisappearance(app.keyboards.firstMatch, timeout: 10),
+      "The terminal keyboard stayed visible after the post-light marker."
+    )
+
+    record("ssh_theme_dark")
+    button("Terminal menu").tap()
+    button("Terminal settings").tap()
+    XCTAssertTrue(button("terminal-theme").waitForExistence(timeout: 15))
+    button("terminal-theme").tap()
+    XCTAssertTrue(app.buttons["Dark"].waitForExistence(timeout: 15))
+    app.buttons["Dark"].tap()
+    button("settings-submit").tap()
+    XCTAssertTrue(waitForTerminal(), "Restoring the dark terminal dropped the live terminal.")
+    XCTAssertEqual(
+      nativeTerminalHandleObservation(),
+      themeHandleBefore,
+      "Restoring the dark terminal rebound the live native terminal."
+    )
+    XCTAssertTrue(
+      terminalTab(identifier: selectedPaneIdentifier).isSelected,
+      "Restoring the dark terminal moved the selected pane."
+    )
+    capture("ssh-terminal-dark")
+    record("ssh_theme_dark_applied")
+
+    let darkTerminal = try terminalElement()
+    darkTerminal.tap()
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 10),
+      "The restored dark terminal keyboard did not appear."
+    )
+    XCTAssertTrue(waitForHittable(button("Hide keyboard"), timeout: 10))
+    capture("ssh-terminal-dark-keyboard")
+    guard let darkThemeCommand = themeMarkerCommand(
+      value: themeDarkValue,
+      paneIdentifier: selectedPaneIdentifier,
+      shellPid: oldShellPid
+    ) else {
+      XCTFail("The selected fixture pane identity is unavailable for the post-dark marker.")
+      return
+    }
+    enterTerminalCommand(darkThemeCommand, stage: "ssh_theme_dark_input")
+    XCTAssertTrue(
+      waitForPaneMarkerLines(
+        at: themeMarkerPath,
+        values: [themeLightValue, themeDarkValue],
+        paneIdentifier: selectedPaneIdentifier,
+        timeout: 30
+      ),
+      "The post-dark fixture marker did not reach the same pane exactly once."
+    )
+    record("ssh_theme_dark_remote_ack")
+    button("Hide keyboard").tap()
+    XCTAssertTrue(
+      waitForDisappearance(app.keyboards.firstMatch, timeout: 10),
+      "The terminal keyboard stayed visible after the post-dark marker."
+    )
+
     record("ssh_disconnect")
     tapConnectionAction("Disconnect")
     XCTAssertTrue(app.staticTexts["Not connected"].waitForExistence(timeout: 60), "The app did not complete the explicit disconnect.")
@@ -1439,7 +2052,32 @@ final class MeetermSmokeUITests: XCTestCase {
     return "printf '%s:%s:%s\\n' '\(value)' '\(pane.dropFirst())' \"$$\" \(redirect) \(shellQuote(transportLossMarkerPath.path))"
   }
 
-  private func waitForTransportLossMarkerLines(
+  private func themeMarkerCommand(
+    value: String,
+    paneIdentifier: String,
+    shellPid: String
+  ) -> String? {
+    let validValue = value.range(
+      of: #"^ios-ssh-theme-(light|dark)-[0-9a-f]{16}$"#,
+      options: .regularExpression
+    ) != nil
+    guard validValue,
+          !value.contains("'"), !value.contains("\n"), !value.contains("\r"),
+          !shellPid.isEmpty, shellPid.allSatisfy({ $0.isNumber }),
+          paneIdentifier.hasPrefix("terminal-tab-") else {
+      return nil
+    }
+    let pane = String(paneIdentifier.dropFirst("terminal-tab-".count))
+    guard pane.hasPrefix("%"), pane.dropFirst().allSatisfy({ $0.isNumber }) else {
+      return nil
+    }
+    // Gating on the captured shell PID makes the round trip fail remote-side
+    // if a theme change rebound the pane or replaced its shell.
+    return "test \"$$\" = '\(shellPid)' && printf '%s:%s:%s\\n' '\(value)' '\(pane.dropFirst())' \"$$\" >> \(shellQuote(themeMarkerPath.path))"
+  }
+
+  private func waitForPaneMarkerLines(
+    at path: URL,
     values: [String],
     paneIdentifier: String,
     timeout: TimeInterval
@@ -1448,7 +2086,7 @@ final class MeetermSmokeUITests: XCTestCase {
     guard !pane.isEmpty, pane.allSatisfy({ $0.isNumber }) else { return false }
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-      if let contents = try? String(contentsOf: transportLossMarkerPath, encoding: .utf8) {
+      if let contents = try? String(contentsOf: path, encoding: .utf8) {
         let lines = contents.split(whereSeparator: { $0.isNewline }).map(String.init)
         let valid = lines.count == values.count && zip(lines, values).allSatisfy { line, value in
           let fields = line.split(separator: ":", omittingEmptySubsequences: false)
@@ -1463,6 +2101,19 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return false
+  }
+
+  private func waitForTransportLossMarkerLines(
+    values: [String],
+    paneIdentifier: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    waitForPaneMarkerLines(
+      at: transportLossMarkerPath,
+      values: values,
+      paneIdentifier: paneIdentifier,
+      timeout: timeout
+    )
   }
 
   private func waitForTransportLossStale(
@@ -3364,6 +4015,23 @@ final class MeetermSmokeUITests: XCTestCase {
     return element.exists && element.isHittable
   }
 
+  /// Bounded wait on an element's accessibility value. Theme rows carry the
+  /// current selection in `accessibilityValue.text` because the row's value
+  /// Text is not exposed inside the accessible Pressable — `staticTexts`
+  /// queries can never see it.
+  private func waitForElementValue(
+    _ element: XCUIElement,
+    expected: String,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if element.exists && element.value as? String == expected { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return element.exists && element.value as? String == expected
+  }
+
   private func waitForHittableElement(
     _ elements: [XCUIElement],
     timeout: TimeInterval
@@ -3543,6 +4211,28 @@ final class MeetermSmokeUITests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
     }
     return .timedOut
+  }
+
+  /// Ask the host driver for a real `simctl ui` scheme flip and wait for its
+  /// fixed acknowledgement. Any non-passing token fails closed so a missing
+  /// observer can never fake an OS appearance change.
+  private func requestAppearance(_ value: String) -> Bool {
+    try? FileManager.default.removeItem(at: appearanceResultPath)
+    do {
+      try Data((value + "\n").utf8).write(to: appearanceRequestPath, options: .atomic)
+    } catch {
+      return false
+    }
+    let expected = "appearance-\(value)-passed\n"
+    let deadline = Date().addingTimeInterval(20)
+    while Date() < deadline {
+      if let observed = try? String(contentsOf: appearanceResultPath, encoding: .utf8),
+         observed.hasPrefix("appearance-") {
+        return observed == expected
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    return false
   }
 
   private func shellQuote(_ value: String) -> String {

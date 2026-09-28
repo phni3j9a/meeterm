@@ -387,9 +387,35 @@ final class MeetermTerminalView: ExpoView {
       : UIColor(red: 36/255, green: 33/255, blue: 29/255, alpha: 1)
     backgroundColor = color
     renderingView.backgroundColor = color
-    terminalInputView.keyboardAppearance = lightTheme ? .light : .dark
+    if let metalView = renderingView as? MTKView {
+      metalView.clearColor = MTLClearColor(
+        red: Double(lightTheme ? 251 : 36) / 255,
+        green: Double(lightTheme ? 247 : 33) / 255,
+        blue: Double(lightTheme ? 239 : 29) / 255,
+        alpha: 1
+      )
+    }
+    terminalInputView.setTheme(light: lightTheme)
+    applySelectionControlTheme()
     renderer.setAppearance(fontSize: fontSize, light: lightTheme)
     if terminalHandle != 0 { MeetermCore.setTheme(terminalId: terminalHandle, light: lightTheme) }
+    NSLog("MEETERM_SMOKE_THEME %@", lightTheme ? "light" : "dark")
+  }
+
+  private func applySelectionControlTheme() {
+    let accent = lightTheme ? UIColor(red: 139/255, green: 94/255, blue: 48/255, alpha: 1)
+      : UIColor(red: 219/255, green: 179/255, blue: 120/255, alpha: 1)
+    let barBackground = lightTheme ? UIColor(red: 230/255, green: 214/255, blue: 174/255, alpha: 0.95)
+      : UIColor(red: 0.57, green: 0.38, blue: 0.13, alpha: 1)
+    for subview in selectionBar.arrangedSubviews {
+      guard let button = subview as? UIButton else { continue }
+      button.configuration?.baseBackgroundColor = barBackground
+      button.configuration?.baseForegroundColor = lightTheme
+        ? accent
+        : UIColor(red: 245/255, green: 237/255, blue: 223/255, alpha: 1)
+    }
+    startHandle.tintColor = accent
+    endHandle.tintColor = accent
   }
 
   override func safeAreaInsetsDidChange() {

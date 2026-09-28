@@ -3281,5 +3281,376 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(repeated_error.exception.reason, "marker_repeated")
 
 
+class TerminalThemeTests(unittest.TestCase):
+    def test_terminal_theme_events_parses_only_native_markers(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.run.return_value = (
+            b"I/MeetermTerminalView(1234): MEETERM_SMOKE_THEME dark\n"
+            b"D/OtherTag(1234): an unrelated native log line\n"
+            b"I/MeetermTerminalView(1234): MEETERM_SMOKE_THEME light\n"
+        )
+        self.assertEqual(
+            smoke.terminal_theme_events(device, "theme_stage"),
+            ["dark", "light"],
+        )
+        self.assertEqual(
+            device.run.call_args.args[0],
+            ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalView:I"),
+        )
+
+    def test_wait_for_terminal_theme_waits_past_the_initial_dark_marker(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        snapshots = iter((["dark"], ["dark", "light"], ["dark", "light"]))
+        with mock.patch.object(
+            smoke, "terminal_theme_events", side_effect=lambda *_a, **_k: next(snapshots)
+        ), mock.patch.object(smoke.time, "sleep"):
+            self.assertEqual(
+                smoke.wait_for_terminal_theme(device, "light", 0, "theme_stage"),
+                2,
+            )
+
+    def test_wait_for_terminal_theme_fails_closed_on_mismatch(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with mock.patch.object(
+            smoke, "terminal_theme_events", return_value=["dark"]
+        ), mock.patch.object(smoke.time, "sleep"), mock.patch.object(
+            smoke.time, "monotonic", side_effect=[0, 0, 100]
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_terminal_theme(device, "light", 0, "theme_stage")
+            self.assertEqual(error.exception.reason, "resolved_theme_mismatch")
+
+    def test_theme_matrix_drives_all_six_pairs_and_resolves_system_to_pinned_os(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        saved: list[tuple[str, str]] = []
+        expected: list[str] = []
+        with (
+            mock.patch.object(smoke, "set_night_mode") as night,
+            mock.patch.object(smoke, "terminal_theme_events", return_value=["dark"]),
+            mock.patch.object(
+                smoke, "set_theme_preferences",
+                side_effect=lambda _d, _s, app, terminal: saved.append((app, terminal)),
+            ),
+            mock.patch.object(smoke, "open_workspace_terminal"),
+            mock.patch.object(
+                smoke, "wait_for_terminal_theme",
+                side_effect=lambda _d, want, _b, _s: expected.append(want) or 1,
+            ),
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(smoke, "leave_workspace_terminal"),
+        ):
+            completed: list[str] = []
+            smoke.exercise_terminal_themes(device, "Workspace ios-main", Path("/tmp/art"), completed)
+
+        night.assert_called_once_with(device, False, "daily_theme_matrix")
+        self.assertEqual(
+            saved,
+            [
+                ("light", "light"), ("light", "dark"), ("light", "system"),
+                ("dark", "light"), ("dark", "dark"), ("dark", "system"),
+            ],
+        )
+        self.assertEqual(
+            expected,
+            ["light", "dark", "light", "light", "dark", "light"],
+        )
+        self.assertEqual(completed, ["daily_theme_matrix"])
+
+    def test_os_scheme_rejects_a_pinned_terminal_that_follows_the_scheme(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.process_id.return_value = "4242"
+        # The system leg resolves light, dark, light; the pinned leg mounts
+        # once more with its own dark marker and must then keep exactly that
+        # count. This fixture leaks one extra marker on the first OS flip,
+        # which the independence check must reject.
+        snapshots = iter((
+            ["dark"],
+            ["dark", "light"],
+            ["dark", "light"],
+            ["dark", "light", "dark"],
+            ["dark", "light", "dark"],
+            ["dark", "light", "dark", "light"],
+            ["dark", "light", "dark", "light"],
+            ["dark", "light", "dark", "light", "dark"],
+            ["dark", "light", "dark", "light", "dark", "dark"],
+            ["dark", "light", "dark", "light", "dark", "dark"],
+            ["dark", "light", "dark", "light", "dark", "dark", "light"],
+        ))
+        with (
+            mock.patch.object(smoke, "set_night_mode"),
+            mock.patch.object(smoke.time, "sleep"),
+            mock.patch.object(
+                smoke, "terminal_theme_events", side_effect=lambda *_a, **_k: next(snapshots)
+            ),
+            mock.patch.object(smoke, "set_theme_preferences"),
+            mock.patch.object(smoke, "open_workspace_terminal"),
+            mock.patch.object(smoke, "wait_for_terminal"),
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(smoke, "leave_workspace_terminal"),
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.exercise_terminal_theme_os_scheme(
+                    device, "Workspace ios-main", Path("/tmp/art"), []
+                )
+            self.assertEqual(error.exception.reason, "pinned_terminal_followed_scheme")
+
+    def test_dialog_events_parses_only_presenter_markers(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.run.return_value = (
+            b"I/MeetermTerminalDialog(1234): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark\n"
+            b"D/OtherTag(1234): an unrelated native log line\n"
+            b"I/MeetermTerminalDialog(1234): MEETERM_SMOKE_DIALOG result=selected index=2\n"
+        )
+        self.assertEqual(
+            smoke.dialog_events(device, "theme_stage"),
+            [
+                "MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark",
+                "MEETERM_SMOKE_DIALOG result=selected index=2",
+            ],
+        )
+        self.assertEqual(
+            device.run.call_args.args[0],
+            ("shell", "logcat", "-d", "-v", "brief", "-s", "MeetermTerminalDialog:I"),
+        )
+
+    def test_wait_for_dialog_event_requires_a_new_marker(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        snapshots = iter((
+            ["MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark"],
+            [
+                "MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark",
+                "MEETERM_SMOKE_DIALOG result=dismissed",
+            ],
+        ))
+        with mock.patch.object(
+            smoke, "dialog_events", side_effect=lambda *_a, **_k: next(snapshots)
+        ), mock.patch.object(smoke.time, "sleep"):
+            self.assertEqual(
+                smoke.wait_for_dialog_event(
+                    device, "result=dismissed", 1, "theme_stage",
+                ),
+                2,
+            )
+
+    def test_wait_for_dialog_event_fails_closed_on_mismatch(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        with mock.patch.object(
+            smoke,
+            "dialog_events",
+            return_value=["MEETERM_SMOKE_DIALOG result=selected index=0"],
+        ), mock.patch.object(smoke.time, "sleep"), mock.patch.object(
+            smoke.time, "monotonic", side_effect=[0, 0, 100]
+        ):
+            with self.assertRaises(smoke.SmokeFailure) as error:
+                smoke.wait_for_dialog_event(
+                    device, "result=dismissed", 0, "theme_stage",
+                )
+            self.assertEqual(error.exception.reason, "dialog_event_mismatch")
+
+    def test_dialog_legs_cover_fixed_and_system_appearances_in_order(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.process_id.return_value = "4242"
+        fixed_calls: list[str] = []
+        presented: list[str] = []
+        saved: list[tuple[str, str]] = []
+        with (
+            mock.patch.object(smoke, "set_night_mode"),
+            mock.patch.object(smoke.time, "sleep"),
+            mock.patch.object(smoke, "terminal_theme_events", return_value=["dark"]),
+            mock.patch.object(smoke, "dialog_events", return_value=[]),
+            mock.patch.object(
+                smoke, "set_theme_preferences",
+                side_effect=lambda _d, _s, app, terminal: saved.append((app, terminal)),
+            ),
+            mock.patch.object(smoke, "open_workspace_terminal"),
+            mock.patch.object(
+                smoke, "wait_for_terminal_theme",
+                side_effect=lambda *_a, **_k: 1,
+            ),
+            mock.patch.object(smoke, "wait_for_terminal"),
+            mock.patch.object(smoke, "wait_for_node"),
+            mock.patch.object(smoke, "wait_for_text_input"),
+            mock.patch.object(smoke, "capture_optional_screenshot"),
+            mock.patch.object(smoke, "leave_workspace_terminal"),
+            mock.patch.object(smoke, "tap_action"),
+            mock.patch.object(smoke, "tap_theme_row"),
+            mock.patch.object(smoke, "tap_app_dialog_button"),
+            mock.patch.object(
+                smoke, "wait_for_dialog_event",
+                side_effect=lambda _d, want, _b, _s: presented.append(want) or 1,
+            ),
+            mock.patch.object(
+                smoke, "exercise_app_alert_fixed",
+                side_effect=lambda _d, _a, _c, _s, base, **kw: (
+                    fixed_calls.append(kw["appearance"]) or base
+                ),
+            ),
+        ):
+            completed: list[str] = []
+            smoke.exercise_terminal_theme_os_scheme(
+                device, "Workspace ios-main", Path("/tmp/art"), completed,
+            )
+
+        # Fixed legs run both directions; the system leg then checks each
+        # resolved OS scheme and exercises the dismissed/selected results.
+        self.assertEqual(fixed_calls, ["dark", "light"])
+        self.assertIn("presented appearance=system resolved=dark", presented)
+        self.assertIn("presented appearance=system resolved=light", presented)
+        self.assertIn("result=selected index=0", presented)
+        self.assertIn("result=dismissed", presented)
+        self.assertEqual(saved[-1], ("light", "dark"))
+        self.assertEqual(
+            completed[-3:],
+            [
+                "daily_theme_dialog_fixed",
+                "daily_theme_dialog_system",
+                "daily_theme_restored",
+            ],
+        )
+
+    def test_set_night_mode_drives_the_real_system_service(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        smoke.set_night_mode(device, True, "theme_stage")
+        self.assertEqual(
+            device.run.call_args.args[0],
+            ("shell", "cmd", "uimode", "night", "yes"),
+        )
+
+    def test_pick_theme_option_taps_the_native_dialog_button(self) -> None:
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        option = smoke.Node("", "LIGHT", "android.widget.Button", (0, 0, 10, 10))
+        with (
+            mock.patch.object(smoke, "tap_theme_row") as action,
+            mock.patch.object(smoke, "wait_for_node", return_value=option) as wait,
+            mock.patch.object(smoke, "tap_node") as tap,
+        ):
+            smoke.pick_theme_option(device, "theme_stage", "Terminal theme", "light")
+        action.assert_called_once_with(device, "theme_stage", "Terminal theme")
+        self.assertEqual(
+            wait.call_args.kwargs,
+            {"text": "LIGHT", "class_fragment": "Button"},
+        )
+        tap.assert_called_once_with(device, option, "theme_stage")
+
+    @staticmethod
+    def _theme_row(
+        description: str,
+        *,
+        resource_id: str = "",
+        enabled: bool = True,
+        visible: bool = True,
+    ) -> smoke.Node:
+        return smoke.Node(
+            "",
+            description,
+            "android.view.ViewGroup",
+            (0, 0, 100, 50),
+            resource_id=resource_id,
+            enabled=enabled,
+            visible_to_user=visible,
+        )
+
+    # Verbatim uiautomator subtrees captured on the same 99855a2 release APK
+    # whose full-r2 run failed at daily_settings_theme/ui_timeout. Evidence
+    # branch android-20260928-issue37-settings-id-998 @ eda34bc5
+    # (theme-settings-two-rows.xml). This dump emits bare resource ids and
+    # omits visible-to-user; parse_ui_dump defaults it to true.
+    _THEME_ROWS_XML_99855 = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<hierarchy rotation="0">'
+        '<node index="4" text="" resource-id="app-theme" class="android.widget.Button" '
+        'package="dev.meeterm.app" content-desc="Appearance, Light" checkable="false" '
+        'checked="false" clickable="true" enabled="true" focusable="true" focused="false" '
+        'scrollable="false" long-clickable="false" password="false" selected="false" '
+        'bounds="[63,654][1017,870]" drawing-order="5" hint="">'
+        '<node index="0" text="Appearance" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,696][897,759]" '
+        'drawing-order="1" hint="" />'
+        '<node index="1" text="Light" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,769][897,827]" '
+        'drawing-order="2" hint="" />'
+        '</node>'
+        '<node index="5" text="" resource-id="terminal-theme" class="android.widget.Button" '
+        'package="dev.meeterm.app" content-desc="Terminal theme, Dark" checkable="false" '
+        'checked="false" clickable="true" enabled="true" focusable="true" focused="false" '
+        'scrollable="false" long-clickable="false" password="false" selected="false" '
+        'bounds="[63,870][1017,1086]" drawing-order="6" hint="">'
+        '<node index="0" text="Terminal theme" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,912][897,975]" '
+        'drawing-order="1" hint="" />'
+        '<node index="1" text="Dark" resource-id="" class="android.widget.TextView" '
+        'package="dev.meeterm.app" content-desc="" checkable="false" checked="false" '
+        'clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" '
+        'long-clickable="false" password="false" selected="false" bounds="[105,985][897,1043]" '
+        'drawing-order="2" hint="" />'
+        '</node>'
+        '</hierarchy>'
+    )
+
+    def test_theme_row_matches_renamed_label_with_real_dump_bare_resource_ids(self) -> None:
+        renamed_dump = self._THEME_ROWS_XML_99855.replace("Appearance", "App appearance")
+        nodes = smoke.parse_ui_dump(renamed_dump.encode("utf-8"))
+        appearance = smoke.find_theme_row(nodes, "App appearance")
+        terminal = smoke.find_theme_row(nodes, "Terminal theme")
+        self.assertIsNotNone(appearance)
+        self.assertIsNotNone(terminal)
+        self.assertEqual(appearance.resource_id, "app-theme")
+        self.assertEqual(terminal.resource_id, "terminal-theme")
+        self.assertEqual(appearance.content_description, "App appearance, Light")
+        self.assertEqual(terminal.content_description, "Terminal theme, Dark")
+
+    def test_theme_row_matches_resource_id_with_value_suffix(self) -> None:
+        row = self._theme_row(
+            "App appearance, Dark",
+            resource_id="dev.meeterm.app:id/app-theme",
+        )
+        self.assertIs(
+            smoke.find_theme_row([row], "App appearance"),
+            row,
+        )
+
+    def test_theme_row_matches_bare_label_description(self) -> None:
+        row = self._theme_row(
+            "Terminal theme",
+            resource_id="dev.meeterm.app:id/terminal-theme",
+        )
+        self.assertIs(smoke.find_theme_row([row], "Terminal theme"), row)
+
+    def test_theme_row_rejects_wrong_id_label_or_state(self) -> None:
+        cases = [
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/terminal-theme"), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Terminal theme"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", enabled=False), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", visible=False), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Font size"),
+            (self._theme_row("App appearance, Dark", resource_id="com.example.other:id/app-theme"), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="app-theme-debug"), "App appearance"),
+            (self._theme_row("Appearance, Dark", resource_id="app-theme"), "App appearance"),
+            (self._theme_row("Terminal theme, Light", resource_id="app-theme"), "Terminal theme"),
+        ]
+        for row, label in cases:
+            with self.subTest(label=label, enabled=row.enabled, visible=row.visible_to_user):
+                self.assertIsNone(smoke.find_theme_row([row], label))
+
+    def test_tap_theme_row_taps_the_identified_row(self) -> None:
+        row = self._theme_row(
+            "Terminal theme, Dark",
+            resource_id="dev.meeterm.app:id/terminal-theme",
+        )
+        device = mock.Mock(spec=smoke.AndroidDevice)
+        device.dump_ui.return_value = [row]
+        with mock.patch.object(smoke, "tap_node") as tap:
+            self.assertIs(smoke.tap_theme_row(device, "theme_stage", "Terminal theme"), row)
+        tap.assert_called_once_with(device, row, "theme_stage")
+
+
 if __name__ == "__main__":
     unittest.main()

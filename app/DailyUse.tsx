@@ -1,30 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  ActionSheetIOS, ActivityIndicator, Alert, FlatList, Keyboard,
+  ActionSheetIOS, ActivityIndicator, FlatList, Keyboard,
   KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView,
   StatusBar, StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ServerProfile, TerminalPreferences } from '../modules/meeterm-terminal';
-import { Button, DARK, Icon, IconButton, MONO, useReducedMotion } from './ui';
-import type { Palette } from './ui';
+import { appAlert, sheetUserInterfaceStyle } from './dialogs';
+import { Button, DARK, Icon, IconButton, MONO, TERMINAL_SURFACE, useReducedMotion, useTerminalTheme } from './ui';
+import type { Palette, ThemePreference } from './ui';
 
 export const DEFAULT_PREFERENCES: TerminalPreferences = {
-  fontSize: 15, theme: 'light', scrollbackLines: 10000, automaticReconnect: true,
+  fontSize: 15, theme: 'light', terminalTheme: 'dark', scrollbackLines: 10000, automaticReconnect: true,
 };
 
-export function itemActions(title: string, edit: () => void, remove: () => void, kind: 'profile' | 'workspace' = 'profile') {
+export function itemActions(appearance: ThemePreference, title: string, edit: () => void, remove: () => void, kind: 'profile' | 'workspace' = 'profile') {
   const editLabel = kind === 'profile' ? 'Edit server' : 'Rename';
   const removeLabel = kind === 'profile' ? 'Remove' : 'Close';
   if (Platform.OS === 'ios') {
-    ActionSheetIOS.showActionSheetWithOptions({ title, options: [editLabel, removeLabel, 'Cancel'], cancelButtonIndex: 2, destructiveButtonIndex: 1 }, index => {
+    ActionSheetIOS.showActionSheetWithOptions({ title, options: [editLabel, removeLabel, 'Cancel'], cancelButtonIndex: 2, destructiveButtonIndex: 1, userInterfaceStyle: sheetUserInterfaceStyle(appearance) }, index => {
       if (index === 0) edit();
       if (index === 1) remove();
     });
   } else {
-    Alert.alert(title, undefined, [
+    appAlert(appearance, title, undefined, [
       { text: 'Cancel', style: 'cancel' },
       { text: editLabel, onPress: edit },
       { text: removeLabel, style: 'destructive', onPress: remove },
@@ -32,13 +33,14 @@ export function itemActions(title: string, edit: () => void, remove: () => void,
   }
 }
 
-export function ProfileList({ profiles, selectedId, loading, error, busy, colors, onRetry, onAdd, onConnect, onEdit, onDelete }: {
+export function ProfileList({ profiles, selectedId, loading, error, busy, colors, themePreference, onRetry, onAdd, onConnect, onEdit, onDelete }: {
   profiles: ServerProfile[];
   selectedId: string;
   loading: boolean;
   error: boolean;
   busy: boolean;
   colors: Palette;
+  themePreference: ThemePreference;
   onRetry: () => void;
   onAdd: () => void;
   onConnect: (profile: ServerProfile) => void;
@@ -57,7 +59,7 @@ export function ProfileList({ profiles, selectedId, loading, error, busy, colors
         <Icon name="server" color={item.id === selectedId ? colors.accent : colors.muted} size={22} />
         <View style={styles.copy}><Text numberOfLines={2} style={[styles.rowTitle, { color: colors.text }]}>{item.name}</Text><Text numberOfLines={2} style={[styles.helper, { color: colors.muted }]}>{item.username}@{item.host.includes(':') ? `[${item.host}]` : item.host}{item.port !== 22 ? `:${item.port}` : ''}</Text><Text style={[styles.caption, { color: colors.muted }]}>{item.credentialSaved ? 'Credentials saved' : 'Ask for credentials'}{item.id === selectedId ? ' · Selected' : ''}</Text></View>
       </Pressable>
-      <IconButton icon="menu" label={`Server options ${item.name}`} disabled={busy} colors={colors} onPress={() => itemActions(item.name, () => onEdit(item), () => onDelete(item))} />
+      <IconButton icon="menu" label={`Server options ${item.name}`} disabled={busy} colors={colors} onPress={() => itemActions(themePreference, item.name, () => onEdit(item), () => onDelete(item))} />
     </View>}
   />;
 }
@@ -85,16 +87,16 @@ function FormModal({ visible, title, submitLabel, submitId, submitText = 'Save',
   </Modal>;
 }
 
-function confirmDiscard(dirty: boolean, close: () => void) {
+function confirmDiscard(appearance: ThemePreference, dirty: boolean, close: () => void) {
   if (!dirty) { Keyboard.dismiss(); close(); return; }
-  Alert.alert('Discard changes?', 'Your changes have not been saved.', [
+  appAlert(appearance, 'Discard changes?', 'Your changes have not been saved.', [
     { text: 'Keep editing', style: 'cancel' },
     { text: 'Discard', style: 'destructive', onPress: () => { Keyboard.dismiss(); close(); } },
   ]);
 }
 
-export function NameForm({ visible, title, initialName, colors, onClose, onSave }: {
-  visible: boolean; title: string; initialName: string; colors: Palette;
+export function NameForm({ visible, title, initialName, colors, themePreference, onClose, onSave }: {
+  visible: boolean; title: string; initialName: string; colors: Palette; themePreference: ThemePreference;
   onClose: () => void; onSave: (name: string) => Promise<boolean>;
 }) {
   const [name, setName] = useState(initialName);
@@ -114,7 +116,7 @@ export function NameForm({ visible, title, initialName, colors, onClose, onSave 
     catch { setError('Could not save the change. Check your connection and try again.'); }
     finally { pending.current = false; setBusy(false); }
   };
-  return <FormModal visible={visible} title={title} submitLabel="Save name" submitId="name-submit" dirty={name !== initialName} submitText={title.includes('Create') ? 'Create' : 'Save'} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(name !== initialName, onClose); }} onSubmit={() => { void submit(); }}>
+  return <FormModal visible={visible} title={title} submitLabel="Save name" submitId="name-submit" dirty={name !== initialName} submitText={title.includes('Create') ? 'Create' : 'Save'} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(themePreference, name !== initialName, onClose); }} onSubmit={() => { void submit(); }}>
     <View style={styles.field}><Text style={[styles.body, { color: colors.text }]}>Name</Text><TextInput accessibilityLabel="Workspace or terminal name" testID="workspace-terminal-name" value={name} onChangeText={setName} autoFocus autoComplete="off" autoCorrect={false} returnKeyType="done" onSubmitEditing={submit} placeholder="e.g. Development" placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]} />
       {error ? <Text accessibilityRole="alert" style={[styles.helper, { color: colors.danger }]}>{error}</Text> : null}
     </View>
@@ -131,25 +133,28 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
   const [fontSize, setFontSize] = useState(String(preferences.fontSize));
   const [scrollback, setScrollback] = useState(String(preferences.scrollbackLines));
   const [theme, setTheme] = useState(preferences.theme);
+  const [terminalTheme, setTerminalTheme] = useState(preferences.terminalTheme);
   const [automaticReconnect, setAutomaticReconnect] = useState(preferences.automaticReconnect);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
+  const previewTheme = useTerminalTheme(terminalTheme);
+  const previewSurface = TERMINAL_SURFACE[previewTheme];
   useEffect(() => {
     if (!visible) return;
     setFontSize(String(preferences.fontSize)); setScrollback(String(preferences.scrollbackLines));
-    setTheme(preferences.theme); setAutomaticReconnect(preferences.automaticReconnect); setError('');
+    setTheme(preferences.theme); setTerminalTheme(preferences.terminalTheme); setAutomaticReconnect(preferences.automaticReconnect); setError('');
     setBusy(false); pending.current = false;
   }, [preferences, visible]);
   const dirty = fontSize !== String(preferences.fontSize) || scrollback !== String(preferences.scrollbackLines)
-    || theme !== preferences.theme || automaticReconnect !== preferences.automaticReconnect;
-  const chooseTheme = () => {
+    || theme !== preferences.theme || terminalTheme !== preferences.terminalTheme || automaticReconnect !== preferences.automaticReconnect;
+  const chooseTheme = (title: string, onPick: (value: ThemePreference) => void) => {
     Keyboard.dismiss();
     const themes = ['system', 'light', 'dark'] as const;
     if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions({ title: 'Appearance', options: [...themes.map(item => THEME_LABELS[item]), 'Cancel'], cancelButtonIndex: 3 }, index => { if (index < 3) setTheme(themes[index]); });
+      ActionSheetIOS.showActionSheetWithOptions({ title, options: [...themes.map(item => THEME_LABELS[item]), 'Cancel'], cancelButtonIndex: 3, userInterfaceStyle: sheetUserInterfaceStyle(preferences.theme) }, index => { if (index < 3) onPick(themes[index]); });
     } else {
-      Alert.alert('Appearance', undefined, themes.map(value => ({ text: THEME_LABELS[value], onPress: () => setTheme(value) })), { cancelable: true });
+      appAlert(preferences.theme, title, undefined, themes.map(value => ({ text: THEME_LABELS[value], onPress: () => onPick(value) })), { cancelable: true });
     }
   };
   const submit = async () => {
@@ -158,22 +163,23 @@ export function SettingsForm({ visible, preferences, colors, onClose, onSave }: 
     if (!/^\d+$/.test(fontSize) || size < 10 || size > 24) { setError('Enter a whole number from 10 to 24 for text size.'); return; }
     if (!/^\d+$/.test(scrollback) || lines < 1000 || lines > 50000) { setError('Enter a whole number from 1,000 to 50,000 for scrollback.'); return; }
     pending.current = true; setBusy(true); setError(''); Keyboard.dismiss();
-    try { if (!await onSave({ fontSize: size, theme, scrollbackLines: lines, automaticReconnect })) setError('Could not save settings. Please try again.'); }
+    try { if (!await onSave({ fontSize: size, theme, terminalTheme, scrollbackLines: lines, automaticReconnect })) setError('Could not save settings. Please try again.'); }
     catch { setError('Could not save settings. Please try again.'); }
     finally { pending.current = false; setBusy(false); }
   };
   const numericStyle = [styles.numericInput, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }];
-  return <FormModal visible={visible} title="Settings" submitLabel="Save settings" submitId="settings-submit" dirty={dirty} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(dirty, onClose); }} onSubmit={() => { void submit(); }}>
+  return <FormModal visible={visible} title="Settings" submitLabel="Save settings" submitId="settings-submit" dirty={dirty} busy={busy} colors={colors} onClose={() => { if (!pending.current) confirmDiscard(preferences.theme, dirty, onClose); }} onSubmit={() => { void submit(); }}>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>DISPLAY</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}>
         <View style={[styles.settingRow, { borderBottomColor: colors.border }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Text size</Text><Text style={[styles.caption, { color: colors.muted }]}>10–24 pt</Text></View><TextInput accessibilityLabel="Terminal font size" testID="terminal-font-size" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={2} value={fontSize} onChangeText={setFontSize} selectionColor={colors.accent} style={numericStyle} /></View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Appearance" testID="terminal-theme" onPress={chooseTheme} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Appearance</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="App appearance" accessibilityValue={{ text: THEME_LABELS[theme] }} testID="app-theme" onPress={() => chooseTheme('App appearance', setTheme)} style={({ pressed }) => [styles.settingRow, { borderBottomColor: colors.border }, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>App appearance</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[theme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Terminal theme" accessibilityValue={{ text: THEME_LABELS[terminalTheme] }} testID="terminal-theme" onPress={() => chooseTheme('Terminal theme', setTerminalTheme)} style={({ pressed }) => [styles.settingRow, styles.noBorder, pressed && { backgroundColor: colors.elevated }]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Terminal theme</Text><Text style={[styles.helper, { color: colors.muted }]}>{THEME_LABELS[terminalTheme]}</Text></View><Icon name="chevron" color={colors.muted} size={18} /></Pressable>
       </View>
-      <View style={[styles.previewCard, { backgroundColor: DARK.terminal }]}>
-        <Text style={[styles.caption, { color: DARK.muted }]}>Text size preview</Text>
-        <Text style={[styles.preview, { color: DARK.text, fontSize: Math.min(24, Math.max(10, Number(fontSize) || 15)) }]}>Aa 0123 日本語</Text>
+      <View testID="terminal-preview" style={[styles.previewCard, { backgroundColor: previewSurface.background }]}>
+        <Text style={[styles.caption, { color: previewSurface.muted }]}>Terminal text size preview</Text>
+        <Text style={[styles.preview, { color: previewSurface.foreground, fontSize: Math.min(24, Math.max(10, Number(fontSize) || 15)) }]}>Aa 0123 日本語</Text>
       </View>
-      <Text style={[styles.helper, { color: colors.muted }]}>Appearance applies to the app. Terminals keep a dark background for consistent command-line colors.</Text>
+      <Text style={[styles.helper, { color: colors.muted }]}>App appearance recolors the app. Terminal theme recolors only the terminal surface.</Text>
     </View>
     <View style={styles.section}><Text style={[styles.sectionLabel, { color: colors.muted }]}>HISTORY</Text>
       <View style={[styles.group, { backgroundColor: colors.surface }]}><View style={[styles.settingRow, styles.noBorder]}><View style={styles.copy}><Text style={[styles.body, { color: colors.text }]}>Scrollback lines</Text><Text style={[styles.caption, { color: colors.muted }]}>1,000–50,000 lines</Text></View><TextInput accessibilityLabel="Scrollback lines" testID="scrollback-lines" inputMode="numeric" keyboardType="number-pad" autoComplete="off" maxLength={5} value={scrollback} onChangeText={setScrollback} selectionColor={colors.accent} style={[numericStyle, { minWidth: 96 }]} /></View></View>

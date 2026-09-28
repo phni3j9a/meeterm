@@ -52,9 +52,38 @@ export type SavedCredential =
   | { authMethod: 'publicKey'; privateKey: string; passphrase: string }
   | { authMethod: 'password'; password: string };
 
+/** Persisted appearance selection; `system` follows the OS appearance. */
+export type ThemePreference = 'system' | 'light' | 'dark';
+
+/** Button descriptor for the app-owned alert presenter. */
+export type AppAlertButton = {
+  text: string;
+  style?: 'default' | 'cancel' | 'destructive';
+};
+
+/**
+ * Android-only native dialog presenter input. `appearance` carries the
+ * currently applied App appearance preference: `system` inherits the
+ * platform configuration and fixed values theme only this dialog. Resolves
+ * the original button index on selection, or null on dismissal/failure.
+ */
+export type AppAlertOptions = {
+  appearance: ThemePreference;
+  title: string;
+  message?: string;
+  buttons: AppAlertButton[];
+  cancelable: boolean;
+};
+
 export type TerminalPreferences = {
   fontSize: number;
-  theme: 'system' | 'light' | 'dark';
+  /** App appearance: chrome, navigation, sheets, and dialogs. */
+  theme: ThemePreference;
+  /**
+   * Terminal surface theme, independent from `theme`. Saves that predate
+   * this key and new installs both resolve as `dark`.
+   */
+  terminalTheme: ThemePreference;
   scrollbackLines: number;
   automaticReconnect: boolean;
 };

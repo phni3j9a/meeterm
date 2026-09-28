@@ -33,6 +33,7 @@ const APP_SOURCE = process.env.APP_SELECTION_SOURCE || path.join(REPO_ROOT, 'App
 const PREFERENCES = {
   fontSize: 14,
   theme: 'light',
+  terminalTheme: 'dark',
   scrollbackLines: 10000,
   automaticReconnect: true,
 };
@@ -40,7 +41,6 @@ const PREFERENCES = {
 const LIGHT = {
   background: '#fbf7ef',
   surface: '#f1eadf',
-  terminal: '#17130f',
   text: '#352b22',
   muted: '#7b6a5a',
   border: '#d8cbbb',
@@ -58,7 +58,6 @@ const LIGHT = {
 const DARK = {
   background: '#241f1b',
   surface: '#332b25',
-  terminal: '#0c0a08',
   text: '#f7eee3',
   muted: '#c3b5a6',
   border: '#51443a',
@@ -235,6 +234,12 @@ function makeNativeEnvironment() {
     initialURLBehavior: 'resolve',
     profilesShouldFail: false,
     profiles: [],
+    preferences: null,
+    savedPreferences: null,
+    colorScheme: 'light',
+    colorSchemeListeners: new Set(),
+    actionSheet: null,
+    terminalViewMounts: 0,
     selectRuntimeShouldFail: false,
     selectRuntimeMode: 'ready',
     pendingSelection: null,
@@ -257,6 +262,8 @@ function makeNativeEnvironment() {
     timeoutCallbacks: [],
     nextTimeoutId: 1,
     alert: null,
+    appAlerts: [],
+    appAlertResponder: null,
     accessibilityAnnouncements: [],
     recoveryRetryMode: 'ready',
     recoveryRetryAttempt: 0,
@@ -279,6 +286,10 @@ function makeNativeEnvironment() {
     assert.equal(typeof dismiss, 'function', 'an iOS page sheet should be awaiting dismissal');
     dismiss();
   };
+  environment.emitColorScheme = next => {
+    environment.colorScheme = next;
+    for (const listener of [...environment.colorSchemeListeners]) listener(next);
+  };
 
   const native = {
     recordStartupPhase(phase) {
@@ -292,9 +303,16 @@ function makeNativeEnvironment() {
     },
     async getPreferences() {
       environment.nativeCalls.push('getPreferences');
-      return { ...PREFERENCES };
+      return { ...(environment.preferences ?? PREFERENCES) };
     },
-    async setPreferences() {},
+    async setPreferences(preferences) {
+      environment.savedPreferences = clone(preferences);
+    },
+    async presentAppAlert(options) {
+      environment.appAlerts.push(clone(options));
+      if (environment.appAlertResponder) return environment.appAlertResponder(options);
+      return null;
+    },
     async setAutomaticReconnect() {},
     async connectHost(_connectionId, options) {
       environment.nativeCalls.push({ method: 'connectHost', options });
@@ -488,6 +506,18 @@ function makeNativeEnvironment() {
       environment.calls.push({ method: 'closePane', paneId });
       closePane(environment.snapshot, paneId);
     },
+    async closeWorkspace(_connectionId, windowId) {
+      environment.calls.push({ method: 'closeWorkspace', windowId });
+    },
+    async closeGroup(_connectionId, groupId) {
+      environment.calls.push({ method: 'closeGroup', groupId });
+    },
+    async deleteProfile(profileId) {
+      environment.calls.push({ method: 'deleteProfile', profileId });
+    },
+    async forgetHostKey(host, port) {
+      environment.calls.push({ method: 'forgetHostKey', host, port });
+    },
     // Issue #28 attachment surface: benign defaults so screens that merely
     // consult the attachment gate never hit an undefined binding. Focused
     // attachment tests replace these via `configureAttachment`.
@@ -583,6 +613,20 @@ function completeRefresh(environment) {
   environment.runtimeDiscovery.revision += 1;
 }
 
+// The OS appearance is a subscribed value on both axes: App appearance and
+// Terminal theme resolve it independently through this hook double.
+function makeColorSchemeHook(environment) {
+  return function useColorScheme() {
+    const [scheme, setScheme] = React.useState(environment.colorScheme);
+    React.useEffect(() => {
+      const listener = next => setScheme(next);
+      environment.colorSchemeListeners.add(listener);
+      return () => { environment.colorSchemeListeners.delete(listener); };
+    }, []);
+    return scheme;
+  };
+}
+
 function makeReactNativeMocks(environment) {
   const noOpSubscription = { remove() {} };
   const AppState = {
@@ -603,7 +647,7 @@ function makeReactNativeMocks(environment) {
       return { remove() { if (environment.hardwareBackHandler === listener) environment.hardwareBackHandler = null; } };
     },
   };
-  const Keyboard = { dismiss() {} };
+  const Keyboard = { dismiss() {}, addListener() { return { remove() {} }; } };
   const Linking = {
     async getInitialURL() {
       if (environment.initialURLBehavior === 'pending') return new Promise(() => {});
@@ -613,8 +657,8 @@ function makeReactNativeMocks(environment) {
     addEventListener() { return noOpSubscription; },
   };
   const Alert = {
-    alert(title, message, buttons) {
-      environment.alert = { title, message, buttons: buttons || [] };
+    alert(title, message, buttons, options) {
+      environment.alert = { title, message, buttons: buttons || [], options: options || {} };
     },
   };
   const AccessibilityInfo = {
@@ -636,14 +680,20 @@ function makeReactNativeMocks(environment) {
   };
 
   return {
-    ActivityIndicator: 'ActivityIndicator',
-    Alert,
     AccessibilityInfo,
+    ActivityIndicator: 'ActivityIndicator',
+    ActionSheetIOS: {
+      showActionSheetWithOptions(options, callback) {
+        environment.actionSheet = { options, callback };
+      },
+    },
+    Alert,
     AppState,
     BackHandler,
     FlatList,
     Image: 'Image',
     Keyboard,
+    KeyboardAvoidingView: 'KeyboardAvoidingView',
     Linking,
     Modal,
     Platform,
@@ -651,9 +701,11 @@ function makeReactNativeMocks(environment) {
     ScrollView: 'ScrollView',
     StatusBar,
     StyleSheet,
+    Switch: 'Switch',
     Text: 'Text',
     TextInput: 'TextInput',
     View: 'View',
+    useColorScheme: makeColorSchemeHook(environment),
     useWindowDimensions() { return { width: 390, height: 844, scale: 1, fontScale: 1 }; },
   };
 }
@@ -666,7 +718,14 @@ function makeSafeAreaMocks() {
   };
 }
 
-function makeUiMocks() {
+// Sentinel surface colors intentionally differ from the real native values:
+// assertions must read them through TERMINAL_SURFACE rather than a literal.
+const TERMINAL_SURFACE = {
+  light: { background: '#e6eef0', foreground: '#182625', muted: '#5a6c69' },
+  dark: { background: '#17110d', foreground: '#d9cfc0', muted: '#93836f' },
+};
+
+function makeUiMocks(environment) {
   function Button({ label, children, onPress, disabled, ...props }) {
     return React.createElement('Button', {
       ...props,
@@ -688,7 +747,19 @@ function makeUiMocks() {
   }
   function Icon(props) { return React.createElement('Icon', props); }
   function Companion(props) { return React.createElement('Companion', props, props.children); }
-  function usePalette(theme) { return theme === 'dark' ? DARK : LIGHT; }
+  const useColorScheme = makeColorSchemeHook(environment);
+  function usePalette(preference = 'system') {
+    const system = useColorScheme();
+    return (preference === 'system' ? system : preference) === 'dark' ? DARK : LIGHT;
+  }
+  function resolveTerminalTheme(preference, system) {
+    if (preference === 'light') return 'light';
+    if (preference === 'system') return system === 'dark' ? 'dark' : 'light';
+    return 'dark';
+  }
+  function useTerminalTheme(preference) {
+    return resolveTerminalTheme(preference, useColorScheme());
+  }
   return {
     __esModule: true,
     Button,
@@ -697,8 +768,11 @@ function makeUiMocks() {
     Icon,
     IconButton,
     MONO: 'MONO',
+    TERMINAL_SURFACE,
+    resolveTerminalTheme,
     usePalette,
     useReducedMotion: () => true,
+    useTerminalTheme,
   };
 }
 
@@ -769,6 +843,9 @@ function makeFormMocks() {
 function makeTerminalModule(native, environment) {
   function TerminalView({ terminalId, ...props }) {
     environment.renderedTerminalIds.push(terminalId);
+    // A mount effect approximates a real surface mount: prop-only theme
+    // updates re-render in place and must not increment this counter.
+    React.useEffect(() => { environment.terminalViewMounts += 1; }, []);
     return React.createElement('TerminalView', { ...props, terminalId });
   }
   const module = {
@@ -781,7 +858,117 @@ function makeTerminalModule(native, environment) {
   return module;
 }
 
-function loadApp(environment, native, presentationOnly = false, smokeEnabled = false) {
+// Compile a sibling app module the same way App.tsx is compiled, against the
+// same doubles, so tests can exercise the real Settings form or ui helpers.
+function loadModuleFromSource(filename, moduleMap) {
+  const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: {
+      target: TypeScript.ScriptTarget.ES2022,
+      module: TypeScript.ModuleKind.CommonJS,
+      jsx: TypeScript.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+    },
+    fileName: filename,
+  }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    module: { exports },
+    require: name => {
+      assert.ok(moduleMap.has(name), `unexpected module request ${name}`);
+      return moduleMap.get(name);
+    },
+  }, { filename });
+  return exports;
+}
+
+function loadDialogsModule(environment, { reactNative, terminal } = {}) {
+  const rn = reactNative ?? makeReactNativeMocks(environment);
+  const terminalModule = terminal ?? { __esModule: true, default: {} };
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/dialogs.ts'), new Map([
+    ['react-native', rn],
+    ['../modules/meeterm-terminal', terminalModule],
+  ]));
+}
+
+function loadDailyUseModule(environment, overrides = {}) {
+  const rn = overrides.reactNative ?? makeReactNativeMocks(environment);
+  const terminal = overrides.terminal ?? { __esModule: true, default: {} };
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/DailyUse.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn],
+    ['react-native-safe-area-context', overrides.safeArea ?? makeSafeAreaMocks()],
+    ['./ui', overrides.ui ?? makeUiMocks(environment)],
+    ['./dialogs', overrides.dialogs ?? loadDialogsModule(environment, { reactNative: rn, terminal })],
+    ['../modules/meeterm-terminal', terminal],
+  ]));
+}
+
+function loadConnectionFormModule(environment, overrides = {}) {
+  const rn = overrides.reactNative ?? makeReactNativeMocks(environment);
+  const terminal = overrides.terminal ?? { __esModule: true, default: {} };
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/ConnectionForm.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', rn],
+    ['react-native-safe-area-context', overrides.safeArea ?? makeSafeAreaMocks()],
+    ['./ui', overrides.ui ?? makeUiMocks(environment)],
+    ['./dialogs', overrides.dialogs ?? loadDialogsModule(environment, { reactNative: rn, terminal })],
+    ['../modules/meeterm-terminal', terminal],
+  ]));
+}
+
+function loadUiModule(environment) {
+  const icons = new Proxy({}, { get: () => 'LucideIcon' });
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/ui.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['react-native', makeReactNativeMocks(environment)],
+    ['lucide-react-native', icons],
+    ['./assets/meerkat-companion-v2.png', 'meerkat-companion-v2.png'],
+  ]));
+}
+
+// Captures each Stack.Screen's evaluated options plus the container theme so
+// tests can assert the real native-stack navigation contract, not strings.
+function makeNavigationMocks() {
+  const captured = { screens: new Map(), theme: null };
+  function Screen({ name, options }) {
+    captured.screens.set(name, options);
+    return null;
+  }
+  function Navigator({ children }) {
+    return React.createElement(React.Fragment, null, children);
+  }
+  function NavigationContainer({ children, theme, onReady }) {
+    captured.theme = theme;
+    React.useEffect(() => { onReady?.(); }, []);
+    return React.createElement(React.Fragment, null, children);
+  }
+  return {
+    captured,
+    native: {
+      DefaultTheme: { dark: false, colors: { primary: '#007', background: '#fff', card: '#fff', text: '#000', border: '#ccc' } },
+      NavigationContainer,
+      StackActions: { popToTop: () => ({ type: 'POP_TO_TOP' }) },
+      useNavigationContainerRef: () => ({ navigate() {}, dispatch() {}, getCurrentRoute: () => ({ name: 'workspaces' }) }),
+    },
+    nativeStack: { createNativeStackNavigator: () => ({ Navigator, Screen }) },
+  };
+}
+
+function loadWorkspaceNavigationModule(environment, navigationMocks = makeNavigationMocks()) {
+  return loadModuleFromSource(path.join(REPO_ROOT, 'app/WorkspaceNavigation.tsx'), new Map([
+    ['react', React],
+    ['react/jsx-runtime', require('react/jsx-runtime')],
+    ['@react-navigation/native', navigationMocks.native],
+    ['@react-navigation/native-stack', navigationMocks.nativeStack],
+    ['./ui', makeUiMocks(environment)],
+  ]));
+}
+
+function loadApp(environment, native, presentationOnly = false, smokeEnabled = false, realDailyUse = false) {
   const source = fs.readFileSync(APP_SOURCE, 'utf8');
   const transpiled = TypeScript.transpileModule(source, {
     compilerOptions: {
@@ -796,9 +983,19 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
   const appModule = { exports: {} };
   const rn = makeReactNativeMocks(environment);
   const safeArea = makeSafeAreaMocks();
-  const ui = makeUiMocks();
-  const forms = makeFormMocks();
+  const ui = makeUiMocks(environment);
   const terminal = makeTerminalModule(native, environment);
+  const dailyUse = realDailyUse ? loadDailyUseModule(environment, { reactNative: rn, safeArea, ui, terminal }) : null;
+  const forms = realDailyUse
+    ? {
+      ...makeFormMocks(),
+      DEFAULT_PREFERENCES: dailyUse.DEFAULT_PREFERENCES,
+      itemActions: dailyUse.itemActions,
+      NameForm: dailyUse.NameForm,
+      ProfileList: dailyUse.ProfileList,
+      SettingsForm: dailyUse.SettingsForm,
+    }
+    : makeFormMocks();
   const scheduleTimeout = environment.fakeTimers
     ? (callback, delay) => {
       const id = environment.nextTimeoutId++;
@@ -820,6 +1017,7 @@ function loadApp(environment, native, presentationOnly = false, smokeEnabled = f
     ['./modules/meeterm-terminal', terminal],
     ['./app/ConnectionForm', forms],
     ['./app/DailyUse', forms],
+    ['./app/dialogs', loadDialogsModule(environment, { reactNative: rn, terminal })],
     ['./app/ui', ui],
     // Navigation's native view/gesture execution belongs to mobile evidence.
     // These tests retain their real App selection and registry assertions.
@@ -1168,36 +1366,697 @@ test('disabled workspace rows keep the unavailable mark at full contrast', async
   assert.equal(hasOpacity(status.props.style), false, 'unavailable status mark must remain at full opacity');
 });
 
-test('settings appearance has the same visible and accessible meaning', async () => {
-  const filename = path.join(REPO_ROOT, 'app/DailyUse.tsx');
-  const compiled = TypeScript.transpileModule(fs.readFileSync(filename, 'utf8'), {
-    compilerOptions: { module: TypeScript.ModuleKind.CommonJS, jsx: TypeScript.JsxEmit.ReactJSX },
-  }).outputText;
+function flattened(style) {
+  const value = typeof style === 'function' ? style({ pressed: false }) : style;
+  if (Array.isArray(value)) return value.reduce((merged, item) => ({ ...merged, ...flattened(item) }), {});
+  return value && typeof value === 'object' ? value : {};
+}
+
+async function pickActionSheetOption(environment, index) {
+  const sheet = environment.actionSheet;
+  environment.actionSheet = null;
+  assert.ok(sheet, 'an iOS action sheet should be presented');
+  await act(async () => {
+    sheet.callback(index);
+  });
+}
+
+test('settings keeps app appearance and terminal theme as independent labeled rows', async () => {
   const { environment } = makeNativeEnvironment();
-  const rn = { ...makeReactNativeMocks(environment), KeyboardAvoidingView: 'KeyboardAvoidingView', Switch: 'Switch' };
-  const modules = new Map([
-    ['react', React], ['react/jsx-runtime', require('react/jsx-runtime')],
-    ['react-native', rn], ['react-native-safe-area-context', makeSafeAreaMocks()],
-    ['./ui', makeUiMocks()],
-  ]);
-  const dailyUse = { exports: {} };
-  vm.runInNewContext(compiled, {
-    exports: dailyUse.exports,
-    require: name => { assert.ok(modules.has(name), name); return modules.get(name); },
-  }, { filename });
+  const dailyUse = loadDailyUseModule(environment);
+  const saved = [];
   const root = createRoot();
   try {
     await act(async () => {
-      root.render(React.createElement(dailyUse.exports.SettingsForm, {
-        visible: true, preferences: PREFERENCES, colors: LIGHT,
-        onClose() {}, async onSave() { return true; },
+      root.render(React.createElement(dailyUse.SettingsForm, {
+        visible: true, preferences: { ...PREFERENCES, theme: 'light', terminalTheme: 'system' }, colors: LIGHT,
+        onClose() {}, async onSave(next) { saved.push(clone(next)); return true; },
       }));
     });
-    assert.equal(findTestId(root, 'terminal-theme').props.accessibilityLabel, 'Appearance');
-    assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 0);
+    // Two distinct, independently labeled rows drive two distinct drafts.
+    const appRow = findTestId(root, 'app-theme');
+    const terminalRow = findTestId(root, 'terminal-theme');
+    assert.equal(appRow.props.accessibilityLabel, 'App appearance');
+    assert.equal(terminalRow.props.accessibilityLabel, 'Terminal theme');
+    assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 1);
+    assert.equal(textContent(appRow), 'App appearanceLight');
+    assert.equal(textContent(terminalRow), 'Terminal themeSystem');
+
+    await press(root, appRow);
+    assert.equal(environment.actionSheet.options.title, 'App appearance');
+    assert.equal(environment.actionSheet.options.userInterfaceStyle, 'light', 'the chooser styles to the applied app appearance');
+    await pickActionSheetOption(environment, 2);
+    assert.equal(textContent(appRow), 'App appearanceDark');
+    assert.equal(textContent(terminalRow), 'Terminal themeSystem');
+
+    await press(root, terminalRow);
+    assert.equal(environment.actionSheet.options.title, 'Terminal theme');
+    await pickActionSheetOption(environment, 1);
+    assert.equal(textContent(terminalRow), 'Terminal themeLight');
+    assert.equal(textContent(appRow), 'App appearanceDark');
+
+    // The preview resolves the edited terminal theme, never the app choice.
+    assert.equal(flattened(findTestId(root, 'terminal-preview').props.style).backgroundColor, TERMINAL_SURFACE.light.background);
+    await press(root, terminalRow);
+    await pickActionSheetOption(environment, 0);
+    await act(async () => { environment.emitColorScheme('dark'); });
+    assert.equal(flattened(findTestId(root, 'terminal-preview').props.style).backgroundColor, TERMINAL_SURFACE.dark.background);
+
+    await press(root, findTestId(root, 'settings-submit'));
+    assert.deepEqual(saved, [{ ...PREFERENCES, theme: 'dark', terminalTheme: 'system' }]);
   } finally {
     await act(async () => { root.unmount(); });
   }
+});
+
+test('theme resolution contract keeps missing values dark and follows the OS scheme', async () => {
+  const { environment } = makeNativeEnvironment();
+  const ui = loadUiModule(environment);
+  // Migration seam: a save without terminalTheme resolves as the historical
+  // dark surface, and the new-install default keeps it there.
+  assert.equal(ui.resolveTerminalTheme(undefined, 'dark'), 'dark');
+  assert.equal(ui.resolveTerminalTheme('dark', 'light'), 'dark');
+  assert.equal(ui.resolveTerminalTheme('light', 'dark'), 'light');
+  assert.equal(ui.resolveTerminalTheme('system', 'dark'), 'dark');
+  assert.equal(ui.resolveTerminalTheme('system', 'light'), 'light');
+  // The JS placeholder/preview colors mirror the native surface contract.
+  assert.equal(ui.TERMINAL_SURFACE.light.background, '#FBF7EF');
+  assert.equal(ui.TERMINAL_SURFACE.dark.background, '#24211D');
+  const dailyUse = loadDailyUseModule(environment);
+  assert.equal(dailyUse.DEFAULT_PREFERENCES.terminalTheme, 'dark');
+  assert.equal(dailyUse.DEFAULT_PREFERENCES.theme, 'light');
+
+  // The real hooks follow OS appearance changes through the shared scheme.
+  let resolved = null;
+  let palette = null;
+  function Probe() {
+    resolved = ui.useTerminalTheme('system');
+    palette = ui.usePalette('system');
+    return null;
+  }
+  const root = createRoot();
+  try {
+    await act(async () => { root.render(React.createElement(Probe)); });
+    assert.equal(resolved, 'light');
+    assert.equal(palette, ui.LIGHT);
+    await act(async () => { environment.emitColorScheme('dark'); });
+    assert.equal(resolved, 'dark');
+    assert.equal(palette, ui.DARK);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test('smoke theme parameters stay release-gated and only override seeded appearances', () => {
+  const { environment, native } = makeNativeEnvironment();
+  const smoke = loadApp(environment, native, true, true);
+  const production = loadApp(environment, native, true, false);
+  assert.equal(production.smokeRouteForUrl('meeterm://smoke?screen=terminal&app=dark&terminal=light'), undefined);
+  for (const [url, appTheme, terminalTheme] of [
+    ['meeterm://smoke?screen=terminal&app=light&terminal=light', 'light', 'light'],
+    ['meeterm://smoke?screen=terminal&app=light&terminal=dark', 'light', 'dark'],
+    ['meeterm://smoke?screen=terminal&app=dark&terminal=light', 'dark', 'light'],
+    ['meeterm://smoke?screen=terminal&app=dark&terminal=dark', 'dark', 'dark'],
+    ['meeterm://smoke?screen=terminal&app=system&terminal=system', 'system', 'system'],
+    ['meeterm://smoke?screen=settings&terminal=light', undefined, 'light'],
+    ['meeterm://smoke?screen=terminal', undefined, undefined],
+  ]) {
+    const route = smoke.smokeRouteForUrl(url);
+    assert.ok(route, `expected ${url} to parse`);
+    assert.equal(route.appTheme, appTheme);
+    assert.equal(route.terminalTheme, terminalTheme);
+  }
+  // Unknown values, unknown parameters, and reordered parameters stay rejected.
+  for (const url of [
+    'meeterm://smoke?screen=terminal&app=sepia',
+    'meeterm://smoke?screen=terminal&terminal=sepia',
+    'meeterm://smoke?screen=terminal&host=untrusted',
+    'meeterm://smoke?screen=terminal&terminal=dark&app=light',
+  ]) {
+    assert.equal(smoke.smokeRouteForUrl(url), undefined, `expected ${url} to stay rejected`);
+  }
+  // Default fixture appearances remain deterministic: light app, dark terminal.
+  const fixture = smoke.smokeFixture('terminal');
+  assert.equal(fixture.preferences.theme, 'light');
+  assert.equal(fixture.preferences.terminalTheme, 'dark');
+});
+
+test('smoke theme parameters render independent fixture combinations end to end', async t => {
+  for (const [appTheme, terminalTheme] of [['light', 'light'], ['light', 'dark'], ['dark', 'light'], ['dark', 'dark']]) {
+    const { environment, native } = makeNativeEnvironment();
+    environment.initialURL = `meeterm://smoke?screen=terminal&app=${appTheme}&terminal=${terminalTheme}`;
+    const App = loadApp(environment, native, false, true);
+    const root = createRoot();
+    try {
+      await act(async () => { root.render(React.createElement(App)); });
+      const view = terminalViews(root)[0];
+      assert.equal(view.props.theme, terminalTheme, `terminal theme for ${appTheme}/${terminalTheme}`);
+      assert.equal(view.props.terminalId, 'poc-main');
+      const palette = appTheme === 'dark' ? DARK : LIGHT;
+      assert.equal(first(root, node => node.type === 'StatusBar').props.barStyle, appTheme === 'dark' ? 'light-content' : 'dark-content');
+      assert.equal(flattened(findText(root, 'Main workspace').props.style).color, palette.text);
+      // Navigation/container backgrounds stay on the app palette.
+      let container = findLabel(root, 'Back to workspaces');
+      while (container && flattened(container.props.style).backgroundColor === undefined) container = container.parent;
+      assert.equal(flattened(container?.props.style).backgroundColor, palette.background);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  }
+});
+
+test('terminal chrome follows the app palette while the surface and placeholder follow the terminal theme', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.preferences = { ...PREFERENCES, theme: 'dark', terminalTheme: 'light' };
+  });
+  await openWorkspace(fixture.root, 'W1');
+  const view = terminalViews(fixture.root)[0];
+  assert.equal(view.props.theme, 'light');
+  assert.equal(view.props.terminalId, 'native:P1');
+  // Chrome, navigation, and status colors resolve from the app palette, not
+  // the terminal theme.
+  assert.equal(first(fixture.root, node => node.type === 'StatusBar', 'missing StatusBar').props.barStyle, 'light-content');
+  assert.equal(flattened(findText(fixture.root, 'Workspace One').props.style).color, DARK.text);
+  // Backgrounding swaps the surface for a placeholder in the same color the
+  // native view draws for the resolved terminal theme — no mismatched flash.
+  await act(async () => { fixture.environment.emitAppState('background'); });
+  assert.equal(terminalViews(fixture.root).length, 0);
+  assert.equal(flattened(findTestId(fixture.root, 'terminal-placeholder').props.style).backgroundColor, TERMINAL_SURFACE.light.background);
+  await act(async () => { fixture.environment.emitAppState('active'); });
+  assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+});
+
+const CONNECTION_METHODS = new Set([
+  'connectHost', 'connectProfileHost', 'connect', 'disconnect', 'reconnect',
+  'respondToHostKey', 'forgetHostKey', 'selectRuntime', 'createTmuxSession',
+  'changeRuntime', 'disconnectForSwitcher', 'retryRecovery', 'refreshRuntimes',
+  'setForeground', 'selectPane', 'createWorkspace', 'renameWorkspace',
+  'closeWorkspace', 'createPane', 'renamePane', 'closePane', 'refreshTerminal',
+]);
+
+function connectionEffectDelta(environment, callsBefore, nativeBefore) {
+  return [...environment.calls.slice(callsBefore), ...environment.nativeCalls.slice(nativeBefore)]
+    .map(entry => typeof entry === 'string' ? entry : entry.method)
+    .filter(method => CONNECTION_METHODS.has(method));
+}
+
+test('a saved theme change reapplies to the same terminal without connection work', async t => {
+  const fixture = await mountForTest(t, makeSnapshot(), environment => {
+    environment.preferences = { ...PREFERENCES };
+  }, { realDailyUse: true });
+  const { root, environment } = fixture;
+  await openWorkspace(root, 'W1');
+  assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(root)[0].props.theme, 'dark');
+  const mountsBefore = environment.terminalViewMounts;
+  const callsBefore = environment.calls.length;
+  const nativeBefore = environment.nativeCalls.length;
+
+  // Terminal menu → Terminal settings (the real iOS page-sheet handoff).
+  await press(root, findLabel(root, 'Terminal menu'));
+  await press(root, findLabel(root, 'Terminal settings'));
+  await act(async () => { environment.dismissPresentedModal(); });
+  assert.equal(terminalViews(root).length, 0, 'opening Settings keeps the existing surface unmount');
+
+  await press(root, findTestId(root, 'terminal-theme'));
+  assert.equal(environment.actionSheet.options.title, 'Terminal theme');
+  await pickActionSheetOption(environment, 1);
+  await press(root, findTestId(root, 'settings-submit'));
+  await settleAsync();
+
+  assert.deepEqual(environment.savedPreferences, { ...PREFERENCES, terminalTheme: 'light' });
+  // The same borrowed terminal binding comes back with the new theme prop;
+  // exactly one remount is the existing Settings close lifecycle, not churn.
+  assert.deepEqual(terminalViews(root).map(view => view.props.terminalId), ['native:P1']);
+  assert.equal(terminalViews(root)[0].props.theme, 'light');
+  assert.equal(environment.terminalViewMounts, mountsBefore + 1);
+  assert.deepEqual(connectionEffectDelta(environment, callsBefore, nativeBefore), []);
+  // The app appearance side stayed untouched.
+  assert.equal(first(root, node => node.type === 'StatusBar').props.barStyle, 'dark-content');
+  assert.equal(flattened(findText(root, 'Workspace One').props.style).color, LIGHT.text);
+});
+
+test('system themes follow the OS appearance in place while a fixed side stays put', async t => {
+  await t.test('both axes follow the same OS switch independently', async t => {
+    const fixture = await mountForTest(t, makeSnapshot(), environment => {
+      environment.preferences = { ...PREFERENCES, theme: 'system', terminalTheme: 'system' };
+    });
+    await openWorkspace(fixture.root, 'W1');
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+    const mountsBefore = fixture.environment.terminalViewMounts;
+    await act(async () => { fixture.environment.emitColorScheme('dark'); });
+    // The theme prop updates in place: same binding, no remount, no new
+    // surface; app chrome flips to the dark palette at the same time.
+    assert.equal(terminalViews(fixture.root).length, 1);
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'dark');
+    assert.equal(terminalViews(fixture.root)[0].props.terminalId, 'native:P1');
+    assert.equal(fixture.environment.terminalViewMounts, mountsBefore);
+    assert.equal(first(fixture.root, node => node.type === 'StatusBar').props.barStyle, 'light-content');
+    assert.equal(flattened(findText(fixture.root, 'Workspace One').props.style).color, DARK.text);
+    await act(async () => { fixture.environment.emitColorScheme('light'); });
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+    assert.equal(fixture.environment.terminalViewMounts, mountsBefore);
+  });
+
+  await t.test('a fixed terminal theme ignores the OS switch the app follows', async t => {
+    const fixture = await mountForTest(t, makeSnapshot(), environment => {
+      environment.preferences = { ...PREFERENCES, theme: 'system', terminalTheme: 'light' };
+    });
+    await openWorkspace(fixture.root, 'W1');
+    await act(async () => { fixture.environment.emitColorScheme('dark'); });
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'light');
+    assert.equal(first(fixture.root, node => node.type === 'StatusBar').props.barStyle, 'light-content');
+  });
+
+  await t.test('a fixed app appearance ignores the OS switch the terminal follows', async t => {
+    const fixture = await mountForTest(t, makeSnapshot(), environment => {
+      environment.preferences = { ...PREFERENCES, theme: 'light', terminalTheme: 'system' };
+    });
+    await openWorkspace(fixture.root, 'W1');
+    await act(async () => { fixture.environment.emitColorScheme('dark'); });
+    assert.equal(terminalViews(fixture.root)[0].props.theme, 'dark');
+    assert.equal(first(fixture.root, node => node.type === 'StatusBar').props.barStyle, 'dark-content');
+    assert.equal(flattened(findText(fixture.root, 'Workspace One').props.style).color, LIGHT.text);
+  });
+});
+
+test('terminal native-stack screen options follow the app palette like workspaces', async () => {
+  // The real WorkspaceNavigation.tsx renders into capturing navigation
+  // doubles; assertions read the evaluated screen options, not source text.
+  const { environment } = makeNativeEnvironment();
+  const navigationMocks = makeNavigationMocks();
+  const navigation = loadWorkspaceNavigationModule(environment, navigationMocks);
+  // Options objects are created inside the VM realm; copy the asserted fields
+  // into host objects so deepEqual compares values, not realm prototypes.
+  const screenOptions = name => {
+    const options = navigationMocks.captured.screens.get(name);
+    return options
+      ? { backgroundColor: options.contentStyle?.backgroundColor, statusBarStyle: options.statusBarStyle }
+      : options;
+  };
+  const root = createRoot();
+  try {
+    await act(async () => {
+      root.render(React.createElement(navigation.WorkspaceNavigation, {
+        screen: 'workspaces', colors: LIGHT,
+        onScreenChange() {}, workspaces: 'workspaces-content', terminal: 'terminal-content',
+      }));
+    });
+    // Under a light app appearance the terminal screen must not keep the dark
+    // navigation background or light status bar it used to hardcode.
+    assert.deepEqual(screenOptions('workspaces'), { backgroundColor: LIGHT.background, statusBarStyle: 'dark' });
+    assert.deepEqual(screenOptions('terminal'), { backgroundColor: LIGHT.background, statusBarStyle: 'dark' });
+    assert.equal(navigationMocks.captured.theme.dark, false);
+    assert.equal(navigationMocks.captured.theme.colors.background, LIGHT.background);
+
+    await act(async () => {
+      root.render(React.createElement(navigation.WorkspaceNavigation, {
+        screen: 'terminal', colors: DARK,
+        onScreenChange() {}, workspaces: 'workspaces-content', terminal: 'terminal-content',
+      }));
+    });
+    assert.deepEqual(screenOptions('workspaces'), screenOptions('terminal'));
+    assert.deepEqual(screenOptions('terminal'), { backgroundColor: DARK.background, statusBarStyle: 'light' });
+    assert.equal(navigationMocks.captured.theme.dark, true);
+    assert.equal(navigationMocks.captured.theme.colors.background, DARK.background);
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test('app-owned alerts carry the applied app appearance on each platform', async t => {
+  // Mount a real App wired to a saved profile whose connection resolves to
+  // HostKeyPending, so the trust prompt is presented by real component code.
+  const hostKeyFixture = async (t2, { platform = 'ios', theme = 'light', colorScheme = 'light', alertResponder = null } = {}) => {
+    const profile = pickerProfile();
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = platform;
+      environment.colorScheme = colorScheme;
+      environment.preferences = { ...PREFERENCES, theme };
+      environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+      environment.profiles = [profile];
+      environment.hostKeyPendingProfileId = profile.id;
+      environment.runtimeDiscovery = pickerDiscovery();
+      environment.snapshot = makeSnapshot();
+      environment.appAlertResponder = alertResponder;
+    });
+    await press(fixture.root, findLabel(fixture.root, `Connect saved server ${profile.name}`));
+    await poll(fixture.environment);
+    await settleAsync();
+    return fixture;
+  };
+  const hostKeyApprovals = environment => environment.nativeCalls.filter(call => typeof call === 'object' && call.method === 'respondToHostKey');
+
+  await t.test('iOS maps each applied appearance to a per-dialog style', () => {
+    const { environment } = makeNativeEnvironment();
+    const dialogs = loadDialogsModule(environment);
+    dialogs.appAlert('dark', 'One', 'Body', [{ text: 'OK' }]);
+    assert.equal(environment.alert.options.userInterfaceStyle, 'dark');
+    dialogs.appAlert('light', 'Two', undefined, [{ text: 'OK' }]);
+    assert.equal(environment.alert.options.userInterfaceStyle, 'light');
+    dialogs.appAlert('system', 'Three', undefined, [{ text: 'OK' }], { cancelable: false });
+    assert.equal(environment.alert.options.userInterfaceStyle, 'unspecified');
+    assert.equal(environment.alert.options.cancelable, false);
+    // Omitted options keep the prior RN Alert default of non-cancelable; an
+    // explicit true (the theme chooser) remains the only caller opt-in.
+    dialogs.appAlert('dark', 'Four', undefined, [{ text: 'OK' }]);
+    assert.equal(environment.alert.options.cancelable, false);
+    dialogs.appAlert('dark', 'Five', undefined, [{ text: 'OK' }], { cancelable: true });
+    assert.equal(environment.alert.options.cancelable, true);
+    // ActionSheetIOS typings only accept fixed styles; system omits the override.
+    assert.equal(dialogs.sheetUserInterfaceStyle('system'), undefined);
+    assert.equal(dialogs.sheetUserInterfaceStyle('dark'), 'dark');
+  });
+
+  await t.test('Android delegates to the native presenter and dispatches the original index once', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.platform = 'android';
+    environment.colorScheme = 'light';
+    const dialogs = loadDialogsModule(environment, { terminal: { __esModule: true, default: native } });
+    const calls = [];
+    environment.appAlertResponder = () => Promise.resolve(1);
+    dialogs.appAlert('dark', 'Title', 'Body', [
+      { text: 'Cancel', style: 'cancel', onPress: () => calls.push('cancel') },
+      { text: 'Approve', onPress: () => calls.push('approve') },
+    ], { cancelable: false });
+    // The presenter receives plain descriptors only — no JS callbacks or
+    // message logging; the chosen index maps back to the original button.
+    assert.deepEqual(environment.appAlerts[0], {
+      appearance: 'dark', title: 'Title', message: 'Body', cancelable: false,
+      buttons: [{ text: 'Cancel', style: 'cancel' }, { text: 'Approve', style: 'default' }],
+    });
+    await settleAsync();
+    assert.deepEqual(calls, ['approve']);
+
+    for (const responder of [() => Promise.resolve(null), () => Promise.resolve(7), () => Promise.reject(new Error('presentation failed'))]) {
+      environment.appAlertResponder = responder;
+      dialogs.appAlert('system', 'Again', undefined, [{ text: 'Yes', onPress: () => calls.push('yes') }]);
+      await settleAsync();
+    }
+    assert.deepEqual(calls, ['approve'], 'dismissal, a bad index, or rejection must not dispatch');
+    assert.equal(environment.appAlerts.at(-1).appearance, 'system', 'system inherits the platform configuration');
+    // MAIN-004: omitted options keep the prior non-cancelable Android Alert
+    // default; an explicit true is forwarded verbatim for the chooser.
+    assert.equal(environment.appAlerts.at(-1).cancelable, false);
+    environment.appAlertResponder = () => Promise.resolve(null);
+    dialogs.appAlert('light', 'Dismissible', undefined, [{ text: 'OK' }], { cancelable: true });
+    assert.equal(environment.appAlerts.at(-1).cancelable, true);
+    await settleAsync();
+    assert.deepEqual(calls, ['approve']);
+  });
+
+  await t.test('iOS security dialogs style to the applied appearance under the opposite OS', async t2 => {
+    const fixture = await hostKeyFixture(t2, { platform: 'ios', theme: 'dark', colorScheme: 'light' });
+    assert.equal(fixture.environment.alert?.title, 'Trust this SSH host?');
+    assert.equal(fixture.environment.alert.options.userInterfaceStyle, 'dark', 'fixed App dark presents a dark dialog under a light OS');
+    assert.equal(fixture.environment.alert.options.cancelable, false);
+    assert.equal(fixture.environment.appAlerts.length, 0, 'iOS must not touch the Android presenter');
+    const trust = fixture.environment.alert.buttons.find(button => button.text === 'Trust and connect');
+    await act(async () => { trust.onPress(); });
+    assert.deepEqual(hostKeyApprovals(fixture.environment), [{ method: 'respondToHostKey', fingerprint: 'SHA256:unknownFixtureHost', accept: true }]);
+  });
+
+  await t.test('iOS fixed light under a dark OS and system inheritance', async t2 => {
+    const lightFixture = await hostKeyFixture(t2, { platform: 'ios', theme: 'light', colorScheme: 'dark' });
+    assert.equal(lightFixture.environment.alert.options.userInterfaceStyle, 'light');
+    const systemFixture = await hostKeyFixture(t2, { platform: 'ios', theme: 'system', colorScheme: 'dark' });
+    assert.equal(systemFixture.environment.alert.options.userInterfaceStyle, 'unspecified', 'system leaves the platform style in place');
+  });
+
+  await t.test('Android routes the host-key prompt through the presenter and trusts once', async t2 => {
+    const fixture = await hostKeyFixture(t2, {
+      platform: 'android', theme: 'dark', colorScheme: 'light',
+      alertResponder: options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Trust and connect')),
+    });
+    assert.equal(fixture.environment.alert, null, 'Android must not use the RN Alert path');
+    assert.equal(fixture.environment.appAlerts.length, 1);
+    assert.equal(fixture.environment.appAlerts[0].appearance, 'dark', 'fixed App dark presents dark under a light OS');
+    assert.equal(fixture.environment.appAlerts[0].title, 'Trust this SSH host?');
+    assert.equal(fixture.environment.appAlerts[0].cancelable, false);
+    assert.deepEqual(fixture.environment.appAlerts[0].buttons, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Trust and connect', style: 'default' },
+    ]);
+    await settleAsync();
+    assert.deepEqual(hostKeyApprovals(fixture.environment), [{ method: 'respondToHostKey', fingerprint: 'SHA256:unknownFixtureHost', accept: true }]);
+  });
+
+  for (const [label, alertResponder] of [
+    ['dismissal', () => Promise.resolve(null)],
+    ['an out-of-range index', () => Promise.resolve(9)],
+    ['presentation failure', () => Promise.reject(new Error('dialog failed'))],
+  ]) {
+    await t.test(`Android host-key ${label} never approves trust`, async t2 => {
+      const fixture = await hostKeyFixture(t2, { platform: 'android', alertResponder });
+      assert.equal(fixture.environment.appAlerts.length, 1);
+      await settleAsync();
+      assert.equal(fixture.environment.connection.state, 'HostKeyPending');
+      assert.equal(hostKeyApprovals(fixture.environment).length, 0, `${label} must fail closed without a host-key decision`);
+    });
+  }
+
+  await t.test('Android destructive confirmation fails closed then approves once', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.colorScheme = 'dark';
+      environment.preferences = { ...PREFERENCES, theme: 'light' };
+      environment.snapshot = makeSnapshot();
+    });
+    await openWorkspace(fixture.root, 'W1');
+    await press(fixture.root, findLabel(fixture.root, 'Terminal menu'));
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Close terminal'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Close terminal?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'light', 'fixed App light presents light under a dark OS');
+    assert.equal(fixture.environment.calls.filter(call => call.method === 'closePane').length, 0,
+      'dismissing the close confirmation must not close the pane');
+
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Close'));
+    await press(fixture.root, findLabel(fixture.root, 'Close terminal'));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'closePane'), [{ method: 'closePane', paneId: 'P1' }],
+      'the destructive index dispatches the original callback exactly once');
+  });
+
+  await t.test('Android item actions chain into the applied-appearance confirmation', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'light' };
+      environment.snapshot = makeSnapshot({
+        groups: [group('G1', 'W1', 'Group One', true), group('G9', 'W1', 'Spare', false), group('G2', 'W2', 'Group Two', true)],
+      });
+    }, { realDailyUse: true });
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Close'));
+    await press(fixture.root, findLabel(fixture.root, 'Workspace options Workspace One'));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.appAlerts[0].buttons.map(button => button.text), ['Cancel', 'Rename', 'Close']);
+    assert.equal(fixture.environment.appAlerts[0].appearance, 'light');
+    assert.equal(fixture.environment.appAlerts[1]?.title, 'Close workspace?');
+    assert.equal(fixture.environment.appAlerts[1].appearance, 'light');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'closeWorkspace'), [{ method: 'closeWorkspace', windowId: 'W1' }]);
+
+    // The group options row shares itemActions and its Close confirmation.
+    await openWorkspace(fixture.root, 'W1');
+    const groupPicker = all(fixture.root, node => typeof node.props?.accessibilityLabel === 'string' && node.props.accessibilityLabel.startsWith('Switch terminal group'))[0];
+    assert.ok(groupPicker, 'the terminal screen should offer the group picker');
+    await press(fixture.root, groupPicker);
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Close'));
+    await press(fixture.root, findLabel(fixture.root, 'Group options Group One'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Close group?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'light');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'closeGroup'), [{ method: 'closeGroup', groupId: 'G1' }]);
+  });
+
+  await t.test('Android remove-server confirmation keeps its labels and approves once', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'light' };
+      environment.connection = { ...environment.connection, state: 'Disconnected', host: '', port: 0 };
+      environment.profiles = [pickerProfile()];
+      environment.snapshot = makeSnapshot();
+    }, { realDailyUse: true });
+    await press(fixture.root, findLabel(fixture.root, 'Saved servers'));
+    // Back-style dismissal of the item menu stays inert; Remove proceeds to
+    // the existing destructive confirmation.
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Server options Queued picker'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Queued picker');
+    assert.deepEqual(fixture.environment.appAlerts.at(-1).buttons.map(button => button.text), ['Cancel', 'Edit server', 'Remove']);
+    assert.equal(fixture.environment.calls.filter(call => call.method === 'deleteProfile').length, 0, 'menu dismissal must not delete');
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Remove'));
+    await press(fixture.root, findLabel(fixture.root, 'Server options Queued picker'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Remove saved server?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'light');
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'deleteProfile'), [{ method: 'deleteProfile', profileId: pickerProfile().id }]);
+  });
+
+  await t.test('Android changed-host-key review keeps security wording and stays fail-closed', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'dark' };
+      environment.colorScheme = 'light';
+      environment.connection = {
+        ...environment.connection, state: 'Failed', errorCode: 'host_key_changed',
+        host: 'fixture.example', port: 22, algorithm: 'ssh-ed25519',
+        knownFingerprint: 'SHA256:savedFixtureKey', fingerprint: 'SHA256:changedFixtureKey',
+      };
+      environment.snapshot = makeSnapshot();
+    });
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Review key change'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Host key changed');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'dark');
+    assert.equal(fixture.environment.appAlerts.at(-1).cancelable, false);
+    assert.equal(fixture.environment.calls.filter(call => call.method === 'forgetHostKey').length, 0, 'dismissal must not remove the saved key');
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Remove saved key'));
+    await press(fixture.root, findLabel(fixture.root, 'Review key change'));
+    await settleAsync();
+    assert.deepEqual(fixture.environment.calls.filter(call => call.method === 'forgetHostKey'),
+      [{ method: 'forgetHostKey', host: 'fixture.example', port: 22 }]);
+  });
+
+  await t.test('Android discard confirmations keep Save/Cancel semantics', async t2 => {
+    const fixture = await mountConfiguredForTest(t2, environment => {
+      environment.platform = 'android';
+      environment.preferences = { ...PREFERENCES, theme: 'dark' };
+      environment.colorScheme = 'light';
+      environment.snapshot = makeSnapshot();
+    }, { realDailyUse: true });
+    await press(fixture.root, findLabel(fixture.root, 'Create workspace'));
+    await act(async () => { findTestId(fixture.root, 'workspace-terminal-name').props.onChangeText('Renamed'); });
+    fixture.environment.appAlertResponder = () => Promise.resolve(null);
+    await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+    await settleAsync();
+    assert.equal(fixture.environment.appAlerts.at(-1).title, 'Discard changes?');
+    assert.equal(fixture.environment.appAlerts.at(-1).appearance, 'dark');
+    assert.ok(findTestId(fixture.root, 'workspace-terminal-name'), 'dismissing discard keeps the form open');
+    fixture.environment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Discard'));
+    await press(fixture.root, findLabel(fixture.root, 'Cancel'));
+    await settleAsync();
+    assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-terminal-name').length, 0, 'discard closes the form');
+  });
+
+  await t.test('Settings pickers and discard prompts use the applied appearance, not the draft', async () => {
+    const { environment, native } = makeNativeEnvironment();
+    environment.platform = 'android';
+    environment.colorScheme = 'dark';
+    const dailyUse = loadDailyUseModule(environment, { terminal: { __esModule: true, default: native } });
+    const saved = [];
+    const root = createRoot();
+    try {
+      await act(async () => {
+        root.render(React.createElement(dailyUse.SettingsForm, {
+          visible: true, preferences: { ...PREFERENCES, theme: 'light' }, colors: LIGHT,
+          onClose() {}, async onSave(next) { saved.push(clone(next)); return true; },
+        }));
+      });
+      // The grouped row exposes its current selection through
+      // accessibilityValue so assistive tech and native UI tests can read it.
+      assert.equal(findTestId(root, 'app-theme').props.accessibilityValue.text, 'Light');
+      assert.equal(findTestId(root, 'terminal-theme').props.accessibilityValue.text, 'Dark');
+      environment.appAlertResponder = () => Promise.resolve(2);
+      await press(root, findTestId(root, 'app-theme'));
+      assert.equal(environment.appAlerts[0].appearance, 'light', 'fixed App light presents light under a dark OS');
+      assert.deepEqual(environment.appAlerts[0].buttons.map(button => button.text), ['System', 'Light', 'Dark']);
+      assert.equal(environment.appAlerts[0].cancelable, true, 'the theme chooser keeps its explicit cancelable override');
+      // The draft is now dark, but the Terminal theme chooser still styles to
+      // the applied App appearance until Save commits the draft.
+      assert.equal(findTestId(root, 'app-theme').props.accessibilityValue.text, 'Dark', 'the row value tracks the selected draft');
+      assert.equal(findTestId(root, 'terminal-theme').props.accessibilityValue.text, 'Dark', 'the Terminal row is independent of the App draft');
+      environment.appAlertResponder = () => Promise.resolve(0);
+      await press(root, findTestId(root, 'terminal-theme'));
+      assert.equal(environment.appAlerts[1].appearance, 'light', 'the chooser uses the applied appearance, not the edited draft');
+      assert.equal(findTestId(root, 'terminal-theme').props.accessibilityValue.text, 'System', 'the Terminal row tracks its own draft');
+      assert.equal(findTestId(root, 'app-theme').props.accessibilityValue.text, 'Dark', 'the App row keeps its draft');
+      await press(root, findTestId(root, 'settings-submit'));
+      assert.deepEqual(saved, [{ ...PREFERENCES, theme: 'dark', terminalTheme: 'system' }]);
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  await t.test('item action sheets and discard prompts style on both platforms', async () => {
+    // iOS: ActionSheetIOS gets a per-call userInterfaceStyle.
+    const iosEnvironment = makeNativeEnvironment();
+    const iosDailyUse = loadDailyUseModule(iosEnvironment);
+    const removed = [];
+    const iosRoot = createRoot();
+    try {
+      await act(async () => {
+        iosRoot.render(React.createElement(iosDailyUse.ProfileList, {
+          profiles: [pickerProfile()], selectedId: '', loading: false, error: false, busy: false,
+          colors: LIGHT, themePreference: 'dark',
+          onRetry() {}, onAdd() {}, onConnect() {}, onEdit() {}, onDelete: profile => removed.push(profile.id),
+        }));
+      });
+      await press(iosRoot, findLabel(iosRoot, 'Server options Queued picker'));
+      assert.equal(iosEnvironment.actionSheet.options.userInterfaceStyle, 'dark');
+      // The options array is VM-realm; copy it before deepEqual.
+      assert.deepEqual([...iosEnvironment.actionSheet.options.options], ['Edit server', 'Remove', 'Cancel']);
+      await pickActionSheetOption(iosEnvironment, 1);
+      assert.deepEqual(removed, [pickerProfile().id]);
+    } finally {
+      await act(async () => { iosRoot.unmount(); });
+    }
+
+    // Android: the same rows go through the native presenter, and a dirty
+    // NameForm discard confirmation carries the same applied appearance.
+    const { environment: androidEnvironment, native: androidNative } = makeNativeEnvironment();
+    androidEnvironment.platform = 'android';
+    const androidDailyUse = loadDailyUseModule(androidEnvironment, { terminal: { __esModule: true, default: androidNative } });
+    const closed = [];
+    const androidRoot = createRoot();
+    try {
+      await act(async () => {
+        androidRoot.render(React.createElement(androidDailyUse.NameForm, {
+          visible: true, title: 'Rename workspace', initialName: 'One', colors: LIGHT, themePreference: 'dark',
+          onClose: () => closed.push('closed'), async onSave() { return true; },
+        }));
+      });
+      await act(async () => { findTestId(androidRoot, 'workspace-terminal-name').props.onChangeText('Renamed'); });
+      androidEnvironment.appAlertResponder = () => Promise.resolve(null);
+      await press(androidRoot, findLabel(androidRoot, 'Cancel'));
+      assert.equal(androidEnvironment.appAlerts[0].title, 'Discard changes?');
+      assert.equal(androidEnvironment.appAlerts[0].appearance, 'dark');
+      await settleAsync();
+      assert.equal(closed.length, 0, 'dismissal must keep the form open');
+      androidEnvironment.appAlertResponder = options => Promise.resolve(options.buttons.findIndex(button => button.text === 'Discard'));
+      await press(androidRoot, findLabel(androidRoot, 'Cancel'));
+      await settleAsync();
+      assert.deepEqual(closed, ['closed']);
+    } finally {
+      await act(async () => { androidRoot.unmount(); });
+    }
+
+    // iOS ConnectionForm discard: the per-dialog style follows the applied
+    // appearance and the destructive button still discards.
+    const formEnvironment = makeNativeEnvironment();
+    const connectionForms = loadConnectionFormModule(formEnvironment);
+    const formCloses = [];
+    const formRoot = createRoot();
+    try {
+      await act(async () => {
+        formRoot.render(React.createElement(connectionForms.ConnectionForm, {
+          visible: true, colors: LIGHT, themePreference: 'dark',
+          onClose: () => formCloses.push('closed'), async onSubmit() { return true; },
+        }));
+      });
+      await act(async () => { findTestId(formRoot, 'ssh-host').props.onChangeText('changed.example'); });
+      await press(formRoot, findLabel(formRoot, 'Cancel'));
+      assert.equal(formEnvironment.alert.title, 'Discard changes?');
+      assert.equal(formEnvironment.alert.options.userInterfaceStyle, 'dark');
+      const discard = formEnvironment.alert.buttons.find(button => button.text === 'Discard');
+      await act(async () => { discard.onPress(); });
+      assert.deepEqual(formCloses, ['closed']);
+    } finally {
+      await act(async () => { formRoot.unmount(); });
+    }
+  });
 });
 
 test('an inactive fixture deep link follows UI foreground changes without reconnecting', async () => {
@@ -1322,7 +2181,7 @@ test('agent status palette keeps every non-text mark at three-to-one contrast', 
   };
   for (const [name, palette] of Object.entries(palettes)) {
     assert.ok(palette.agentStatus, `${name} agentStatus tokens are missing`);
-    const backgrounds = name === 'DARK' ? [palette.background, palette.surface, palette.terminal] : [palette.background, palette.surface];
+    const backgrounds = [palette.background, palette.surface];
     for (const [status, color] of Object.entries(palette.agentStatus)) {
       for (const background of backgrounds) {
         const values = [luminance(color), luminance(background)].sort((a, b) => b - a);
@@ -1450,11 +2309,11 @@ function groupTitle(root) {
   return switcher ? textContent(switcher) : '';
 }
 
-async function mountApp(snapshot, configure) {
+async function mountApp(snapshot, configure, options) {
   const { environment, native } = makeNativeEnvironment();
   environment.snapshot = clone(snapshot);
   configure?.(environment, native);
-  const App = loadApp(environment, native);
+  const App = loadApp(environment, native, false, false, options?.realDailyUse === true);
   const root = createRoot();
   await act(async () => {
     root.render(React.createElement(App));
@@ -1462,8 +2321,8 @@ async function mountApp(snapshot, configure) {
   return { root, environment, native };
 }
 
-async function mountForTest(t, snapshot, configure) {
-  const fixture = await mountApp(snapshot, configure);
+async function mountForTest(t, snapshot, configure, options) {
+  const fixture = await mountApp(snapshot, configure, options);
   t.after(async () => {
     await act(async () => {
       fixture.root.unmount();
@@ -1472,10 +2331,10 @@ async function mountForTest(t, snapshot, configure) {
   return fixture;
 }
 
-async function mountConfiguredForTest(t, configure) {
+async function mountConfiguredForTest(t, configure, options) {
   const { environment, native } = makeNativeEnvironment();
   configure(environment, native);
-  const App = loadApp(environment, native);
+  const App = loadApp(environment, native, false, false, options?.realDailyUse === true);
   const root = createRoot();
   await act(async () => {
     root.render(React.createElement(App));
