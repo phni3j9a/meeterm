@@ -147,7 +147,7 @@ substitute a large device for a small one.
   `legacy_preferences_migration`, where a persisted four-key preferences file
   gains the `dark` terminal theme while the app value is preserved), fourteen
   native input/recovery-bridge cases (including `scroll_gesture` and
-  `theme_refresh`, an added check awaiting macOS execution that asserts the
+  `theme_refresh`, which asserts the
   responder, marked text and selection survive an in-place theme switch),
   direct screen captures from public deterministic state, and a fresh native foundation
   launch/readiness/frame/no-crash observation. Its source-level screen manifest
@@ -197,10 +197,10 @@ substitute a large device for a small one.
   foreground cycle and transport-loss case are separate evidence categories.
   It also performs a live `ssh_theme_light`/`ssh_theme_dark` check before
   disconnect: saving a terminal theme on the live session must repaint in
-  place with the same native handle and selected pane. The existing remote
-  input acknowledgment precedes the theme changes; a post-theme native SSH
-  fixture marker round trip plus light/dark keyboard captures were accepted
-  (MAIN-003) for the native Worker's next fix and are not yet present.
+  place with the same native handle and selected pane, and each post-theme
+  change must return a remote acknowledgment through a fixture marker round
+  trip exactly once from the same pane/shell PID/native handle with other
+  panes clean; light/dark keyboard captures are recorded alongside.
 - `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
   Full preserves its original assertions and result; a prior failed full remains failed.
 
@@ -211,7 +211,12 @@ identity, plus a pinned-dark terminal that must emit no new resolved
 `MEETERM_SMOKE_THEME` logcat marker. These are additive cases inside the
 existing suite; Android's observational `SCREEN_NAMES` stays at 32 routes and
 theme combinations are not new named screen routes. The iOS counterparts are
-the `standard`/`ssh` additions above; remote runs remain pending.
+the `standard`/`ssh` additions above. The Issue #37 remote mobile runs are
+completed at their actual sources — iOS on `52978906` (standard evidence
+`3f15e9be`, ssh evidence `ce285376` with strict same-C4 product reuse) and
+Android `full` on `dca158c` (evidence `cf2db126`). See
+[evidence/issue-37-independent-themes.md](evidence/issue-37-independent-themes.md)
+for the verified evidence and scoped limits.
 
 For retained-work recovery (Issues #26 and #41), Android `full` and iOS `standard` plus `ssh` are the applicable
 mobile paths. Shared/native tests separately cover bounded no-side-effect
