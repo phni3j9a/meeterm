@@ -1,0 +1,62 @@
+00:12:28 corrected transitions on de8a4e6 APK; quoted URI launch verified working
+00:12:30 launch meeterm://smoke?screen=settings&app=dark&terminal=system -> rc=0 stderr=none pid=4083
+00:12:36 seed-check meeterm://smoke?screen=settings&app=dark&terminal=system -> {'app-theme': 'Appearance, Dark', 'terminal-theme': 'Terminal theme, System'} expect={'app-theme': 'Appearance, Dark', 'terminal-theme': 'Terminal theme, System'} pass=True
+00:12:36 clipA: OS light; seed screen=terminal&app=dark&terminal=system
+00:12:40 launch meeterm://smoke?screen=terminal&app=dark&terminal=system -> rc=0 stderr=none pid=4213
+00:12:48 still tcA-02-osdark.png (changed)
+00:12:49 still tcA-03-oslight.png (changed)
+00:12:51 still tcA-04-workspaces.png (changed)
+00:12:53 workspace-row bounds=(477, 1106)
+00:12:58 still tcA-05-reopened.png (changed)
+00:12:59 launch meeterm://smoke?screen=recovery-progress&app=dark&terminal=light -> rc=0 stderr=none pid=4668
+00:13:05 clipA pids=['4213', '4213', '4213', '4668']
+00:13:05 clipA markers pid4213=[]
+00:13:05 clip trans-corrected-de8-clipA.mp4 pulled 2515407 bytes
+00:13:07 launch meeterm://smoke?screen=settings&app=system&terminal=dark -> rc=0 stderr=none pid=4833
+00:13:13 seed-check meeterm://smoke?screen=settings&app=system&terminal=dark -> {'app-theme': 'Appearance, System', 'terminal-theme': 'Terminal theme, Dark'} expect={'app-theme': 'Appearance, System', 'terminal-theme': 'Terminal theme, Dark'} pass=True
+00:13:13 clipB: OS light; seed screen=terminal&app=system&terminal=dark
+00:13:17 launch meeterm://smoke?screen=terminal&app=system&terminal=dark -> rc=0 stderr=none pid=4969
+00:13:24 still tcB-02-osdark.png (changed)
+00:13:25 still tcB-03-oslight.png (changed)
+00:13:25 clipB pids=['4969', '4969', '4969']
+00:13:25 clipB markers pid4969=[]
+00:13:25 clip trans-corrected-de8-clipB.mp4 pulled 914571 bytes
+
+--- post-run facts ---
+source=de8a4e6a70845978f2bd4e83b35bfbc20075d672 (issue-37-independent-themes)
+apk=same installed build (lastUpdateTime 2026-09-27 17:15:20 = r3 build output;
+ no rebuild/reinstall; VM restarted between runs -> emulator respawned, AVD
+ install state persisted)
+quoting fix: remote command passed as one argv with URI single-quoted ->
+ `&` params reach the app. PROVEN against the old form: argv-joined
+ `... -d meeterm://smoke?screen=settings&app=light&terminal=light` split at the
+ remote shell (`/system/bin/sh: -n: inaccessible or not found`, rc=127) and
+ delivered only screen=settings -> rows showed Appearance,Light +
+ Terminal theme,Dark (defaults) = exactly the wrong values in the C3 clips.
+ Corrected form rc=0 -> Appearance,Light + Terminal theme,Light.
+
+seed-checks (pre-record, settings route):
+ app=dark&terminal=system -> app-theme="Appearance, Dark",
+   terminal-theme="Terminal theme, System" PASS
+ app=system&terminal=dark -> app-theme="Appearance, System",
+   terminal-theme="Terminal theme, Dark" PASS
+
+clipA (trans-corrected-de8-clipA.mp4, ffprobe=25.429600s, hard cap 75s):
+ pids=[4213,4213,4213,4668] — same PID through OS dark->light and Back->reopen;
+ recovery seed is a separate process as documented.
+ pid4213 MEETERM_SMOKE_THEME sequence: dark(mount)+light(resolved system,
+ OS light), dark(OS->dark), light(OS->light), dark+light(remount on reopen).
+ tcA-01 mounted: AppDark chrome + Light terminal surface (intended pairing).
+ tcA-02 osdark: dark chrome + dark terminal; tcA-03 light again.
+ tcA-04 Workspaces list via native Back; tcA-05 reopen via
+ workspace-row-@smoke-main (477,1106) -> native terminal restored w/ scrollback.
+ tcA-06 seeded recovery-progress&app=dark&terminal=light (pid4668): mount dark +
+ resolved light marker; presentation-only recovery frame.
+
+clipB (trans-corrected-de8-clipB.mp4, ffprobe=10.638900s):
+ pids=[4969,4969,4969]. pid4969 emits mount 'dark' ONLY — pinned terminal=dark
+ emits no resolved marker through OS light->dark->light (contract holds);
+ tcB-01/02/03 stills: app chrome followed OS, terminal stayed dark.
+
+scope: seeded presentation diagnostics only — no SSH, no credentials, not a
+suite acceptance, no pixel gates; stills/video are human evidence.
