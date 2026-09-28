@@ -1,0 +1,3 @@
+screen=empty
+result=unavailable
+reason=missing_screen_element_0,screen_element_1

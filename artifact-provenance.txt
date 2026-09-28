@@ -1,0 +1,46 @@
+Artifact provenance — Issue #45 POSIX run
+=========================================
+
+source_sha=1351186c518cddd24a0cc4538c5704712d1c9868
+evidence_branch=evidence/android-20260928-issue45-posix
+artifact_dir=/home/ubuntu/repos/meeterm/artifacts/android-emulator-observability
+
+Background
+  The artifact directory is reused across runs (not wiped per run). Before this
+  1351186 run it still contained files from the completed 690b09b2 run whose
+  evidence was already pushed to evidence/android-20260928-issue45 @ da662f4.
+  The running suite was not disturbed to clean the directory; freshness was
+  enforced by an mtime boundary instead.
+
+Run-start boundary
+  boundary=2026-09-28 15:45 UTC
+  This run's first artifact write = gradle-build.log @ 16:01:28 UTC
+  (npm ci/prebuild ran ~15:2x-15:5x; build tee began ~15:59; boundary set at
+  15:45 — safely before any write of this run and after the last prior-run
+  write @ 15:27:34).
+
+Freshness enforcement (post-suite sweep: find . -type f ! -newermt "15:45")
+  Suite-produced artifacts: every file the suite writes received a fresh mtime
+  >= 16:01 UTC because the suite overwrites each artifact at its stage.
+  Manually-produced files (not written by the suite):
+    dialog-markers.txt  — stale 15:26:58 -> REGENERATED from this run's logcat (68 lines)
+    run-record.txt      — stale 15:27:34 -> REGENERATED for 1351186 (this file)
+  Post-regeneration sweep result: 0 files remaining with mtime < 15:45 UTC.
+  Total files in bundle: 78 at sweep time (app-release.apk then removed = 77).
+
+Excluded prior-run filenames
+  none — no stale-content file was shipped; the two stale manual files were
+  regenerated from this run's observations rather than excluded.
+
+Honest-observation notes
+  - empty-unavailable.txt: fresh from this run; the `empty` seeded route again
+    returned unavailable:missing_screen_element_0,screen_element_1 (baseline).
+    Not treated as a gate; the screenshot/absence boundary is preserved as-is.
+  - No earlier-stage screenshot was recreated or back-filled. Summaries
+    (run-record.txt, dialog-markers.txt, this file) reflect only this run's
+    observations on 1351186.
+  - daily-use.mp4 covers the suite's own 180s driver window only; later legs
+    are covered by PNG stills.
+  - Removed before push: app-release.apk (~65MB). No credentials, known_hosts,
+    private keys, or raw auth logs included (fixture ephemeral key material
+    lives only in the suite's temp dir, not this bundle).

@@ -1,0 +1,67 @@
+Issue #45 POSIX-follow-up Android emulator validation — run record
+==================================================================
+
+source_sha=1351186c518cddd24a0cc4538c5704712d1c9868
+source_branch=issue-45-herdr-capabilities
+source_subject=fix: isolate Herdr resolver globs from the SSH login shell
+evidence_branch=evidence/android-20260928-issue45-posix
+session=devin-9429c00e8cc14fb2b140b3e23bb28ec1 (devin-swe-2-max)
+run_start_boundary=2026-09-28 ~15:47 UTC (gradle tee) — see artifact-provenance.txt
+
+toolchain
+  node=22.22.2 (nvm, .nvmrc)
+  npm=10.9.7
+  jdk=17.0.19
+  ndk=27.1.12297006
+  rust=1.96.0
+  gradle=9.3.1
+  device=emulator-5554 sdk_gphone64_x86_64 api=36 (AVD meeterm_api36, headless)
+
+build
+  git reset --hard 1351186c + rm -rf android + npm ci
+  expo prebuild --platform android --non-interactive --no-install --clean (fresh CNG)
+  ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release --no-daemon
+  result=BUILD SUCCESSFUL in 2m17s (668 tasks)
+  install=adb install -r Success
+  pm clear dev.meeterm.app before suite
+
+gates (scripts/ci/android-smoke.sh)
+  install/launch/native_ready/first_frame/alive = PASS
+  MEETERM_SMOKE_NATIVE_READY + MEETERM_SMOKE_FIRST_FRAME observed, no crash
+
+seeded routes (scripts/ci/android-screen-fixtures.py)
+  captured=31/32
+  empty=unavailable:missing_screen_element_0,screen_element_1 (baseline retained honestly, not treated as gate)
+
+SSH/tmux suite (scripts/ssh/fixture.py -- scripts/ssh/android-smoke.py)
+  result=passed
+  stages_completed=116
+  first_failing_stage=none
+  final_stage=disconnect_after_resume
+  transport_loss_evidence=passed (inject -> stale read-only -> restored -> authoritative ready -> remote ack)
+  mobile live SSH case = tmux control mode; no mobile live-Herdr claim (herdr-* seeded routes are presentation captures only)
+
+theme cases
+  daily_theme_matrix 6/6 screenshots
+  daily_theme_os_scheme light->dark->light same process
+  daily_theme_os_independence pinned terminal
+  daily_theme_dialog_fixed / _system / _restored completed
+  MEETERM_SMOKE_THEME markers=31 total (logcat.txt 1 + ssh-logcat.txt 30)
+  MeetermTerminalDialog markers (dialog-markers.txt, 68 lines):
+    presented appearance=dark resolved=dark x13
+    presented appearance=light resolved=light x12
+    presented appearance=system resolved=dark x1
+    presented appearance=system resolved=light x7
+    result=selected index=0 x10, index=1 x9, index=2 x12
+    result=dismissed x3
+
+elapsed
+  build=2m17s
+  ssh_tmux_suite=~33min (16:05 -> ~16:38 UTC)
+  total run ~50min including npm ci/prebuild/gates/routes
+
+scope notes
+  This run validates the POSIX-shell resolver isolation (login-shell glob fix) plus
+  upstream test-only fixes; product inputs changed vs 690b09b2 so full fresh build
+  was performed. Prior 690b09b2 evidence preserved on its own branch.
+  emulator-only; no iOS, physical device, or external-IME items run.
