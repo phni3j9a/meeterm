@@ -57,8 +57,63 @@ existing `control.terminalInputReady` acknowledgment before the first marker.
 The input/identity/recovery assertions and deadlines are unchanged. This fixes
 only the Rust integration test, not product or mobile-suite code.
 
-GitHub CI after that correction and exact product-source `690b09b2` Android full /
-iOS standard / iOS ssh acceptance are pending. No mobile or visual success is claimed by these local results.
+The correction is `a3e43dff82aa5123a8184afa2fa05a26844da699`.
+[Rust CI job 108986817107](https://github.com/phni3j9a/meeterm/actions/runs/36439742190/job/108986817107)
+passed: 238 unit cases, 4 fixture/parser cases, 1 layout case, real OpenSSH/tmux
+(29.10 seconds), all 4 SHA-verified Herdr 0.9.0 live cases (22.35 seconds), and
+the SHA-verified 0.9.1 compatibility/recovery case (3.14 seconds). JavaScript/Expo
+and iOS Swift preflight passed in the same workflow. Android native build
+(job `108986817419`, 13m03s) also passed; all four workflow jobs succeeded.
+
+Mobile product source is `690b09b2e1ad097ad2747922c8d48a04b32c48bd`.
+The only later source change is the standalone Rust integration test above;
+app/native library, mobile tests, CNG and build inputs are identical. All mobile
+runs used that exact original candidate; iOS standard-to-ssh product reuse
+matched that commit and toolchain as recorded below. Subsequent evidence-only
+documentation updates do not change these validation inputs.
+The SWE-2 Max mobile sessions are
+[Android](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) and
+[iOS](https://app.devin.ai/sessions/7a32a4e6ed984961b5194e22feeba407).
+
+- iOS `standard` passed on the exact mobile source above with fresh clean CNG
+  and unsigned build-for-testing. Evidence:
+  [`evidence/ios-20260928-issue45-standard`](https://github.com/phni3j9a/meeterm/tree/79a684c21639c93fde495805aaa2aedb9bb9f4a3/690b09b2-standard).
+  Xcode 26.6 (17F113), iOS 27.0, arm64 Simulator; 26/26 routes,
+  14/14 native input cases, 6/6 app-hosted storage cases, 6/6 theme combinations,
+  and 11/11 theme/dialog checks passed. Foundation records confirm native
+  readiness, `FIRST_FRAME_METAL`, and no-crash survival; this run used Metal,
+  not the Simulator software fallback. Main downloaded the evidence commit
+  and viewed all 26 `standard-*.png` and 23 `theme-*.png` captures, including
+  picker, partial error, Herdr terminal/groups, recovery and theme states.
+  No visible regression was identified in those captures.
+- iOS `ssh` passed using the same session's pristine products from the fresh
+  `standard` build. The strict restore helper verified manifest, checksum,
+  source SHA and Xcode match before reuse. Evidence:
+  [`evidence/ios-20260928-issue45-ssh`](https://github.com/phni3j9a/meeterm/tree/fbec803016f5f05cf4dc0cf0ad30e255659e454e/690b09b2-ssh).
+  Real OpenSSH/tmux runtime selection, native input, session switching, theme
+  markers and transport-loss recovery passed. Loss retained the terminal
+  identifier/handle and selected pane, showed the cached read-only surface,
+  and accepted no input while disconnected. Pre/post markers occurred once
+  on the same pane/PID with other panes clean. Main viewed all 8 PNG captures,
+  including native input, light/dark terminals, keyboards and disconnect.
+  The renderer marker was again Metal.
+- Android `full` passed on the exact mobile source above: fresh clean CNG,
+  release build (2m22s), install/launch/native-ready/first-frame/no-crash gates,
+  and 116 SSH/tmux stages through `disconnect_after_resume` (about 35 minutes).
+  Evidence:
+  [`evidence/android-20260928-issue45`](https://github.com/phni3j9a/meeterm/tree/da662f473eecf8ee4a8fc36fb937df66da8aa637).
+  API 36 x86_64 emulator, JDK 17.0.19, NDK 27.1.12297006, Gradle 9.3.1,
+  Rust 1.96.0. Transport loss retained the native handle and pane, accepted no
+  input while stale, and produced pre/post markers exactly once with other
+  panes clean. Settings, six theme combinations, OS theme changes, dialogs,
+  saved credentials, native copy/paste, CJK atlas and desktop layout restoration
+  completed. Main downloaded the evidence commit and viewed all 59 PNGs:
+  31 seeded routes and 28 interaction captures. The observational `empty`
+  route was unavailable with `missing_screen_element_0,screen_element_1`,
+  recorded in `empty-unavailable.txt`; it is not counted as a viewed/passing
+  screenshot. Screenshot presence is not a machine gate. The other viewed
+  captures showed the expected picker, terminal, recovery and theme states.
+
 Mobile SSH suites exercise tmux; seeded Herdr screens only verify presentation.
 Physical-device GPU, fonts and Japanese IME parity remain outside this change's
 emulator/Simulator acceptance scope. Prior Issue #17 evidence remains unchanged.
