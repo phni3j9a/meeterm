@@ -1,0 +1,21 @@
+00:56:06 surface-fix probe on 0b12dc6 APK; fresh build+install outside; quoted URIs
+00:56:08 launch 'meeterm://foundation?foundation=1' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://foundation/... cmp=dev.meeterm.app/.MainActivity }\nStatu' stderr=none pid=3722
+00:56:10 gate pid=3722 native_ready=True first_frame=True alive=True
+00:56:12 launch 'meeterm://smoke?screen=settings&app=dark&terminal=system' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=3805
+00:56:18 seed-check 'meeterm://smoke?screen=settings&app=dark&terminal=system' -> {'app-theme': 'Appearance, Dark', 'terminal-theme': 'Terminal theme, System'} expect={'app-theme': 'Appearance, Dark', 'terminal-theme': 'Terminal theme, System'} pass=True
+00:56:22 launch 'meeterm://smoke?screen=terminal&app=dark&terminal=system' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=3944
+00:56:29 still sfp-A-02-osdark.png (changed)
+00:56:30 still sfp-A-03-oslight.png (changed)
+00:56:33 still sfp-A-04-workspaces.png (changed)
+00:56:35 workspace-row bounds=(477, 1106)
+00:56:40 still sfp-A-05-reopened.png (changed)
+00:56:41 launch 'meeterm://smoke?screen=recovery-progress&app=dark&terminal=light' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=4418
+00:56:46 clipA pids=['3944', '3944', '3944', '3944', '4418']
+00:56:47 clip sfp-clipA.mp4 pulled 2822435 bytes
+00:56:48 launch 'meeterm://smoke?screen=settings&app=system&terminal=dark' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=4591
+00:56:54 seed-check 'meeterm://smoke?screen=settings&app=system&terminal=dark' -> {'app-theme': 'Appearance, System', 'terminal-theme': 'Terminal theme, Dark'} expect={'app-theme': 'Appearance, System', 'terminal-theme': 'Terminal theme, Dark'} pass=True
+00:56:59 launch 'meeterm://smoke?screen=terminal&app=system&terminal=dark' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=4766
+00:57:05 still sfp-B-02-osdark.png (changed)
+00:57:06 still sfp-B-03-oslight.png (changed)
+00:57:06 clipB pids=['4766', '4766', '4766']
+00:57:06 clip sfp-clipB.mp4 pulled 977300 bytes

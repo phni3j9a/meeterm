@@ -1,0 +1,32 @@
+== per-pid MEETERM marker slice (tags MeetermTerminalView/MeetermRenderer, -v brief, pid-padded) ==
+--- pid 3722 ---
+I/MeetermTerminalView( 3722): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 3722): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 3722): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 3722): MEETERM_SMOKE_FIRST_FRAME
+--- pid 3805 ---
+--- pid 3944 ---
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 3944): MEETERM_SMOKE_FIRST_FRAME
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 3944): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 3944): MEETERM_SMOKE_FIRST_FRAME
+--- pid 4418 ---
+I/MeetermTerminalView( 4418): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 4418): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 4418): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 4418): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 4418): MEETERM_SMOKE_FIRST_FRAME
+--- pid 4591 ---
+--- pid 4766 ---
+I/MeetermTerminalView( 4766): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 4766): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 4766): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 4766): MEETERM_SMOKE_FIRST_FRAME

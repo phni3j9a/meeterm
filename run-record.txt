@@ -1,0 +1,27 @@
+== surface-fix-probe run record ==
+scope: bounded diagnostic on committed SurfaceCoverGate cover fix; NOT a suite acceptance
+source: 0b12dc6ba9115203fb8b0274e26dea6e394c178c "fix: cover Android terminal surface until first valid frame (#37)" (issue-37-independent-themes HEAD)
+toolchain: node v22.22.2 (nvm/.nvmrc), npm 10.9.7, JDK 17.0.19, NDK 27.1.12297006, Rust 1.96.0, Gradle 9.3.1
+device: emulator-5554 (AVD meeterm_api36, headless, API36), anims 0.0
+build: rm -rf android + npm ci + expo prebuild --platform android --clean + assembleRelease arm64-v8a,x86_64 release -> BUILD SUCCESSFUL in 2m20s (668 tasks); gradle-build.log in bundle
+install: adb install -r app-release.apk -> Success; lastUpdateTime 2026-09-28 00:54:44 (replaces installed de8a4e6 APK, authorized for this probe)
+launch mechanism: remote-shell-safe quoted URIs (remote command single argv, URI single-quoted) — same as corrected-transitions run
+
+GATES (passed): foundation launch -> pid 3722; MEETERM_SMOKE_NATIVE_READY x2 + MEETERM_SMOKE_FIRST_FRAME (MeetermRenderer) present; process alive
+SEED CHECKS (passed, rows via uiautomator content-desc):
+  screen=settings&app=dark&terminal=system -> 'Appearance, Dark' + 'Terminal theme, System'
+  screen=settings&app=system&terminal=dark -> 'Appearance, System' + 'Terminal theme, Dark'
+  delivered intents confirmed via 'am start' Status: ok output (quoted dat=meeterm://smoke/...)
+
+CLIP A (sfp-clipA.mp4, ffprobe 25.355s, hard cap 75s):
+  pids: 3944 (mount/OS flips/Back/reopen) then 4418 (recovery seed, new process)
+  mount under OS light: THEME dark (mount) + light (resolved); dark chrome + light terminal
+  OS dark -> THEME dark; OS light -> THEME light; same pid 3944
+  native Back -> Workspaces -> tap workspace-row-@smoke-main (bounds 477,1106) -> remount READY+FIRST_FRAME+dark+light on same pid
+  recovery-progress&app=dark&terminal=light -> pid 4418 mount dark + resolved light
+CLIP B (sfp-clipB.mp4, ffprobe 10.131s, hard cap 75s):
+  pid 4766 throughout; app=system terminal=dark; OS light->dark->light
+  pinned terminal emitted mount 'dark' only; no new THEME marker on flips; chrome stills change with OS
+
+BLACK RECTANGLE (preliminary, stills reviewed): no black terminal rectangle at mount (sfp-A-01), reopen/remount (sfp-A-05), recovery (sfp-A-06), or clip B mount (sfp-B-01). Terminal surface shows correct light/dark pairing in all captured states. Main will review video.
+stills: sfp-A-01..06, sfp-B-01..03 ordered; sfp-marker-slice.txt per-pid markers; sfp-manifest.txt timestamps/leg outcomes
