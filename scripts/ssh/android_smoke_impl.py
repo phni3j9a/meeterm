@@ -1549,7 +1549,7 @@ def accessible_label(node: Node) -> str:
 
 
 THEME_ROW_RESOURCE_IDS = {
-    "Appearance": "app-theme",
+    "App appearance": "app-theme",
     "Terminal theme": "terminal-theme",
 }
 
@@ -1558,7 +1558,7 @@ def find_theme_row(nodes: list[Node], label: str) -> Node | None:
     """Match one Settings theme row by testID plus its public a11y label.
 
     Android joins RN ``accessibilityValue.text`` into ``contentDescription``
-    (for example ``Appearance, Dark``), so row identity comes from the
+    (for example ``App appearance, Dark``), so row identity comes from the
     stable ``testID`` resource id while the label contract is checked with
     the established label-prefix rule instead of an exact-description match.
     The uiautomator dump exposes the id bare (``app-theme``) or package
@@ -4539,7 +4539,7 @@ def exercise_daily_settings(
     # The app appearance and the terminal surface theme are independent rows.
     # Setting both to Light here exercises each native dialog once; the matrix
     # below covers the remaining combinations and restores the dark terminal.
-    pick_theme_option(device, stage, "Appearance", "light")
+    pick_theme_option(device, stage, "App appearance", "light")
     pick_theme_option(device, stage, "Terminal theme", "light")
 
     fill_field(
@@ -4574,14 +4574,14 @@ def exercise_daily_settings(
     stage = "daily_settings_reopen"
     tap_action(device, stage, ("Terminal settings",))
     wait_for_field_value(device, stage, "Terminal font size", "18")
-    wait_for_node(device, stage, content_description="Appearance, Light")
+    wait_for_node(device, stage, content_description="App appearance, Light")
     # Both independent rows must redisplay the persisted Light value. The
     # semantic accessibilityValue rides in the row's content description as
     # "<label>, <value>", which is an exact match here.
     redisplay_nodes = device.dump_ui()
     if not all(
         find_node(redisplay_nodes, content_description=description) is not None
-        for description in ("Appearance, Light", "Terminal theme, Light")
+        for description in ("App appearance, Light", "Terminal theme, Light")
     ):
         raise SmokeFailure(stage, "theme_values_not_redisplayed")
     capture_optional_screenshot(
@@ -4617,7 +4617,7 @@ def set_theme_preferences(
 
     tap_action(device, stage, ("Terminal settings",))
     wait_for_text_input(device, stage, "Terminal font size")
-    pick_theme_option(device, stage, "Appearance", app_theme)
+    pick_theme_option(device, stage, "App appearance", app_theme)
     pick_theme_option(device, stage, "Terminal theme", terminal_theme)
     tap_action(device, stage, ("Save settings",))
     wait_for_node(
@@ -4694,7 +4694,7 @@ def exercise_app_alert_fixed(
     """
 
     presented = f"presented appearance={appearance} resolved={appearance}"
-    tap_theme_row(device, stage, "Appearance")
+    tap_theme_row(device, stage, "App appearance")
     baseline = wait_for_dialog_event(device, presented, baseline, stage)
     capture_optional_screenshot(
         device,
@@ -4710,7 +4710,7 @@ def exercise_app_alert_fixed(
     # Picking a different draft Appearance must not retheme the next chooser:
     # the Terminal theme dialog still resolves the applied App appearance.
     draft = "light" if appearance == "dark" else "dark"
-    tap_theme_row(device, stage, "Appearance")
+    tap_theme_row(device, stage, "App appearance")
     baseline = wait_for_dialog_event(device, presented, baseline, stage)
     tap_app_dialog_button(device, stage, draft)
     baseline = wait_for_dialog_event(
@@ -4904,7 +4904,7 @@ def exercise_terminal_theme_os_scheme(
     # description as "<label>, <value>".
     tap_action(device, stage, ("Terminal settings",))
     wait_for_text_input(device, stage, "Terminal font size")
-    wait_for_node(device, stage, content_description="Appearance, Dark")
+    wait_for_node(device, stage, content_description="App appearance, Dark")
     wait_for_node(device, stage, content_description="Terminal theme, System")
     tap_action(device, stage, ("Cancel",))
     wait_for_node(
@@ -4941,7 +4941,7 @@ def exercise_terminal_theme_os_scheme(
     set_theme_preferences(device, stage, "system", "dark")
     tap_action(device, stage, ("Terminal settings",))
     wait_for_text_input(device, stage, "Terminal font size")
-    tap_theme_row(device, stage, "Appearance")
+    tap_theme_row(device, stage, "App appearance")
     dialog_baseline = wait_for_dialog_event(
         device, "presented appearance=system resolved=dark",
         dialog_baseline, stage,
@@ -4957,7 +4957,7 @@ def exercise_terminal_theme_os_scheme(
         device, "result=selected index=0", dialog_baseline, stage,
     )
     set_night_mode(device, False, stage)
-    tap_theme_row(device, stage, "Appearance")
+    tap_theme_row(device, stage, "App appearance")
     dialog_baseline = wait_for_dialog_event(
         device, "presented appearance=system resolved=light",
         dialog_baseline, stage,

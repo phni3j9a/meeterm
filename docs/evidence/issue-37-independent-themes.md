@@ -43,7 +43,7 @@ Settings の App appearance と Terminal theme を独立した設定へ分離し
   `MeetermCore.setTheme` の in-place 更新で、view key・mount 条件・SSH 接続・
   registry・scrollback・選択・retained/recovery 状態・native Term/view handle/
   owner/history/input 状態を保持します。
-- Settings UI: 「Appearance」(`app-theme`) と「Terminal theme」(`terminal-theme`) を
+- Settings UI: 「App appearance」(`app-theme`) と「Terminal theme」(`terminal-theme`) を
   別 draft・別 label/testID の独立行として追加し、各行は現在の draft 値を
   `accessibilityValue.text` で公開します (native UI test が行の選択値を読むため)。
   preview (`terminal-preview`) は編集中の Terminal theme と OS scheme だけで解決します。

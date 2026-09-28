@@ -3595,24 +3595,25 @@ class TerminalThemeTests(unittest.TestCase):
         '</hierarchy>'
     )
 
-    def test_theme_row_matches_real_dump_bare_resource_ids(self) -> None:
-        nodes = smoke.parse_ui_dump(self._THEME_ROWS_XML_99855.encode("utf-8"))
-        appearance = smoke.find_theme_row(nodes, "Appearance")
+    def test_theme_row_matches_renamed_label_with_real_dump_bare_resource_ids(self) -> None:
+        renamed_dump = self._THEME_ROWS_XML_99855.replace("Appearance", "App appearance")
+        nodes = smoke.parse_ui_dump(renamed_dump.encode("utf-8"))
+        appearance = smoke.find_theme_row(nodes, "App appearance")
         terminal = smoke.find_theme_row(nodes, "Terminal theme")
         self.assertIsNotNone(appearance)
         self.assertIsNotNone(terminal)
         self.assertEqual(appearance.resource_id, "app-theme")
         self.assertEqual(terminal.resource_id, "terminal-theme")
-        self.assertEqual(appearance.content_description, "Appearance, Light")
+        self.assertEqual(appearance.content_description, "App appearance, Light")
         self.assertEqual(terminal.content_description, "Terminal theme, Dark")
 
     def test_theme_row_matches_resource_id_with_value_suffix(self) -> None:
         row = self._theme_row(
-            "Appearance, Dark",
+            "App appearance, Dark",
             resource_id="dev.meeterm.app:id/app-theme",
         )
         self.assertIs(
-            smoke.find_theme_row([row], "Appearance"),
+            smoke.find_theme_row([row], "App appearance"),
             row,
         )
 
@@ -3625,13 +3626,14 @@ class TerminalThemeTests(unittest.TestCase):
 
     def test_theme_row_rejects_wrong_id_label_or_state(self) -> None:
         cases = [
-            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/terminal-theme"), "Appearance"),
-            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Terminal theme"),
-            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", enabled=False), "Appearance"),
-            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", visible=False), "Appearance"),
-            (self._theme_row("Appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Font size"),
-            (self._theme_row("Appearance, Dark", resource_id="com.example.other:id/app-theme"), "Appearance"),
-            (self._theme_row("Appearance, Dark", resource_id="app-theme-debug"), "Appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/terminal-theme"), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Terminal theme"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", enabled=False), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme", visible=False), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="dev.meeterm.app:id/app-theme"), "Font size"),
+            (self._theme_row("App appearance, Dark", resource_id="com.example.other:id/app-theme"), "App appearance"),
+            (self._theme_row("App appearance, Dark", resource_id="app-theme-debug"), "App appearance"),
+            (self._theme_row("Appearance, Dark", resource_id="app-theme"), "App appearance"),
             (self._theme_row("Terminal theme, Light", resource_id="app-theme"), "Terminal theme"),
         ]
         for row, label in cases:

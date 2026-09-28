@@ -60,7 +60,10 @@ class MeetermTerminalView(
   // black until the first swap. This themed sibling covers the viewport until
   // the renderer reports a valid snapshot frame for the current generation.
   private val terminalCover = View(context)
-  private val coverGate = SurfaceCoverGate()
+  private val coverGate = SurfaceCoverGate(
+    showCover = { showTerminalCover() },
+    requestRender = { surface.requestRender() },
+  )
   private lateinit var specialKeyRow: LinearLayout
   private var controlModifierButton: TextView? = null
   private var altModifierButton: TextView? = null
@@ -225,15 +228,12 @@ class MeetermTerminalView(
     surface.holder.addCallback(object : SurfaceHolder.Callback {
       override fun surfaceCreated(holder: SurfaceHolder) {
         coverGate.surfaceCreated()
-        showTerminalCover()
       }
       override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         coverGate.surfaceChanged()
-        showTerminalCover()
       }
       override fun surfaceDestroyed(holder: SurfaceHolder) {
         coverGate.surfaceDestroyed()
-        showTerminalCover()
       }
     })
     setOnApplyWindowInsetsListener { _, insets ->

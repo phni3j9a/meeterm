@@ -1,5 +1,6 @@
 package dev.meeterm.terminal
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,7 +14,7 @@ import org.junit.Test
 class SurfaceCoverGateTest {
   @Test
   fun firstValidFrameOfLifetimeReveals() {
-    val gate = SurfaceCoverGate()
+    val gate = SurfaceCoverGate({}, {})
     assertTrue(gate.covered)
     gate.surfaceCreated()
     val stampedAtStart = gate.currentLifetime
@@ -23,7 +24,7 @@ class SurfaceCoverGateTest {
 
   @Test
   fun recreateWithoutContextRecreatedStillReveals() {
-    val gate = SurfaceCoverGate()
+    val gate = SurfaceCoverGate({}, {})
     // holder create -> EGL context+surface create once -> valid frame reveals
     gate.surfaceCreated()
     gate.onValidFrame(gate.currentLifetime)
@@ -42,7 +43,7 @@ class SurfaceCoverGateTest {
 
   @Test
   fun frameStartedBeforeDestroyCannotRevealAfterRecreate() {
-    val gate = SurfaceCoverGate()
+    val gate = SurfaceCoverGate({}, {})
     gate.surfaceCreated()
     // Renderer read the lifetime when this frame STARTED, before destroy.
     val oldSurfaceStamp = gate.currentLifetime
@@ -57,7 +58,7 @@ class SurfaceCoverGateTest {
 
   @Test
   fun noSurfaceNeverReveals() {
-    val gate = SurfaceCoverGate()
+    val gate = SurfaceCoverGate({}, {})
     gate.surfaceCreated()
     gate.onValidFrame(gate.currentLifetime)
     gate.surfaceDestroyed()
@@ -68,7 +69,7 @@ class SurfaceCoverGateTest {
 
   @Test
   fun resizeArmsUntilFirstFrameOfThatLifetime() {
-    val gate = SurfaceCoverGate()
+    val gate = SurfaceCoverGate({}, {})
     gate.surfaceCreated()
     gate.onValidFrame(gate.currentLifetime)
     assertFalse(gate.covered)
@@ -84,11 +85,54 @@ class SurfaceCoverGateTest {
 
   @Test
   fun healthyContentFramesNeverReArm() {
-    val gate = SurfaceCoverGate()
+    val gate = SurfaceCoverGate({}, {})
     gate.surfaceCreated()
     gate.onValidFrame(gate.currentLifetime)
     gate.onValidFrame(gate.currentLifetime)
     gate.onValidFrame(gate.currentLifetime)
+    assertFalse(gate.covered)
+  }
+
+  @Test
+  fun holderEventsRequestANewLifetimeFrameAfterShowingTheCover() {
+    val events = mutableListOf<String>()
+    val requestedFrames = mutableListOf<Long>()
+    lateinit var gate: SurfaceCoverGate
+    gate = SurfaceCoverGate(
+      showCover = {
+        assertTrue(gate.covered)
+        events.add("cover:${gate.currentLifetime}")
+      },
+      requestRender = {
+        assertTrue(gate.covered)
+        events.add("render:${gate.currentLifetime}")
+        requestedFrames.add(gate.currentLifetime)
+      },
+    )
+
+    for (holderEvent in listOf(gate::surfaceCreated, gate::surfaceChanged)) {
+      val inFlightFrame = gate.currentLifetime
+      events.clear()
+      requestedFrames.clear()
+      holderEvent()
+      val newLifetime = gate.currentLifetime
+      assertTrue(newLifetime > inFlightFrame)
+      assertEquals(listOf("cover:$newLifetime", "render:$newLifetime"), events)
+      assertEquals(listOf(newLifetime), requestedFrames)
+      gate.onValidFrame(inFlightFrame)
+      assertTrue(gate.covered)
+      gate.onValidFrame(requestedFrames.single())
+      assertFalse(gate.covered)
+      assertEquals(2, events.size)
+    }
+
+    events.clear()
+    gate.surfaceDestroyed()
+    assertEquals(listOf("cover:${gate.currentLifetime}"), events)
+    requestedFrames.clear()
+    gate.surfaceCreated()
+    assertEquals(listOf(gate.currentLifetime), requestedFrames)
+    gate.onValidFrame(requestedFrames.single())
     assertFalse(gate.covered)
   }
 }

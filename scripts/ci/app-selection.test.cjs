@@ -1396,24 +1396,24 @@ test('settings keeps app appearance and terminal theme as independent labeled ro
     // Two distinct, independently labeled rows drive two distinct drafts.
     const appRow = findTestId(root, 'app-theme');
     const terminalRow = findTestId(root, 'terminal-theme');
-    assert.equal(appRow.props.accessibilityLabel, 'Appearance');
+    assert.equal(appRow.props.accessibilityLabel, 'App appearance');
     assert.equal(terminalRow.props.accessibilityLabel, 'Terminal theme');
     assert.equal(all(root, node => node.props?.accessibilityLabel === 'Terminal theme').length, 1);
-    assert.equal(textContent(appRow), 'AppearanceLight');
+    assert.equal(textContent(appRow), 'App appearanceLight');
     assert.equal(textContent(terminalRow), 'Terminal themeSystem');
 
     await press(root, appRow);
-    assert.equal(environment.actionSheet.options.title, 'Appearance');
+    assert.equal(environment.actionSheet.options.title, 'App appearance');
     assert.equal(environment.actionSheet.options.userInterfaceStyle, 'light', 'the chooser styles to the applied app appearance');
     await pickActionSheetOption(environment, 2);
-    assert.equal(textContent(appRow), 'AppearanceDark');
+    assert.equal(textContent(appRow), 'App appearanceDark');
     assert.equal(textContent(terminalRow), 'Terminal themeSystem');
 
     await press(root, terminalRow);
     assert.equal(environment.actionSheet.options.title, 'Terminal theme');
     await pickActionSheetOption(environment, 1);
     assert.equal(textContent(terminalRow), 'Terminal themeLight');
-    assert.equal(textContent(appRow), 'AppearanceDark');
+    assert.equal(textContent(appRow), 'App appearanceDark');
 
     // The preview resolves the edited terminal theme, never the app choice.
     assert.equal(flattened(findTestId(root, 'terminal-preview').props.style).backgroundColor, TERMINAL_SURFACE.light.background);

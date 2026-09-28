@@ -17,7 +17,10 @@ package dev.meeterm.terminal
  * updates and remote content changes are not holder events and never
  * re-raise the cover.
  */
-internal class SurfaceCoverGate {
+internal class SurfaceCoverGate(
+  private val showCover: () -> Unit,
+  private val requestRender: () -> Unit,
+) {
   /**
    * Bumped on the UI thread for every holder surface create/change/destroy.
    * Read by the GL thread at frame start.
@@ -48,6 +51,8 @@ internal class SurfaceCoverGate {
     armedLifetime = currentLifetime
     armedHasSurface = hasSurface
     covered = true
+    showCover()
+    if (hasSurface) requestRender()
   }
 
   /**
