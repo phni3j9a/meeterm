@@ -1,0 +1,14 @@
+tmux 3.7c
+OpenSSH fixture check passed: authenticated SSH and remote tmux
+   Compiling meeterm-core v0.1.0 (/Users/devin/repos/meeterm/native/meeterm-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.84s
+     Running tests/openssh.rs (native/meeterm-core/target/debug/deps/openssh-fe87c31b3e2d81a1)
+
+running 1 test
+test real_openssh_existing_tmux_runtime_selection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.21s
+
+OpenSSH fixture ready on 127.0.0.1:64125; environment file: /Users/devin/runner-temp-issue45-posix-ssh/meeterm-ssh.env
+iOS short SSH UI smoke passed.
+iOS short SSH UI smoke passed.

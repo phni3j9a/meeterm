@@ -1,0 +1,14 @@
+run=issue45-posix-ssh
+candidate=1351186c518cddd24a0cc4538c5704712d1c9868
+suite=ssh
+result=passed
+runner_temp=/Users/devin/runner-temp-issue45-posix-ssh
+original_build=/Users/devin/runner-temp-issue45-posix (fresh CNG+build-for-testing, same commit)
+reuse=/Users/devin/runner-temp-issue45-posix/ios-test-products -> restore strict helper PASSED (manifest+checksum+source-sha+xcode)
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone 18 Pro Max
+xcode=26.6-17F113 arch=arm64 config=Release-iphonesimulator unsigned
+session=devin-swe-2-max devin-7a32a4e6ed984961b5194e22feeba407
+renderer=FIRST_FRAME_METAL (software-first-frame=0)
+fixture=local sshd 127.0.0.1:64125 + tmux; real_openssh_existing_tmux_runtime_selection OK
+theme_markers=passed (light/dark exactly once, same pane+PID, other panes clean)
+transport_loss=passed (pre/post marker once, same handle, input during loss=none)

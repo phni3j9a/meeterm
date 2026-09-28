@@ -1,0 +1,186 @@
+Timestamp               Ty Process[PID:TID]
+2026-09-28 16:14:40.465 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=js_module_loaded
+2026-09-28 16:14:40.479 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=root_effect
+2026-09-28 16:14:40.479 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=initial_url_requested
+2026-09-28 16:14:40.482 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=initial_url_null
+2026-09-28 16:14:40.525 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=app_content_mounted
+2026-09-28 16:14:40.525 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=profiles_requested
+2026-09-28 16:14:40.528 Df meeterm[7125:deed] (Foundation) MEETERM_SMOKE_STARTUP phase=profiles_succeeded
+2026-09-28 16:15:55.092 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:55.092 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:55.835 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:15:55.835 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:55.835 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:15:55.835 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:55.836 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:15:55.836 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:15:55.866 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:15:55.913 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:15:56.902 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:15:56.902 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:15:56.903 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:58.141 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:58.141 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:58.150 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:15:58.151 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:15:58.151 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:15:58.151 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:15:58.151 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:15:58.184 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:15:59.076 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:16:11.093 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:16:11.094 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:16:11.111 Df meeterm[7125:e4d4] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:16:11.111 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:16:11.112 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:16:27.106 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:16:27.106 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:16:27.113 Df meeterm[7125:e6a4] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:16:27.114 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:16:27.114 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:16:31.288 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:16:31.289 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:16:31.289 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:16:31.289 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:35.418 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:35.418 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:35.429 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:16:35.429 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:35.430 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:16:35.430 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:35.430 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:16:35.430 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:16:35.434 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:16:35.447 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:16:37.437 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:16:49.355 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:16:49.355 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:16:49.362 Df meeterm[7125:e748] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:16:49.362 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:16:49.363 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:16:53.750 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:16:53.751 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:16:53.751 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:16:53.751 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:57.618 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:57.618 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:57.626 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:16:57.627 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:57.627 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:16:57.627 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:16:57.628 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:16:57.628 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:16:57.633 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:16:57.650 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:16:59.620 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:17:08.708 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:17:08.708 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:17:08.716 Df meeterm[7125:e404] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:17:08.716 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:17:08.716 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:17:13.092 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:17:13.093 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:17:13.093 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:17:13.093 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:37.600 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:37.600 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:37.610 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:18:37.610 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:37.610 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:18:37.611 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:37.611 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:18:37.611 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:18:37.615 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:18:37.628 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:18:39.553 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:18:51.355 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:18:51.355 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:18:51.366 Df meeterm[7125:ec18] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:18:51.366 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:18:51.367 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:18:55.772 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:18:55.773 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:18:55.773 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:18:55.773 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:59.738 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:59.739 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:59.747 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:18:59.747 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:59.747 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:18:59.747 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:18:59.747 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:18:59.747 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:18:59.757 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:18:59.776 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:19:01.703 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:10.655 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:10.655 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:19:10.663 Df meeterm[7125:eb64] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:19:10.663 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:19:10.664 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:19:15.722 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:27.238 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:27.238 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:19:27.245 Df meeterm[7125:ec18] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:19:27.245 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:19:27.246 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:19:31.407 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:19:31.407 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:31.434 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:19:32.217 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:19:32.218 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:19:39.187 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:51.007 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:19:51.007 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:19:51.015 Df meeterm[7125:ef28] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:19:51.015 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:19:51.015 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:19:55.978 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:19:55.979 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:19:55.979 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:19:55.979 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:01.154 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:01.155 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME light
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME light
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:01.161 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:01.162 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:20:01.172 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:20:02.514 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:20:12.840 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:20:12.840 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:20:12.848 Df meeterm[7125:ede8] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:20:12.848 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:20:12.848 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:20:17.055 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:17.056 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:20:17.093 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:20:17.814 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:20:17.814 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:17.814 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:23.032 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:23.032 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:23.041 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:23.041 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:23.042 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:23.042 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
+2026-09-28 16:20:23.042 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_THEME dark
+2026-09-28 16:20:23.042 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_NATIVE_READY
+2026-09-28 16:20:23.043 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=1
+2026-09-28 16:20:23.058 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_FIRST_FRAME_METAL
+2026-09-28 16:20:24.511 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:20:34.839 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:20:34.839 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_REQUEST
+2026-09-28 16:20:34.848 Df meeterm[7125:ede9] (Foundation) MEETERM_SMOKE_PASTE_PROVIDER_COMPLETION
+2026-09-28 16:20:34.848 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_DELIVERY_ATTEMPT
+2026-09-28 16:20:34.848 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_PASTE_RESULT accepted=1
+2026-09-28 16:20:39.186 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:20:39.187 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_FOCUS result=1 window=1
+2026-09-28 16:20:39.228 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=1 result=1
+2026-09-28 16:21:21.249 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_WINDOW attached=0
+2026-09-28 16:21:21.249 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_BINDING_CANCEL
+2026-09-28 16:21:21.250 Df meeterm[7125:deaf] (Foundation) MEETERM_SMOKE_INPUT_RESIGN focused=0 result=0
