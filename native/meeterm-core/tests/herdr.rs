@@ -3455,6 +3455,14 @@ fn real_herdr_compatibility_resolution_and_recovery() {
     let root = initial.panes.iter().find(|p| p.selected).unwrap();
     let terminal = root.terminal_id;
     assert_eq!(meeterm_set_terminal_visible(id, 1), 0);
+    // Visibility acceptance temporarily closes the actor's input gate. Wait
+    // for its controller-ready acknowledgment before sending the marker;
+    // enqueuing input immediately races that transition on faster runners.
+    wait_json(
+        id,
+        "compatible candidate terminal input ready",
+        |snapshot| snapshot["control"]["terminalInputReady"] == true,
+    );
     commit_marker(
         terminal,
         "HERDR_COMPAT_BEFORE",

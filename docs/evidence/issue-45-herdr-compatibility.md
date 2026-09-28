@@ -43,11 +43,22 @@ Local development checks on 2026-09-28:
 - Herdr Python driver regression: 6 passed.
 - SHA-verified Herdr 0.9.0: all 4 ignored native integration cases passed
   (21.86 seconds), including the new compatibility/recovery case.
-- SHA-verified Herdr 0.9.1: focused compatibility/recovery case passed
-  (3.16 seconds). Full suite and OpenSSH regression results are pending.
+- SHA-verified Herdr 0.9.1: all 4 ignored native integration cases passed
+  (22.06 seconds). Real OpenSSH/tmux session integration passed (27.31 seconds).
 
-GitHub CI and exact-source Android full / iOS standard / iOS ssh acceptance
-are pending. No mobile or visual success is claimed by these local results.
+Initial GitHub CI on `690b09b2` exposed a race in the new standalone test:
+[push run 36438261747](https://github.com/phni3j9a/meeterm/actions/runs/36438261747)
+failed its 0.9.0 compatibility marker, while
+[PR run 36438394226](https://github.com/phni3j9a/meeterm/actions/runs/36438394226)
+passed all 0.9.0 cases and failed the 0.9.1 compatibility marker. The test called
+`set_terminal_visible(true)` and immediately sent input while that accepted
+visibility transition temporarily closed the actor gate. It now waits for the
+existing `control.terminalInputReady` acknowledgment before the first marker.
+The input/identity/recovery assertions and deadlines are unchanged. This fixes
+only the Rust integration test, not product or mobile-suite code.
+
+GitHub CI after that correction and exact product-source `690b09b2` Android full /
+iOS standard / iOS ssh acceptance are pending. No mobile or visual success is claimed by these local results.
 Mobile SSH suites exercise tmux; seeded Herdr screens only verify presentation.
 Physical-device GPU, fonts and Japanese IME parity remain outside this change's
 emulator/Simulator acceptance scope. Prior Issue #17 evidence remains unchanged.
