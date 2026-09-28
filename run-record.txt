@@ -1,0 +1,27 @@
+== surface-lifetime-probe run record ==
+scope: bounded diagnostic on committed holder-surface-lifetime keyed cover; NOT a suite acceptance
+source: dca158c0239787e1e0066adbe9e9ff83af14cfc8 "fix: key Android terminal cover on holder surface lifetime (#37)" (issue-37-independent-themes HEAD; on top of d96cdd7/0b12dc6/de8a4e6)
+toolchain: node v22.22.2 (nvm/.nvmrc), npm 10.9.7, JDK 17.0.19, NDK 27.1.12297006, Rust 1.96.0, Gradle 9.3.1
+device: emulator-5554 (AVD meeterm_api36, headless, API36), anims 0.0
+build: rm -rf android + npm ci + expo prebuild --platform android --clean + assembleRelease arm64-v8a,x86_64 release -> BUILD SUCCESSFUL in 2m22s (668 tasks); gradle-build.log in bundle
+install: adb install -r -> Success; lastUpdateTime 2026-09-28 01:27:39 (replaces 0b12dc6 APK, authorized for this probe)
+launch mechanism: remote-shell-safe quoted URIs (remote command single argv, URI single-quoted); resume via am start MAIN/LAUNCHER (no URI, no reseed)
+
+GATES (passed): foundation launch -> pid 5305; NATIVE_READY x2 + FIRST_FRAME (MeetermRenderer) + 'GLES surface created cell=20x54'; process alive
+SEED CHECKS (passed, uiautomator content-desc):
+  settings&app=dark&terminal=system -> 'Appearance, Dark' + 'Terminal theme, System' (am start Status: ok)
+  settings&app=system&terminal=dark -> 'Appearance, System' + 'Terminal theme, Dark' (am start Status: ok)
+
+CLIP A (slp-clipA.mp4, ffprobe 32.521s, hard cap 75s):
+  pid 5496 through mount/OS flips/Back/reopen/HOME/resume; recovery seed pid 6066 (new process)
+  mount OS light: THEME dark(mount)+light(resolved); dark chrome + light terminal
+  OS dark -> THEME dark; OS light -> THEME light; same pid
+  Back -> Workspaces -> workspace-row-@smoke-main (477,1106) -> remount: READY + 'GLES surface created' + FIRST_FRAME + dark+light on same pid
+  HOME leg: KEYCODE_HOME -> launcher (slp-A-06); am start MAIN/LAUNCHER resume -> same pid 5496; remount READY + 'GLES surface created' + FIRST_FRAME + dark+light; terminal shows prior light content+scrollback, no stuck cover (slp-A-07)
+  recovery-progress&app=dark&terminal=light -> pid 6066 dark+light (slp-A-08)
+CLIP B (slp-clipB.mp4, ffprobe 11.018s, hard cap 75s):
+  pid 6355 throughout; app=system terminal=dark; OS light->dark->light; pinned terminal emitted mount 'dark' only; chrome tracks OS (slp-B-01..03)
+
+CONTEXT vs HOLDER path (observed): no 'font metrics updated' line exists in this build's renderer logs at all; observable evidence is 'GLES surface created cell=20x54' + MEETERM_SMOKE_FIRST_FRAME recurring per remount — THREE surface creations on pid 5496 (initial mount, workspace reopen, home-resume). I.e. holder surface destroy->create on background/reopen, same PID; no separate font-metrics line emitted, so EGL-context-vs-holder distinction resolves as surface/holder recreation; no explicit context-recreate marker present.
+BLACK RECTANGLE (preliminary, stills reviewed): none at mount (slp-A-01), reopen (slp-A-05), home-resume (slp-A-07), recovery (slp-A-08), clip B mount (slp-B-01). Main will review video.
+files: run-record.txt, slp-manifest.txt, slp-marker-slice.txt, gradle-build.log, slp-A-01..08 + slp-B-01..03 PNGs, slp-clipA.mp4, slp-clipB.mp4

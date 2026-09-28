@@ -1,0 +1,26 @@
+01:28:53 surface-lifetime probe on dca158c APK; fresh build+install outside; quoted URIs
+01:28:55 launch 'meeterm://foundation?foundation=1' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://foundation/... cmp=dev.meeterm.app/.MainActivity }\nStatu' stderr=none pid=5305
+01:28:57 gate pid=5305 native_ready=True first_frame=True alive=True
+01:28:58 launch 'meeterm://smoke?screen=settings&app=dark&terminal=system' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=5374
+01:29:04 seed-check 'meeterm://smoke?screen=settings&app=dark&terminal=system' -> {'app-theme': 'Appearance, Dark', 'terminal-theme': 'Terminal theme, System'} expect={'app-theme': 'Appearance, Dark', 'terminal-theme': 'Terminal theme, System'} pass=True
+01:29:08 launch 'meeterm://smoke?screen=terminal&app=dark&terminal=system' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=5496
+01:29:16 still slp-A-02-osdark.png (changed)
+01:29:17 still slp-A-03-oslight.png (changed)
+01:29:20 still slp-A-04-workspaces.png (changed)
+01:29:22 workspace-row bounds=(477, 1106)
+01:29:26 still slp-A-05-reopened.png (changed)
+01:29:29 still slp-A-06-home-bg.png (changed)
+01:29:29 resume-MAIN -> rc=0 out='Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] cmp=dev.meeterm.app/.MainActivi' pid=5496
+01:29:33 still slp-A-07-resumed.png (changed)
+01:29:33 home leg: bg_pid=5496 resume_pid=5496 same=True
+01:29:35 launch 'meeterm://smoke?screen=recovery-progress&app=dark&terminal=light' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=6066
+01:29:40 clipA pids=['5496', '5496', '5496', '5496', '5496', '6066']
+01:29:41 clip slp-clipA.mp4 pulled 3377779 bytes
+01:29:42 launch 'meeterm://smoke?screen=settings&app=system&terminal=dark' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=6224
+01:29:48 seed-check 'meeterm://smoke?screen=settings&app=system&terminal=dark' -> {'app-theme': 'Appearance, System', 'terminal-theme': 'Terminal theme, Dark'} expect={'app-theme': 'Appearance, System', 'terminal-theme': 'Terminal theme, Dark'} pass=True
+01:29:52 launch 'meeterm://smoke?screen=terminal&app=system&terminal=dark' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' stderr=none pid=6355
+01:30:00 still slp-B-02-osdark.png (changed)
+01:30:01 still slp-B-03-oslight.png (changed)
+01:30:01 clipB pids=['6355', '6355', '6355']
+01:30:01 clip slp-clipB.mp4 pulled 933898 bytes
+01:30:01 marker slice collection follows in slp-marker-slice.txt

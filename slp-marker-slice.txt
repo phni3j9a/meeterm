@@ -1,0 +1,42 @@
+--- pid 5305 ---
+I/MeetermTerminalView( 5305): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 5305): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 5305): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 5305): GLES surface created cell=20x54
+I/MeetermRenderer( 5305): MEETERM_SMOKE_FIRST_FRAME
+--- pid 5374 ---
+--- pid 5496 ---
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 5496): GLES surface created cell=20x54
+I/MeetermRenderer( 5496): MEETERM_SMOKE_FIRST_FRAME
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 5496): GLES surface created cell=20x54
+I/MeetermRenderer( 5496): MEETERM_SMOKE_FIRST_FRAME
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 5496): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 5496): GLES surface created cell=20x54
+I/MeetermRenderer( 5496): MEETERM_SMOKE_FIRST_FRAME
+--- pid 6066 ---
+I/MeetermTerminalView( 6066): MEETERM_SMOKE_THEME dark
+I/MeetermTerminalView( 6066): MEETERM_SMOKE_THEME light
+I/MeetermTerminalView( 6066): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 6066): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 6066): GLES surface created cell=20x54
+I/MeetermRenderer( 6066): MEETERM_SMOKE_FIRST_FRAME
+--- pid 6224 ---
+--- pid 6355 ---
+I/MeetermTerminalView( 6355): MEETERM_SMOKE_THEME dark
+I/MeetermRenderer( 6355): GLES surface created cell=20x54
+I/MeetermTerminalView( 6355): MEETERM_SMOKE_NATIVE_READY
+I/MeetermTerminalView( 6355): MEETERM_SMOKE_NATIVE_READY
+I/MeetermRenderer( 6355): MEETERM_SMOKE_FIRST_FRAME
