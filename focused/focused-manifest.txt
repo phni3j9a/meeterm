@@ -1,0 +1,12 @@
+11:57:08 pr44 focused clip on 3f38a91 APK; same build as full run; quoted URIs
+11:57:09 launch 'meeterm://smoke?screen=settings&app=light&terminal=light' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' pid=27854
+11:57:15 settings rows -> {'app-theme': 'App appearance, Light', 'terminal-theme': 'Terminal theme, Light'}
+11:57:19 launch 'meeterm://smoke?screen=terminal&app=light&terminal=light' -> rc=0 out='Starting: Intent { act=android.intent.action.VIEW dat=meeterm://smoke/... cmp=dev.meeterm.app/.MainActivity }\nStatus: ok' pid=27982
+11:57:28 still f44-02-workspaces.png (changed)
+11:57:30 workspace-row bounds=(477, 1106)
+11:57:34 still f44-03-reentry.png (changed)
+11:57:37 still f44-04-home-bg.png (changed)
+11:57:37 resume-MAIN -> rc=0 pid=27982
+11:57:42 still f44-05-resumed.png (changed)
+11:57:42 pids=['27982', '27982', '27982'] home_bg=27982 resume_same=True
+11:57:42 clip pulled

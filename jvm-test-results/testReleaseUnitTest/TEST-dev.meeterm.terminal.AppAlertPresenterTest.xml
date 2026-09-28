@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.AppAlertPresenterTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.132Z" hostname="devin-box" time="0.066">
+  <properties/>
+  <testcase name="completionResolvesSelectionExactlyOnce" classname="dev.meeterm.terminal.AppAlertPresenterTest" time="0.019"/>
+  <testcase name="rejectsMalformedOptions" classname="dev.meeterm.terminal.AppAlertPresenterTest" time="0.028"/>
+  <testcase name="parsesContractAndKeepsOriginalButtonOrder" classname="dev.meeterm.terminal.AppAlertPresenterTest" time="0.001"/>
+  <testcase name="dismissalOrFailureNeverBecomesAnApprovalIndex" classname="dev.meeterm.terminal.AppAlertPresenterTest" time="0.001"/>
+  <testcase name="buttonIndexToSlotMappingMatchesAlertOrder" classname="dev.meeterm.terminal.AppAlertPresenterTest" time="0.008"/>
+  <testcase name="fixedAppearanceOverridesOnlyTheDialogNightQualifier" classname="dev.meeterm.terminal.AppAlertPresenterTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

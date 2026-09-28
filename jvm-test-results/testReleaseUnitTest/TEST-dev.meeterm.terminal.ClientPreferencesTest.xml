@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.ClientPreferencesTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.266Z" hostname="devin-box" time="0.069">
+  <properties/>
+  <testcase name="invalidSettingsCannotAllocateUnboundedHistoryOrInvalidMetrics" classname="dev.meeterm.terminal.ClientPreferencesTest" time="0.001"/>
+  <testcase name="legacyPersistedPreferencesNormalizeTerminalThemeToDark" classname="dev.meeterm.terminal.ClientPreferencesTest" time="0.052"/>
+  <testcase name="presentButInvalidStoredTerminalThemeIsRejected" classname="dev.meeterm.terminal.ClientPreferencesTest" time="0.011"/>
+  <testcase name="persistedSettingsKeepBoundsAndNativeTypes" classname="dev.meeterm.terminal.ClientPreferencesTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

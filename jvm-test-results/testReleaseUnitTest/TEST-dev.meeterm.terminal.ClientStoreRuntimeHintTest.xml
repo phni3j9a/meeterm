@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.ClientStoreRuntimeHintTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.340Z" hostname="devin-box" time="0.014">
+  <properties/>
+  <testcase name="changingEndpointClearsHintToTmuxCompatibilityDefaults" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.004"/>
+  <testcase name="malformedHerdrHintCannotBeAcceptedAsAProfileMigration" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.001"/>
+  <testcase name="tmuxHintAcceptsUnicodeAndSpacesWithinPublicNameLimit" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.0"/>
+  <testcase name="tmuxHintRejectsOversizedUtf8AndControlCharacters" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.002"/>
+  <testcase name="editingServerFieldsWithoutRuntimeKeysPreservesSameEndpointHint" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.001"/>
+  <testcase name="namedTmuxRuntimeIsValidAsANonAuthoritativeHint" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.0"/>
+  <testcase name="herdrHintRetainsBoundedAsciiRules" classname="dev.meeterm.terminal.ClientStoreRuntimeHintTest" time="0.003"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

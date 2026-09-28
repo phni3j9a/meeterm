@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.AttachmentOperationTest" tests="11" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.250Z" hostname="devin-box" time="0.009">
+  <properties/>
+  <testcase name="decodesFlagsAndErrorFields" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.001"/>
+  <testcase name="rejectsShortArraysAndUnknownPhases" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.002"/>
+  <testcase name="appliesSnapshotsOnlyForTheSameAttachmentId" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.001"/>
+  <testcase name="inFlightJobBlocksEveryAction" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.001"/>
+  <testcase name="remoteRemovalKeepsPhaseAndChangesCapabilities" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.0"/>
+  <testcase name="refusesSecondUploadWhileOperationIsLive" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.0"/>
+  <testcase name="clearsOperationForDiscardAndNewPick" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.0"/>
+  <testcase name="capabilityGatesFollowTheContractPhases" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.003"/>
+  <testcase name="allowsNewUploadOnlyFromTerminalPhases" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.0"/>
+  <testcase name="cancelledOperationIgnoresLateUploadSnapshots" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.0"/>
+  <testcase name="decodesCompleteSnapshotFields" classname="dev.meeterm.terminal.AttachmentOperationTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

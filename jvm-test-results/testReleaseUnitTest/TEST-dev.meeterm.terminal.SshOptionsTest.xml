@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.SshOptionsTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.377Z" hostname="devin-box" time="0.005">
+  <properties/>
+  <testcase name="passwordModePreservesWhitespaceAndClearsKeyFieldsForTheAbi" classname="dev.meeterm.terminal.SshOptionsTest" time="0.001"/>
+  <testcase name="legacyBackendAndRuntimeHintsAreIgnoredByHostOptions" classname="dev.meeterm.terminal.SshOptionsTest" time="0.003"/>
+  <testcase name="nulInPasswordIsRejected" classname="dev.meeterm.terminal.SshOptionsTest" time="0.001"/>
+  <testcase name="legacyNamedTmuxRuntimeDoesNotChangeHostOnlyConnect" classname="dev.meeterm.terminal.SshOptionsTest" time="0.0"/>
+  <testcase name="emptyPasswordIsRejected" classname="dev.meeterm.terminal.SshOptionsTest" time="0.0"/>
+  <testcase name="missingAuthMethodKeepsTheLegacyPublicKeyShape" classname="dev.meeterm.terminal.SshOptionsTest" time="0.0"/>
+  <testcase name="malformedLegacyBackendAndRuntimeHintsAreIgnoredByHostOptions" classname="dev.meeterm.terminal.SshOptionsTest" time="0.0"/>
+  <testcase name="unknownAuthMethodIsRejected" classname="dev.meeterm.terminal.SshOptionsTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

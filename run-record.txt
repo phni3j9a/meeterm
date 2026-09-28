@@ -1,0 +1,17 @@
+== PR #44 review-fix Android validation run record ==
+result: PASS (ssh-validation.txt result=passed)
+source: 3f38a91a6be954f48fdc09d009514dc6aa29a5f8 "fix: address PR44 surface redraw and appearance labels (#37)" (issue-37-independent-themes HEAD)
+toolchain: node v22.22.2 (nvm/.nvmrc), npm 10.9.7, JDK 17.0.19, NDK 27.1.12297006, Rust 1.96.0, Gradle 9.3.1
+device: emulator-5554 (AVD meeterm_api36, headless, API36), anims 0.0, pm clear before suite
+build: rm -rf android + npm ci + expo prebuild --clean + :app:assembleRelease arm64-v8a,x86_64 release -> BUILD SUCCESSFUL in 2m40s (673 tasks); gradle-build.log
+install: adb install -r Success (fresh APK from this SHA); pm clear before suite
+gates: android-smoke.sh PASS (install/launch/MEETERM_SMOKE_NATIVE_READY/MEETERM_SMOKE_FIRST_FRAME/process alive)
+JVM unit tests (:meeterm-terminal:testReleaseUnitTest, in same gradle run): 11 classes / 81 tests, 0 failures 0 errors — SurfaceCoverGateTest 7/7; XML under jvm-test-results/testReleaseUnitTest/
+seeded routes: 31/32 captured (empty=unavailable:missing_screen_element, same as baseline)
+suite: scripts/ssh/fixture.py -- scripts/ssh/android-smoke.py -> "Android real SSH smoke passed"; 116 completed stages, final=disconnect_after_resume; first_failing_stage: none
+theme/dialog legs: daily_theme_matrix 6/6; daily_theme_os_scheme; daily_theme_os_independence; daily_theme_dialog_fixed/_system/_restored — all completed; MEETERM_SMOKE_THEME x29 (ssh-logcat.txt); MEETERM_SMOKE_DIALOG x64 lines (dialog-markers.txt)
+transport loss: transport_loss_evidence=passed (inject -> stale read-only -> restored -> remote ack)
+'App appearance' wording: settings row dump shows 'App appearance, Light' + 'Terminal theme, Light' (focused-manifest.txt); still focused/f44-00-settings-app-appearance.png shows the row + explainer text
+focused clip (same installed APK, focused/ dir): pr44-focused.mp4 ffprobe 23.408s; legs = Light terminal first entry -> Back -> Workspaces -> workspace-row-@smoke-main reentry -> KEYCODE_HOME -> am start MAIN/LAUNCHER resume; pid 27982 constant across all legs (resume_same=True); 3 'GLES surface created' + FIRST_FRAME groups (mount/reentry/resume); stills f44-01..05; no stranded cover/black rectangle in reviewed stills; EGL-context-preservation NOT claimed (no font-metrics/context marker observed; observable path is surface destroy->create per remount on same PID)
+recording: daily-use.mp4 present (driver 180s window); later legs covered by PNG stills
+sanitization: APK removed; no credentials/known_hosts/keys/raw auth logs

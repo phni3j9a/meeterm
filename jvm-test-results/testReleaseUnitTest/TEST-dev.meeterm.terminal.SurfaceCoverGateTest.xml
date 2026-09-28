@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.SurfaceCoverGateTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.383Z" hostname="devin-box" time="0.026">
+  <properties/>
+  <testcase name="firstValidFrameOfLifetimeReveals" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.006"/>
+  <testcase name="noSurfaceNeverReveals" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.001"/>
+  <testcase name="frameStartedBeforeDestroyCannotRevealAfterRecreate" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.0"/>
+  <testcase name="healthyContentFramesNeverReArm" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.001"/>
+  <testcase name="holderEventsRequestANewLifetimeFrameAfterShowingTheCover" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.012"/>
+  <testcase name="recreateWithoutContextRecreatedStillReveals" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.001"/>
+  <testcase name="resizeArmsUntilFirstFrameOfThatLifetime" classname="dev.meeterm.terminal.SurfaceCoverGateTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

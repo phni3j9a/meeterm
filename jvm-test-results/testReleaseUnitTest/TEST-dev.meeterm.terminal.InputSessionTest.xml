@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.InputSessionTest" tests="16" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.360Z" hostname="devin-box" time="0.016">
+  <properties/>
+  <testcase name="japaneseCompositionIsNativeUntilOneCommit" classname="dev.meeterm.terminal.InputSessionTest" time="0.001"/>
+  <testcase name="stalePasteEpochGateRejectsReacquiredTerminalButAllowsCurrentOne" classname="dev.meeterm.terminal.InputSessionTest" time="0.007"/>
+  <testcase name="clearCompositionDropsOnlyUncommittedPreedit" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="finishCompositionCommitsPendingTextOnce" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="recoveryBridgeArgumentsStayDecimalLosslessAndBounded" classname="dev.meeterm.terminal.InputSessionTest" time="0.005"/>
+  <testcase name="physicalModifiersUseSharedNativeBitsForKeysAndText" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="independentCommitWithSameTextIsNotSuppressed" classname="dev.meeterm.terminal.InputSessionTest" time="0.001"/>
+  <testcase name="specialKeyAndAsciiMappingsAreExplicit" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="oldInputSessionIsRejectedAfterOperationEpochChanges" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="cancelClearsCompositionAndAccessoryModifiers" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="androidMetaStateMapsToStableModifierBits" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="runtimeBoundaryResultsPreserveNativeMeaningAndPreCallRejection" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="emptyCallbacksAndLocalPreeditDeletionKeepOneShotModifierArmed" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="accessoryModifiersAreOneShotAcrossCommitFinishDeleteAndKeyUp" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="keyDownAndUpEmitOneTerminalKey" classname="dev.meeterm.terminal.InputSessionTest" time="0.0"/>
+  <testcase name="deletingPreeditEditsLocallyAndDeletingCommittedTextSendsBackspace" classname="dev.meeterm.terminal.InputSessionTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.meeterm.terminal.AttachmentLimitsTest" tests="17" skipped="0" failures="0" errors="0" timestamp="2026-09-28T11:21:14.210Z" hostname="devin-box" time="0.035">
+  <properties/>
+  <testcase name="rejectsTruncatedPngHeader" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.005"/>
+  <testcase name="sniffsPngHeaderWithDimensions" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.001"/>
+  <testcase name="choosesPowerOfTwoSubsampleAndFittedOutput" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="acceptsOrdinarySizesWithoutScaling" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.001"/>
+  <testcase name="rejectsJpegWhoseFirstMarkerStartsEntropyScan" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="rejectsJpegTruncatedInsideFrameSegment" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="beginsOnlyWhenCompositionIsIdle" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.001"/>
+  <testcase name="pinsAllEightExifOrientations" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="validatesAppOwnedFileNames" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.009"/>
+  <testcase name="rejectsPngWithZeroDimensions" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="reportsHeldAndTargetErrorsWithoutComposition" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.001"/>
+  <testcase name="enforcesPerSideAndPixelCeilings" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.001"/>
+  <testcase name="rejectsUnsupportedAndHeicFamiliesSeparately" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="sessionSnapshotCarriesOnlyDisplayMetadata" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.002"/>
+  <testcase name="sniffsJpegHeaderAfterAppSegments" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="holdsInsertionWhileCompositionIsActive" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <testcase name="enforcesInputByteCeilingBeforeDecode" classname="dev.meeterm.terminal.AttachmentLimitsTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
