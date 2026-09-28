@@ -1,0 +1,16 @@
+== Issue #37 full-r4 Android run record ==
+result: PASS (ssh-validation.txt result=passed)
+source: dca158c0239787e1e0066adbe9e9ff83af14cfc8 "fix: key Android terminal cover on holder surface lifetime (#37)" (issue-37-independent-themes HEAD)
+toolchain: node v22.22.2 (nvm/.nvmrc), npm 10.9.7, JDK 17.0.19, NDK 27.1.12297006, Rust 1.96.0, Gradle 9.3.1
+device: emulator-5554 (AVD meeterm_api36, headless, API36), anims 0.0, pm clear before suite
+build: rm -rf android + npm ci + expo prebuild --clean + assembleRelease arm64-v8a,x86_64 release -> BUILD SUCCESSFUL in 2m20s (668 tasks); gradle-build.log
+install: adb install -r Success (fresh APK from this SHA; probe APK not reused)
+gates: android-smoke.sh PASS (install/launch/NATIVE_READY/FIRST_FRAME/process alive)
+seeded routes: 31/32 captured (empty=unavailable:missing_screen_element, same as baseline)
+suite: scripts/ssh/fixture.py -- scripts/ssh/android-smoke.py -> "Android real SSH smoke passed"; 116 completed stages, final=disconnect_after_resume
+first_failing_stage: none
+theme legs: daily_theme_matrix 6/6; daily_theme_os_scheme (light->dark->light same pid); daily_theme_os_independence (pinned terminal); daily_theme_dialog_fixed; daily_theme_dialog_system; daily_theme_restored — all completed
+dialog markers (dialog-markers.txt, live tag slice): presented appearance=dark x13 (OS light), =light x13 (OS dark), =system resolved=dark x1, =system resolved=light x7; result=selected index=0 x10 / index=1 x9 / index=2 x12; result=dismissed x3
+theme markers: MEETERM_SMOKE_THEME x30 in ssh-logcat.txt
+transport loss: transport_loss_evidence=passed (inject -> stale read-only -> restored -> remote ack)
+recording: daily-use.mp4 present (driver 180s window over daily settings/theme/workspace legs; later legs covered by PNG stills)
