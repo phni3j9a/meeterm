@@ -1,7 +1,7 @@
 //! Bounded live coverage for the production Herdr backend.
 //!
 //! The test is ignored by default. The Python driver starts only disposable
-//! Herdr 0.9.0 processes; this file starts a test-only russh endpoint which
+//! Herdr processes; this file starts a test-only russh endpoint which
 //! implements the exact SSH exec and direct-streamlocal operations used by
 //! production. It does not use OpenSSH streamlocal forwarding, whose local
 //! privilege rules reject this unprivileged fixture.
@@ -429,6 +429,8 @@ struct RusshState {
     sftp_reply_delay_secs: u64,
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
     commands: Arc<std::sync::Mutex<Vec<String>>>,
+    executables: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    schema_faults: Arc<std::sync::Mutex<HashMap<PathBuf, &'static str>>>,
 }
 
 struct FixtureSsh {
@@ -437,6 +439,8 @@ struct FixtureSsh {
     address: SocketAddr,
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
     commands: Arc<std::sync::Mutex<Vec<String>>>,
+    executables: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    schema_faults: Arc<std::sync::Mutex<HashMap<PathBuf, &'static str>>>,
 }
 
 impl FixtureSsh {
@@ -444,6 +448,8 @@ impl FixtureSsh {
         let host_key = keys::load_secret_key(&manifest.host_key, None).expect("fixture host key");
         let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
         let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let executables = Arc::new(std::sync::Mutex::new(vec![PathBuf::from(&manifest.binary)]));
+        let schema_faults = Arc::new(std::sync::Mutex::new(HashMap::new()));
         // The fixture's virtual SFTP home lives under the disposable
         // fixture root; nothing ever touches the real $HOME.
         let sftp_root = PathBuf::from(&manifest.root).join("sftp-root");
@@ -451,6 +457,8 @@ impl FixtureSsh {
         let state = Arc::new(RusshState {
             clients: Arc::clone(&clients),
             commands: Arc::clone(&commands),
+            executables: Arc::clone(&executables),
+            schema_faults: Arc::clone(&schema_faults),
             binary: PathBuf::from(&manifest.binary),
             environment: manifest.environment.clone(),
             sockets: manifest
@@ -507,6 +515,8 @@ impl FixtureSsh {
             address,
             clients,
             commands,
+            executables,
+            schema_faults,
         }
     }
 
@@ -621,7 +631,13 @@ impl Handler for FixtureServer {
             ExecCommand::Resolve => {
                 let state = Arc::clone(&self.state);
                 tokio::spawn(async move {
-                    let resolved = format!("{}\tHerdr 0.9.0\n", state.binary.display());
+                    let resolved = state
+                        .executables
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|path| format!("{}\0", path.display()))
+                        .collect::<String>();
                     if resolved.len() <= 64 * 1024 {
                         let _ = handle.data(channel, resolved.into_bytes()).await;
                         let _ = handle.exit_status_request(channel, 0).await;
@@ -632,7 +648,7 @@ impl Handler for FixtureServer {
                     let _ = handle.close(channel).await;
                 });
             }
-            ExecCommand::Schema => {
+            ExecCommand::Schema { fault } => {
                 let state = Arc::clone(&self.state);
                 tokio::spawn(async move {
                     let result = tokio::process::Command::new(&state.binary)
@@ -641,8 +657,26 @@ impl Handler for FixtureServer {
                         .args(["api", "schema", "--json"])
                         .output()
                         .await;
-                    if let Ok(output) = result {
+                    if let Ok(mut output) = result {
                         let status = output.status.code().unwrap_or(1).max(0) as u32;
+                        if let Some(fault) = fault {
+                            let mut schema: Value = serde_json::from_slice(&output.stdout).unwrap();
+                            if fault == "protocol" {
+                                schema["protocol"] = json!(23);
+                            }
+                            if fault == "schema" {
+                                schema["schema_version"] = json!(2);
+                            }
+                            if fault == "method" {
+                                schema["schemas"]["request"]["oneOf"]
+                                    .as_array_mut()
+                                    .unwrap()
+                                    .retain(|method| {
+                                        method["properties"]["method"]["const"] != "pane.send_input"
+                                    });
+                            }
+                            output.stdout = serde_json::to_vec(&schema).unwrap();
+                        }
                         if output.stdout.len() <= MAX_EXEC_OUTPUT {
                             let _ = handle.data(channel, output.stdout).await;
                         }
@@ -650,6 +684,40 @@ impl Handler for FixtureServer {
                     } else {
                         let _ = handle.exit_status_request(channel, 1).await;
                     }
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                });
+            }
+            ExecCommand::CliCapabilities => {
+                let state = Arc::clone(&self.state);
+                tokio::spawn(async move {
+                    let mut success = true;
+                    for args in [
+                        vec!["session", "list", "--help"],
+                        vec!["status", "--help"],
+                        vec!["terminal", "session", "control", "--help"],
+                    ] {
+                        let result = tokio::process::Command::new(&state.binary)
+                            .env_clear()
+                            .envs(&state.environment)
+                            .args(&args)
+                            .output()
+                            .await;
+                        match result {
+                            Ok(output) if output.status.success() => {
+                                if args[0] == "terminal" {
+                                    let _ = handle.data(channel, output.stdout).await;
+                                }
+                            }
+                            _ => {
+                                success = false;
+                                break;
+                            }
+                        }
+                    }
+                    let _ = handle
+                        .exit_status_request(channel, if success { 0 } else { 1 })
+                        .await;
                     let _ = handle.eof(channel).await;
                     let _ = handle.close(channel).await;
                 });
@@ -1088,7 +1156,10 @@ impl russh_sftp::server::Handler for FixtureSftp {
 
 enum ExecCommand {
     Resolve,
-    Schema,
+    Schema {
+        fault: Option<&'static str>,
+    },
+    CliCapabilities,
     Json {
         runtime: String,
         args: Vec<String>,
@@ -1106,19 +1177,26 @@ fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> 
         return Some(ExecCommand::Resolve);
     }
 
-    if command
-        == format!(
-            "{} api schema --json",
-            shell_quote_executable(&state.binary)
-        )
-    {
-        return Some(ExecCommand::Schema);
+    let executables = state.executables.lock().unwrap();
+    for executable in executables.iter() {
+        let quoted = shell_quote_executable(executable);
+        if command == format!("{quoted} api schema --json") {
+            return Some(ExecCommand::Schema {
+                fault: state.schema_faults.lock().unwrap().get(executable).copied(),
+            });
+        }
+        if command
+            == format!(
+                "{quoted} --session default session list --help >/dev/null && {quoted} --session default status --help >/dev/null && {quoted} --session default terminal session control --help"
+            )
+        {
+            return Some(ExecCommand::CliCapabilities);
+        }
     }
-
-    let (runtime, args) = if let Some(rest) = command.strip_prefix(&format!(
-        "{} --session ",
-        shell_quote_executable(&state.binary)
-    )) {
+    let rest = executables.iter().find_map(|path| {
+        command.strip_prefix(&format!("{} --session ", shell_quote_executable(path)))
+    });
+    let (runtime, args) = if let Some(rest) = rest {
         let (runtime, args) = rest.split_once(' ')?;
         (
             runtime.to_owned(),
@@ -1174,7 +1252,7 @@ fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> 
     })
 }
 
-const RESOLVER_COMMAND: &str = r#"found=0; for candidate in "$(command -v herdr 2>/dev/null || true)" "$HOME/.cargo/bin/herdr" "$HOME/.local/bin/herdr" "/usr/local/bin/herdr" "/opt/homebrew/bin/herdr" "$HOME/.homebrew/bin/herdr" "$HOME/.linuxbrew/bin/herdr" "$HOME/.local/share/mise/installs/herdr/0.9.0/bin/herdr" "$HOME/.local/share/mise/installs/herdr/latest/bin/herdr" "$HOME/.nix-profile/bin/herdr" "/nix/var/nix/profiles/default/bin/herdr"; do case "$candidate" in /*) ;; *) continue ;; esac; [ -x "$candidate" ] || continue; found=1; version=$("$candidate" --version 2>/dev/null | head -n 1) || continue; case "$version" in *"0.9.0"*) printf '%s\t%s\n' "$candidate" "$version"; exit 0 ;; esac; done; [ "$found" -eq 1 ] && exit 78 || exit 127"#;
+const RESOLVER_COMMAND: &str = include_str!("../src/herdr_resolver.sh");
 
 fn shell_quote_executable(path: &Path) -> String {
     let value = path.to_string_lossy();
@@ -1202,6 +1280,8 @@ fn parser_fixture_state(binary: &str) -> RusshState {
         sftp_reply_delay_secs: 0,
         clients: Arc::new(std::sync::Mutex::new(Vec::new())),
         commands: Arc::new(std::sync::Mutex::new(Vec::new())),
+        executables: Arc::new(std::sync::Mutex::new(vec![PathBuf::from(binary)])),
+        schema_faults: Arc::new(std::sync::Mutex::new(HashMap::new())),
     }
 }
 
@@ -1219,7 +1299,7 @@ fn fixture_parser_matches_conditional_resolved_herdr_wire_quoting() {
     ));
     assert!(matches!(
         parse_exec_command(&format!("{safe_executable} api schema --json"), &safe_state),
-        Some(ExecCommand::Schema)
+        Some(ExecCommand::Schema { fault: None })
     ));
     let safe_status = format!("{safe_executable} --session named-probe status --json");
     assert!(matches!(
@@ -1251,7 +1331,7 @@ fn fixture_parser_matches_conditional_resolved_herdr_wire_quoting() {
     ));
     assert!(matches!(
         parse_exec_command(&format!("{executable} api schema --json"), &state),
-        Some(ExecCommand::Schema)
+        Some(ExecCommand::Schema { fault: None })
     ));
     assert!(parse_exec_command(&format!("{RESOLVER_COMMAND} extra"), &state).is_none());
 
@@ -1779,7 +1859,7 @@ finally:
 }
 
 #[test]
-#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a real Herdr 0.9.0 binary"]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a compatible real Herdr binary"]
 fn real_herdr_native_backend_over_russh_fixture() {
     assert_eq!(
         env::var("MEETERM_HERDR_INTEGRATION").ok().as_deref(),
@@ -2973,7 +3053,7 @@ fn generated_basename_valid(name: &str) -> bool {
 /// all against the disposable fixture filesystem and isolated Herdr
 /// processes. The user's own Herdr configuration is never touched.
 #[test]
-#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a real Herdr 0.9.0 binary"]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a compatible real Herdr binary"]
 fn real_herdr_attachment_upload_insert_and_fence() {
     assert_eq!(
         env::var("MEETERM_HERDR_INTEGRATION").ok().as_deref(),
@@ -3260,7 +3340,7 @@ fn real_herdr_attachment_upload_insert_and_fence() {
 /// test itself, so this runs under the same `MEETERM_HERDR_INTEGRATION=1`
 /// + `MEETERM_HERDR_BINARY` environment as every other Herdr fixture.
 #[test]
-#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a real Herdr 0.9.0 binary"]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a compatible real Herdr binary"]
 fn real_herdr_delayed_subsystem_keeps_input_responsive() {
     assert_eq!(
         env::var("MEETERM_HERDR_INTEGRATION").ok().as_deref(),
@@ -3334,4 +3414,95 @@ fn real_herdr_delayed_subsystem_keeps_input_responsive() {
     attachment_dispose(attachment_id).expect("dispose delayed attachment");
     attachment_intent_dispose(intent).expect("dispose delayed intent");
     println!("HERDR_DELAYED_SUBSYSTEM_OK input_held upload_completed delete");
+}
+
+#[test]
+#[ignore = "requires MEETERM_HERDR_INTEGRATION=1 and a compatible real Herdr binary"]
+fn real_herdr_compatibility_resolution_and_recovery() {
+    let driver = Driver::start();
+    let ssh = FixtureSsh::start(&driver.manifest, 0);
+    let original = PathBuf::from(&driver.manifest.binary);
+    let aliases = [
+        "wrong-protocol",
+        "wrong-schema",
+        "missing-api",
+        "compatible-upgrade",
+    ]
+    .map(|name| Path::new(&driver.manifest.root).join(name));
+    // These are test endpoint paths; the fixture executes the real binary
+    // and only modifies explicit schema responses for the negative cases.
+    *ssh.executables.lock().unwrap() = vec![
+        aliases[0].clone(),
+        aliases[1].clone(),
+        aliases[2].clone(),
+        original.clone(),
+    ];
+    for (path, fault) in aliases.iter().zip(["protocol", "schema", "method"]) {
+        ssh.schema_faults
+            .lock()
+            .unwrap()
+            .insert(path.clone(), fault);
+    }
+    let id = create_terminal(40, 16).unwrap();
+    let _guard = TerminalGuard { id };
+    connect_host(id, options(&driver.manifest, &ssh, None)).unwrap();
+    select_herdr_runtime_from_picker(
+        id,
+        "default",
+        "compatible candidate after three incompatible candidates",
+    );
+    let initial = wait_session(id, "compatible candidate session");
+    let root = initial.panes.iter().find(|p| p.selected).unwrap();
+    let terminal = root.terminal_id;
+    assert_eq!(meeterm_set_terminal_visible(id, 1), 0);
+    commit_marker(
+        terminal,
+        "HERDR_COMPAT_BEFORE",
+        "compatibility input before loss",
+    );
+    let before: Value = serde_json::from_str(&workspace_snapshot_json(id).unwrap()).unwrap();
+    let epoch = before["control"]["operationEpoch"].as_str().unwrap();
+    *ssh.executables.lock().unwrap() = vec![aliases[3].clone()];
+    ssh.lose_connections();
+    wait_recovery_ready_after_epoch(
+        id,
+        epoch,
+        "compatible CLI path change recovers same terminal",
+    );
+    let recovered = wait_session(id, "recovered compatible path");
+    assert_eq!(
+        recovered
+            .panes
+            .iter()
+            .find(|p| p.selected)
+            .unwrap()
+            .terminal_id,
+        terminal
+    );
+    commit_marker(
+        terminal,
+        "HERDR_COMPAT_AFTER",
+        "compatibility input after path change",
+    );
+    assert!(ssh.commands.lock().unwrap().iter().any(|command| {
+        command.starts_with(&shell_quote_executable(&aliases[3]))
+            && command.ends_with(" status --json")
+    }));
+    // An incompatible replacement must stop on cached work, never enable input.
+    *ssh.executables.lock().unwrap() = vec![aliases[0].clone()];
+    ssh.lose_connections();
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let state = loop {
+        let state: Value = serde_json::from_str(&workspace_snapshot_json(id).unwrap()).unwrap();
+        if state["control"]["recovery"]["phase"] == "stopped" {
+            break state;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "incompatible replacement must stop recovery"
+        );
+        thread::sleep(POLL_INTERVAL);
+    };
+    assert_eq!(state["control"]["recovery"]["reason"], "herdr_incompatible");
+    assert_eq!(state["control"]["terminalInputReady"], false);
 }

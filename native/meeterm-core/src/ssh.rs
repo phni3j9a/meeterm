@@ -2515,8 +2515,7 @@ pub fn select_runtime(terminal_id: TerminalId, candidate_id: &str) -> Result<(),
 }
 
 /// Explicitly create a tmux session. Herdr creation/start remains outside the
-/// first picker milestone because the upstream 0.9.0 detached-start proof is
-/// not part of this core operation.
+/// supported runtime operations; lifecycle creation requires separate acceptance.
 pub fn create_runtime(
     terminal_id: TerminalId,
     backend: Backend,
@@ -4207,7 +4206,7 @@ impl FlowFailure {
             ),
             Self::HerdrIncompatible => (
                 "herdr_incompatible",
-                "This Herdr client/server does not support the verified terminal protocol (22).",
+                "This Herdr installation does not provide the required protocol (22), schema (1), or API capabilities.",
             ),
             Self::HerdrUnsupported => (
                 "herdr_unsupported",
@@ -4271,11 +4270,11 @@ impl FlowFailure {
             ),
             Self::HerdrDiscoveryMissing => (
                 "herdr_missing",
-                "Herdr 0.9.0 was not found in the remote SSH command path or common install paths.",
+                "Herdr was not found in the remote SSH command path or common install paths.",
             ),
             Self::HerdrDiscoveryIncompatible => (
                 "herdr_incompatible",
-                "A remote Herdr executable was found, but it is not compatible with 0.9.0.",
+                "The Herdr installation does not provide the protocol or API capabilities required by meeterm.",
             ),
             Self::HerdrDiscoveryMalformed => (
                 "herdr_discovery_malformed",
@@ -5862,7 +5861,6 @@ fn clear_tmux_create_error(shared: &ConnectionShared) -> Result<(), ConnectionEr
 
 async fn discover_and_publish(
     shared: &Arc<ConnectionShared>,
-    base: &ConnectionProfile,
     session: &client::Handle<HostKeyHandler>,
 ) -> Result<(), FlowFailure> {
     let revision = {
@@ -5884,16 +5882,9 @@ async fn discover_and_publish(
     // The two commands use separate SSH channels and have independent bounds
     // and result mapping. A missing/broken backend therefore cannot hide the
     // other backend's candidates.
-    let expected_herdr_executable = {
-        let state = shared.session.lock().map_err(|_| FlowFailure::Stale)?;
-        base.herdr_executable
-            .as_deref()
-            .or(state.herdr_executable.as_deref())
-            .map(str::to_owned)
-    };
     let (tmux_result, herdr_result) = tokio::join!(
         control::discover(shared, session),
-        herdr_control::discover(shared, session, expected_herdr_executable.as_deref()),
+        herdr_control::discover(shared, session),
     );
     let mut bindings = HashMap::new();
     let tmux = discovery_section(
@@ -6014,7 +6005,7 @@ async fn run_runtime_picker(
         return Err(FlowFailure::Stale);
     }
     clear_runtime_binding(shared)?;
-    discover_and_publish(shared, base, session).await?;
+    discover_and_publish(shared, session).await?;
     loop {
         shared.set_state(ConnectionState::AwaitingRuntimeSelection);
         let command = tokio::select! {
@@ -6035,7 +6026,7 @@ async fn run_runtime_picker(
         expire_attachment_request(&request.command, AttachmentBlock::NotReady);
         match request.command {
             ControlCommand::RefreshRuntimes => {
-                discover_and_publish(shared, base, session).await?;
+                discover_and_publish(shared, session).await?;
             }
             ControlCommand::SelectRuntime { candidate_id } => {
                 let binding = {

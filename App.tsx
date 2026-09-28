@@ -689,7 +689,7 @@ function connectionError(connection: SshConnectionState) {
   const herdrErrors: Record<string, string> = {
     herdr_missing: 'Herdr was not found. Check that the Herdr you use on your computer is also available over SSH.',
     herdr_session_missing: 'This Herdr session is not running. Open it on your computer, then reconnect.',
-    herdr_incompatible: 'This Herdr version is not supported. meeterm supports Herdr 0.9.0, protocol 22.',
+    herdr_incompatible: 'This Herdr installation does not provide the protocol or API capabilities required by meeterm.',
     herdr_unsupported: 'This Herdr instance does not provide the required connection or state updates. Check its available features.',
     herdr_forwarding: 'Herdr is unreachable over SSH. Check that your SSH server allows Unix socket forwarding (AllowStreamLocalForwarding).',
     herdr_controller_busy: 'Another connection is controlling this terminal. Release it there, then reconnect.',

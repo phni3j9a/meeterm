@@ -88,7 +88,8 @@ views stop polling without destroying the SSH session or terminal ID.
 The production crate implements the common `Workspace → TerminalGroup →
 Terminal` model for `Backend::Tmux` and `Backend::Herdr`. Tmux keeps its
 window/pane mapping with one virtual group per window. Herdr maps workspace,
-tab, and pane from its public 0.9.0 protocol 22/schema 1 API. Both backends
+tab, and pane from its public protocol 22/schema 1 API with the required capabilities.
+SemVer and executable path equality are not compatibility requirements. Both backends
 reuse the SSH lifecycle, terminal registry, `alacritty_terminal::Term`, native
 snapshot format, input/resize transport, and native visibility lifecycle.
 

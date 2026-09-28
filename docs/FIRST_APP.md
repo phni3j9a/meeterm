@@ -45,7 +45,7 @@ window / paneの作成・名前変更・終了、文字選択・コピー、Ctrl
 
 ## 接続先の準備と使い方
 
-接続先は通常のOpenSSHサーバーと、選択するruntime（tmuxまたは既存のHerdr 0.9.0）が必要です。認証方式はOpenSSH秘密鍵による
+接続先は通常のOpenSSHサーバーと、選択するruntime（tmuxまたはprotocol 22・schema 1・必要APIを満たす既存のHerdr）が必要です。認証方式はOpenSSH秘密鍵による
 公開鍵認証、またはSSHパスワード認証から選べます。パスワード認証はSSHの
 `password` メソッドだけを使い、keyboard-interactive、MFA、SSH-agentには対応しません。
 公開鍵認証を使う場合はサーバー側に対応する公開鍵を登録し、SSH経由のシェルから

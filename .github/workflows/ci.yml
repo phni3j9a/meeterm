@@ -135,6 +135,19 @@ jobs:
           cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
             --test herdr -- --ignored --nocapture
 
+      - name: Herdr 0.9.1 compatibility and changed-path recovery
+        env:
+          MEETERM_HERDR_INTEGRATION: "1"
+        run: |
+          export MEETERM_HERDR_BINARY="${RUNNER_TEMP}/herdr-0.9.1-fixture"
+          curl --fail --location --silent --show-error \
+            https://github.com/herdrdev/herdr/releases/download/v0.9.1/herdr-linux-x86_64 \
+            --output "${MEETERM_HERDR_BINARY}"
+          echo "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7  ${MEETERM_HERDR_BINARY}" | sha256sum --check
+          chmod 700 "${MEETERM_HERDR_BINARY}"
+          cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
+            --test herdr real_herdr_compatibility_resolution_and_recovery -- --ignored --nocapture
+
   android:
     name: Android native build
     runs-on: ubuntu-24.04

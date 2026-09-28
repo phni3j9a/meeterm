@@ -85,7 +85,9 @@ adaptation belongs in meeterm using existing public interfaces; an upstream API
 addition is not a prerequisite of this issue. Mode-aware special keys and
 Japanese/LF bracketed paste are verified through existing public operations.
 
-Herdr 0.9.0 / protocol 22 / schema 1 is the fixed compatibility target. It is
+Herdr compatibility requires protocol 22, API schema 1, and the API/CLI
+capabilities used by meeterm. Herdr 0.9.0 is the verified baseline fixture;
+SemVer and executable path equality are not connection requirements. It is
 connected through the public direct stream-local API over ordinary SSH. See
 [`HERDR.md`](HERDR.md) for the input, scroll, resize, lease, and handoff
 contract, and the [Issue #17 feasibility record](evidence/issue-17-herdr-feasibility.md)
@@ -163,7 +165,7 @@ Simultaneous interactive use from phone and PC is not an initial product require
 ### 4. No meeterm server component
 
 The remote host should require ordinary SSH access and the selected runtime:
-tmux or an existing Herdr 0.9.0 session/socket.
+tmux or an existing compatible Herdr session/socket.
 
 meeterm must not require a dedicated gateway, daemon, HTTP API, WebSocket service, or self-hosted meeterm backend for the core product.
 
@@ -224,7 +226,7 @@ meeterm never silently creates a replacement.
 
 The Herdr section lists `default` and named sessions with running/stopped
 status. Only running candidates are selectable, and selection revalidates the
-Herdr 0.9.0 / protocol 22 / schema 1 compatibility and direct stream-local
+Herdr protocol 22 / schema 1 / required capability compatibility and direct stream-local
 operations. Stopped rows explain that the session must be opened with the
 ordinary Herdr client and then refreshed. Herdr start/create is not promised by
 Issue #21; no meeterm action starts, creates, installs, or updates Herdr, and
@@ -247,7 +249,7 @@ Recovery does not open the picker,
 create a replacement, silently retarget, or fall back to the other backend.
 
 tmux verifies the previously selected session identity and pane ID. Herdr
-recovery checks the same approved SSH host/key, compatible Herdr 0.9.0
+recovery checks the same approved SSH host/key, compatible Herdr
 (protocol 22, schema 1, direct stream-local operations), the selected running
 runtime, the original stable `terminal_id`, successful ordinary controller
 acquisition without takeover, and the first authoritative full frame. Herdr

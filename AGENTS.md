@@ -37,8 +37,12 @@ Herdr maps Workspace to a Herdr workspace, Group to a Herdr tab, and Terminal
 to a Herdr pane. Backend selection is explicit after authenticated runtime
 discovery. Legacy backend/runtime fields are a non-authoritative last-used
 hint, updated only after Ready; a missing legacy backend seeds the tmux
-suggestion but does not bypass the picker. The Rust/native path targets Herdr 0.9.0,
-protocol 22, schema 1 through its existing direct public API. Keep acceptance
+suggestion but does not bypass the picker. The Rust/native path requires
+protocol 22, schema 1, and the public API/CLI
+capabilities used by meeterm. Herdr 0.9.0 is a verified baseline fixture,
+not a production SemVer gate. Executable paths are connection-scoped
+capabilities, not runtime identity; reconnect may resolve another compatible
+path. Keep acceptance
 evidence scoped to the tested source and suites in
 [`docs/evidence/issue-17-herdr-mobile.md`](docs/evidence/issue-17-herdr-mobile.md). See [`docs/HERDR.md`](docs/HERDR.md) and the historical
 record [`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
@@ -154,11 +158,10 @@ tmux runtime is a separate detached action, suggests `meeterm` as its name,
 verifies the returned identity, and then selects it. A list-to-select race is a
 stale-selection error followed by refresh, never an implicit create.
 
-The Herdr section resolves the compatible 0.9.0 executable natively using PATH,
+The Herdr section resolves a compatible Herdr executable natively using PATH,
 the official `~/.local/bin` installer default, and common package-manager
 locations, and keeps that resolved path as a
-connection-scoped capability for list, status, controller setup, and later
-proof-gated operations. The path is not exposed to JavaScript or ordinary
+connection-scoped capability for list, status, controller setup, and supported operations. The path is not exposed to JavaScript or ordinary
 logs. Rows distinguish running candidates from stopped sessions; only running
 rows may be selected, and selection revalidates protocol 22, schema 1, and the
 direct stream-local contract. Herdr start/create is not promised by this
@@ -178,7 +181,7 @@ remain blocked until the host identity/authentication, backend capability,
 runtime identity, topology, selected terminal, and authoritative screen are
 verified and committed. tmux recovery requires the exact stored session
 identity and pane ID. Herdr recovery has no confirmation step: it checks the
-same approved SSH host/key, compatible Herdr 0.9.0 / protocol 22 / schema 1 /
+same approved SSH host/key, compatible Herdr protocol 22 / schema 1 /
 direct stream-local contract, the same selected running runtime, the original
 stable `terminal_id`, ordinary controller acquisition without takeover, and
 the first authoritative full frame. The absence of comparable Herdr
