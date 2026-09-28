@@ -1551,12 +1551,24 @@ mod tests {
             ".nix-profile/bin/herdr",
         ];
         let run = || {
-            Command::new("/bin/sh")
+            let output = Command::new("/bin/sh")
                 .arg("-c")
                 .arg(&script)
                 .env("PATH", root.join("path"))
                 .output()
-                .unwrap()
+                .unwrap();
+            // A login shell may reject unmatched globs (zsh NOMATCH, or
+            // bash failglob). Only the explicit POSIX child may expand mise
+            // candidates, so a missing installation still permits PATH/local.
+            let strict = Command::new("/bin/bash")
+                .args(["-O", "failglob", "-c"])
+                .arg(&script)
+                .env("PATH", root.join("path"))
+                .output()
+                .unwrap();
+            assert_eq!(strict.status.code(), output.status.code());
+            assert_eq!(strict.stdout, output.stdout);
+            output
         };
         assert_eq!(run().status.code(), Some(127));
         for location in locations {

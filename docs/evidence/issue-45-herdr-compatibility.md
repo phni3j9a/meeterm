@@ -80,13 +80,13 @@ The corrected case passed 100/100 invocations without retries; the full local
 is confined to the existing `#[cfg(test)]` module. Final follow-up CI is linked
 from [PR #46](https://github.com/phni3j9a/meeterm/pull/46).
 
-Mobile product source is `690b09b2e1ad097ad2747922c8d48a04b32c48bd`.
-Later changes are evidence documentation and the standalone integration/unit
+Initial mobile product source is `690b09b2e1ad097ad2747922c8d48a04b32c48bd`.
+Changes through `91934c8` are evidence documentation and the standalone integration/unit
 test corrections above. Code compiled into the mobile library, mobile suites,
 CNG and build configuration remain unchanged. The production portion of
 `ssh.rs` before its `#[cfg(test)] mod tests` is byte-identical to that candidate
 (SHA-256 `9b83ac6fac97379bc500865cbd4cf931dd82250bdf10eefd62e1ed02f2becd4a`).
-All mobile runs used that exact original candidate; iOS standard-to-ssh product
+The initial mobile runs used that exact original candidate; iOS standard-to-ssh product
 reuse matched that commit and toolchain as recorded below.
 The SWE-2 Max mobile sessions are
 [Android](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) and
@@ -134,3 +134,19 @@ The SWE-2 Max mobile sessions are
 Mobile SSH suites exercise tmux; seeded Herdr screens only verify presentation.
 Physical-device GPU, fonts and Japanese IME parity remain outside this change's
 emulator/Simulator acceptance scope. Prior Issue #17 evidence remains unchanged.
+
+## POSIX resolver follow-up
+
+Final review reproduced a production resolver issue when the remote login shell
+is zsh: with no mise install directory, its default NOMATCH rejects the optional
+mise glob before even an existing `~/.local/bin/herdr` candidate is enumerated.
+The original command exited 1 with no candidates in an isolated local zsh test.
+The resolver now explicitly runs its static script under `/bin/sh`; the same
+test exits 0 and returns the local candidate without executing it. The existing
+resolver filesystem test also compares POSIX sh with outer bash `failglob`, so
+CI covers strict unmatched-glob behavior without requiring a new shell package.
+
+This changes code compiled into the mobile library. The mobile results above
+remain valid for their recorded `690b09b2` source, but fresh Android full and
+iOS standard/ssh on the follow-up candidate are required before final acceptance.
+Their final results will be recorded below.
