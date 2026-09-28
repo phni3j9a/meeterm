@@ -9481,9 +9481,8 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
 
     fn retry_profile() -> ConnectionProfile {
         ConnectionProfile {
-            // Port 1 keeps the replacement actor away from any fixture
-            // service. The test observes the synchronous handoff before the
-            // asynchronous SSH attempt can matter.
+            // Tests that inspect an in-flight SSH attempt override this
+            // closed port with a controlled listener before starting Retry.
             host: "127.0.0.1".to_owned(),
             port: 1,
             username: "fixture".to_owned(),
@@ -9574,7 +9573,16 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
     #[test]
     fn stopped_retry_restores_retained_work_without_reenabling_automatic_retries() {
         let (owner, shared) = recovery_fixture();
-        shared.set_profile(retry_profile());
+        // A closed port may fail before the assertions and legitimately stop
+        // recovery when automatic retries are disabled. Hold a real TCP peer
+        // before its SSH banner so the in-flight phase has a controlled owner.
+        let runtime = runtime().expect("native runtime");
+        let listener = runtime
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("bind pending retry peer");
+        let mut profile = retry_profile();
+        profile.port = listener.local_addr().expect("pending retry address").port();
+        shared.set_profile(profile);
 
         let retained_snapshot = session_snapshot(owner).expect("retained snapshot");
         let retained_terminal = registry::shared_terminal(owner).expect("retained terminal");
@@ -9597,10 +9605,7 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         // `wait_for_generation_finish` trusts the finished marker. Abort the
         // fixture task up front so the test does not leave a pending task
         // behind when the old entry is replaced without a drain wait.
-        let old_abort = runtime()
-            .expect("native runtime")
-            .spawn(std::future::pending::<()>())
-            .abort_handle();
+        let old_abort = runtime.spawn(std::future::pending::<()>()).abort_handle();
         old_abort.abort();
         connections().lock().expect("connection registry").insert(
             owner,
@@ -9611,6 +9616,12 @@ xCZUvAuCiHiZ0Surfg/LAAAAFXNlcnZlckBzZXJ2ZXItTWFjbWluaQ==
         );
 
         retry_recovery(owner, stopped_epoch).expect("first retry starts replacement");
+        let (_peer, _) = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .expect("replacement started its TCP connection")
+                .expect("accept pending retry peer")
+        });
 
         let replacement = connections()
             .lock()

@@ -65,12 +65,29 @@ the SHA-verified 0.9.1 compatibility/recovery case (3.14 seconds). JavaScript/Ex
 and iOS Swift preflight passed in the same workflow. Android native build
 (job `108986817419`, 13m03s) also passed; all four workflow jobs succeeded.
 
+The later evidence-only push `1f642e4` exposed an existing unit-fixture race in
+[`36444092822`, Rust job `109001765837`](https://github.com/phni3j9a/meeterm/actions/runs/36444092822/job/109001765837):
+`stopped_retry_restores_retained_work_without_reenabling_automatic_retries`
+expected Reconnecting after starting a real connection to closed local port 1.
+An immediate connection refusal could legitimately finish that actor as Stopped
+before the test inspected it. A temporary 20 ms scheduling delay reproduced the
+same failure locally; that diagnostic delay was removed. The fixture now binds
+an isolated TCP listener, waits at most one second for the replacement's actual
+connection, and holds its peer before the SSH banner while checking the original
+state/identity/duplicate-Retry assertions. No product retry or deadline changed.
+The corrected case passed 100/100 invocations without retries; the full local
+238-unit/4-parser/1-layout suite, formatting and Clippy also passed. This change
+is confined to the existing `#[cfg(test)]` module. Final follow-up CI is linked
+from [PR #46](https://github.com/phni3j9a/meeterm/pull/46).
+
 Mobile product source is `690b09b2e1ad097ad2747922c8d48a04b32c48bd`.
-The only later source change is the standalone Rust integration test above;
-app/native library, mobile tests, CNG and build inputs are identical. All mobile
-runs used that exact original candidate; iOS standard-to-ssh product reuse
-matched that commit and toolchain as recorded below. Subsequent evidence-only
-documentation updates do not change these validation inputs.
+Later changes are evidence documentation and the standalone integration/unit
+test corrections above. Code compiled into the mobile library, mobile suites,
+CNG and build configuration remain unchanged. The production portion of
+`ssh.rs` before its `#[cfg(test)] mod tests` is byte-identical to that candidate
+(SHA-256 `9b83ac6fac97379bc500865cbd4cf931dd82250bdf10eefd62e1ed02f2becd4a`).
+All mobile runs used that exact original candidate; iOS standard-to-ssh product
+reuse matched that commit and toolchain as recorded below.
 The SWE-2 Max mobile sessions are
 [Android](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) and
 [iOS](https://app.devin.ai/sessions/7a32a4e6ed984961b5194e22feeba407).
