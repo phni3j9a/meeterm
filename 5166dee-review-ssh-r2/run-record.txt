@@ -1,0 +1,13 @@
+run=issue45-review-ssh-r2 (controlled environment rerun, authorized)
+candidate=5166dee92d22610e769cc2726a77c70641e63b27
+suite=ssh
+result=passed stage=complete
+runner_temp=/Users/devin/runner-temp-issue45-review-ssh-r2
+reuse=/Users/devin/runner-temp-issue45-review/ios-test-products -> strict restore PASSED (manifest+checksum+source-sha 5166dee+xcode 26.6-17F113)
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone 18 Pro Max (fresh boot post-remediation)
+environment: load 2.4-4 at run time (r1 ran at load~78)
+fixture=local sshd 127.0.0.1:55274 + tmux; preflight ok
+theme_markers=passed light/dark exactly once same pane+PID other panes clean
+transport_loss=passed pre/post once same handle input during loss=none
+renderer=FIRST_FRAME_METAL software_first_frame=0
+r1_result=FAILED ui_test_failed fill_username 1/5 chars @ swift:3304 (evidence/ios-20260929-issue45-review-ssh @5a11d95)

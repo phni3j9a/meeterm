@@ -1,0 +1,8 @@
+Retained tail of build-for-testing attempt 1 (b4t.out was overwritten by attempt 2; these are the last lines captured at the time):
+error: unable to open output file '/Users/devin/runner-temp-issue45-review/meeterm-derived-data/ModuleCache.noindex/RSEEXB2MIH0F/UserNotifications-1FJPVU08305M0.pcm': 'No space left on device' (in target 'EXJSONUtils' from project 'Pods')
+.../UNNotificationResponse+UIKitAdditions.h:10:9: error: Could not build module 'UserNotifications' (in target 'EXJSONUtils' from project 'Pods')
+.../EXJSONUtils-prefix.pch:2:9: error: Could not build module 'UIKit' (in target 'EXJSONUtils' from project 'Pods')
+** TEST BUILD FAILED **
+(2 failures)
+2026-09-28 19:39:22.423 xcodebuild[2342:28103] Error saving log: ... Code=28 "No space left on device" ...xcactivitylog
+(exit 65)
