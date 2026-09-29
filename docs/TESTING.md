@@ -27,6 +27,19 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 このpreflightはXCTest runnerが起動できない場合も、remote tmux接続とiOS UI操作の
 どちらで失敗したかを分けるためのもので、iOS UI/input検証の代わりにはしません。
 
+## Issue #47 エージェント状態と端末入力 gate の分離
+
+App回帰試験では、`Ready` / `runtimeOperationsReady=true` /
+`terminalInputReady=false` の実際の端末非表示条件で、Workspaces一覧と切替シート、
+Group切替シート、Terminalの状態表示・読み上げを確認します。一覧表示中のmetadata更新、
+`unknown` / `null`、端末入力gate再開、切断・復旧時の `Status unavailable` も対象です。
+nativeがruntime gateを閉じ、接続phaseがまだ `Ready` の場合も、pollが最新controlを反映し、
+保持している状態をlive表示しないことを検証します。
+
+`herdr-workspaces` / `herdr-groups` の既存mobile表示fixtureも、端末非表示を模して
+input gateを閉じます。Android full / iOS standardの画像は表示確認の証拠であり、
+実Herdr接続やagent検出の証明ではありません。
+
 ## Issue #45 Herdr互換性の確認項目
 
 Herdr 0.9.0は再現可能なverified baseline fixtureであり、productionのversion gateでは

@@ -169,7 +169,10 @@ JavaScript の集約で作り直しません。Herdr が返す `unknown` は値�
 full resync を通るため、workspace、tab、pane は同じ native snapshot で更新されます。
 `done` を pane 選択時に `idle` へ変更したり、status の優先度で一覧を並べ替えたりしません。
 
-表示側では `Ready` 以外（切断、再接続、runtime 選択中、失敗を含む）の間だけ、保持している
+表示側では `Ready` かつ native の runtime 操作 gate が開いていて、復旧中・無効化済みでない
+場合に状態を表示します。一覧や切替シートで端末が非表示になり `terminalInputReady=false` に
+なっても、runtime の metadata は有効なので状態を表示・更新します。端末入力の gate は変更しません。
+runtime が利用できない間（切断、再接続、runtime 選択中、失敗を含む）は、保持している
 status を灰色の `Status unavailable` として解決します。これは presentation-only の解決で、
 native snapshot の値を `unknown` や別 status に書き換えるものではありません。`Ready` に
 戻り新しい snapshot を受け取ると、元の status を表示します。値が `null` の場合は mark も
