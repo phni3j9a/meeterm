@@ -1,0 +1,15 @@
+run=issue45-review-standard
+candidate=5166dee92d22610e769cc2726a77c70641e63b27
+suite=standard
+result=FAILED stage=xcuitest_standard reason=xcodebuild_timeout (834990ms > 833233ms) last_stage=theme_keyboard_open
+runner_temp=/Users/devin/runner-temp-issue45-review
+products=/Users/devin/runner-temp-issue45-review/ios-test-products (pristine, packed before runtime; usable for ssh reuse)
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone18ProMax iOS27.0
+xcode=26.6-17F113 arch=arm64 config=Release-iphonesimulator unsigned
+node=22.22.2 npm=10.9.7 rust=1.96.0 cocoapods=1.17.0 macos=26.5.2
+session=devin-swe-2-max devin-7a32a4e6ed984961b5194e22feeba407
+build_attempts=2: attempt1 exit65 ENOSPC; attempt2 SUCCEEDED after disk cleanup (see build/FIRST-FAILURE-ANALYSIS.md)
+preflight_attempt1=FAILED failures=1 root_cause=UNDETERMINED; attempt2 OK (see analysis)
+completed=storage 6/6, appearance pass, 26 routes, theme matrix, os flips, pinned, mp4 234s
+not_reached=theme_keyboard complete, 11 theme_dialog legs, theme_verification_complete, foundation_verified, standard_complete; ios-native-input-validation.txt absent
+recording=theme-transitions.mp4 captured (partial section)
