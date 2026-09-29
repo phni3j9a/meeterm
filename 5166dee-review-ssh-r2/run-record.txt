@@ -5,7 +5,7 @@ result=passed stage=complete
 runner_temp=/Users/devin/runner-temp-issue45-review-ssh-r2
 reuse=/Users/devin/runner-temp-issue45-review/ios-test-products -> strict restore PASSED (manifest+checksum+source-sha 5166dee+xcode 26.6-17F113)
 simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone 18 Pro Max (fresh boot post-remediation)
-environment: load 2.4-4 at run time (r1 ran at load~78)
+environment: load 2.4-4 at run time (r1 ran before remediation; load~78 was observed in the r1 SSH window itself)
 fixture=local sshd 127.0.0.1:55274 + tmux; preflight ok
 theme_markers=passed light/dark exactly once same pane+PID other panes clean
 transport_loss=passed pre/post once same handle input during loss=none
