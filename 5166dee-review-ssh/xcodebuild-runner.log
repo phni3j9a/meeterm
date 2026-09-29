@@ -1,0 +1,219 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp-issue45-review-ssh/meeterm-derived-data/Build/Products/.meeterm-cu3g4i6o.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO "-only-testing:meetermTests/MeetermSmokeUITests/testShortSshInputAndDisconnect" -resultBundlePath /Users/devin/runner-temp-issue45-review-ssh/meeterm-ios-ssh.xcresult
+
+Build settings from command line:
+    CODE_SIGNING_ALLOWED = NO
+    CODE_SIGNING_REQUIRED = NO
+
+2026-09-28 20:15:20.047 xcodebuild[10349:124996] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+Writing result bundle at path:
+	/Users/devin/runner-temp-issue45-review-ssh/meeterm-ios-ssh.xcresult
+
+2026-09-28 20:15:20.051 xcodebuild[10349:124996] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-28 20:15:20.408 xcodebuild[10349:124996] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-09-29 03:15:31.728509+0000 meetermTests-Runner[10376:125539] [Default] Running tests...
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-09-29 03:15:37.610.
+Test Suite 'meetermTests.xctest' started at 2026-09-29 03:15:37.611.
+Test Suite 'MeetermSmokeUITests' started at 2026-09-29 03:15:37.611.
+Test Case '-[meetermTests.MeetermSmokeUITests testShortSshInputAndDisconnect]' started.
+    t =     0.01s Start Test at 2026-09-29 03:15:37.618
+    t =     0.03s Set Up
+    t =     0.04s     Open dev.meeterm.app
+    t =     0.04s         Launch dev.meeterm.app
+2026-09-28 20:15:37.705 xcodebuild[10349:124996] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-28 20:15:37.705 xcodebuild[10349:124996] [MT] IDELaunchParametersSnapshot: no debugger version
+objc[10376]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x108128398) and /Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x1082e0310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =     5.95s             Setting up automation session
+    t =    11.63s             Wait for dev.meeterm.app to idle
+    t =    13.60s     Wait for dev.meeterm.app to become Running Foreground
+    t =    13.64s     Checking existence of `Window (First Match)`
+    t =    16.53s     Find the Window (First Match)
+    t =    16.55s     Find the Window at {{0.0, 0.0}, {440.0, 956.0}}
+    t =    16.60s     Checking existence of `Button (First Match)`
+    t =    16.62s     Checking existence of `Button (First Match)`
+    t =    16.62s     Checking existence of `Button (First Match)`
+    t =    16.63s     Checking existence of `TextField (First Match)`
+    t =    16.64s     Checking existence of `StaticText (First Match)`
+    t =    16.65s     Checking existence of `StaticText (First Match)`
+    t =    16.66s     Checking existence of `StaticText (First Match)`
+    t =    16.67s     Checking existence of `StaticText (First Match)`
+    t =    16.68s     Checking existence of `StaticText (First Match)`
+    t =    16.70s     Checking existence of `StaticText (First Match)`
+    t =    16.71s     Checking existence of `StaticText (First Match)`
+    t =    16.73s     Checking existence of `StaticText (First Match)`
+    t =    16.76s     Find the Target Application 'dev.meeterm.app'
+    t =    16.87s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =    16.99s Waiting 20.0s for "Connect" Any to exist
+    t =    18.04s     Checking `Expect predicate `existsNoRetry == 1` for object "Connect" Any`
+    t =    18.04s         Checking existence of `"Connect" Any`
+    t =    18.77s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =    22.22s Get number of matches for: Elements matching predicate 'identifier == "Connect" OR label == "Connect"'
+    t =    22.25s Checking existence of `Button (Element at index 0)`
+    t =    22.27s Find the Button (Element at index 0)
+    t =    22.49s Tap "Connect" Button
+    t =    22.49s     Wait for dev.meeterm.app to idle
+    t =    22.49s     Find the "Connect" Button
+    t =    22.52s     Check for interrupting elements affecting "Connect" Button
+    t =    22.54s     Synthesize event
+    t =    22.85s     Wait for dev.meeterm.app to idle
+    t =    23.28s Waiting 15.0s for TextField (First Match) to exist
+    t =    24.36s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    24.40s         Checking existence of `TextField (First Match)`
+    t =    27.64s Waiting 10.0s for TextField (First Match) to exist
+    t =    28.68s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    28.68s         Checking existence of `TextField (First Match)`
+    t =    29.32s Checking existence of `TextField (First Match)`
+    t =    29.37s Find the TextField (First Match)
+    t =    29.52s Tap "ssh-host" TextField[0.95, 0.50]
+    t =    29.52s     Wait for dev.meeterm.app to idle
+    t =    29.53s     Find the "ssh-host" TextField
+    t =    29.69s     Check for interrupting elements affecting "ssh-host" TextField
+    t =    29.77s     Synthesize event
+    t =    29.78s         Find the "ssh-host" TextField
+    t =    32.96s         Find the "ssh-host" TextField
+    t =    33.03s         Find the "ssh-host" TextField
+    t =    33.43s     Wait for dev.meeterm.app to idle
+    t =    33.66s Find the "ssh-host" TextField
+    t =    38.32s Find the "ssh-host" TextField
+    t =    38.52s Type '127.0.0.1' into "ssh-host" TextField
+    t =    38.52s     Wait for dev.meeterm.app to idle
+    t =    38.52s     Find the "ssh-host" TextField
+    t =    38.78s     Check for interrupting elements affecting "ssh-host" TextField
+    t =    38.83s     Synthesize event
+    t =    39.22s     Wait for dev.meeterm.app to idle
+    t =    42.73s Checking `Expect predicate `BLOCKPREDICATE(0x107e6ea30)` for object "ssh-host" TextField`
+    t =    43.88s     Find the "ssh-host" TextField
+    t =    44.10s     Find the "ssh-host" TextField
+    t =    44.21s Waiting 10.0s for TextField (First Match) to exist
+    t =    45.28s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    45.28s         Checking existence of `TextField (First Match)`
+    t =    49.67s Checking existence of `TextField (First Match)`
+    t =    49.92s Find the TextField (First Match)
+    t =    50.48s Tap "ssh-port" TextField[0.95, 0.50]
+    t =    50.48s     Wait for dev.meeterm.app to idle
+    t =    50.49s     Find the "ssh-port" TextField
+    t =    55.17s     Check for interrupting elements affecting "ssh-port" TextField
+    t =    55.31s     Synthesize event
+    t =    55.31s         Find the "ssh-port" TextField
+    t =    55.44s         Find the "ssh-port" TextField
+    t =    55.64s         Find the "ssh-port" TextField
+    t =    56.27s     Wait for dev.meeterm.app to idle
+    t =    56.40s Find the "ssh-port" TextField
+    t =    60.87s Find the "ssh-port" TextField
+    t =    61.02s Type '' into "ssh-port" TextField
+    t =    61.02s     Wait for dev.meeterm.app to idle
+    t =    61.03s     Find the "ssh-port" TextField
+    t =    61.16s     Check for interrupting elements affecting "ssh-port" TextField
+    t =    61.19s     Synthesize event
+    t =    61.45s     Wait for dev.meeterm.app to idle
+    t =    61.48s Find the "ssh-port" TextField
+    t =    61.59s Type '59956' into "ssh-port" TextField
+    t =    61.59s     Wait for dev.meeterm.app to idle
+    t =    61.60s     Find the "ssh-port" TextField
+    t =    61.76s     Check for interrupting elements affecting "ssh-port" TextField
+    t =    61.81s     Synthesize event
+    t =    64.27s     Wait for dev.meeterm.app to idle
+    t =    66.40s Checking `Expect predicate `BLOCKPREDICATE(0x107e1d320)` for object "ssh-port" TextField`
+    t =    66.40s     Find the "ssh-port" TextField
+    t =    66.76s     Find the "ssh-port" TextField
+    t =    67.12s Waiting 10.0s for TextField (First Match) to exist
+    t =    68.69s     Checking `Expect predicate `existsNoRetry == 1` for object TextField (First Match)`
+    t =    68.69s         Checking existence of `TextField (First Match)`
+    t =    71.82s Checking existence of `TextField (First Match)`
+    t =    71.93s Find the TextField (First Match)
+    t =    72.09s Tap "ssh-username" TextField[0.95, 0.50]
+    t =    72.09s     Wait for dev.meeterm.app to idle
+    t =    72.09s     Find the "ssh-username" TextField
+    t =    72.24s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    72.29s     Synthesize event
+    t =    72.29s         Find the "ssh-username" TextField
+    t =    72.43s         Find the "ssh-username" TextField
+    t =    72.59s         Find the "ssh-username" TextField
+    t =    73.11s     Wait for dev.meeterm.app to idle
+    t =    77.70s Find the "ssh-username" TextField
+    t =    77.92s Find the "ssh-username" TextField
+    t =    78.24s Type 'd' into "ssh-username" TextField
+    t =    78.24s     Wait for dev.meeterm.app to idle
+    t =    78.24s     Find the "ssh-username" TextField
+    t =    78.42s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    78.46s     Synthesize event
+    t =    78.70s     Wait for dev.meeterm.app to idle
+    t =    79.88s Checking `Expect predicate `BLOCKPREDICATE(0x107e81d10)` for object "ssh-username" TextField`
+    t =    79.88s     Find the "ssh-username" TextField
+    t =    83.22s     Find the "ssh-username" TextField
+    t =    83.74s Find the "ssh-username" TextField
+    t =    83.87s Find the "ssh-username" TextField
+    t =    84.02s Checking existence of `"ssh-username" TextField`
+    t =    88.59s Find the "ssh-username" TextField
+    t =    88.78s Checking existence of `Keyboard (First Match)`
+    t =    88.81s Find the Keyboard (First Match)
+    t =    89.87s Checking `Expect predicate `BLOCKPREDICATE(0x107dbf990)` for object "ssh-username" TextField`
+    t =    89.87s     Find the "ssh-username" TextField
+    t =    94.16s     Capturing element debug description
+    t =    94.17s Find the TextField (First Match)
+    t =    94.42s Find the "ssh-username" TextField
+    t =    94.66s Checking existence of `"ssh-username" TextField`
+    t =    94.88s Find the "ssh-username" TextField
+    t =    95.01s Checking existence of `Keyboard (First Match)`
+    t =    95.04s Find the Keyboard (First Match)
+    t =    95.11s Checking existence of `"ssh-username" TextField`
+    t =    99.50s Find the "ssh-username" TextField
+    t =    99.74s Tap "ssh-username" TextField[0.95, 0.50]
+    t =    99.74s     Wait for dev.meeterm.app to idle
+    t =    99.74s     Find the "ssh-username" TextField
+    t =    99.86s     Check for interrupting elements affecting "ssh-username" TextField
+    t =    99.92s     Synthesize event
+    t =    99.92s         Find the "ssh-username" TextField
+    t =   100.13s         Find the "ssh-username" TextField
+    t =   100.52s         Find the "ssh-username" TextField
+    t =   105.61s     Wait for dev.meeterm.app to idle
+    t =   105.73s Find the "ssh-username" TextField
+    t =   106.09s Find the "ssh-username" TextField
+    t =   109.80s Type '' into "ssh-username" TextField
+    t =   109.80s     Wait for dev.meeterm.app to idle
+    t =   110.22s     Find the "ssh-username" TextField
+    t =   111.11s     Check for interrupting elements affecting "ssh-username" TextField
+    t =   111.15s     Synthesize event
+    t =   111.38s     Wait for dev.meeterm.app to idle
+    t =   111.66s Find the "ssh-username" TextField
+    t =   116.24s Find the "ssh-username" TextField
+    t =   116.45s Type 'd' into "ssh-username" TextField
+    t =   116.45s     Wait for dev.meeterm.app to idle
+    t =   116.45s     Find the "ssh-username" TextField
+    t =   116.68s     Check for interrupting elements affecting "ssh-username" TextField
+    t =   116.73s     Synthesize event
+    t =   116.96s     Wait for dev.meeterm.app to idle
+    t =   118.05s Checking `Expect predicate `BLOCKPREDICATE(0x1097ee850)` for object "ssh-username" TextField`
+    t =   118.05s     Find the "ssh-username" TextField
+    t =   121.79s     Find the "ssh-username" TextField
+    t =   121.99s Find the "ssh-username" TextField
+    t =   122.11s Find the "ssh-username" TextField
+    t =   122.25s Checking existence of `"ssh-username" TextField`
+    t =   122.38s Find the "ssh-username" TextField
+    t =   122.59s Checking existence of `Keyboard (First Match)`
+    t =   122.61s Find the Keyboard (First Match)
+    t =   124.81s Checking `Expect predicate `BLOCKPREDICATE(0x111c659b0)` for object "ssh-username" TextField`
+    t =   124.82s     Find the "ssh-username" TextField
+    t =   127.26s     Find the "ssh-username" TextField
+    t =   127.43s     Capturing element debug description
+    t =   127.86s         Requesting snapshot of accessibility hierarchy for app with pid 10396
+    t =   127.95s         Requesting snapshot of accessibility hierarchy for app with pid 10396
+    t =   127.95s         Requesting snapshot of accessibility hierarchy for app with pid 10396
+    t =   127.95s         Requesting snapshot of accessibility hierarchy for app with pid 10396
+    t =   127.96s Find the "ssh-username" TextField
+    t =   128.19s Find the "ssh-username" TextField
+    t =   128.56s Checking existence of `"ssh-username" TextField`
+    t =   132.85s Find the "ssh-username" TextField
+    t =   133.08s Checking existence of `Keyboard (First Match)`
+    t =   133.10s Find the Keyboard (First Match)
+/Users/devin/repos/meeterm/ios/meetermTests/MeetermSmokeUITests.swift:3304: error: -[meetermTests.MeetermSmokeUITests testShortSshInputAndDisconnect] : failed - The short field did not retain the expected input after one retry.
+    t =   133.44s Tear Down
+Test Case '-[meetermTests.MeetermSmokeUITests testShortSshInputAndDisconnect]' failed (133.730 seconds).
+Test Suite 'MeetermSmokeUITests' failed at 2026-09-29 03:17:51.348.
+	 Executed 1 test, with 1 failure (0 unexpected) in 133.730 (133.737) seconds
+Test Suite 'meetermTests.xctest' failed at 2026-09-29 03:17:51.348.
+	 Executed 1 test, with 1 failure (0 unexpected) in 133.730 (133.737) seconds
+Test Suite 'Selected tests' failed at 2026-09-29 03:17:51.349.
+	 Executed 1 test, with 1 failure (0 unexpected) in 133.730 (133.738) seconds
+** BUILD INTERRUPTED **

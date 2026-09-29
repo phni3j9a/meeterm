@@ -1,0 +1,13 @@
+run=issue45-review-ssh
+candidate=5166dee92d22610e769cc2726a77c70641e63b27
+suite=ssh
+result=FAILED stage=xcuitest_ssh reason=ui_test_failed assert=MeetermSmokeUITests.swift:3304 short-field-username-retention (1/5 chars after retry)
+runner_temp=/Users/devin/runner-temp-issue45-review-ssh
+original_build=/Users/devin/runner-temp-issue45-review (fresh CNG+build-for-testing attempt2, same commit)
+reuse=/Users/devin/runner-temp-issue45-review/ios-test-products -> strict restore PASSED (manifest+checksum+source-sha+xcode)
+simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone 18 Pro Max
+xcode=26.6-17F113 arch=arm64 config=Release-iphonesimulator unsigned
+session=devin-swe-2-max devin-7a32a4e6ed984961b5194e22feeba407
+fixture=local sshd 127.0.0.1:59956 + tmux; preflight ok
+elapsed=xcodebuild 220s; test 133.7s; not a timeout
+contention=load ~78 on 12 cores during run; two booted sims; see suite/FAILURE-ANALYSIS.md and build/CONTENTION-DIAGNOSIS.md
