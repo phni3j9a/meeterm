@@ -50,8 +50,10 @@ capability として保持し、runtime list、session status、controller setup
 runtime、stable terminal、通常lease、authoritative full frameの検証を経て復旧します。
 miseはshim・current/latest・versionを固定しないinstall pathを探索し、NixやHomebrewも
 対象です。候補は最大32件・NUL区切りでnativeへ渡し、重複を除いた順に検証します。
-候補列挙と一連のcapability probeにはそれぞれ既存のSSH stage deadlineを適用し、
-不互換候補を飛ばして最初の互換候補を採用します。
+候補列挙と一連のcapability probeにはそれぞれ既存の30秒上限を適用し、
+schemaとhelpを合わせた候補ごとのprobeは5秒以内に制限します。不互換、候補固有のtimeout、
+出力超過、exec拒否・異常終了ではprobe channelを閉じて次候補へ進みます。
+キャンセル・古いoperation epoch・SSH transport喪失では探索を終了します。
 非対話 SSH の PATH に `~/.local/bin` が含まれない場合でも、公式installerの既定locationとして
 確認できる場所を探索します。解決できない場合は Herdr section の局所エラーとして表示し、
 tmux の候補を隠しません。
@@ -80,7 +82,8 @@ Issue #45の実行結果と範囲は[互換性検証記録](evidence/issue-45-he
   paneのsplit・rename・close・scroll・send_text・send_keys・send_inputです。
   未知の追加method/fieldは許容し、一つでも必須methodが欠ければ不互換とします。
 - JSON schemaに含まれないCLIは `session list --help`、`status --help`、
-  `terminal session control --help` で存在を確認し、controlのtarget・cols・rowsを検査します。
+  `terminal session control --help` で存在を確認し、controlと`--cols`・`--rows`を検査します。
+  `<TARGET>`等の引数表示名は互換性条件にしません。
   helpはruntimeやcontrollerを開始しません。list/statusの実応答、stream-localの購読ACK・
   snapshot、通常controller取得と最初のfull frameは利用段階で実際に検証します。
   control streamのinput/resize/scroll/release semanticsはprotocol 22の契約と実integrationで

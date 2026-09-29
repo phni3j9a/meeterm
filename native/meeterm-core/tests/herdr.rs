@@ -430,7 +430,7 @@ struct RusshState {
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
     commands: Arc<std::sync::Mutex<Vec<String>>>,
     executables: Arc<std::sync::Mutex<Vec<PathBuf>>>,
-    schema_faults: Arc<std::sync::Mutex<HashMap<PathBuf, &'static str>>>,
+    probe_faults: Arc<std::sync::Mutex<HashMap<PathBuf, &'static str>>>,
 }
 
 struct FixtureSsh {
@@ -440,7 +440,7 @@ struct FixtureSsh {
     clients: Arc<std::sync::Mutex<Vec<server::Handle>>>,
     commands: Arc<std::sync::Mutex<Vec<String>>>,
     executables: Arc<std::sync::Mutex<Vec<PathBuf>>>,
-    schema_faults: Arc<std::sync::Mutex<HashMap<PathBuf, &'static str>>>,
+    probe_faults: Arc<std::sync::Mutex<HashMap<PathBuf, &'static str>>>,
 }
 
 impl FixtureSsh {
@@ -449,7 +449,7 @@ impl FixtureSsh {
         let clients = Arc::new(std::sync::Mutex::new(Vec::new()));
         let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
         let executables = Arc::new(std::sync::Mutex::new(vec![PathBuf::from(&manifest.binary)]));
-        let schema_faults = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let probe_faults = Arc::new(std::sync::Mutex::new(HashMap::new()));
         // The fixture's virtual SFTP home lives under the disposable
         // fixture root; nothing ever touches the real $HOME.
         let sftp_root = PathBuf::from(&manifest.root).join("sftp-root");
@@ -458,7 +458,7 @@ impl FixtureSsh {
             clients: Arc::clone(&clients),
             commands: Arc::clone(&commands),
             executables: Arc::clone(&executables),
-            schema_faults: Arc::clone(&schema_faults),
+            probe_faults: Arc::clone(&probe_faults),
             binary: PathBuf::from(&manifest.binary),
             environment: manifest.environment.clone(),
             sockets: manifest
@@ -497,6 +497,7 @@ impl FixtureSsh {
                     state,
                     channels: HashMap::new(),
                     registered: false,
+                    pending_probe_closes: HashMap::new(),
                 };
                 let running = server.run_on_socket(config, &listener);
                 let handle = running.handle();
@@ -516,7 +517,7 @@ impl FixtureSsh {
             clients,
             commands,
             executables,
-            schema_faults,
+            probe_faults,
         }
     }
 
@@ -568,6 +569,7 @@ struct FixtureServer {
     state: Arc<RusshState>,
     channels: HashMap<ChannelId, Channel<Msg>>,
     registered: bool,
+    pending_probe_closes: HashMap<ChannelId, String>,
 }
 
 impl RusshServer for FixtureServer {
@@ -578,6 +580,7 @@ impl RusshServer for FixtureServer {
             state: Arc::clone(&self.state),
             channels: HashMap::new(),
             registered: false,
+            pending_probe_closes: HashMap::new(),
         }
     }
 }
@@ -624,6 +627,38 @@ impl Handler for FixtureServer {
             session.channel_failure(channel)?;
             return Ok(());
         };
+        let probe_fault = match &parsed {
+            ExecCommand::Schema { fault: Some(fault) } => fault.strip_prefix("schema-"),
+            ExecCommand::CliCapabilities { fault: Some(fault) } => fault.strip_prefix("help-"),
+            _ => None,
+        };
+        if let Some(fault @ ("timeout" | "overflow" | "stderr-overflow" | "exec" | "exit")) =
+            probe_fault
+        {
+            self.pending_probe_closes.insert(channel, command);
+            if fault == "exec" {
+                session.channel_failure(channel)?;
+                return Ok(());
+            }
+            session.channel_success(channel)?;
+            if fault != "timeout" {
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    if fault == "overflow" {
+                        let _ = handle.data(channel, vec![b'x'; 512 * 1024 + 1]).await;
+                    } else if fault == "stderr-overflow" {
+                        let _ = handle
+                            .extended_data(channel, 1, vec![b'x'; 512 * 1024 + 1])
+                            .await;
+                    } else {
+                        let _ = handle.exit_status_request(channel, 126).await;
+                    }
+                });
+            }
+            // Keep unanswered/overflow/rejected-exec channels alive until the
+            // client closes them; the test observes that cleanup explicitly.
+            return Ok(());
+        }
         let channel_object = self.channels.remove(&channel);
         session.channel_success(channel)?;
         let handle = session.handle();
@@ -688,7 +723,7 @@ impl Handler for FixtureServer {
                     let _ = handle.close(channel).await;
                 });
             }
-            ExecCommand::CliCapabilities => {
+            ExecCommand::CliCapabilities { fault } => {
                 let state = Arc::clone(&self.state);
                 tokio::spawn(async move {
                     let mut success = true;
@@ -706,7 +741,15 @@ impl Handler for FixtureServer {
                         match result {
                             Ok(output) if output.status.success() => {
                                 if args[0] == "terminal" {
-                                    let _ = handle.data(channel, output.stdout).await;
+                                    let stdout = if fault == Some("help-target") {
+                                        String::from_utf8(output.stdout)
+                                            .unwrap()
+                                            .replace("<TARGET>", "<TERMINAL>")
+                                            .into_bytes()
+                                    } else {
+                                        output.stdout
+                                    };
+                                    let _ = handle.data(channel, stdout).await;
                                 }
                             }
                             _ => {
@@ -812,6 +855,22 @@ impl Handler for FixtureServer {
                     let _ = handle.close(channel_id).await;
                 });
             }
+        }
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.channels.remove(&channel);
+        if let Some(command) = self.pending_probe_closes.remove(&channel) {
+            self.state
+                .commands
+                .lock()
+                .unwrap()
+                .push(format!("probe-closed {command}"));
         }
         Ok(())
     }
@@ -1159,7 +1218,9 @@ enum ExecCommand {
     Schema {
         fault: Option<&'static str>,
     },
-    CliCapabilities,
+    CliCapabilities {
+        fault: Option<&'static str>,
+    },
     Json {
         runtime: String,
         args: Vec<String>,
@@ -1182,7 +1243,7 @@ fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> 
         let quoted = shell_quote_executable(executable);
         if command == format!("{quoted} api schema --json") {
             return Some(ExecCommand::Schema {
-                fault: state.schema_faults.lock().unwrap().get(executable).copied(),
+                fault: state.probe_faults.lock().unwrap().get(executable).copied(),
             });
         }
         if command
@@ -1190,7 +1251,9 @@ fn parse_exec_command(command: &str, state: &RusshState) -> Option<ExecCommand> 
                 "{quoted} --session default session list --help >/dev/null && {quoted} --session default status --help >/dev/null && {quoted} --session default terminal session control --help"
             )
         {
-            return Some(ExecCommand::CliCapabilities);
+            return Some(ExecCommand::CliCapabilities {
+                fault: state.probe_faults.lock().unwrap().get(executable).copied(),
+            });
         }
     }
     let rest = executables.iter().find_map(|path| {
@@ -1281,7 +1344,7 @@ fn parser_fixture_state(binary: &str) -> RusshState {
         clients: Arc::new(std::sync::Mutex::new(Vec::new())),
         commands: Arc::new(std::sync::Mutex::new(Vec::new())),
         executables: Arc::new(std::sync::Mutex::new(vec![PathBuf::from(binary)])),
-        schema_faults: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        probe_faults: Arc::new(std::sync::Mutex::new(HashMap::new())),
     }
 }
 
@@ -3438,10 +3501,32 @@ fn real_herdr_compatibility_resolution_and_recovery() {
         original.clone(),
     ];
     for (path, fault) in aliases.iter().zip(["protocol", "schema", "method"]) {
-        ssh.schema_faults
-            .lock()
-            .unwrap()
-            .insert(path.clone(), fault);
+        ssh.probe_faults.lock().unwrap().insert(path.clone(), fault);
+    }
+    let faults = [
+        "schema-timeout",
+        "schema-overflow",
+        "schema-stderr-overflow",
+        "schema-exec",
+        "schema-exit",
+        "help-timeout",
+        "help-overflow",
+        "help-stderr-overflow",
+        "help-exec",
+        "help-exit",
+    ];
+    let broken = faults
+        .iter()
+        .map(|fault| Path::new(&driver.manifest.root).join(fault))
+        .collect::<Vec<_>>();
+    {
+        let mut candidates = ssh.executables.lock().unwrap();
+        candidates.splice(0..0, broken.iter().cloned());
+        let mut configured = ssh.probe_faults.lock().unwrap();
+        for (path, fault) in broken.iter().zip(faults) {
+            configured.insert(path.clone(), fault);
+        }
+        configured.insert(original.clone(), "help-target");
     }
     let id = create_terminal(40, 16).unwrap();
     let _guard = TerminalGuard { id };
@@ -3449,8 +3534,17 @@ fn real_herdr_compatibility_resolution_and_recovery() {
     select_herdr_runtime_from_picker(
         id,
         "default",
-        "compatible candidate after three incompatible candidates",
+        "compatible candidate after failed probes and incompatible candidates",
     );
+    let commands = ssh.commands.lock().unwrap().clone();
+    for path in &broken {
+        let prefix = format!("probe-closed {} ", shell_quote_executable(path));
+        assert!(
+            commands.iter().any(|command| command.starts_with(&prefix)),
+            "failed candidate channel must be closed: {}",
+            path.display()
+        );
+    }
     let initial = wait_session(id, "compatible candidate session");
     let root = initial.panes.iter().find(|p| p.selected).unwrap();
     let terminal = root.terminal_id;
@@ -3513,4 +3607,64 @@ fn real_herdr_compatibility_resolution_and_recovery() {
     };
     assert_eq!(state["control"]["recovery"]["reason"], "herdr_incompatible");
     assert_eq!(state["control"]["terminalInputReady"], false);
+    assert_probe_aborts_on_connection_end(&driver, false);
+    assert_probe_aborts_on_connection_end(&driver, true);
+}
+
+fn assert_probe_aborts_on_connection_end(driver: &Driver, lose_transport: bool) {
+    let ssh = FixtureSsh::start(&driver.manifest, 0);
+    let stalled = Path::new(&driver.manifest.root).join("stalled-abort-probe");
+    let original = PathBuf::from(&driver.manifest.binary);
+    *ssh.executables.lock().unwrap() = vec![stalled.clone(), original.clone()];
+    ssh.probe_faults
+        .lock()
+        .unwrap()
+        .insert(stalled.clone(), "schema-timeout");
+    let id = create_terminal(40, 16).unwrap();
+    let _guard = TerminalGuard { id };
+    connect_host(id, options(&driver.manifest, &ssh, None)).unwrap();
+    // options() installs the isolated fixture host key before connecting;
+    // wait on the actual probe request, not a prompt that cannot appear.
+    let stalled_command = format!("{} api schema --json", shell_quote_executable(&stalled));
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    while !ssh.commands.lock().unwrap().contains(&stalled_command) {
+        assert!(Instant::now() < deadline, "stalled probe must have started");
+        thread::sleep(POLL_INTERVAL);
+    }
+    if lose_transport {
+        ssh.lose_connections();
+    } else {
+        disconnect_terminal(id).unwrap();
+    }
+    // Completion, rather than a sleep, proves there is no later probe left
+    // in flight. The existing picker owns how discovery failures are shown.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let snapshot = connection_snapshot(id).unwrap();
+        if lose_transport {
+            let discovery = runtime_discovery_snapshot(id).unwrap();
+            if discovery.herdr.error_code.as_deref() == Some("transport") {
+                break;
+            }
+            if snapshot.state == ConnectionState::Failed as u32 {
+                assert_eq!(
+                    field(&snapshot.error_code, snapshot.error_code_len),
+                    "transport"
+                );
+                break;
+            }
+        } else if snapshot.state == ConnectionState::Disconnected as u32 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "connection-level stop must not wait for candidate timeout"
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+    let later_schema = format!("{} api schema --json", shell_quote_executable(&original));
+    assert!(
+        !ssh.commands.lock().unwrap().contains(&later_schema),
+        "connection loss/cancel must not probe another candidate"
+    );
 }

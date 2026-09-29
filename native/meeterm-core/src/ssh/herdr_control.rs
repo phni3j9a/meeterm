@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+const EXECUTABLE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 static NEXT_REMOTE_HANDLE: AtomicU64 = AtomicU64::new(1_000_000);
 
 #[derive(Clone, Default)]
@@ -517,58 +518,162 @@ async fn resolve_executable(
         Some(127) => return Err(missing),
         Some(_) | None => return Err(malformed),
     };
-    // The path is a connection-scoped capability, never runtime identity.
-    // Re-resolve on recovery and keep all host/session/terminal/lease gates.
-    // Bound the entire candidate probe loop, not just each command.
-    let probe = async {
-        for executable in candidates {
-            let schema_command =
-                wire::api_schema_command_with_executable(&executable).map_err(|_| malformed)?;
-            let schema_output = super::run_remote_command_with_timeout_at_epoch(
-                shared,
-                session,
-                schema_command,
-                512 * 1024,
-                malformed,
-                malformed,
-                expected_epoch,
-            )
-            .await?;
-            if schema_output.exit_status != Some(0) {
-                continue;
-            }
-            let Ok(schema) = serde_json::from_slice::<Value>(&schema_output.stdout) else {
-                continue;
-            };
-            if wire::validate_api_schema(&schema).is_err() {
-                continue;
-            }
-            let cli_output = super::run_remote_command_with_timeout_at_epoch(
-                shared,
-                session,
-                wire::cli_capability_command(&executable).map_err(|_| malformed)?,
-                64 * 1024,
-                malformed,
-                malformed,
-                expected_epoch,
-            )
-            .await?;
-            if cli_output.exit_status == Some(0) && wire::validate_control_help(&cli_output.stdout)
-            {
-                return Ok(executable);
+    // Each candidate shares a short budget across schema + help. Keep the
+    // existing total limit so a stalled PATH candidate cannot consume the
+    // entire search budget or make 32 candidates take 32 stage timeouts.
+    let deadline = tokio::time::Instant::now() + SSH_STAGE_TIMEOUT;
+    for executable in candidates {
+        check_probe_connection(shared, session, expected_epoch)?;
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let candidate_deadline =
+            deadline.min(tokio::time::Instant::now() + EXECUTABLE_PROBE_TIMEOUT);
+        let schema_command =
+            wire::api_schema_command_with_executable(&executable).map_err(|_| malformed)?;
+        let Some(schema_output) = probe_command(
+            shared,
+            session,
+            schema_command,
+            512 * 1024,
+            candidate_deadline,
+            deadline,
+            expected_epoch,
+        )
+        .await?
+        else {
+            continue;
+        };
+        let Ok(schema) = serde_json::from_slice::<Value>(&schema_output) else {
+            continue;
+        };
+        if wire::validate_api_schema(&schema).is_err() {
+            continue;
+        }
+        let Some(cli_output) = probe_command(
+            shared,
+            session,
+            wire::cli_capability_command(&executable).map_err(|_| malformed)?,
+            64 * 1024,
+            candidate_deadline,
+            deadline,
+            expected_epoch,
+        )
+        .await?
+        else {
+            continue;
+        };
+        if wire::validate_control_help(&cli_output) {
+            // A resolved path remains a connection capability, not identity.
+            return Ok(executable);
+        }
+    }
+    check_probe_connection(shared, session, expected_epoch)?;
+    if tokio::time::Instant::now() >= deadline && discovery {
+        Err(FlowFailure::HerdrDiscoveryTimeout)
+    } else {
+        Err(incompatible)
+    }
+}
+
+fn check_probe_connection(
+    shared: &ConnectionShared,
+    session: &client::Handle<HostKeyHandler>,
+    expected_epoch: Option<u64>,
+) -> Result<(), FlowFailure> {
+    if shared.is_cancelled()
+        || shared.explicit_cleanup_requested()
+        || expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch))
+    {
+        Err(FlowFailure::Stale)
+    } else if session.is_closed() {
+        Err(FlowFailure::Transport)
+    } else {
+        Ok(())
+    }
+}
+
+/// None rejects only this candidate (timeout, bounded-output overflow, exec
+/// refusal, abnormal exit). Err ends discovery/recovery on a stale intent or
+/// dead SSH transport. Keep this policy local to Herdr capability probes;
+/// ordinary tmux and runtime commands retain their existing failure handling.
+async fn probe_command(
+    shared: &ConnectionShared,
+    session: &client::Handle<HostKeyHandler>,
+    command: String,
+    max_bytes: usize,
+    candidate_deadline: tokio::time::Instant,
+    search_deadline: tokio::time::Instant,
+    expected_epoch: Option<u64>,
+) -> Result<Option<Vec<u8>>, FlowFailure> {
+    check_probe_connection(shared, session, expected_epoch)?;
+    if tokio::time::Instant::now() >= candidate_deadline {
+        return Ok(None);
+    }
+    // Retain the channel outside the cancellable future so every completion
+    // path, including a timeout or rejected exec, closes the probe channel.
+    let mut opened = None;
+    let request = async {
+        match session.channel_open_session().await {
+            Ok(channel) => opened = Some(channel),
+            Err(russh::Error::ChannelOpenFailure(_)) => return Ok(None),
+            Err(_) => return Err(FlowFailure::Transport),
+        }
+        check_probe_connection(shared, session, expected_epoch)?;
+        let channel = opened.as_mut().expect("opened probe channel");
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|_| FlowFailure::Transport)?;
+        let mut stdout = Vec::new();
+        let mut total_bytes = 0usize;
+        let mut exit_status = None;
+        while let Some(message) = channel.wait().await {
+            check_probe_connection(shared, session, expected_epoch)?;
+            match message {
+                ChannelMsg::Data { data } => {
+                    total_bytes = total_bytes.saturating_add(data.len());
+                    if total_bytes > max_bytes {
+                        return Ok(None);
+                    }
+                    stdout.extend_from_slice(&data);
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    // Diagnostics count against the cap but are not retained.
+                    total_bytes = total_bytes.saturating_add(data.len());
+                    if total_bytes > max_bytes {
+                        return Ok(None);
+                    }
+                }
+                ChannelMsg::ExitStatus {
+                    exit_status: status,
+                } => {
+                    if status != 0 {
+                        return Ok(None);
+                    }
+                    exit_status = Some(status);
+                }
+                ChannelMsg::Failure | ChannelMsg::ExitSignal { .. } => return Ok(None),
+                ChannelMsg::Close => break,
+                _ => {}
             }
         }
-        Err(incompatible)
+        Ok((exit_status == Some(0)).then_some(stdout))
     };
-    tokio::time::timeout(SSH_STAGE_TIMEOUT, probe)
-        .await
-        .map_err(|_| {
-            if discovery {
-                FlowFailure::HerdrDiscoveryTimeout
-            } else {
-                FlowFailure::HerdrIncompatible
-            }
-        })?
+    let result = tokio::select! {
+        biased;
+        _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
+        result = tokio::time::timeout_at(candidate_deadline, request) => result.unwrap_or(Ok(None)),
+    };
+    if let Some(channel) = opened {
+        // Closing is best effort and bounded by the original search deadline.
+        let close_deadline =
+            search_deadline.min(tokio::time::Instant::now() + Duration::from_millis(250));
+        let _ = tokio::time::timeout_at(close_deadline, channel.close()).await;
+    }
+    check_probe_connection(shared, session, expected_epoch)?;
+    result
 }
 
 /// Status proves the selected live runtime, not a CLI path or SemVer.

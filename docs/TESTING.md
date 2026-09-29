@@ -38,6 +38,9 @@ PATH、`~/.local/bin`、Homebrew、mise shim/current/可変install、Nix、複�
 実Herdr/russhの `real_herdr_compatibility_resolution_and_recovery` は、protocol/schema/APIが
 不足する候補の後にある互換候補を選び、transport loss後にCLI pathが変わっても同じnative
 terminalへ復旧・入力できること、不互換pathへ変わるとread-onlyで停止することを検証します。
+schema/helpのtimeout・stdout/stderr上限超過・exec拒否・異常終了でも後続の互換候補へ進み、
+失敗したprobe channelが閉じられること、helpの引数表示名だけが変わっても受理すること、
+キャンセル・transport喪失では後続候補をprobeせず終了することも実SSH上で確認します。
 一般CIは既存のSHA固定0.9.0全integrationを維持し、SHA固定0.9.1でこの短いcaseも実行します。
 機能変更のmobile受入はAndroid full、iOS standardとsshを適用します。
 実行済みversion/source/suiteと限界は[Issue #45記録](evidence/issue-45-herdr-compatibility.md)に残します。

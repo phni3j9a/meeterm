@@ -7,7 +7,8 @@ stable terminal identity, ordinary controller acquisition without takeover, and
 the first authoritative full frame remain required for retained recovery.
 
 The bundled schema advertises JSON methods. Read-only CLI help probes cover the
-list/status/control entry points and controller target/size options. Actual
+list/status/control entry points and controller size options. Help argument
+display names such as `<TARGET>` are not compatibility requirements. Actual
 list/status, direct stream-local subscription/snapshot, lease and frame handling
 are verified when used. Input/resize/scroll/release are protocol 22 semantics;
 discovery never sends these mutations merely to probe support. Unknown additive
@@ -217,3 +218,43 @@ test or build inputs. Their CI status is linked from PR #46. The mobile live
 connection cases above exercise tmux; live Herdr compatibility and zero-tap
 recovery are established by the separate Rust/russh binary cases. Emulator and
 Simulator captures do not establish physical-device GPU or external-IME parity.
+
+## PR #46 review follow-up (2026-09-29)
+
+[Review 5346704282](https://github.com/phni3j9a/meeterm/pull/46#pullrequestreview-5346704282)
+identified two gaps: candidate-local probe errors escaped the resolver instead
+of trying the next path, and control help required the cosmetic `<TARGET>`
+argument label. The Herdr-only probe now returns a rejected candidate for a
+local timeout, stdout/stderr overflow, exec refusal or abnormal exit. Cancellation,
+stale operation epochs and dead SSH transport still terminate resolution.
+Schema and help share a five-second candidate budget inside the unchanged
+30-second total probe budget. Opened probe channels are closed on all completion
+paths, with bounded best-effort cleanup. The common tmux command helper is unchanged.
+
+The existing live compatibility case now injects ten failed candidates (the
+five failure modes above for both schema and help), followed by the existing
+protocol/schema/missing-method negatives and a real compatible binary. It
+observes client channel closure, accepts a `<TERMINAL>` help label, and retains
+the same-terminal recovery/input checks. Additional real-SSH legs end a stalled
+probe through explicit disconnect and transport loss; both must finish before
+the candidate timeout and must not probe the next executable. Unit help checks
+also accept `<TARGET>`, `<PANE>` and `<TERMINAL>` while retaining command/option
+requirements.
+
+During local test development, the initial close assertion expected a callback
+after the fixture itself had already closed its abnormal-exit channel. That
+case now sends the nonzero exit status and leaves the channel open so the test
+observes the client's cleanup. A new abort leg initially waited for a host-key
+prompt despite the existing helper already writing the isolated known-hosts
+file; it now synchronizes on the actual probe request. Neither failed local
+invocation counts as acceptance. The corrected focused case passed in 25.00s;
+the full local Rust suite and Clippy also passed.
+
+The previously recorded `1351186` mobile results remain evidence for that
+source. Fresh Android full and iOS standard/ssh are required for this review
+follow-up; exact-source results are linked from PR #46 and recorded below once
+available. The earlier `cad6e16` push run's pre-test OpenSSH fixture failure
+([job 109030574597](https://github.com/phni3j9a/meeterm/actions/runs/36452528703/job/109030574597))
+remains an unresolved historical fixture diagnostic; the same-head PR run
+passed. This review follow-up does not change that fixture or claim its root
+cause is fixed.

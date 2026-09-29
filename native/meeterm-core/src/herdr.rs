@@ -891,7 +891,7 @@ pub(crate) fn cli_capability_command(executable: &str) -> Result<String, HerdrEr
 
 pub(crate) fn validate_control_help(output: &[u8]) -> bool {
     std::str::from_utf8(output).is_ok_and(|help| {
-        ["control", "<TARGET>", "--cols", "--rows"]
+        ["control", "--cols", "--rows"]
             .iter()
             .all(|token| help.contains(token))
     })
@@ -1506,9 +1506,12 @@ mod tests {
             assert!(validate_api_schema(&schema).is_err());
         }
         assert!(validate_api_schema(&json!({"protocol":22,"schema_version":1})).is_err());
-        assert!(validate_control_help(
-            b"Usage: herdr terminal session control [OPTIONS] <TARGET> --cols <N> --rows <N>"
-        ));
+        for argument in ["<TARGET>", "<PANE>", "<TERMINAL>"] {
+            assert!(validate_control_help(
+                format!("Usage: herdr terminal session control [OPTIONS] {argument} --cols <N> --rows <N>")
+                    .as_bytes()
+            ));
+        }
         assert!(!validate_control_help(
             b"Usage: herdr terminal session observe <TARGET>"
         ));
