@@ -1,0 +1,6 @@
+addendum: app=dark captures on the SAME accepted binary (meeterm.app from 567bc391... build, still installed on 7EE2EBC1; no product/test/assertion changes)
+commands:
+  xcrun simctl openurl 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 "meeterm://smoke?screen=herdr-workspaces&app=dark" -> simctl io ... screenshot issue47-herdr-workspaces-app-dark.png
+  xcrun simctl openurl 7EE2EBC1-0640-4950-AAFF-B4CDF455F377 "meeterm://smoke?screen=herdr-groups&app=dark" -> screenshot issue47-herdr-groups-app-dark.png
+verified: Main workspace red filled (blocked) + Tools green hollow (idle); Development yellow/amber (working) + Tests&review teal (done) — dark appearance
+diagnostic_recording: UNAVAILABLE — stale CoreSimulator "host recording already in progress" lock persisted after an earlier simctl recordVideo was killed pre-finalization; retry and Simulator.app File>Record Screen both failed; not resolved because clearing requires sim daemon/device restart heavier than warranted for this optional artifact. theme-transitions.mp4 in suite/ remains the suite-captured motion evidence.
