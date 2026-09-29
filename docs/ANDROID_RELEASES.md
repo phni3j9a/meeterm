@@ -38,3 +38,9 @@ mainの履歴を書き換えたり、この計算のoffsetを下げたりしな�
 この配布経路は共通CI・Android Releaseビルド・APK構造と署名の確認です。
 Devin CloudのAndroid/iOS操作受入、実機の動作・性能検証とは区別します。
 アプリの変更に必要な既存の受入手順は引き続き実施します。
+
+## 初回設定時の依存更新
+
+既存CIのExpo互換性検査で57.0.26が必要になったため、Expoを57.0.25から
+57.0.26へ更新しました。lockfile内のExpo Modules Core / Expo Constantsも
+必要な57.0.20へ揃えています。初回検証の結果はIssue #49へ記録します。
