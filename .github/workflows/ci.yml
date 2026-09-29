@@ -41,6 +41,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # Diff needs history/trees, not old evidence images and logs.
+          filter: blob:none
       - name: Check job selection
         run: python3 scripts/ci/test_select_checks.py
       - name: Select jobs from the complete changed-path list
@@ -122,6 +124,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      # The iOS project-injection regression calls the lockfile's xcode parser.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm install --global npm@"${NPM_VERSION}"
+      - run: npm ci
       - name: Python and evidence collector regressions
         run: |
           python3 -m unittest discover -s scripts/ci -p 'test_*.py'
