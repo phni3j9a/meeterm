@@ -1,0 +1,68 @@
+Issue #45 PR46-review Android emulator validation — run record
+================================================================
+
+source_sha=5166dee92d22610e769cc2726a77c70641e63b27
+source_branch=issue-45-herdr-capabilities
+source_subject=fix: isolate Herdr candidate probe failures and accept help label changes
+evidence_branch=evidence/android-20260929-issue45-review
+session=devin-9429c00e8cc14fb2b140b3e23bb28ec1 (devin-swe-2-max)
+run_start=2026-09-29 ~02:25 UTC (fresh checkout + npm ci); first artifact 02:32:48 UTC
+
+toolchain
+  node=22.22.2 (nvm, .nvmrc)
+  npm=10.9.7
+  jdk=17.0.19
+  ndk=27.1.12297006
+  rust=1.96.0
+  gradle=9.3.1
+  device=emulator-5554 sdk_gphone64_x86_64 api=36 (AVD meeterm_api36, headless)
+
+build
+  git reset --hard 5166dee + rm -rf android + npm ci
+  expo prebuild --platform android --non-interactive --no-install --clean (fresh CNG)
+  ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release --no-daemon
+  result=BUILD SUCCESSFUL in 2m39s (668 tasks)
+  install=adb install -r Success
+  pm clear dev.meeterm.app before suite
+
+gates (scripts/ci/android-smoke.sh)
+  install/launch/native_ready/first_frame/alive = PASS
+  MEETERM_SMOKE_NATIVE_READY + MEETERM_SMOKE_FIRST_FRAME observed, no crash
+
+seeded routes (scripts/ci/android-screen-fixtures.py)
+  captured=31/32
+  empty=unavailable:missing_screen_element_0,screen_element_1 (baseline retained honestly, not treated as gate)
+
+SSH/tmux suite (scripts/ssh/fixture.py -- scripts/ssh/android-smoke.py)
+  result=passed
+  stages_completed=116
+  first_failing_stage=none
+  final_stage=disconnect_after_resume
+  transport_loss_evidence=passed (inject -> stale read-only -> restored -> authoritative ready -> remote ack)
+  mobile live SSH case = tmux control mode; no mobile live-Herdr claim (herdr-* seeded routes are presentation captures only)
+
+theme cases
+  daily_theme_matrix 6/6 screenshots
+  daily_theme_os_scheme light->dark->light same process
+  daily_theme_os_independence pinned terminal
+  daily_theme_dialog_fixed / _system / _restored completed
+  MEETERM_SMOKE_THEME markers=31 total (logcat.txt 1 + ssh-logcat.txt 30)
+  MeetermTerminalDialog markers (dialog-markers.txt, 69 lines):
+    presented appearance=dark resolved=dark x13
+    presented appearance=light resolved=light x13
+    presented appearance=system resolved=dark x1
+    presented appearance=system resolved=light x7
+    result=selected index=0 x10, index=1 x9, index=2 x12
+    result=dismissed x3
+
+elapsed
+  build=2m39s
+  ssh_tmux_suite=~32min (~02:35 -> 03:07 UTC)
+  total run ~50min including respawn/npm ci/prebuild/gates/routes
+
+scope notes
+  This run validates the PR #46 review fix: candidate-local Herdr schema/help
+  failures now close channels and fall through within a 5s-candidate/30s-total
+  budget; stale/cancel/dead-transport ends resolution; <TARGET> help label
+  relaxed. Production Rust changed vs 1351186, so a full fresh build was run.
+  emulator-only; no iOS, physical device, or external-IME items run.

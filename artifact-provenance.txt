@@ -1,0 +1,38 @@
+Artifact provenance — Issue #45 PR46-review run
+================================================
+
+source_sha=5166dee92d22610e769cc2726a77c70641e63b27
+evidence_branch=evidence/android-20260929-issue45-review
+artifact_dir=/home/ubuntu/repos/meeterm/artifacts/android-emulator-observability
+
+Clean-directory handling
+  The prior run's artifact directory was moved aside BEFORE this run started:
+    artifacts/android-emulator-observability (1351186 leftovers, already
+    pushed @ da662f4-equiv branch issue45-posix 3b4d472)
+      -> artifacts/android-emulator-observability.1351186 (preserved separately)
+    artifacts/android-emulator-observability -> recreated EMPTY for this run.
+  Result: no freshness boundary needed — every file in this bundle was created
+  by this run.
+
+Run-start boundary
+  first_artifact=gradle-build.log @ 2026-09-29 02:32:48 UTC
+  last_suite_artifact=ssh-validation.txt / ssh-logcat.txt /
+    android-transport-path.txt @ 03:07:11 UTC
+  Manually produced after suite end (this run's observations):
+    dialog-markers.txt — dumped from live logcat (69 lines)
+    run-record.txt — written for 5166dee
+    artifact-provenance.txt — this file
+
+Freshness check
+  find . -type f ! -newermt "2026-09-29 02:30" -> 0 files.
+  Inventory: 77 files at push time (app-release.apk removed = 76 shipped).
+  No prior-run filenames were present to exclude; nothing back-filled.
+
+Honest-observation notes
+  - empty-unavailable.txt: fresh from this run; `empty` seeded route again
+    unavailable:missing_screen_element_0,screen_element_1 (baseline). Not a gate.
+  - daily-use.mp4 covers the suite's own ~180s driver window only; later legs
+    are covered by PNG stills.
+  - Removed before push: app-release.apk (~65MB). No credentials, known_hosts,
+    private keys, or raw auth logs included; fixture ephemeral key material
+    stays in the suite's temp dir.
