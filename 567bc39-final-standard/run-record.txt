@@ -11,5 +11,5 @@ suite_result: result=passed stage=complete teardown=349985ms
 gates: storage 6/6, native-input 14/14, appearance+foundation+standard+ui validations all passed
 renderer: FIRST_FRAME_METAL=1, FIRST_FRAME_SOFTWARE=0 (grep simulator.log)
 agent_status_evidence: standard-herdr-workspaces.png = Main red filled (blocked) + Tools green hollow (idle); standard-herdr-groups.png = Development yellow/amber (working) + Tests&review teal (done) — light appearance only; dark/light variants covered by theme matrix screens (not herdr-specific routes)
-file_inventory: 71 files at initial push (head 4924f14221f3e12af00c4eb212f201da68189382); addendum recovered build/xcodebuild.log -> 72 files
+file_inventory: per git ls-tree -r --name-only: initial push 4924f14=72 files, xcodebuild.log addendum 8260c89=73 files, dark-capture addendum c81b37d=76 files (all counts include run-record.txt)
 xcodebuild_log: original transcript recovered from session overflow (full 39666-line invocation->TEST BUILD SUCCEEDED), sanitized to build/xcodebuild.log; pipeline exit=1 remains tee file-open error at transiently missing log dir, not a build failure
