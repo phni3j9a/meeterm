@@ -1088,6 +1088,11 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
   assert.equal(smoke.smokeFixture('disconnected').connection.state, 'Disconnected');
   assert.equal(smoke.smokeFixture('connection-error').connection.errorCode, 'authentication_failed');
   assert.equal(smoke.smokeFixture('workspaces').connection.state, 'Ready');
+  for (const screen of ['herdr-workspaces', 'herdr-groups']) {
+    const fixture = smoke.smokeFixture(screen);
+    assert.equal(fixture.control.runtimeOperationsReady, true);
+    assert.equal(fixture.control.terminalInputReady, false, 'hidden-terminal fixtures must exercise the closed input gate');
+  }
   const picker = smoke.smokeFixture('runtime-picker');
   assert.equal(picker.connection.state, 'AwaitingRuntimeSelection');
   assert.equal(picker.runtimeDiscovery.backends.length, 2);
@@ -1329,6 +1334,82 @@ test('Herdr status metadata renders on its owning surfaces without JS rollups or
   fixture.environment.connection.state = 'Ready';
   await updateSnapshot(fixture.environment, updated);
   assert.deepEqual(workspaceOrder(), ['workspace-row-W1', 'workspace-row-W2'], 'status changes must not reorder workspaces');
+});
+
+test('Herdr workspace status stays live and updates while terminal input is hidden', async t => {
+  const snapshot = makeSnapshot({
+    workspaces: [
+      workspace('W1', 'Workspace One', 'working'),
+      workspace('W2', 'Workspace Two', 'idle'),
+      workspace('W3', 'Unknown', 'unknown'),
+      workspace('W4', 'No status'),
+    ],
+    control: workspaceControl({ terminalInputReady: false }),
+  });
+  const fixture = await mountForTest(t, snapshot);
+  await settleAsync();
+
+  assert.equal(fixture.environment.visibility.at(-1), false);
+  assert.equal(fixture.environment.connection.state, 'Ready');
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status: working/);
+  assert.match(findTestId(fixture.root, 'workspace-row-W2').props.accessibilityLabel, /Agent status: idle/);
+  assert.match(findTestId(fixture.root, 'workspace-row-W3').props.accessibilityLabel, /Agent status: unknown/);
+  assert.equal(all(fixture.root, node => node.props?.testID === 'workspace-agent-status-W4').length, 0);
+  assert.equal(all(fixture.root, node => node.props?.style?.some?.(style => style?.backgroundColor === LIGHT.agentStatus.working)).length > 0, true);
+
+  const updated = clone(snapshot);
+  updated.workspaces[0].agentStatus = 'done';
+  await updateSnapshot(fixture.environment, updated);
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status: finished/);
+
+  // An unavailable runtime must still suppress cached states, even if the
+  // transport phase or input flag has not caught up with the native gate.
+  for (const [state, control] of [
+    ['Ready', workspaceControl({ runtimeOperationsReady: false })],
+    ['Ready', workspaceControl({ recovery: { phase: 'resynchronizing' } })],
+    ['Reconnecting', workspaceControl()],
+    ['Disconnected', workspaceControl()],
+  ]) {
+    fixture.environment.connection.state = state;
+    await updateSnapshot(fixture.environment, { ...updated, control });
+    assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status unavailable/);
+    assert.equal(fixture.environment.snapshot.workspaces[0].agentStatus, 'done');
+  }
+
+  fixture.environment.connection.state = 'Ready';
+  await updateSnapshot(fixture.environment, updated);
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status: finished/);
+  assert.equal(fixture.environment.snapshot.control.terminalInputReady, false);
+});
+
+test('Herdr status stays live in switch sheets and terminal chrome with input gated', async t => {
+  const snapshot = makeSnapshot({
+    workspaces: [workspace('W1', 'Workspace One', 'blocked')],
+    groups: [group('G1', 'W1', 'Group One', true, 'working'), group('G2', 'W1', 'Group Two', false, 'done')],
+    terminals: [pane('P1', 'W1', 'G1', 'native:P1', true, true, 'Build', { name: 'Claude Code', status: 'working' })],
+  });
+  const fixture = await mountForTest(t, snapshot);
+  await openWorkspace(fixture.root, 'W1');
+  await press(fixture.root, findLabel(fixture.root, 'Switch workspace'));
+  const hidden = clone(snapshot);
+  hidden.control.terminalInputReady = false;
+  await updateSnapshot(fixture.environment, hidden);
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status: blocked/);
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+
+  const groupPicker = findLabel(fixture.root, 'Switch terminal group, Group Group One, Agent status: working');
+  assert.equal(findTestId(fixture.root, 'terminal-tab-P1').props.accessibilityLabel, 'Terminal Build, Agent status: working');
+  assert.equal(findTestId(fixture.root, 'selected-agent-line').props.accessibilityLabel, 'Claude Code, Agent status: working');
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'cachedReadOnly', 'live metadata must not enable native input');
+  await press(fixture.root, groupPicker);
+  assert.ok(findLabel(fixture.root, 'Group Group One, Agent status: working'));
+  assert.ok(findLabel(fixture.root, 'Group Group Two, Agent status: finished, not yet viewed'));
+  await press(fixture.root, findLabel(fixture.root, 'Close sheet'));
+  await updateSnapshot(fixture.environment, snapshot);
+  assert.equal(terminalViews(fixture.root)[0].props.interactionMode, 'live');
+  await press(fixture.root, findLabel(fixture.root, 'Back to workspaces'));
+  await updateSnapshot(fixture.environment, hidden);
+  assert.match(findTestId(fixture.root, 'workspace-row-W1').props.accessibilityLabel, /Agent status: blocked/);
 });
 
 test('disabled workspace rows keep the unavailable mark at full contrast', async t => {

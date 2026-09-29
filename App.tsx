@@ -451,6 +451,11 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     base.panes = SMOKE_HERDR_PANES.map(pane => ({ ...pane, selected: pane.id === SMOKE_HERDR_PANES[0].id }));
     base.selectedPaneIds = { 'smoke-code': base.panes[0].id };
     base.sheet = screen === 'herdr-groups' ? 'groups' : null;
+    // Native closes the input gate while the list or a switch sheet hides
+    // the terminal; the runtime still publishes live agent metadata.
+    if (screen === 'herdr-workspaces' || screen === 'herdr-groups') {
+      base.control = smokeControl({ terminalInputReady: false });
+    }
     return base;
   }
   if (screen.startsWith('attachment-')) {
@@ -1706,11 +1711,10 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             && nextSessionControl.recovery.phase !== 'none'
             && !recoveryInvalidatedRef.current);
           if (!readySession && !retainedSession && nextSession && nextSessionControl
-            && !recoveryInvalidatedRef.current && next.state !== 'Ready') {
-            // A disconnected native snapshot can advance its operation epoch
-            // before it publishes an active recovery phase. Refresh lifecycle
-            // control while keeping the last workspace and selected terminal
-            // metadata bound to the cached screen.
+            && !recoveryInvalidatedRef.current) {
+            // Native can close its gates before the connection phase changes
+            // or an active recovery is published. Always refresh lifecycle
+            // control while keeping the last workspace/terminal metadata.
             setSession(current => {
               const nextControlOnly = { ...current, control: nextSessionControl };
               return sameSession(current, nextControlOnly) ? current : nextControlOnly;
@@ -1718,7 +1722,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           }
           if (readySession || retainedSession) {
             if (readySession) {
-              // A Ready snapshot with both native gates open is a valid
+              // A Ready snapshot with the runtime operation gate open is a valid
               // binding; this is the only path that updates the live session
               // during ordinary polling.
               updateRuntimeBound(true);
@@ -1925,6 +1929,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   // These are native-published gates, not guesses derived from the transport
   // phase or the presence of cached JS metadata. Keep the two gates separate
   // so a drawable recovery surface can never imply writable input.
+  // Agent metadata follows runtimeReady: hiding the terminal closes its
+  // input gate without making workspace/group/pane status unavailable.
   const runtimeReady = Boolean(ready && control.runtimeOperationsReady && !recoveryPhaseActive && !recoveryInvalidated);
   const terminalInputReady = Boolean(ready && control.terminalInputReady && !recoveryPhaseActive && !recoveryInvalidated);
   const strongReady = runtimeReady && terminalInputReady;
@@ -3931,7 +3937,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
           && retainedPane && item.id === retainedWorkspaceId);
         const disabled = commandBusy || (!runtimeReady && !retainedWorkspace)
           || (presentation.pending && !retainedWorkspace);
-        return <View style={styles.horizontal}><WorkspaceRow connected={strongReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={disabled} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>;
+        return <View style={styles.horizontal}><WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === activeWorkspaceId} disabled={disabled} optionsDisabled={!runtimeReady} colors={homeColors} onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} /></View>;
       }}
       ListHeaderComponent={listHeader}
       ListEmptyComponent={emptyList}
@@ -3970,17 +3976,17 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
         <Text style={[styles.groupLabel, { color: homeColors.muted }]}>Group</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, strongReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: homeColors.surface }, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}>
-          <AgentStatusIndicator status={group?.agentStatus} live={strongReady} colors={homeColors} testID={group ? `group-agent-status-${group.id}` : undefined} />
+        <Pressable accessibilityRole="button" accessibilityLabel={(() => { const phrase = agentStatusPhrase(group?.agentStatus, runtimeReady); return phrase ? `Switch terminal group, Group ${group?.name || 'Untitled group'}, ${phrase}` : 'Switch terminal group'; })()} accessibilityHint={group?.name} disabled={!runtimeReady || commandBusy} onPress={() => openSheet('groups')} style={({ pressed }) => [styles.groupPicker, { backgroundColor: homeColors.surface }, !runtimeReady && { opacity: .55 }, pressed && { opacity: .65 }]}>
+          <AgentStatusIndicator status={group?.agentStatus} live={runtimeReady} colors={homeColors} testID={group ? `group-agent-status-${group.id}` : undefined} />
           <Text numberOfLines={1} style={[styles.groupName, { color: homeColors.text }]}>{group?.name || 'Choose a group'}</Text><Icon name="down" color={homeColors.muted} size={12} />
         </Pressable>
       </View> : null}
       {workspace && groupPanes.length > 0 ? <View style={[styles.paneStrip, { borderBottomColor: homeColors.border }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paneTabs}>
-        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, strongReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={strongReady ? name : `${name}. Cached output, read only. Input is paused until recovery finishes.`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? homeColors.accent : 'transparent' }, pressed && { backgroundColor: homeColors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? homeColors.accent : homeColors.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={strongReady} colors={homeColors} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? homeColors.accent : homeColors.muted }]}>{name}</Text></Pressable>; })}
+        {groupPanes.map((pane, index) => { const name = pane.name || `Terminal ${index + 1}`; const spokenName = pane.name ? `Terminal ${name}` : name; const phrase = agentStatusPhrase(pane.agent?.status, runtimeReady); return <Pressable key={pane.id} testID={`terminal-tab-${pane.id}`} accessibilityRole="tab" accessibilityLabel={`${spokenName}${phrase ? `, ${phrase}` : ''}`} accessibilityHint={strongReady ? name : `${name}. Cached output, read only. Input is paused until recovery finishes.`} accessibilityState={{ selected: pane.id === selectedPane?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => choosePane(pane)} onLongPress={() => { if (runtimeReady) openName({ kind: 'renamePane', pane }); }} style={({ pressed }) => [styles.paneTab, { borderBottomColor: pane.id === selectedPane?.id ? homeColors.accent : 'transparent' }, pressed && { backgroundColor: homeColors.surface }]}><Icon name="terminal" color={pane.id === selectedPane?.id ? homeColors.accent : homeColors.muted} size={15} /><AgentStatusIndicator status={pane.agent?.status} live={runtimeReady} colors={homeColors} testID={`terminal-agent-status-${pane.id}`} /><Text numberOfLines={1} style={[styles.paneTabText, { color: pane.id === selectedPane?.id ? homeColors.accent : homeColors.muted }]}>{name}</Text></Pressable>; })}
       </ScrollView><IconButton icon="plus" label="Create terminal" colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={createPane} /></View> : null}
-      {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, strongReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
+      {selectedPane?.agent ? (() => { const phrase = agentStatusPhrase(selectedPane.agent.status, runtimeReady); return <View testID="selected-agent-line" accessible accessibilityRole="text" accessibilityLabel={`${selectedPane.agent.name}, ${phrase}`} accessibilityHint="Status reported by Herdr. This does not verify task correctness or passing tests." accessibilityLiveRegion="polite" style={styles.agentLine}>
         <Text accessible={false} numberOfLines={1} style={[styles.agentName, { color: homeColors.muted }]}>{selectedPane.agent.name}</Text>
-        <AgentStatusIndicator status={selectedPane.agent.status} live={strongReady} colors={homeColors} showLabel testID="selected-agent-status" />
+        <AgentStatusIndicator status={selectedPane.agent.status} live={runtimeReady} colors={homeColors} showLabel testID="selected-agent-status" />
       </View>; })() : null}
       {recoveryRail}
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
@@ -4106,12 +4112,12 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         </Pressable>
       </ScrollView> : sheet === 'servers' ? <ProfileList profiles={profiles} selectedId={profileId} loading={profilesLoading} error={profilesError} busy={commandBusy} colors={homeColors} themePreference={preferences.theme} onRetry={() => { void loadProfiles(); }} onAdd={() => openProfileForm(undefined, 'save')} onConnect={connectSavedProfile} onEdit={profile => openProfileForm(profile, 'save')} onDelete={deleteProfile} /> : sheet === 'workspaces' ? <View style={styles.flex}>
         <View style={styles.pickerHeader}><Text selectable style={[styles.emptyBody, { color: homeColors.muted }]}>{endpoint(connection)}</Text>{workspaces.length >= 6 ? <SearchField label="Search workspace picker" value={pickerQuery} onChange={setPickerQuery} colors={homeColors} /> : null}<Button label="Create workspace" colors={homeColors} secondary disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'createWorkspace' })}>Create workspace</Button></View>
-        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={strongReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
+        <FlatList data={pickerWorkspaces} keyExtractor={item => item.id} contentContainerStyle={styles.pickerList} renderItem={({ item }) => <WorkspaceRow connected={runtimeReady} workspace={item} selected={item.id === workspaceId} disabled={!runtimeReady || presentation.pending || commandBusy} optionsDisabled={!runtimeReady} colors={homeColors} picker onPress={() => openWorkspace(item)} onOptions={() => workspaceOptions(item)} />} ListEmptyComponent={<Text style={[styles.emptyBody, { color: homeColors.muted }]}>No matching workspaces.</Text>} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets />
       </View> : sheet === 'groups' ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Keep related terminals together. Select a group to switch.</Text>
-        {groups.map(item => { const phrase = agentStatusPhrase(item.agentStatus, strongReady); return <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
+        {groups.map(item => { const phrase = agentStatusPhrase(item.agentStatus, runtimeReady); return <View key={item.id} style={[styles.groupRow, { borderColor: homeColors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel={`Group ${item.name || 'Untitled group'}${phrase ? `, ${phrase}` : ''}`} accessibilityState={{ selected: item.id === group?.id, disabled: !runtimeReady || commandBusy }} disabled={!runtimeReady || commandBusy} onPress={() => chooseGroup(item)} style={({ pressed }) => [styles.groupChoice, pressed && { opacity: .65 }]}>
-            <View style={styles.groupNameRow}><AgentStatusIndicator status={item.agentStatus} live={strongReady} colors={homeColors} testID={`group-agent-status-${item.id}`} /><Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text></View>
+            <View style={styles.groupNameRow}><AgentStatusIndicator status={item.agentStatus} live={runtimeReady} colors={homeColors} testID={`group-agent-status-${item.id}`} /><Text style={[styles.groupName, { color: item.id === group?.id ? homeColors.accent : homeColors.text }]}>{item.name || 'Untitled group'}</Text></View>
             <Text style={[styles.rowSubtitle, { color: homeColors.muted }]}>{panes.filter(pane => pane.groupId === item.id).length} {panes.filter(pane => pane.groupId === item.id).length === 1 ? 'terminal' : 'terminals'}{item.id === group?.id ? ' · Selected' : ''}</Text>
           </Pressable>
           <IconButton icon="menu" label={`Group options ${item.name}`} colors={homeColors} disabled={!runtimeReady || commandBusy} onPress={() => itemActions(preferences.theme, item.name, () => openName({ kind: 'renameGroup', group: item }), () => closeGroup(item), 'workspace')} />

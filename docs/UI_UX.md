@@ -164,7 +164,12 @@ status は一覧順、check、tab underline、selected text、connection dot の
 | `working` | semantic yellow の filled 8 pt circle | `Working` | `Agent status: working` |
 | `idle` | semantic green の hollow 8 pt circle | `Idle` | `Agent status: idle` |
 | `unknown` | gray の filled 4 pt dot | `Unknown` | `Agent status: unknown` |
-| Ready 以外 | gray の filled 4 pt dot | `Status unavailable` | `Agent status unavailable` |
+| runtime 利用不可 | gray の filled 4 pt dot | `Status unavailable` | `Agent status unavailable` |
+
+状態表示は `Ready` かつ native の runtime 操作 gate が開いており、復旧中・無効化済みでない
+場合に有効です。一覧・切替シート・Terminal の状態表示と読み上げはこの同じ判定を使います。
+端末非表示による `terminalInputReady=false` は状態表示を無効にしません。入力可否と端末描画の
+gate は独立して維持し、切断・復旧中は保持した metadata を live として表示しません。
 
 すべての mark は 12 pt の非操作 slot 内に置きます。workspace row と group picker/sheet
 では名前の前、terminal tab では terminal icon の後かつ名前の前に置きます。selected
