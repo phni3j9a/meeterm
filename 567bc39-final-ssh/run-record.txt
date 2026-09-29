@@ -1,0 +1,11 @@
+run: ios-20260929-issue47-final-ssh
+source_sha: 567bc391ba24d497f88e2223a52f00d626d80b25 (same-session exact commit)
+reuse: /Users/devin/runner-temp-issue47/ios-test-products (standard build pack, BEFORE runtime) -> runner-temp-issue47-ssh via ios-test-products.py restore --source-sha 567bc391... strict manifest+checksum+source-sha+xcode PASS; NOT a fresh build
+pipeline: restore->ios-select-simulator->MEETERM_IOS_SUITE=ssh ios-smoke.sh
+simulator: 7EE2EBC1 iPhone 18 Pro Max iOS 27.0 (only booted)
+fixture: OpenSSH sshd 127.0.0.1:54020 + tmux 3.7c; real_openssh_existing_tmux_runtime_selection PASS; suite uses tmux not mobile Herdr
+suite_result: result=passed stage=complete teardown=434992ms
+gates: fixture/theme-marker/transport-loss/ui-ssh validations all passed
+renderer: FIRST_FRAME_SOFTWARE=0; metal frames present in simulator.log
+load: ~6 during run
+xctest_elapsed/timeout: xcodebuild_elapsed_ms=501978 xcodebuild_timeout_ms=899999 
