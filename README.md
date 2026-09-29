@@ -1,5 +1,7 @@
 # meeterm
 
+Android 開発版は [GitHub Releases](https://github.com/phni3j9a/meeterm/releases) の **Assets → `meeterm.apk`** からダウンロードできます。`main` のCI成功後に自動生成します。[配布・更新手順](docs/ANDROID_RELEASES.md)。
+
 **meeterm** is a smartphone-first SSH client for carrying the same development environment between phone and desktop. It supports the ordinary tmux backend and an explicitly selected Herdr backend.
 
 The core idea is simple: the phone is not a separate development environment. It is another viewport into the selected tmux or Herdr workspace you can later open from a PC.

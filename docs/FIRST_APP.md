@@ -139,7 +139,12 @@ npx expo run:android --device
 USBで `adb reverse tcp:8081 tcp:8081` を設定するなど、端末からMetroへ到達できる
 状態にします。Expo Goでは動作しません。
 
-自己完結する評価APKはDevin CloudのAndroid検証セッションが `artifacts/android-emulator-observability/` に
+最新の開発版APKは [GitHub Releases](https://github.com/phni3j9a/meeterm/releases) の
+**Assets → `meeterm.apk`** からダウンロードできます。`main` のCI成功後に自動生成し、
+JavaScriptを同梱するためMetroは不要です。既存評価版の開発用署名を維持しています。
+自動配布の条件、上書き更新、検証範囲は [Android配布手順](ANDROID_RELEASES.md) を参照してください。
+
+操作受入用の評価APKはDevin CloudのAndroid検証セッションが `artifacts/android-emulator-observability/` に
 `app-release.apk` として生成します（既定ではサイズのため証跡ブランチから除外するので、
 配布用に必要な場合はセッションへ明示的にアップロードを依頼します）。arm64実機とx86_64エミュレーターを
 対象にし、JavaScriptを同梱するためMetro不要です。開発用の署名を使用し、
@@ -150,7 +155,7 @@ adb install -r app-release.apk
 adb shell monkey -p dev.meeterm.app 1
 ```
 
-Androidの実SSH操作が通過した評価APKは
+過去にAndroidの実SSH操作が通過した評価APKは
 [run 34590304287 の成果物](https://github.com/phni3j9a/meeterm/actions/runs/34590304287/artifacts/10196515168)
 から取得できます（commit `b82c226`、Expo 57.0.21、日常利用版のAndroid操作検証を完走）。
 

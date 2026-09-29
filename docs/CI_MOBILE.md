@@ -1,5 +1,7 @@
 # Mobile validation guide
 
+Android APKの自動配布は `android-release.yml` で実行します。`main` の既存CIが成功したコミットからRelease APKを生成し、GitHub Pre-releaseへ掲載します。配布ビルドの検査と、以下のDevin Cloudで行う操作受入は別です。[配布・更新手順](ANDROID_RELEASES.md)。
+
 This guide defines Android emulator and iOS Simulator validation on **Devin Cloud
 persistent sessions**. It complements the Android device runbook in
 [`POC_ANDROID.md`](POC_ANDROID.md); it does not turn a simulator/emulator into a

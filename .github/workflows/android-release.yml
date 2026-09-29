@@ -1,0 +1,133 @@
+name: Android APK release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# Keep every successful main commit, even if another merge arrives mid-build.
+concurrency:
+  group: android-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+env:
+  CI: '1'
+  EXPO_NO_TELEMETRY: '1'
+  NODE_VERSION: '22.22.2'
+  RUSTUP_TOOLCHAIN: '1.96.0'
+  ANDROID_NDK_VERSION: '27.1.12297006'
+
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version_code: ${{ steps.version.outputs.version_code }}
+    env:
+      BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm install --global npm@10.9.7
+      - run: npm ci
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          packages: ''
+      - name: Install pinned Android and Rust build tools
+        run: |
+          sdkmanager --install 'platform-tools' 'platforms;android-36' \
+            'build-tools;36.0.0' 'build-tools;35.0.0' 'cmake;3.22.1' \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Set source-based Android update number
+        id: version
+        run: |
+          test "$(git rev-parse HEAD)" = "$BUILD_SHA"
+          python3 scripts/ci/android-release.py prepare
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --non-interactive --no-install
+      - name: Build standalone APK for phones and emulators
+        working-directory: android
+        run: >-
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace --max-workers=2
+          -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release
+      - name: Verify signature, update number, JS bundle and native libraries
+        run: python3 scripts/ci/android-release.py verify
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: android-apk-${{ github.event.workflow_run.head_sha }}
+          path: dist/android/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: android-apk-${{ github.event.workflow_run.head_sha }}
+          path: dist/android
+      - name: Publish development APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          VERSION_CODE: ${{ needs.build.outputs.version_code }}
+          CI_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          cd dist/android
+          sha256sum --check SHA256SUMS
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          main の更新から自動生成した開発版です。
+
+          - APK: \`meeterm.apk\`（arm64実機 / x86_64、Metro不要）
+          - ソース: https://github.com/${GH_REPO}/commit/${BUILD_SHA}
+          - Android versionCode: ${VERSION_CODE}
+          - 共通CI: ${CI_URL}
+          - 署名: 既存評価版と共通のExpo開発用署名。ストア配布用ではありません。
+          - 確認範囲: 共通CI、Releaseビルド、署名、bundle・native同梱検査。
+            Devin Cloudの両OS操作受入や実機確認をこの結果で代替しません。
+
+          APKと同じ署名の既存アプリへ上書きインストールできます。
+          ダウンロード後の検証には \`SHA256SUMS\` を使用してください。
+          EOF
+          if gh release view "$RELEASE_TAG" --json targetCommitish > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
+            test "$(jq -r .targetCommitish "$RUNNER_TEMP/existing-release.json")" = "$BUILD_SHA"
+            gh release upload "$RELEASE_TAG" meeterm.apk SHA256SUMS build.json --clobber
+          else
+            gh release create "$RELEASE_TAG" meeterm.apk SHA256SUMS build.json \
+              --target "$BUILD_SHA" --title "Android 開発版 ${VERSION_CODE} (${BUILD_SHA:0:7})" \
+              --prerelease --latest=false --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          echo "APK: https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/meeterm.apk" >> "$GITHUB_STEP_SUMMARY"
