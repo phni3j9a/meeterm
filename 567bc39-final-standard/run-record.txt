@@ -11,5 +11,5 @@ suite_result: result=passed stage=complete teardown=349985ms
 gates: storage 6/6, native-input 14/14, appearance+foundation+standard+ui validations all passed
 renderer: FIRST_FRAME_METAL=1, FIRST_FRAME_SOFTWARE=0 (grep simulator.log)
 agent_status_evidence: standard-herdr-workspaces.png = Main red filled (blocked) + Tools green hollow (idle); standard-herdr-groups.png = Development yellow/amber (working) + Tests&review teal (done) — light appearance only; dark/light variants covered by theme matrix screens (not herdr-specific routes)
-file_inventory: 68 files; freshness: all created after run start 2026-09-29T13:34:15Z-ish; no inherited artifacts (rm -rf at start)
-xcodebuild_log_gap: artifacts/ios-build-observability/xcodebuild.log absent this run (log dir transiently missing at tee open) — honest gap recorded
+file_inventory: 71 files at initial push (head 4924f14221f3e12af00c4eb212f201da68189382); addendum recovered build/xcodebuild.log -> 72 files
+xcodebuild_log: original transcript recovered from session overflow (full 39666-line invocation->TEST BUILD SUCCEEDED), sanitized to build/xcodebuild.log; pipeline exit=1 remains tee file-open error at transiently missing log dir, not a build failure
