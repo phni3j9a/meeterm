@@ -1,0 +1,31 @@
+Artifact provenance — Issue #47 final run
+==========================================
+
+source_sha=567bc391ba24d497f88e2223a52f00d626d80b25
+evidence_branch=evidence/android-20260929-issue47-final
+artifact_dir=/home/ubuntu/repos/meeterm/artifacts/android-emulator-observability
+
+Clean-directory handling
+  Prior run's dir moved aside BEFORE this run:
+    artifacts/android-emulator-observability (5166dee leftovers, already
+    pushed @ 419462d on evidence/android-20260929-issue45-review)
+      -> artifacts/android-emulator-observability.5166dee (preserved separately)
+    artifacts/android-emulator-observability -> recreated EMPTY for this run.
+  Every file in this bundle was created by this run.
+
+Run-start boundary
+  first_artifact=gradle-build.log @ 2026-09-29 13:21 UTC
+  last_artifact=i47-flow.mp4 @ ~13:57 UTC (supplemental capture, same binary)
+
+Freshness check
+  find . -type f ! -newermt "2026-09-29 13:15" -> 0 files.
+  Inventory: 82 files tracked at push (app-release.apk removed) = 62 PNG + 20 other files.
+  No prior-run filenames present to exclude; nothing back-filled.
+
+Honest-observation notes
+  - empty-unavailable.txt: fresh; `empty` route again unavailable (baseline), not a gate.
+  - daily-use.mp4 covers the suite's own ~180s driver window; later legs covered by PNGs.
+  - i47-flow.mp4 is a supplemental fixture-flow recording on the accepted binary,
+    NOT a suite artifact; dark-variant stills likewise supplemental seeded captures.
+  - Removed before push: app-release.apk (~65MB). No credentials, known_hosts,
+    private keys, or raw auth logs; fixture ephemeral key stays in suite temp dir.

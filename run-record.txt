@@ -1,0 +1,71 @@
+Issue #47 FINAL Android emulator validation — run record
+=========================================================
+
+source_sha=567bc391ba24d497f88e2223a52f00d626d80b25
+source_branch=fix/issue-47-agent-status (verified == origin HEAD at fetch)
+source_subject=chore: update Expo patch required by dependency validation
+evidence_branch=evidence/android-20260929-issue47-final
+session=devin-9429c00e8cc14fb2b140b3e23bb28ec1 (devin-swe-2-max)
+run_start=2026-09-29 ~13:15 UTC; first artifact gradle-build.log @ 13:21 UTC
+
+toolchain
+  node=22.22.2 (nvm, .nvmrc)   npm=10.9.7
+  jdk=17.0.19   ndk=27.1.12297006   rust=1.96.0   gradle=9.3.1
+  expo=57.0.26  expo-constants=57.0.20  expo-modules-core=57.0.20
+  device=emulator-5554 sdk_gphone64_x86_64 api=36 (AVD meeterm_api36, headless)
+
+build
+  git reset --hard 567bc39 + rm -rf android + npm ci
+  expo prebuild --platform android --non-interactive --no-install --clean (fresh CNG)
+  ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release --no-daemon
+  result=BUILD SUCCESSFUL in 2m21s (668 tasks)
+  install=adb install -r Success ; pm clear dev.meeterm.app
+
+gates (scripts/ci/android-smoke.sh)
+  install/launch/native_ready/first_frame/alive = PASS
+  MEETERM_SMOKE_NATIVE_READY + MEETERM_SMOKE_FIRST_FRAME observed, no crash
+
+seeded routes (scripts/ci/android-screen-fixtures.py)
+  captured=31/32
+  empty=unavailable:missing_screen_element_0,screen_element_1 (baseline retained honestly)
+
+SSH/tmux suite (scripts/ssh/fixture.py -- scripts/ssh/android-smoke.py)
+  result=passed ; stages_completed=116 ; first_failing_stage=none
+  final_stage=disconnect_after_resume
+  transport_loss_evidence=passed (inject -> stale read-only -> restored -> remote ack)
+  mobile live SSH case = tmux control mode; no mobile live-Herdr claim
+
+theme cases
+  daily_theme_matrix 6/6 ; os_scheme same-pid ; pinned independence ;
+  dialog fixed/system/restored all completed
+  MEETERM_SMOKE_THEME markers=30 total (logcat.txt 1 + ssh-logcat.txt 29)
+  MeetermTerminalDialog markers (dialog-markers.txt, 66 lines):
+    dark x13, light x11, system-dark x1, system-light x7
+    selected index 0/1/2 = 10/8/11 ; dismissed x3
+
+Issue #47 agent-status fixture checks (text layer, suite-verified on captured routes)
+  herdr-workspaces: "Agent status: blocked" (Main) + "Agent status: idle" (Tools) -> captured
+  herdr-groups: "Group Development" + "Agent status: working",
+                "Group Tests & review" + "Agent status: finished" -> captured
+  herdr-terminal: "Claude Code, Agent status: working" selected -> captured
+  Visual review of stills (this run, human-checked):
+    light: Main = solid red dot (blocked); Tools = hollow green circle (idle);
+           Development = yellow dot (working); Tests & review = teal dot (done);
+           Code tab = yellow, Tests tab = red, Review tab = teal, Shell tab = no dot (agentless absent)
+    dark (supplemental, this run): same dot scheme verified on dark surface
+    no grey/unknown chip visible on captured tab range (unknown-status tab may be
+    offscreen per fixture's own representative-view note)
+
+supplemental captures (same accepted binary, post-suite)
+  herdr-workspaces-dark.png / herdr-groups-dark.png  (app=dark&terminal=system)
+  herdr-workspaces-flow-light.png                    (back->light relaunch still)
+  i47-flow.mp4 37.64s  (dark ws -> dark groups sheet -> back -> light ws)
+  launch mechanism: single-argv remote am start, URI single-quoted
+
+elapsed
+  build=2m21s ; suite ~32min (~13:25 -> 13:57 UTC) ; total ~45min
+
+scope notes
+  2752912 request superseded before any work started; nothing to preserve.
+  Seeded screenshots are presentation evidence only, not live Herdr evidence.
+  emulator-only; no iOS/physical/external-IME items run.

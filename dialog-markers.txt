@@ -1,0 +1,65 @@
+--------- beginning of main
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=dismissed
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=dark resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=dismissed
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=dark
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=0
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=dismissed
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=system resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=2
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG presented appearance=light resolved=light
+I/MeetermTerminalDialog(16464): MEETERM_SMOKE_DIALOG result=selected index=1
