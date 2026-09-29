@@ -25,7 +25,7 @@ Run-start boundary
 
 Freshness check
   find . -type f ! -newermt "2026-09-29 02:30" -> 0 files.
-  Inventory: 77 files at push time (app-release.apk removed = 76 shipped).
+  Inventory: 78 files tracked at push (app-release.apk removed) = 59 PNG + 19 other files.
   No prior-run filenames were present to exclude; nothing back-filled.
 
 Honest-observation notes
