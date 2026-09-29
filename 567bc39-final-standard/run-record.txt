@@ -1,0 +1,15 @@
+run: ios-20260929-issue47-final-standard
+source_sha: 567bc391ba24d497f88e2223a52f00d626d80b25
+branch: fix/issue-47-agent-status
+supersedes: 27529122081423757f4f6a1e48c6297df1d6a8c1 (aborted before build, toolchain record preserved separately)
+pipeline: fetch->verify-sha->reset --hard->npm ci->CNG --clean->ios-inject-ui-test.sh->pod install->ios-strip-storage-rust-link.py->xcodebuild build-for-testing->test_ios_simulator_entitlements (3/3 OK)->ios-test-products pack (BEFORE runtime)->ios-select-simulator->MEETERM_IOS_SUITE=standard ios-smoke.sh
+build_attempts: 1 (attempt1 TEST BUILD SUCCEEDED; pipeline exit 1 was tee file-open error at log-dir absence, not build failure; xcodebuild.log not captured for this run — transcript retained in session output/overflow)
+preflight: ios-typecheck.sh PASSED first attempt (Ran 2 tests OK)
+environment: load 1.4/91% idle at start; leftover iPhone Air shut down pre-run (preempted prior contention); 19Gi free
+simulator: 7EE2EBC1 iPhone 18 Pro Max iOS 27.0 (only booted device)
+suite_result: result=passed stage=complete teardown=349985ms
+gates: storage 6/6, native-input 14/14, appearance+foundation+standard+ui validations all passed
+renderer: FIRST_FRAME_METAL=1, FIRST_FRAME_SOFTWARE=0 (grep simulator.log)
+agent_status_evidence: standard-herdr-workspaces.png = Main red filled (blocked) + Tools green hollow (idle); standard-herdr-groups.png = Development yellow/amber (working) + Tests&review teal (done) — light appearance only; dark/light variants covered by theme matrix screens (not herdr-specific routes)
+file_inventory: 68 files; freshness: all created after run start 2026-09-29T13:34:15Z-ish; no inherited artifacts (rm -rf at start)
+xcodebuild_log_gap: artifacts/ios-build-observability/xcodebuild.log absent this run (log dir transiently missing at tee open) — honest gap recorded
