@@ -1,156 +1,52 @@
 # meeterm
 
-Android 開発版は [GitHub Releases](https://github.com/phni3j9a/meeterm/releases) の **Assets → `meeterm.apk`** からダウンロードできます。`main` のCI成功後に自動生成します。[配布・更新手順](docs/ANDROID_RELEASES.md)。
+スマホとPCで同じリモート作業を続けるためのSSHクライアントです。
+通常のtmuxと、明示的に選択した既存のHerdr runtimeに対応します。
 
-**meeterm** is a smartphone-first SSH client for carrying the same development environment between phone and desktop. It supports the ordinary tmux backend and an explicitly selected Herdr backend.
+Android開発版は[GitHub Releases](https://github.com/phni3j9a/meeterm/releases)の
+**Assets → `meeterm.apk`** から取得できます。mainのCI成功後に自動生成します。
+[インストール・更新・署名](docs/ANDROID_RELEASES.md)を参照してください。
 
-The core idea is simple: the phone is not a separate development environment. It is another viewport into the selected tmux or Herdr workspace you can later open from a PC.
+## 使い方と構成
 
-## Product model
+SSH接続・ホスト鍵確認の後、tmuxまたはHerdrのセッションを選択します。
+Workspaceはtmux window / Herdr workspace、Terminalはpaneです。
+スマホではpaneをタブとして開き、PCでは通常のtmux/Herdrクライアントで続きを操作します。
+切断してもリモートの作業は残ります。一時的な通信断では作業画面を読み取り専用で保持し、
+同じ接続先・端末を確認して復旧します。
 
-- **Connection** = SSH host
-- **Runtime** = a selected ordinary tmux session, or a selected running Herdr `default`/named session
-- **Workspace** = tmux window, or Herdr workspace
-- **TerminalGroup** = one virtual group for a tmux window, or a Herdr tab
-- **Terminal** = tmux pane, or Herdr pane
+React Nativeは画面・操作・低頻度の状態を担当し、SSH・端末状態・入力・描画は
+共有Rust coreと薄いAndroid/iOS native adapterで処理します。
+WebView端末やmeeterm専用サーバーは使いません。
 
-On mobile, panes are presented as tabs and the active pane is expanded for a phone-sized viewport. A profile stores the SSH endpoint and authentication details. After authentication, the user explicitly selects a runtime from the tmux and Herdr session lists; a saved backend/runtime value is only a last-used hint. On desktop, `tmux attach -t <selected-session>` exposes the selected tmux windows and panes using their normal layout, while a selected Herdr runtime remains available to the normal Herdr client.
+実装済みの主な機能は、保存済み接続先と安全な資格情報保存、runtime picker、
+workspace/group/pane操作、再接続、native入力・選択/copy、独立したapp/terminalテーマ、
+SSH経由の画像添付です。詳細と制約は[PRODUCT.md](docs/PRODUCT.md)から参照できます。
 
-## Issue #17 implementation status
-
-The common model is `Workspace → TerminalGroup → Terminal`. The Rust/native
-backend boundary maps tmux to `window → virtual group → pane` and Herdr to
-`workspace → tab → pane`. Herdr support requires protocol 22, API schema 1, and the public operations
-used by meeterm (see the [compatibility contract](docs/HERDR.md)) over direct SSH stream-local control. Terminal frames,
-input, scroll, resize, lifecycle, stable terminal IDs, and native rendering
-remain below the JavaScript boundary; Herdr itself is unchanged.
-
-The [production native integration](docs/evidence/issue-17-herdr-native.md)
-exercises real Herdr 0.9.0 through an isolated russh endpoint, including normal
-PC client handoff and safe handling of related Git workspaces. The prior
-OpenSSH public CLI proof remains historical evidence. The
-[mobile acceptance record](docs/evidence/issue-17-herdr-mobile.md) tracks exact
-source revisions, suite results, actual screenshot review, and remaining limits.
-See [`docs/HERDR.md`](docs/HERDR.md) for setup, input semantics, handoff behavior,
-close-scope restrictions, and verification commands.
-
-## Issue #21 implementation status
-
-Fresh and manual connections now authenticate the SSH host before showing a
-runtime picker. Discovery is bounded and read-only. tmux sessions can be
-selected or explicitly created as detached sessions; `meeterm` is the suggested
-new-session name rather than a fixed target. Herdr lists running and stopped
-sessions, allows selection only for running sessions, and resolves a compatible
-binary from the non-interactive PATH, the official `~/.local/bin` default, and
-common package-manager locations. Starting or creating Herdr sessions remains
-an ordinary Herdr-client action.
-
-Same-process transport recovery keeps the last authoritative workspace and
-native terminal visible but read-only, and automatically resumes both tmux and
-Herdr without a tap when their concrete checks succeed. tmux verifies the
-selected session and pane. Herdr verifies the approved SSH host and
-authentication, compatible Herdr capability, selected runtime, original
-stable terminal ID, ordinary controller lease without takeover, and an
-authoritative full frame. Herdr 0.9.0 does not expose a comparable
-server-instance identity; that missing proof alone does not block recovery.
-Recovery stops on a concrete mismatch, authentication or synchronization
-failure, missing runtime/terminal, incompatibility, or controller conflict,
-and keeps the stale screen read-only. `runtimeMismatch`, controller conflict,
-and retry-exhaustion/unknown stops offer **Retry** and **Change**; the
-`runtimeMissing`, `terminalMissing`, and `incompatible` reasons offer **Change**
-only. A changed host key offers **Review key**, and authentication failure
-offers **Connection details**. Reconnect in Workspaces or the Server
-sheet is available while retained recovery is reconnecting or stopped for a
-retry-eligible reason, and uses the same-intent path; both controls are hidden
-during resynchronization and for Change-only or security stops.
-
-When retained work exists, **Reconnect** in Workspaces and the Server sheet,
-and **Retry**, all use the same-intent `retryRecovery` path. Its first automatic attempt is immediate;
-bounded exponential backoff applies after failures, and foreground return or a
-network-change notification wakes a sleeping retry. `reconnect` and the
-runtime picker remain the fresh-selection path for cold start, explicit
-server/Session changes, or **Change** after the retained target is lost. Saved
-backend/runtime fields remain non-authoritative last-used hints and are updated
-only after the selected runtime reaches `Ready`.
-
-tmux mobile zoom ownership is tracked by window identity within the selected
-runtime/generation, so pane switches do not lose the cleanup target and
-pre-existing desktop zoom is preserved. Disconnect performs bounded,
-same-Control-Mode cleanup and reports `layout_restore_unconfirmed` through the
-existing connection error fields if the desktop layout cannot be confirmed;
-the local connection still ends in `Disconnected` without replaying input or
-starting automatic recovery. See [SSH validation and limitations](docs/SSH.md)
-for the exact cleanup boundary and current evidence.
-
-## Architecture direction
-
-```text
-React Native / Expo
-        │
-        │ commands, navigation, snapshots only
-        ▼
-Rust native core
-├── russh
-├── backend selector
-│   ├── tmux Control Mode
-│   └── Herdr direct stream-local control
-├── connection / terminal lifecycle
-├── alacritty_terminal
-└── native GPU renderer
-        │
-        │ ordinary SSH
-        ▼
-OpenSSH server
-├── selected ordinary tmux session
-│   ├── window = Workspace
-│   └── pane   = Terminal
-└── selected compatible Herdr session/socket
-```
-
-Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME composition, and rendering frames must stay out of JavaScript. React Native owns app chrome and product state; the native core owns terminal data and rendering.
-
-## Project status
-
-The first evaluation app has passed real SSH connection, workspace/pane selection, native input, and disconnect/reconnect on both the hosted Android emulator and iOS Simulator. The [verified run on `012c987`](https://github.com/phni3j9a/meeterm/actions/runs/34243185286) also passed both native readiness/first-frame/no-crash gates, iOS UIKit input tests, and ordinary desktop tmux attach. Android and iOS screenshots were downloaded and reviewed. iOS reported Metal frames in this Simulator run; physical iPhone GPU and Japanese IME behavior remain unverified. A self-contained Android APK that does not need Metro is available through the [installation guide](docs/FIRST_APP.md#android). See the [Issue #13 acceptance record](docs/evidence/issue-13-ios-acceptance.md) for the iOS launch fix, evidence, and remaining limits.
-
-The shared Rust terminal foundation has Android and iOS native adapters, with GLES on Android and Metal on iOS. Hosted iOS Simulators without Metal use an explicitly identified native CoreGraphics fallback. Both platforms have build/install/launch/first-frame smoke jobs. The original Android foundation was also exercised on a physical Pixel 3, including Japanese IME composition/commit and resize; that historical device evidence remains separate from later SSH validation.
-
-The session path uses a Rust-owned `russh` connection and an explicit backend. Use **Connect** to enter the SSH host, username, and OpenSSH private-key credential (with an optional passphrase) or SSH `password`, then explicitly verify the host key. After authentication, choose an existing tmux session or a running Herdr `default`/named session. tmux creation is a separate explicit action; Herdr creation and startup stay in the normal Herdr client. **Disconnect** leaves the selected remote runtime running. Native automatic recovery retains the last authoritative workspace as read-only and resumes tmux or Herdr with no tap after concrete target, lease, and full-frame checks succeed. **Reconnect** and **Retry** use same-intent recovery while retained work exists; the first retry is immediate, and foreground/network events wake backoff. A fresh manual/cold connection, explicit server/Session change, or **Change** after target loss uses the picker. Keyboard-interactive prompts and MFA are not added. The daily-use milestone adds saved server profiles and opt-in platform-secure credentials, so a saved server can be reopened after an app restart without returning its secret to JavaScript. Approved host identities remain pinned. Input, output, resize, scroll, and rendering stay in the native terminal path. The workspace-first real app follows the [HTML mock](docs/mock/README.md); normal startup shows the unconnected workspace screen. Workspace/group/pane selection, reconnect, and PC handoff guidance use the real native session state. Daily-use additions also cover window/pane management, native automatic reconnect, selection/copy, Ctrl/Alt input and persisted terminal preferences; [the milestone record](docs/DAILY_USE.md) distinguishes implementation from verified acceptance. [First-app usage and acceptance evidence](docs/FIRST_APP.md) tracks the implementation and outstanding mobile verification. See [SSH validation and limitations](docs/SSH.md), the [mobile CI guide](docs/CI_MOBILE.md), and the [Android PoC runbook](docs/POC_ANDROID.md).
-
-Image attachments (Issue #28) let you pick one PNG/JPEG from the photo or file picker, preview the normalized image, upload it over SFTP on the existing SSH connection, and then insert its quoted remote path into the input line of a Codex or Claude Code conversation that is already open. Upload and insert are separate explicit actions, and sending stays a normal Enter by the user. See the [Issue #28 acceptance record](docs/evidence/issue-28-image-attachments.md) for storage, deletion, limits, and evidence.
-
-## Quick start
-
-Use the pinned environment in [the Android PoC runbook](docs/POC_ANDROID.md), then run:
+## 開発
 
 ```sh
 npm ci
-npx expo prebuild --platform android --non-interactive --no-install
-npx expo run:android --device
+npm run typecheck
+npm run test:app
+npm start
 ```
 
-`android/` and `ios/` are Expo CNG outputs when generated locally; the root app config, local native module, and Rust source remain the source of truth. The recorded device result and its known limitations are in the runbook; a future emulator-only run must not overwrite that evidence or be treated as proof of native Japanese IME and GPU behavior.
+native実行にはExpo Development Buildが必要です。Expo Goには対応しません。
+`android/`・`ios/`はCNG生成物で、変更はtrackedなapp config・plugins・native moduleへ行います。
 
-## Design docs
+普段は変更箇所の確認だけを実行します。文書変更でnative buildを起動せず、
+小さなUI修正に両OSの総合検証を要求しません。CIはPRとmainで変更範囲に応じてjobを選びます。
+Android full / iOS standardなどは必要時に明示する診断です。
 
-- [Current mobile UI, design research, and verification scope](docs/UI_UX.md)
-- [Product definition](docs/PRODUCT.md)
-- [Engineering principles](docs/ENGINEERING_PRINCIPLES.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Herdr backend and usage](docs/HERDR.md)
-- [Development](docs/DEVELOPMENT.md)
-- [Standard testing workflow](docs/TESTING.md)
-- [First-app evaluation, installation, and evidence](docs/FIRST_APP.md)
-- [Daily-use features and acceptance](docs/DAILY_USE.md)
-- [SSH password authentication and Fold7 installation evidence](docs/evidence/password-auth-fold7.md)
-- [SSH validation and limitations](docs/SSH.md)
-- [Mobile CI guide](docs/CI_MOBILE.md)
-- [Android PoC runbook](docs/POC_ANDROID.md)
-- [Issue #1 Android device validation](docs/evidence/issue-1-android-device.md)
-- [Issue #13 iOS SSH and native smoke acceptance](docs/evidence/issue-13-ios-acceptance.md)
-- [Issue #17 Herdr feasibility evidence](docs/evidence/issue-17-herdr-feasibility.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md)
-- [ADR 0001: native terminal first](docs/decisions/0001-native-terminal-first.md)
-- [Agent instructions](AGENTS.md)
+- [開発の入口](docs/DEVELOPMENT.md)
+- [何を検証するか](docs/TESTING.md) — 実行範囲の唯一の基準
+- [Mobile診断の実行手順](docs/CI_MOBILE.md) — 実行するときだけ参照
+- [製品仕様](docs/PRODUCT.md) / [アーキテクチャ](docs/ARCHITECTURE.md)
+- [判断原則](docs/ENGINEERING_PRINCIPLES.md)
+- [SSH](docs/SSH.md) / [Herdr](docs/HERDR.md) / [UI](docs/UI_UX.md)
 
-The public Fressh repository was consulted during feasibility research only. meeterm does not copy Fressh source and does not depend on a Fressh binary; see [the provenance notice](THIRD_PARTY_NOTICES.md).
+過去の検証結果と既知の限界は[証跡](docs/evidence/)に保存しています。
+Simulatorやseeded画面の成功を、実機GPU・日本語IME・実接続の成功とは扱いません。
+日常利用の経緯は[DAILY_USE.md](docs/DAILY_USE.md)、過去の評価は
+[FIRST_APP.md](docs/FIRST_APP.md)を参照してください。

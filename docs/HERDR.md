@@ -355,24 +355,11 @@ Herdr への自動 fallback は検証対象にも実装 promise にも含めま�
 topology の安全性は、Herdr の既存 close contract と混同せず、tmux 側の実行直前 fail-closed
 検証として記録します。
 
-モバイルでは Android full、iOS `standard`、接続・認証・native input を含む短い iOS `ssh` を
-影響範囲に応じて実行します。runtime picker の loading、mixed、empty、partial error、重複名、
-明示的作成、stale selection の画面は fixture で確認します。iOS `standard` の source-level
-manifest は26画面で、Issue #21の18画面に `session-switcher`、
-`session-switcher-sessions`、`recovery-progress`、
-`recovery-exhausted`、`recovery-mismatch`、
-`connection-error`を加えたものです。
-`layout-restore-unconfirmed` と `runtime-layout-restore-unconfirmed` の warning fixture も含みます。
-既存の `herdr-connection` は、
-Herdr `default` candidate に non-authoritative な `Last used` hint を表示する picker state
-です。Android の observational `SCREEN_NAMES` は32 routeで、Issue #21の25
-routeに2つの switcher route、3つの recovery route、2つの layout-restore
-warning fixtureを加えています。これらは source scope の記述であり、remote CI や visual review の結果を主張
-しません。Herdr の実切断からの zero-tap recovery は opt-in ignored Rust/russh integration で
-実 Herdr 0.9.0 binary を使って検証します。Android full と iOS `ssh` の実接続切断試験は tmux
-を対象とし、iOS standard の Herdr 画面は seeded presentation のみです。seeded presentation は
-remote 操作の成功や pixel-diff の gate ではなく、iOS/Android
-の画像を実際に review するまで visual success と報告しません。
+検証の実行範囲は[TESTING.md](TESTING.md)、Mobile実行時の手順は
+[CI_MOBILE.md](CI_MOBILE.md)に集約します。UIだけの修正に両OS総合検証は要求しません。
+Herdrの実切断からの復旧は実binaryを使うRust/russh integrationで確認します。
+Android full / iOS sshの接続試験はtmux、Herdr画面fixtureは表示だけの証拠です。
+画面数・test件数はdriverを参照し、実行していないsourceの受入を主張しません。
 
 旧 `scripts/herdr/feasibility.py` の public CLI proof は OpenSSH 経由の先行診断です。新しい
 russh integration の代わりにはしません。過去の frame/input の失敗や CI failure は、元の

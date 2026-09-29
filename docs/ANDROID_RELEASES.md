@@ -35,12 +35,10 @@ mainの履歴を書き換えたり、この計算のoffsetを下げたりしな�
 
 ## 検証の範囲
 
-この配布経路は共通CI・Android Releaseビルド・APK構造と署名の確認です。
+この配布経路は変更範囲に応じたCI・Android Releaseビルド・native単体試験・APK構造と署名の確認です。
 Devin CloudのAndroid/iOS操作受入、実機の動作・性能検証とは区別します。
-アプリの変更に必要な既存の受入手順は引き続き実施します。
+追加の動作確認は[TESTING.md](TESTING.md)で選び、毎回の両OS総合検証は要求しません。
+mainでは一般CIのAndroid debug buildを省き、このRelease buildで確認します。
+main更新ごとのAPK提供は維持するため、文書だけのmain更新でも配布ビルドは実行します。
 
-## 初回設定時の依存更新
-
-既存CIのExpo互換性検査で57.0.26が必要になったため、Expoを57.0.25から
-57.0.26へ更新しました。lockfile内のExpo Modules Core / Expo Constantsも
-必要な57.0.20へ揃えています。初回検証の結果はIssue #49へ記録します。
+初回配布設定の経緯・結果は[Issue #49](https://github.com/phni3j9a/meeterm/issues/49)に記録しています。

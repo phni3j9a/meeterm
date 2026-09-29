@@ -1,436 +1,69 @@
 # AGENTS.md
 
-This repository is a greenfield implementation of **meeterm**, a smartphone-first SSH client with ordinary tmux and an explicitly selected Herdr backend.
-
-Before making architectural or product changes, read `docs/PRODUCT.md`,
-`docs/ARCHITECTURE.md`, and `docs/ENGINEERING_PRINCIPLES.md`. Treat them as the
-current source of truth unless an approved task explicitly changes product
-direction. When an explicit product priority conflicts with an older, stricter
-implementation rule, follow the product priority while preserving unrelated
-invariants and concrete safety requirements.
-
-## Product invariants
-
-- The selected remote runtime is the durable workspace source of truth.
-- The tmux runtime is a user-selected session on the ordinary tmux server. `meeterm` is the suggested name for an explicitly created new session and the legacy last-used hint; it is not a fixed runtime. Herdr uses a selected running `default` or named session.
-- **Workspace = tmux window or Herdr workspace.**
-- **Terminal = tmux pane or Herdr pane.**
-- On mobile, panes are presented as tabs and the selected pane receives a phone-appropriate full-size experience.
-- On desktop, tmux remains usable through ordinary `tmux attach -t <selected-session>`, and Herdr remains usable through its normal client for the selected session.
-- Smooth phone-to-PC handoff is required. Simultaneous interactive phone+PC use is not an initial requirement.
-
-Do not change the session/window/pane mapping merely because another mapping simplifies mobile implementation.
-
-## Issue #17 common backend contract
-
-The invariants above describe the current, working tmux backend and remain in
-force. Issue #17 adds an implemented common model without changing that mapping:
-
-```text
-Workspace → TerminalGroup → Terminal
-```
-
-For tmux, a Workspace remains a tmux window, a Terminal remains a tmux pane,
-and TerminalGroup is one virtual mobile group per window. The virtual group
-must not create a remote tmux window or otherwise change the desktop layout.
-Herdr maps Workspace to a Herdr workspace, Group to a Herdr tab, and Terminal
-to a Herdr pane. Backend selection is explicit after authenticated runtime
-discovery. Legacy backend/runtime fields are a non-authoritative last-used
-hint, updated only after Ready; a missing legacy backend seeds the tmux
-suggestion but does not bypass the picker. The Rust/native path requires
-protocol 22, schema 1, and the public API/CLI
-capabilities used by meeterm. Herdr 0.9.0 is a verified baseline fixture,
-not a production SemVer gate. Executable paths are connection-scoped
-capabilities, not runtime identity; reconnect may resolve another compatible
-path. Keep acceptance
-evidence scoped to the tested source and suites in
-[`docs/evidence/issue-17-herdr-mobile.md`](docs/evidence/issue-17-herdr-mobile.md). See [`docs/HERDR.md`](docs/HERDR.md) and the historical
-record [`docs/evidence/issue-17-herdr-feasibility.md`](docs/evidence/issue-17-herdr-feasibility.md).
-
-An additional backend connects to a user-selected remote runtime over ordinary
-SSH. The prohibition on a meeterm gateway or daemon prohibits meeterm's own
-relay; it does not prohibit the selected remote Herdr server. Herdr is an
-existing external application. Integrate with its existing public interfaces;
-do not modify, fork, install, or update Herdr, and do not make an upstream API
-addition a prerequisite of this issue. Keep compatibility limits explicit.
-
-## Architecture invariants
-
-The intended data path is:
-
-```text
-React Native / Expo
-        │ commands / state snapshots only
-        ▼
-Rust native core
-├── russh
-├── backend selector
-│   ├── tmux Control Mode
-│   └── Herdr direct stream-local control
-├── terminal lifecycle/registry
-├── alacritty_terminal
-└── native GPU renderer
-        │
-        ▼
-ordinary SSH
-├── selected ordinary tmux session
-└── selected existing Herdr session/socket
-```
-
-### Keep the terminal data plane native
-
-Do not stream the following through JavaScript:
-
-- terminal output bytes;
-- ANSI/VT streams;
-- terminal cells;
-- continuous scrollback/render data;
-- rendering frames;
-- cursor blinking;
-- IME composition events that can remain inside the native terminal path.
-
-React Native should own navigation, screens, controls, dialogs, settings, and low-frequency state snapshots.
-
-### No server-side meeterm component
-
-Do not introduce, for the core product:
-
-- a meeterm gateway;
-- a meeterm daemon;
-- HTTP terminal transport;
-- WebSocket terminal transport;
-- a hosted relay as a required component.
-
-The remote host should require ordinary SSH access and the selected runtime:
-tmux for the default backend, or an existing Herdr session/socket for Herdr.
-This still must not introduce a meeterm gateway, daemon, HTTP terminal
-transport, WebSocket terminal transport, or hosted relay.
-
-### No WebView terminal fallback
-
-Do not replace the native terminal architecture with xterm.js/WebView as a shortcut unless a task explicitly changes the architecture after documenting the tradeoff.
-
-The target is `alacritty_terminal` plus a native GPU renderer.
-
-### Use ordinary tmux
-
-Do not isolate meeterm into a separate tmux server/socket such as `tmux -L meeterm` for the normal product path.
-
-A desktop user must be able to run the ordinary client against the selected
-runtime, for example:
-
-```bash
-tmux attach -t <selected-session>
-```
-
-without meeterm-specific desktop software. `meeterm` may be substituted when
-it is the selected session or the name chosen by the explicit tmux create
-action; it is not assumed when listing or reconnecting.
-
-## tmux integration
-
-Use the selected backend's structured public boundary as the mobile integration
-boundary: tmux Control Mode for tmux and Herdr's direct stream-local API for
-Herdr.
-
-- Treat tmux pane IDs (`%...`) and window IDs (`@...`) as stable runtime identities where appropriate; Herdr pane IDs are mutable aliases and stable `terminal_id` is the remote identity.
-- Decode Control Mode output as bytes; do not assume pane output is ordinary UTF-8 text.
-- Route each pane's output to its own native terminal state.
-- Preserve the underlying tmux window/pane layout while adapting presentation for mobile.
-- Mobile pane selection/zoom must not permanently destroy the desktop layout.
-- Do not install global tmux hooks or mutate user configuration without a demonstrated need and narrowly scoped design.
-
-Avoid shell command construction from untrusted or user-visible names. Prefer typed command/argument encoding and explicit tmux targets.
-
-## Runtime discovery and selection
-
-An authenticated SSH host connection and a selected runtime are separate
-native lifecycle stages. A fresh manual connection and a cold start always
-perform bounded, read-only discovery and show a picker grouped into tmux and
-Herdr sections. A last-used hint may highlight a row, but it never selects or
-attaches by itself. Discovery must not create, start, attach, or otherwise
-mutate a runtime.
-
-The tmux section lists arbitrary sessions from the ordinary server. A verified
-empty server/session result is an empty section; other command failures remain
-errors. Selecting a row targets its exact live session identity. Creating a
-tmux runtime is a separate detached action, suggests `meeterm` as its name,
-verifies the returned identity, and then selects it. A list-to-select race is a
-stale-selection error followed by refresh, never an implicit create.
-
-The Herdr section resolves a compatible Herdr executable natively using PATH,
-the official `~/.local/bin` installer default, and common package-manager
-locations, and keeps that resolved path as a
-connection-scoped capability for list, status, controller setup, and supported operations. The path is not exposed to JavaScript or ordinary
-logs. Rows distinguish running candidates from stopped sessions; only running
-rows may be selected, and selection revalidates protocol 22, schema 1, and the
-direct stream-local contract. Herdr start/create is not promised by this
-issue, and meeterm never silently falls back to tmux when Herdr discovery or
-selection fails.
-
-Each backend has bounded, independent discovery and error state. A missing or
-incompatible tmux/Herdr capability is local to its section unless the user
-selects that backend. There is one selected runtime actor per SSH host
-connection. Switching or releasing it drains/closes the backend controller
-and preserves the remote process before another selection is acquired.
-
-After a runtime has reached Ready, same-process transport recovery preserves
-the last authoritative workspace, selected terminal, native Term, and local
-history as a stale read-only work screen. Input, resize, and remote mutations
-remain blocked until the host identity/authentication, backend capability,
-runtime identity, topology, selected terminal, and authoritative screen are
-verified and committed. tmux recovery requires the exact stored session
-identity and pane ID. Herdr recovery has no confirmation step: it checks the
-same approved SSH host/key, compatible Herdr protocol 22 / schema 1 /
-direct stream-local contract, the same selected running runtime, the original
-stable `terminal_id`, ordinary controller acquisition without takeover, and
-the first authoritative full frame. The absence of comparable Herdr
-server-instance identity alone does not stop recovery. A changed host key,
-authentication failure, missing runtime/session or terminal, incompatibility,
-actual identity mismatch, controller conflict, or failed required
-resynchronization stops on the cached work screen. The available action follows
-the reason: `runtimeMismatch`, controller conflict, and retry-exhaustion/unknown
-stops allow Retry and Change; `runtimeMissing`, `terminalMissing`, and
-`incompatible` allow Change only; host-key stops require Review key and
-authentication stops require Connection details. Security failures take
-precedence over a backend-staged reason. Recovery never retargets or falls back
-to another runtime/backend.
-
-When retained work exists, **Reconnect** in the Workspaces list and Server
-sheet, and recovery **Retry**, use the same-intent
-`retryRecovery(id, operationEpoch)` entry. Both **Reconnect** controls are shown
-while recovery is reconnecting or stopped with a retry-eligible reason; they
-are hidden during resynchronization and for Change-only or security stops. A
-failure revokes the epoch, input/operation gates, and transport immediately,
-but publishes `stopped` only when the old actor finishes.
-A stopped Retry first publishes `reconnecting` with `manual_retry` while
-handing off the retained owner; duplicate current-epoch calls are no-ops and do
-not publish `runtime_replaced`. Retry restarts stopped or exhausted recovery
-with a fresh retry budget, wakes a sleeping backoff immediately, and accepts an
-in-flight request as a no-op. Explicit Disconnect/Change revoke the retry
-intent even after the old actor has finished; stale epochs are rejected.
-`reconnect(id)` /
-`ManualReconnect` and the runtime picker are reserved for cold/fresh selection,
-explicit server or Session changes, and **Change** after the target is lost.
-The first automatic attempt is immediate; bounded exponential backoff applies
-only after failures. Foreground return and `network_changed()` wake a sleeping
-retry only while foreground and automatic reconnect are enabled. A network
-wake never interrupts a healthy connection or resets the retry budget.
-
-Saved server profiles own SSH endpoint and authentication metadata. Existing
-backend/runtime fields represent a non-authoritative logical `lastUsedRuntime`
-hint;
-profile IDs and credentials remain independent, and the hint is updated only
-after the selected runtime reaches `Ready`. Credential secure-storage identity
-must not change merely because the backend or runtime hint changes.
-
-The common backend target must keep remote identifiers opaque and scoped by
-connection, backend, and runtime. A Herdr pane identifier may change when a
-pane moves between workspaces; do not use it as an immutable local terminal
-handle. Reuse the shared Rust registry, `alacritty_terminal::Term`, native
-snapshot format, and bounded input/resize transport for every backend.
-
-## Rust / native structure
-
-Prefer simple module boundaries first. Do not create crates, abstraction layers, traits, registries, or generalized frameworks solely because they may be useful later.
-
-One mobile native package and one shared native library/runtime/terminal registry are preferred. Avoid independent native libraries that accidentally duplicate Tokio runtimes or live terminal registries.
-
-Generated typed bindings are preferred for the low-frequency React Native ↔ Rust control plane. The native terminal view should bind to stable terminal IDs instead of owning the remote session lifetime.
-
-The terminal semantics, opaque IDs, registry ownership, input contract, and native-only snapshot format should be shared across Android and iOS. Android and iOS should remain thin adapters for their own view/surface lifecycle, font metrics, text-input protocol, renderer backend, and native build integration. Do not duplicate the Rust terminal state or create a platform-specific second source of truth merely to make one adapter convenient.
-
-## Japanese and CJK are first-class
-
-Do not treat Japanese support as post-MVP polish.
-
-The terminal foundation must account for:
-
-- Japanese IME composition;
-- CJK wide characters;
-- fallback fonts;
-- combining marks;
-- Unicode text;
-- representative emoji;
-- terminal cell width consistency.
-
-Do not route IME composition through a JavaScript `TextInput` merely because it is easier to implement.
-
-## Security
-
-- Verify SSH host keys. Never silently accept a changed known host key.
-- Keep private keys, passwords, and passphrases out of logs.
-- Store secrets in platform secure storage.
-- Keep authentication and host-key behavior explicit and testable.
-- Treat remote command/input encoding as a security boundary.
-
-## State and lifecycle
-
-- SSH is transport; the selected remote runtime is durable state. tmux uses the
-  selected ordinary session; Herdr uses its selected running `default` or
-  named session. `meeterm` is only a suggested new-session name and legacy
-  hint.
-- Each backend owns reconnect and resynchronization in the Rust core. Explicit
-  Herdr Disconnect/Change/handoff drains the direct controller stream through
-  closed/EOF before a later stable-ID reacquire, while the remote process
-  remains alive. A non-explicit network/channel/transport/remote-close failure
-  abandons the dead controller locally without waiting for a release ACK. With
-  retained work,
-  Workspaces-list and Server-sheet Reconnect and recovery Retry use
-  `retryRecovery`; `reconnect` /
-  `ManualReconnect` remains the fresh-selection entry without retained work.
-- Connection/reconnect behavior belongs in the Rust core, not scattered React hooks/timers.
-- A React Native view unmount must not imply pane destruction.
-- Backgrounding and transport loss should be recoverable through reconnect/resynchronization.
-- Process-death recovery for full-screen TUIs is a technical-risk area; test it rather than assuming scrollback capture is sufficient.
-
-## Scope discipline
-
-meeterm should stay focused. Do not add broad remote-admin functionality without an explicit requirement.
-
-Initial non-goals include:
-
-- browser client;
-- PC-specific meeterm application;
-- hosted backend;
-- file manager;
-- system monitor;
-- simultaneous phone/PC editing guarantees;
-- proprietary session model replacing tmux.
-
-Prefer the smallest implementation that proves the current milestone. Avoid speculative extensibility and over-engineering.
-
-An explicit product priority in an approved task takes precedence over an older
-stricter implementation policy. If safety or robustness appears to require
-expanding scope, first state the reproducible failure scenario and the smallest
-adequate alternative. Do not add confirmation UI, state, or abstraction beyond
-the task's acceptance criteria without that evidence.
-
-## Current engineering sequence and acceptance
-
-The first implementation milestone is a dual-platform native terminal foundation. Prove shared Rust terminal semantics first, keep Android and iOS as thin native adapters, and establish both hosted mobile validation paths early. An environment-only iOS check must not be reported as iOS terminal verification.
-
-The dual-platform native foundation and the selected-backend control boundary
-are implemented together. Keep verifying:
-
-1. Shared Rust-owned `alacritty_terminal::Term` semantics, deterministic resize, input encoding, and native-only snapshot fixtures.
-2. One native package contract in which both platform views bind stable terminal IDs and retain one shared registry/runtime.
-3. Expo Development Build/CNG generation for Android and iOS, with generated native directories remaining untracked.
-4. Thin Android and iOS native `TerminalView` adapters that keep terminal bytes, cells, render frames, and IME composition out of JavaScript.
-5. A real native GPU surface on each platform consuming the shared terminal snapshot. The iOS backend choice remains an evidence-driven implementation decision; see `docs/ARCHITECTURE.md`.
-6. Japanese/CJK/font behavior, native Japanese IME composition and committed input, and deterministic resize behavior on the applicable platform paths.
-7. Devin Cloud Android emulator and iOS Simulator validation sessions that build, install, launch, signal native readiness and a first frame, and detect crashes while always pushing an observability bundle to an evidence branch.
-
-The Herdr live case is an opt-in ignored Rust integration test because it needs a
-real Herdr 0.9.0 binary. It uses an isolated russh test endpoint, not the older
-OpenSSH fixture. Mobile validation is tiered: fast source checks and a short
-native core smoke provide continuous feedback, while Android full and iOS
-`standard` provide final acceptance once the relevant source is stable and
-before merge. Do not spend full-matrix runner time on every intermediate push.
-The short core smoke must still build the generated app when required, install
-and launch it, observe native readiness and a first terminal frame, and check
-that the process does not crash. It is not a substitute for final full and
-`standard` acceptance.
-
-The iOS `standard` source-level manifest is 26 screens: the previous 18 plus
-`session-switcher` and `session-switcher-sessions`,
-`recovery-progress`, `recovery-exhausted`, and `recovery-mismatch`, plus the
-`layout-restore-unconfirmed` and
-`runtime-layout-restore-unconfirmed` warning fixtures and `connection-error`.
-Its existing `herdr-connection` route is now a picker state whose Herdr `default`
-candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` contains 32 routes: the previous 25 plus the two switcher routes,
-three recovery routes, and the two warning fixtures. These are
-source-level scopes, not remote CI
-or visual-review results.
-
-The explicit iOS `polish` diagnostic adds seven presentation states and native
-navigation/keyboard/back checks. `polish-navigation` independently exercises the
-same navigation helper and a fresh native foundation; it does not validate the
-seven states or replace a failed `polish` result. Android's seeded presentation
-routes are observational evidence and do not replace the machine gate. No test
-result may claim acceptance without the applicable integration/CI evidence and
-required visual review.
-
-## Standard testing workflow
-
-Read `docs/TESTING.md` before changing tests, CI, or native code. Use it for the
-current suite contents and commands; the tier and trigger policy below controls
-when those suites run. Drive the Devin Cloud mobile sessions with
-`scripts/ci/devin-cloud.py`, which creates and messages SWE-2 sessions through
-`devin acp --cloud` without the Web UI. See `docs/CI_MOBILE.md`. Do not run a
-validation under a different model when SWE-2 is unavailable. Use these test
-tiers:
-
-- On every relevant push, run the fast Rust, JavaScript, Swift/Kotlin, native
-  bridge, and build-contract checks selected for the changed paths.
-- The validation path should provide a short Android emulator and iOS Simulator
-  core smoke for changes that affect the mobile runtime, generated projects,
-  native bridge, renderer, lifecycle, or user flow. Once available, run it as a
-  blocking check before merge. Keep this suite focused on CNG or product
-  restoration, install, launch, native readiness, first frame, and no-crash
-  evidence, plus only the smallest representative UI state needed to prove the
-  path.
-- Once the relevant source is stable and before merge, run Android full and iOS
-  `standard` on the exact candidate commit. These acceptance runs cover the full
-  interaction and presentation matrices and are required for applicable mobile
-  changes, but they do not need to run after every intermediate push. Run them
-  again after any later source change that affects their product or assertions.
-- Use the small `ssh` round-trip for connection, authentication, runtime
-  selection, or native input changes and before distribution. Do not run it for
-  unrelated UI or documentation changes.
-
-Until the short core smoke exists in the validation path, keep using the current
-Android full and iOS `standard` suites for final acceptance; a source-only check
-must not be presented as the missing runtime gate. The long iOS `full` flow and
-`forms`/`native`/`names` suites remain explicit diagnostics and are not required
-for every change. Keep UI fixtures behind the smoke build flag and an explicit
-test launch route; screenshots of seeded state verify presentation, not the user
-actions that would ordinarily create that state. Preserve real native terminal
-rendering and never send fixture terminal bytes/cells through JS.
-
-For the runtime picker, the applicable Rust/native checks also cover bounded
-side-effect-free discovery, tmux list/create/select and exact identity,
-Herdr executable resolution and running-session list/select, independent
-backend failures, profile migration, reconnect identity, switch/release, and
-fail-closed linked/shared tmux topology mutations. Mobile evidence must cover
-picker loading, duplicate-name, stale-selection, asynchronous refresh, and
-explicit selection/create state transitions in focused app/native tests. The
-26-screen iOS source manifest and 32-route Android observational `SCREEN_NAMES`
-include the three recovery visual routes `recovery-progress`,
-`recovery-exhausted`, and `recovery-mismatch` in addition to the runtime-picker
-routes and the two `layout-restore-unconfirmed`
-warning fixtures. Android full and iOS `standard` plus `ssh`
-remain the required mobile paths for this connection-lifecycle change; both
-platform screenshots from the applicable exact-source acceptance runs must be
-downloaded and actually viewed before the corresponding evidence is reported.
-The ignored Rust/russh integration with the real Herdr 0.9.0 binary is the live
-Herdr zero-tap recovery evidence. Android full and iOS `ssh` real-connection
-loss tests exercise tmux; seeded Herdr screens are presentation evidence only.
-
-The iOS UI/input Swift preflight runs before CNG/app compilation. Report each
-suite by its actual scope; never rename an old full failure into a passing result.
-For another suite or diagnosis on identical source, reuse pristine iOS test
-products only through the same-session commit/toolchain match described in
-docs/CI_MOBILE.md. Record the
-original fresh build and the reuse run. Changes to app, native, test, or build
-inputs require a new build.
-Investigate the first failed stage before rerunning; retain bounded state waits,
-exact completion evidence, and sanitized artifacts. Do not fix failures by
-silently skipping assertions, adding blind retries, or extending deadlines.
-
-## CI and visual evidence boundary
-
-For both mobile validations, the machine-gated acceptance boundary is: generated project/build succeeds, the app installs, the app launches, the expected native module is ready, a first native terminal frame is reported, and the process does not crash. These gates do not claim physical-device GPU, font fallback, rotation, or IME parity.
-
-The iOS validation must distinguish a Metal first-frame marker from the Simulator-only native CoreGraphics fallback marker. The fallback still validates the Rust snapshot, CoreText, view, and input boundary, but it is not evidence that Metal executed.
-
-The observability bundle is pushed to an evidence branch on every run, including failed runs. After app launch it should contain a screenshot and sanitized native log; if launch or capture was not reached, it must contain an explicit unavailable diagnostic rather than a fake image. Do not add a screenshot-existence or pixel-difference gate at this stage. For every native UI change, Main must fetch the evidence branch and actually view both the Android emulator and iOS Simulator screenshots from the final exact-source acceptance runs before reporting visual success; a pushed bundle or a passing process check is not visual review. Intermediate short-smoke screenshots are diagnostic and do not require a full presentation review unless they are the evidence being used for a visual claim. The general Rust CI downloads the official Herdr 0.9.0 binary only into `RUNNER_TEMP`, verifies its pinned SHA-256, and runs the ignored russh integration; record the exact run and result in the acceptance evidence.
-
-The iOS Simulator validation is an unsigned simulator build/install boundary and must not require distribution certificates, provisioning profiles, or Apple signing secrets. Physical-device validation and TestFlight distribution are later, separate signed workflows with their own credentials and acceptance criteria. Simulator Keychain tests run in an app-hosted unit-test target with isolated app entitlements embedded in the Mach-O XML and DER sections; these are generated only for the disposable Simulator app while code signing remains disabled. Entitlement sections in a UI test bundle do not establish entitlement availability in its separate XCTest runner process. See `docs/DAILY_USE.md` for the focused reproduction and actual validation scope.
-
-Treat updates to Expo/React Native, the Rust terminal stack, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, fonts, or the chosen iOS renderer backend as cross-platform native dependency changes. Regenerate CNG output on a fresh checkout, run the short core smoke while iterating, and complete fresh Android full and iOS `standard` acceptance on the final candidate commit; do not patch ignored generated directories to accommodate a dependency update.
-
-## Change policy
-
-If an implementation task reveals that one of these invariants is technically unsound, do not silently work around it. Document the observed constraint, reproduce it with a focused test/PoC, and propose the smallest architecture change needed.
+meeterm is a smartphone-first SSH client for ordinary tmux and an explicitly
+selected existing Herdr runtime. Keep everyday changes small and quick to verify.
+
+## Read only what the task needs
+
+- Product behavior: [docs/PRODUCT.md](docs/PRODUCT.md).
+- Native, SSH, lifecycle or architecture changes: the relevant sections of
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), then [docs/SSH.md](docs/SSH.md)
+  or [docs/HERDR.md](docs/HERDR.md) when needed.
+- Tests and CI: [docs/TESTING.md](docs/TESTING.md) is the single authority for
+  **what to run and when**. Read [docs/CI_MOBILE.md](docs/CI_MOBILE.md) only
+  when actually running or changing mobile diagnostics.
+- Product/architecture decisions: [docs/ENGINEERING_PRINCIPLES.md](docs/ENGINEERING_PRINCIPLES.md).
+
+Do not read all evidence/history or run all suites as a prerequisite to a small
+change. Older milestone documents and evidence describe their recorded source;
+they do not add requirements to the current testing policy.
+
+## Product and security boundaries
+
+- The selected remote runtime is durable state. Workspace = tmux window or
+  Herdr workspace; Terminal = pane. TerminalGroup is virtual for tmux and a
+  Herdr tab. Mobile presentation must preserve desktop layout and normal attach.
+- Use the ordinary tmux server, never a product-specific `tmux -L` socket.
+  `meeterm` is a suggested new-session name, not a fixed runtime.
+- Fresh/cold connections use bounded read-only discovery and an explicit picker.
+  Last-used hints never attach automatically. Do not create a runtime after a
+  selection race, or fall back silently between backends.
+- Herdr is external software: use its public interfaces; do not modify, install
+  or update it. Compatibility is protocol 22/schema 1/required capabilities,
+  not a pinned production version or executable path.
+- Keep terminal bytes, cells, continuous scrollback, render frames and IME
+  composition native. React Native owns controls and low-frequency snapshots.
+  No WebView terminal, meeterm gateway/daemon, or HTTP/WebSocket terminal relay.
+- Share one Rust runtime/terminal registry and `alacritty_terminal::Term` across
+  thin Android/iOS adapters. Views bind stable terminal IDs; unmount does not
+  destroy remote panes. Herdr pane aliases are not stable terminal identity.
+- Verify SSH host keys; changed keys require explicit review. Credentials belong
+  in platform secure storage and never in logs. Encode remote commands safely.
+- Rust owns reconnect. Retained work stays read-only until the original target
+  and authoritative screen are verified. Retry preserves that intent; explicit
+  Change starts selection. Never replay stale input or retarget missing panes.
+- Release controllers before acquiring replacements; keep remote processes alive.
+  Destructive topology changes must not affect another session inadvertently.
+- Japanese/CJK, native IME, wide/combining characters and font fallback are core
+  requirements. Do not move composition into a JS TextInput.
+
+## Development and verification
+
+- Follow the user's Git/Issue/PR instructions. Reuse the current task's branch;
+  start independent work from the latest default branch. Preserve unrelated work.
+- Default to changed-path checks and a regression that demonstrates the bug.
+  Small UI changes do not require both simulators, all screenshots, real SSH,
+  or a dependency update. See the matrix in TESTING.md for native/high-risk work.
+- Full Android and iOS suites are explicit diagnostics, not automatic per-PR
+  acceptance. Do not expand a focused task because an old checklist says so.
+- Keep Expo CNG output (`android/`, `ios/`) untracked. Fix source/configuration,
+  not generated projects. Rebuild affected native inputs when testing them.
+- Keep assertions meaningful. Do not add tests that merely mirror source text
+  or implementation shape. Do not mask failures with blind retries or longer waits.
+- Report actual scope: source checks are not runtime proof, seeded screens are
+  presentation only, and Simulator CoreGraphics is not Metal or physical IME.
+  View an image before claiming visual success for that image/platform.
+- Record result, relevant checks and remaining limitations in the PR. Keep
+  detailed run artifacts in evidence; do not copy the same history into guides.
+- Do not add abstractions, states or confirmation UI for hypothetical risks.
+  A concrete failure or an explicit product requirement must justify complexity.

@@ -76,6 +76,11 @@ jobs:
         run: >-
           ./gradlew :app:assembleRelease --no-daemon --stacktrace --max-workers=2
           -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release
+      - name: Check Android native module regressions
+        working-directory: android
+        run: >-
+          ./gradlew :meeterm-terminal:testReleaseUnitTest --no-daemon --stacktrace --max-workers=2
+          -PreactNativeArchitectures=arm64-v8a,x86_64 -PmeetermRustProfile=release
       - name: Verify signature, update number, JS bundle and native libraries
         run: python3 scripts/ci/android-release.py verify
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
