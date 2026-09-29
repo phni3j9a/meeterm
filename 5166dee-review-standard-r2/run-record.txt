@@ -5,7 +5,7 @@ result=passed stage=complete teardown=309121ms (r1 hit 833233ms deadline)
 runner_temp=/Users/devin/runner-temp-issue45-review-r2
 reuse=/Users/devin/runner-temp-issue45-review/ios-test-products -> strict restore PASSED (manifest+checksum+source-sha 5166dee+xcode 26.6-17F113)
 simulator=7EE2EBC1-0640-4950-AAFF-B4CDF455F377 iPhone18ProMax iOS27.0 (fresh boot post-remediation)
-environment: pre-r2 load 10.2/cpu93%idle (r1 ran at load~78, two booted sims, spotlight+diagnosticd churn)
+environment: pre-r2 load 10.2/cpu93%idle (r1 window load not sampled during run; load~78 observed in the later SSH window before remediation, two booted sims, spotlight+diagnosticd churn)
 storage_cases=6/6 input_cases=14/14 routes=26/26 theme_matrix=6/6 theme_dialog=11/11
 renderer=FIRST_FRAME_METAL software_first_frame=0
 recording=theme-transitions.mp4 captured
