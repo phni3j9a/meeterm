@@ -251,10 +251,130 @@ invocation counts as acceptance. The corrected focused case passed in 25.00s;
 the full local Rust suite and Clippy also passed.
 
 The previously recorded `1351186` mobile results remain evidence for that
-source. Fresh Android full and iOS standard/ssh are required for this review
-follow-up; exact-source results are linked from PR #46 and recorded below once
-available. The earlier `cad6e16` push run's pre-test OpenSSH fixture failure
+source. Android full and iOS standard/ssh for this review follow-up use a fresh
+build of the review candidate; exact-source results are linked from PR #46 and
+recorded below. The earlier `cad6e16` push run's pre-test OpenSSH fixture failure
 ([job 109030574597](https://github.com/phni3j9a/meeterm/actions/runs/36452528703/job/109030574597))
 remains an unresolved historical fixture diagnostic; the same-head PR run
 passed. This review follow-up does not change that fixture or claim its root
 cause is fixed.
+
+Review product candidate: `5166dee92d22610e769cc2726a77c70641e63b27`.
+Local full Herdr runs passed all four cases with each SHA-verified fixture:
+0.9.0 in 63.42s and 0.9.1 in 63.17s (the isolated version runs overlapped).
+[Review-candidate Rust CI](https://github.com/phni3j9a/meeterm/actions/runs/36512708507/job/109228171219)
+passed: 238 unit cases, 4 parser cases, 1 layout case, real OpenSSH/tmux
+(26.52s), all four Herdr 0.9.0 cases (24.50s), and the focused Herdr 0.9.1
+compatibility/recovery case (24.51s). The local full runs serialize cases;
+CI's 0.9.0 invocation uses the normal parallel test runner.
+All four jobs passed in both the
+[PR workflow](https://github.com/phni3j9a/meeterm/actions/runs/36512708507) and
+[push workflow](https://github.com/phni3j9a/meeterm/actions/runs/36512704009),
+including JavaScript/Expo, Swift preflight and Android native build.
+
+Android `full` passed on the exact `5166dee` candidate with fresh CNG and a
+release build (2m39s). Evidence
+[`evidence/android-20260929-issue45-review`](https://github.com/phni3j9a/meeterm/tree/419462da9dfc8b629b248ff60542ecb53ed671d1)
+records all machine gates, all 116 real SSH/tmux stages, and transport-loss
+recovery preserving the native handle and pane with no input during loss and
+exactly-once pre/post markers. Theme, credentials, native selection, CJK atlas,
+and desktop layout cases completed. Main downloaded `8a44d19` and viewed all
+59 PNGs (31 seeded routes and 28 interaction captures); no visible regression
+was identified in those captures. The `empty` route again has a fresh
+unavailable diagnostic and is not counted as a passing screenshot. The bundle
+was created in an empty per-run directory. A subsequent documentation-only
+evidence commit corrects its inventory to 78 files (59 PNGs and 19 others);
+Main verified that images and logs did not change. An ACP control connection
+closed during the suite, but the same remote test process continued without
+restart.
+
+The first iOS `standard` attempt on `5166dee` failed. Evidence
+[`evidence/ios-20260929-issue45-review-standard`](https://github.com/phni3j9a/meeterm/tree/c9bb30fd326dcd3a969b826f1cb88d415ce07f4a)
+records `xcuitest_standard` / `xcodebuild_timeout`: 834,990ms elapsed against
+the remaining 833,233ms budget, with `theme_keyboard_open` as the last stage.
+Storage 6/6, appearance, all 26 routes, the six theme combinations and OS/pinned
+theme checks completed. The keyboard completion, 11 dialog checks, native input
+result and final foundation gate were not reached. Main downloaded and viewed
+all 37 available PNGs; these are partial diagnostic presentation evidence and
+do not establish standard acceptance. Compared with the prior `1351186` run,
+route capture took 526,319ms instead of 198,573ms and keyboard entry began at
+751,727ms instead of 264,800ms; the slowdown spans the flow rather than only
+the final keyboard stage. The deadline and assertions were unchanged.
+
+Before that suite, preflight attempt 1 reported one failure but its detailed
+output was discarded by the validation session's pipeline. Its cause and even
+the failing test name remain undetermined; a passing second attempt does not
+diagnose it. The first build separately failed with exit 65 and `No space left
+on device`; after clearing completed prior-run build products, build attempt 2
+succeeded on the same source. Disk exhaustion is only a possible explanation
+for the earlier preflight failure, not an established cause. The standard
+timeout and the incomplete failure-log preservation remain explicitly recorded.
+The [evidence addendum](https://github.com/phni3j9a/meeterm/tree/09e9b976efc79a3aee05cc4cb43c13e6d099061b)
+adds the retained build failure tail and passing standalone selection-text
+preflight rerun output; it cannot recover the discarded first preflight detail.
+During the subsequent SSH suite, the VM reported load averages around 78 on
+12 cores, two booted simulators and active diagnostic/indexing processes, while
+memory and disk checks did not show exhaustion. This is consistent with a
+contention hypothesis, not proof of per-process causality during the earlier
+standard run. In particular, the later SSH fixture's Rust compilation does not
+establish overlap with the preceding standard UI test.
+
+The independent first iOS `ssh` attempt also failed. Evidence
+[`evidence/ios-20260929-issue45-review-ssh`](https://github.com/phni3j9a/meeterm/tree/5a11d95b569d516d097cf30aa34d4f28f3ba5bab)
+records successful exact-source/toolchain/checksum product restoration and
+fixture preflight, followed by `ui_test_failed` at the existing short-field
+readback assertion (Swift line 3304). The username retained 1 of 5 characters
+on both of the test's existing attempts. The test ran 133.7s (xcodebuild 220s),
+so this was not a suite timeout. It stopped before connection, theme or
+transport-loss assertions. Main viewed the sole `ssh-entry-initial.png`; it
+shows a blank launch surface and establishes no successful SSH interaction.
+High load is a possible contributor to dropped input, not a proven root cause.
+
+The [corrected contention record](https://github.com/phni3j9a/meeterm/tree/5ea4405087316af29fa54a4c374ea7e00fa9da76)
+keeps observation times separate from causal hypotheses. The unused iPhone Air
+was shut down, followed by a normal shutdown/boot of the validation target
+after the failed suites had ended. No host daemons or unrelated jobs were
+terminated. The first instantaneous measurement still showed 71% CPU idle even
+with a decaying load average around 22. After the target restart and settling,
+the second sample showed 93% idle and a one-minute load of 10.2 on 12 cores.
+Only after that measured recovery was one controlled rerun per suite authorized,
+using unchanged source, exact same-session pristine products, assertions and
+deadlines, with separate fresh output/evidence branches.
+
+iOS `standard` then passed in the controlled rerun. Evidence
+[`evidence/ios-20260929-issue45-review-standard-r2`](https://github.com/phni3j9a/meeterm/tree/226b5bf2610fbf4d0154af672e95abbd29b2a611)
+records strict restoration of the pristine products from the same session's
+fresh `5166dee` build, with matching manifest, checksums, source and Xcode
+26.6 (17F113). All 26 routes, 14 native input cases, 6 app-hosted storage cases,
+6 theme combinations and 11 theme/dialog checks passed. The fresh foundation
+verified native readiness, a Metal first frame and no-crash survival; it did
+not use the Simulator software renderer. UI teardown completed at 309,121ms.
+The xcodebuild wrapper observed the explicit passed result and then used its
+existing bounded post-result exit handling (60,189ms), as recorded separately
+from the 380,500ms total invocation. Main downloaded this exact evidence and
+viewed all 50 PNGs: 26 standard, 23 theme and one foundation image. No visible
+regression was identified in these captures. Main first viewed `64c96d3`, then
+verified that `226b5bf` changes only the run-record's observation-time wording;
+images, logs and test results are unchanged. This passing rerun does not erase
+or relabel the earlier failed attempt or establish the lost preflight cause.
+
+iOS `ssh` also passed in its separate controlled rerun. Evidence
+[`evidence/ios-20260929-issue45-review-ssh-r2`](https://github.com/phni3j9a/meeterm/tree/5d258729a6b829bbbca02bf0f8759a7fe7304dd7)
+records the same strict source/toolchain/product restoration, with measured
+load 2.4–4 during the run. Real OpenSSH/tmux input, server/session switching,
+theme markers and transport-loss checks completed. Light/dark and pre/post-loss
+markers occurred exactly once on the same pane/PID, with other panes clean.
+Recovery retained the native terminal identifier/handle and selected pane,
+kept the cached surface read-only and admitted no input during loss. Metal
+executed. Main downloaded the final evidence and viewed all eight PNGs;
+no visible regression was identified in these captures. The preceding failed
+input attempt remains a separate result, not a passing SSH run.
+
+Final review acceptance is therefore scoped to `5166dee`: both source CI runs,
+Android full, and the controlled iOS standard/ssh reruns above. Subsequent
+evidence-only commits do not change product, native, test or build inputs.
+Mobile real-connection cases exercise tmux; live Herdr compatibility and
+same-terminal recovery are established by the separate Rust/russh binary tests.
+Emulator/Simulator results do not establish physical-device GPU or external-IME
+parity. The initial preflight failure's root cause remains unknown because its
+detailed output was not retained.
