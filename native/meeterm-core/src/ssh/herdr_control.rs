@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+const EXECUTABLE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 static NEXT_REMOTE_HANDLE: AtomicU64 = AtomicU64::new(1_000_000);
 
 #[derive(Clone, Default)]
@@ -418,21 +419,19 @@ pub(super) fn stage_local_recovery_failure(
 pub(super) async fn discover(
     shared: &Arc<ConnectionShared>,
     session: &client::Handle<HostKeyHandler>,
-    expected: Option<&str>,
 ) -> Result<Discovery, FlowFailure> {
-    discover_at_epoch(shared, session, expected, None).await
+    discover_at_epoch(shared, session, None).await
 }
 
 async fn discover_at_epoch(
     shared: &Arc<ConnectionShared>,
     session: &client::Handle<HostKeyHandler>,
-    expected: Option<&str>,
     expected_epoch: Option<u64>,
 ) -> Result<Discovery, FlowFailure> {
     if expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch)) {
         return Err(FlowFailure::Stale);
     }
-    let executable = resolve_executable(shared, session, expected, true, expected_epoch).await?;
+    let executable = resolve_executable(shared, session, true, expected_epoch).await?;
     let command = wire::command_with_executable(&executable, None, &["session", "list", "--json"])
         .map_err(|_| FlowFailure::HerdrDiscoveryMalformed)?;
     let output = super::run_remote_command_with_timeout_at_epoch(
@@ -480,7 +479,6 @@ async fn discover_at_epoch(
 async fn resolve_executable(
     shared: &Arc<ConnectionShared>,
     session: &client::Handle<HostKeyHandler>,
-    expected: Option<&str>,
     discovery: bool,
     expected_epoch: Option<u64>,
 ) -> Result<String, FlowFailure> {
@@ -515,39 +513,196 @@ async fn resolve_executable(
             FlowFailure::HerdrProtocol,
         )
     };
-    let executable = match output.exit_status {
-        Some(0) => wire::parse_resolved_executable(&output.stdout).map_err(|_| malformed)?,
+    let candidates = match output.exit_status {
+        Some(0) => wire::parse_executable_candidates(&output.stdout).map_err(|_| malformed)?,
         Some(127) => return Err(missing),
-        Some(78) => return Err(incompatible),
         Some(_) | None => return Err(malformed),
     };
-    if expected.is_some_and(|expected| expected != executable) {
-        // A lifecycle that already selected a binary must not silently switch
-        // to another installation after reconnect.
-        return Err(incompatible);
+    // Each candidate shares a short budget across schema + help. Keep the
+    // existing total limit so a stalled PATH candidate cannot consume the
+    // entire search budget or make 32 candidates take 32 stage timeouts.
+    let deadline = tokio::time::Instant::now() + SSH_STAGE_TIMEOUT;
+    for executable in candidates {
+        check_probe_connection(shared, session, expected_epoch)?;
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let candidate_deadline =
+            deadline.min(tokio::time::Instant::now() + EXECUTABLE_PROBE_TIMEOUT);
+        let schema_command =
+            wire::api_schema_command_with_executable(&executable).map_err(|_| malformed)?;
+        let Some(schema_output) = probe_command(
+            shared,
+            session,
+            schema_command,
+            512 * 1024,
+            candidate_deadline,
+            deadline,
+            expected_epoch,
+        )
+        .await?
+        else {
+            continue;
+        };
+        let Ok(schema) = serde_json::from_slice::<Value>(&schema_output) else {
+            continue;
+        };
+        if wire::validate_api_schema(&schema).is_err() {
+            continue;
+        }
+        let Some(cli_output) = probe_command(
+            shared,
+            session,
+            wire::cli_capability_command(&executable).map_err(|_| malformed)?,
+            64 * 1024,
+            candidate_deadline,
+            deadline,
+            expected_epoch,
+        )
+        .await?
+        else {
+            continue;
+        };
+        if wire::validate_control_help(&cli_output) {
+            // A resolved path remains a connection capability, not identity.
+            return Ok(executable);
+        }
     }
-    let schema_command =
-        wire::api_schema_command_with_executable(&executable).map_err(|_| malformed)?;
-    let schema_output = super::run_remote_command_with_timeout_at_epoch(
-        shared,
-        session,
-        schema_command,
-        512 * 1024,
-        malformed,
-        if discovery {
-            FlowFailure::HerdrDiscoveryTimeout
-        } else {
-            FlowFailure::HerdrProtocol
-        },
-        expected_epoch,
-    )
-    .await?;
-    if schema_output.exit_status != Some(0) {
-        return Err(incompatible);
+    check_probe_connection(shared, session, expected_epoch)?;
+    if tokio::time::Instant::now() >= deadline && discovery {
+        Err(FlowFailure::HerdrDiscoveryTimeout)
+    } else {
+        Err(incompatible)
     }
-    let schema: Value = serde_json::from_slice(&schema_output.stdout).map_err(|_| malformed)?;
-    wire::validate_api_schema(&schema).map_err(|_| incompatible)?;
-    Ok(executable)
+}
+
+fn check_probe_connection(
+    shared: &ConnectionShared,
+    session: &client::Handle<HostKeyHandler>,
+    expected_epoch: Option<u64>,
+) -> Result<(), FlowFailure> {
+    if shared.is_cancelled()
+        || shared.explicit_cleanup_requested()
+        || expected_epoch.is_some_and(|epoch| !shared.current_request_epoch(epoch))
+    {
+        Err(FlowFailure::Stale)
+    } else if session.is_closed() {
+        Err(FlowFailure::Transport)
+    } else {
+        Ok(())
+    }
+}
+
+/// None rejects only this candidate (timeout, bounded-output overflow, exec
+/// refusal, abnormal exit). Err ends discovery/recovery on a stale intent or
+/// dead SSH transport. Keep this policy local to Herdr capability probes;
+/// ordinary tmux and runtime commands retain their existing failure handling.
+async fn probe_command(
+    shared: &ConnectionShared,
+    session: &client::Handle<HostKeyHandler>,
+    command: String,
+    max_bytes: usize,
+    candidate_deadline: tokio::time::Instant,
+    search_deadline: tokio::time::Instant,
+    expected_epoch: Option<u64>,
+) -> Result<Option<Vec<u8>>, FlowFailure> {
+    check_probe_connection(shared, session, expected_epoch)?;
+    if tokio::time::Instant::now() >= candidate_deadline {
+        return Ok(None);
+    }
+    // Retain the channel outside the cancellable future so every completion
+    // path, including a timeout or rejected exec, closes the probe channel.
+    let mut opened = None;
+    let request = async {
+        match session.channel_open_session().await {
+            Ok(channel) => opened = Some(channel),
+            Err(russh::Error::ChannelOpenFailure(_)) => return Ok(None),
+            Err(_) => return Err(FlowFailure::Transport),
+        }
+        check_probe_connection(shared, session, expected_epoch)?;
+        let channel = opened.as_mut().expect("opened probe channel");
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|_| FlowFailure::Transport)?;
+        let mut stdout = Vec::new();
+        let mut total_bytes = 0usize;
+        let mut exit_status = None;
+        while let Some(message) = channel.wait().await {
+            check_probe_connection(shared, session, expected_epoch)?;
+            match message {
+                ChannelMsg::Data { data } => {
+                    total_bytes = total_bytes.saturating_add(data.len());
+                    if total_bytes > max_bytes {
+                        return Ok(None);
+                    }
+                    stdout.extend_from_slice(&data);
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    // Diagnostics count against the cap but are not retained.
+                    total_bytes = total_bytes.saturating_add(data.len());
+                    if total_bytes > max_bytes {
+                        return Ok(None);
+                    }
+                }
+                ChannelMsg::ExitStatus {
+                    exit_status: status,
+                } => {
+                    if status != 0 {
+                        return Ok(None);
+                    }
+                    exit_status = Some(status);
+                }
+                ChannelMsg::Failure | ChannelMsg::ExitSignal { .. } => return Ok(None),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        Ok((exit_status == Some(0)).then_some(stdout))
+    };
+    let result = tokio::select! {
+        biased;
+        _ = shared.cancelled() => Err(FlowFailure::Stale),
+        _ = shared.explicit_cleanup() => Err(FlowFailure::Stale),
+        result = tokio::time::timeout_at(candidate_deadline, request) => result.unwrap_or(Ok(None)),
+    };
+    if let Some(channel) = opened {
+        // Closing is best effort and bounded by the original search deadline.
+        let close_deadline =
+            search_deadline.min(tokio::time::Instant::now() + Duration::from_millis(250));
+        let _ = tokio::time::timeout_at(close_deadline, channel.close()).await;
+    }
+    check_probe_connection(shared, session, expected_epoch)?;
+    result
+}
+
+/// Status proves the selected live runtime, not a CLI path or SemVer.
+fn validate_status(status: &Value, runtime: Option<&str>) -> Result<String, FlowFailure> {
+    let server = &status["server"];
+    if server["running"] != true {
+        return Err(FlowFailure::HerdrSessionMissing);
+    }
+    if server["protocol"] != wire::HERDR_PROTOCOL
+        || status["client"]["protocol"] != wire::HERDR_PROTOCOL
+        || status
+            .get("schema")
+            .or_else(|| server.get("schema"))
+            .is_some_and(|schema| schema.as_u64() != Some(u64::from(wire::HERDR_SCHEMA)))
+    {
+        return Err(FlowFailure::HerdrIncompatible);
+    }
+    let socket = server["socket"]
+        .as_str()
+        .filter(|path| path.starts_with('/') && path.len() <= 4096 && !path.contains('\0'))
+        .ok_or(FlowFailure::HerdrProtocol)?
+        .to_owned();
+    let expected_runtime = runtime.filter(|name| *name != "default");
+    if server["session"].as_str() != expected_runtime
+        || status["client"]["session"].as_str() != expected_runtime
+    {
+        return Err(FlowFailure::HerdrIncompatible);
+    }
+    Ok(socket)
 }
 
 fn is_permission_error(stderr: &[u8]) -> bool {
@@ -624,14 +779,7 @@ async fn run_impl(
         }
         (epoch, recovering.then_some(epoch))
     };
-    let executable = resolve_executable(
-        shared,
-        session,
-        profile.herdr_executable.as_deref(),
-        false,
-        Some(operation_epoch),
-    )
-    .await?;
+    let executable = resolve_executable(shared, session, false, Some(operation_epoch)).await?;
     if !shared.current_request_epoch(operation_epoch) {
         return Err(FlowFailure::Stale);
     }
@@ -661,31 +809,7 @@ async fn run_impl(
         return Err(FlowFailure::Stale);
     }
     let status: Value = serde_json::from_slice(&status).map_err(|_| FlowFailure::HerdrProtocol)?;
-    let server = &status["server"];
-    if server["running"] != true {
-        return Err(FlowFailure::HerdrSessionMissing);
-    }
-    if server["version"] != wire::HERDR_VERSION
-        || server["protocol"] != wire::HERDR_PROTOCOL
-        || status["client"]["protocol"] != wire::HERDR_PROTOCOL
-        || status
-            .get("schema")
-            .or_else(|| server.get("schema"))
-            .is_some_and(|schema| schema.as_u64() != Some(u64::from(wire::HERDR_SCHEMA)))
-    {
-        return Err(FlowFailure::HerdrIncompatible);
-    }
-    let socket = server["socket"]
-        .as_str()
-        .filter(|path| path.starts_with('/') && path.len() <= 4096 && !path.contains('\0'))
-        .ok_or(FlowFailure::HerdrProtocol)?
-        .to_owned();
-    let expected_runtime = profile.runtime.as_deref().filter(|name| *name != "default");
-    if server["session"].as_str() != expected_runtime
-        || status["client"]["session"].as_str() != expected_runtime
-    {
-        return Err(FlowFailure::HerdrIncompatible);
-    }
+    let socket = validate_status(&status, profile.runtime.as_deref())?;
     let viewport = shared
         .session
         .lock()
@@ -960,13 +1084,16 @@ async fn open_api(
     Ok(JsonChannel::new(channel))
 }
 
-fn decode_snapshot_result(value: &Value) -> Result<wire::HerdrSessionSnapshot, wire::HerdrError> {
+fn decode_snapshot_result(value: &Value) -> Result<wire::HerdrSessionSnapshot, FlowFailure> {
     if value["type"] != "session_snapshot" {
-        return Err(wire::HerdrError::InvalidResponse(
-            "expected session_snapshot".to_owned(),
-        ));
+        return Err(FlowFailure::HerdrProtocol);
     }
-    wire::decode_session_snapshot(&value["snapshot"])
+    let snapshot = wire::decode_session_snapshot(&value["snapshot"])
+        .map_err(|_| FlowFailure::HerdrProtocol)?;
+    if snapshot.protocol != wire::HERDR_PROTOCOL {
+        return Err(FlowFailure::HerdrIncompatible);
+    }
+    Ok(snapshot)
 }
 
 fn snapshot_contains_stable_terminal(
@@ -1313,12 +1440,7 @@ impl HerdrClient<'_> {
         // new coherent baseline rather than silently dropping status events.
         for _ in 0..8 {
             let result = self.request("session.snapshot", json!({})).await?;
-            let snapshot =
-                decode_snapshot_result(&result).map_err(|_| FlowFailure::HerdrProtocol)?;
-            if snapshot.version != wire::HERDR_VERSION || snapshot.protocol != wire::HERDR_PROTOCOL
-            {
-                return Err(FlowFailure::HerdrIncompatible);
-            }
+            let snapshot = decode_snapshot_result(&result)?;
             let pane_ids: HashSet<String> = snapshot
                 .workspaces
                 .iter()
@@ -2484,6 +2606,51 @@ fn character_key(character: char, modifiers: Modifiers) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn status_and_snapshot_gate_protocol_identity_not_release_version() {
+        for version in ["0.9.0", "0.9.1", "42.0.0-future"] {
+            let mut status = json!({"server":{"running":true,"version":version,"protocol":22,
+                "socket":"/private/herdr.sock","session":"work"},
+                "client":{"version":"different-build", "protocol":22, "session":"work"}});
+            assert_eq!(
+                validate_status(&status, Some("work")).ok().unwrap(),
+                "/private/herdr.sock"
+            );
+            assert!(matches!(
+                validate_status(&status, Some("other")),
+                Err(FlowFailure::HerdrIncompatible)
+            ));
+            status["server"]["protocol"] = json!(23);
+            assert!(matches!(
+                validate_status(&status, Some("work")),
+                Err(FlowFailure::HerdrIncompatible)
+            ));
+            status["server"]["protocol"] = json!(22);
+            status["schema"] = json!(2);
+            assert!(matches!(
+                validate_status(&status, Some("work")),
+                Err(FlowFailure::HerdrIncompatible)
+            ));
+            status["schema"] = json!(1);
+            status["server"]["running"] = json!(false);
+            assert!(matches!(
+                validate_status(&status, Some("work")),
+                Err(FlowFailure::HerdrSessionMissing)
+            ));
+            let mut result = json!({"type":"session_snapshot","snapshot":{"version":version,
+                "protocol":22,"workspaces":[],"tabs":[],"panes":[]}});
+            assert_eq!(
+                decode_snapshot_result(&result).ok().unwrap().version,
+                version
+            );
+            result["snapshot"]["protocol"] = json!(23);
+            assert!(matches!(
+                decode_snapshot_result(&result),
+                Err(FlowFailure::HerdrIncompatible)
+            ));
+        }
+    }
+
     fn group(id: u64, workspace: u64, selected: bool) -> workspace::TerminalGroup {
         workspace::TerminalGroup {
             id: id.to_string(),
@@ -2788,7 +2955,7 @@ mod tests {
             agent_status: wire::AgentStatus::Idle,
         };
         let moved = wire::HerdrSessionSnapshot {
-            version: wire::HERDR_VERSION.to_owned(),
+            version: "0.9.0".to_owned(),
             protocol: wire::HERDR_PROTOCOL,
             focused_workspace_id: Some("workspace-moved".to_owned()),
             focused_tab_id: Some("tab-moved".to_owned()),
@@ -3244,7 +3411,7 @@ mod tests {
     fn apply_snapshot_projection_keeps_distinct_workspace_group_and_pane_statuses() {
         let generation = 42_424;
         let snapshot = wire::HerdrSessionSnapshot {
-            version: wire::HERDR_VERSION.to_owned(),
+            version: "0.9.0".to_owned(),
             protocol: wire::HERDR_PROTOCOL,
             focused_workspace_id: Some("workspace-main".to_owned()),
             focused_tab_id: Some("tab-live".to_owned()),

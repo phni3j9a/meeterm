@@ -9,14 +9,14 @@ iOS standardと短いSSH入力テストが成功し、両OSの画面を実際に
 に保存してあり、書き換えていません。
 
 Herdr は既存の外部アプリです。meeterm は公開 API に適応し、Herdr 本体の変更・fork・
-自動導入・更新を行いません。リモートには、SSH から実行できる既存の Herdr 0.9.0 と
+自動導入・更新を行いません。リモートには、SSH から実行でき、下記の互換contractを満たす既存の Herdr と
 SSH stream-local forwarding の許可が必要です。picker には起動中・停止中の対象 session
 を表示しますが、meeterm から選べるのは互換性を再確認できた起動中の session だけです。
 meeterm 用 gateway、daemon、HTTP/WebSocket relay、追加のリモートツールはありません。
 
 ## 接続して使う
 
-1. リモートに Herdr 0.9.0 を用意し、SSH から実行できる状態にします。起動中の
+1. リモートに互換性のある Herdr を用意し、SSH から実行できる状態にします。起動中の
    session はそのまま選択できます。停止中の session も一覧には出ますが、meeterm で
    は選択できません。
 2. meetermの接続画面でSSHの接続先・ユーザー・認証方法を入力します。backendや
@@ -30,7 +30,7 @@ meeterm 用 gateway、daemon、HTTP/WebSocket relay、追加のリモートツ�
    `herdr --session default`、または指定した session 名で開きます。
 
 SSHのUnix socket転送が許可されていない場合は、転送設定を確認する案内が出ます。
-Herdr未導入、セッション未起動、対応機能・バージョンの不一致、入力権限の競合も
+Herdr未導入、セッション未起動、protocol・schema・必要機能の不一致、入力権限の競合も
 それぞれ別のエラーで案内します。保存済み profile の legacy backend/runtime は
 last-used hint として移行しますが、picker を省略しません。既存のSSH credentialと
 profile IDは維持し、hintは選択したruntimeが `Ready` になった後だけ更新します。
@@ -43,29 +43,55 @@ profile IDは維持し、hintは選択したruntimeが `Ready` になった後�
 ### Herdr executable の解決
 
 認証後の discovery では、native core が PATH、公式installerの既定値 `~/.local/bin`、一般的なpackage managerのinstall location
-から Herdr 0.9.0 binary を解決します。解決した絶対 path は connection-scoped な native
-capability として保持し、runtime list、session status、controller setup、後続の
-proof-gated operation のすべてで同じものを使います。path は JavaScript や通常のログへ
+から必要capabilityを満たす Herdr binary を解決します。解決した絶対 path は connection-scoped な native
+capability として保持し、runtime list、session status、controller setup、対応する操作で使います。path は JavaScript や通常のログへ
 渡しません。transport reconnect 後は再解決・再検証してから runtime を再取得します。
+絶対pathはruntime identityではなく、別の互換binaryへ解決されても、同じhost/key、
+runtime、stable terminal、通常lease、authoritative full frameの検証を経て復旧します。
+miseはshim・current/latest・versionを固定しないinstall pathを探索し、NixやHomebrewも
+対象です。候補は最大32件・NUL区切りでnativeへ渡し、重複を除いた順に検証します。
+候補列挙と一連のcapability probeにはそれぞれ既存の30秒上限を適用し、
+schemaとhelpを合わせた候補ごとのprobeは5秒以内に制限します。不互換、候補固有のtimeout、
+出力超過、exec拒否・異常終了ではprobe channelを閉じて次候補へ進みます。
+キャンセル・古いoperation epoch・SSH transport喪失では探索を終了します。
 非対話 SSH の PATH に `~/.local/bin` が含まれない場合でも、公式installerの既定locationとして
 確認できる場所を探索します。解決できない場合は Herdr section の局所エラーとして表示し、
 tmux の候補を隠しません。
 
 ## 対応する公開プロトコル
 
-現在の互換性ターゲットは **Herdr 0.9.0 / protocol 22 / schema 1** です。
-これは下位互換の最低バージョン宣言ではなく、実装と integration test が照合する固定の
-公開契約です。公式の [v0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0)
-と [v0.9.0 source](https://github.com/herdrdev/herdr/tree/v0.9.0) を参照します。
-tag の dereferenced source commit は `b99002ac99b09e00b4ca692436cb15a6b0d676f1` です。
+**compatibility contract** は **protocol 22 / API schema 1 / 必要なAPI・CLI機能**です。
+実行ファイル・server status・snapshotのSemVer文字列は接続条件にしません。
+将来のreleaseもこのcontractを検証し、不足・不一致は拒否します。全versionの動作保証や
+未検証の最低versionを宣言するものではありません。
+
+**verified version** は実際の受入記録に紐づけます。既存の基準fixtureは
+[Herdr v0.9.0](https://github.com/herdrdev/herdr/releases/tag/v0.9.0)、sourceは
+`b99002ac99b09e00b4ca692436cb15a6b0d676f1` です。
+0.9.1の公開[schema](https://github.com/herdrdev/herdr/blob/v0.9.1/docs/next/api/herdr-api.schema.json)
+と[CLI定義](https://github.com/herdrdev/herdr/blob/v0.9.1/src/cli/spec.rs)も契約確認に用いています。
+Issue #45の実行結果と範囲は[互換性検証記録](evidence/issue-45-herdr-compatibility.md)へ記録します。
 
 - discovery は `herdr session list --json` と、同じ解決済み binary による各 session の
   status 確認で `default` と named session を列挙します。`listed/stopped` と起動中の
   candidate を区別し、runtime 名は Herdr の session 名として扱います。default は
   `default` です。socket が存在するだけでは互換性確認済みとはしません。
-- 解決時に同じ絶対pathの `herdr api schema --json` をboundedに読み、top-levelの
-  `protocol == 22` と `schema_version == 1` を必須にします。`status --json` はschema
-  versionを公開しないため、status fieldの欠落を互換性の証拠として扱いません。
+- 解決時に候補の `herdr api schema --json` をboundedに読み、`protocol == 22`、
+  `schema_version == 1` と公開requestの `oneOf[].properties.method.const` を検査します。
+  必須methodは `session.snapshot`、`events.subscribe`、workspace/tabのcreate・rename・close、
+  paneのsplit・rename・close・scroll・send_text・send_keys・send_inputです。
+  未知の追加method/fieldは許容し、一つでも必須methodが欠ければ不互換とします。
+- JSON schemaに含まれないCLIは `session list --help`、`status --help`、
+  `terminal session control --help` で存在を確認し、controlと`--cols`・`--rows`を検査します。
+  `<TARGET>`等の引数表示名は互換性条件にしません。
+  helpはruntimeやcontrollerを開始しません。list/statusの実応答、stream-localの購読ACK・
+  snapshot、通常controller取得と最初のfull frameは利用段階で実際に検証します。
+  control streamのinput/resize/scroll/release semanticsはprotocol 22の契約と実integrationで
+  検証し、discovery中にユーザーのpaneを変更するprobeは行いません。observe CLIは現在の
+  production経路で使用しないため必須にはしません。実operationのunsupported応答も
+  `herdr_unsupported` として拒否します。
+- `status --json` はschema versionを公開しないため、schemaは上記のbundled schemaで
+  検査します。server/clientのprotocolと選択sessionも確認し、snapshotのprotocolを再確認します。
 - 接続は SSH の direct stream-local public API です。1 channel につき 1 request を順番に
   処理します。購読は subscribe ack の後に snapshot を繰り返し受け、pane set が期待値と
   一致して安定するまで snapshot を確定状態へ適用しません。その後は event と resync で
@@ -123,8 +149,8 @@ Herdr 0.9.0 の公開 snapshot に含まれる workspace の `agent_status` と 
 `agent_status` を、Rust の共通 snapshot へそのまま投影します。wire enum から共通 enum
 への変換は native の一つの変換境界で行い、workspace/tab の値を pane の走査や
 JavaScript の集約で作り直しません。Herdr が返す `unknown` は値のある状態なので
-`Some(Unknown)` として保持し、tmux と agent のない pane は `null` です。互換性の根拠は
-この文書冒頭で固定している [v0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0)
+`Some(Unknown)` として保持し、tmux と agent のない pane は `null` です。このmetadataの検証根拠は
+基準fixtureとして記録している [v0.9.0 release](https://github.com/herdrdev/herdr/releases/tag/v0.9.0)
 と [v0.9.0 source](https://github.com/herdrdev/herdr/tree/v0.9.0) です。
 
 共通 bridge の JSON は次の shape です。
@@ -163,7 +189,7 @@ Rust native core
        ↓ ordinary SSH
 remote host
   ├─ selected ordinary tmux session
-  └─ selected existing Herdr 0.9.0 session/socket
+  └─ selected compatible Herdr session/socket
 ```
 
 ANSI bytes、cells、scrollback、render frame、cursor、IME composition は JavaScript の
@@ -251,7 +277,7 @@ controller をローカルで abandon し、届かない release ACK を待ち�
 Herdr 0.9.0 の公開 API は transport loss の前後で同じ server instance だと比較できる
 identity を公開しません。この不足だけでは通常 recovery を止めません。一度 `Ready` に
 なった作業は最後の workspace/terminal 画面を read-only で保持し、同じ承認済み SSH host/key
-へ再認証した後、compatible な Herdr 0.9.0 / protocol 22 / schema 1 / direct stream-local
+へ再認証した後、compatible な Herdr protocol 22 / schema 1 / direct stream-local
 contract、同じ選択 runtime、元の stable `terminal_id` の存在を確認します。そのうえで通常の
 controller lease を takeover なしで取得し、最初の authoritative full frame が届いた時に
 `Ready` と入力許可を戻します。確認画面や Review 操作はありません。
@@ -303,7 +329,7 @@ cargo test --locked --manifest-path native/meeterm-core/Cargo.toml \
 ```
 
 `native/meeterm-core/tests/herdr.rs` は test-only の russh SSH endpoint と、隔離 XDG state
-で起動する real Herdr 0.9.0 driver を組み合わせます。普通の OpenSSH server fixture では
+で起動する real Herdr driver を組み合わせます。普通の OpenSSH server fixture では
 ありません。default/named runtime、snapshot/subscribe、workspace/group CRUD、ANSI frame、
 resize、semantic input、CJK paste、controller conflict、release/reacquire、外部 move と
 stable identity を一つの bounded ケースで確認します。

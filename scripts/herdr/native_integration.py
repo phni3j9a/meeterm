@@ -2,7 +2,7 @@
 """Run an isolated real Herdr fixture for the native Rust integration test.
 
 The Rust test owns the test-only russh endpoint.  This process owns only the
-real Herdr 0.9.0 server children and their private config/state directories;
+real Herdr server children and their private config/state directories;
 the two processes exchange a small JSON manifest and a bounded READY marker.
 No OpenSSH daemon or user configuration is touched here.
 """

@@ -58,7 +58,8 @@ retained read-only work screen.
 Same-process transport recovery keeps the selected `(backend, runtime)` and
 cached work visible as read-only while it reconnects without a tap. tmux checks
 the selected session/server epoch and original pane. Herdr checks the approved
-SSH host/key and authentication, compatible capability, same selected running
+SSH host/key and authentication, protocol 22/schema 1 plus required API/CLI
+capabilities (independent of SemVer and executable path), same selected running
 runtime, original stable `terminal_id`, ordinary controller lease without
 takeover, and authoritative full frame. Herdr 0.9.0 has no comparable public
 server-instance identity, but lack of that proof alone does not stop recovery.

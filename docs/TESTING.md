@@ -27,6 +27,24 @@ test を追加しています。ローカルの[実Herdr native検証](evidence/
 このpreflightはXCTest runnerが起動できない場合も、remote tmux接続とiOS UI操作の
 どちらで失敗したかを分けるためのもので、iOS UI/input検証の代わりにはしません。
 
+## Issue #45 Herdr互換性の確認項目
+
+Herdr 0.9.0は再現可能なverified baseline fixtureであり、productionのversion gateでは
+ありません。互換contractはprotocol 22、schema 1、必要API/CLI、選択runtime/terminalと
+通常controller/full frameです。単体試験では0.9.0・0.9.1・将来のversion文字列を受理し、
+protocol/schema mismatchと各required methodの欠落を拒否します。resolverは隔離filesystemで
+PATH、`~/.local/bin`、Homebrew、mise shim/current/可変install、Nix、複数候補、上限を確認します。
+
+実Herdr/russhの `real_herdr_compatibility_resolution_and_recovery` は、protocol/schema/APIが
+不足する候補の後にある互換候補を選び、transport loss後にCLI pathが変わっても同じnative
+terminalへ復旧・入力できること、不互換pathへ変わるとread-onlyで停止することを検証します。
+schema/helpのtimeout・stdout/stderr上限超過・exec拒否・異常終了でも後続の互換候補へ進み、
+失敗したprobe channelが閉じられること、helpの引数表示名だけが変わっても受理すること、
+キャンセル・transport喪失では後続候補をprobeせず終了することも実SSH上で確認します。
+一般CIは既存のSHA固定0.9.0全integrationを維持し、SHA固定0.9.1でこの短いcaseも実行します。
+機能変更のmobile受入はAndroid full、iOS standardとsshを適用します。
+実行済みversion/source/suiteと限界は[Issue #45記録](evidence/issue-45-herdr-compatibility.md)に残します。
+
 ## Issue #21 runtime picker の確認項目
 
 runtime picker の変更では、画面だけでなく Rust/native の lifecycle と
@@ -159,7 +177,7 @@ bindingとは別に実際のstale/recovered handle比較を表す
 - tmuxはstored session identityと元pane IDを必須とし、attach後の同じControl Mode streamで
   再検証します。初期同期、選択/zoom後のdirty readback、元paneのauthoritative captureが
   終わるまでReady/inputを公開しません。missing/replaced/stale topologyで別paneへfallbackしません。
-- Herdrはtapなしに、同じapproved SSH host/key、compatible Herdr (0.9.0 / protocol 22 / schema 1 /
+- Herdrはtapなしに、同じapproved SSH host/key、compatible Herdr (protocol 22 / schema 1 /
   direct stream-local contract)、同じselected running runtime、元stable `terminal_id`、通常lease、
   authoritative full frameを検証してReadyへ戻ります。takeover、別terminal、tmux fallbackは
   行わず、instance continuity proofがないことだけでは停止しません。

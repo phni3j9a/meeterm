@@ -23,7 +23,7 @@ pub(crate) const MAX_TERMINAL_DIMENSION: u16 = 4096;
 pub(crate) const MAX_SESSION_LIST_ENTRIES: usize = 256;
 pub(crate) const MAX_HERDR_SESSION_NAME_BYTES: usize = 64;
 pub(crate) const MAX_EXECUTABLE_PATH_BYTES: usize = 4096;
-pub(crate) const HERDR_VERSION: &str = "0.9.0";
+pub(crate) const MAX_EXECUTABLE_CANDIDATES: usize = 32;
 pub(crate) const HERDR_PROTOCOL: u32 = 22;
 pub(crate) const HERDR_SCHEMA: u32 = 1;
 
@@ -823,68 +823,105 @@ pub(crate) fn api_schema_command_with_executable(executable: &str) -> Result<Str
     Ok(format!("{} api schema --json", shell_quote(executable)?))
 }
 
-/// Validate the compatibility fields published by `herdr api schema --json`.
+/// Every JSON API method used by the native actor. Check the public bundled
+/// schema without executing input, resize, close, or other mutations as probes.
+pub(crate) const REQUIRED_API_METHODS: &[&str] = &[
+    "session.snapshot",
+    "events.subscribe",
+    "workspace.create",
+    "workspace.rename",
+    "workspace.close",
+    "tab.create",
+    "tab.rename",
+    "tab.close",
+    "pane.split",
+    "pane.rename",
+    "pane.close",
+    "pane.scroll",
+    "pane.send_text",
+    "pane.send_keys",
+    "pane.send_input",
+];
+
+/// This is a compatibility contract, not a tested-release allowlist. The
+/// schema's version string and additive methods/fields do not affect it.
 pub(crate) fn validate_api_schema(value: &Value) -> Result<(), HerdrError> {
-    let root = as_object(value, "API schema")?;
-    let protocol = root
-        .get("protocol")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| HerdrError::InvalidResponse("API schema.protocol is missing".to_owned()))?;
-    let schema = root
-        .get("schema_version")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            HerdrError::InvalidResponse("API schema.schema_version is missing".to_owned())
-        })?;
-    if protocol != u64::from(HERDR_PROTOCOL) || schema != u64::from(HERDR_SCHEMA) {
-        return Err(HerdrError::InvalidResponse(format!(
-            "unsupported Herdr API protocol/schema {protocol}/{schema}"
-        )));
+    if value["protocol"].as_u64() != Some(u64::from(HERDR_PROTOCOL))
+        || value["schema_version"].as_u64() != Some(u64::from(HERDR_SCHEMA))
+    {
+        return Err(HerdrError::InvalidResponse(
+            "unsupported Herdr API protocol/schema".into(),
+        ));
+    }
+    let methods = value
+        .pointer("/schemas/request/oneOf")
+        .and_then(Value::as_array)
+        .ok_or_else(|| HerdrError::InvalidResponse("missing Herdr API methods".into()))?;
+    for required in REQUIRED_API_METHODS {
+        if !methods.iter().any(|method| {
+            method
+                .pointer("/properties/method/const")
+                .and_then(Value::as_str)
+                == Some(required)
+        }) {
+            return Err(HerdrError::InvalidResponse(format!(
+                "missing Herdr API method {required}"
+            )));
+        }
     }
     Ok(())
 }
 
-/// A fixed remote resolver. It checks the non-interactive SSH PATH first, then
-/// common direct/Homebrew/mise/Nix locations. Only an absolute executable and
-/// an exact 0.9.0 version line are accepted. Exit 127 means no candidate was
-/// found; exit 78 means candidates existed but were incompatible.
-pub(crate) fn resolver_command() -> &'static str {
-    r#"found=0; for candidate in "$(command -v herdr 2>/dev/null || true)" "$HOME/.cargo/bin/herdr" "$HOME/.local/bin/herdr" "/usr/local/bin/herdr" "/opt/homebrew/bin/herdr" "$HOME/.homebrew/bin/herdr" "$HOME/.linuxbrew/bin/herdr" "$HOME/.local/share/mise/installs/herdr/0.9.0/bin/herdr" "$HOME/.local/share/mise/installs/herdr/latest/bin/herdr" "$HOME/.nix-profile/bin/herdr" "/nix/var/nix/profiles/default/bin/herdr"; do case "$candidate" in /*) ;; *) continue ;; esac; [ -x "$candidate" ] || continue; found=1; version=$("$candidate" --version 2>/dev/null | head -n 1) || continue; case "$version" in *"0.9.0"*) printf '%s\t%s\n' "$candidate" "$version"; exit 0 ;; esac; done; [ "$found" -eq 1 ] && exit 78 || exit 127"#
+/// The direct terminal CLI is not described by the JSON API schema. Ask its
+/// parser for help (no target or lease) and check the list/status entry points.
+/// Protocol 22 plus the real lease/full-frame boundary validates stream
+/// semantics; probing input/resize/release on a user's pane would mutate it.
+pub(crate) fn cli_capability_command(executable: &str) -> Result<String, HerdrError> {
+    let list = command_with_executable(executable, None, &["session", "list", "--help"])?;
+    let status = command_with_executable(executable, None, &["status", "--help"])?;
+    let control = command_with_executable(
+        executable,
+        None,
+        &["terminal", "session", "control", "--help"],
+    )?;
+    Ok(format!(
+        "{list} >/dev/null && {status} >/dev/null && {control}"
+    ))
 }
 
-pub(crate) fn parse_resolved_executable(output: &[u8]) -> Result<String, HerdrError> {
-    let mut lines = output
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty());
-    let line = lines
-        .next()
-        .ok_or_else(|| HerdrError::InvalidCommand("Herdr resolver returned no path".to_owned()))?;
-    if lines.next().is_some() {
-        return Err(HerdrError::InvalidCommand(
-            "Herdr resolver returned multiple records".to_owned(),
-        ));
+pub(crate) fn validate_control_help(output: &[u8]) -> bool {
+    std::str::from_utf8(output).is_ok_and(|help| {
+        ["control", "--cols", "--rows"]
+            .iter()
+            .all(|token| help.contains(token))
+    })
+}
+
+/// PATH and common direct/Homebrew/mise/Nix locations, with no release pin.
+/// The shell emits at most 32 NUL-delimited paths; Rust validates and dedupes
+/// them before probing each candidate in order. Exit 127 means no candidates.
+pub(crate) fn resolver_command() -> &'static str {
+    include_str!("herdr_resolver.sh")
+}
+
+pub(crate) fn parse_executable_candidates(output: &[u8]) -> Result<Vec<String>, HerdrError> {
+    let invalid = || HerdrError::InvalidCommand("invalid Herdr executable candidates".into());
+    let records = output.strip_suffix(&[0]).ok_or_else(invalid)?;
+    let mut candidates = Vec::new();
+    for (index, record) in records.split(|byte| *byte == 0).enumerate() {
+        let path = std::str::from_utf8(record).map_err(|_| invalid())?;
+        if index >= MAX_EXECUTABLE_CANDIDATES
+            || !path.starts_with('/')
+            || path.len() > MAX_EXECUTABLE_PATH_BYTES
+            || path.chars().any(char::is_control)
+        {
+            return Err(invalid());
+        }
+        if !candidates.iter().any(|candidate| candidate == path) {
+            candidates.push(path.to_owned());
+        }
     }
-    let separator = line.iter().position(|byte| *byte == b'\t').ok_or_else(|| {
-        HerdrError::InvalidCommand("Herdr resolver returned an invalid record".to_owned())
-    })?;
-    let (path, version) = (&line[..separator], &line[separator + 1..]);
-    let path = std::str::from_utf8(path)
-        .map_err(|_| HerdrError::InvalidCommand("Herdr path is not UTF-8".to_owned()))?;
-    let version = std::str::from_utf8(version)
-        .map_err(|_| HerdrError::InvalidCommand("Herdr version is not UTF-8".to_owned()))?;
-    if path.is_empty()
-        || path.len() > MAX_EXECUTABLE_PATH_BYTES
-        || !path.starts_with('/')
-        || path.chars().any(char::is_control)
-        || !version
-            .split_whitespace()
-            .any(|token| token == HERDR_VERSION)
-    {
-        return Err(HerdrError::InvalidCommand(
-            "Herdr executable is not compatible with 0.9.0".to_owned(),
-        ));
-    }
-    Ok(path.to_owned())
+    Ok(candidates)
 }
 
 fn as_object<'a>(value: &'a Value, context: &str) -> Result<&'a Map<String, Value>, HerdrError> {
@@ -1365,46 +1402,195 @@ mod tests {
         assert!(decode_session_list(&control).is_err());
     }
 
-    #[test]
-    fn resolved_executable_is_absolute_bounded_and_reusable_for_all_commands() {
-        let executable = parse_resolved_executable(b"/opt/herdr bin/herdr\tHerdr 0.9.0\n").unwrap();
-        assert_eq!(executable, "/opt/herdr bin/herdr");
-        assert_eq!(
-            command_with_executable(&executable, Some("work; rm -rf /"), &["status", "--json"])
-                .unwrap(),
-            "'/opt/herdr bin/herdr' --session 'work; rm -rf /' status --json"
-        );
-        assert!(parse_resolved_executable(b"herdr\t0.9.0\n").is_err());
-        assert!(parse_resolved_executable(b"/opt/herdr\t0.9.0-beta\n").is_err());
-        assert!(command_with_executable("herdr", None, &["status"]).is_err());
-
-        let resolver = resolver_command();
-        assert!(resolver.contains("command -v herdr"));
-        assert!(resolver.contains(".cargo/bin/herdr"));
-        assert!(resolver.contains("/opt/homebrew/bin/herdr"));
-        assert!(resolver.contains("mise/installs/herdr/0.9.0"));
-        assert!(resolver.contains(".nix-profile/bin/herdr"));
+    fn compatible_schema() -> Value {
+        // Independent literal fixture: missing a newly required operation must
+        // fail until this test's contract is deliberately updated.
+        let methods = [
+            "session.snapshot",
+            "events.subscribe",
+            "workspace.create",
+            "workspace.rename",
+            "workspace.close",
+            "tab.create",
+            "tab.rename",
+            "tab.close",
+            "pane.split",
+            "pane.rename",
+            "pane.close",
+            "pane.scroll",
+            "pane.send_text",
+            "pane.send_keys",
+            "pane.send_input",
+        ];
+        json!({"protocol":22, "schema_version":1,
+            "schemas":{"request":{"oneOf": methods.iter().map(|method|
+                json!({"properties":{"method":{"const":method}}})).collect::<Vec<_>>()}}})
     }
 
     #[test]
-    fn api_schema_probe_requires_protocol_22_and_schema_1() {
-        let command = api_schema_command_with_executable("/opt/herdr bin/herdr").unwrap();
-        assert_eq!(command, "'/opt/herdr bin/herdr' api schema --json");
-        assert!(
-            validate_api_schema(&json!({
-                "protocol": 22,
-                "schema_version": 1,
-                "schemas": {},
-            }))
-            .is_ok()
+    fn candidates_are_absolute_bounded_deduplicated_and_safely_quoted() {
+        let candidates = parse_executable_candidates(
+            b"/opt/herdr bin/herdr\0/opt/herdr bin/herdr\0/other/herdr\0",
+        )
+        .unwrap();
+        assert_eq!(candidates, ["/opt/herdr bin/herdr", "/other/herdr"]);
+        assert_eq!(
+            command_with_executable(
+                &candidates[0],
+                Some("work; rm -rf /"),
+                &["status", "--json"]
+            )
+            .unwrap(),
+            "'/opt/herdr bin/herdr' --session 'work; rm -rf /' status --json"
         );
-        for value in [
-            json!({"protocol": 22}),
-            json!({"protocol": 22, "schema_version": 2}),
-            json!({"protocol": 23, "schema_version": 1}),
-            json!({"protocol": "22", "schema_version": 1}),
+        for invalid in [
+            b"".as_slice(),
+            b"herdr\0",
+            b"/opt/herdr\n\0",
+            b"/opt/herdr",
+            b"/opt/herdr\0\0",
+            b"/bad\xff\0",
         ] {
-            assert!(validate_api_schema(&value).is_err());
+            assert!(parse_executable_candidates(invalid).is_err());
         }
+        assert!(
+            parse_executable_candidates(
+                "/herdr\0".repeat(MAX_EXECUTABLE_CANDIDATES + 1).as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_executable_candidates(
+                format!("/{}\0", "x".repeat(MAX_EXECUTABLE_PATH_BYTES)).as_bytes()
+            )
+            .is_err()
+        );
+        assert!(command_with_executable("herdr", None, &["status"]).is_err());
+    }
+
+    #[test]
+    fn api_contract_accepts_versions_and_additions_but_rejects_missing_capabilities() {
+        assert_eq!(
+            api_schema_command_with_executable("/opt/herdr bin/herdr").unwrap(),
+            "'/opt/herdr bin/herdr' api schema --json"
+        );
+        for version in ["0.9.0", "0.9.1", "42.0.0-future"] {
+            let mut schema = compatible_schema();
+            schema["version"] = json!(version);
+            schema["schemas"]["request"]["oneOf"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"properties":{"method":{"const":"future.method"}}}));
+            assert!(validate_api_schema(&schema).is_ok());
+        }
+        for (key, value) in [
+            ("protocol", json!(23)),
+            ("schema_version", json!(2)),
+            ("protocol", json!("22")),
+            ("schema_version", Value::Null),
+        ] {
+            let mut schema = compatible_schema();
+            schema[key] = value;
+            assert!(validate_api_schema(&schema).is_err());
+        }
+        let count = compatible_schema()["schemas"]["request"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .len();
+        for index in 0..count {
+            let mut schema = compatible_schema();
+            schema["schemas"]["request"]["oneOf"]
+                .as_array_mut()
+                .unwrap()
+                .remove(index);
+            assert!(validate_api_schema(&schema).is_err());
+        }
+        assert!(validate_api_schema(&json!({"protocol":22,"schema_version":1})).is_err());
+        for argument in ["<TARGET>", "<PANE>", "<TERMINAL>"] {
+            assert!(validate_control_help(
+                format!("Usage: herdr terminal session control [OPTIONS] {argument} --cols <N> --rows <N>")
+                    .as_bytes()
+            ));
+        }
+        assert!(!validate_control_help(
+            b"Usage: herdr terminal session observe <TARGET>"
+        ));
+        assert!(!validate_control_help(b"control <TARGET> --cols"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolver_enumerates_path_local_homebrew_mise_and_nix_without_executing_them() {
+        use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+        let root = std::env::temp_dir().join(format!("meeterm-resolver-{}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        // Redirect fixed locations into an isolated test filesystem; the
+        // process environment and real user/package-manager installs stay intact.
+        let script = resolver_command()
+            .replace("$HOME", root.to_str().unwrap())
+            .replace(
+                "/usr/local/bin/herdr",
+                &format!("{}/usr/local/bin/herdr", root.display()),
+            )
+            .replace(
+                "/opt/homebrew/bin/herdr",
+                &format!("{}/opt/homebrew/bin/herdr", root.display()),
+            )
+            .replace(
+                "/home/linuxbrew/.linuxbrew/bin/herdr",
+                &format!("{}/linuxbrew/bin/herdr", root.display()),
+            )
+            .replace(
+                "/nix/var/nix/profiles/default/bin/herdr",
+                &format!("{}/nix-system/bin/herdr", root.display()),
+            );
+        let locations = [
+            "path/herdr",
+            ".local/bin/herdr",
+            "opt/homebrew/bin/herdr",
+            ".local/share/mise/shims/herdr",
+            ".local/share/mise/installs/herdr/current/bin/herdr",
+            ".local/share/mise/installs/herdr/9.8.7/bin/herdr",
+            ".nix-profile/bin/herdr",
+        ];
+        let run = || {
+            let output = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&script)
+                .env("PATH", root.join("path"))
+                .output()
+                .unwrap();
+            // A login shell may reject unmatched globs (zsh NOMATCH, or
+            // bash failglob). Only the explicit POSIX child may expand mise
+            // candidates, so a missing installation still permits PATH/local.
+            let strict = Command::new("/bin/bash")
+                .args(["-O", "failglob", "-c"])
+                .arg(&script)
+                .env("PATH", root.join("path"))
+                .output()
+                .unwrap();
+            assert_eq!(strict.status.code(), output.status.code());
+            assert_eq!(strict.stdout, output.stdout);
+            output
+        };
+        assert_eq!(run().status.code(), Some(127));
+        for location in locations {
+            let path = root.join(location);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "#!/bin/sh\nexit 99\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            let output = run();
+            assert!(output.status.success());
+            assert!(
+                parse_executable_candidates(&output.stdout)
+                    .unwrap()
+                    .contains(&path.to_str().unwrap().to_owned())
+            );
+        }
+        assert_eq!(
+            parse_executable_candidates(&run().stdout).unwrap().len(),
+            locations.len()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

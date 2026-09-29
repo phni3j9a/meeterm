@@ -18,8 +18,8 @@ On mobile, panes are presented as tabs and the active pane is expanded for a pho
 
 The common model is `Workspace → TerminalGroup → Terminal`. The Rust/native
 backend boundary maps tmux to `window → virtual group → pane` and Herdr to
-`workspace → tab → pane`. Herdr support uses the existing 0.9.0 public protocol
-(protocol 22, schema 1) over direct SSH stream-local control. Terminal frames,
+`workspace → tab → pane`. Herdr support requires protocol 22, API schema 1, and the public operations
+used by meeterm (see the [compatibility contract](docs/HERDR.md)) over direct SSH stream-local control. Terminal frames,
 input, scroll, resize, lifecycle, stable terminal IDs, and native rendering
 remain below the JavaScript boundary; Herdr itself is unchanged.
 
@@ -38,7 +38,7 @@ Fresh and manual connections now authenticate the SSH host before showing a
 runtime picker. Discovery is bounded and read-only. tmux sessions can be
 selected or explicitly created as detached sessions; `meeterm` is the suggested
 new-session name rather than a fixed target. Herdr lists running and stopped
-sessions, allows selection only for running sessions, and resolves the 0.9.0
+sessions, allows selection only for running sessions, and resolves a compatible
 binary from the non-interactive PATH, the official `~/.local/bin` default, and
 common package-manager locations. Starting or creating Herdr sessions remains
 an ordinary Herdr-client action.
@@ -102,7 +102,7 @@ OpenSSH server
 ├── selected ordinary tmux session
 │   ├── window = Workspace
 │   └── pane   = Terminal
-└── selected existing Herdr 0.9.0 session/socket
+└── selected compatible Herdr session/socket
 ```
 
 Terminal byte streams, ANSI parsing, terminal cell state, scrollback, IME composition, and rendering frames must stay out of JavaScript. React Native owns app chrome and product state; the native core owns terminal data and rendering.

@@ -33,7 +33,7 @@ Control bridge              Native Terminal View
           ├── selected ordinary tmux session
           │   ├── window = Workspace
           │   └── pane   = Terminal
-          └── selected existing Herdr 0.9.0 session/socket
+          └── selected compatible Herdr session/socket
 ```
 
 There is no meeterm server-side component in the core architecture.
@@ -74,7 +74,9 @@ selected existing runtime through direct stream-local public operations; this
 does not add a meeterm gateway, daemon, HTTP API, or WebSocket terminal
 transport.
 
-The fixed Herdr compatibility target is 0.9.0 / protocol 22 / schema 1. The
+Herdr compatibility requires protocol 22, API schema 1, and the API/CLI
+capabilities used by meeterm. Herdr 0.9.0 is a verified baseline fixture, not a
+production release gate. The
 live Rust integration has passed; the [mobile acceptance record](evidence/issue-17-herdr-mobile.md)
 tracks CI source revisions, actual screen review, and remaining limits. Input adaptation uses Herdr's existing `send_text`,
 `send_keys`, and `send_input` operations; a modified Herdr or upstream API
@@ -116,13 +118,15 @@ detached `new-session` operation: it uses a safely encoded name (suggesting
 `meeterm`), verifies the returned identity, and then binds it. Normal selection
 must not use an attach-or-create operation that could create after a race.
 
-The Herdr section resolves the compatible Herdr 0.9.0 executable through PATH,
+The Herdr section resolves a compatible Herdr executable through PATH,
 the official `~/.local/bin` installer default, and common package-manager
 locations. The resolved path is retained
 as a native, connection-scoped capability and reused for runtime listing,
-per-session status, controller setup, and any later proof-gated operation. It
+per-session status, controller setup, and supported operations. It
 is never exposed to JavaScript or ordinary logs, and is re-resolved and
-revalidated after transport reconnect. Herdr rows distinguish stopped sessions
+revalidated after transport reconnect. A changed executable path is allowed
+when compatibility and the selected runtime/terminal are revalidated; the path
+is not runtime identity. Herdr rows distinguish stopped sessions
 from running candidates; a running socket alone does not prove compatibility.
 Selection revalidates session identity, protocol 22, schema 1, direct
 operations, and stream-local forwarding. This issue does not promise a Herdr
@@ -162,7 +166,7 @@ for automatic recovery. Herdr 0.9.0 exposes its session name and socket but no
 comparable server-instance identity through the selected public interfaces.
 Recovery therefore does not require proof of server instance continuity. It
 reauthenticates to the same approved SSH host, verifies a compatible Herdr
-0.9.0 capability (protocol 22, schema 1, direct stream-local operations), the
+capability (protocol 22, schema 1, direct stream-local operations), the
 same selected running runtime and original stable `terminal_id`, acquires the
 ordinary controller lease without takeover, and requires the authoritative
 first full frame. A missing runtime/terminal, incompatibility, actual identity
