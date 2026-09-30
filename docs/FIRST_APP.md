@@ -1,5 +1,8 @@
 # 初版の実用評価
 
+これは初版の操作・検証記録です。現在の仕様は[PRODUCT.md](PRODUCT.md)、
+検証基準は[TESTING.md](TESTING.md)、Android配布は[ANDROID_RELEASES.md](ANDROID_RELEASES.md)を参照してください。
+
 HTMLモック第5版の画面を、既存のReact Native / Expo・共有Rust・
 ネイティブ端末・SSH / 選択式のtmux・Herdr runtimeへ接続した実用評価版です。
 Android先行版に続き、[Issue #13の検証](evidence/issue-13-ios-acceptance.md)で

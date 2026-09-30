@@ -1,308 +1,90 @@
 # Product definition
 
-## What meeterm is
+meeterm is a smartphone-first SSH client for continuing the same remote work
+from phone and desktop. The selected remote runtime is the durable workspace;
+the phone adapts its presentation without creating a separate environment.
 
-meeterm is a smartphone-first client for an existing SSH development environment. The default backend is ordinary tmux; an authenticated SSH host may use an existing Herdr runtime after explicit selection in the picker.
+## Model
 
-It is not intended to create a second, mobile-only development environment. A developer should be able to work from a phone, stop, then later sit at a PC and continue by attaching to the same selected ordinary tmux session without rebuilding context.
-
-The product promise is:
-
-> The same development workspace, presented appropriately for the device you are using.
-
-## Canonical tmux model
-
-The remote tmux state is the source of truth.
-
-| meeterm concept | tmux concept |
-| --- | --- |
-| Server | SSH host |
-| Remote runtime | selected session on the ordinary tmux server |
-| Workspace | window |
-| Terminal | pane |
-
-This mapping is deliberate and must not be inverted merely to simplify the mobile UI. The suggested name for an explicitly created new session is `meeterm`; it is also retained as a legacy last-used hint, not as a fixed runtime.
-
-### Example
-
-```text
-selected session: <session-name> (example: `meeterm`)
-├── window: app-a
-│   ├── pane: Codex
-│   └── pane: nvim / shell
-├── window: app-b
-│   ├── pane: Codex
-│   └── pane: shell
-└── window: rfkit-rs
-    ├── pane: Codex
-    └── pane: tests
-```
-
-On a phone, `app-a` is a workspace and its panes are shown as terminal tabs. The selected pane receives the phone-sized viewport and is presented full-screen.
-
-On a PC, the user can run the ordinary tmux client against the selected
-session:
-
-```bash
-tmux attach -t <selected-session>
-```
-
-and see the same windows and panes in their ordinary tmux layout. For example,
-Codex and nvim can appear side by side within the same window while app-a and
-app-b remain separate tmux windows. Substitute `meeterm` only when that is the
-session selected by the user.
-
-## Issue #17 common model and implementation
-
-Issue #17 defines one semantic hierarchy shared by the implemented tmux and
-Herdr backends:
-
-| Common concept | tmux backend | Herdr backend |
+| Concept | Ordinary tmux | Herdr |
 | --- | --- | --- |
-| Workspace | tmux window | Herdr workspace |
-| TerminalGroup | one virtual mobile group per window | Herdr tab |
-| Terminal | tmux pane | Herdr pane |
+| Server | SSH host | SSH host |
+| Runtime | selected ordinary session | selected running default/named session |
+| Workspace | window | workspace |
+| TerminalGroup | one virtual mobile group per window | tab |
+| Terminal | pane | pane |
 
-The tmux virtual group is presentation state. It must not create a remote
-window, flatten a tmux layout, or break an ordinary attach to the selected
-session. Backend/runtime selection happens explicitly after SSH host
-authentication in the runtime picker. A saved profile owns the SSH endpoint
-and authentication; legacy backend/runtime fields are migrated to a
-non-authoritative last-used hint and do not bypass the picker. An additional
-backend may use ordinary SSH to a user-selected remote runtime, while meeterm
-itself still requires no gateway, daemon, hosted relay, HTTP API, or WebSocket
-terminal transport.
+The tmux virtual group creates no remote object. Panes appear as mobile tabs;
+the selected pane receives a phone-sized viewport while desktop layout remains
+recoverable. On PC, ordinary `tmux attach -t <selected-session>` or the normal
+Herdr client continues the work. Simultaneous interactive phone/PC use is not
+an initial requirement. `meeterm` is a suggested new tmux session name and a
+legacy last-used hint, never a required runtime name.
 
-The Rust/native backend boundary, profile/runtime fields, common snapshots,
-group operations, and Herdr mobile routes are implemented. The production native
-integration has passed against real Herdr, including ordinary PC client handoff
-and linked-workspace close safety. See the [native evidence](evidence/issue-17-herdr-native.md)
-and [mobile acceptance record](evidence/issue-17-herdr-mobile.md) for measured
-results, exact source revisions, and validation limits.
+## Connection and selection
 
-Herdr is an existing external application and must remain unchanged. Input
-adaptation belongs in meeterm using existing public interfaces; an upstream API
-addition is not a prerequisite of this issue. Mode-aware special keys and
-Japanese/LF bracketed paste are verified through existing public operations.
+1. Add/select an SSH profile and authenticate, explicitly verifying the host key.
+2. Every fresh manual connection and cold start performs bounded, read-only
+   discovery and shows a picker grouped by tmux and Herdr. Even one candidate
+   requires explicit selection. Last-used is a hint, not an automatic attach.
+3. Select an existing tmux session or running Herdr session. Creating a detached
+   tmux session is a separate explicit action. A stale selection refreshes;
+   it never creates a replacement. Herdr start/create/install/update stays in
+   the normal Herdr tools; meeterm does not do it or silently fall back to tmux.
+4. Open a workspace, group and terminal. Tab selection preserves native terminal
+   state and the other remote processes.
+5. Disconnect or hand off to PC while leaving the remote runtime alive.
 
-Herdr compatibility requires protocol 22, API schema 1, and the API/CLI
-capabilities used by meeterm. Herdr 0.9.0 is the verified baseline fixture;
-SemVer and executable path equality are not connection requirements. It is
-connected through the public direct stream-local API over ordinary SSH. See
-[`HERDR.md`](HERDR.md) for the input, scroll, resize, lease, and handoff
-contract, and the [Issue #17 feasibility record](evidence/issue-17-herdr-feasibility.md)
-for historical probe evidence. Herdr remains unchanged.
+Backend discovery errors remain local to their section. Duplicate display names
+remain distinct by runtime identity. Credentials and profile identity belong to
+the SSH endpoint; changing a runtime hint must not change secure-storage identity.
+Write the hint only after the selected runtime reaches Ready.
 
-## Issue #27 server and session switching
+## Switching and recovery
 
-The Workspaces and Terminal headers show the selected Server and Session. Tapping
-that destination opens one hierarchical sheet: saved/current servers first,
-then sessions from the server the user chose. Opening and closing the sheet do
-not connect or search. The current server and session are marked only while a
-runtime is actually selected; a `Last used` profile hint is never presented as
-the current Session.
+Headers show the current Server and Session. Opening the hierarchical switcher
+only displays known state; it does not connect or discover. Choosing a server
+releases the old owner, authenticates/discovers for the destination, and requires
+explicit Session selection before returning to Workspaces. One owner is active
+at a time. Authentication and changed-key review remain explicit.
 
-Choosing a server starts a sequential switch. meeterm releases the current
-native runtime/controller before reconnecting to that same server or another
-SSH endpoint, then lists its tmux and running Herdr sessions in the same sheet.
-The user explicitly chooses a Session, and the app returns to Workspaces only
-after native reports `Ready`. Authentication and changed-host-key verification
-remain explicit inside the switcher before destination Sessions are shown.
-A rejection before the native release boundary keeps the current or retained
-work screen; normal polling can continue updating transport-recovery state, and
-the app says it could not start the switch. If the boundary is accepted but
-replacement startup fails, the old view is retired and is not restored as
-connected. Disconnect remains a secondary action in the sheet.
+A rejected switch before release keeps the current work. After release, failure
+or cancellation must not revive the old owner as connected; the next attempt uses
+a saved profile or connection details. Release never kills remote processes.
+Local history need not survive an intentional switch.
 
-After canceling a switch that crossed the release boundary, the app does not
-offer Reconnect for the canceled connection. The user starts again through a
-saved server profile or the existing credential form, then explicitly chooses
-a Session from fresh discovery. A late `Ready` from the canceled generation is
-ignored; only the selected candidate reaching `Ready` opens Workspaces. Cancel
-or failure after release leaves remote sessions and processes running.
+Transport loss after Ready instead retains the workspace, terminal and local
+history as read-only and automatically restores the same target. Reconnect and
+Retry preserve that intent; Change starts a fresh selection. Stop on concrete
+host/auth/target/capability/controller/resynchronization failures, without
+retargeting or replaying uncertain input. The reason-specific actions and exact
+identity gates are defined in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Releasing or canceling a mobile connection does not stop or close remote
-sessions or their processes. Local terminal history is not promised across an
-intentional switch. Transport loss without an explicit switch continues to use
-the retained-work recovery flow.
+## Terminal and everyday features
 
-## Product principles
+- Terminal state, rendering and input stay native. Japanese/CJK, native IME,
+  wide/combining characters, font fallback and deterministic resize are core.
+- Saved profiles and opt-in credentials in platform secure storage; trusted
+  host identities remain pinned.
+- Workspace/group/terminal selection and supported create/rename/close actions;
+  destructive operations preserve other sessions and use explicit targets.
+- Native selection/copy, Ctrl/Alt and navigation keys, bounded local scrollback,
+  persisted font size and independently selected app/terminal themes.
+- Image attachment: pick/normalize one image, upload over the existing SSH
+  connection, explicitly insert its quoted path into the original terminal.
+  Upload, insert and model consumption are separate; meeterm never sends Enter.
 
-### 1. The selected backend is the durable workspace
+Implementation and UI detail belong in [ARCHITECTURE.md](ARCHITECTURE.md),
+[UI_UX.md](UI_UX.md), [SSH.md](SSH.md) and [HERDR.md](HERDR.md).
+Testing frequency is defined only by [TESTING.md](TESTING.md).
 
-SSH connections are transport and may disappear. For tmux, the selected
-ordinary session is the durable development environment; for Herdr, the
-selected running `default` or named session is durable. `meeterm` is only the
-suggested new-session name and a legacy hint.
+## Scope and direction
 
-The app must tolerate backgrounding, network loss, and process restart by
-reconnecting to the selected remote runtime instead of treating the SSH
-connection as the source of truth.
+No browser client, PC-specific meeterm app, hosted relay, file manager, system
+monitor, or proprietary replacement for remote session state. No meeterm server
+component: ordinary SSH plus the selected existing runtime is sufficient.
+Herdr is an external application, not permission to introduce a meeterm daemon.
 
-### 2. Mobile presentation must not redefine the remote model
-
-A pane is still a pane even when the phone presents panes as tabs. A window is still a window even when the phone calls it a workspace.
-
-Device-specific UI should adapt presentation, not mutate the semantic model solely for presentation convenience.
-
-### 3. Phone and PC optimize the same state differently
-
-Mobile:
-
-- one active workspace at a time;
-- panes exposed as tabs;
-- selected pane expanded for the phone viewport;
-- touch-first navigation and keyboard affordances.
-
-Desktop tmux:
-
-- ordinary tmux window switching;
-- ordinary pane layouts such as side-by-side Codex and nvim;
-- no meeterm-specific desktop client required.
-
-Simultaneous interactive use from phone and PC is not an initial product requirement. Smooth handoff between them is.
-
-### 4. No meeterm server component
-
-The remote host should require ordinary SSH access and the selected runtime:
-tmux or an existing compatible Herdr session/socket.
-
-meeterm must not require a dedicated gateway, daemon, HTTP API, WebSocket service, or self-hosted meeterm backend for the core product.
-
-That rule concerns a meeterm-owned relay. It does not prohibit connecting over
-ordinary SSH to a user-selected Herdr server/runtime when the Herdr backend is
-explicitly selected.
-
-### 5. Native terminal quality is a core product requirement
-
-The terminal is not a generic web view embedded inside an app. It should behave like a first-class mobile terminal with:
-
-- responsive rendering;
-- correct terminal semantics;
-- durable scrollback while the app process lives;
-- accurate resize handling;
-- Japanese/CJK text support;
-- robust Japanese IME composition;
-- reliable special-key and modifier input;
-- smooth pane/tab switching.
-
-Japanese input and CJK rendering are first-class acceptance requirements, not optional polish.
-
-## Primary user flow
-
-1. Add an SSH server profile containing the endpoint and authentication details.
-2. Connect, verify the server host key, and authenticate.
-3. On a fresh manual connection or cold start, review the runtime picker. It
-   shows bounded, read-only sections for tmux and Herdr. A highlighted
-   last-used row is a hint only; the user must select a candidate explicitly,
-   even when only one candidate is available.
-4. Select an existing tmux session, or a running Herdr `default`/named session.
-5. View the selected runtime's workspaces.
-6. Open a workspace and select its group when it has more than one.
-7. View the group's panes as terminal tabs.
-8. Work in one pane at phone-friendly size.
-9. Switch panes without losing the other panes' native terminal state.
-10. Leave the phone; the selected remote runtime continues running.
-11. Later, attach with the ordinary tmux client or Herdr client and continue in
-    the runtime's normal layout.
-
-## Runtime picker and lifecycle
-
-The authenticated SSH host connection is separate from runtime selection. The
-picker is always shown for a fresh manual profile entry and a cold start. Its
-discovery is bounded, backend-independent, and read-only: it never creates,
-starts, attaches, or mutates a runtime. Duplicate names remain distinct by
-backend, and a backend-specific failure stays inside that backend's section so
-the other section remains usable.
-
-The tmux section lists arbitrary sessions from the user's ordinary tmux server.
-An explicitly verified empty result is an empty section; an ambiguous or
-unexpected command failure is an error. Selecting a row attaches to its exact
-discovered session identity. The user may explicitly create a detached tmux
-session when needed; the form suggests `meeterm`, verifies the created identity,
-and only then selects it. A session that disappears or is replaced between
-listing and selection produces a stale-selection error and refreshes the list;
-meeterm never silently creates a replacement.
-
-The Herdr section lists `default` and named sessions with running/stopped
-status. Only running candidates are selectable, and selection revalidates the
-Herdr protocol 22 / schema 1 / required capability compatibility and direct stream-local
-operations. Stopped rows explain that the session must be opened with the
-ordinary Herdr client and then refreshed. Herdr start/create is not promised by
-Issue #21; no meeterm action starts, creates, installs, or updates Herdr, and
-there is no automatic fallback from Herdr to tmux.
-
-After a runtime has reached `Ready`, same-process transport recovery keeps its
-last authoritative workspace, selected terminal, native `Term`, and local
-history visible as read-only while restoring the same work automatically.
-Input, resize, and remote mutations stay closed until host authentication,
-backend capability, selected runtime, topology, selected terminal, and an
-authoritative screen have been verified and committed together. Recovery stops
-in that work screen on a concrete mismatch, conflict, authentication failure,
-missing target, incompatibility, or required synchronization failure.
-`runtimeMismatch`, controller conflict, and retry-exhaustion/unknown
-stops offer **Retry** and **Change**; `runtimeMissing`, `terminalMissing`, and
-`incompatible` offer **Change** only. A changed host key offers **Review key**;
-authentication failure offers **Connection details**. The staged backend
-reason is retained unless a host-key or authentication failure takes precedence.
-Recovery does not open the picker,
-create a replacement, silently retarget, or fall back to the other backend.
-
-tmux verifies the previously selected session identity and pane ID. Herdr
-recovery checks the same approved SSH host/key, compatible Herdr
-(protocol 22, schema 1, direct stream-local operations), the selected running
-runtime, the original stable `terminal_id`, successful ordinary controller
-acquisition without takeover, and the first authoritative full frame. Herdr
-0.9.0 does not publish a comparable server-instance identity; inability to
-prove that identity alone does not block recovery. A missing selected runtime
-or terminal, changed host key, authentication failure, incompatibility,
-controller conflict, or failed full-frame/resynchronization check stops
-recovery on the retained screen. These checks do not permit fallback to another
-runtime or backend.
-
-When retained work exists, **Reconnect** in the Workspaces list or Server sheet
-is available while recovery is reconnecting or stopped for a retry-eligible
-reason; both controls are hidden during resynchronization and for Change-only
-or security stops. These controls and recovery **Retry** call the same-intent
-recovery path. A stopped Retry publishes
-`reconnecting`/`manual_retry` before replacement; duplicate current-epoch calls
-are no-ops, and explicit Disconnect/Change revoke the intent even if the old
-actor has finished. The first automatic attempt starts immediately;
-bounded exponential backoff applies only after a failed attempt. Foreground
-return and a network-change notification wake a sleeping retry when automatic
-reconnect is enabled. `reconnect`/`ManualReconnect` and the picker are reserved
-for cold/fresh connection, explicit server or Session change, and **Change**
-after the retained target is lost. Those fresh-selection flows still require
-explicit runtime selection.
-
-The profile stores SSH endpoint/authentication metadata. Existing backend and
-runtime fields represent a non-authoritative logical `lastUsedRuntime` hint;
-profile IDs and credentials remain independent, and the hint is updated only
-after the selected runtime reaches `Ready`. Switching servers or runtimes keeps
-one selected runtime actor per host connection: the current controller is
-released/drained before the next one is acquired, while the remote runtime and
-processes remain alive.
-
-Topology mutations are subject to the selected runtime's safety boundary. For
-linked or shared tmux topology, workspace close and a terminal close that may
-remove the final pane must be checked immediately before execution in the same
-Rust actor/control queue. If cross-session safety cannot be proved at that
-point, the mutation fails closed with an actionable message.
-
-## Non-goals for the first product
-
-- A browser client.
-- A PC-specific meeterm application.
-- A tablet-specific layout as a separate product surface.
-- A hosted relay or synchronization backend.
-- Simultaneous phone/PC editing guarantees.
-- File-manager, system-monitoring, or general remote-admin features.
-- Replacing tmux with a proprietary session model.
-
-These may be reconsidered only if concrete product needs justify them.
-
-## Brand direction
-
-The meerkat is meeterm's theme character: an alert companion that watches over long-running development sessions.
-
-The visual product should remain mature, quiet, minimal, and professional. Character use should be restrained, especially inside the active terminal experience.
+Prefer the smallest implementation that serves the current requirement.
+[Engineering principles](ENGINEERING_PRINCIPLES.md) guide tradeoffs. The meerkat
+brand is restrained; the interface stays quiet and focused on terminal work.

@@ -1,5 +1,8 @@
 # Daily-use milestone
 
+This is a milestone/history reference. Current behavior is in [PRODUCT.md](PRODUCT.md)
+and [ARCHITECTURE.md](ARCHITECTURE.md); current verification policy is [TESTING.md](TESTING.md).
+
 The user authorized all nine daily-use improvements after validating the PoC.
 The canonical product and native data-plane invariants remain unchanged.
 
@@ -195,47 +198,10 @@ backend/runtime hint only after synchronization reaches `Ready`.
 
 ## Verification
 
-The previously documented daily-use implementation is present. Issue #21's
-runtime-picker additions require the focused checks below; this document does
-not claim those new checks or mobile evidence until Main records them. Local
-deterministic tests, real SSH/tmux integration, Android native tests and
-TypeScript must pass. Under the user-approved policy
-of 2026-09-11, Android full and iOS standard validate a fresh CNG build and
-their screenshots must be downloaded and actually viewed. iOS standard combines
-production storage/input tests, seeded production-screen images and real native
-foundation gates. A separate short SSH round-trip validates connection/input.
-The long iOS full is optional; seeded images do not establish end-to-end behavior. An independent
-review follows integration. Physical-device-only claims require device evidence.
-
-For Issue #21, the Rust/native acceptance set must additionally cover bounded
-side-effect-free discovery; tmux empty/multiple-session listing, explicit
-detached creation, exact selection, and list/select races; Herdr PATH plus
-known-location resolution, default/named running/stopped listing, and running
-selection revalidation; backend-local partial failures; profile/credential
-migration; verified reconnect identity and stale replacement; switch/release
-semantics; and fail-closed linked/shared tmux topology mutations, including
-workspace close and final-pane close. Mobile validation remains Android full
-and iOS `standard` plus the short `ssh` suite for connection changes. Picker
-loading, duplicate-name, stale-selection, asynchronous refresh, and explicit
-selection/create transitions are covered by focused app/native tests. The fixed
-source-level visual manifests include the picker routes plus retained-work
-recovery progress, exhaustion, and mismatch. The iOS `standard` manifest has
-26 screens: the Issue #21 set of 18 plus
-`session-switcher` and `session-switcher-sessions`,
-`recovery-progress`, `recovery-exhausted`, `recovery-mismatch`,
-`layout-restore-unconfirmed`, and
-`runtime-layout-restore-unconfirmed`, plus the `connection-error`
-auth-warning coexistence fixture.
-The existing `herdr-connection` route is the picker state whose Herdr `default`
-candidate carries the non-authoritative `Last used` hint. Android's observational
-`SCREEN_NAMES` has 32 routes: the Issue #21 set of 25 plus the two switcher
-routes, three recovery routes, and the two layout-restore warning fixtures. These counts describe source
-scope only; Main must still record actual
-CI results and downloaded, viewed screenshots before visual success is reported.
-The live Herdr zero-tap recovery check uses the real Herdr 0.9.0 binary in the
-opt-in ignored Rust/russh integration. Android full and iOS `ssh` real-connection
-recovery checks exercise tmux; seeded Herdr screens do not establish a mobile
-Herdr connection result.
+Current execution policy is [TESTING.md](TESTING.md). The runs below are
+historical results on their recorded commits, not a requirement to run both
+platforms' full suites for every change. Source/unit, real SSH, seeded-screen,
+and actual device evidence remain separate.
 
 ### Accepted candidate under the revised policy
 

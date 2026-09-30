@@ -1,536 +1,142 @@
-# Mobile validation guide
+# Mobile診断の実行ガイド
 
-Android APKの自動配布は `android-release.yml` で実行します。`main` の既存CIが成功したコミットからRelease APKを生成し、GitHub Pre-releaseへ掲載します。配布ビルドの検査と、以下のDevin Cloudで行う操作受入は別です。[配布・更新手順](ANDROID_RELEASES.md)。
+実行するかどうかは[TESTING.md](TESTING.md)で決めます。この文書は実行時の手順です。
+Android full / iOS standardは毎回の変更に必要なゲートではありません。
+開発APKの自動生成は[ANDROID_RELEASES.md](ANDROID_RELEASES.md)を参照してください。
 
-This guide defines Android emulator and iOS Simulator validation on **Devin Cloud
-persistent sessions**. It complements the Android device runbook in
-[`POC_ANDROID.md`](POC_ANDROID.md); it does not turn a simulator/emulator into a
-physical-device substitute.
+## 使用する環境
 
-The standard day-to-day sequence and exact commands are in
-[TESTING.md](TESTING.md). The user-approved policy of 2026-09-11 uses iOS
-`standard` for normal acceptance, with a separate short `ssh` suite when
-connection/input changes. Android retains its full smoke; the long iOS `full`
-is an optional diagnostic.
+Devin Cloudの常駐セッションで、必要なOSだけ実行します。
 
-History: until 2026-09-20 the same suites ran on GitHub-hosted runners via
-`.github/workflows/mobile-smoke.yml`. That workflow was retired after the Devin
-Cloud path proved the same gates end to end; old workflow runs remain in git
-and Actions history as historical evidence.
+| OS | セッション |
+| --- | --- |
+| Android / Linux KVM | [9429c00e8cc14fb2b140b3e23bb28ec1](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) |
+| iOS / macOS Apple Silicon | [7a32a4e6ed984961b5194e22feeba407](https://app.devin.ai/sessions/7a32a4e6ed984961b5194e22feeba407) |
 
-Shared and fast checks still run in [CI](../.github/workflows/ci.yml). Native
-builds and runtime verification run on the sessions below.
-
-## Validation sessions
-
-| Session | Platform | Purpose |
-| --- | --- | --- |
-| [`7a32a4e6ed984961b5194e22feeba407`](https://app.devin.ai/sessions/7a32a4e6ed984961b5194e22feeba407) | Devin Cloud macOS (Apple Silicon) | iOS Simulator suites: `standard`, `ssh`, `polish`, `polish-navigation`, `native`, `forms`, `names`, optional `full` |
-| [`9429c00e8cc14fb2b140b3e23bb28ec1`](https://app.devin.ai/sessions/9429c00e8cc14fb2b140b3e23bb28ec1) | Devin Cloud Linux (KVM) | Android build, emulator smoke, screen fixtures, real SSH/tmux smoke |
-
-The two sessions above were created in the Devin Web UI; they are still the
-default targets because they keep warm build caches and same-session product
-reuse. They are no longer a manual prerequisite: Main can create, message, and
-inspect SWE-2 sessions itself (see [Driving sessions](#driving-sessions)).
-
-How a run works:
-
-1. Main drives sessions through the Devin CLI's cloud ACP relay
-   (`devin acp --cloud`) with `scripts/ci/devin-cloud.py`, using the CLI's own
-   `devin auth login` credentials; no `DEVIN_API_KEY` is involved. A new
-   session is created with explicit `repos=phni3j9a/meeterm`,
-   `devin_version=devin-swe-2-max`, and `platform=linux|macos`; the helper
-   refuses a value the relay does not offer and verifies that the created
-   session reports the requested version.
-2. Main sends a validation prompt to the target session (`send`), which wakes a
-   suspended session. Sessions sleep while idle; idle time does not consume
-   quota. The cloud turn continues after the driver detaches, so long suites
-   are sent with a short `--wait` and followed with `status`.
-3. The session executes the suite, pushes the observability bundle to an
-   `evidence/<platform>-<yyyymmdd>` orphan branch, and reports a structured
-   result. Main fetches the branch and actually views the images; the Director
-   judges acceptance from that evidence.
-4. On failure, the same session can investigate in place — live `adb`/`xcrun`,
-   remote tmux polling, fixture logs — which is the main advantage over hosted
-   runner logs.
-
-Persistent VMs keep the installed toolchain, so runs after the first skip
-setup. Every run still starts with `git fetch` and `git reset --hard <SHA>` on
-the exact candidate commit and regenerates CNG output; persistent state is
-cache, never source of truth. If a VM drifts or a session is lost, create a
-replacement with `devin-cloud.py new` and update the ID in the table above.
-
-## Driving sessions
+Mainは `scripts/ci/devin-cloud.py` からDevin CLIの `devin acp --cloud` を使います。
+認証は `devin auth login`。REST API用の鍵は不要です。新規セッションはSWE-2 Maxを
+明示指定し、使用不能ならその理由を報告します。別モデルで代用しません。
 
 ```sh
-python3 scripts/ci/devin-cloud.py list                    # add --all for archived
-python3 scripts/ci/devin-cloud.py new --platform macos --prompt-file prompt.md --wait 60
-python3 scripts/ci/devin-cloud.py send <session-id> --prompt-file prompt.md --wait 60
+python3 scripts/ci/devin-cloud.py list
+python3 scripts/ci/devin-cloud.py new --platform macos --prompt-file /tmp/meeterm-run.md --wait 60
+python3 scripts/ci/devin-cloud.py send <session-id> --prompt-file /tmp/meeterm-run.md --wait 60
+python3 scripts/ci/devin-cloud.py wait-evidence evidence/ios-<date> --after <previous-head> --timeout 5400
 python3 scripts/ci/devin-cloud.py status <session-id> --messages 3
-python3 scripts/ci/devin-cloud.py wait-evidence evidence/ios-<date> --timeout 5400
 ```
 
-`new` defaults to `--version devin-swe-2-max --repo phni3j9a/meeterm`. A turn
-still running when `--wait` expires is reported as detached, not failed.
-To wait for a validation run, use `wait-evidence` instead of repeated `status`
-calls or fixed sleeps. Each run pushes its observability bundle even on
-failure, so a new evidence-branch head is the completion signal; session status
-is not, because an idle session still reports `running`. It checks the branch
-with `git ls-remote` every 60 seconds by default, prints the new head and exits
-0, or exits 2 on timeout. Pass `--after <sha>` when the run may push before
-waiting starts.
-`status` replays the session's most recent Devin messages and prints its
-status, platform, `devinVersionOverride`, and URL. The helper declines any
-request the cloud agent makes to the local client, such as local file access
-or a permission prompt; validation runs need no local tools.
+`new` の既定は `devin-swe-2-max`、repoは `phni3j9a/meeterm` です。
+`--wait` 終了後もcloud処理は継続します。長い処理は `wait-evidence` で待ち、短い間隔の
+status確認を繰り返しません。送信前のevidence headを `--after` に渡すと早い完了も拾えます。
+idleでもsession statusがrunningのことがあるため、完了は新しい証跡commitと結果で判断します。
+ACPのモデル識別子は外部サービス依存です。変更された場合は失敗を調べてからdriverを直します。
 
-Why ACP rather than the REST API: `POST /v3/organizations/{org}/sessions`
-cannot select SWE-2 — `devin_mode` accepts only
-`normal/fast/lite/ultra/fusion`. The ACP relay's `session/new` returns
-`configOptions` whose `devin_version` offers `devin-swe-2-low/high/max` and
-`devin-swe-2-priority-low/high/max`, and whose `platform` offers
-`linux/macos/windows`; `session/set_config_option` applies them before the
-first prompt. A session exists in the cloud only after that first prompt.
-Web-created SWE-2 Max sessions report the same `devinVersionOverride`
-(`devin-swe-2-max`).
+## Suiteを選ぶ
 
-Compatibility limits: the CLI documentation labels cloud ACP as insiders-only,
-and `devin_version` values are internal identifiers rather than a published
-API. Verified with Devin CLI 3000.11.1 on 2026-09-23. If the relay stops
-offering a value, `new` fails closed. In that case, create the session in the
-Web UI with SWE-2 and continue with `send`/`status`. Do not silently run a
-validation under another model.
+| 経路 | 実行範囲 |
+| --- | --- |
+| Android foundation | `scripts/ci/android-smoke.sh`。用意したRelease APKのinstall/launch/native frame/no-crash |
+| Android SSH/full | `scripts/ssh/android-smoke.py`を隔離SSH fixtureから実行。保存・設定・pane操作・theme・復旧などを含む大きな診断 |
+| Android presentation | `scripts/ci/android-screen-fixtures.py`。公開のseeded画面を観測 |
+| iOS `native` | production保存とnative入力。起動/描画の総合検証ではない |
+| iOS `standard` | 保存・入力・画面巡回・theme・fresh native foundation。広範な表示/描画診断 |
+| iOS `ssh` | 実SSH、host key、runtime選択、入力、switch、foreground/transport-loss復旧 |
+| iOS `polish-navigation` | 検索・keyboard・sheet・back操作とfoundation |
+| iOS `polish` | 上記操作と追加の表示状態 |
+| iOS `forms` / `names` / `full` | フォーム、名前操作、旧全操作をそれぞれ調べる診断 |
 
-Measured on 2026-09-23 with sessions created by `new`:
+iOSは `MEETERM_IOS_SUITE=<suite> scripts/ci/ios-smoke.sh` で実行します。
+scriptの既定値は互換性のため `standard` のままですが、依頼にはsuiteを明記します。
+`MEETERM_IOS_PROFILE=compact-xl` は小画面・大きい文字の任意診断です。
 
-- Linux: blueprint warm state was present. That covered Rust 1.96.0,
-  cargo-ndk 4.1.2, NDK 27.1.12297006, `~/.gradle/init.gradle`, `/dev/kvm`,
-  8 vCPU / 31 GiB, and `~/repos/meeterm`. Node resolved to 22.23.2, not the
-  22.22.2 pinned in `.nvmrc` and `ci.yml`.
-- macOS: Apple M4 Pro (Virtual), 16 GiB. The session booted with the macOS
-  blueprint state already applied: `~/.cargo/bin` rustup proxies, Rust 1.96.0
-  with the iOS targets, Homebrew `tmux`, `cocoapods` 1.17.0, and `node@22`
-  22.23.2, plus the blueprint `ENVRC` PATH entries. It also had Xcode 26.6
-  (17F113), the iOS 26.5 and 27.0 Simulator runtimes, and `~/repos/meeterm`.
-  The manual bootstrap below was not needed. Keep it as a fallback for a
-  session that lacks these tools.
-- A cloud turn continued after the driver detached mid-command, and a later
-  `status` call returned the completed output.
-- `send` to the suspended Web-created Android session woke it and returned a
-  read-only reply over the same relay (`devin-swe-2-max`, checkout still at
-  `ed43536`).
+画面名やtest件数をこの文書へ複製しません。現行manifestは
+[MeetermSmokeUITests.swift](../scripts/ci/MeetermSmokeUITests.swift)と
+[android-screen-fixtures.py](../scripts/ci/android-screen-fixtures.py)、
+suiteの完了条件は各driverにあります。suiteを選んだらそのassertionを省略しません。
+`ssh` も複数の接続操作を含むため、起動だけの短いsmokeとは区別します。
 
-## Source of truth and CNG
+## Buildと再利用
 
-Tracked source remains:
+依頼には、対象SHA・OS・suite/操作・fresh buildか再利用か・evidence branchを指定します。
 
-- root TypeScript and Expo app config;
-- `modules/meeterm-terminal/`, including each platform's native adapter;
-- `native/meeterm-core/`, including shared Rust terminal semantics and bridge source;
-- lockfiles and pinned toolchain/dependency declarations.
+1. 専用runner checkoutが他作業で使われていないことを確認し、対象SHAを取得する。
+2. `npm ci` と対象toolchainの確認。iOSは `scripts/ci/ios-typecheck.sh` を先に実行。
+3. `EXPO_PUBLIC_MEETERM_SMOKE=1` を指定して対象OSのCNGを生成し、Release構成をbuildする。
+4. Emulator/Simulatorを起動し、対象scriptでinstall・操作・結果収集を行う。
+5. 成否にかかわらずsanitizedな観測結果をevidence branchへpushする。
 
-`android/` and `ios/` are Expo Continuous Native Generation (CNG) output and
-remain untracked. Each acceptance run resets to the exact candidate commit,
-runs `npm ci`, generates only the requested platform with `expo prebuild`, and
-builds that generated project. Explicit same-commit product reuse inside the
-same session can validate another suite against that build; it is not a new
-CNG/build run. Record both the fresh build and the reuse run. Do not make a
-generated Gradle/Xcode/Podfile edit the source of truth.
+`android/` と `ios/` は生成物です。必要な変更はapp config、plugins、native moduleへ戻します。
+Node/Rust/Androidの固定値は `.nvmrc`、Rust toolchain、ci.ymlが基準です。
+Android foundationのAPKは
+`artifacts/android-emulator-observability/app-release.apk` に用意します。
+AndroidのCNG/buildコマンドはci.ymlとandroid-release.ymlを参照してください。
 
-## Focused execution and product reuse
+iOSは同一セッション・同一commit・同一toolchain/CPU/構成のpristine
+`build-for-testing` productsに限り、別suiteで再利用できます。
+[scripts/ci/ios-test-products.py](../scripts/ci/ios-test-products.py)で一致を検証し、
+fixture環境変数は実行ごとの一時コピーにだけ注入します。
+app/native/test/build入力を変えたら新しいbuildが必要です。
+元buildと再利用runを記録し、再利用をfresh buildと呼びません。
 
-`MEETERM_IOS_SUITE` selects `standard|polish|polish-navigation|ssh|full|forms|native|names`.
-The default is `standard`. `MEETERM_IOS_PROFILE=compact-xl` selects the explicit
-accessibility diagnostic simulator profile (SE-class layout, extra-large
-content size); report it separately from normal Pro-class results and never
-substitute a large device for a small one.
+Simulatorは署名なしで実行します。証明書・provisioning profile・Apple秘密情報を要求しません。
+Keychain試験はproduction moduleをimportするapp-hosted targetで行い、使い捨てのSimulator
+app本体にXML/DER entitlementを埋め込みます。別processのUI runnerへ付けても代用できません。
+[scripts/ci/ios-inject-ui-test.py](../scripts/ci/ios-inject-ui-test.py)と
+[ios-strip-storage-rust-link.py](../scripts/ci/ios-strip-storage-rust-link.py)を使用します。
+実機/TestFlightの署名・配布は別作業です。
 
-- `standard`: six production storage cases (including
-  `legacy_preferences_migration`, where a persisted four-key preferences file
-  gains the `dark` terminal theme while the app value is preserved), fourteen
-  native input/recovery-bridge cases (including `scroll_gesture` and
-  `theme_refresh`, which asserts the
-  responder, marked text and selection survive an in-place theme switch),
-  direct screen captures from public deterministic state, and a fresh native foundation
-  launch/readiness/frame/no-crash observation. Its source-level screen manifest
-  has 26 routes: the previous 18 plus `session-switcher`,
-  `session-switcher-sessions`, `recovery-progress`,
-  `recovery-exhausted`, `recovery-mismatch`,
-  `layout-restore-unconfirmed`, `runtime-layout-restore-unconfirmed`, and
-  `connection-error`. The existing
-  `herdr-connection` route is the picker with the Herdr `default` candidate's
-  non-authoritative `Last used` hint. The three recovery presentation routes
-  are `recovery-progress`, `recovery-exhausted`, and `recovery-mismatch`; they
-  retain the native terminal and verify the
-  applicable recovery rail copy/action state. Runtime-picker and recovery
-  states are seeded only for presentation; no SSH fixture is started.
-  For the Issue #37 theme contract the suite additionally verifies all six
-  `&app=`/`&terminal=` smoke-URL pairs (captured as
-  `theme-app-<a>-terminal-<t>.png`, each with a real native terminal handle),
-  the Settings preview (`app-theme`/`terminal-theme`/`terminal-preview`), a
-  seeded recovery rail under an opposite theme pair, and real `simctl ui`
-  appearance flips that must repaint the same native handle in place with the
-  selection intact. The pinned-dark case also asserts the same native handle
-  across both flips and captures `theme-os-pinned`; the pinned surface's
-  actual appearance stays subject to Main's visual review. (The stricter
-  no-new-resolved-marker assertion is Android-only — see below.) A standard
-  run must end with the `theme_verification_complete`
-  stage marker; `ios-appearance-validation.txt` records the
-  request/result handshake as supplementary observer diagnostics, not a pass
-  gate. These theme cases are additive checks, not new named screen routes.
-- `ssh`: the actual connection and host-key boundary, runtime discovery and
-  explicit selection, a healthy same-process app background/foreground return
-  while the selected tmux pane remains active, and a resumed native input and
-  remote acknowledgment. It also runs a separate deterministic transport-loss
-  case: the disposable fixture stops/restarts only its sshd through its
-  fixture-owned control files, while tmux remains alive. After the stop ACK,
-  the Android driver reaches the fixture directly through the Android
-  Emulator's reserved `10.0.2.2` alias for the host loopback interface. It
-  requires exactly one ready `emulator-<port>` transport before credential
-  entry, requires an empty serial-scoped reverse list before and after the
-  loss case, and runs a bounded zero-I/O reachability probe to the exact alias
-  and fixture port. It does not create or remove an ADB reverse mapping. The fixture's exact accepted sshd session
-  therefore owns the connection-loss boundary without an intermediate relay.
-  The app must then show the retained read-only rail and
-  return Ready to the same pane/native handle without reopening the picker,
-  followed by one post-loss remote acknowledgment and disconnect. No daily
-  CRUD/copy/restart chain; this path does not claim arbitrary packet loss,
-  network handover, physical device, or Herdr mobile recovery. The healthy
-  foreground cycle and transport-loss case are separate evidence categories.
-  It also performs a live `ssh_theme_light`/`ssh_theme_dark` check before
-  disconnect: saving a terminal theme on the live session must repaint in
-  place with the same native handle and selected pane, and each post-theme
-  change must return a remote acknowledgment through a fixture marker round
-  trip exactly once from the same pane/shell PID/native handle with other
-  panes clean; light/dark keyboard captures are recorded alongside.
-- `forms`, `native`, `names`, and the old `full`: explicitly requested diagnostics.
-  Full preserves its original assertions and result; a prior failed full remains failed.
+## Runtime結果と画像
 
-For Issue #37 on Android, `full` additionally exercises the theme contract
-through the real Settings rows and navigation — the six app/terminal pairs —
-then real OS night-mode switches (`cmd uimode night`) asserting process
-identity, plus a pinned-dark terminal that must emit no new resolved
-`MEETERM_SMOKE_THEME` logcat marker. These are additive cases inside the
-existing suite; Android's observational `SCREEN_NAMES` stays at 32 routes and
-theme combinations are not new named screen routes. The iOS counterparts are
-the `standard`/`ssh` additions above. The PR #44 review-fix runs are complete
-on exact product/test source `3f38a91`: fresh Android `full` (evidence
-`c9d3d1e2`) and fresh iOS `standard` (evidence `98299519`). Main downloaded and
-viewed the relevant screenshots and sampled recordings from both runs,
-including the Android recording's final encoded frame rather than only its
-fixed-rate samples. iOS `ssh` was not rerun for this label/render-scheduling
-change; its earlier evidence remains scoped to `52978906` (`ce285376`, with
-strict same-C4 product reuse), not to the review-fix source. Earlier iOS
-`standard` (`3f15e9be`) and Android `full` on `dca158c` (`cf2db126`) remain
-historical runs. See
-[evidence/issue-37-independent-themes.md](evidence/issue-37-independent-themes.md)
-for the verified evidence and scoped limits.
+foundationの成功にはinstall、launch、native readiness、実Rust snapshotのfirst frame、
+no-crashが必要です。環境準備・静的label・画像の存在だけでは成功にしません。
+iOSのMetal markerとSimulator専用CoreGraphics markerを区別します。
+Simulatorは実機GPU・IME・font parityの証拠ではありません。
 
-For retained-work recovery (Issues #26 and #41), Android `full` and iOS `standard` plus `ssh` are the applicable
-mobile paths. Shared/native tests separately cover bounded no-side-effect
-discovery, tmux list/create/select and identity races, Herdr executable
-resolution and running-only selection, profile migration, reconnect identity,
-switch/release, backend-local partial failures, and fail-closed linked/shared
-tmux mutations. Retained-work checks additionally cover strict original tmux
-pane recovery, Herdr same-runtime/stable-terminal/ordinary-lease checks without
-takeover, operation-epoch input gating, no automatic picker/fallback, and
-authoritative resynchronization before Ready. The first retry is immediate;
-bounded backoff applies after a failure, while foreground and native network
-change wake a sleeping retry without resetting its budget or interrupting a
-healthy connection. The iOS `standard` source-level manifest has 26 routes and
-Android's observational `SCREEN_NAMES` has 32 routes. Both include the two switcher routes,
-the four runtime-picker routes `runtime-picker`, `runtime-partial-error`,
-`runtime-empty`, and `runtime-create`, plus `recovery-progress`, `recovery-exhausted`,
-and `recovery-mismatch`, plus the two
-`layout-restore-unconfirmed` warning fixtures and the `connection-error`
-auth-warning coexistence fixture, while `herdr-connection` is
-the repurposed picker state described above. These are source-level scopes only;
-this document does not claim remote CI or visual review.
-The opt-in ignored Rust/russh integration with the real Herdr 0.9.0 binary
-provides the live Herdr zero-tap recovery evidence. Android full and iOS `ssh`
-exercise real tmux connection loss; they do not claim mobile Herdr recovery.
+smoke buildと明示URL `meeterm://smoke?screen=<name>` で公開fixtureを開けます。
+必要なときだけ `&app=<theme>&terminal=<theme>` をこの順で指定します。
+foundation URLは `meeterm://foundation?foundation=1` です。
+通常起動ではfixtureを有効にせず、端末データはRust/nativeで作ります。
+seeded画面を実接続・保存・入力操作の証拠として報告しません。
 
-Issue #27 uses Android `full` and iOS `standard` plus `ssh`. The `standard`
-switcher routes are seeded presentation captures only; they do not start the
-SSH fixture or prove switch actions. Android `full`'s daily-use extension and
-iOS `ssh` perform same-server Session switching and cross-endpoint switching.
-The fixture sshd listens on distinct ports; `Match LocalPort` sets a different
-`TMUX_TMPDIR` for each port, and the alternate endpoint owns the separate
-ordinary tmux Session `switcher-alternate-destination`. The switch tests verify
-destination input markers, explicit host-key confirmation for the alternate
-profile, and the original shell PID after returning. These are suite scopes,
-not remote-run results; Main records exact-source builds/runs and reviews the
-final Android/iOS evidence separately. See [TESTING.md](TESTING.md) for the
-focused App/native boundary and cancel cases.
+実SSH試験は隔離fixtureを使い、host keyとremote input markerを検証します。
+Android fullとiOS sshのtransport-loss試験はtmuxが対象です。Herdr実接続はRust/russhの
+ignored integrationで確認します。foreground復帰と意図的なtransport lossを混同しません。
+ユーザーのsshd・tmux・Herdrを停止したり、秘密情報をログへ出したりしません。
 
-Standard and ssh each have a 15-minute XCTest budget. Native has 10 minutes,
-forms/names have 15, and optional full retains its 30-minute storage/UI budget.
-Session-side build and Simulator setup time is outside those budgets and is
-recorded with the result.
+## 成果物と失敗調査
 
-For `ssh`, `full`, and `names`, `scripts/ci/ios-smoke.sh` itself runs the
-preflight the retired workflow enforced: fixture-only tmux installation,
-`scripts/ssh/fixture.py --check` (authenticated SSH and remote tmux resolution
-with the disposable host key), and the
-`real_openssh_existing_tmux_runtime_selection` cargo test through the fixture.
-This preflight is environment validation and does not count as iOS terminal or
-SSH UI evidence. Standard and focused forms/native runs skip fixture
-installation and startup entirely.
+- Android: `artifacts/android-emulator-observability/`
+- iOS: `artifacts/ios-simulator-observability/`
+- 保存先: `evidence/<platform>-<date>` のorphan branch。大きなAPKは必要時だけ含めます。
 
-Same-source reuse: within a session, `RUNNER_TEMP` derived-data persists, so a
-second suite on the identical commit can reuse the fresh `build-for-testing`
-products instead of rebuilding. The driver must verify the commit and toolchain
-match before reusing and must never claim a new CNG/build for a reuse run. See
-[TESTING.md](TESTING.md) for commands, triage, the limits of reuse and the final
-acceptance procedure.
+launch後は画像とsanitized native logを採取します。到達しなかった場合はunavailable理由を
+保存し、画像を捏造しません。秘密欄の画像、生XCTest/xcresult、入力値、clipboardや端末の
+生内容はアップロードせず、runnerの一時領域にとどめます。
 
-## Machine gates
-
-Both platforms use the same acceptance boundary:
-
-1. The fresh CNG-generated native project builds.
-2. The app installs in the emulator or Simulator.
-3. The app launches successfully.
-4. The expected native terminal module reports readiness.
-5. The native terminal reports a first rendered frame from a real Rust-owned snapshot.
-6. The app remains alive without a crash during the smoke interaction.
-
-Readiness and first-frame signals must come from the native module/view or a sanitized native log, not from OCR, a fixed sleep, or the existence of a screenshot. The Android module already has native event/readiness and metrics concepts; the iOS adapter should expose the same low-frequency contract without moving terminal bytes, cells, render frames, or IME composition through JavaScript.
-
-The foundation gates exercise fixed local demo bytes through the shared Rust
-terminal state and native snapshot/render path. A static React Native label,
-WebView terminal, or screenshot fixture is not an acceptable substitute.
-
-Android additionally runs the disposable OpenSSH/tmux fixture and
-drives the connection form through `adb`. The script verifies the displayed
-host fingerprint before explicitly trusting it, waits for the Rust-backed
-connection state, and sends native terminal input that writes a marker inside
-the fixture's temporary directory. It also disconnects and reconnects, checks
-the same pane identity, and uses a shell variable to prove that the original
-remote process resumed. This verifies the real SSH/tmux input path
-without adding a production test endpoint or passing terminal streams through
-JavaScript. While connected, the selected mobile pane may legitimately be
-zoomed, so the resume check compares stable window/pane identities and shell
-PIDs. After each explicit disconnect, including a second disconnect after the
-resume check, the script requires the original split shape and no remaining
-mobile zoom. The PC-help screenshot documents the UI; ordinary desktop attach
-is covered separately by the shared Rust integration test and the iOS fixture.
-The remote-shell screenshot is separate from the foundation
-screenshot and is for human inspection; neither screenshot is a pixel gate.
-The daily-use extension also checks saved-profile management, native credential
-restoration after process restart, settings persistence, workspace/pane mutations,
-CJK atlas rollover, and exact native selection/copy/paste. Android’s deliberate HOME
-transition requires the configured launcher, the same app PID on return and a
-fresh acknowledgment from the original remote shell. Recording starts after
-credential entry and restoration; detected unexpected foreground loss discards
-the recording rather than capturing another app.
-The HOME transition just described is the healthy foreground evidence and does
-not simulate a transport failure. The same Android `full` run separately sends
-`stop` and `start` requests through the fixture's mode-0600
-`sshd-control-request`/`sshd-control-status` files. After the stop ACK, the
-driver has already required an emulator serial and replaced only the fixture's
-published `127.0.0.1` form value with `10.0.2.2`, Android Emulator's reserved
-alias for the host loopback interface. The expected host-key fingerprint still
-comes from the same disposable fixture key. A read-only pre/post check requires
-one ready selected emulator and an empty reverse list. No ADB reverse relay, adbd restart,
-host ADB server restart, or product-side transport hook is involved. Only the fixture
-sshd process tree is stopped; the tmux server/session/shell and endpoint identity
-are left alive. The fixture's verified listener/session owner exit is therefore
-the accepted-stream boundary directly observed by the app's TCP socket. The driver
-records sanitized fixed results for the pre-loss and post-loss markers, the
-cached read-only rail, the same native handle, the same selected pane, and the
-absence of input while stopped. On iOS, the final
-sanitized artifact carries the independent `native_handle_same` and
-`selected_pane_identifier_same` booleans in addition to the native surface
-binding boolean. This transport-loss
-branch is a remote acceptance check; local source/Python tests and this document
-do not claim that a remote run has passed.
-The iOS `ssh` suite records the same two categories separately: its existing
-Home/background → activate cycle is healthy foreground evidence, while the
-fixture control request is the intentional SSH/Control Mode loss. XCTest sends
-no input between the stop and start acknowledgements, checks the retained
-read-only terminal and smoke-only opaque native handle, records the stale and
-recovered handle comparison as `native_handle_same`, and records the independent
-selected-pane checks as `selected_pane_identifier_same`. It then sends the unique
-post-loss marker only after the same pane is authoritative Ready. The host
-driver verifies the marker pair against the live tmux pane and rejects any
-duplicate or other-pane occurrence. These checks remain remote-only until the
-app is run on the session Simulator; no local source result is a mobile
-acceptance claim.
-
-The iOS run generates a temporary app-hosted storage test target and an XCUITest
-target in the fresh CNG project. The storage target compiles only
-`ClientStoreTests.swift` and resolves the production module through `TEST_HOST`;
-it does not copy the storage implementation or link a second native runtime.
-After CocoaPods integration, `scripts/ci/ios-strip-storage-rust-link.py` removes
-the inherited Rust library flag from the storage target's generated
-Debug/Release configurations and verifies that the app retains it. It also checks
-that only the app generates an Expo provider. Standard, full and native suites
-require four fresh storage-case success markers before their input/UI tests run;
-a successful runner exit without those cases does not pass the gate. The
-forms-only diagnostic does not run storage tests.
-
-In the optional full scope, the XCUITest target drives the actual connection form, host trust, workspace/pane selection,
-native input, disconnect, and reconnect against the same disposable fixture.
-The Python driver then checks remote markers and ordinary desktop attach.
-The daily iOS flow also checks saved-credential cold restart, native selection
-and Copy, persisted settings, and workspace/pane management. After a real Copy
-and selection clear, XCTest requests a bounded host-side `simctl pbpaste` check
-through a fresh per-run marker. The host compares clipboard content in memory
-and returns only a fixed result; clipboard text is never logged or uploaded.
-Missing observations, content mismatch and command timeout fail the gate. The
-UI runner must not read another app's `UIPasteboard.general.string`, because
-iOS can block that synchronous read behind a paste permission alert. Production
-copy/paste and its permission behavior remain unchanged. Storage plus input/UI
-execution retain one shared 30-minute deadline.
-After the real SSH flow, XCUITest terminates the app and opens the explicit
-foundation URL with `XCUIApplication.open(_:)`. It requires the preview and
-native terminal to appear, then continuously observes the app in the foreground
-for ten seconds. The host validates that this fresh process reported native
-readiness and a Metal or Simulator-only software first frame at least five
-seconds before that observation ended. UTC log timestamps keep foundation
-frames separate from the real SSH frame gate. The collector preserves the
-XCTest screenshot rather than capturing an arbitrary post-test screen.
-Raw XCTest output and xcresult bundles can contain typed credentials and remain
-in session temporary storage; only sanitized stages and safe screenshots are pushed.
-Standard also finishes with that fresh-foundation observation, independently of
-the optional full sequence. Current suite evidence is tracked in `DAILY_USE.md`.
-Both foundation previews require a smoke build and an explicit
-`meeterm://foundation?foundation=1` launch. Ordinary startup opens the real app.
-See [`SSH.md`](SSH.md) for credentials, commands, and the remaining limits.
-
-## Direct screen fixtures
-
-Screenshot coverage opens fixed screen states through a smoke-build-only explicit
-launch route. It reuses production screen components and public metadata; it
-must not type credentials, connect to a real host, or mutate saved profiles to
-prepare an image. Ordinary startup and non-smoke builds do not activate this route.
-The terminal image still uses the Rust fixture and native TerminalView.
-
-A seeded server/workspace/settings image proves presentation, not successful
-creation, persistence, connection or copy. Keep that boundary in reports. The
-short SSH suite supplies actual connection/input evidence separately; more
-extensive lifecycle, clipboard and editing flows retain their actual evidence
-or are explicitly listed as unverified. New policy does not retroactively turn
-old full failures into success.
-
-## Evidence and visual review
-
-Each run pushes an observability bundle to an `evidence/<platform>-<yyyymmdd>`
-orphan branch in this repository — including on failed runs. Once app launch is
-reached, the run attempts to capture a screenshot and sanitized native log; if
-an earlier stage or capture itself fails, the bundle contains an explicit
-`screenshot-unavailable.txt` or runtime-log diagnostic rather than a fake image.
-Logs must not contain private keys, passwords, passphrases, host credentials, or
-raw authentication material.
-
-- `artifacts/android-emulator-observability/` — build log, launch/process/logcat
-  records, screen-fixture captures, SSH validation results, failure-state
-  screenshot and recording. Large binaries (`app-release.apk`) are excluded by
-  default; request explicit upload when an evaluation APK is needed.
-- `artifacts/ios-simulator-observability/` — suite results, stage/timing
-  records, screen captures, sanitized simulator log, foundation observation.
-
-Evidence branches accumulate; prune old ones once their runs are recorded in
-the acceptance documents. Session-page attachments are a secondary, expiring
-channel — the branch is the durable record.
-
-There is no screenshot-existence or pixel-difference machine gate at this stage. Native readiness, renderer-specific first-frame evidence, and process survival are the runtime gates. For every native UI change, Main must fetch the evidence branch and actually view both the Android emulator screenshot and the iOS Simulator screenshot before reporting visual success. If either PNG is unavailable or invalid, visual success remains unverified even when the machine gates pass. Pixel comparisons may be reconsidered only after renderer/font/device variance is understood and the visual contract is explicitly defined.
-
-## Environment notes (measured 2026-09-20)
-
-- **Maven Central is blocked** by the organization network policy (HTTP 403).
-  The Android session injects Google's official mirror
-  `maven-central.storage-download.googleapis.com/maven2/` plus a plugin mirror
-  via `~/.gradle/init.gradle` (`beforeSettings` hook — `settingsEvaluated` is
-  too late for included builds). The permanent fix is adding
-  `repo.maven.apache.org`, `repo1.maven.org`, and `plugins.gradle.org` to the
-  Devin Security Profile allowlist (Settings → Customization → Security
-  profiles); keep the mirror init script until that lands.
-- **arm64 macOS session**: build with `ARCHS=arm64` — an `x86_64` simulator
-  product cannot install on the arm64 host's simulator (Rosetta does not cover
-  sim apps). The Rust slice target is `aarch64-apple-ios-sim`. This is a
-  legitimate platform deviation from the retired Intel runner's `x86_64` path.
-- **Simulator runtime mismatch**: when `xcodebuild` reports the SDK's expected
-  iOS runtime build missing, bind the installed build with
-  `xcrun simctl runtime match set <platform> <build>` (verify with
-  `xcrun simctl runtime match list`).
-- **`SIMCTL_CHILD_TZ=UTC`**: `simctl spawn log show --start` parses its
-  timestamp in the simulator's local timezone regardless of `--timezone UTC`.
-  Export it for the smoke run or the post-XCTest log query window is empty on
-  non-UTC hosts.
-- **Suite re-runs**: app profile state persists between runs on the same VM;
-  `adb shell pm clear dev.meeterm.app` restores first-run conditions for
-  Android. Stale `.xcresult`/`.xctestrun` products under `RUNNER_TEMP` similarly
-  break iOS re-runs and must be cleared.
-- **Headless by default**: the Android emulator runs `-no-window -gpu
-  swiftshader_indirect`; screenshots come from `adb exec-out screencap`, so no
-  visible window appears on the session desktop. The iOS Simulator.app shows a
-  window — that difference is expected.
-- **macOS session bootstrap** (fallback only; sessions created on 2026-09-23
-  already had this state, see [Driving sessions](#driving-sessions)): the base
-  image ships brew-managed rustup but no `~/.cargo/bin` proxies, so
-  `rustc`/`cargo` do not resolve.
-  Link proxies to the real binary — `/opt/homebrew/bin/rustup` is a brew
-  wrapper that drops argv[0], so symlinks to it do not dispatch.
-  ```bash
-  mkdir -p ~/.cargo/bin
-  RUSTUP_BIN="$(brew --prefix rustup)/libexec/bin/rustup"
-  for t in cargo rustc rustdoc rustfmt cargo-clippy clippy-driver cargo-fmt; do
-    ln -sf "$RUSTUP_BIN" "$HOME/.cargo/bin/$t"
-  done
-  export PATH="$HOME/.cargo/bin:$PATH"
-  rustup default 1.96.0
-  rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-  HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux cocoapods node@22
-  brew link --overwrite node@22 || true
-  echo 'export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:$PATH"' >> ~/.zprofile
-  ```
-
-## iOS signing boundary
-
-The Simulator run is an unsigned simulator build/install check. It must not require distribution certificates, provisioning profiles, an Apple Developer account, or signing secrets. Physical-device installation and TestFlight distribution are later signed workflows with protected credentials, provisioning decisions, and separate acceptance evidence.
-
-For production Keychain tests, the disposable Simulator app host embeds XML and
-DER entitlement sections in its Mach-O executable. The run verifies both
-sections before execution. This is a Simulator-only test configuration and does
-not provide device signing or distribution credentials. Storage tests run in
-that app host before the separate UI runner starts.
-
-The runtime uses Release configuration to embed the JavaScript bundle and avoid depending on Metro or the Expo development launcher. This is still a local smoke binary, not an App Store/distribution build. Interactive local work and physical-device input testing use Expo Development Builds.
-
-## Native dependency updates
-
-An update to Expo/React Native, `expo-build-properties` or `expo-dev-client`, Rust/`alacritty_terminal`, Android SDK/NDK/Gradle, Xcode/SDK/CocoaPods, bundled fonts, or the iOS renderer backend is a cross-platform native dependency update. Pin or document the relevant versions, regenerate CNG output, and run both mobile validations before merging it. Since generated iOS dependency output is not currently committed, the session toolchain policy must be explicit rather than relying on a local `Podfile.lock`.
-
-The current iOS adapter uses direct Metal and the explicitly identified Simulator-only CoreGraphics fallback described below. Any future backend change must be supported by native evidence for snapshot throughput, text/CJK rendering, IME/lifecycle behavior, build cost and maintenance, and recorded in the architecture. Do not hide a backend change in generated project files or route rendering through JavaScript.
-
-Metal execution: the Devin Cloud macOS session runs on Apple Silicon where the
-Metal renderer path is available, and the 2026-09-20 `standard` run recorded the
-Metal first-frame marker. The validation must still distinguish a Metal
-first-frame marker from the Simulator-only native CoreGraphics fallback marker —
-the fallback validates the Rust snapshot, CoreText, view, and input boundary,
-but it is not evidence that Metal executed. iOS Metal parity on physical devices
-remains a device-validation item.
-
-## Minimal run shape
-
-Each validation run on a session follows this order:
-
-```text
-git fetch && git reset --hard <candidate SHA>
-npm ci
-native dependency/toolchain check
-expo prebuild --platform android|ios --non-interactive --no-install
-build the generated native project
-boot the emulator/Simulator
-install and launch the self-contained smoke app
-wait for native readiness and first-frame evidence
-capture screenshot and sanitized log
-push the observability bundle to the evidence branch, even on failure
+```sh
+git fetch origin evidence/ios-YYYYMMDD
+mkdir -p /tmp/meeterm-evidence-YYYYMMDD
+git archive origin/evidence/ios-YYYYMMDD | tar -x -C /tmp/meeterm-evidence-YYYYMMDD
 ```
 
-The Android-specific toolchain values and physical-device commands remain in
-[`POC_ANDROID.md`](POC_ANDROID.md). iOS simulator build glue belongs in the
-local module/app source and the session procedure, not in an ignored generated
-directory.
+Mainは報告対象の画像を実際に開きます。全画面・両OS画像の一律取得は不要で、変更した画面と
+確認対象OSに絞ります。PRにはsource/suite・結果・成果物・確認できなかった点を簡潔に残します。
+
+最初の失敗をbuild、Simulator、保存/入力、表示、SSH、描画に分け、該当ログから調査します。
+同じ失敗をblind retryせず、assertionを飛ばしたりdeadlineを延ばしたりしません。
+iOS driverは最上位XCTest結果が出た後の終了ハングを判別しますが、結果のないtimeoutは失敗です。
+以前のfull失敗を別suiteの成功で上書きしません。
+
+## Runner固有の注意
+
+- Apple SiliconのSimulatorは `ARCHS=arm64`、Rustは `aarch64-apple-ios-sim`。
+- `SIMCTL_CHILD_TZ=UTC` を設定し、log収集開始時刻のtimezoneを揃えます。
+- Maven Centralが403の場合はrunnerのnetwork policyを確認します。既存Linux sessionには
+  Google公式mirrorを使うGradle init設定があります。無関係な依存更新で回避しません。
+- 同じVMにはprofileや古い成果物が残ります。専用のtest app/dataだけを初期化し、
+  raw XCTest productsと再利用対象のpristine productsを混ぜません。
+- runtime不足、toolchain drift、セッション消失は環境の失敗として報告します。
+  新規sessionの現在の状態を調べ、必要なものだけ準備します。
+
+過去の詳細結果は[検証履歴](evidence/testing-method-validation-history.md)と
+[daily-use履歴](evidence/daily-use-validation-history.md)を参照してください。

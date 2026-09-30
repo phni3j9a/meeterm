@@ -2,13 +2,17 @@ name: CI
 
 on:
   push:
-    branches:
-      - "**"
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Superseded PR runs may stop; every main commit still feeds APK distribution.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   NODE_VERSION: 22.22.2
@@ -22,8 +26,44 @@ env:
   ANDROID_NDK_VERSION: 27.1.12297006
 
 jobs:
+  changes:
+    name: Select checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      javascript: ${{ steps.select.outputs.javascript }}
+      rust: ${{ steps.select.outputs.rust }}
+      ios: ${{ steps.select.outputs.ios }}
+      android: ${{ steps.select.outputs.android }}
+      scripts: ${{ steps.select.outputs.scripts }}
+      dependencies: ${{ steps.select.outputs.dependencies }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Diff needs history/trees, not old evidence images and logs.
+          filter: blob:none
+      - name: Check job selection
+        run: python3 scripts/ci/test_select_checks.py
+      - name: Select jobs from the complete changed-path list
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) python3 scripts/ci/select-checks.py "$BASE_SHA" "$HEAD_SHA" --merge-base >> "$GITHUB_OUTPUT" ;;
+            push) python3 scripts/ci/select-checks.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch) python3 scripts/ci/select-checks.py --all >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+          cat "$GITHUB_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+
   ios-driver:
     name: iOS driver fast typecheck
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-26-intel
     timeout-minutes: 10
     env:
@@ -37,6 +77,8 @@ jobs:
 
   javascript:
     name: JavaScript and Expo checks
+    needs: changes
+    if: needs.changes.outputs.javascript == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -64,26 +106,42 @@ jobs:
       - name: Check public Android presentation routes
         run: python3 scripts/ci/test_android_screen_fixtures.py
 
-      - name: Check iOS Simulator entitlement generation
-        run: python3 scripts/ci/test_ios_simulator_entitlements.py
-
-      - name: Check iOS app-hosted storage linker isolation
-        run: python3 scripts/ci/test_ios_strip_storage_rust_link.py
-
-      - name: Check portable exact-source iOS test products
-        run: python3 scripts/ci/test_ios_test_products.py
-
-      - name: Check Devin Cloud ACP driver
-        run: python3 scripts/ci/test_devin_cloud.py
-
       - name: Validate Expo configuration
         run: npx expo config --type public >/tmp/meeterm-expo-config.json
 
-      - name: Run Expo doctor
+      # Registry recommendations must not force an unrelated patch upgrade.
+      # npm ci, typecheck, Expo config and native builds remain blocking checks.
+      - name: Expo dependency advice
+        if: needs.changes.outputs.dependencies == 'true'
+        continue-on-error: true
         run: npx --yes expo-doctor@1.20.4
+
+  scripts:
+    name: Validation script regressions
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # The iOS project-injection regression calls the lockfile's xcode parser.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm install --global npm@"${NPM_VERSION}"
+      - run: npm ci
+      - name: Python and evidence collector regressions
+        run: |
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
+          python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
+          python3 -m unittest discover -s scripts/herdr -p 'test_*.py'
+          scripts/ci/ios-collect-artifacts-test.sh
 
   rust:
     name: Rust checks
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -95,14 +153,6 @@ jobs:
           rustup toolchain install "${RUST_VERSION}" --profile minimal \
             --component rustfmt,clippy --no-self-update
           rustup default "${RUST_VERSION}"
-
-      - name: Check SSH smoke driver regressions
-        run: |
-          python3 -m unittest discover -s scripts/ssh -p 'test_*.py'
-          python3 -m unittest discover -s scripts/herdr -p 'test_*.py'
-          scripts/ci/ios-collect-artifacts-test.sh
-          command -v tmux
-          tmux -V
 
       - name: Format check
         working-directory: native/meeterm-core
@@ -150,6 +200,9 @@ jobs:
 
   android:
     name: Android native build
+    needs: changes
+    # On main the release workflow builds/tests Android once and publishes it.
+    if: needs.changes.outputs.android == 'true' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Keep Rust debug assertions for the debug variant, but omit DWARF data
@@ -205,14 +258,6 @@ jobs:
             aarch64-linux-android x86_64-linux-android
           cargo +"${RUST_VERSION}" install cargo-ndk --version "${CARGO_NDK_VERSION}" --locked
 
-      - name: Build Rust Android targets
-        working-directory: native/meeterm-core
-        env:
-          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
-        run: |
-          cargo ndk -t arm64-v8a -t x86_64 -P 24 \
-            build --locked --release
-
       - name: Generate Android project with Expo CNG
         run: npx expo prebuild --platform android --non-interactive --no-install
 
@@ -220,17 +265,8 @@ jobs:
         working-directory: android
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Run native module unit tests when the generated task exists
+      - name: Run native module debug and release regressions
         working-directory: android
-        run: |
-          tasks="$(./gradlew tasks --all --no-daemon)"
-          if grep -Eq "(^|:)meeterm-terminal:testDebugUnitTest([[:space:]]|$)" <<<"${tasks}"; then
-            ./gradlew :meeterm-terminal:testDebugUnitTest --no-daemon --stacktrace
-          else
-            echo "No :meeterm-terminal:testDebugUnitTest task was generated; no native-module Android unit tests are present in this PoC."
-          fi
-          if grep -Eq "(^|:)app:testDebugUnitTest([[:space:]]|$)" <<<"${tasks}"; then
-            ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
-          else
-            echo "No :app:testDebugUnitTest task was generated; no app Android unit tests are present in this PoC."
-          fi
+        run: >-
+          ./gradlew :meeterm-terminal:testDebugUnitTest :meeterm-terminal:testReleaseUnitTest
+          --no-daemon --stacktrace
