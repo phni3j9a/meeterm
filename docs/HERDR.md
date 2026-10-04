@@ -215,8 +215,6 @@ operation に分けます。
   `offset_from_bottom: 0` を送ってから input operation を送ります。
 - native view の columns/rows は Herdr の resize operation に伝えます。frame の寸法だけを
   画面へ引き伸ばしません。
-- controller が `Ready` になる前に届いた有効な寸法は、Term の変更や後続への resize queue
-  にはせず、次の controller 起動時の `--cols/--rows` 用 one-shot hint として使います。
 
 controller lease を持つ選択 pane だけが input を送信します。別 controller の競合は明示的な
 error とし、release・disconnect・hidden view では新しい input を停止します。通常の PC

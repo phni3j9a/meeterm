@@ -291,10 +291,6 @@ pub struct Terminal {
     content_revision: u64,
     remote_mode: bool,
     remote_generation: Option<u64>,
-    /// Latest validated native size requested before the remote transport is
-    /// Ready. This is consumed only as a controller launch size; it is never
-    /// applied later as a queued resize.
-    launch_size_hint: Option<(u16, u16)>,
     /// Nonzero token for the currently usable native operation boundary.
     ///
     /// This is deliberately separate from the SSH connection generation.  A
@@ -345,7 +341,6 @@ impl Terminal {
             content_revision: 0,
             remote_mode: false,
             remote_generation: None,
-            launch_size_hint: None,
             operation_epoch: 1,
             transport_overloaded,
             outbound,
@@ -392,24 +387,16 @@ impl Terminal {
         validate_dimensions(columns, rows)?;
 
         // A public resize is a remote operation as well as a local display
-        // change. Before Ready, preserve only a validated size hint for the
-        // initial Herdr controller launch. Do not mutate `Term` or queue a
-        // resize sender for later application. Backend reconstruction uses
+        // change.  Do the readiness check before touching `Term` or the watch
+        // sender so an offline view cannot mutate local dimensions or leave a
+        // resize queued for a later binding.  Backend reconstruction uses
         // `resize_from_remote`, which intentionally passes `notify = false`.
         let resize_sender = if self.remote_mode && notify {
             let gate = self
                 .outbound
                 .lock()
                 .map_err(|_| TerminalError::RegistryPoisoned)?;
-            if let Some(binding) = gate.binding.as_ref()
-                && self.remote_generation != Some(binding.generation())
-            {
-                return Err(TerminalError::RemoteGenerationMismatch);
-            }
             if gate.readiness != TransportReadiness::Ready {
-                if self.remote_generation.is_some() {
-                    self.launch_size_hint = Some((columns, rows));
-                }
                 return Err(TerminalError::InputNotReady);
             }
             let binding = gate.binding.as_ref().ok_or(TerminalError::InputNotReady)?;
@@ -426,7 +413,6 @@ impl Terminal {
     }
 
     fn resize_validated(&mut self, columns: u16, rows: u16, resize_sender: Option<ResizeSender>) {
-        self.launch_size_hint = None;
         let changed = self.term.columns() != usize::from(columns)
             || self.term.screen_lines() != usize::from(rows);
         self.term.resize(TerminalDimensions {
@@ -496,9 +482,6 @@ impl Terminal {
 
         let was_remote = self.remote_mode;
         let generation_changed = self.remote_generation != Some(generation);
-        if !was_remote || generation_changed {
-            self.launch_size_hint = None;
-        }
         self.revoke_transport()?;
         if !was_remote {
             self.replace_term(columns, rows);
@@ -545,7 +528,6 @@ impl Terminal {
         validate_dimensions(columns, rows)?;
 
         self.revoke_transport()?;
-        self.launch_size_hint = None;
         self.replace_term(columns, rows);
         self.remote_mode = true;
         self.remote_generation = Some(generation);
@@ -1569,10 +1551,6 @@ impl Terminal {
     /// Return the current nonzero operation epoch for delayed native input.
     pub(crate) fn operation_epoch(&self) -> u64 {
         self.operation_epoch
-    }
-
-    pub(crate) fn take_launch_size_hint(&mut self) -> Option<(u16, u16)> {
-        self.launch_size_hint.take()
     }
 
     pub(crate) fn content_revision(&self) -> u64 {
