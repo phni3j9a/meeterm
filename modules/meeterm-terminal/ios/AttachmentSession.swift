@@ -1,12 +1,6 @@
 import Foundation
 
-/**
- * Issue #28 one-attachment session model.
- *
- * JS sees only narrow result dictionaries; the staging/prepared file names are
- * kept here, and `snapshot` exposes display metadata plus the app-local
- * preview file URL.
- */
+/** One-tap image session. File names remain native and never cross to JS. */
 /**
  * Pane-scoped identity for display and session binding. The Rust core
  * resolves the owning SSH endpoint/runtime/remote pane itself from the
@@ -35,28 +29,15 @@ struct AttachmentTargetIdentity {
 
 struct AttachmentPreparedImage {
   let fileName: String
-  let format: AttachmentImageFormat
-  let width: Int
-  let height: Int
   let byteCount: Int64
-  let sourceByteCount: Int64
-}
-
-enum AttachmentSessionStatus: String {
-  case idle
-  case staged
-  case prepared
 }
 
 final class AttachmentSession {
   let target: AttachmentTargetIdentity
   var stagingFileName: String?
   var prepared: AttachmentPreparedImage?
-  var lastErrorCode = ""
-  var lastMessage = ""
   /// Live `meeterm_attachment_intent` id for the recorded pane terminal; 0
-  /// means no intent is held. Kept for the process lifetime across sheet
-  /// unmounts; released only by Discard or a fresh `begin`.
+  /// means no intent is held. Replaced by the next `begin`.
   var intentId: UInt64 = 0
 
   /// Live Rust-owned operation; its snapshot stays authoritative.
@@ -64,42 +45,6 @@ final class AttachmentSession {
 
   init(target: AttachmentTargetIdentity) { self.target = target }
 
-  var status: AttachmentSessionStatus {
-    if prepared != nil { return .prepared }
-    if stagingFileName != nil { return .staged }
-    return .idle
-  }
-
-  func recordError(_ errorCode: String, _ message: String) {
-    lastErrorCode = errorCode
-    lastMessage = message
-  }
-
-  func clearError() {
-    lastErrorCode = ""
-    lastMessage = ""
-  }
-
-  func snapshot(previewUri: String) -> [String: Any] {
-    [
-      "status": status.rawValue,
-      "fileId": prepared?.fileName ?? "",
-      "previewUri": prepared != nil ? previewUri : "",
-      "format": prepared?.format.rawValue ?? "",
-      "width": prepared?.width ?? 0,
-      "height": prepared?.height ?? 0,
-      "byteCount": prepared?.byteCount ?? 0,
-      "sourceByteCount": prepared?.sourceByteCount ?? 0,
-      "target": [
-        "terminalId": target.terminalId,
-        "paneId": target.paneId,
-        "workspaceId": target.workspaceId,
-      ],
-      "operation": machine.operation.map(AttachmentResults.operation) ?? NSNull(),
-      "errorCode": lastErrorCode,
-      "message": lastMessage,
-    ]
-  }
 }
 
 /// Result-dictionary builders matching Attachment*.types.ts one-for-one.
@@ -116,24 +61,13 @@ enum AttachmentResults {
     ["status": "error", "errorCode": errorCode, "message": message]
   }
 
-  static func picked(token: String, byteCount: Int64) -> [String: Any] {
-    ["status": "picked", "token": token, "byteCount": byteCount]
+  static func picked(token: String) -> [String: Any] {
+    ["status": "picked", "token": token]
   }
 
   static func canceled() -> [String: Any] { ["status": "canceled"] }
 
-  static func prepared(_ image: AttachmentPreparedImage, previewUri: String) -> [String: Any] {
-    [
-      "status": "prepared",
-      "fileId": image.fileName,
-      "previewUri": previewUri,
-      "format": image.format.rawValue,
-      "width": image.width,
-      "height": image.height,
-      "byteCount": image.byteCount,
-      "sourceByteCount": image.sourceByteCount,
-    ]
-  }
+  static func prepared() -> [String: Any] { ["status": "prepared"] }
 
   /// Uniform accepted answer carrying the decimal u64 attachment id.
   static func accepted(_ attachmentId: UInt64) -> [String: Any] {

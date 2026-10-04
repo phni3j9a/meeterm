@@ -128,11 +128,7 @@ struct AttachmentNormalize {
     return .ok(
       AttachmentPreparedImage(
         fileName: preparedName,
-        format: format,
-        width: thumbnail.width,
-        height: thumbnail.height,
-        byteCount: size.int64Value,
-        sourceByteCount: sourceBytes
+        byteCount: size.int64Value
       )
     )
   }

@@ -120,19 +120,6 @@ class AttachmentOperationTest {
   }
 
   @Test
-  fun cancelledOperationIgnoresLateUploadSnapshots() {
-    val machine = AttachmentOpMachine()
-    machine.recordBegin(7L, 100L, "a.png")
-    machine.markCancelled()
-    // Late progress after a local cancel never resurrects the upload.
-    assertTrue(machine.applySnapshot(operation(7L, AttachmentOpPhase.UPLOADING)))
-    assertEquals(AttachmentOpPhase.CANCELLED, machine.operation?.phase)
-    // A genuinely finished upload still surfaces its terminal state.
-    assertTrue(machine.applySnapshot(operation(7L, AttachmentOpPhase.UPLOADED)))
-    assertEquals(AttachmentOpPhase.UPLOADED, machine.operation?.phase)
-  }
-
-  @Test
   fun capabilityGatesFollowTheContractPhases() {
     val op = { phase: AttachmentOpPhase -> operation(1L, phase) }
     assertTrue(op(AttachmentOpPhase.PENDING).canRetryUpload)
@@ -147,14 +134,6 @@ class AttachmentOperationTest {
     assertTrue(op(AttachmentOpPhase.UPLOADING).canCancel)
     assertFalse(op(AttachmentOpPhase.UPLOADED).canCancel)
 
-    for (phase in listOf(
-      AttachmentOpPhase.UPLOADED, AttachmentOpPhase.INSERTED,
-      AttachmentOpPhase.FAILED, AttachmentOpPhase.CANCELLED,
-    )) {
-      assertTrue("delete allowed in $phase", op(phase).canDeleteRemote)
-    }
-    assertFalse(op(AttachmentOpPhase.UPLOADING).canDeleteRemote)
-    assertFalse(op(AttachmentOpPhase.PENDING).canDeleteRemote)
   }
 
   @Test
@@ -165,19 +144,16 @@ class AttachmentOperationTest {
     assertTrue(removedUploaded.remoteRemoved)
     assertEquals("uploaded", removedUploaded.wirePhase)
     assertFalse(removedUploaded.canInsert)
-    assertFalse(removedUploaded.canDeleteRemote)
     // The core re-uploads the same operation for uploaded+removed.
     assertTrue(removedUploaded.canRetryUpload)
 
     val removedInserted = operation(1L, AttachmentOpPhase.INSERTED, flags = 0x2)
     assertTrue(removedInserted.remoteRemoved)
     assertFalse(removedInserted.canInsert)
-    assertFalse(removedInserted.canDeleteRemote)
     assertFalse(removedInserted.canRetryUpload)
 
     val removedFailed = operation(1L, AttachmentOpPhase.FAILED, flags = 0x2)
     assertTrue(removedFailed.canRetryUpload)
-    assertFalse(removedFailed.canDeleteRemote)
   }
 
   @Test
@@ -187,12 +163,10 @@ class AttachmentOperationTest {
     val busyUploaded = operation(1L, AttachmentOpPhase.UPLOADED, flags = 0x4)
     assertTrue(busyUploaded.jobInFlight)
     assertFalse(busyUploaded.canInsert)
-    assertFalse(busyUploaded.canDeleteRemote)
     assertFalse(busyUploaded.canRetryUpload)
 
     val busyFailed = operation(1L, AttachmentOpPhase.FAILED, flags = 0x4)
     assertFalse(busyFailed.canRetryUpload)
-    assertFalse(busyFailed.canDeleteRemote)
 
     // A stale reason from an earlier attempt never re-enables the gates.
     val busyWithError = operation(1L, AttachmentOpPhase.PENDING, flags = 0x4)
@@ -200,7 +174,7 @@ class AttachmentOperationTest {
   }
 
   @Test
-  fun clearsOperationForDiscardAndNewPick() {
+  fun clearsOperationWhenStartingANewAttachment() {
     val machine = AttachmentOpMachine()
     machine.recordBegin(7L, 100L, "a.png")
     machine.clear()

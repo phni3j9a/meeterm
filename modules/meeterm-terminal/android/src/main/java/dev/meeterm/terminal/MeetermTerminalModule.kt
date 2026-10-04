@@ -248,9 +248,8 @@ class MeetermTerminalModule : Module() {
       }
     }
 
-    // Issue #28 attachment flow. Composition state is read on the main
-    // thread; a held result means the IME still owns marked text and the
-    // caller must not dismiss it.
+    // One-tap attachment. Composition state is read on the main thread; a
+    // held result means the IME still owns marked text and the picker stays closed.
     AsyncFunction("beginAttachment") { terminalId: String, target: Map<String, Any?> ->
       val identity = AttachmentTargetIdentity.fromMap(target)
         ?: throw IllegalArgumentException("The attachment target is invalid.")
@@ -265,38 +264,26 @@ class MeetermTerminalModule : Module() {
     }.runOnQueue(Queues.MAIN)
     // Activity result registration and launch are main-thread operations; the
     // bounded staging copy inside the picker callback hops to a worker.
-    AsyncFunction("pickAttachmentImage") { source: String, promise: Promise ->
-      AttachmentController.pick(source, promise, appContext, storageContext())
+    AsyncFunction("pickAttachmentImage") { promise: Promise ->
+      AttachmentController.pick(promise, appContext, storageContext())
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("prepareAttachmentImage") { token: String ->
       AttachmentController.prepare(token, storageContext())
     }
-    AsyncFunction("discardAttachment") {
-      AttachmentController.discard(storageContext())
-    }
-    AsyncFunction("getAttachmentState") {
-      AttachmentController.snapshot(storageContext())
-    }
-    AsyncFunction("uploadAttachment") { terminalId: String, remoteDirectory: String ->
-      AttachmentController.upload(normalizeTerminalId(terminalId), remoteDirectory, storageContext())
+    AsyncFunction("uploadAttachment") { terminalId: String ->
+      AttachmentController.upload(normalizeTerminalId(terminalId), storageContext())
     }
     AsyncFunction("attachmentSnapshot") {
       AttachmentController.attachmentSnapshot()
     }
     AsyncFunction("retryAttachmentUpload") { terminalId: String ->
-      AttachmentController.retryUpload(normalizeTerminalId(terminalId), storageContext())
+      AttachmentController.retryUpload(normalizeTerminalId(terminalId))
     }
-    AsyncFunction("cancelAttachment") {
-      AttachmentController.cancel()
-    }
-    // Dedicated attachment insertion — never routed through paste or special
-    // keys, and held while the native IME owns a composition.
+    // Verification-backed insertion is still held while the native IME owns
+    // a composition. It never submits Enter.
     AsyncFunction("insertAttachment") { terminalId: String ->
-      AttachmentController.insert(normalizeTerminalId(terminalId), storageContext())
+      AttachmentController.insert(normalizeTerminalId(terminalId))
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("deleteRemoteAttachment") { terminalId: String ->
-      AttachmentController.deleteRemote(normalizeTerminalId(terminalId), storageContext())
-    }
 
     // App-scoped alert presenter (Issue #37 AC36). Android-only by contract:
     // iOS keeps the existing per-dialog RN APIs. Dialog appearance is scoped
@@ -310,10 +297,11 @@ class MeetermTerminalModule : Module() {
       Prop("theme", "dark") { view: MeetermTerminalView, value: String -> view.setTheme(value) }
       Prop("scrollbackLines", 10000) { view: MeetermTerminalView, value: Int -> view.setScrollbackLines(value) }
       Prop("interactionMode", "live") { view: MeetermTerminalView, value: String -> view.setInteractionMode(value) }
+      Prop("attachmentBusy", false) { view: MeetermTerminalView, value: Boolean -> view.setAttachmentBusy(value) }
       Prop("terminalId", "poc-main") { view: MeetermTerminalView, terminalId: String ->
         view.bindTerminal(terminalId)
       }
-      Events("onNativeReady", "onMetrics")
+      Events("onNativeReady", "onMetrics", "onAttachImageRequest")
 
       OnViewDestroys { view: MeetermTerminalView ->
         view.releaseBindingForLifecycle()

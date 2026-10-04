@@ -1672,8 +1672,9 @@ fn real_openssh_sftp_attachment_upload_and_insert() {
         inserted.flags & ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED,
         ATTACHMENT_FLAG_INSERT_ENQUEUED_UNCONFIRMED
     );
-    // Exactly one single-quoted line lands in the pane input; Enter is
-    // never sent, so the shell echoes the line without executing it. The
+    // The Rust unit test asserts the trailing ASCII space byte; terminal
+    // snapshots trim it. This verifies the quoted path lands without Enter,
+    // so the shell echoes the line without executing it. The
     // generated path is longer than the 80-column pane: it soft-wraps, so
     // the checks run against the wrap-joined viewport text.
     let shown = wait_for_pane_snapshot(&pane, "quoted remote path echo", |snapshot| {

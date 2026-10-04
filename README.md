@@ -21,7 +21,8 @@ WebView端末やmeeterm専用サーバーは使いません。
 
 実装済みの主な機能は、保存済み接続先と安全な資格情報保存、runtime picker、
 workspace/group/pane操作、再接続、native入力・選択/copy、独立したapp/terminalテーマ、
-SSH経由の画像添付です。詳細と制約は[PRODUCT.md](docs/PRODUCT.md)から参照できます。
+特殊キー行からワンタップで行うSSH経由の画像添付です。詳細と制約は
+[PRODUCT.md](docs/PRODUCT.md)から参照できます。
 
 ## 開発
 

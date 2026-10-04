@@ -285,7 +285,7 @@ typedef struct meeterm_attachment_snapshot {
   uint8_t error_message[MEETERM_ATTACHMENT_MSG_CAPACITY];
 } meeterm_attachment_snapshot_t;
 
-/* Record the destination intent when the attachment sheet is confirmed:
+/* Record the destination intent when the one-tap attachment starts:
  * pass the *picked pane's* native terminal id (any pane, not just the
  * connection owner); the core resolves the owning SSH connection and
  * stores the stable endpoint/backend/runtime/pane identity. Returns an
@@ -314,7 +314,8 @@ uint64_t meeterm_attachment_begin(
  * intent's pane. 0 = the upload job was queued; poll the snapshot. */
 int32_t meeterm_attachment_retry_upload(uint64_t target_terminal_id, uint64_t attachment_id);
 /* Queue the verified-insert job: remote lstat + generated-name/base
- * checks first, then — only on success — one quoted path line into the
+ * checks first, then — only on success — one quoted path followed by one
+ * ASCII space into the
  * intent's recorded pane under the session lock; never sends Enter,
  * never retargets to the currently selected pane. 0 = job accepted;
  * the result is read from the snapshot once JOB_IN_FLIGHT clears

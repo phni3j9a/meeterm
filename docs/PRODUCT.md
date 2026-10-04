@@ -70,9 +70,11 @@ identity gates are defined in [ARCHITECTURE.md](ARCHITECTURE.md).
   destructive operations preserve other sessions and use explicit targets.
 - Native selection/copy, Ctrl/Alt and navigation keys, bounded local scrollback,
   persisted font size and independently selected app/terminal themes.
-- Image attachment: pick/normalize one image, upload over the existing SSH
-  connection, explicitly insert its quoted path into the original terminal.
-  Upload, insert and model consumption are separate; meeterm never sends Enter.
+- Image attachment: tap the native key-row photo button to choose one image
+  from Photos; meeterm normalizes it, uploads it over the existing SSH
+  connection, verifies it, then inserts its quoted path and a trailing space
+  into the original terminal. Review and submit the line yourself; meeterm
+  never sends Enter.
 
 Implementation and UI detail belong in [ARCHITECTURE.md](ARCHITECTURE.md),
 [UI_UX.md](UI_UX.md), [SSH.md](SSH.md) and [HERDR.md](HERDR.md).

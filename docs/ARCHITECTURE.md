@@ -215,12 +215,15 @@ CJK/input/lifecycle behavior and build/maintenance justification.
 ## Image attachments
 
 Rust `attachment.rs` owns destination intent, bounded SFTP operations and the
-`meeterm_attachment_*` ABI. Platform adapters pick/normalize one PNG/JPEG and
-retain an app-owned file; image bytes never cross JS. Real native composition
-blocks opening/inserting without committing or clearing marked text.
+`meeterm_attachment_*` ABI. A native key-row button sends a low-frequency
+request event to JS, which sequences the Photos picker, normalization, upload
+and verified insert. Platform adapters keep the image bytes in app-owned
+files; JS receives only a temporary opaque staging token and never image data.
+Real native composition blocks the flow without committing or clearing marked
+text.
 
-Capture the original stable endpoint/runtime/terminal intent, then re-resolve it
-into a fresh epoch fence for each upload/insert/retry/delete. Same-target recovery
+Capture the original stable endpoint/runtime/terminal intent at the tap, then
+re-resolve it into a fresh epoch fence for each upload/insert/retry. Same-target recovery
 can proceed; destination changes or missing panes fail rather than retargeting.
 One live operation per connection and one in-flight job per operation prevent
 concurrent work. Attempt IDs reject stale progress/completion; `jobInFlight`
@@ -229,12 +232,14 @@ means accepted work has not completed. Cancel/dispose cannot revive a stale job.
 Use bounded SFTP work outside the interactive command loop. Resolve the default
 base from SFTP `realpath(".")`; reject symlinks/unsafe components and use generated
 names with private directory/file modes. Stage then verify CLOSE/metadata before
-rename. Verify the recorded remote file again before one quoted-path insertion
-under the operation/session fences. Never send Enter or claim model consumption.
-Upload and insert are explicit separate actions. Remote deletion removes only
-the operation's generated names on the same verified endpoint; nothing is deleted
-automatically on insert/cancel/dispose/exit. Detailed paths, limits, policies and
-cleanup are in [SSH.md](SSH.md); UI behavior is in [UI_UX.md](UI_UX.md).
+rename. Verify the recorded remote file again before inserting `'<path>'␠` under
+the operation/session fences. Never send Enter or claim model consumption. The
+app performs upload and insert as one tap; the native core retains their
+asynchronous phases and retry boundaries. Uploaded files remain on the SSH host
+until manually removed. The core delete ABI remains available to native
+integrations, but the app has no remote-delete or discard control. Detailed
+paths, limits, policies and cleanup are in [SSH.md](SSH.md); UI behavior is in
+[UI_UX.md](UI_UX.md).
 
 ## Security and persistence
 

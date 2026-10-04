@@ -9,9 +9,7 @@ import type {
   AttachmentInsertResult,
   AttachmentPickResult,
   AttachmentPrepareResult,
-  AttachmentSessionState,
   AttachmentSnapshotResult,
-  AttachmentSource,
   AttachmentTarget,
   SavedCredential,
   ServerProfile,
@@ -133,21 +131,17 @@ class MeetermTerminalModule extends NativeModule<{}> {
     throw new Error(WEB_UNAVAILABLE);
   }
 
-  // Issue #28 attachments are native-only; keep the same Promise surface so
+  // Image attachment is native-only; keep the same Promise surface so
   // product code on web gets deterministic unavailable answers instead of an
   // undefined binding.
   async beginAttachment(_terminalId: string, _target: AttachmentTarget): Promise<AttachmentBeginResult> { throw new Error(WEB_UNAVAILABLE); }
   async attachmentCompositionStatus(_terminalId: string): Promise<AttachmentCompositionStatus> { return { status: 'ok' }; }
-  async pickAttachmentImage(_source: AttachmentSource): Promise<AttachmentPickResult> { throw new Error(WEB_UNAVAILABLE); }
+  async pickAttachmentImage(): Promise<AttachmentPickResult> { throw new Error(WEB_UNAVAILABLE); }
   async prepareAttachmentImage(_token: string): Promise<AttachmentPrepareResult> { throw new Error(WEB_UNAVAILABLE); }
-  async discardAttachment(): Promise<void> { throw new Error(WEB_UNAVAILABLE); }
-  async getAttachmentState(): Promise<AttachmentSessionState> { throw new Error(WEB_UNAVAILABLE); }
-  async uploadAttachment(_terminalId: string, _remoteDirectory: string): Promise<AttachmentActionResult> { throw new Error(WEB_UNAVAILABLE); }
+  async uploadAttachment(_terminalId: string): Promise<AttachmentActionResult> { throw new Error(WEB_UNAVAILABLE); }
   async attachmentSnapshot(): Promise<AttachmentSnapshotResult> { throw new Error(WEB_UNAVAILABLE); }
   async retryAttachmentUpload(_terminalId: string): Promise<AttachmentActionResult> { throw new Error(WEB_UNAVAILABLE); }
   async insertAttachment(_terminalId: string): Promise<AttachmentInsertResult> { throw new Error(WEB_UNAVAILABLE); }
-  async cancelAttachment(): Promise<AttachmentActionResult> { throw new Error(WEB_UNAVAILABLE); }
-  async deleteRemoteAttachment(_terminalId: string): Promise<AttachmentActionResult> { throw new Error(WEB_UNAVAILABLE); }
 }
 
 export default registerWebModule(MeetermTerminalModule, 'MeetermTerminalModule');

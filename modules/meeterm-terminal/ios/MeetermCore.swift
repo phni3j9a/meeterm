@@ -652,7 +652,7 @@ enum MeetermCore {
     terminalId != 0 && meeterm_destroy_terminal(terminalId) == 1
   }
 
-  // Issue #28 attachment contract (attachment-ffi.md + Main amendments).
+  // Native attachment ABI contract (attachment-ffi.md).
   // The core owns the SFTP operation, remote path, destination intent, and the
   // single-line insert; this adapter only passes the local file and polls the
   // fixed-size snapshot. An empty remoteDirectory selects the core default
@@ -704,7 +704,8 @@ enum MeetermCore {
   }
 
   /// `meeterm_attachment_insert`: queues the verified-insert job — remote
-  /// lstat + name/base checks first, then one quoted path line; never
+  /// lstat + name/base checks first, then one quoted path and trailing ASCII
+  /// space; never
   /// sends Enter. 0 = job accepted (not inserted); the result lands in the
   /// snapshot once JOB_IN_FLIGHT (0x4) clears. -8 = another job in flight.
   static func attachmentInsert(targetTerminalId: UInt64, attachmentId: UInt64) -> Int32 {

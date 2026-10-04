@@ -137,11 +137,7 @@ internal class AttachmentNormalize(private val store: AttachmentStore) {
       Result.Ok(
         AttachmentPreparedImage(
           fileName = preparedName,
-          format = format,
-          width = fitted.width,
-          height = fitted.height,
           byteCount = byteCount,
-          sourceByteCount = sourceBytes,
         ),
         preparedFile,
       )

@@ -6,7 +6,6 @@ import {
   BackHandler,
   AccessibilityInfo,
   FlatList,
-  Image,
   Keyboard,
   Linking,
   Modal,
@@ -20,11 +19,12 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import type { NativeSyntheticEvent } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import MeetermTerminal, { TerminalView } from './modules/meeterm-terminal';
 import { DEFAULT_WORKSPACE_CONTROL, normalizeWorkspaceControl } from './modules/meeterm-terminal';
-import type { AgentStatus, AttachmentCorePhase, AttachmentOperationSnapshot, AttachmentSource, AttachmentTarget, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
+import type { AgentStatus, AttachImageRequestEvent, AttachmentOperationSnapshot, AttachmentTarget, RuntimeBackend, RuntimeBoundaryResult, RuntimeCandidate, RuntimeDiscovery, RuntimeBackendDiscovery, ServerProfile, SshConnectOptions, SshConnectionState, TerminalPreferences, RemoteTerminal, RemoteWorkspace, TerminalGroup, WorkspaceControl, WorkspaceState } from './modules/meeterm-terminal';
 import { appAlert } from './app/dialogs';
 import { ConnectionForm } from './app/ConnectionForm';
 import { WorkspaceNavigation } from './app/WorkspaceNavigation';
@@ -86,45 +86,8 @@ const INITIAL_CONNECTION: SshConnectionState = {
   knownFingerprint: '', errorCode: '', errorMessage: '',
 };
 type Workspace = RemoteWorkspace & { panes: RemoteTerminal[] };
-type SheetKind = 'server' | 'servers' | 'switcher' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | 'attachment' | null;
-
-// Issue #28 attachment draft. `phase` is the local staging lifecycle; once a
-// core operation exists, `operation` (the authoritative native snapshot)
-// drives the Upload → progress → Uploaded → Insert flow. The captured
-// destination is what the native session is bound to — a changed pane never
-// retargets it.
-type AttachmentPhase = 'choosing' | 'picking' | 'normalizing' | 'ready' | 'error';
-type AttachmentBusyAction = 'upload' | 'retryUpload' | 'insert' | 'cancel' | 'deleteRemote' | 'discard' | null;
-type AttachmentPreparedInfo = {
-  fileId: string;
-  previewUri: string;
-  format: string;
-  width: number;
-  height: number;
-  byteCount: number;
-  sourceByteCount: number;
-};
-type AttachmentDestination = {
-  /** Captured binding passed back to every native call; never retargeted. */
-  terminalId: string;
-  server: string;
-  session: string;
-  workspace: string;
-  terminal: string;
-};
-type AttachmentDraftState = {
-  phase: AttachmentPhase;
-  prepared: AttachmentPreparedInfo | null;
-  operation: AttachmentOperationSnapshot | null;
-  remoteDirectory: string;
-  busyAction: AttachmentBusyAction;
-  /** False after a held begin until a session is actually established. */
-  sessionReady: boolean;
-  destination: AttachmentDestination;
-  notice: string;
-  errorCode: string;
-  errorMessage: string;
-};
+type SheetKind = 'server' | 'servers' | 'switcher' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | null;
+type AttachmentRetry = { terminalId: string; destinationKey: string; operation: AttachmentOperationSnapshot; action: 'upload' | 'insert' };
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
 type SwitcherTarget = { profile: ServerProfile; isCurrent: boolean };
@@ -143,7 +106,7 @@ type PendingRuntimeRefresh = {
   baselineRevision: number;
   clearSelectionErrors: boolean;
 };
-type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff' | 'attachment-choose' | 'attachment-ready' | 'attachment-uploading' | 'attachment-pending' | 'attachment-uploaded' | 'attachment-inserted' | 'attachment-failed' | 'attachment-cancelled' | 'attachment-deleted' | 'attachment-error' | 'attachment-blocked';
+type SmokeScreen = 'welcome' | 'empty' | 'search-empty' | 'disconnected' | 'reconnecting' | 'connection-error' | 'long-workspaces' | 'runtime-picker' | 'runtime-partial-error' | 'runtime-empty' | 'runtime-create' | 'session-switcher' | 'session-switcher-sessions' | 'herdr-connection' | 'herdr-groups' | 'herdr-terminal' | 'herdr-workspaces' | 'recovery-progress' | 'recovery-exhausted' | 'recovery-mismatch' | 'layout-restore-unconfirmed' | 'runtime-layout-restore-unconfirmed' | 'home' | 'servers' | 'connection' | 'password' | 'workspaces' | 'terminal' | 'settings' | 'workspace-name' | 'terminal-name' | 'handoff';
 type SmokeRoute = { kind: 'foundation' } | { kind: 'screen'; screen: SmokeScreen; appTheme?: ThemePreference; terminalTheme?: ThemePreference } | null;
 
 // This is the native message published after an explicit disconnect cannot
@@ -154,33 +117,17 @@ const SMOKE_LAYOUT_RESTORE_WARNING = 'The connection closed, but the desktop lay
 const SMOKE_CLEANUP_WARNING_MESSAGE = "The old connection's desktop layout restore could not be confirmed.";
 const LEGACY_CLEANUP_WARNING_ID = 'legacy-layout-restore-unconfirmed';
 
-// IME-safe attachment insertion: a live composition holds the request instead
-// of being committed, cleared, or forwarded by the native path.
-const ATTACHMENT_BEGIN_COMPOSING_NOTICE = 'Finish IME composition before attaching.';
-const ATTACHMENT_COMPOSING_NOTICE = 'Finish IME composition before inserting.';
-const ATTACHMENT_DEFAULT_REMOTE_DIRECTORY = '~/.local/share/meeterm/attachments';
-const ATTACHMENT_INSERTED_NOTICE = 'Inserted into terminal input — not sent. Review it and send it yourself.';
-const ATTACHMENT_INSERTED_DETAIL = "meeterm can't see what the CLI does with it, and nothing is resent automatically.";
-const ATTACHMENT_INSERTING_NOTICE = 'Inserting… verifying the remote file first.';
-const ATTACHMENT_INSERT_GUIDANCE = 'Close and insert from the terminal: tap Insert attachment in the terminal toolbar to add the image path.';
-const ATTACHMENT_INSERT_NOT_READY = 'The terminal input is not ready. Finish recovery and keep this terminal open before inserting.';
-const ATTACHMENT_INSERT_UNCONFIRMED_NOTICE = 'Insert delivery is unconfirmed — check the terminal input yourself; it is not resent automatically.';
-const ATTACHMENT_DELETE_FAILED_NOTICE = 'The remote file could not be deleted. Try again.';
-const ATTACHMENT_DESTINATION_NOTICE = 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again.';
-// Core contract codes that all describe a fenced destination no longer
-// matching the recorded intent — shown with the same recovery guidance.
-const ATTACHMENT_DESTINATION_CODES = new Set([
-  'destination_changed',
-  'destination_missing',
-  'stale_connection',
-  'unknown_intent',
-  'attachment_target_mismatch',
-]);
-
 function attachmentFailureNotice(errorCode: string, message: string): string {
-  return ATTACHMENT_DESTINATION_CODES.has(errorCode)
-    ? `${ATTACHMENT_DESTINATION_NOTICE} (${errorCode})`
-    : message;
+  if (['destination_changed', 'destination_missing', 'stale_connection', 'unknown_intent', 'attachment_target_mismatch'].includes(errorCode)) {
+    return 'The original terminal is no longer available. Return to it and try again.';
+  }
+  if (['source_too_large', 'input_too_large', 'attachment_too_large'].includes(errorCode)) {
+    return 'Choose an image smaller than 24 MiB.';
+  }
+  if (['unsupported_format', 'unsupported_image', 'attachment_unsupported_format', 'attachment_unsupported_heic'].includes(errorCode)) {
+    return 'Choose a PNG or JPEG image.';
+  }
+  return message.trim().slice(0, 140) || 'Could not attach the image.';
 }
 
 function legacyCleanupWarning(connection: SshConnectionState): WorkspaceControl['cleanupWarning'] {
@@ -242,7 +189,6 @@ type SmokeFixtureState = {
   profileId: string;
   sheet: SheetKind;
   hasConnected: boolean;
-  attachmentDraft?: AttachmentDraftState | null;
   searching?: boolean;
   query?: string;
   runtimeDiscovery?: RuntimeDiscovery;
@@ -458,12 +404,6 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
     }
     return base;
   }
-  if (screen.startsWith('attachment-')) {
-    const base = smokeFixture('terminal');
-    base.sheet = 'attachment';
-    base.attachmentDraft = smokeAttachmentDraft(screen);
-    return base;
-  }
   const panes = smokePanes();
   const ready = ['workspaces', 'terminal', 'workspace-name', 'terminal-name', 'handoff'].includes(screen);
   const mainWorkspace = smokeWorkspace(panes, '@smoke-main');
@@ -495,99 +435,6 @@ function smokeFixture(screen: SmokeScreen): SmokeFixtureState {
   return base;
 }
 
-/** Deterministic Issue #28 drafts covering every UI-visible core phase. */
-function smokeAttachmentDraft(screen: SmokeScreen): AttachmentDraftState {
-  const prepared: AttachmentPreparedInfo = {
-    fileId: 'att_smoke0001.png',
-    // A real 540×960 portrait PNG keeps the preview deterministic and offline
-    // while its advertised metadata matches the actual placeholder image, so
-    // evidence captures can never be mistaken for a real transferred photo.
-    previewUri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAhwAAAPACAIAAADxFzfLAAAKvklEQVR42u3VMQ0AAAgEsfeEBcQhGxOwNamCWy7VAwAnIgEApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQBgKioAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoApqICAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCgKlIAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAJiKCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAoCpqACAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQBgKhIAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoApqICAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAYCoqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgIApgKAqQBgKgCYCgCYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAJiKBACYCgCmAoCpAICpAGAqAJgKAKYCAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAoCpqACAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgCYigoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAJgKAKYCgKkAgKkAYCoAmAoAmAoApgKAqQBgKgBgKgCYCgCmAgCmAoCpAGAqAJgKAJgKAKYCgKkAgKkAYCoAmAoApgIApgKAqQBgKgBgKgCYCgCmAoCpAICpAGAqAJgKAJgKAKYCgKkAYCoAYCoAmAoApgKAqQCAqQBgKgCYCgCYCgCmAoCpAGAqAGAqAJgKAKYCAKYCgKkAYCoAmAoAmAoApgKAqQCAqQBgKgCYCgCmAgCmAoCpAGAqAGAqAHxZW0GNMPWqRpsAAAAASUVORK5CYII=',
-    format: 'png',
-    width: 540,
-    height: 960,
-    byteCount: 2807,
-    sourceByteCount: 2807,
-  };
-  const destination: AttachmentDestination = {
-    terminalId: CONNECTION_ID,
-    server: 'dev',
-    session: 'tmux · main',
-    workspace: 'main',
-    terminal: 'Shell',
-  };
-  const operation = (phase: AttachmentCorePhase, extra: Partial<AttachmentOperationSnapshot> = {}): AttachmentOperationSnapshot => ({
-    phase,
-    attachmentId: '42',
-    bytesUploaded: 0,
-    sizeBytes: prepared.byteCount,
-    remotePath: '',
-    displayName: prepared.fileId,
-    errorCode: '',
-    errorMessage: '',
-    insertUnconfirmed: false,
-    remoteRemoved: false,
-    jobInFlight: false,
-    ...extra,
-  });
-  const draft = (phase: AttachmentPhase, operation: AttachmentOperationSnapshot | null, preparedInfo: AttachmentPreparedInfo | null = prepared): AttachmentDraftState => ({
-    phase,
-    prepared: preparedInfo,
-    operation,
-    remoteDirectory: '',
-    busyAction: null,
-    sessionReady: true,
-    destination,
-    notice: '',
-    errorCode: '',
-    errorMessage: '',
-  });
-  switch (screen) {
-    case 'attachment-ready':
-      return draft('ready', null);
-    case 'attachment-uploading':
-      return draft('ready', operation('uploading', { bytesUploaded: 124_456 }));
-    case 'attachment-pending':
-      return draft('ready', operation('pending', {
-        errorCode: 'destination_not_ready',
-        errorMessage: 'The SSH connection is not ready for the transfer yet.',
-      }));
-    case 'attachment-uploaded':
-      return draft('ready', operation('uploaded', {
-        bytesUploaded: prepared.byteCount,
-        remotePath: '/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png',
-      }));
-    case 'attachment-inserted':
-      return draft('ready', operation('inserted', {
-        bytesUploaded: prepared.byteCount,
-        remotePath: '/home/dev/.local/share/meeterm/attachments/meeterm-20260101-120000-0123456789abcdef.png',
-        insertUnconfirmed: true,
-      }));
-    case 'attachment-failed':
-      return draft('ready', operation('failed', {
-        errorCode: 'remote_io_failed',
-        errorMessage: 'The upload stopped while writing to the server.',
-      }));
-    case 'attachment-cancelled':
-      return draft('ready', operation('cancelled'));
-    case 'attachment-deleted':
-      return draft('ready', operation('uploaded', {
-        bytesUploaded: prepared.byteCount,
-        remoteRemoved: true,
-      }));
-    case 'attachment-error':
-      return {
-        ...draft('error', null, null),
-        errorCode: 'attachment_too_many_pixels',
-        errorMessage: 'The image exceeds the attachment size limits.',
-      };
-    case 'attachment-blocked':
-      return { ...draft('ready', null), notice: ATTACHMENT_BEGIN_COMPOSING_NOTICE };
-    default:
-      return draft('choosing', null, null);
-  }
-}
-
 const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'welcome', 'empty', 'search-empty', 'disconnected', 'reconnecting', 'connection-error', 'long-workspaces',
   'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
@@ -596,9 +443,6 @@ const SMOKE_SCREEN_NAMES: SmokeScreen[] = [
   'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
   'home', 'servers', 'connection', 'password', 'workspaces', 'terminal',
   'settings', 'workspace-name', 'terminal-name', 'handoff',
-  'attachment-choose', 'attachment-ready', 'attachment-uploading', 'attachment-pending',
-  'attachment-uploaded', 'attachment-inserted', 'attachment-failed', 'attachment-cancelled',
-  'attachment-deleted', 'attachment-error', 'attachment-blocked',
   'herdr-connection', 'herdr-groups', 'herdr-terminal', 'herdr-workspaces',
 ];
 
@@ -807,170 +651,6 @@ function NativeSheet({ title, visible, onClose, onDismiss, busy, allowDismissWhi
       </SafeAreaView>
     </SafeAreaProvider>
   </Modal>;
-}
-
-/**
- * Issue #28 attachment sheet body. Preview always renders the normalized,
- * app-owned output file — never the untrusted picker source. Once the
- * explicit Upload starts, the core operation snapshot drives the
- * Upload → progress → Uploaded sequence; insertion is a separate explicit
- * "Insert attachment" action on the terminal toolbar, and nothing is
- * inserted or sent without that tap and the user's own Enter.
- */
-function AttachmentSheet({ draft, colors, currentTerminalId, onPickSource, onRemoteDirectoryChange, onUpload, onRetryUpload, onCancel, onDeleteRemote, onDiscard, onChooseDifferent }: {
-  draft: AttachmentDraftState | null;
-  colors: Palette;
-  /** The pane currently shown; the toolbar gates Insert on this identity. */
-  currentTerminalId: string;
-  onPickSource: (source: AttachmentSource) => void;
-  onRemoteDirectoryChange: (value: string) => void;
-  onUpload: () => void;
-  onRetryUpload: () => void;
-  onCancel: () => void;
-  onDeleteRemote: () => void;
-  onDiscard: () => void;
-  onChooseDifferent: () => void;
-}) {
-  const busyAction = draft?.busyAction ?? null;
-  const localBusy = draft?.phase === 'picking' || draft?.phase === 'normalizing';
-  const operation = draft?.operation ?? null;
-  const busy = localBusy || busyAction !== null || operation?.jobInFlight === true;
-  // Cancel is the exception to the one-in-flight-job gate: it must stay
-  // reachable while the upload job is in flight. It is gated only by local
-  // processing or an already-requested action — never by jobInFlight — so a
-  // tap cannot queue a duplicate cancel while Upload/Insert/Delete keep the
-  // ordinary mutual exclusion.
-  const cancelBusy = localBusy || busyAction !== null;
-  const deleting = busyAction === 'deleteRemote';
-  const inserting = busyAction === 'insert';
-  const destinationMatches = !draft || draft.destination.terminalId === currentTerminalId;
-  const destinationBlock = draft ? <View testID="attachment-destination" style={[styles.attachmentDestination, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-    <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Server · ${draft.destination.server}`}</Text>
-    <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Session · ${draft.destination.session}`}</Text>
-    <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Workspace · ${draft.destination.workspace}`}</Text>
-    <Text style={[styles.attachmentDestinationLine, { color: colors.muted }]}>{`Terminal · ${draft.destination.terminal}`}</Text>
-  </View> : null;
-  const destinationWarning = !destinationMatches ? <Text accessibilityRole="alert" style={[styles.runtimeHint, { color: colors.danger }]}>This attachment is bound to a different terminal. Return to that terminal to insert, or discard and start again here — it is never inserted into the wrong destination automatically.</Text> : null;
-  return <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
-    {deleting ? <View testID="attachment-deleting" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-      <View style={styles.horizontal}><ActivityIndicator color={colors.accent} /><Text style={[styles.emptyBody, { color: colors.text }]}>Deleting…</Text></View>
-      <Text style={[styles.noticeBody, { color: colors.muted }]}>The remote file stays listed until the server confirms removal.</Text>
-    </View> : null}
-    {inserting ? <View testID="attachment-inserting" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-      <View style={styles.horizontal}><ActivityIndicator color={colors.accent} /><Text style={[styles.emptyBody, { color: colors.text }]}>Inserting…</Text></View>
-      <Text style={[styles.noticeBody, { color: colors.muted }]}>The remote file is verified before its path reaches the terminal input.</Text>
-    </View> : null}
-    {draft?.notice ? <View testID="attachment-notice" accessibilityLiveRegion="polite" style={[styles.noticeBox, { borderColor: colors.border, backgroundColor: colors.surface }]}><Text style={[styles.emptyBody, { color: colors.text }]}>{draft.notice}</Text></View> : null}
-    {draft?.phase === 'error' ? <View style={styles.gone}>
-      <Icon name="attach" color={colors.danger} size={32} />
-      <Text testID="attachment-error" style={[styles.emptyTitle, { color: colors.text }]}>The image could not be attached</Text>
-      <Text style={[styles.emptyBody, { color: colors.muted }]}>{draft.errorMessage || 'Choose a different image and try again.'}</Text>
-      <Button label="Choose another image" colors={colors} onPress={onChooseDifferent}>Choose another image</Button>
-    </View> : null}
-    {draft?.phase === 'choosing' ? <View>
-      <Text style={[styles.emptyBody, { color: colors.muted }]}>Choose one image. It is checked against size limits, rotated to its stored orientation, and stripped of location and other metadata before preview.</Text>
-      {destinationBlock}
-      <Button testID="attachment-pick-photos" label="Choose from photos" colors={colors} disabled={busy} onPress={() => onPickSource('photos')}>Choose from photos</Button>
-      <Button testID="attachment-pick-files" label="Choose from files" colors={colors} secondary disabled={busy} onPress={() => onPickSource('files')} style={styles.attachmentActionSpacer}>Choose from files</Button>
-    </View> : null}
-    {draft?.phase === 'picking' || draft?.phase === 'normalizing' ? <View testID="attachment-progress" style={styles.gone}>
-      <ActivityIndicator color={colors.accent} size="large" />
-      <Text style={[styles.emptyBody, { color: colors.muted }]}>{draft.phase === 'picking' ? 'Waiting for the system picker…' : 'Checking and normalizing the image…'}</Text>
-    </View> : null}
-    {draft?.phase === 'ready' && draft.prepared ? <View>
-      <Image testID="attachment-preview" source={{ uri: draft.prepared.previewUri }} accessibilityLabel="Normalized image preview" resizeMode="contain" style={[styles.attachmentPreview, { borderColor: colors.border, backgroundColor: colors.surface }]} />
-      <Text testID="attachment-meta" style={[styles.emptyBody, { color: colors.muted }]}>{`${draft.prepared.width}×${draft.prepared.height} · ${draft.prepared.format.toUpperCase()} · ${Math.max(1, Math.round(draft.prepared.byteCount / 1024))} KB`}</Text>
-      {destinationBlock}
-      {destinationWarning}
-      {!operation ? <View style={styles.runtimeField}>
-        <Text style={[styles.runtimeLabel, { color: colors.text }]}>Remote directory</Text>
-        <TextInput testID="attachment-remote-dir" accessibilityLabel="Remote directory" value={draft.remoteDirectory} onChangeText={onRemoteDirectoryChange} autoCapitalize="none" autoComplete="off" autoCorrect={false} editable={!busy} placeholder={ATTACHMENT_DEFAULT_REMOTE_DIRECTORY} placeholderTextColor={colors.placeholder} selectionColor={colors.accent} style={[styles.runtimeInput, { color: colors.text, backgroundColor: colors.elevated, borderColor: colors.border }]} />
-      </View> : null}
-
-      {!operation ? <View>
-        <Button testID="attachment-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onUpload}>Upload</Button>
-        <Text style={[styles.noticeBody, { color: colors.muted }]}>Uploading saves the image on the SSH host. Nothing is added to the terminal yet.</Text>
-      </View> : null}
-
-      {operation?.phase === 'pending' ? <View testID="attachment-pending">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Upload waiting</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>{operation.errorMessage || `Waiting: ${operation.errorCode || 'the destination is not ready yet.'}`}</Text>
-        <Button testID="attachment-retry-upload" label="Retry upload" colors={colors} disabled={busy} onPress={onRetryUpload}>Retry upload</Button>
-        <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={cancelBusy} onPress={onCancel} style={styles.attachmentActionSpacer}>Cancel</Button>
-      </View> : null}
-
-      {operation?.phase === 'uploading' ? <View testID="attachment-uploading">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Uploading…</Text>
-        <View style={[styles.attachmentProgressTrack, { backgroundColor: colors.elevated, borderColor: colors.border }]}>
-          <View testID="attachment-progress-fill" style={[styles.attachmentProgressFill, { backgroundColor: colors.accent, width: `${Math.min(100, operation.sizeBytes > 0 ? Math.round((operation.bytesUploaded / operation.sizeBytes) * 100) : 0)}%` }]} />
-        </View>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>{`${Math.max(0, Math.round(operation.bytesUploaded / 1024))} KB of ${Math.max(1, Math.round(operation.sizeBytes / 1024))} KB`}</Text>
-        <Button testID="attachment-cancel" label="Cancel upload" colors={colors} secondary disabled={cancelBusy} onPress={onCancel}>Cancel</Button>
-      </View> : null}
-
-      {operation?.phase === 'uploaded' && !operation.remoteRemoved ? <View testID="attachment-uploaded">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Uploaded</Text>
-        <Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{operation.remotePath}</Text>
-        <Text style={[styles.noticeBody, { color: colors.muted }]}>The image is saved on the SSH host. Sending the terminal request passes it to the AI running there — insert only adds the path reference.</Text>
-        {operation.errorMessage || operation.errorCode ? <Text testID="attachment-insert-blocked" accessibilityRole="alert" style={[styles.runtimeHint, { color: colors.danger }]}>{`Notice: ${operation.errorMessage || operation.errorCode}`}</Text> : null}
-        <Text testID="attachment-insert-guidance" style={[styles.noticeBody, { color: colors.text }]}>{ATTACHMENT_INSERT_GUIDANCE}</Text>
-        <Text style={[styles.noticeBody, { color: colors.muted }]}>Inserting adds the image path to the command line. You still review and send it yourself — nothing is submitted automatically.</Text>
-        <View style={styles.noticeActions}>
-          <Pressable testID="attachment-delete-remote" accessibilityRole="button" accessibilityLabel="Delete from server" disabled={busy} onPress={onDeleteRemote} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Delete from server</Text></Pressable>
-          <Pressable testID="attachment-discard" accessibilityRole="button" accessibilityLabel="Discard local image" disabled={busy} onPress={onDiscard} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Discard</Text></Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Choose a different image" disabled={busy} onPress={onChooseDifferent} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Choose a different image</Text></Pressable>
-        </View>
-      </View> : null}
-
-      {operation?.phase === 'inserted' && !operation.remoteRemoved ? <View testID="attachment-inserted">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>{ATTACHMENT_INSERTED_NOTICE}</Text>
-        <Text style={[styles.noticeBody, { color: colors.muted }]}>{ATTACHMENT_INSERTED_DETAIL}</Text>
-        <Text selectable style={[styles.emptyBody, { color: colors.muted }]}>{operation.remotePath}</Text>
-        <View style={styles.noticeActions}>
-          <Pressable testID="attachment-delete-remote" accessibilityRole="button" accessibilityLabel="Delete from server" disabled={busy} onPress={onDeleteRemote} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Delete from server</Text></Pressable>
-          <Pressable testID="attachment-discard" accessibilityRole="button" accessibilityLabel="Discard local image" disabled={busy} onPress={onDiscard} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Discard</Text></Pressable>
-        </View>
-      </View> : null}
-
-      {operation?.phase === 'failed' && !operation.remoteRemoved ? <View testID="attachment-failed">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Upload failed</Text>
-        <Text accessibilityRole="alert" style={[styles.emptyBody, { color: colors.danger }]}>{operation.errorMessage || operation.errorCode || 'The upload could not be completed.'}</Text>
-        <Button testID="attachment-retry-upload" label="Retry upload" colors={colors} disabled={busy} onPress={onRetryUpload}>Retry upload</Button>
-        <View style={styles.noticeActions}>
-          <Pressable testID="attachment-delete-remote" accessibilityRole="button" accessibilityLabel="Delete from server" disabled={busy} onPress={onDeleteRemote} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Delete from server</Text></Pressable>
-          <Pressable testID="attachment-discard" accessibilityRole="button" accessibilityLabel="Discard local image" disabled={busy} onPress={onDiscard} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Discard</Text></Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Choose a different image" disabled={busy} onPress={onChooseDifferent} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Choose a different image</Text></Pressable>
-        </View>
-      </View> : null}
-
-      {operation?.phase === 'cancelled' && !operation.remoteRemoved ? <View testID="attachment-cancelled">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Upload cancelled</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>The transfer was stopped; nothing was inserted into the terminal.</Text>
-        <Button testID="attachment-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onUpload}>Upload again</Button>
-        <View style={styles.noticeActions}>
-          <Pressable testID="attachment-delete-remote" accessibilityRole="button" accessibilityLabel="Delete from server" disabled={busy} onPress={onDeleteRemote} style={styles.textAction}><Text style={[styles.actionText, { color: colors.danger }]}>Delete from server</Text></Pressable>
-          <Pressable testID="attachment-discard" accessibilityRole="button" accessibilityLabel="Discard local image" disabled={busy} onPress={onDiscard} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Discard</Text></Pressable>
-        </View>
-      </View> : null}
-
-      {operation?.remoteRemoved ? <View testID="attachment-deleted">
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Deleted from server</Text>
-        <Text style={[styles.emptyBody, { color: colors.muted }]}>{operation.phase === 'inserted'
-          ? 'The remote file was removed. The inserted path line already reached the terminal — edit it there yourself.'
-          : 'The remote file was removed. Upload again to reattach it.'}</Text>
-        {operation.phase === 'uploaded' || operation.phase === 'failed'
-          ? <Button testID="attachment-retry-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onRetryUpload}>Upload again</Button>
-          : null}
-        {operation.phase === 'cancelled'
-          ? <Button testID="attachment-upload" label="Upload to server" colors={colors} disabled={busy} onPress={onUpload}>Upload again</Button>
-          : null}
-        <View style={styles.noticeActions}>
-          <Pressable testID="attachment-discard" accessibilityRole="button" accessibilityLabel="Discard local image" disabled={busy} onPress={onDiscard} style={styles.textAction}><Text style={[styles.actionText, { color: colors.accent }]}>Discard</Text></Pressable>
-        </View>
-      </View> : null}
-    </View> : null}
-    {!draft ? <Text style={[styles.emptyBody, { color: colors.muted }]}>No image selected.</Text> : null}
-  </ScrollView>;
 }
 
 function emptyRuntimeBackend(backend: RuntimeBackend): RuntimeBackendDiscovery {
@@ -1406,7 +1086,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const [pollProblem, setPollProblem] = useState(false);
   const [removedHostKeyId, setRemovedHostKeyId] = useState('');
   const [hasConnected, setHasConnected] = useState(() => fixture?.hasConnected ?? false);
-  const [attachment, setAttachment] = useState<AttachmentDraftState | null>(() => fixture?.attachmentDraft ?? null);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [commandBusy, setCommandBusy] = useState(false);
   const [appState, setAppState] = useState(AppState.currentState);
   const [foundation, setFoundation] = useState(() => smokeRoute?.kind === 'foundation');
@@ -1416,6 +1096,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const commandPending = useRef(false);
   const commandVersion = useRef(0);
   const shownHostKey = useRef('');
+  const connectionUsername = useRef('');
   const pendingModal = useRef<(() => void) | null>(null);
   const formSavedProfile = useRef<ServerProfile | undefined>(undefined);
   const returnToServersAfterForm = useRef(false);
@@ -1451,21 +1132,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const workspaceObservationRef = useRef(Boolean(fixture?.hasConnected && fixture.panes.length > 0));
   const retainedPaneRef = useRef<RemoteTerminal | null>(null);
   const recoveryPendingRef = useRef<RecoveryPendingActions>({ retry: null, change: null });
-  const attachmentGeneration = useRef(0);
-  // Snapshot read sequence: every read captures the current value at call
-  // start and applies only while it is still latest. Job and draft-intent
-  // starts bump it, so a read begun before a newer job (or a fresh draft)
-  // can never land afterwards, clear a live busyAction, or resurrect an
-  // action the new job already owns.
-  const attachmentSnapshotSeq = useRef(0);
-  // A native request that has been issued but whose accepted/rejected
-  // verdict has not resolved yet. While it is set no snapshot read starts:
-  // a snapshot taken in that window can only describe the pre-job state
-  // (jobInFlight still false) and must never complete the pending
-  // busyAction. The accept/reject resolution clears it, bumps the read
-  // sequence — invalidating anything still in flight — and only reads
-  // made after the boundary may settle the job's outcome.
-  const attachmentPendingAccept = useRef(false);
+  const attachmentBusyRef = useRef(false);
+  const attachmentFlowGeneration = useRef(0);
+  const attachmentRetry = useRef<AttachmentRetry | null>(null);
   const recoveryMilestoneRef = useRef<{ epoch: string; phase: WorkspaceControl['recovery']['phase']; attempt: number; retained: boolean; strongReady: boolean } | null>(null);
   const completedRecoveryEpochRef = useRef('');
   const recoveredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1935,11 +1604,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const terminalInputReady = Boolean(ready && control.terminalInputReady && !recoveryPhaseActive && !recoveryInvalidated);
   const strongReady = runtimeReady && terminalInputReady;
   const surfaceAvailable = Boolean(workspace && selectedPane && (strongReady || retainedWorkAvailable));
-  // The attachment sheet deliberately keeps the terminal surface visible and
-  // mounted underneath: its IME composition must survive, and insertion lives
-  // on the terminal toolbar rather than inside the sheet.
+  // Keep the native terminal mounted under ordinary terminal sheets.
   const surfaceVisible = Boolean(surfaceAvailable)
-    && screen === 'terminal' && (sheet === null || sheet === 'attachment') && !modalPending && !formVisible && !settingsVisible
+    && screen === 'terminal' && sheet === null && !modalPending && !formVisible && !settingsVisible
     && !nameRequest && appState === 'active';
   const recoveryServerLabel = currentProfile?.name ?? endpoint(connection);
   const recoveryCopy = recoveryRailCopy(control, session.backend, session.runtime, recoveryServerLabel);
@@ -2550,7 +2217,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
   }, []);
 
-  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>, keepSwitcher = false) => {
+  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'username' | 'backend' | 'runtime'>, keepSwitcher = false) => {
+    if (profile.username) connectionUsername.current = profile.username;
     if (Platform.OS === 'ios' && (formVisible || (sheet !== null && !keepSwitcher))) setHostPromptDeferred(true);
     switcherCancelReleaseIssued.current = false;
     boundaryFailureFence.current = null;
@@ -2795,552 +2463,213 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   }, [sheet, showModal]);
   const openForm = useCallback(() => openProfileForm(currentProfile), [currentProfile, openProfileForm]);
 
-  // Issue #28 image attachment. One draft at a time; a generation counter
-  // drops late picker/normalize results after discard or a fresh begin. The
-  // captured destination never retargets: the native session revalidates its
-  // own binding and the sheet disables Insert while another pane is shown.
-  // Pane-scoped identity only: the core resolves the owning SSH endpoint,
-  // backend/runtime, and remote pane itself at `meeterm_attachment_intent`
-  // time — the adapter never captures or reuses an SSH owner id.
   const attachmentTargetFor = useCallback((pane: RemoteTerminal): AttachmentTarget => ({
     terminalId: pane.terminalId,
     paneId: pane.id,
     workspaceId: pane.workspaceId,
   }), []);
 
-  const attachmentDestinationFor = useCallback((pane: RemoteTerminal): AttachmentDestination => ({
-    terminalId: pane.terminalId,
-    server: currentProfile?.name ?? endpoint(connection),
-    session: currentSessionDescription,
-    workspace: workspaces.find(item => item.id === pane.workspaceId)?.name ?? pane.workspaceId,
-    terminal: pane.name,
-  }), [connection, currentProfile, currentSessionDescription, workspaces]);
+  const attachmentDestinationKeyFor = useCallback((pane: RemoteTerminal) => JSON.stringify([
+    profileId,
+    connection.host,
+    connection.port,
+    currentProfile?.username ?? connectionUsername.current,
+    connection.knownFingerprint || connection.fingerprint,
+    session.backend,
+    session.runtime,
+    pane.workspaceId,
+    pane.id,
+    pane.terminalId,
+  ]), [connection.fingerprint, connection.host, connection.knownFingerprint, connection.port, currentProfile?.username, profileId, session.backend, session.runtime]);
 
-  // Restore display from pane-scoped identity only — resolve labels through
-  // the live pane/workspace lists; a gone pane falls back to the opaque ids
-  // (the destination warning still fences on terminalId).
-  const attachmentDestinationFromTarget = useCallback((target: AttachmentTarget): AttachmentDestination => {
-    const pane = panes.find(item => item.terminalId === target.terminalId)
-      ?? panes.find(item => item.id === target.paneId);
-    if (pane) return attachmentDestinationFor(pane);
-    return {
-      terminalId: target.terminalId,
-      server: 'previous server',
-      session: 'previous session',
-      workspace: workspaces.find(item => item.id === target.workspaceId)?.name ?? target.workspaceId,
-      terminal: target.paneId,
+  const startQuickAttachment = useCallback((event: NativeSyntheticEvent<AttachImageRequestEvent>) => {
+    const terminalId = event.nativeEvent.terminalId;
+    const pane = selectedPane;
+    if (!terminalId || !pane || terminalId !== pane.terminalId || attachmentBusyRef.current) return;
+    if (!runtimeReady || !terminalInputReady || !surfaceAvailable || commandBusy) return;
+
+    const destinationKey = attachmentDestinationKeyFor(pane);
+    const retry = attachmentRetry.current?.terminalId === terminalId
+      && attachmentRetry.current.destinationKey === destinationKey
+      ? attachmentRetry.current
+      : null;
+    if (!retry) attachmentRetry.current = null;
+    const generation = ++attachmentFlowGeneration.current;
+    attachmentBusyRef.current = true;
+    setAttachmentBusy(true);
+    setControlMessage('');
+    let operation: AttachmentOperationSnapshot | null = null;
+    let hasFreshOperationSnapshot = false;
+    let insertResumeRejectedWithoutSnapshot = false;
+
+    const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+    const waitForJob = async (attachmentId: string): Promise<AttachmentOperationSnapshot> => {
+      for (;;) {
+        if (generation !== attachmentFlowGeneration.current) throw new Error('The image request was superseded.');
+        const snapshot = await MeetermTerminal.attachmentSnapshot();
+        if (snapshot.status === 'snapshot') {
+          if (snapshot.operation.attachmentId !== attachmentId) {
+            throw new Error('The attachment operation changed before it finished.');
+          }
+          operation = snapshot.operation;
+          hasFreshOperationSnapshot = true;
+          if (!snapshot.operation.jobInFlight) return snapshot.operation;
+        } else if (snapshot.status === 'error') {
+          throw Object.assign(new Error(snapshot.message), { errorCode: snapshot.errorCode });
+        } else {
+          throw new Error(snapshot.status === 'unavailable'
+            ? 'The attachment service is not available right now.'
+            : 'The attachment operation is no longer available.');
+        }
+        await wait(300);
+      }
     };
-  }, [attachmentDestinationFor, panes, workspaces]);
-
-  /** Fold the authoritative core snapshot into the draft, dropping stale ids. */
-  const refreshAttachmentSnapshot = useCallback(() => {
-    if (smokeFixtureActive || attachmentPendingAccept.current) return;
-    const seq = ++attachmentSnapshotSeq.current;
-    void MeetermTerminal.attachmentSnapshot().then(result => {
-      // A newer read already superseded this one, or a new job/draft intent
-      // began after it started — the response is stale and must not touch
-      // busyAction, the operation, or the toolbar gates.
-      if (attachmentSnapshotSeq.current !== seq) return;
-      // During a pending delete, `idle` means the operation record itself is
-      // gone — the remote file is removed with it.
-      if (result.status === 'idle') {
-        setAttachment(current => current?.busyAction === 'deleteRemote' && current.operation
-          ? { ...current, busyAction: null, operation: { ...current.operation, remoteRemoved: true } }
-          : current);
-        return;
+    const setRetryFor = (op: AttachmentOperationSnapshot | null) => {
+      if (op?.phase === 'uploaded') {
+        attachmentRetry.current = { terminalId, destinationKey, operation: op, action: 'insert' };
+      } else if (op?.phase === 'pending' || op?.phase === 'failed') {
+        attachmentRetry.current = { terminalId, destinationKey, operation: op, action: 'upload' };
+      } else {
+        attachmentRetry.current = null;
       }
-      if (result.status !== 'snapshot') return;
-      const fresh = result.operation;
-      setAttachment(current => {
-        if (!current || (current.operation && current.operation.attachmentId !== fresh.attachmentId)) return current;
-        // An accepted job (delete / verify+insert) resolves only when the
-        // core drops jobInFlight — never on acceptance, and a stale error
-        // from a previous attempt no longer ends the wait (the core clears
-        // it at job start). The dropped flag carries the real outcome.
-        if (fresh.jobInFlight) return { ...current, operation: fresh };
-        if (current.busyAction === 'deleteRemote') {
-          if (fresh.remoteRemoved) return { ...current, busyAction: null, operation: fresh };
-          if (fresh.errorCode) return { ...current, busyAction: null, operation: fresh, notice: fresh.errorMessage || ATTACHMENT_DELETE_FAILED_NOTICE };
-          return { ...current, busyAction: null, operation: fresh };
-        }
-        if (current.busyAction === 'insert') {
-          if (fresh.phase === 'inserted') {
-            setControlMessage(ATTACHMENT_INSERTED_NOTICE);
-            return { ...current, busyAction: null, operation: fresh };
-          }
-          setControlMessage(fresh.errorMessage || fresh.errorCode || ATTACHMENT_INSERT_UNCONFIRMED_NOTICE);
-          return { ...current, busyAction: null, operation: fresh };
-        }
-        if (current.busyAction === 'retryUpload' || current.busyAction === 'cancel') {
-          return { ...current, busyAction: null, operation: fresh,
-            notice: fresh.errorCode ? (fresh.errorMessage || 'The attachment job failed.') : '' };
-        }
-        return { ...current, operation: fresh };
-      });
-    }).catch(() => {});
-  }, [smokeFixtureActive]);
-
-  // Low-frequency progress polling: ~300 ms while the sheet is visible and a
-  // pending/uploading operation may still be moving — plus any operation whose
-  // JOB_IN_FLIGHT bit is still up, regardless of phase (a cancelled upload
-  // keeps the flag while the detached cleanup runs; only its drop frees the
-  // sheet actions) — and whenever an accepted remote deletion is still
-  // awaiting its verified `remoteRemoved` flag — even if the sheet was closed
-  // while the delete was in flight.
-  const attachmentOperationPhase = attachment?.operation?.phase ?? null;
-  const attachmentJobInFlight = attachment?.operation?.jobInFlight === true;
-  const attachmentDeleting = attachment?.busyAction === 'deleteRemote';
-  const attachmentInserting = attachment?.busyAction === 'insert';
-  useEffect(() => {
-    if (smokeFixtureActive) return;
-    const transferLive = sheet === 'attachment'
-      && (attachmentOperationPhase === 'pending' || attachmentOperationPhase === 'uploading' || attachmentJobInFlight);
-    if (!transferLive && !attachmentDeleting && !attachmentInserting) return;
-    const timer = setInterval(refreshAttachmentSnapshot, 300);
-    return () => clearInterval(timer);
-  }, [attachmentDeleting, attachmentInserting, attachmentJobInFlight, attachmentOperationPhase, refreshAttachmentSnapshot, sheet, smokeFixtureActive]);
-
-  /** Closing the sheet retains the draft and native session for remount. */
-  const closeAttachmentSheet = useCallback(() => {
-    if (sheet === 'attachment') setSheet(null);
-  }, [sheet]);
-
-  const openAttachment = useCallback(() => {
-    const pane = selectedPane;
-    if (!pane || !runtimeReady || commandBusy) return;
-    void (async () => {
-      // Ask the native input surface first: a live IME composition must be
-      // finished by the user — never committed or cleared by us — before the
-      // keyboard is dismissed or the sheet presented.
-      if (!smokeFixtureActive) {
-        try {
-          const gate = await MeetermTerminal.attachmentCompositionStatus(pane.terminalId);
-          if (gate.status === 'held') {
-            setControlMessage(ATTACHMENT_BEGIN_COMPOSING_NOTICE);
-            return;
-          }
-        } catch {
-          // The query is best-effort; the terminal view stays mounted under
-          // the attachment sheet, so an unanswered check cannot lose state.
-        }
+    };
+    const ensureUploaded = async (attachmentId: string) => {
+      const completed = await waitForJob(attachmentId);
+      if (completed.phase !== 'uploaded') {
+        setRetryFor(completed);
+        throw Object.assign(new Error(completed.errorMessage || 'The image could not be uploaded.'), { errorCode: completed.errorCode });
       }
-      Keyboard.dismiss();
-      if (attachment) {
-        // Remount within the same process: the retained draft rebinds and a
-        // still-running core operation keeps progressing.
-        setSheet('attachment');
-        refreshAttachmentSnapshot();
-        return;
-      }
-      const generation = ++attachmentGeneration.current;
-      // A brand-new draft intent: invalidate any snapshot read still in
-      // flight for the previous operation so it cannot land on this draft.
-      attachmentSnapshotSeq.current += 1;
-      setAttachment({
-        phase: 'choosing',
-        prepared: null,
-        operation: null,
-        remoteDirectory: '',
-        busyAction: null,
-        sessionReady: true,
-        destination: attachmentDestinationFor(pane),
-        notice: '',
-        errorCode: '',
-        errorMessage: '',
-      });
-      setSheet('attachment');
-      if (smokeFixtureActive) return;
+      setRetryFor(completed);
+    };
+    const verifyAndInsert = async (attachmentId: string) => {
+      let result: Awaited<ReturnType<typeof MeetermTerminal.insertAttachment>>;
       try {
-        // Same-process remount recovery: a retained native session rebinds
-        // the draft instead of silently starting over.
-        const state = await MeetermTerminal.getAttachmentState();
-        if (attachmentGeneration.current !== generation) return;
-        if (state.status !== 'idle' || state.operation) {
-          setAttachment(current => current ? {
-            ...current,
-            phase: state.status === 'prepared' ? 'ready' : 'choosing',
-            prepared: state.status === 'prepared' ? {
-              fileId: state.fileId,
-              previewUri: state.previewUri,
-              format: state.format,
-              width: state.width,
-              height: state.height,
-              byteCount: state.byteCount,
-              sourceByteCount: state.sourceByteCount,
-            } : current.prepared,
-            operation: state.operation,
-            destination: state.target ? attachmentDestinationFromTarget(state.target) : current.destination,
-            sessionReady: true,
-          } : current);
-          return;
+        result = await MeetermTerminal.insertAttachment(terminalId);
+      } catch (error) {
+        if (retry?.action === 'insert' && !hasFreshOperationSnapshot) {
+          insertResumeRejectedWithoutSnapshot = true;
         }
-        const result = await MeetermTerminal.beginAttachment(pane.terminalId, attachmentTargetFor(pane));
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'held') {
-          setAttachment(current => current ? { ...current, sessionReady: false, notice: ATTACHMENT_BEGIN_COMPOSING_NOTICE } : current);
-        } else if (result.status === 'error') {
-          // The core refused the destination intent — hold the sheet with
-          // the reason; never silently fall back to another destination.
-          setAttachment(current => current ? { ...current, sessionReady: false, notice: attachmentFailureNotice(result.errorCode, result.message) } : current);
-        }
-      } catch {
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_unavailable', errorMessage: 'Could not start the attachment.' } : current);
+        throw error;
       }
-    })();
-  }, [attachment, attachmentDestinationFor, attachmentDestinationFromTarget, attachmentTargetFor, commandBusy, refreshAttachmentSnapshot, runtimeReady, selectedPane, smokeFixtureActive]);
-
-  /** (Re)establish the native session after a held begin or a Discard. */
-  const ensureAttachmentSession = useCallback(async (): Promise<boolean> => {
-    if (attachment?.sessionReady) return true;
-    const pane = selectedPane;
-    if (!pane) return false;
-    try {
-      const result = await MeetermTerminal.beginAttachment(pane.terminalId, attachmentTargetFor(pane));
       if (result.status === 'held') {
-        setAttachment(current => current ? { ...current, notice: ATTACHMENT_BEGIN_COMPOSING_NOTICE } : current);
-        return false;
+        if (result.reason === 'composing') {
+          if (hasFreshOperationSnapshot) setRetryFor(operation);
+        } else if (hasFreshOperationSnapshot) {
+          setRetryFor(operation);
+        } else if (retry?.action === 'insert') {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
+        throw new Error(result.reason === 'composing'
+          ? 'Finish IME composition before attaching.'
+          : 'The uploaded image is no longer available.');
       }
       if (result.status === 'error') {
-        setAttachment(current => current ? { ...current, notice: attachmentFailureNotice(result.errorCode, result.message) } : current);
-        return false;
+        if (hasFreshOperationSnapshot) {
+          setRetryFor(operation);
+        } else if (retry?.action === 'insert') {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
+        throw Object.assign(new Error(result.message), { errorCode: result.errorCode });
       }
-      setAttachment(current => current ? {
-        ...current,
-        sessionReady: true,
-        notice: '',
-        // A Discard followed by Choose on another pane binds the new target.
-        destination: attachmentDestinationFor(pane),
-      } : current);
-      return true;
-    } catch {
-      setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_unavailable', errorMessage: 'Could not start the attachment.' } : current);
-      return false;
-    }
-  }, [attachment?.sessionReady, attachment?.destination.terminalId, attachmentDestinationFor, attachmentTargetFor, selectedPane]);
-
-  const pickAttachment = useCallback((source: AttachmentSource) => {
-    if (!attachment || attachment.busyAction || attachment.phase === 'picking' || attachment.phase === 'normalizing') return;
-    const generation = attachmentGeneration.current;
-    attachmentSnapshotSeq.current += 1;
-    setAttachment(current => current ? { ...current, phase: 'picking', notice: '', errorCode: '', errorMessage: '' } : current);
-    if (smokeFixtureActive) {
-      // Fixtures never reach the OS picker; stay on the picking state only in
-      // the real flow and return to choosing in smoke screenshots.
-      setAttachment(current => current ? { ...current, phase: 'choosing' } : current);
-      return;
-    }
-    void (async () => {
-      if (!await ensureAttachmentSession()) {
-        setAttachment(current => current && current.phase === 'picking' ? { ...current, phase: 'choosing' } : current);
+      if (result.status === 'unavailable') {
+        if (retry?.action === 'insert' && !hasFreshOperationSnapshot) {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
+        throw new Error('The attachment service is not available right now.');
+      }
+      if (result.status === 'inserted') {
+        attachmentRetry.current = null;
         return;
       }
-      try {
-        const result = await MeetermTerminal.pickAttachmentImage(source);
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'canceled') {
-          setAttachment(current => current ? { ...current, phase: 'choosing' } : current);
-          return;
-        }
-        if (result.status === 'error') {
-          setAttachment(current => current ? { ...current, phase: 'error', errorCode: result.errorCode, errorMessage: result.message } : current);
-          return;
-        }
-        setAttachment(current => current ? { ...current, phase: 'normalizing' } : current);
-        const prepared = await MeetermTerminal.prepareAttachmentImage(result.token);
-        if (attachmentGeneration.current !== generation) return;
-        if (prepared.status === 'prepared') {
-          setAttachment(current => current ? { ...current, phase: 'ready', operation: null, prepared: {
-            fileId: prepared.fileId,
-            previewUri: prepared.previewUri,
-            format: prepared.format,
-            width: prepared.width,
-            height: prepared.height,
-            byteCount: prepared.byteCount,
-            sourceByteCount: prepared.sourceByteCount,
-          } } : current);
-        } else {
-          setAttachment(current => current ? { ...current, phase: 'error', errorCode: prepared.errorCode, errorMessage: prepared.message } : current);
-        }
-      } catch {
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, phase: 'error', errorCode: 'attachment_io_failed', errorMessage: 'The image could not be prepared.' } : current);
+      const completed = await waitForJob(attachmentId);
+      if (completed?.phase === 'inserted') {
+        attachmentRetry.current = null;
+        return;
       }
-    })();
-  }, [attachment, ensureAttachmentSession, smokeFixtureActive]);
+      setRetryFor(completed ?? operation);
+      throw Object.assign(new Error(completed?.errorMessage || 'The image path could not be added.'), { errorCode: completed?.errorCode ?? '' });
+    };
 
-  /** Explicit Upload → `meeterm_attachment_begin`; progress comes from polling. */
-  const uploadAttachmentDraft = useCallback(() => {
-    const operation = attachment?.operation;
-    if (!attachment || !attachment.prepared || attachment.busyAction || !selectedPane) return;
-    // Double-tap guard: a live op must be retried or cancelled, never rebegun.
-    if (operation && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
-    const generation = attachmentGeneration.current;
-    attachmentSnapshotSeq.current += 1;
-    attachmentPendingAccept.current = true;
-    setAttachment(current => current ? { ...current, busyAction: 'upload', notice: '', errorCode: '', errorMessage: '' } : current);
-    void MeetermTerminal.uploadAttachment(attachment.destination.terminalId, attachment.remoteDirectory.trim())
-      .then(result => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'accepted') {
-          setAttachment(current => current ? { ...current, busyAction: null, operation: {
-            phase: 'uploading',
-            attachmentId: result.attachmentId,
-            bytesUploaded: 0,
-            sizeBytes: current.prepared?.byteCount ?? 0,
-            remotePath: '',
-            displayName: '',
-            errorCode: '',
-            errorMessage: '',
-            insertUnconfirmed: false,
-            remoteRemoved: false,
-            jobInFlight: true,
-          } } : current);
-          refreshAttachmentSnapshot();
-          return;
-        }
-        setAttachment(current => current ? { ...current, busyAction: null, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
-            : attachmentFailureNotice(result.errorCode, result.message) } : current);
-      })
-      .catch(() => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, busyAction: null, notice: 'The upload could not be started.' } : current);
-      });
-  }, [attachment, refreshAttachmentSnapshot, selectedPane]);
-
-  /** Explicit transfer retry — pending/failed, or verified-removed uploaded. */
-  const retryAttachmentUpload = useCallback(() => {
-    const operation = attachment?.operation;
-    if (!attachment || !operation || attachment.busyAction) return;
-    const retryable = operation.phase === 'pending' || operation.phase === 'failed'
-      || (operation.phase === 'uploaded' && operation.remoteRemoved);
-    if (!retryable) return;
-    const generation = attachmentGeneration.current;
-    attachmentSnapshotSeq.current += 1;
-    attachmentPendingAccept.current = true;
-    setAttachment(current => current ? { ...current, busyAction: 'retryUpload', notice: '' } : current);
-    // The core verifies the passed pane terminal against the recorded
-    // intent — a different visible pane fails with `destination_changed`.
-    void MeetermTerminal.retryAttachmentUpload(selectedPane?.terminalId ?? '')
-      .then(result => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'accepted') {
-          // The request was accepted — the wait is over and the transfer is
-          // now an ordinary in-flight job tracked by jobInFlight, exactly
-          // like the first upload. Leaving busyAction='retryUpload' here
-          // would lock Cancel for the whole transfer (FP-025).
-          setAttachment(current => current?.operation ? {
-            ...current,
-            busyAction: null,
-            operation: {
-              ...current.operation,
-              phase: 'uploading',
-              jobInFlight: true,
-              errorCode: '',
-              errorMessage: '',
-            },
-          } : current);
-          refreshAttachmentSnapshot();
-          return;
-        }
-        setAttachment(current => current ? { ...current, busyAction: null } : current);
-        setAttachment(current => current ? { ...current, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
-            : attachmentFailureNotice(result.errorCode, result.message) } : current);
-      })
-      .catch(() => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, busyAction: null, notice: 'The retry could not be started.' } : current);
-      });
-  }, [attachment, refreshAttachmentSnapshot, selectedPane]);
-
-  /** Explicit cancel of a pending/uploading operation. */
-  const cancelAttachmentDraft = useCallback(() => {
-    const operation = attachment?.operation;
-    if (!attachment || !operation || attachment.busyAction) return;
-    if (operation.phase !== 'pending' && operation.phase !== 'uploading') return;
-    const generation = attachmentGeneration.current;
-    attachmentSnapshotSeq.current += 1;
-    attachmentPendingAccept.current = true;
-    setAttachment(current => current ? { ...current, busyAction: 'cancel', notice: '' } : current);
-    void MeetermTerminal.cancelAttachment()
-      .then(result => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'accepted') {
-          setAttachment(current => current?.operation ? { ...current, busyAction: null, operation: { ...current.operation, phase: 'cancelled' } } : current);
-          refreshAttachmentSnapshot();
-          return;
-        }
-        setAttachment(current => current ? { ...current, busyAction: null, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.' : result.message } : current);
-      })
-      .catch(() => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, busyAction: null, notice: 'The upload could not be cancelled.' } : current);
-      });
-  }, [attachment, refreshAttachmentSnapshot]);
-
-  /**
-   * Explicit toolbar Insert — never sent automatically or retried silently.
-   * Runs through the normal terminal input gate: the target terminal must be
-   * the visible pane and the native input gate ready before the core call.
-   */
-  const insertAttachmentFromToolbar = useCallback(() => {
-    const operation = attachment?.operation;
-    const pane = selectedPane;
-    if (!attachment || !operation || attachment.busyAction || !pane) return;
-    // Destination protection: insertion goes only to the captured terminal.
-    if (pane.terminalId !== attachment.destination.terminalId) return;
-    // Insert is one verified job (intent + fresh fence + remote lstat +
-    // paste) on an uploaded op — an inserted op is never re-inserted, and
-    // no job may start while another is in flight.
-    if (operation.remoteRemoved || operation.jobInFlight || operation.phase !== 'uploaded') return;
-    if (sheet === 'attachment') return;
-    if (!terminalInputReady || !surfaceVisible) {
-      setControlMessage(ATTACHMENT_INSERT_NOT_READY);
-      return;
-    }
-    const generation = attachmentGeneration.current;
-    // New job starting: reads begun before this point belong to the previous
-    // job generation and must never clear the insert busy state.
-    attachmentSnapshotSeq.current += 1;
-    // While the native accepted/rejected verdict is still out, snapshot
-    // reads are suppressed — a pre-acceptance snapshot can only describe
-    // the pre-job state and would wrongly end the Inserting… wait.
-    attachmentPendingAccept.current = true;
-    setAttachment(current => current ? { ...current, busyAction: 'insert', notice: '' } : current);
-    void MeetermTerminal.insertAttachment(pane.terminalId)
-      .then(result => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'accepted' || result.status === 'inserted') {
-          // `accepted` only means the verify+insert job started — keep
-          // busyAction until the snapshot's jobInFlight drops, then show
-          // the landed outcome (inserted phase or the Pending reason).
-          setControlMessage(ATTACHMENT_INSERTING_NOTICE);
-          refreshAttachmentSnapshot();
-          return;
-        }
-        setAttachment(current => current ? { ...current, busyAction: null } : current);
-        setControlMessage(
-          result.status === 'held'
-            ? (result.reason === 'composing' ? ATTACHMENT_COMPOSING_NOTICE : 'No prepared image is attached yet.')
-            : result.status === 'unavailable'
-              ? 'The attachment backend is not available in this build.'
-              : attachmentFailureNotice(result.errorCode, result.message));
-      })
-      .catch(() => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, busyAction: null } : current);
-        setControlMessage('The image reference could not be inserted.');
-      });
-  }, [attachment, refreshAttachmentSnapshot, selectedPane, sheet, surfaceVisible, terminalInputReady]);
-
-  /**
-   * Explicit server-side delete of the completed remote file. `accepted` only
-   * means the core took the request — the Deleting… state and snapshot
-   * polling continue until `remoteRemoved` or an error is observed.
-   */
-  const deleteRemoteAttachment = useCallback(() => {
-    const operation = attachment?.operation;
-    if (!attachment || !operation || attachment.busyAction) return;
-    // One in-flight job per operation — a new delete is refused while a
-    // job is still running, and the wait ends when its flag drops.
-    if (operation.jobInFlight) return;
-    if (operation.phase !== 'uploaded' && operation.phase !== 'inserted' && operation.phase !== 'failed' && operation.phase !== 'cancelled') return;
-    const generation = attachmentGeneration.current;
-    attachmentSnapshotSeq.current += 1;
-    attachmentPendingAccept.current = true;
-    setAttachment(current => current ? { ...current, busyAction: 'deleteRemote', notice: '' } : current);
-    // The core verifies the passed pane terminal against the recorded
-    // intent — a different visible pane fails with `destination_changed`.
-    void MeetermTerminal.deleteRemoteAttachment(selectedPane?.terminalId ?? '')
-      .then(result => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        if (result.status === 'accepted') {
-          // Keep `busyAction: 'deleteRemote'`: refreshAttachmentSnapshot clears
-          // it when the authoritative remoteRemoved flag or an error arrives.
-          refreshAttachmentSnapshot();
-          return;
-        }
-        setAttachment(current => current ? { ...current, busyAction: null, notice:
-          result.status === 'unavailable' ? 'The attachment backend is not available in this build.'
-            : attachmentFailureNotice(result.errorCode, result.message) } : current);
-      })
-      .catch(() => {
-        attachmentPendingAccept.current = false;
-        attachmentSnapshotSeq.current += 1;
-        if (attachmentGeneration.current !== generation) return;
-        setAttachment(current => current ? { ...current, busyAction: null, notice: ATTACHMENT_DELETE_FAILED_NOTICE } : current);
-      });
-  }, [attachment, refreshAttachmentSnapshot, selectedPane]);
-
-  // Toolbar Insert: visible only while a captured uploaded op for the
-  // displayed terminal still owns a remote file. An inserted op is never
-  // re-inserted — the path stays in the terminal input for review.
-  // Readiness is checked on tap — a merely disabled button cannot explain
-  // why it refused.
-  const attachmentInsertVisible = Boolean(
-    attachment?.operation
-    && !attachment.operation.remoteRemoved
-    && !attachment.operation.jobInFlight
-    && attachment.operation.phase === 'uploaded'
-    && attachment.destination.terminalId === selectedPane?.terminalId
-    && screen === 'terminal');
-
-  /** Explicit Discard: cancels/disposes the core op and removes local files. */
-  const discardAttachmentDraft = useCallback(() => {
-    if (!attachment || attachment.busyAction) return;
-    const generation = attachmentGeneration.current;
-    attachmentSnapshotSeq.current += 1;
-    attachmentPendingAccept.current = true;
-    setAttachment(current => current ? { ...current, busyAction: 'discard', notice: '' } : current);
     void (async () => {
-      if (!smokeFixtureActive) {
-        try { await MeetermTerminal.discardAttachment(); } catch { /* local cleanup is best-effort */ }
-      }
-      attachmentPendingAccept.current = false;
-      attachmentSnapshotSeq.current += 1;
-      if (attachmentGeneration.current !== generation) return;
-      setAttachment(current => current ? {
-        ...current,
-        phase: 'choosing',
-        prepared: null,
-        operation: null,
-        busyAction: null,
-        sessionReady: false,
-        // Discard ended the old intent and destination — the draft now
-        // floats to the current pane, and the next explicit Choose binds a
-        // fresh intent there (the core disposes the old intent itself).
-        destination: selectedPane ? attachmentDestinationFor(selectedPane) : current.destination,
-        notice: '',
-        errorCode: '',
-        errorMessage: '',
-      } : current);
-    })();
-  }, [attachment, attachmentDestinationFor, selectedPane, smokeFixtureActive]);
+      try {
+        const composition = await MeetermTerminal.attachmentCompositionStatus(terminalId);
+        if (composition.status === 'held') {
+          setControlMessage('Finish IME composition before attaching.');
+          return;
+        }
 
-  const reopenAttachmentPicker = useCallback(() => {
-    setAttachment(current => current ? { ...current, phase: 'choosing', notice: '', errorCode: '', errorMessage: '' } : current);
-  }, []);
+        if (retry?.action === 'insert') {
+          operation = retry.operation;
+          await verifyAndInsert(retry.operation.attachmentId);
+          return;
+        }
+
+        let attachmentId: string;
+        if (retry?.action === 'upload') {
+          const resumed = await MeetermTerminal.retryAttachmentUpload(terminalId);
+          if (resumed.status !== 'accepted') {
+            const message = resumed.status === 'error' ? resumed.message : 'The image upload could not be retried.';
+            const errorCode = resumed.status === 'error' ? resumed.errorCode : '';
+            throw Object.assign(new Error(message), { errorCode });
+          }
+          attachmentId = resumed.attachmentId;
+        } else {
+          const begun = await MeetermTerminal.beginAttachment(terminalId, attachmentTargetFor(pane));
+          if (begun.status === 'held') {
+            setControlMessage('Finish IME composition before attaching.');
+            return;
+          }
+          if (begun.status === 'error') {
+            throw Object.assign(new Error(begun.message), { errorCode: begun.errorCode });
+          }
+          const picked = await MeetermTerminal.pickAttachmentImage();
+          if (picked.status === 'canceled') {
+            return;
+          }
+          if (picked.status === 'error') {
+            throw Object.assign(new Error(picked.message), { errorCode: picked.errorCode });
+          }
+          const prepared = await MeetermTerminal.prepareAttachmentImage(picked.token);
+          if (prepared.status === 'error') {
+            throw Object.assign(new Error(prepared.message), { errorCode: prepared.errorCode });
+          }
+          const uploaded = await MeetermTerminal.uploadAttachment(terminalId);
+          if (uploaded.status !== 'accepted') {
+            const message = uploaded.status === 'error' ? uploaded.message : 'The image upload could not be started.';
+            const errorCode = uploaded.status === 'error' ? uploaded.errorCode : '';
+            throw Object.assign(new Error(message), { errorCode });
+          }
+          attachmentId = uploaded.attachmentId;
+        }
+
+        await ensureUploaded(attachmentId);
+        await verifyAndInsert(attachmentId);
+      } catch (error) {
+        const failure = error as Error & { errorCode?: string };
+        // A rejected resume has no fresh snapshot to replace the cached
+        // operation with. Retire that reference so a later tap can begin a
+        // new intent instead of repeatedly calling retry on the same one.
+        const rejectedWithoutSnapshot = Boolean(retry
+          && attachmentRetry.current === retry
+          && !hasFreshOperationSnapshot
+          && (retry.action === 'upload'
+            ? !operation
+            : insertResumeRejectedWithoutSnapshot));
+        if (rejectedWithoutSnapshot) attachmentRetry.current = null;
+        if (!rejectedWithoutSnapshot && hasFreshOperationSnapshot && operation) setRetryFor(operation);
+        const notice = attachmentFailureNotice(failure.errorCode ?? '', failure.message);
+        setControlMessage(attachmentRetry.current?.terminalId === terminalId
+          && attachmentRetry.current.destinationKey === destinationKey
+          ? `${notice.slice(0, 140)} Tap Attach image to retry.`
+          : notice);
+      } finally {
+        if (generation === attachmentFlowGeneration.current) {
+          attachmentBusyRef.current = false;
+          setAttachmentBusy(false);
+        }
+      }
+    })();
+  }, [attachmentDestinationKeyFor, attachmentTargetFor, commandBusy, runtimeReady, selectedPane, surfaceAvailable, terminalInputReady]);
 
   const openSwitcher = useCallback(() => {
     if (commandPending.current) return;
@@ -3637,9 +2966,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     if (sheet === 'switcher' && !returnToSwitcherAfterForm.current && switcherBoundary.current) {
       void cancelSwitcher('close');
     }
-    // An iOS swipe-dismissal hides the attachment sheet the same way onClose
-    // does: the native session and draft are retained for same-process
-    // remount recovery. Only the explicit Discard action cleans them up.
   }, [cancelSwitcher, sheet]);
 
   const manageFromSwitcher = useCallback(() => {
@@ -3963,15 +3289,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             <ConnectionStatus connection={connection} colors={homeColors} />
           </View>
         </View>
-        <IconButton testID="attach-image" icon="attach" label="Attach image" colors={homeColors} disabled={!runtimeReady || commandBusy || !surfaceAvailable} onPress={openAttachment} />
-        {attachmentInsertVisible ? <IconButton
-          testID="attachment-insert"
-          icon="attach"
-          label="Insert attachment"
-          colors={homeColors}
-          disabled={attachment?.busyAction != null}
-          onPress={insertAttachmentFromToolbar}
-        /> : null}
         <IconButton icon="menu" label="Terminal menu" colors={homeColors} onPress={() => openSheet('server')} />
       </View>
       {groups.length > 1 ? <View style={styles.groupBar}>
@@ -3994,7 +3311,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       {surfaceAvailable ? (
         // Unmounting a surface cancels composition; the shared native registry
         // still owns the SSH connection and each terminal's retained state.
-        (recoveryPhaseActive && retainedWorkAvailable) || ((sheet === null || sheet === 'attachment') && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active') ? <TerminalView key={selectedPane!.terminalId} terminalId={selectedPane!.terminalId} interactionMode={strongReady ? 'live' : 'cachedReadOnly'} accessibilityLabel={strongReady ? 'Terminal' : 'Terminal, cached output, read only'} accessibilityHint={strongReady ? undefined : 'Input is paused until recovery finishes.'} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View testID="terminal-placeholder" style={[styles.flex, { backgroundColor: TERMINAL_SURFACE[resolvedTheme].background }]} />
+        (recoveryPhaseActive && retainedWorkAvailable) || (sheet === null && !modalPending && !formVisible && !settingsVisible && !nameRequest && appState === 'active') ? <TerminalView key={selectedPane!.terminalId} terminalId={selectedPane!.terminalId} interactionMode={strongReady ? 'live' : 'cachedReadOnly'} attachmentBusy={attachmentBusy} onAttachImageRequest={startQuickAttachment} accessibilityLabel={strongReady ? 'Terminal' : 'Terminal, cached output, read only'} accessibilityHint={strongReady ? undefined : 'Input is paused until recovery finishes.'} fontSize={preferences.fontSize} theme={resolvedTheme} scrollbackLines={preferences.scrollbackLines} style={styles.flex} /> : <View testID="terminal-placeholder" style={[styles.flex, { backgroundColor: TERMINAL_SURFACE[resolvedTheme].background }]} />
       ) : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.terminalUnavailable, { paddingBottom: Math.max(insets.bottom, 24) }]}>
         {statusNotice}
         {runtimeReady ? <View style={styles.gone}>
@@ -4036,7 +3353,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     <ConnectionForm visible={formVisible} initialProfile={formProfile} mode={formMode} colors={homeColors} themePreference={preferences.theme} onClose={finishConnectionForm} onDismiss={connectionFormDismissed} onSubmit={submitConnection} />
     <SettingsForm visible={settingsVisible} preferences={preferences} colors={homeColors} onClose={() => setSettingsVisible(false)} onSave={savePreferences} />
     <NameForm visible={nameRequest !== null} title={nameRequest?.kind === 'createWorkspace' ? 'Create workspace' : nameRequest?.kind === 'renameWorkspace' ? 'Rename workspace' : nameRequest?.kind === 'createGroup' ? 'Create group' : nameRequest?.kind === 'renameGroup' ? 'Rename group' : 'Rename terminal'} initialName={nameRequest?.kind === 'renameWorkspace' ? nameRequest.workspace.name : nameRequest?.kind === 'renamePane' ? nameRequest.pane.name : nameRequest?.kind === 'renameGroup' ? nameRequest.group.name : ''} colors={homeColors} themePreference={preferences.theme} onClose={() => setNameRequest(null)} onSave={saveName} />
-    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'attachment' ? 'Attach image' : sheet === 'servers' ? 'Saved servers' : sheet === 'switcher' ? switcherTarget ? `Sessions on ${switcherSessionServerName}` : 'Switch server or session' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={sheet === 'switcher' ? closeSwitcher : sheet === 'attachment' ? closeAttachmentSheet : () => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : sheet === 'switcher' ? 'Cancel server or session switch' : sheet === 'attachment' ? 'Close attachment sheet' : 'Close sheet'} busy={sheet === 'switcher' ? switcherAccepting : commandBusy || recoveryPending.change} allowDismissWhileBusy={sheet === 'switcher' && !switcherAccepting} onDismiss={switcherDismissed} colors={homeColors}>
+    <NativeSheet title={sheet === 'groups' ? 'Switch group' : sheet === 'workspaces' ? 'Switch workspace' : sheet === 'handoff' ? 'Continue on your computer' : sheet === 'servers' ? 'Saved servers' : sheet === 'switcher' ? switcherTarget ? `Sessions on ${switcherSessionServerName}` : 'Switch server or session' : sheet === 'recovery' ? 'Change connection or runtime' : 'Server'} visible={sheet !== null} onClose={sheet === 'switcher' ? closeSwitcher : () => setSheet(null)} closeLabel={sheet === 'recovery' ? 'Cancel' : sheet === 'switcher' ? 'Cancel server or session switch' : 'Close sheet'} busy={sheet === 'switcher' ? switcherAccepting : commandBusy || recoveryPending.change} allowDismissWhileBusy={sheet === 'switcher' && !switcherAccepting} onDismiss={switcherDismissed} colors={homeColors}>
       {cleanupWarningNotice ? <View style={styles.terminalFeedback}>{cleanupWarningNotice}</View> : null}
       {feedback ? <View style={styles.terminalFeedback}>{feedback}</View> : null}
       {sheet === 'switcher' ? switcherTarget ? <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.runtimePickerContent}>
@@ -4131,7 +3448,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         <Text selectable style={[styles.command, { backgroundColor: homeColors.surface, color: homeColors.text }]}>{session.backend === 'herdr' ? `herdr --session ${session.runtime || 'default'}` : `tmux attach -t ${session.runtime || 'meeterm'}`}</Text>
         <Text style={[styles.emptyBody, { color: homeColors.muted }]}>Run this command to reopen the same workspaces and terminals.</Text>
         {active ? <Button label="Disconnect" colors={homeColors} disabled={commandBusy} onPress={disconnect}>Disconnect this phone</Button> : <Button label="Close sheet" colors={homeColors} secondary onPress={() => setSheet(null)}>Close</Button>}
-      </ScrollView> : sheet === 'attachment' ? <AttachmentSheet draft={attachment} colors={homeColors} currentTerminalId={selectedPane?.terminalId ?? ''} onPickSource={pickAttachment} onRemoteDirectoryChange={value => setAttachment(current => current ? { ...current, remoteDirectory: value } : current)} onUpload={uploadAttachmentDraft} onRetryUpload={retryAttachmentUpload} onCancel={cancelAttachmentDraft} onDeleteRemote={deleteRemoteAttachment} onDiscard={discardAttachmentDraft} onChooseDifferent={reopenAttachmentPicker} /> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
+      </ScrollView> : <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.sheetContent}>
         <View style={styles.serverDetails}>
           <Icon name="server" color={homeColors.accent} size={28} />
           <Text selectable style={[styles.serverDetailTitle, { color: homeColors.text }]}>{currentProfile?.name ?? endpoint(connection)}</Text>
@@ -4153,7 +3470,6 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
             <Pressable accessibilityRole="button" accessibilityLabel="Rename terminal" disabled={!runtimeReady || commandBusy} onPress={() => openName({ kind: 'renamePane', pane: selectedPane })} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Rename</Text></Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="Close terminal" disabled={!runtimeReady || commandBusy} onPress={closePane} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.danger }]}>Close terminal</Text></Pressable>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel="Attach image" accessibilityHint="Choose one image, preview it, then insert a reference into the terminal input." disabled={!runtimeReady || commandBusy} onPress={openAttachment} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Attach image</Text></Pressable>
           <Pressable accessibilityRole="button" accessibilityLabel={`Workspace options ${workspace.name}`} disabled={!runtimeReady || commandBusy} onPress={() => workspaceOptions(workspace)} style={styles.textAction}><Text style={[styles.actionText, { color: homeColors.accent }]}>Workspace options</Text></Pressable>
         </View> : null}
         {screen === 'terminal' && workspace && session.groupsSupported ? <View style={[styles.terminalActions, { borderColor: homeColors.border }]}>
@@ -4327,12 +3643,6 @@ const styles = StyleSheet.create({
   sheetTitle: { flex: 1, fontSize: 18, lineHeight: 28, fontWeight: '600' },
   sheetContent: { padding: 24, gap: 20 },
   noticeBox: { padding: 14, borderRadius: 12, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth },
-  attachmentPreview: { width: '100%', height: 260, borderRadius: 12, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth },
-  attachmentActionSpacer: { marginTop: 12 },
-  attachmentDestination: { padding: 14, borderRadius: 12, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth, gap: 4 },
-  attachmentDestinationLine: { fontSize: 13, lineHeight: 20 },
-  attachmentProgressTrack: { height: 8, borderRadius: 4, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
-  attachmentProgressFill: { height: '100%', borderRadius: 4 },
   serverDetails: { alignItems: 'flex-start', gap: 12, paddingBottom: 4 },
   serverDetailTitle: { fontSize: 23, lineHeight: 32, fontWeight: '600' },
   menuRow: { minHeight: 56, paddingVertical: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth },

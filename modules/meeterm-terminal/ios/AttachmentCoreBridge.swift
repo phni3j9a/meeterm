@@ -33,7 +33,7 @@ enum AttachmentCoreBridge {
     _ = MeetermCore.attachmentIntentDispose(intentId: intentId)
   }
 
-  /// `meeterm_attachment_begin`. An empty remoteDirectory selects the core
+  /// `meeterm_attachment_begin`. The adapter always selects the core
   /// default `~/.local/share/meeterm/attachments`. Returns the attachment id
   /// (>0) or nil on synchronous rejection (unknown intent, unreadable file,
   /// changed/missing destination, or a second live op).
@@ -41,14 +41,13 @@ enum AttachmentCoreBridge {
     intentId: UInt64,
     localPath: String,
     displayName: String,
-    remoteDirectory: String,
     sizeBytes: UInt64
   ) -> UInt64? {
     let attachmentId = MeetermCore.attachmentBegin(
       intentId: intentId,
       localPath: localPath,
       displayName: displayName,
-      remoteDirectory: remoteDirectory,
+      remoteDirectory: "",
       sizeBytes: sizeBytes
     )
     return attachmentId > 0 ? attachmentId : nil
@@ -79,15 +78,6 @@ enum AttachmentCoreBridge {
   /// `meeterm_attachment_dispose`; uniform accepted/error map.
   static func dispose(attachmentId: UInt64) -> [String: Any] {
     actionResult(MeetermCore.attachmentDispose(attachmentId: attachmentId), attachmentId: attachmentId)
-  }
-
-  /// `meeterm_attachment_delete_remote`; uniform accepted/error map.
-  /// `targetTerminalId` must be the intent's recorded pane terminal.
-  static func deleteRemote(terminalId: UInt64, attachmentId: UInt64) -> [String: Any] {
-    actionResult(
-      MeetermCore.attachmentDeleteRemote(targetTerminalId: terminalId, attachmentId: attachmentId),
-      attachmentId: attachmentId
-    )
   }
 
   /// `meeterm_attachment_snapshot` decoded by the pure codec.

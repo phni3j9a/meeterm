@@ -3,8 +3,9 @@
 //! One attachment operation uploads a single locally selected image file
 //! over a second SFTP channel multiplexed on the *existing* authenticated
 //! SSH connection, stores it under a private remote directory, and — only
-//! on an explicit user request — inserts one quoted remote path line into
-//! the destination pane through the epoch-guarded native paste path.
+//! on an explicit user request — inserts one quoted remote path followed by a
+//! single ASCII space into the destination pane through the epoch-guarded
+//! native paste path.
 //!
 //! The operation binds a stable destination fence (connection generation,
 //! session operation epoch, remote pane identity, the native terminal
@@ -290,8 +291,8 @@ pub(crate) struct DestinationFence {
     pub(crate) endpoint: AttachmentEndpoint,
 }
 
-/// The durable destination intent captured when the attachment sheet was
-/// opened: which pane the user picked, resolved to the SSH connection
+/// The durable destination intent captured when one-tap attachment starts:
+/// which pane the user picked, resolved to the SSH connection
 /// owning it. Every operation and later call re-validates this stable
 /// identity against the *current* connection state — connection
 /// generation, operation epoch, and native terminal epoch are never part
@@ -502,9 +503,8 @@ pub fn attachment_intent(target_terminal_id: u64) -> Result<u64, AttachmentError
     Ok(id)
 }
 
-/// Drop a recorded intent. Idempotent — the sheet may be closed before or
-/// after operations were created from it; live ops keep their own copy of
-/// the captured identity.
+/// Drop a recorded intent. Idempotent — live ops keep their own copy of the
+/// captured identity.
 pub fn attachment_intent_dispose(intent_id: u64) -> Result<(), AttachmentError> {
     intents()
         .lock()
@@ -900,7 +900,7 @@ fn partial_name(remote_name: &str) -> String {
 /// or control characters — it is rejected *before* the line exists, never
 /// escaped, because only generated names and pre-validated directories are
 /// legitimate. No newline and no Enter is ever added; `paste_utf8` keeps
-/// the line editable for the user.
+/// the line editable for the user and ready for the next command argument.
 fn insertion_line(remote_path: &str) -> Result<Vec<u8>, AttachmentError> {
     if remote_path.is_empty()
         || remote_path.contains('\'')
@@ -908,10 +908,11 @@ fn insertion_line(remote_path: &str) -> Result<Vec<u8>, AttachmentError> {
     {
         return Err(AttachmentError::InvalidArgument);
     }
-    let mut line = String::with_capacity(remote_path.len() + 2);
+    let mut line = String::with_capacity(remote_path.len() + 3);
     line.push('\'');
     line.push_str(remote_path);
     line.push('\'');
+    line.push(' ');
     Ok(line.into_bytes())
 }
 
@@ -969,7 +970,8 @@ fn remote_dir_components(
         )
     };
     // `'` / CR / LF / control characters can never appear: the resulting
-    // path is single-quoted verbatim into the inserted line.
+    // path is single-quoted verbatim into the inserted line with a trailing
+    // ASCII space so a terminal command can continue after it.
     if dir.chars().any(|ch| ch == '\'' || ch.is_control()) {
         return Err(unsafe_path());
     }
@@ -1258,7 +1260,8 @@ pub fn attachment_retry_upload(
 /// `SftpInsert` job is queued, and only after the job re-verifies the
 /// recorded remote file over SFTP — regular file, exact size, `0600`,
 /// generated name under the recorded base — does it re-check the fence
-/// under the session lock and paste exactly one quoted path line through
+/// under the session lock and paste one quoted path followed by one ASCII
+/// space through
 /// `paste_utf8_at_epoch`. Enter is never sent and the paste can never run
 /// before the remote check succeeds.
 ///
@@ -1630,7 +1633,7 @@ where
 /// SFTP stream: re-verify the recorded remote file (`lstat` type/size/
 /// mode + the generated name under the recorded base) and only then
 /// re-check the destination fence under the session lock and paste the
-/// single quoted path line. The paste can never run before verification
+/// single quoted path followed by one ASCII space. The paste can never run before verification
 /// succeeds.
 pub(crate) fn start_insert<S>(
     op: Arc<Mutex<AttachmentOperation>>,
@@ -2433,7 +2436,8 @@ async fn run_remove(
 ///    path is `remote_unsafe_path`; a transient SFTP failure keeps the op
 ///    retryable.
 /// 3. Only then is the fence re-checked under the session lock inside
-///    `attachment_insert_line`, which pastes the single quoted path line
+///    `attachment_insert_line`, which pastes the single quoted path with a
+///    trailing ASCII space
 ///    through `paste_utf8_at_epoch`. Enter is never sent.
 async fn run_insert(
     op: &Arc<Mutex<AttachmentOperation>>,
@@ -2488,7 +2492,7 @@ async fn run_insert(
 /// file and require the published identity — a regular file of the exact
 /// uploaded size in `0600`, still named by the generated grammar,
 /// directly under the recorded canonical base. `Ok` carries the single
-/// quoted path line that is safe to paste; every `Err` is a
+/// quoted path plus a trailing ASCII space that is safe to paste; every `Err` is a
 /// verification-stage outcome that must never reach the paste step.
 async fn insert_verified_line(
     op: &Arc<Mutex<AttachmentOperation>>,
@@ -2805,7 +2809,7 @@ mod tests {
     #[test]
     fn insertion_line_is_single_line_quoted() {
         let line = insertion_line("/home/a b/.local/share/meeterm/attachments/m.png").unwrap();
-        assert_eq!(line, b"'/home/a b/.local/share/meeterm/attachments/m.png'");
+        assert_eq!(line, b"'/home/a b/.local/share/meeterm/attachments/m.png' ");
         assert!(!line.contains(&b'\n') && !line.contains(&b'\r'));
     }
 
@@ -3473,7 +3477,7 @@ mod tests {
         let line = insert_verified_line(&op, &session)
             .await
             .expect("intact remote file verifies to a paste line");
-        // Exactly one single-quoted line, no newline or Enter.
+        // One quoted path with one trailing ASCII space; no newline or Enter.
         let text = String::from_utf8(line).expect("paste line is utf8");
         assert!(!text.contains('\n') && !text.contains('\r'));
         assert!(text.starts_with('\'') && text.trim_end().ends_with('\''));
@@ -3570,7 +3574,7 @@ mod tests {
             pasted.fetch_add(1, Ordering::AcqRel);
             let text = String::from_utf8(line.to_vec()).expect("utf8 line");
             assert!(!text.contains('\n') && !text.contains('\r'));
-            assert_eq!(text, format!("'{path}'"));
+            assert_eq!(text, format!("'{path}' "));
             Ok(line.len())
         })
         .await;

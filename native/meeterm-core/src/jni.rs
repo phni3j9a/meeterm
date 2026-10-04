@@ -1357,8 +1357,8 @@ pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentRetryUp
         .unwrap_or_else(|error| error.code())
 }
 
-/// One quoted remote-path line into the intent's recorded destination pane
-/// only; never Enter. `handle` must be the pane terminal the intent
+/// One quoted remote path followed by one ASCII space into the intent's
+/// recorded destination pane only; never Enter. `handle` must be the pane terminal the intent
 /// captured.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_meeterm_terminal_MeetermNative_attachmentInsert(

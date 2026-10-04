@@ -1,19 +1,15 @@
 import ExpoModulesCore
 import PhotosUI
 import UIKit
-import UniformTypeIdentifiers
 
 /**
  * System pickers for the attachment flow.
  *
- * `photos` uses `PHPickerViewController` (image filter, single selection);
- * `files` uses `UIDocumentPickerViewController` for images. Only file URLs
- * come back — `AttachmentStore` stages the bytes with its own magic checks.
+ * `PHPickerViewController` offers one library image. Only file URLs come
+ * back — `AttachmentStore` stages the bytes with its own magic checks.
  * One outstanding pick at a time per process.
  */
 final class AttachmentPicker: NSObject {
-  enum Source { case photos, files }
-
   private let store: AttachmentStore
   private var completion: (([String: Any]) -> Void)?
   private var activePicker: UIViewController?
@@ -23,7 +19,6 @@ final class AttachmentPicker: NSObject {
   }
 
   func pick(
-    source: Source,
     from viewController: UIViewController?,
     completion: @escaping ([String: Any]) -> Void
   ) {
@@ -43,22 +38,13 @@ final class AttachmentPicker: NSObject {
     }
     self.completion = completion
 
-    switch source {
-    case .photos:
-      var configuration = PHPickerConfiguration()
-      configuration.selectionLimit = 1
-      configuration.filter = .images
-      let picker = PHPickerViewController(configuration: configuration)
-      picker.delegate = self
-      activePicker = picker
-      presenter.present(picker, animated: true)
-    case .files:
-      let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image])
-      picker.allowsMultipleSelection = false
-      picker.delegate = self
-      activePicker = picker
-      presenter.present(picker, animated: true)
-    }
+    var configuration = PHPickerConfiguration()
+    configuration.selectionLimit = 1
+    configuration.filter = .images
+    let picker = PHPickerViewController(configuration: configuration)
+    picker.delegate = self
+    activePicker = picker
+    presenter.present(picker, animated: true)
   }
 
   private func topViewController() -> UIViewController? {
@@ -89,16 +75,6 @@ final class AttachmentPicker: NSObject {
     }
   }
 
-  private func stage(_ url: URL, securityScoped: Bool) {
-    let fileName = store.newStagingFileName()
-    let result = store.stage(from: url, fileName: fileName, securityScoped: securityScoped)
-    switch result {
-    case .ok(let stagedName, let byteCount):
-      finish(AttachmentResults.picked(token: stagedName, byteCount: byteCount))
-    case .rejected(let errorCode):
-      finish(AttachmentResults.error(errorCode, message(for: errorCode)))
-    }
-  }
 }
 
 extension AttachmentPicker: PHPickerViewControllerDelegate {
@@ -110,7 +86,7 @@ extension AttachmentPicker: PHPickerViewControllerDelegate {
     }
     // `loadFileRepresentation` streams the asset to a temp file — the image
     // never lands in memory as an unbounded Data before staging.
-    let typeIdentifier = UTType.image.identifier
+    let typeIdentifier = "public.image"
     guard result.itemProvider.hasItemConformingToTypeIdentifier(typeIdentifier) else {
       finish(AttachmentResults.error(
         AttachmentLimits.errorUnsupported,
@@ -140,30 +116,12 @@ extension AttachmentPicker: PHPickerViewControllerDelegate {
       )
       DispatchQueue.main.async {
         switch staged {
-        case .ok(let name, let byteCount):
-          self.finish(AttachmentResults.picked(token: name, byteCount: byteCount))
+        case .ok(let name, _):
+          self.finish(AttachmentResults.picked(token: name))
         case .rejected(let errorCode):
           self.finish(AttachmentResults.error(errorCode, self.message(for: errorCode)))
         }
       }
     }
-  }
-}
-
-extension AttachmentPicker: UIDocumentPickerDelegate {
-  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-    guard let url = urls.first else {
-      finish(AttachmentResults.canceled())
-      return
-    }
-    // The delegate fires on the main thread; the bounded staging copy moves
-    // off it so a large image never stalls the UI.
-    DispatchQueue.global(qos: .userInitiated).async { [self] in
-      stage(url, securityScoped: true)
-    }
-  }
-
-  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-    finish(AttachmentResults.canceled())
   }
 }

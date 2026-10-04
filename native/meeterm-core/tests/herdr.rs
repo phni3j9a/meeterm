@@ -3301,6 +3301,8 @@ fn real_herdr_attachment_upload_insert_and_fence() {
     assert_eq!(inserted.phase, AttachmentPhase::Inserted as u32);
     // The generated path is longer than the pane width: it soft-wraps, so
     // the echo check runs against the wrap-joined snapshot text.
+    // Terminal snapshots may trim the trailing ASCII space. The Rust unit
+    // test asserts the exact paste bytes; this checks that the path lands.
     let quoted = format!("'{remote_path}'");
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {

@@ -223,7 +223,7 @@ client と direct controller が同時に存在できることと、同時編集
 ボタンや、専用の閲覧モードへ切り替えるUIはありません。
 Issue の初期 product scope は simultaneous phone/PC editing の保証ではなく、hand-off です。
 
-## 画像 attachment（Issue #28）
+## 画像 attachment
 
 Herdr backend でも tmux と同じ Rust-owned attachment 操作を使います。宛先は
 `attachment_intent(target_terminal_id)` が対象 pane の native terminal から一度だけ
@@ -248,9 +248,11 @@ remote path 1行だけを送ります。Enter は送らず、shell command も�
 も作りません。`inserted` は「native input queue が行を受け付けた」という意味だけで、
 Codex/Claude が画像を読んだことの acknowledgement ではありません。
 
+アプリは特殊キー行の写真ボタンから Photos の画像 1 枚を選び、正規化・upload・検証・挿入までを
+続けて実行します。挿入時は quoted path の後ろに半角スペース 1 つを付け、Enter は送りません。
 remote 側のファイルは `<realpath(".")>/.local/share/meeterm/attachments/` 以下に
 生成名 `meeterm-<YYYYMMDD>-<HHMMSS>-<16 hex>.<ext>`（拡張子は画像 magic 由来、
-picked filename は使いません）で保存され、`attachment_delete_remote` の明示削除まで
+picked filename は使いません）で保存され、core ABI の `attachment_delete_remote` による明示削除まで
 残ります。削除対象は operation が生成した名前だけで、intent が記録した同一 SSH
 endpoint 上の SFTP channel から実行します。削除前に canonical base を byte 一致で
 再解決し、全 path 成分を `lstat` で実 directory と確認するため、symlink 置換や

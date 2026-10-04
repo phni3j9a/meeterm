@@ -115,11 +115,6 @@ internal class AttachmentStore(private val context: Context) {
 
   fun preparedPath(fileName: String): File? = preparedFile(fileName)?.takeIf { it.isFile }
 
-  fun previewUri(fileName: String): String {
-    val file = preparedFile(fileName) ?: return ""
-    return Uri.fromFile(file).toString()
-  }
-
   fun sha256(fileName: String, staging: Boolean): String? {
     val file = (if (staging) stagingFile(fileName) else preparedFile(fileName)) ?: return null
     if (!file.isFile) return null

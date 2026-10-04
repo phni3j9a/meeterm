@@ -406,13 +406,13 @@ pub unsafe extern "C" fn meeterm_paste_utf8_at_epoch(
         .unwrap_or_else(terminal_error_code)
 }
 
-/// Record the destination intent for the attachment sheet: the adapter
+/// Record the destination intent for a one-tap attachment: the adapter
 /// passes the *picked pane's* native terminal id; the core resolves the
 /// owning SSH connection itself and stores the stable identity (endpoint,
 /// backend/runtime, remote pane / Herdr `terminal_id`). The returned id is
 /// opaque and positive; zero means the pane is not a usable destination
 /// right now. Dispose it with `meeterm_attachment_intent_dispose` when the
-/// sheet closes, before or after any `meeterm_attachment_begin` calls.
+/// adapter no longer needs this intent; live operations keep their own copy.
 #[unsafe(no_mangle)]
 pub extern "C" fn meeterm_attachment_intent(target_terminal_id: u64) -> u64 {
     crate::attachment::attachment_intent(target_terminal_id).unwrap_or(0)
@@ -498,7 +498,8 @@ pub extern "C" fn meeterm_attachment_retry_upload(
 
 /// Queue the verified-insert job: the recorded remote file is re-verified
 /// over SFTP (regular file, exact size, `0600`, generated name under the
-/// recorded base) before one quoted remote-path line is pasted into the
+/// recorded base) before one quoted remote-path line with a trailing ASCII
+/// space is pasted into the
 /// operation's recorded destination pane through the epoch-guarded native
 /// paste path under the session lock. `target_terminal_id` must be the
 /// pane terminal the intent captured. Never sends Enter; never retargets

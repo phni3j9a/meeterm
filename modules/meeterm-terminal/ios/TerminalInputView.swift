@@ -1,6 +1,32 @@
 import Foundation
 import UIKit
 
+/// Replaceable, template-rendered photo glyph used by the special-key row.
+private enum AttachmentGlyph {
+  static let image: UIImage = {
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
+    let image = renderer.image { _ in
+      UIColor.black.setStroke()
+      let frame = UIBezierPath(roundedRect: CGRect(x: 2.5, y: 2.5, width: 19, height: 19), cornerRadius: 3.2)
+      frame.lineWidth = 1.8
+      frame.stroke()
+      UIColor.black.setFill()
+      UIBezierPath(ovalIn: CGRect(x: 5.7, y: 6.6, width: 3.6, height: 3.6)).fill()
+      let hills = UIBezierPath()
+      hills.move(to: CGPoint(x: 4.8, y: 18.2))
+      hills.addLine(to: CGPoint(x: 10.1, y: 12.1))
+      hills.addLine(to: CGPoint(x: 13.3, y: 15.5))
+      hills.addLine(to: CGPoint(x: 16, y: 12.6))
+      hills.addLine(to: CGPoint(x: 19.2, y: 18.2))
+      hills.lineWidth = 1.8
+      hills.lineCapStyle = .round
+      hills.lineJoinStyle = .round
+      hills.stroke()
+    }
+    return image.withRenderingMode(.alwaysTemplate)
+  }()
+}
+
 /// Shared native-side validation for operation epochs arriving from JavaScript.
 /// The decimal epoch is checked as ASCII before conversion, so it never travels
 /// through NSNumber/Double.
@@ -64,6 +90,7 @@ final class TerminalInputView: UITextView {
   var onModifiedSpecialKey: ((TerminalSpecialKey, UInt32) -> Void)?
   var onModifiedSpecialKeyAtEpoch: ((TerminalSpecialKey, UInt32, UInt64) -> Void)?
   var onCopySelection: (() -> Void)?
+  var onAttachImageRequest: (() -> Void)?
   var hasTerminalSelection: (() -> Bool)?
   var operationEpochProvider: (() -> UInt64?)?
 
@@ -72,6 +99,9 @@ final class TerminalInputView: UITextView {
   private weak var controlButton: UIButton?
   private weak var altButton: UIButton?
   private var accessoryButtons: [UIButton] = []
+  private weak var attachImageButton: UIButton?
+  private weak var attachImageSpinner: UIActivityIndicatorView?
+  private var attachmentBusy = false
   private var lightTheme = false
   private var themeApplied = false
 
@@ -362,6 +392,17 @@ final class TerminalInputView: UITextView {
     }
   }
 
+  func setAttachmentBusy(_ busy: Bool) {
+    attachmentBusy = busy
+    attachImageButton?.isHidden = busy
+    attachImageButton?.isEnabled = !busy && !isCachedReadOnly
+    if busy {
+      attachImageSpinner?.startAnimating()
+    } else {
+      attachImageSpinner?.stopAnimating()
+    }
+  }
+
   private func applyAccessoryTheme() {
     terminalAccessoryView.backgroundColor = lightTheme
       ? UIColor(red: 242.0 / 255, green: 237.0 / 255, blue: 226.0 / 255, alpha: 1)
@@ -506,6 +547,7 @@ final class TerminalInputView: UITextView {
 
   private func updateInteractionAccessibility() {
     for control in remoteInputControls {
+      if control === attachImageButton { continue }
       control.isUserInteractionEnabled = !isCachedReadOnly
       control.isAccessibilityElement = !isCachedReadOnly
       control.accessibilityElementsHidden = isCachedReadOnly
@@ -513,6 +555,7 @@ final class TerminalInputView: UITextView {
         control.isEnabled = !isCachedReadOnly
       }
     }
+    attachImageButton?.isEnabled = !isCachedReadOnly && !attachmentBusy
   }
 
   private func makeAccessoryView() -> UIView {
@@ -532,7 +575,43 @@ final class TerminalInputView: UITextView {
     remoteInputControls.append(terminalPasteControl)
     controlButton = control
     altButton = alt
+    let attachContainer = UIView()
+    attachContainer.translatesAutoresizingMaskIntoConstraints = false
+    let attachButton = UIButton(type: .system)
+    var attachConfiguration = UIButton.Configuration.plain()
+    attachConfiguration.image = AttachmentGlyph.image
+    attachConfiguration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 24, weight: .regular)
+    attachConfiguration.baseForegroundColor = accessoryForegroundColor
+    attachConfiguration.background.backgroundColor = accessoryButtonBackgroundColor
+    attachConfiguration.background.cornerRadius = 8
+    attachConfiguration.contentInsets = .zero
+    attachButton.configuration = attachConfiguration
+    attachButton.accessibilityLabel = "Attach image"
+    attachButton.accessibilityIdentifier = "attach-image"
+    attachButton.translatesAutoresizingMaskIntoConstraints = false
+    attachButton.addTarget(self, action: #selector(requestImageAttachment), for: .touchUpInside)
+    attachImageButton = attachButton
+    accessoryButtons.append(attachButton)
+    remoteInputControls.append(attachButton)
+    let attachSpinner = UIActivityIndicatorView(style: .medium)
+    attachSpinner.color = accessoryForegroundColor
+    attachSpinner.hidesWhenStopped = true
+    attachSpinner.translatesAutoresizingMaskIntoConstraints = false
+    attachImageSpinner = attachSpinner
+    attachContainer.addSubview(attachButton)
+    attachContainer.addSubview(attachSpinner)
+    NSLayoutConstraint.activate([
+      attachContainer.widthAnchor.constraint(equalToConstant: 44),
+      attachContainer.heightAnchor.constraint(equalToConstant: 44),
+      attachButton.leadingAnchor.constraint(equalTo: attachContainer.leadingAnchor),
+      attachButton.trailingAnchor.constraint(equalTo: attachContainer.trailingAnchor),
+      attachButton.topAnchor.constraint(equalTo: attachContainer.topAnchor),
+      attachButton.bottomAnchor.constraint(equalTo: attachContainer.bottomAnchor),
+      attachSpinner.centerXAnchor.constraint(equalTo: attachContainer.centerXAnchor),
+      attachSpinner.centerYAnchor.constraint(equalTo: attachContainer.centerYAnchor)
+    ])
     let keys = UIStackView(arrangedSubviews: [
+      attachContainer,
       accessoryButton(title: "Esc", action: #selector(sendEscape)),
       accessoryButton(title: "Tab", action: #selector(sendTab)),
       accessoryButton(title: "^C", action: #selector(sendInterrupt)),
@@ -622,6 +701,11 @@ final class TerminalInputView: UITextView {
       button.heightAnchor.constraint(equalToConstant: 44)
     ])
     return button
+  }
+
+  @objc private func requestImageAttachment() {
+    guard !isCachedReadOnly && !attachmentBusy else { return }
+    onAttachImageRequest?()
   }
 
   @objc private func sendEscape() {
