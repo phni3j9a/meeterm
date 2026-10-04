@@ -7,18 +7,17 @@ private enum AttachmentGlyph {
     let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
     let image = renderer.image { _ in
       UIColor.black.setStroke()
-      let frame = UIBezierPath(roundedRect: CGRect(x: 2, y: 3, width: 20, height: 18), cornerRadius: 3)
+      let frame = UIBezierPath(roundedRect: CGRect(x: 2.5, y: 2.5, width: 19, height: 19), cornerRadius: 3.2)
       frame.lineWidth = 1.8
       frame.stroke()
-      let sun = UIBezierPath(ovalIn: CGRect(x: 15.2, y: 6.8, width: 3, height: 3))
-      sun.lineWidth = 1.5
-      sun.stroke()
+      UIColor.black.setFill()
+      UIBezierPath(ovalIn: CGRect(x: 5.7, y: 6.6, width: 3.6, height: 3.6)).fill()
       let hills = UIBezierPath()
-      hills.move(to: CGPoint(x: 4.5, y: 18))
-      hills.addLine(to: CGPoint(x: 10, y: 11.5))
-      hills.addLine(to: CGPoint(x: 13.2, y: 15))
-      hills.addLine(to: CGPoint(x: 15.3, y: 12.8))
-      hills.addLine(to: CGPoint(x: 20, y: 18))
+      hills.move(to: CGPoint(x: 4.8, y: 18.2))
+      hills.addLine(to: CGPoint(x: 10.1, y: 12.1))
+      hills.addLine(to: CGPoint(x: 13.3, y: 15.5))
+      hills.addLine(to: CGPoint(x: 16, y: 12.6))
+      hills.addLine(to: CGPoint(x: 19.2, y: 18.2))
       hills.lineWidth = 1.8
       hills.lineCapStyle = .round
       hills.lineJoinStyle = .round
@@ -581,7 +580,7 @@ final class TerminalInputView: UITextView {
     let attachButton = UIButton(type: .system)
     var attachConfiguration = UIButton.Configuration.plain()
     attachConfiguration.image = AttachmentGlyph.image
-    attachConfiguration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+    attachConfiguration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 24, weight: .regular)
     attachConfiguration.baseForegroundColor = accessoryForegroundColor
     attachConfiguration.background.backgroundColor = accessoryButtonBackgroundColor
     attachConfiguration.background.cornerRadius = 8
