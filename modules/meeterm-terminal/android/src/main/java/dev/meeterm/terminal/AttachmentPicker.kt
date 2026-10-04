@@ -1,7 +1,10 @@
 package dev.meeterm.terminal
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
@@ -72,6 +75,24 @@ internal class AttachmentPicker(
     launcher = registered
     try {
       registered.launch(null)
+    } catch (e: PhotoPickerUnavailableException) {
+      launcher = null
+      registered.unregister()
+      promise.resolve(
+        AttachmentResults.error(
+          AttachmentLimits.ERROR_IO,
+          "This device can't open a photo picker.",
+        ),
+      )
+    } catch (e: ActivityNotFoundException) {
+      launcher = null
+      registered.unregister()
+      promise.resolve(
+        AttachmentResults.error(
+          AttachmentLimits.ERROR_IO,
+          "This device can't open a photo picker.",
+        ),
+      )
     } catch (e: RuntimeException) {
       launcher = null
       registered.unregister()
@@ -87,20 +108,45 @@ internal class AttachmentPicker(
   /** Image-only system photo picker. */
   private class PhotoPickerContract : ActivityResultContract<Any?, Uri?>() {
     private val delegate = ActivityResultContracts.PickVisualMedia()
-    override fun createIntent(
-      context: android.content.Context,
-      input: Any?,
-    ): Intent = delegate.createIntent(
-      context,
-      PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-    )
+    override fun createIntent(context: android.content.Context, input: Any?): Intent {
+      val photoPickerIntent = if (ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context)) {
+        delegate.createIntent(
+          context,
+          PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+        ).takeIf(::isPhotosOnlyIntent)
+          ?.takeIf { resolves(context, it) }
+      } else {
+        null
+      }
+      val galleryIntent = Intent(Intent.ACTION_PICK).setDataAndType(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        "image/*",
+      )
+      val route = attachmentPickerRoute(
+        photoPickerIntentAvailable = photoPickerIntent != null,
+        galleryIntentAvailable = resolves(context, galleryIntent),
+      )
+      return when (route) {
+        AttachmentPickerRoute.PHOTO_PICKER -> photoPickerIntent!!
+        AttachmentPickerRoute.GALLERY -> galleryIntent
+        AttachmentPickerRoute.UNAVAILABLE -> throw PhotoPickerUnavailableException()
+      }
+    }
 
     override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
-      delegate.parseResult(resultCode, intent)
+      if (resultCode == Activity.RESULT_OK) intent?.data else null
 
     override fun getSynchronousResult(
       context: android.content.Context,
       input: Any?,
     ): SynchronousResult<Uri?>? = null
+
+    private fun isPhotosOnlyIntent(intent: Intent): Boolean =
+      intent.action != Intent.ACTION_OPEN_DOCUMENT && intent.action != Intent.ACTION_GET_CONTENT
+
+    private fun resolves(context: android.content.Context, intent: Intent): Boolean =
+      context.packageManager.resolveActivity(intent, 0) != null
   }
+
+  private class PhotoPickerUnavailableException : RuntimeException()
 }

@@ -87,7 +87,7 @@ const INITIAL_CONNECTION: SshConnectionState = {
 };
 type Workspace = RemoteWorkspace & { panes: RemoteTerminal[] };
 type SheetKind = 'server' | 'servers' | 'switcher' | 'workspaces' | 'groups' | 'handoff' | 'recovery' | null;
-type AttachmentRetry = { terminalId: string; operation: AttachmentOperationSnapshot; action: 'upload' | 'insert' };
+type AttachmentRetry = { terminalId: string; destinationKey: string; operation: AttachmentOperationSnapshot; action: 'upload' | 'insert' };
 type NameRequest = { kind: 'createWorkspace' } | { kind: 'renameWorkspace'; workspace: Workspace } | { kind: 'renamePane'; pane: RemoteTerminal } | { kind: 'createGroup'; workspace: Workspace } | { kind: 'renameGroup'; group: TerminalGroup };
 type RuntimeHint = { backend: RuntimeBackend; runtime: string };
 type SwitcherTarget = { profile: ServerProfile; isCurrent: boolean };
@@ -1096,6 +1096,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
   const commandPending = useRef(false);
   const commandVersion = useRef(0);
   const shownHostKey = useRef('');
+  const connectionUsername = useRef('');
   const pendingModal = useRef<(() => void) | null>(null);
   const formSavedProfile = useRef<ServerProfile | undefined>(undefined);
   const returnToServersAfterForm = useRef(false);
@@ -2216,7 +2217,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     }
   }, []);
 
-  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'backend' | 'runtime'>, keepSwitcher = false) => {
+  const resetForConnection = useCallback((profile: Pick<ServerProfile, 'host' | 'port' | 'username' | 'backend' | 'runtime'>, keepSwitcher = false) => {
+    if (profile.username) connectionUsername.current = profile.username;
     if (Platform.OS === 'ios' && (formVisible || (sheet !== null && !keepSwitcher))) setHostPromptDeferred(true);
     switcherCancelReleaseIssued.current = false;
     boundaryFailureFence.current = null;
@@ -2467,13 +2469,30 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     workspaceId: pane.workspaceId,
   }), []);
 
+  const attachmentDestinationKeyFor = useCallback((pane: RemoteTerminal) => JSON.stringify([
+    profileId,
+    connection.host,
+    connection.port,
+    currentProfile?.username ?? connectionUsername.current,
+    connection.knownFingerprint || connection.fingerprint,
+    session.backend,
+    session.runtime,
+    pane.workspaceId,
+    pane.id,
+    pane.terminalId,
+  ]), [connection.fingerprint, connection.host, connection.knownFingerprint, connection.port, currentProfile?.username, profileId, session.backend, session.runtime]);
+
   const startQuickAttachment = useCallback((event: NativeSyntheticEvent<AttachImageRequestEvent>) => {
     const terminalId = event.nativeEvent.terminalId;
     const pane = selectedPane;
     if (!terminalId || !pane || terminalId !== pane.terminalId || attachmentBusyRef.current) return;
     if (!runtimeReady || !terminalInputReady || !surfaceAvailable || commandBusy) return;
 
-    const retry = attachmentRetry.current?.terminalId === terminalId ? attachmentRetry.current : null;
+    const destinationKey = attachmentDestinationKeyFor(pane);
+    const retry = attachmentRetry.current?.terminalId === terminalId
+      && attachmentRetry.current.destinationKey === destinationKey
+      ? attachmentRetry.current
+      : null;
     if (!retry) attachmentRetry.current = null;
     const generation = ++attachmentFlowGeneration.current;
     attachmentBusyRef.current = true;
@@ -2504,9 +2523,9 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     };
     const setRetryFor = (op: AttachmentOperationSnapshot | null) => {
       if (op?.phase === 'uploaded') {
-        attachmentRetry.current = { terminalId, operation: op, action: 'insert' };
+        attachmentRetry.current = { terminalId, destinationKey, operation: op, action: 'insert' };
       } else if (op?.phase === 'pending' || op?.phase === 'failed') {
-        attachmentRetry.current = { terminalId, operation: op, action: 'upload' };
+        attachmentRetry.current = { terminalId, destinationKey, operation: op, action: 'upload' };
       } else {
         attachmentRetry.current = null;
       }
@@ -2601,9 +2620,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         await verifyAndInsert(attachmentId);
       } catch (error) {
         const failure = error as Error & { errorCode?: string };
+        // A rejected resume has no fresh snapshot to replace the cached
+        // operation with. Retire that reference so a later tap can begin a
+        // new intent instead of repeatedly calling retry on the same one.
+        if (retry && attachmentRetry.current === retry && !operation) attachmentRetry.current = null;
         if (!attachmentRetry.current && operation) setRetryFor(operation);
         const notice = attachmentFailureNotice(failure.errorCode ?? '', failure.message);
         setControlMessage(attachmentRetry.current?.terminalId === terminalId
+          && attachmentRetry.current.destinationKey === destinationKey
           ? `${notice.slice(0, 140)} Tap Attach image to retry.`
           : notice);
       } finally {
@@ -2613,7 +2637,7 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         }
       }
     })();
-  }, [attachmentTargetFor, commandBusy, runtimeReady, selectedPane, surfaceAvailable, terminalInputReady]);
+  }, [attachmentDestinationKeyFor, attachmentTargetFor, commandBusy, runtimeReady, selectedPane, surfaceAvailable, terminalInputReady]);
 
   const openSwitcher = useCallback(() => {
     if (commandPending.current) return;

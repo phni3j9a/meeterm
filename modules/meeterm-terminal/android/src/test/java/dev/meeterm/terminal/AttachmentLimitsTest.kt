@@ -13,6 +13,22 @@ import org.junit.Test
  * device; these tests pin the rules that guard it.
  */
 class AttachmentLimitsTest {
+  @Test
+  fun photoPickerRouteUsesOnlyPhotoLibraryIntents() {
+    assertEquals(
+      AttachmentPickerRoute.PHOTO_PICKER,
+      attachmentPickerRoute(photoPickerIntentAvailable = true, galleryIntentAvailable = true),
+    )
+    assertEquals(
+      AttachmentPickerRoute.GALLERY,
+      attachmentPickerRoute(photoPickerIntentAvailable = false, galleryIntentAvailable = true),
+    )
+    assertEquals(
+      AttachmentPickerRoute.UNAVAILABLE,
+      attachmentPickerRoute(photoPickerIntentAvailable = false, galleryIntentAvailable = false),
+    )
+  }
+
   private fun png(width: Int, height: Int): ByteArray {
     val signature = byteArrayOf(
       0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,

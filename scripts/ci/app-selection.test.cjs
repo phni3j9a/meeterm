@@ -4904,6 +4904,58 @@ test('a pending upload retries from the key row without picking a second image',
   assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
 });
 
+test('a pending upload keeps its retry through recovery to the same destination', async t => {
+  const fixture = await openQuickAttachmentTerminal(t, { uploadResults: ['pending'] });
+
+  await emitAttachImageRequest(fixture);
+  fixture.environment.connection.state = 'Reconnecting';
+  await poll(fixture.environment);
+  fixture.environment.connection.state = 'Ready';
+  await poll(fixture.environment);
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'retryUpload').length, 1);
+  assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
+});
+
+test('a rejected upload retry is retired so the next tap can start a fresh photo', async t => {
+  const fixture = await openQuickAttachmentTerminal(t, { uploadResults: ['pending'] });
+  await emitAttachImageRequest(fixture);
+  fixture.native.retryAttachmentUpload = async terminalId => {
+    fixture.environment.attachmentCalls.push({ method: 'retryUpload', args: [terminalId] });
+    return { status: 'error', errorCode: 'destination_not_ready', message: 'The original destination is unavailable.' };
+  };
+
+  await emitAttachImageRequest(fixture);
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'retryUpload').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 2);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 2);
+});
+
+test('a new tmux endpoint and runtime on a reused terminal ID allow a fresh photo', async t => {
+  const snapshot = { ...makeSnapshot(), backend: 'tmux', runtime: 'old-session', groupsSupported: false };
+  const fixture = await mountForTest(t, snapshot, (environment, native) => {
+    configureQuickAttachment(environment, native, { uploadResults: ['pending'] });
+  });
+  await openWorkspace(fixture.root, 'W1');
+  await emitAttachImageRequest(fixture);
+
+  fixture.environment.connection.host = 'new-endpoint.example';
+  await updateSnapshot(fixture.environment, { ...makeSnapshot(), backend: 'tmux', runtime: 'new-session', groupsSupported: false });
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(terminalViews(fixture.root)[0].props.terminalId, 'native:P1');
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 2);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 2);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'retryUpload').length, 0);
+  assert.equal(fixture.environment.attachmentIntentEndpoint, 'new-endpoint.example:22');
+  assert.equal(fixture.environment.attachmentIntentRuntime, 'tmux:new-session');
+});
+
 test('an insert failure can be retried from the key row without reuploading', async t => {
   const fixture = await openQuickAttachmentTerminal(t, { failFirstInsert: true });
 
