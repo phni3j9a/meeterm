@@ -209,6 +209,13 @@ pub(crate) fn terminal_dimensions(id: TerminalId) -> Result<(u16, u16), Terminal
     with_terminal(id, |terminal| Ok(terminal.dimensions()))
 }
 
+/// Consume the latest validated native size requested before a remote
+/// controller became Ready. The hint is a one-shot launch input, never a
+/// deferred resize to apply to the native terminal or a later binding.
+pub(crate) fn take_launch_size_hint(id: TerminalId) -> Result<Option<(u16, u16)>, TerminalError> {
+    with_terminal(id, |terminal| Ok(terminal.take_launch_size_hint()))
+}
+
 /// Read the per-terminal operation epoch used to reject delayed native input
 /// after a transport/controller binding has been revoked and reacquired.
 pub(crate) fn operation_epoch(id: TerminalId) -> Result<u64, TerminalError> {

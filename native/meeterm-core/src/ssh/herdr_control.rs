@@ -291,6 +291,15 @@ struct HerdrClient<'a> {
     staged_projection: Option<SnapshotProjection>,
 }
 
+fn controller_launch_viewport(
+    native: registry::TerminalId,
+    fallback: (u16, u16),
+) -> Result<(u16, u16), FlowFailure> {
+    registry::take_launch_size_hint(native)
+        .map(|hint| hint.unwrap_or(fallback))
+        .map_err(|_| FlowFailure::Stale)
+}
+
 impl Drop for HerdrClient<'_> {
     fn drop(&mut self) {
         self.discard_staged_projection();
@@ -2156,7 +2165,13 @@ impl<'a> HerdrClient<'a> {
         if !self.shared.is_foreground() {
             return Ok(());
         }
-        let (cols, rows) = self.viewport;
+        let (cols, rows) = controller_launch_viewport(native, self.viewport)?;
+        self.viewport = (cols, rows);
+        self.shared
+            .session
+            .lock()
+            .map_err(|_| FlowFailure::Stale)?
+            .viewport = Some((cols, rows));
         let command = wire::command_with_executable(
             &self.executable,
             self.runtime.as_deref(),
@@ -2649,6 +2664,32 @@ mod tests {
                 Err(FlowFailure::HerdrIncompatible)
             ));
         }
+    }
+
+    #[test]
+    fn controller_launch_viewport_uses_and_consumes_the_native_hint() {
+        let native = registry::create_terminal(80, 24).expect("create launch terminal");
+        let generation = 92_001;
+        registry::begin_remote(native, generation).expect("begin remote terminal");
+        let epoch = registry::operation_epoch(native).expect("initial operation epoch");
+        assert!(matches!(
+            registry::resize_terminal_at_epoch(native, epoch, 63, 30),
+            Err(crate::terminal::TerminalError::InputNotReady)
+        ));
+
+        assert_eq!(
+            controller_launch_viewport(native, (80, 24))
+                .ok()
+                .expect("take launch viewport"),
+            (63, 30)
+        );
+        assert_eq!(
+            controller_launch_viewport(native, (80, 24))
+                .ok()
+                .expect("fallback after take"),
+            (80, 24)
+        );
+        assert!(registry::destroy_terminal(native));
     }
 
     fn group(id: u64, workspace: u64, selected: bool) -> workspace::TerminalGroup {
