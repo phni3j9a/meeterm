@@ -10,6 +10,7 @@ final class MeetermTerminalView: ExpoView {
 
   let onNativeReady = EventDispatcher()
   let onMetrics = EventDispatcher()
+  let onAttachImageRequest = EventDispatcher()
 
   private let renderingView: UIView
   private let renderer: any TerminalFrameRendering
@@ -103,6 +104,10 @@ final class MeetermTerminalView: ExpoView {
 
     terminalInputView.onPreeditChanged = { [weak self] value in
       self?.renderer.setPreedit(value)
+    }
+    terminalInputView.onAttachImageRequest = { [weak self] in
+      guard let self else { return }
+      self.onAttachImageRequest(["terminalId": self.terminalId])
     }
     terminalInputView.operationEpochProvider = { [weak self] in
       self?.currentOperationEpoch()
@@ -349,6 +354,10 @@ final class MeetermTerminalView: ExpoView {
     guard next != lightTheme else { return }
     lightTheme = next
     applyAppearance()
+  }
+
+  func setAttachmentBusy(_ busy: Bool) {
+    terminalInputView.setAttachmentBusy(busy)
   }
 
   /// Keep the same native terminal handle/surface while changing whether

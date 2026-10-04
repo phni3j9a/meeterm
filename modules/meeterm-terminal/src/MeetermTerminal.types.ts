@@ -320,15 +320,9 @@ export type RuntimeDiscovery = {
   backends: RuntimeBackendDiscovery[];
 };
 
-/** Attachment entry points offered to the native picker adapter. */
-export type AttachmentSource = 'photos' | 'files';
-
-/** Re-encoded formats accepted by the first attachment milestone. */
-export type AttachmentImageFormat = 'png' | 'jpeg';
-
 /**
- * Pane-scoped identity recorded when an attachment starts, for restore
- * display only. The core resolves the owning SSH endpoint, runtime, and
+ * Pane-scoped identity recorded when an attachment starts. The core resolves
+ * the owning SSH endpoint, runtime, and
  * remote pane itself from `terminalId` (`meeterm_attachment_intent`); the
  * adapter never captures or reuses an SSH owner id.
  */
@@ -339,7 +333,7 @@ export type AttachmentTarget = {
 };
 
 /**
- * Attachment open result. `held` means native input composition is active;
+ * Attachment begin result. `held` means native input composition is active;
  * `error` means the core refused the destination intent (`destination_*`
  * codes carry the reason).
  */
@@ -350,28 +344,19 @@ export type AttachmentBeginResult =
 
 /**
  * Answer to the main-thread composition query. Callers must not dismiss the
- * keyboard, present the sheet, or unmount the view while `held`.
+ * keyboard, present Photos, or unmount the view while `held`.
  */
 export type AttachmentCompositionStatus =
   | { status: 'ok' }
   | { status: 'held'; reason: 'composing' };
 
 export type AttachmentPickResult =
-  | { status: 'picked'; token: string; byteCount: number }
+  | { status: 'picked'; token: string }
   | { status: 'canceled' }
   | { status: 'error'; errorCode: string; message: string };
 
 export type AttachmentPrepareResult =
-  | {
-      status: 'prepared';
-      fileId: string;
-      previewUri: string;
-      format: AttachmentImageFormat;
-      width: number;
-      height: number;
-      byteCount: number;
-      sourceByteCount: number;
-    }
+  | { status: 'prepared' }
   | { status: 'error'; errorCode: string; message: string };
 
 /**
@@ -402,7 +387,7 @@ export type AttachmentOperationSnapshot = {
   errorMessage: string;
   /** flags & 0x1: the input path accepted the line, delivery unconfirmed. */
   insertUnconfirmed: boolean;
-  /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
+  /** flags & 0x2: the meeterm-created remote file was removed through the core ABI. */
   remoteRemoved: boolean;
   /**
    * flags & 0x4: a job (upload / verify+insert / remove) is in flight.
@@ -413,7 +398,7 @@ export type AttachmentOperationSnapshot = {
   jobInFlight: boolean;
 };
 
-/** Uniform answer for upload/retry/cancel/delete/dispose requests. */
+/** Uniform answer for native upload, retry, and disposal requests. */
 export type AttachmentActionResult =
   | { status: 'accepted'; attachmentId: string }
   | { status: 'unavailable'; reason: string }
@@ -434,24 +419,6 @@ export type AttachmentInsertResult =
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; errorCode: string; message: string };
 
-/** Low-frequency native attachment session snapshot for remount recovery. */
-export type AttachmentSessionState = {
-  status: 'idle' | 'staged' | 'prepared';
-  fileId: string;
-  previewUri: string;
-  format: AttachmentImageFormat;
-  width: number;
-  height: number;
-  byteCount: number;
-  sourceByteCount: number;
-  /** Captured destination binding; needed to restore honestly after remount. */
-  target: AttachmentTarget | null;
-  /** Last-known core operation, present only while an op is live. */
-  operation: AttachmentOperationSnapshot | null;
-  errorCode: string;
-  message: string;
-};
-
 export type NativeReadyEvent = {
   terminalId: string;
   native: true;
@@ -465,6 +432,10 @@ export type TerminalMetricsEvent = {
   cellHeightPx: number;
 };
 
+export type AttachImageRequestEvent = {
+  terminalId: string;
+};
+
 /** Low-frequency control-plane props/events only; terminal data stays native. */
 export type MeetermTerminalViewProps = ViewProps & {
   terminalId?: string;
@@ -473,6 +444,9 @@ export type MeetermTerminalViewProps = ViewProps & {
   scrollbackLines?: number;
   /** Live native input or a drawable but input-inert retained snapshot. */
   interactionMode?: 'live' | 'cachedReadOnly';
+  /** Show native progress and block another image request while attaching. */
+  attachmentBusy?: boolean;
   onNativeReady?: (event: NativeSyntheticEvent<NativeReadyEvent>) => void;
   onMetrics?: (event: NativeSyntheticEvent<TerminalMetricsEvent>) => void;
+  onAttachImageRequest?: (event: NativeSyntheticEvent<AttachImageRequestEvent>) => void;
 };

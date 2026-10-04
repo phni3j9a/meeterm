@@ -3,12 +3,9 @@ import Foundation
 import UIKit
 
 /**
- * Process-wide attachment session owner for Issue #28.
- *
- * A single pending attachment is allowed at a time; `begin` replaces any
- * previous one after deleting its files. Session files live under
- * `Caches/attachments/` and are reclaimed on startup when no session
- * references them.
+ * Process-wide owner for the one-tap image attachment flow.
+ * A fresh `begin` retires any prior local session. Staged files live under
+ * `Caches/attachments/` and are reclaimed on startup.
  */
 final class AttachmentController {
   static let shared = AttachmentController()
@@ -81,28 +78,13 @@ final class AttachmentController {
     return ["status": "ready"]
   }
 
-  func pick(
-    source: String,
-    promise: Promise,
-    viewController: () -> UIViewController?
-  ) throws {
-    let parsed: AttachmentPicker.Source
-    switch source {
-    case "photos": parsed = .photos
-    case "files": parsed = .files
-    default:
-      promise.resolve(AttachmentResults.error(
-        AttachmentLimits.errorArgument,
-        "Unknown attachment source."
-      ))
-      return
-    }
+  func pick(promise: Promise, viewController: () -> UIViewController?) throws {
     let existingStore = try requireStore()
     lock.lock()
     if picker == nil { picker = AttachmentPicker(store: existingStore) }
     let activePicker = picker!
     lock.unlock()
-    activePicker.pick(source: parsed, from: viewController()) { [weak self] result in
+    activePicker.pick(from: viewController()) { [weak self] result in
       if (result["status"] as? String) == "picked",
          let token = result["token"] as? String {
         self?.onPicked(token: token)
@@ -121,7 +103,6 @@ final class AttachmentController {
     let stalePrepared = active.prepared?.fileName
     active.stagingFileName = token
     active.prepared = nil
-    active.clearError()
     // A fresh pick also retires any live core operation from this session.
     retireOperationLocked(active)
     store?.delete(stale == token ? nil : stale, stalePrepared == token ? nil : stalePrepared)
@@ -149,70 +130,21 @@ final class AttachmentController {
       lock.lock()
       active.prepared = image
       active.stagingFileName = nil
-      active.clearError()
       lock.unlock()
       existingStore.delete(token)
-      return AttachmentResults.prepared(
-        image,
-        previewUri: existingStore.previewUri(image.fileName)
-      )
+      return AttachmentResults.prepared()
     case .rejected(let errorCode, let message):
-      lock.lock()
-      active.recordError(errorCode, message)
-      lock.unlock()
       return AttachmentResults.error(errorCode, message)
     }
   }
 
-  /// Explicit Discard: cancel/dispose the core op and the recorded intent,
-  /// then delete local files.
-  func discard() throws {
-    lock.lock()
-    let active = session
-    session = nil
-    lock.unlock()
-    guard let active = active else { return }
-    lock.lock()
-    retireOperationLocked(active)
-    lock.unlock()
-    if active.intentId != 0 {
-      AttachmentCoreBridge.intentDispose(intentId: active.intentId)
-    }
-    try requireStore().delete(active.stagingFileName, active.prepared?.fileName)
-  }
-
-  func snapshot() throws -> [String: Any] {
-    lock.lock()
-    let active = session
-    lock.unlock()
-    guard let active = active else {
-      return [
-        "status": "idle",
-        "fileId": "",
-        "previewUri": "",
-        "format": "",
-        "width": 0,
-        "height": 0,
-        "byteCount": 0,
-        "sourceByteCount": 0,
-        "target": NSNull(),
-        "operation": NSNull(),
-        "errorCode": "",
-        "message": "",
-      ]
-    }
-    let preview = active.prepared
-      .flatMap { try? requireStore().previewUri($0.fileName) } ?? ""
-    return active.snapshot(previewUri: preview)
-  }
-
   /**
-   * Explicit Upload: `meeterm_attachment_begin` against the recorded intent.
+   * Begin the upload against the recorded intent.
    * The core re-resolves the intent's stable identity into a fresh fence; a
    * switched server/session/runtime or vanished pane fails closed there.
    * A second upload is refused while the previous operation is live.
    */
-  func upload(terminalId: String, remoteDirectory: String) throws -> [String: Any] {
+  func upload(terminalId: String) throws -> [String: Any] {
     lock.lock()
     let active = session
     lock.unlock()
@@ -248,7 +180,6 @@ final class AttachmentController {
       intentId: active.intentId,
       localPath: url.path,
       displayName: prepared.fileName,
-      remoteDirectory: remoteDirectory,
       sizeBytes: UInt64(clamping: prepared.byteCount)
     ) else {
       // `begin` flattens its rejection to nil; a fresh probe intent for the
@@ -262,7 +193,6 @@ final class AttachmentController {
       sizeBytes: UInt64(clamping: prepared.byteCount),
       displayName: prepared.fileName
     )
-    if recorded { active.clearError() }
     lock.unlock()
     if !recorded {
       // A racing upload won the slot; release the orphaned core op.
@@ -299,7 +229,7 @@ final class AttachmentController {
     return AttachmentResults.snapshotResult(fresh)
   }
 
-  /// Explicit transfer retry on a pending/failed operation. The passed pane
+  /// Retry a pending/failed transfer. The passed pane
   /// terminal must be the intent's recorded pane — the core refuses any
   /// other terminal with `destination_changed`.
   func retryUpload(terminalId: String) throws -> [String: Any] {
@@ -319,54 +249,6 @@ final class AttachmentController {
       )
     }
     let result = AttachmentCoreBridge.retryUpload(
-      terminalId: try ensureHandle(terminalId),
-      attachmentId: operation.attachmentId
-    )
-    if (result["status"] as? String) == "accepted" { refreshSnapshot(active) }
-    return result
-  }
-
-  /// Explicit cancel of a pending/uploading operation.
-  func cancel() -> [String: Any] {
-    lock.lock()
-    let active = session
-    lock.unlock()
-    guard let active = active else {
-      return AttachmentResults.unavailable(AttachmentLimits.reasonNoAttachment)
-    }
-    guard let operation = active.machine.operation, operation.canCancel else {
-      return AttachmentResults.error(
-        AttachmentLimits.errorState,
-        "There is no upload to cancel."
-      )
-    }
-    let result = AttachmentCoreBridge.cancel(attachmentId: operation.attachmentId)
-    if (result["status"] as? String) == "accepted" {
-      lock.lock()
-      active.machine.markCancelled()
-      lock.unlock()
-    }
-    return result
-  }
-
-  /// Explicit server-side delete of the completed remote file.
-  func deleteRemote(terminalId: String) throws -> [String: Any] {
-    lock.lock()
-    let active = session
-    lock.unlock()
-    guard let active = active, active.target.terminalId == terminalId else {
-      return AttachmentResults.error(
-        AttachmentLimits.errorDestinationChanged,
-        "The attachment belongs to a different terminal."
-      )
-    }
-    guard let operation = active.machine.operation, operation.canDeleteRemote else {
-      return AttachmentResults.error(
-        AttachmentLimits.errorState,
-        "There is no uploaded file to delete."
-      )
-    }
-    let result = AttachmentCoreBridge.deleteRemote(
       terminalId: try ensureHandle(terminalId),
       attachmentId: operation.attachmentId
     )
@@ -450,13 +332,13 @@ final class AttachmentController {
       return AttachmentResults.error(
         AttachmentLimits.errorDestinationChanged,
         "The attachment destination changed since the image was picked. " +
-          "It is never retargeted — return to the original terminal or discard and attach again."
+          "It is never retargeted — reopen the original terminal and try again."
       )
     }
     return AttachmentResults.error(
       AttachmentLimits.errorDestinationMissing,
-      "The attachment destination is no longer available. " +
-        "It is never retargeted — return to the original terminal or discard and attach again."
+        "The attachment destination is no longer available. " +
+          "It is never retargeted — reopen the original terminal and try again."
     )
   }
 

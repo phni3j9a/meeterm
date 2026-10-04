@@ -6,7 +6,7 @@ import Foundation
  * The core operation lifecycle is authoritative; this model only decodes the
  * fixed-size snapshot record and pins the adapter-side transition guards:
  * a second upload is refused while an op is live, snapshots from a stale
- * attachment id are dropped, and insert/delete capabilities follow the phase.
+ * attachment id are dropped, and insert/retry capabilities follow the phase.
  */
 enum AttachmentOpPhase: Int {
   case pending = 0
@@ -42,10 +42,10 @@ struct AttachmentOperation: Equatable {
   /// flags & 0x1: the input queue accepted the line; delivery unconfirmed.
   var insertUnconfirmed: Bool { flags & 0x1 != 0 }
 
-  /// flags & 0x2: the meeterm-created remote file was explicitly deleted.
+  /// flags & 0x2: the meeterm-created remote file was removed through the core ABI.
   var remoteRemoved: Bool { flags & 0x2 != 0 }
 
-  /// flags & 0x4: a job (upload / verify+insert / remove) is in flight on
+  /// flags & 0x4: an upload or verify+insert job is in flight on
   /// this operation. The core clears the previous reason at job start and
   /// drops the flag when that attempt's outcome lands — UI busy display
   /// and polling key off this bit, never off a stale errorCode.
@@ -70,12 +70,6 @@ struct AttachmentOperation: Equatable {
   /// Cancel applies while transfer work may still be running.
   var canCancel: Bool { phase == .pending || phase == .uploading }
 
-  /// Remote delete covers every phase that may still own a file; refused
-  /// while a job is in flight (one in-flight job per operation).
-  var canDeleteRemote: Bool {
-    !remoteRemoved && !jobInFlight &&
-      (phase == .uploaded || phase == .inserted || phase == .failed || phase == .cancelled)
-  }
 }
 
 /**
@@ -115,30 +109,8 @@ final class AttachmentOpMachine {
     guard let current = operation, current.attachmentId == snapshot.attachmentId else {
       return false
     }
-    // A locally-cancelled op keeps its phase until the core confirms the
-    // cancel (or finishes); late upload bytes never resurrect it.
-    if current.phase == .cancelled, snapshot.phase == .uploading {
-      return true
-    }
     operation = snapshot
     return true
-  }
-
-  /// Local cancel mark; the core drops delayed completions itself.
-  func markCancelled() {
-    guard var op = operation else { return }
-    op = AttachmentOperation(
-      attachmentId: op.attachmentId,
-      phase: .cancelled,
-      flags: op.flags,
-      bytesUploaded: op.bytesUploaded,
-      sizeBytes: op.sizeBytes,
-      remotePath: op.remotePath,
-      displayName: op.displayName,
-      errorCode: op.errorCode,
-      errorMessage: op.errorMessage
-    )
-    operation = op
   }
 
   func clear() {

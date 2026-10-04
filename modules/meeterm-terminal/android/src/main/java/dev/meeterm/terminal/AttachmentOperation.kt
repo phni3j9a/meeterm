@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets
  * The core operation lifecycle is authoritative; this model only decodes the
  * fixed-size snapshot record and pins the adapter-side transition guards:
  * a second upload is refused while an op is live, snapshots from a stale
- * attachment id are dropped, and insert/delete capabilities follow the phase.
+ * attachment id are dropped, and insertion/retry capabilities follow the phase.
  */
 internal enum class AttachmentOpPhase(val wireValue: Int) {
   PENDING(0),
@@ -40,11 +40,11 @@ internal data class AttachmentOperation(
   /** flags & 0x1: the input queue accepted the line; delivery unconfirmed. */
   val insertUnconfirmed: Boolean get() = flags and 0x1 != 0
 
-  /** flags & 0x2: the meeterm-created remote file was explicitly deleted. */
+  /** flags & 0x2: the meeterm-created remote file was removed through the core ABI. */
   val remoteRemoved: Boolean get() = flags and 0x2 != 0
 
   /**
-   * flags & 0x4: a job (upload / verify+insert / remove) is in flight on
+   * flags & 0x4: an upload or verify+insert job is in flight on
    * this operation. The core clears the previous reason at job start and
    * drops the flag when that attempt's outcome lands — UI busy/pending
    * display and polling key off this bit, never off a stale errorCode.
@@ -84,16 +84,6 @@ internal data class AttachmentOperation(
   val canCancel: Boolean
     get() = phase == AttachmentOpPhase.PENDING || phase == AttachmentOpPhase.UPLOADING
 
-  /**
-   * Remote delete covers every phase that may still own a file; refused
-   * while a job is in flight (one in-flight job per operation).
-   */
-  val canDeleteRemote: Boolean
-    get() = !remoteRemoved && !jobInFlight &&
-      (phase == AttachmentOpPhase.UPLOADED ||
-        phase == AttachmentOpPhase.INSERTED ||
-        phase == AttachmentOpPhase.FAILED ||
-        phase == AttachmentOpPhase.CANCELLED)
 }
 
 /**
@@ -132,20 +122,8 @@ internal class AttachmentOpMachine {
   fun applySnapshot(snapshot: AttachmentOperation): Boolean {
     val current = operation ?: return false
     if (current.attachmentId != snapshot.attachmentId) return false
-    // A locally-cancelled op keeps its phase until the core confirms the
-    // cancel (or finishes); late upload bytes never resurrect it.
-    if (current.phase == AttachmentOpPhase.CANCELLED &&
-      snapshot.phase == AttachmentOpPhase.UPLOADING
-    ) {
-      return true
-    }
     operation = snapshot
     return true
-  }
-
-  /** Local cancel mark; the core drops delayed completions itself. */
-  fun markCancelled() {
-    operation = operation?.copy(phase = AttachmentOpPhase.CANCELLED)
   }
 
   fun clear() {

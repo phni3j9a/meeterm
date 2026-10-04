@@ -126,7 +126,7 @@ internal object MeetermNative {
   external fun createTmuxSession(handle: Long, name: String): Int
 
   /*
-   * Issue #28 attachment contract (attachment-ffi + Main amendments). jni.rs
+   * Attachment contract (attachment-ffi). jni.rs
    * (W2) implements `Java_dev_meeterm_terminal_MeetermNative_attachment*`
    * with the same call order as the C API. attachmentIntent records the
    * picked pane's destination identity; attachmentBegin maps to

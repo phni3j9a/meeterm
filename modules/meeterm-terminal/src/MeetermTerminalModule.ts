@@ -8,9 +8,7 @@ import type {
   AttachmentInsertResult,
   AttachmentPickResult,
   AttachmentPrepareResult,
-  AttachmentSessionState,
   AttachmentSnapshotResult,
-  AttachmentSource,
   AttachmentTarget,
   SavedCredential,
   ServerProfile,
@@ -89,27 +87,18 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
   beginAttachment(terminalId: string, target: AttachmentTarget): Promise<AttachmentBeginResult>;
   /**
    * Explicit main-thread query for live IME composition on a terminal.
-   * Called before the sheet opens so `held` can refuse `Keyboard.dismiss()`
-   * without touching the composition.
-   */
+   * Called before presenting Photos so `held` preserves the composition.
+  */
   attachmentCompositionStatus(terminalId: string): Promise<AttachmentCompositionStatus>;
-  /** OS picker; the chosen image is stream-copied into app-owned staging. */
-  pickAttachmentImage(source: AttachmentSource): Promise<AttachmentPickResult>;
+  /** Photos picker; the chosen image is stream-copied into app-owned staging. */
+  pickAttachmentImage(): Promise<AttachmentPickResult>;
   /** Validate, orient, strip metadata, and re-encode the staged image. */
   prepareAttachmentImage(token: string): Promise<AttachmentPrepareResult>;
   /**
-   * Cancel any live core operation, dispose its record, and remove the
-   * session's local staging/prepared files. Explicit Discard action.
+   * Upload the normalized image over the fenced SSH connection to the fixed
+   * `~/.local/share/meeterm/attachments` directory.
    */
-  discardAttachment(): Promise<void>;
-  /** Low-frequency session snapshot used to rebind state after remounts. */
-  getAttachmentState(): Promise<AttachmentSessionState>;
-  /**
-   * Explicit Upload of the normalized image over the fenced SSH connection
-   * (`meeterm_attachment_begin`). `remoteDirectory` is an absolute or `~/`
-   * path; empty means the core's `~/.local/share/meeterm/attachments` default.
-   */
-  uploadAttachment(terminalId: string, remoteDirectory: string): Promise<AttachmentActionResult>;
+  uploadAttachment(terminalId: string): Promise<AttachmentActionResult>;
   /** Poll the live core operation (`meeterm_attachment_snapshot`). */
   attachmentSnapshot(): Promise<AttachmentSnapshotResult>;
   /** Explicit transfer retry on a pending/failed operation. */
@@ -120,13 +109,6 @@ declare class MeetermTerminalModule extends NativeModule<{}> {
    * `meeterm_attachment_insert` for the fenced destination only.
    */
   insertAttachment(terminalId: string): Promise<AttachmentInsertResult>;
-  /** Cancel a pending/uploading operation (`meeterm_attachment_cancel`). */
-  cancelAttachment(): Promise<AttachmentActionResult>;
-  /**
-   * Explicit server-side delete of the completed remote file, validated by
-   * the core (`meeterm_attachment_delete_remote`).
-   */
-  deleteRemoteAttachment(terminalId: string): Promise<AttachmentActionResult>;
 }
 
 export default requireNativeModule<MeetermTerminalModule>('MeetermTerminal');

@@ -288,45 +288,9 @@ class AttachmentLimitsTest {
   }
 
   @Test
-  fun beginsOnlyWhenCompositionIsIdle() {
-    assertEquals(
-      AttachmentInsertionPolicy.Verdict.HeldComposing,
-      AttachmentInsertionPolicy.begin(composing = true, hasActiveSession = false),
-    )
-    assertEquals(
-      AttachmentInsertionPolicy.Verdict.ReadyToInsert,
-      AttachmentInsertionPolicy.begin(composing = false, hasActiveSession = true),
-    )
-  }
-
-  @Test
-  fun sessionSnapshotCarriesOnlyDisplayMetadata() {
-    val session = AttachmentSession(
-      AttachmentTargetIdentity("poc-main", "%1", "@1"),
-    )
-    assertEquals("idle", session.snapshot("")["status"])
-    session.stagingFileName = "att_0011223344556677.bin"
-    assertEquals("staged", session.snapshot("")["status"])
-    session.prepared = AttachmentPreparedImage(
-      fileName = "att_8899aabbccddeeff.png",
-      format = AttachmentImageFormat.PNG,
-      width = 1080,
-      height = 1920,
-      byteCount = 123_456,
-      sourceByteCount = 4_000_000,
-    )
-    val snapshot = session.snapshot("file:///cache/attachments/att_8899aabbccddeeff.png")
-    assertEquals("prepared", snapshot["status"])
-    assertEquals("att_8899aabbccddeeff.png", snapshot["fileId"])
-    assertEquals("file:///cache/attachments/att_8899aabbccddeeff.png", snapshot["previewUri"])
-    assertEquals(1080, snapshot["width"])
-    assertEquals(1920, snapshot["height"])
-    assertEquals("poc-main", (snapshot["target"] as Map<*, *>)["terminalId"])
-    // The core operation rides the session snapshot only while an op exists.
-    assertEquals(null, snapshot["operation"])
-    session.machine.recordBegin(7L, 123_456L, "att_8899aabbccddeeff.png")
-    val withOp = session.snapshot("")["operation"] as Map<*, *>
-    assertEquals("uploading", withOp["phase"])
-    assertEquals("7", withOp["attachmentId"])
+  fun preparedResultExposesOnlyStatus() {
+    val result = AttachmentResults.prepared()
+    assertEquals("prepared", result["status"])
+    assertEquals(setOf("status"), result.keys)
   }
 }

@@ -160,11 +160,6 @@ final class AttachmentStore {
     return url
   }
 
-  func previewUri(_ fileName: String) -> String {
-    guard let url = preparedFile(fileName) else { return "" }
-    return url.absoluteString
-  }
-
   func delete(_ names: String?...) {
     for name in names {
       guard let name = name, let url = resolveAppFile(name) else { continue }

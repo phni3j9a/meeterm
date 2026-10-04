@@ -26,6 +26,9 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.HorizontalScrollView
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.ProgressBar
 import android.widget.TextView
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
@@ -33,6 +36,7 @@ import expo.modules.kotlin.views.ExpoView
 import java.nio.charset.StandardCharsets
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Native terminal surface exported through Expo Modules API.
@@ -67,6 +71,9 @@ class MeetermTerminalView(
   private lateinit var specialKeyRow: LinearLayout
   private var controlModifierButton: TextView? = null
   private var altModifierButton: TextView? = null
+  private var attachmentButton: ImageView? = null
+  private var attachmentProgress: ProgressBar? = null
+  private var attachmentBusy = false
   private var terminalId: String = DEFAULT_TERMINAL_ID
   private var inputGeneration = 0L
   @Volatile private var terminalHandle: Long = 0L
@@ -164,6 +171,7 @@ class MeetermTerminalView(
 
   private val onNativeReady by EventDispatcher<Map<String, Any>>()
   private val onMetrics by EventDispatcher<Map<String, Any>>()
+  private val onAttachImageRequest by EventDispatcher<Map<String, Any>>()
 
   init {
     applyThemeColors()
@@ -900,6 +908,36 @@ class MeetermTerminalView(
     // Keep clipboard actions fixed while the 44dp keys scroll. The row stays
     // native and its height/terminal geometry contract is unchanged.
     row.addView(scroll, LinearLayout.LayoutParams(0, dp(48), 1f))
+    val attachControl = FrameLayout(context)
+    val attachButton = ImageView(context).apply {
+      setImageResource(R.drawable.meeterm_attach_image)
+      setColorFilter(keyTextColor())
+      background = keyBackground()
+      contentDescription = "Attach image"
+      isClickable = true
+      isFocusable = true
+      importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+      setOnClickListener {
+        if (isCachedReadOnly || attachmentBusy) return@setOnClickListener
+        onAttachImageRequest(mapOf("terminalId" to terminalId))
+      }
+    }
+    attachmentButton = attachButton
+    remoteInputControls += attachButton
+    attachControl.addView(attachButton, FrameLayout.LayoutParams(dp(44), dp(44)))
+    val attachProgress = ProgressBar(context).apply {
+      isIndeterminate = true
+      indeterminateTintList = ColorStateList.valueOf(keyTextColor())
+      visibility = View.GONE
+      contentDescription = "Attaching image"
+      importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+    attachmentProgress = attachProgress
+    attachControl.addView(attachProgress, FrameLayout.LayoutParams(dp(20), dp(20), android.view.Gravity.CENTER))
+    keys.addView(attachControl, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+      marginStart = dp(1)
+      marginEnd = dp(1)
+    })
     val controlButton = createModifierButton(context, "Ctrl", InputSession.MOD_CTRL)
     val altButton = createModifierButton(context, "Alt", InputSession.MOD_ALT)
     controlModifierButton = controlButton
@@ -1059,6 +1097,7 @@ class MeetermTerminalView(
   private fun updateInteractionAccessibility() {
     val enabled = !isCachedReadOnly
     remoteInputControls.forEach { control ->
+      if (control === attachmentButton) return@forEach
       control.isEnabled = enabled
       control.isFocusable = enabled
       control.importantForAccessibility = if (enabled) {
@@ -1067,6 +1106,15 @@ class MeetermTerminalView(
         View.IMPORTANT_FOR_ACCESSIBILITY_NO
       }
     }
+    attachmentButton?.isEnabled = enabled && !attachmentBusy
+    attachmentButton?.isFocusable = enabled && !attachmentBusy
+  }
+
+  fun setAttachmentBusy(value: Boolean) {
+    attachmentBusy = value
+    attachmentButton?.visibility = if (value) View.INVISIBLE else View.VISIBLE
+    attachmentProgress?.visibility = if (value) View.VISIBLE else View.GONE
+    updateInteractionAccessibility()
   }
 
   fun setScrollbackLines(value: Int) {
@@ -1124,6 +1172,8 @@ class MeetermTerminalView(
         button.setTextColor(keyText)
         button.background = keyBackground()
       }
+      attachmentButton?.setColorFilter(keyText)
+      attachmentProgress?.indeterminateTintList = ColorStateList.valueOf(keyText)
       syncModifierButtons()
     }
     renderer.setTheme(themeName == "light")

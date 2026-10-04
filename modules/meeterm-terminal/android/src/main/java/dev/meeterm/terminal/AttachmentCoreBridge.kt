@@ -65,10 +65,9 @@ internal object AttachmentCoreBridge {
   )
 
   /**
-   * `meeterm_attachment_begin`. A null remoteDirectory selects the core
+   * `meeterm_attachment_begin`. The adapter always selects the fixed core
    * default `~/.local/share/meeterm/attachments` (the JNI `remote_dir`
-   * parameter is nullable; an empty string would be a validation error,
-   * not the default).
+   * parameter is null).
    * Returns the attachment id (>0), 0 on synchronous rejection, or null when
    * the core contract is not linked yet.
    */
@@ -76,12 +75,11 @@ internal object AttachmentCoreBridge {
     intentId: Long,
     localPath: String,
     displayName: String,
-    remoteDirectory: String?,
     sizeBytes: Long,
   ): Long? = pending(
     {
       MeetermNative.attachmentBegin(
-        intentId, localPath, displayName, remoteDirectory, sizeBytes,
+        intentId, localPath, displayName, null, sizeBytes,
       )
     },
     { null },
@@ -116,13 +114,6 @@ internal object AttachmentCoreBridge {
   fun dispose(attachmentId: Long): Map<String, Any?> =
     pending(
       { actionResult(MeetermNative.attachmentDispose(attachmentId), attachmentId) },
-      { AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING) },
-    )
-
-  /** `meeterm_attachment_delete_remote`; uniform accepted/error map. */
-  fun deleteRemote(targetTerminalId: Long, attachmentId: Long): Map<String, Any?> =
-    pending(
-      { actionResult(MeetermNative.attachmentDeleteRemote(targetTerminalId, attachmentId), attachmentId) },
       { AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING) },
     )
 

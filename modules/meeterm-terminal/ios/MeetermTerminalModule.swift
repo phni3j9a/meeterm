@@ -262,7 +262,7 @@ public final class MeetermTerminalModule: Module {
       }
     }
 
-    // Issue #28 attachment flow. Composition state is read on the main
+    // Attachment flow. Composition state is read on the main
     // thread; a held result means the IME still owns marked text and the
     // caller must not dismiss it.
     AsyncFunction("beginAttachment") { (terminalId: String, target: [String: Any]) throws -> [String: Any] in
@@ -282,9 +282,9 @@ public final class MeetermTerminalModule: Module {
     }.runOnQueue(.main)
     // Presenter lookup and `present` are main-thread operations; the bounded
     // staging copy inside the picker stays off the main queue.
-    AsyncFunction("pickAttachmentImage") { (source: String, promise: Promise) in
+    AsyncFunction("pickAttachmentImage") { (promise: Promise) in
       do {
-        try AttachmentController.shared.pick(source: source, promise: promise) { [weak self] in
+        try AttachmentController.shared.pick(promise: promise) { [weak self] in
           self?.appContext?.utilities?.currentViewController()
         }
       } catch {
@@ -294,17 +294,8 @@ public final class MeetermTerminalModule: Module {
     AsyncFunction("prepareAttachmentImage") { (token: String) throws -> [String: Any] in
       try AttachmentController.shared.prepare(token: token)
     }
-    AsyncFunction("discardAttachment") {
-      try AttachmentController.shared.discard()
-    }
-    AsyncFunction("getAttachmentState") { () throws -> [String: Any] in
-      try AttachmentController.shared.snapshot()
-    }
-    AsyncFunction("uploadAttachment") { (terminalId: String, remoteDirectory: String) throws -> [String: Any] in
-      try AttachmentController.shared.upload(
-        terminalId: Self.normalizeTerminalId(terminalId),
-        remoteDirectory: remoteDirectory
-      )
+    AsyncFunction("uploadAttachment") { (terminalId: String) throws -> [String: Any] in
+      try AttachmentController.shared.upload(terminalId: Self.normalizeTerminalId(terminalId))
     }
     AsyncFunction("attachmentSnapshot") { () -> [String: Any] in
       AttachmentController.shared.attachmentSnapshot()
@@ -314,29 +305,22 @@ public final class MeetermTerminalModule: Module {
         terminalId: Self.normalizeTerminalId(terminalId)
       )
     }
-    AsyncFunction("cancelAttachment") { () -> [String: Any] in
-      AttachmentController.shared.cancel()
-    }
     // Dedicated attachment insertion — never routed through paste or special
     // keys, and held while the native IME owns a marked-text composition.
     AsyncFunction("insertAttachment") { (terminalId: String) throws -> [String: Any] in
       try AttachmentController.shared.insert(terminalId: Self.normalizeTerminalId(terminalId))
     }.runOnQueue(.main)
-    AsyncFunction("deleteRemoteAttachment") { (terminalId: String) throws -> [String: Any] in
-      try AttachmentController.shared.deleteRemote(
-        terminalId: Self.normalizeTerminalId(terminalId)
-      )
-    }
 
     View(MeetermTerminalView.self) {
       Prop("fontSize", 15.0) { (view: MeetermTerminalView, value: Double) in view.setFontSize(value) }
       Prop("theme", "dark") { (view: MeetermTerminalView, value: String) in view.setTheme(value) }
       Prop("scrollbackLines", 10000) { (view: MeetermTerminalView, value: Int) in view.setScrollbackLines(value) }
       Prop("interactionMode", "live") { (view: MeetermTerminalView, value: String) in view.setInteractionMode(value) }
+      Prop("attachmentBusy", false) { (view: MeetermTerminalView, value: Bool) in view.setAttachmentBusy(value) }
       Prop("terminalId", "poc-main") { (view: MeetermTerminalView, terminalId: String) in
         view.bindTerminal(terminalId)
       }
-      Events("onNativeReady", "onMetrics")
+      Events("onNativeReady", "onMetrics", "onAttachImageRequest")
     }
   }
 

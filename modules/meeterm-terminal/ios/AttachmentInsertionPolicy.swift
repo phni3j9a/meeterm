@@ -4,8 +4,8 @@ import Foundation
  * IME-safe attachment insertion decision.
  *
  * An active marked-text composition keeps the request `held` and is never
- * committed, cleared, or forwarded. Identity mismatches and Phase-A core
- * unavailability stay distinct so the sheet can explain each one.
+ * committed, cleared, or forwarded. Identity mismatches and core
+ * unavailability stay distinct.
  */
 enum AttachmentInsertionPolicy {
   enum Verdict: Equatable {

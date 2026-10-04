@@ -518,21 +518,16 @@ function makeNativeEnvironment() {
     async forgetHostKey(host, port) {
       environment.calls.push({ method: 'forgetHostKey', host, port });
     },
-    // Issue #28 attachment surface: benign defaults so screens that merely
-    // consult the attachment gate never hit an undefined binding. Focused
-    // attachment tests replace these via `configureAttachment`.
+    // Attachment flow defaults keep unused native methods predictable;
+    // focused one-tap attachment tests replace these stubs.
     async attachmentCompositionStatus() { return { status: 'ok' }; },
-    async getAttachmentState() { return { status: 'idle' }; },
     async beginAttachment() { return { status: 'unavailable' }; },
     async pickAttachmentImage() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
     async prepareAttachmentImage() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
-    async discardAttachment() {},
     async uploadAttachment() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
     async attachmentSnapshot() { return { status: 'idle' }; },
     async retryAttachmentUpload() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
-    async cancelAttachment() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
     async insertAttachment() { return { status: 'unavailable' }; },
-    async deleteRemoteAttachment() { return { status: 'error', errorCode: 'attachment_unavailable', message: 'Attachment unavailable.' }; },
   };
   environment.resolvePendingSelection = outcome => {
     assert.ok(environment.pendingSelection, 'a runtime selection should be pending');
@@ -1075,12 +1070,11 @@ test('public presentation fixtures stay release-gated and do not mutate shared c
     'runtime-picker', 'runtime-partial-error', 'runtime-empty', 'runtime-create',
     'session-switcher', 'session-switcher-sessions',
     'recovery-progress', 'recovery-exhausted', 'recovery-mismatch',
-    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed',
-    'attachment-choose', 'attachment-ready', 'attachment-uploading', 'attachment-pending',
-    'attachment-uploaded', 'attachment-inserted', 'attachment-failed', 'attachment-cancelled',
-    'attachment-deleted', 'attachment-error', 'attachment-blocked']) {
+    'layout-restore-unconfirmed', 'runtime-layout-restore-unconfirmed']) {
     assert.equal(smoke.smokeRouteForUrl(`meeterm://smoke?screen=${screen}`).screen, screen);
   }
+  assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=attachment-ready'), undefined,
+    'attachment sheet presentation fixtures are retired with the sheet');
   assert.equal(smoke.smokeRouteForUrl('meeterm://smoke?screen=welcome&host=untrusted'), undefined);
   assert.equal(smoke.smokeFixture('welcome').profiles.length, 0);
   assert.equal(smoke.smokeFixture('empty').panes.length, 0);
@@ -2487,8 +2481,8 @@ async function connectSavedProfileToRuntime(t, profile, candidate, extraProfiles
 }
 
 async function poll(env) {
-  // The metadata poll is always interval 0; attachment transfer/delete polls
-  // may legitimately register alongside it while an operation is live.
+  // The metadata poll is always interval 0; attachment snapshots are awaited
+  // by the active one-tap flow rather than a second background interval.
   assert.ok(env.intervalCallbacks.length >= 1, 'App should register the metadata polling interval');
   await act(async () => {
     env.intervalCallbacks[0]();
@@ -4709,26 +4703,15 @@ test('absence of a selected pane hides and releases the native terminal view', a
   assert.equal(all(fixture.root, node => node.props && node.props.accessibilityLabel === 'Terminal unavailable').length, 1);
 });
 
-// ---- Issue #28 attachment UI flow (review-round cases, adapted) ----
-
-const ATTACHMENT_PREPARED = {
-  status: 'prepared',
-  fileId: 'att_review001.png',
-  previewUri: 'file:///review.png',
-  format: 'png',
-  width: 100,
-  height: 100,
-  byteCount: 1000,
-  sourceByteCount: 1000,
-};
+// ---- One-tap image attachment flow ----
 
 const ATTACHMENT_UPLOADED = {
   phase: 'uploaded',
   attachmentId: '42',
   bytesUploaded: 1000,
   sizeBytes: 1000,
-  remotePath: '/home/u/meeterm-review.png',
-  displayName: 'review',
+  remotePath: '/home/u/.local/share/meeterm/attachments/meeterm-photo.png',
+  displayName: 'meeterm-photo.png',
   errorCode: '',
   errorMessage: '',
   insertUnconfirmed: false,
@@ -4736,602 +4719,204 @@ const ATTACHMENT_UPLOADED = {
   jobInFlight: false,
 };
 
-/**
- * Double the native attachment surface. `environment.attachmentOp` is the
- * live core record — tests mutate it to drive snapshot-poll transitions.
- */
-function configureAttachment(environment, native, initialOp) {
-  environment.attachmentOp = initialOp;
-  native.attachmentCompositionStatus = async () => environment.compositionHeld
-    ? { status: 'held', reason: 'composing' }
-    : { status: 'ok' };
-  native.getAttachmentState = async () => ({
-    status: 'idle',
-    fileId: '',
-    previewUri: '',
-    format: '',
-    width: 0,
-    height: 0,
-    byteCount: 0,
-    sourceByteCount: 0,
-    target: null,
-    operation: null,
-    errorCode: '',
-    errorMessage: '',
-  });
-  native.beginAttachment = async (id, target) => {
+function configureQuickAttachment(environment, native, { uploadResults = ['uploaded'], failFirstInsert = false } = {}) {
+  environment.attachmentCalls = [];
+  environment.attachmentTarget = null;
+  environment.attachmentOperation = null;
+  environment.compositionHeld = false;
+  environment.uploadResults = [...uploadResults];
+  environment.failFirstInsert = failFirstInsert;
+  const record = (method, ...args) => environment.attachmentCalls.push({ method, args });
+
+  native.attachmentCompositionStatus = async terminalId => {
+    record('composition', terminalId);
+    return environment.compositionHeld ? { status: 'held', reason: 'composing' } : { status: 'ok' };
+  };
+  native.beginAttachment = async (terminalId, target) => {
+    record('begin', terminalId, target);
     environment.attachmentTarget = target;
-    environment.attachmentTargetId = id;
-    // The core records the intent's *stable identity* at sheet-open —
-    // endpoint + backend/runtime + the remote pane — not the snapshot object
-    // itself (a mere pane selection swap keeps the same identity).
+    environment.attachmentTargetId = terminalId;
     environment.attachmentIntentEndpoint = `${environment.connection.host}:${environment.connection.port}`;
     environment.attachmentIntentRuntime = `${environment.snapshot.backend}:${environment.snapshot.runtime}`;
     return { status: 'ready' };
   };
-  native.pickAttachmentImage = async () => ({ status: 'picked', token: 'att_review001.bin', byteCount: 1000 });
-  native.prepareAttachmentImage = async () => ATTACHMENT_PREPARED;
-  native.uploadAttachment = async (terminalId, remoteDirectory) => {
-    environment.attachmentUploadTarget = terminalId;
-    environment.attachmentRemoteDirectory = remoteDirectory;
-    // Re-resolve the intent against current state, like the core does:
-    // changed endpoint/session fails `destination_changed`, a gone pane
-    // fails `destination_missing`, and neither writes to the new selection.
-    const paneAlive = environment.snapshot.terminals
-      .some(item => item.terminalId === environment.attachmentTargetId);
-    const endpoint = `${environment.connection.host}:${environment.connection.port}`;
-    const runtime = `${environment.snapshot.backend}:${environment.snapshot.runtime}`;
-    if (!paneAlive || endpoint !== environment.attachmentIntentEndpoint
-      || runtime !== environment.attachmentIntentRuntime) {
+  native.pickAttachmentImage = () => {
+    record('pick');
+    return Promise.resolve({ status: 'picked', token: 'staging-token' });
+  };
+  native.prepareAttachmentImage = async token => {
+    record('prepare', token);
+    return { status: 'prepared' };
+  };
+  native.uploadAttachment = async terminalId => {
+    record('upload', terminalId);
+    const result = environment.uploadResults.shift() || 'uploaded';
+    environment.attachmentOperation = result === 'pending'
+      ? {
+        ...ATTACHMENT_UPLOADED,
+        phase: 'pending',
+        errorCode: 'sftp_timeout',
+        errorMessage: 'The image upload needs another attempt.',
+      }
+      : { ...ATTACHMENT_UPLOADED };
+    return { status: 'accepted', attachmentId: '42' };
+  };
+  native.attachmentSnapshot = async () => {
+    record('snapshot');
+    return environment.attachmentOperation
+      ? { status: 'snapshot', operation: { ...environment.attachmentOperation } }
+      : { status: 'idle' };
+  };
+  native.retryAttachmentUpload = async terminalId => {
+    record('retryUpload', terminalId);
+    environment.attachmentOperation = { ...ATTACHMENT_UPLOADED };
+    return { status: 'accepted', attachmentId: '42' };
+  };
+  native.insertAttachment = async terminalId => {
+    record('insert', terminalId);
+    if (environment.failFirstInsert) {
+      environment.failFirstInsert = false;
       return {
         status: 'error',
-        errorCode: paneAlive ? 'destination_changed' : 'destination_missing',
-        message: 'The attachment destination changed since the image was picked. It is never retargeted — return to the original terminal or discard and attach again.',
+        errorCode: 'destination_not_ready',
+        message: 'The terminal is not ready to receive the image path.',
       };
     }
-    environment.attachmentOp = environment.attachmentOp && environment.attachmentOp.phase !== 'cancelled'
-      ? environment.attachmentOp
-      : { ...ATTACHMENT_UPLOADED, phase: 'uploading', bytesUploaded: 0, remotePath: '', jobInFlight: true };
-    return { status: 'accepted', attachmentId: '42' };
-  };
-  native.attachmentSnapshot = async () => environment.attachmentOp
-    ? { status: 'snapshot', operation: environment.attachmentOp }
-    : { status: 'idle' };
-  native.retryAttachmentUpload = async () => {
-    environment.attachmentRetries = (environment.attachmentRetries || 0) + 1;
-    if (environment.attachmentOp) {
-      environment.attachmentOp = { ...environment.attachmentOp, jobInFlight: true, errorCode: '', errorMessage: '' };
-    }
-    return { status: 'accepted', attachmentId: '42' };
-  };
-  native.cancelAttachment = async () => ({ status: 'accepted', attachmentId: '42' });
-  native.insertAttachment = async terminalId => {
-    environment.insertedInto = terminalId;
-    // The verify+insert job is accepted; its outcome lands when the
-    // snapshot's jobInFlight drops. Job start clears the previous reason.
-    if (environment.attachmentOp) {
-      environment.attachmentOp = { ...environment.attachmentOp, jobInFlight: true, errorCode: '', errorMessage: '' };
-    }
-    return { status: 'accepted', attachmentId: '42' };
-  };
-  native.deleteRemoteAttachment = async () => {
-    environment.deleteCalls = (environment.deleteCalls || 0) + 1;
-    // Same job contract: JOB_IN_FLIGHT up and the stale error cleared at
-    // start; the outcome (remoteRemoved or a new error) arrives when it
-    // drops — an accepted delete is never instantly complete.
-    if (environment.attachmentOp) {
-      environment.attachmentOp = { ...environment.attachmentOp, jobInFlight: true, errorCode: '', errorMessage: '' };
-    }
+    environment.attachmentOperation = { ...ATTACHMENT_UPLOADED, phase: 'inserted' };
     return { status: 'accepted', attachmentId: '42' };
   };
 }
 
-/** Mount → open W1 terminal → open the attachment sheet → pick → ready. */
-async function openPrepared(t, op) {
-  const fixture = await mountForTest(t, makeSnapshot(), (e, n) => configureAttachment(e, n, op));
-  await settleAsync();
+async function openQuickAttachmentTerminal(t, options = {}) {
+  const fixture = await mountForTest(t, makeSnapshot(), (environment, native) => {
+    configureQuickAttachment(environment, native, options);
+  });
   await openWorkspace(fixture.root, 'W1');
-  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
-  await settleAsync();
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P1']);
   return fixture;
 }
 
-test('attachment: opening the sheet keeps the terminal input surface alive', async t => {
-  const fixture = await openPrepared(t, null);
-  assert.equal(fixture.environment.visibility.at(-1), true, 'the input surface must stay reported visible under the attachment sheet');
-  assert.equal(terminalViews(fixture.root).length, 1, 'the terminal view stays mounted while the sheet is open');
-  assert.ok(findTestId(fixture.root, 'attachment-remote-dir'), 'the ready-phase sheet should render');
+async function emitAttachImageRequest(fixture, terminalId = 'native:P1') {
+  const view = terminalViews(fixture.root).find(item => item.props.terminalId === terminalId);
+  assert.ok(view, `missing terminal view for ${terminalId}`);
+  assert.equal(typeof view.props.onAttachImageRequest, 'function', 'the native key row request should reach App');
+  await act(async () => {
+    view.props.onAttachImageRequest({ nativeEvent: { terminalId } });
+    await Promise.resolve();
+  });
+  await settleAsync();
+}
+
+test('one tap runs Photos, normalization, upload and verified insert on the captured pane', async t => {
+  const fixture = await openQuickAttachmentTerminal(t);
+  await emitAttachImageRequest(fixture);
+
+  assert.deepEqual(fixture.environment.attachmentCalls.map(call => call.method), [
+    'composition', 'begin', 'pick', 'prepare', 'upload', 'snapshot', 'insert', 'snapshot',
+  ]);
+  assert.equal(fixture.environment.attachmentTargetId, 'native:P1');
+  assert.equal(fixture.environment.attachmentTarget.terminalId, 'native:P1');
+  assert.equal(fixture.environment.attachmentTarget.paneId, 'P1');
+  assert.equal(fixture.environment.attachmentTarget.workspaceId, 'W1');
+  assert.equal(fixture.environment.attachmentCalls.find(call => call.method === 'upload').args.length, 1,
+    'the app API no longer accepts a user-selected remote directory');
+  assert.equal(fixture.environment.attachmentCalls.find(call => call.method === 'upload').args[0], 'native:P1');
+  assert.equal(fixture.environment.attachmentCalls.find(call => call.method === 'insert').args[0], 'native:P1');
+  assert.equal(terminalViews(fixture.root)[0].props.attachmentBusy, false);
+  assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
+  assert.equal('getAttachmentState' in fixture.native, false);
+  assert.equal('discardAttachment' in fixture.native, false);
+  assert.equal('deleteRemoteAttachment' in fixture.native, false);
 });
 
-test('attachment: a composing IME holds the sheet open request', async t => {
-  const fixture = await mountForTest(t, makeSnapshot(), (e, n) => {
-    configureAttachment(e, n, null);
-    e.compositionHeld = true;
-  });
-  await settleAsync();
-  await openWorkspace(fixture.root, 'W1');
-  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentTarget, undefined, 'beginAttachment must not run while composition is held');
-  assert.ok(findText(fixture.root, 'Finish IME composition before attaching.'), 'the hold notice should explain the block');
-  assert.equal(fixture.environment.visibility.at(-1), true, 'the terminal surface stays live while composition is held');
+test('IME composition holds the quick flow before intent capture or Photos', async t => {
+  const fixture = await openQuickAttachmentTerminal(t);
+  fixture.environment.compositionHeld = true;
+
+  await emitAttachImageRequest(fixture);
+
+  assert.deepEqual(fixture.environment.attachmentCalls.map(call => call.method), ['composition']);
+  assert.ok(findText(fixture.root, 'Finish IME composition before attaching.'));
+  assert.equal(terminalViews(fixture.root)[0].props.attachmentBusy, false);
 });
 
-test('attachment: upload stays bound to the intent pane, not the selected pane', async t => {
-  const fixture = await openPrepared(t, null);
-  // Switch the selected pane under the open sheet: the upload still carries
-  // the intent's recorded pane terminal — the selected pane never retargets it.
-  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentUploadTarget, 'native:P1');
-});
-
-test('attachment: a non-owner pane records its own pane TerminalId for intent and upload', async t => {
-  // P2 is a second pane — on Herdr every pane is a non-owner of the owning
-  // connection; the adapter passes its TerminalId and the core resolves it.
-  const fixture = await mountForTest(t, makeSnapshot({
-    selectedPane: 'P2',
-    terminals: [
-      pane('P1', 'W1', 'G1', 'native:P1', false, false, 'P1'),
-      pane('P2', 'W1', 'G1', 'native:P2', false, true, 'P2'),
-      pane('P3', 'W2', 'G2', 'native:P3', false, true, 'P3'),
-    ],
-  }), (e, n) => configureAttachment(e, n, null));
-  await settleAsync();
-  await openWorkspace(fixture.root, 'W1');
-  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentTargetId, 'native:P2', 'the pane TerminalId, not an owner id, drives the intent');
-  assert.deepEqual(Object.keys(fixture.environment.attachmentTarget).sort(), ['paneId', 'terminalId', 'workspaceId'],
-    'the adapter sends pane-scoped identity only — never a captured SSH owner');
-  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentUploadTarget, 'native:P2', 'upload is addressed by the pane TerminalId');
-});
-
-test('attachment: switching server/session mid-preview surfaces destination_changed and never saves elsewhere', async t => {
-  const fixture = await openPrepared(t, null);
-  // Switch the Session wholesale — different runtime identity means the
-  // recorded intent no longer resolves, so the core (double) rejects the
-  // upload with destination_changed instead of writing to the new session.
-  await updateSnapshot(fixture.environment, { ...makeSnapshot({ selectedPane: 'P1' }), runtime: 'other-session' });
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentOp, null, 'a rejected upload must not create an operation on the new destination');
-  assert.ok(findText(fixture.root, 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again. (destination_changed)'),
-    'the sheet explains the fenced rejection');
-  // A switched Server behaves identically — the recorded endpoint differs.
-  fixture.environment.connection = { ...fixture.environment.connection, host: 'other.example', port: 2222 };
-  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P1' }));
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentOp, null, 'a server switch must also refuse to save elsewhere');
-  assert.ok(findText(fixture.root, 'The attachment destination changed or is no longer available. It is never retargeted — return to the original terminal or discard and attach again. (destination_changed)'),
-    'the sheet keeps explaining the fenced rejection');
-});
-
-test('attachment: an accepted delete stays pending until remoteRemoved', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  const timersBefore = fixture.environment.intervalCallbacks.length;
-  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'an accepted delete shows the pending Deleting state');
-  assert.ok(fixture.environment.intervalCallbacks.length > timersBefore, 'deletion keeps a snapshot poll running');
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
-    'the toolbar insert action is hidden while a job is in flight');
-  // The flag arrives through the poll — only then does the removed state show.
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, remoteRemoved: true };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'verified removal shows the deleted state');
-});
-
-test('attachment: Upload again after verified removal invokes transfer retry', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
-  await settleAsync();
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, remoteRemoved: true };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-retry-upload'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentRetries, 1, 'Upload again after verified removal must call retryAttachmentUpload');
-});
-
-test('attachment: toolbar insert appears only for the captured terminal and taps through the input gate', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  // Uploaded guidance replaces the in-sheet Insert action.
-  assert.ok(findTestId(fixture.root, 'attachment-insert-guidance'), 'the uploaded sheet should point at the terminal toolbar');
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 1, 'the toolbar insert action is rendered for the captured terminal');
-  // Close the sheet — the toolbar action is the only insert path.
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
-  await settleAsync();
-  assert.equal(fixture.environment.insertedInto, 'native:P1', 'insert targets the captured destination terminal');
-  // `accepted` only means the verify job started — the button hides and the
-  // inserting notice shows until the snapshot's jobInFlight drops.
-  assert.ok(findText(fixture.root, 'Inserting… verifying the remote file first.'), 'acceptance announces the verification wait, not completion');
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
-    'the action hides while the insert job is in flight');
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, phase: 'inserted' };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'), 'the landed snapshot announces insertion');
-});
-
-test('attachment: toolbar insert is hidden on other terminals and gated when input is not ready', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  // Stopped recovery while the destination terminal is retained: the surface
-  // stays up in cached mode, the input gate is down, and the tap explains
-  // itself without reaching the core.
-  await updateSnapshot(fixture.environment, makeSnapshot({
-    selectedPane: 'P1',
-    control: workspaceControl({
-      operationEpoch: '2',
-      hasRetainedWork: true,
-      runtimeOperationsReady: false,
-      terminalInputReady: false,
-      recovery: { phase: 'stopped', reason: 'runtime_missing', attempt: 6, maxAttempts: 6 },
-    }),
-  }));
-  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
-  await settleAsync();
-  assert.equal(fixture.environment.insertedInto, undefined, 'a blocked input gate must not reach the core insert');
-  assert.ok(findText(fixture.root, 'The terminal input is not ready. Finish recovery and keep this terminal open before inserting.'), 'the blocked tap should explain itself');
-  // A different selected pane hides the action — never retargets it.
-  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0, 'insert must not appear for a non-destination terminal');
-});
-
-// ---------------------------------------------------------------------------
-// Review round 2: the verify+insert/delete job contract — `accepted` means the
-// job started; the outcome lands only when the snapshot's jobInFlight drops.
-// ---------------------------------------------------------------------------
-
-test('attachment: insert after an epoch change is one verified job whose outcome arrives by snapshot', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  // The connection epoch rolled over while the sheet was closed — the fence
-  // the op was uploaded under is stale, but Insert itself is the reverify
-  // job, so the action still reaches the core and carries the displayed pane.
-  await updateSnapshot(fixture.environment, makeSnapshot({ control: workspaceControl({ operationEpoch: '2' }) }));
-  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
-  await settleAsync();
-  assert.equal(fixture.environment.insertedInto, 'native:P1', 'the verify+insert job is addressed to the captured terminal');
-  assert.ok(findText(fixture.root, 'Inserting… verifying the remote file first.'), 'the UI stays busy while jobInFlight is set');
-  // A failed verification lands as a pending operation with its reason — the
-  // path must not be silently pasted and must not claim insertion.
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, errorCode: 'destination_not_ready', errorMessage: 'the captured operation epoch is no longer current' };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findText(fixture.root, 'the captured operation epoch is no longer current'), 'a failed verification surfaces the pending reason');
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 1,
-    'the uploaded op is insertable again once the failed job lands');
-});
-
-test('attachment: discard permits a new attachment on another pane without retargeting the draft', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
-  await press(fixture.root, findTestId(fixture.root, 'attachment-discard'));
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-pick-files'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentTargetId, 'native:P2', 'the discarded intent is disposed and a fresh one binds the visible pane');
-});
-
-test('attachment: an inserted operation offers no insert action again', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, phase: 'inserted' };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'), 'the inserted state keeps the review-before-send guidance');
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  assert.equal(all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length, 0,
-    'a duplicate insert is a no-op, so the UI must not offer it');
-});
-
-test('attachment: a delete retry stays pending while its job is in flight', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  // The previous attempt failed — its stale reason must not end the wait for
-  // the new accepted delete: the core cleared it at job start.
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, errorCode: 'sftp_error', errorMessage: 'previous delete failed' };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'the accepted retry shows Deleting until its own outcome lands');
-  // A poll while the flag is still up must not clear the wait.
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'an in-flight flag keeps the Deleting state');
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, remoteRemoved: true };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'the dropped flag carries the verified removal');
-});
-
-test('attachment: cancel stays enabled while the upload job is in flight', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  // The upload job is still running — JOB_IN_FLIGHT gates Upload/Insert/
-  // Delete but never Cancel.
-  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
-  // A deferred native cancel keeps busyAction='cancel' observable.
-  let resolveCancel;
-  fixture.native.cancelAttachment = () => new Promise(resolve => { resolveCancel = resolve; });
-  const cancel = findTestId(fixture.root, 'attachment-cancel');
-  assert.equal(cancel.props.disabled, false, 'cancel is the exception to the one-in-flight-job gate');
-  await press(fixture.root, cancel);
-  await settleAsync();
-  assert.equal(findTestId(fixture.root, 'attachment-cancel').props.disabled, true,
-    'a cancel already in flight must not queue a duplicate request');
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED, phase: 'cancelled' };
-  await act(async () => { resolveCancel({ status: 'accepted', attachmentId: '42' }); });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
-});
-
-test('attachment: a pre-insert snapshot cannot finish a newer insert job', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  // A snapshot read that began while no insert job existed stays unresolved.
-  let resolveOld;
-  const oldSnapshot = { status: 'snapshot', operation: { ...fixture.environment.attachmentOp } };
-  const oldPromise = new Promise(resolve => { resolveOld = resolve; });
-  let first = true;
-  fixture.native.attachmentSnapshot = async () => {
-    if (first) { first = false; return oldPromise; }
-    return { status: 'snapshot', operation: { ...fixture.environment.attachmentOp } };
+test('native busy state and JS guard prevent a second picker request', async t => {
+  const fixture = await openQuickAttachmentTerminal(t);
+  let resolvePicker;
+  let pickerCalls = 0;
+  fixture.native.pickAttachmentImage = () => {
+    pickerCalls += 1;
+    return new Promise(resolve => { resolvePicker = resolve; });
   };
-  // Reopen the sheet — this starts the read captured above.
-  await press(fixture.root, findTestId(fixture.root, 'attach-image'));
-  await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  // Toolbar Insert starts the verify+insert job: the real op goes
-  // jobInFlight while the old read is still pending.
-  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
-  await act(async () => { resolveOld(oldSnapshot); });
-  await settleAsync();
-  assert.equal(
-    all(fixture.root, node => node.props && node.props.testID === 'attachment-insert').length,
-    0,
-    'a stale response must not clear busy state or restore the Insert action'
-  );
-  // Polling keeps running until the current job's flag actually drops.
-  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'inserted', jobInFlight: false };
+
+  await emitAttachImageRequest(fixture);
+  assert.equal(pickerCalls, 1);
+  assert.equal(terminalViews(fixture.root)[0].props.attachmentBusy, true);
+  await emitAttachImageRequest(fixture);
+  assert.equal(pickerCalls, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 1);
+
   await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
+    resolvePicker({ status: 'canceled' });
+    await Promise.resolve();
   });
   await settleAsync();
-  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'),
-    'the current job completion still lands once the stale read is ignored');
+  assert.equal(terminalViews(fixture.root)[0].props.attachmentBusy, false);
 });
 
-test('attachment: a read during native Insert acceptance cannot finish that request', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
+test('changing the visible pane while Photos is open never retargets the upload', async t => {
+  const fixture = await openQuickAttachmentTerminal(t);
+  let resolvePicker;
+  fixture.native.pickAttachmentImage = () => new Promise(resolve => { resolvePicker = resolve; });
+
+  await emitAttachImageRequest(fixture);
+  await updateSnapshot(fixture.environment, makeSnapshot({ selectedPane: 'P2' }));
+  await settleAsync();
+  assert.deepEqual(terminalViews(fixture.root).map(view => view.props.terminalId), ['native:P2']);
+
   await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
+    resolvePicker({ status: 'picked', token: 'staging-token' });
+    await Promise.resolve();
   });
   await settleAsync();
-  await press(fixture.root, findLabel(fixture.root, 'Close attachment sheet'));
-  await settleAsync();
-  // Insert runs on the native main queue; a snapshot poll can observe the
-  // pre-job state while the request is still awaiting its verdict.
-  let acceptInsert;
-  fixture.native.insertAttachment = () => new Promise(resolve => {
-    acceptInsert = () => {
-      fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, jobInFlight: true };
-      resolve({ status: 'accepted', attachmentId: '42' });
-    };
-  });
-  await press(fixture.root, findTestId(fixture.root, 'attachment-insert'));
-  await settleAsync();
-  assert.equal(findTestId(fixture.root, 'attachment-insert').props.disabled, true,
-    'toolbar Insert stays disabled while the native request is pending');
-  // The poll fires during the acceptance window — it must not complete the
-  // pending request or re-enable Insert.
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.equal(findTestId(fixture.root, 'attachment-insert').props.disabled, true,
-    'a read before native acceptance must not finish the pending request');
-  // Acceptance starts the real job; polling keeps running until its flag drops.
-  await act(async () => { acceptInsert(); });
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
-  assert.equal(
-    all(fixture.root, node => node.props && node.props.testID === 'attachment-insert'
-      && node.props.disabled === false).length,
-    0,
-    'Insert must not re-enable once the job is in flight'
-  );
-  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'inserted', jobInFlight: false };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findText(fixture.root, 'Inserted into terminal input — not sent. Review it and send it yourself.'),
-    'the dropped flag lands the inserted outcome');
+
+  const calls = fixture.environment.attachmentCalls;
+  assert.equal(calls.find(call => call.method === 'begin').args[0], 'native:P1');
+  assert.equal(calls.find(call => call.method === 'upload').args[0], 'native:P1');
+  assert.equal(calls.find(call => call.method === 'insert').args[0], 'native:P1');
+  assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
 });
 
-test('attachment: a read during native Delete acceptance cannot finish that request', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  fixture.environment.attachmentOp = { ...ATTACHMENT_UPLOADED };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  let acceptDelete;
-  fixture.native.deleteRemoteAttachment = () => new Promise(resolve => {
-    acceptDelete = () => {
-      fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, jobInFlight: true };
-      resolve({ status: 'accepted', attachmentId: '42' });
-    };
-  });
-  await press(fixture.root, findTestId(fixture.root, 'attachment-delete-remote'));
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'Deleting shows while the native request is pending');
-  // A poll during the acceptance window must not end the Deleting state.
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleting'),
-    'a read before native acceptance must not finish the pending delete');
-  await act(async () => { acceptDelete(); });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleting'), 'the accepted delete keeps waiting for its flag');
-  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, remoteRemoved: true, jobInFlight: false };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-deleted'), 'the dropped flag carries the verified removal');
+test('a pending upload retries from the key row without picking a second image', async t => {
+  const fixture = await openQuickAttachmentTerminal(t, { uploadResults: ['pending'] });
+
+  await emitAttachImageRequest(fixture);
+  assert.ok(all(fixture.root, node => node.type === 'Text').some(node => textContent(node).includes('Tap Attach image to retry.')),
+    `missing retry text in: ${all(fixture.root, node => node.type === 'Text').map(textContent).join(' | ')}`);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 1);
+
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'retryUpload').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'insert').length, 1);
+  assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
 });
 
-test('attachment: an accepted retried upload remains cancellable', async t => {
-  const fixture = await openPrepared(t, {
-    ...ATTACHMENT_UPLOADED, phase: 'pending', remotePath: '',
-    jobInFlight: false, errorCode: 'timeout', errorMessage: 'previous upload timed out',
-  });
-  // The first upload press pulls the seeded pending op into the draft.
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  fixture.native.retryAttachmentUpload = async () => {
-    fixture.environment.attachmentOp = {
-      ...fixture.environment.attachmentOp, phase: 'uploading',
-      jobInFlight: true, errorCode: '', errorMessage: '',
-    };
-    return { status: 'accepted', attachmentId: '42' };
-  };
-  await press(fixture.root, findTestId(fixture.root, 'attachment-retry-upload'));
-  await settleAsync();
-  assert.equal(fixture.environment.attachmentOp.phase, 'uploading');
-  assert.equal(fixture.environment.attachmentOp.jobInFlight, true);
-  const cancel = findTestId(fixture.root, 'attachment-cancel');
-  assert.equal(cancel.props.disabled, false,
-    'an accepted retried upload must allow Cancel while its remote write job is running');
-  // Pressing it cancels the in-flight job like a first upload.
-  await press(fixture.root, cancel);
-  await settleAsync();
-  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'cancelled', jobInFlight: false };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
-});
+test('an insert failure can be retried from the key row without reuploading', async t => {
+  const fixture = await openQuickAttachmentTerminal(t, { failFirstInsert: true });
 
-test('attachment: a cancelled upload keeps polling until the job flag drops', async t => {
-  const fixture = await openPrepared(t, null);
-  await press(fixture.root, findTestId(fixture.root, 'attachment-upload'));
-  await settleAsync();
-  // Cancel lands while the transfer still runs; core reports cancelled but
-  // keeps JOB_IN_FLIGHT up until the detached cleanup finishes.
-  let resolveCancel;
-  fixture.native.cancelAttachment = () => new Promise(resolve => { resolveCancel = resolve; });
-  await press(fixture.root, findTestId(fixture.root, 'attachment-cancel'));
-  await settleAsync();
-  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'cancelled', jobInFlight: true };
-  await act(async () => { resolveCancel({ status: 'accepted', attachmentId: '42' }); });
-  await settleAsync();
-  assert.ok(findTestId(fixture.root, 'attachment-cancelled'), 'the accepted cancel lands on the cancelled state');
-  assert.equal(findTestId(fixture.root, 'attachment-discard').props.disabled, true,
-    'the still-running cleanup keeps the sheet actions gated');
-  // Cleanup finishes later — the flag drop must still reach the UI through
-  // the live poll. With the bug no interval survives the cancelled phase and
-  // invoking it throws under the real clearInterval harness.
-  fixture.environment.attachmentOp = { ...fixture.environment.attachmentOp, phase: 'cancelled', jobInFlight: false };
-  await act(async () => {
-    fixture.environment.intervalCallbacks.at(-1)();
-  });
-  await settleAsync();
-  assert.equal(findTestId(fixture.root, 'attachment-discard').props.disabled, false,
-    'once cleanup drops JOB_IN_FLIGHT the cancelled draft can be discarded');
-  assert.equal(findTestId(fixture.root, 'attachment-upload').props.disabled, false,
-    'Upload again is usable after cleanup');
-  assert.equal(findTestId(fixture.root, 'attachment-delete-remote').props.disabled, false,
-    'Delete from server is usable after cleanup');
-  assert.throws(() => fixture.environment.intervalCallbacks.at(-1)(),
-    /invoked after clearInterval/,
-    'nothing left to track once the flag is down — the poll must stop');
+  await emitAttachImageRequest(fixture);
+  assert.ok(all(fixture.root, node => node.type === 'Text').some(node => textContent(node).includes('Tap Attach image to retry.')),
+    `missing retry text in: ${all(fixture.root, node => node.type === 'Text').map(textContent).join(' | ')}`);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'upload').length, 1);
+
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'upload').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'insert').length, 2);
+  assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
 });

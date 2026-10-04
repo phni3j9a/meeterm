@@ -157,10 +157,10 @@ that mode off until the application emits it again. A static alternate-screen
 recovery test is useful evidence, but arbitrary full-screen TUI process-death
 recovery still needs application-specific validation and may require a redraw.
 
-## Image attachment over SFTP (Issue #28)
+## Image attachment over SFTP
 
 `attachment_intent(target_terminal_id)` records the destination intent
-when the attachment sheet is confirmed: the adapter passes the *target
+when the native photo button is tapped: the adapter passes the *target
 pane's* native terminal id — any pane, not just the connection owner —
 and the core resolves the owning SSH connection itself and stores the
 stable identity (SSH endpoint + verified host key, backend/runtime, the
@@ -177,11 +177,14 @@ reports the in-flight state while the phase still shows the last settled
 result). Every job — `begin`, `retry`, `insert`, `delete_remote` —
 re-resolves the intent into a fresh execution fence (generation,
 operation epoch, pane binding, tmux session identity); a
-Server/Session/runtime switch during preview, a replaced tmux server, a
+Server/Session/runtime switch while Photos is open, a replaced tmux server, a
 replaced or vanished pane, or a foreign terminal id fails closed instead
 of running against whatever is now selected. The picked file stays
 adapter-owned and read-only for the core; it is re-validated immediately
-before streaming.
+before streaming. The app accepts Photos only and sequences pick, normalize,
+upload, verify, and insert from one key-row tap. Its adapter omits
+`remote_dir`, fixing the destination to the default app attachments directory;
+the core ABI retains its validated override parameter for native compatibility.
 
 The upload multiplexes a second SSH **session channel** running the `sftp`
 subsystem on the already-authenticated connection — no second TCP session,
@@ -219,7 +222,8 @@ changed. Cancellation and failures remove the partial best-effort; a
 verified same-endpoint final file short-circuits a later retry without
 re-sending bytes.
 
-Remote files persist until `attachment_delete_remote` runs — itself one
+Remote files persist until `attachment_delete_remote` runs at the core ABI
+level — itself one
 accepted job that re-resolves the *whole* recorded intent (endpoint,
 backend/runtime incl. tmux session identity, remote pane) into a fresh
 fence, not merely a stale endpoint match: it deletes
@@ -247,14 +251,16 @@ rmdir ~/.local/share/meeterm/attachments ~/.local/share/meeterm 2>/dev/null
 
 (`rmdir` fails harmlessly if the directory is not empty.)
 
-`attachment_insert` is a separate explicit step on the intent's pane —
-one asynchronous *verified-insert* job. A `0` return only means the job
+`attachment_insert` is the final native step on the intent's pane — one
+asynchronous *verified-insert* job automatically started by the app's
+one-tap flow. A `0` return only means the job
 was accepted (`0x4` set); the job re-resolves the intent onto a fresh
 fence, lstat-verifies the recorded remote file over SFTP (generated
 basename, recorded canonical base re-walked component-by-component as
 real non-symlink directories, regular file, exact size, `0600`),
 and only on success re-checks the whole fence under the session lock and
-pastes exactly one single-quoted remote-path line through
+inserts exactly one single-quoted remote-path line followed by one ASCII
+space through
 `paste_utf8_at_epoch`. No path pastes before or without verification.
 The paste decision itself is serialized on the operation lock — the job
 must still be registered, uncancelled, and the current attempt — so a

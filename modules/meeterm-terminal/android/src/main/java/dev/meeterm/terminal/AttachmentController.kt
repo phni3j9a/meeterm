@@ -5,7 +5,7 @@ import expo.modules.kotlin.Promise
 import java.io.IOException
 
 /**
- * Process-wide attachment session owner for Issue #28.
+ * Process-wide owner for the one-tap image attachment flow.
  *
  * A single pending attachment is allowed at a time; `begin` replaces any
  * previous one after deleting its files. The session files live under
@@ -84,7 +84,7 @@ internal object AttachmentController {
     return mapOf("status" to "ready")
   }
 
-  fun onPicked(token: String, byteCount: Long, context: Context) {
+  fun onPicked(token: String, context: Context) {
     synchronized(lock) {
       val active = session ?: return
       if (!AttachmentFileNames.isStagingName(token)) return
@@ -94,7 +94,6 @@ internal object AttachmentController {
       val stalePrepared = active.prepared?.fileName
       active.stagingFileName = token
       active.prepared = null
-      active.clearError()
       retireOperationLocked(active)
       store(context).delete(
         stale?.takeIf { it != token },
@@ -120,64 +119,20 @@ internal object AttachmentController {
       is AttachmentNormalize.Result.Ok -> {
         synchronized(lock) {
           active.prepared = result.image
-          active.clearError()
         }
         // Staging is no longer needed once the normalized file exists; the
-        // session keeps only the previewable prepared file.
+        // session keeps only the prepared file.
         store(context).delete(staging)
         synchronized(lock) { active.stagingFileName = null }
-        return AttachmentResults.prepared(
-          result.image,
-          store(context).previewUri(result.image.fileName),
-        )
+        return AttachmentResults.prepared()
       }
       is AttachmentNormalize.Result.Rejected -> {
-        synchronized(lock) {
-          active.recordError(result.errorCode, result.message)
-        }
         return AttachmentResults.error(result.errorCode, result.message)
       }
     }
   }
 
-  /** Explicit Discard: cancel/dispose the core op and the recorded intent,
-   * then delete local files. */
-  fun discard(context: Context) {
-    val active = synchronized(lock) {
-      val current = session
-      session = null
-      current
-    } ?: return
-    val op = active.machine.operation
-    if (op != null) {
-      if (op.canCancel) AttachmentCoreBridge.cancel(op.attachmentId)
-      AttachmentCoreBridge.dispose(op.attachmentId)
-    }
-    if (active.intentId != 0L) AttachmentCoreBridge.intentDispose(active.intentId)
-    active.machine.clear()
-    store(context).delete(active.stagingFileName, active.prepared?.fileName)
-  }
-
-  fun snapshot(context: Context): Map<String, Any?> {
-    val active = synchronized(lock) { session } ?: return emptySessionSnapshot()
-    val preview = active.prepared?.fileName?.let { store(context).previewUri(it) } ?: ""
-    return synchronized(lock) { active.snapshot(preview) }
-  }
-
-  fun pick(source: String, promise: Promise, appContext: expo.modules.kotlin.AppContext, context: Context) {
-    val parsed = when (source) {
-      "photos" -> AttachmentPicker.Source.PHOTOS
-      "files" -> AttachmentPicker.Source.FILES
-      else -> {
-        promise.resolve(
-          AttachmentResults.error(
-            AttachmentLimits.ERROR_ARGUMENT,
-            "Unknown attachment source.",
-          ),
-        )
-        return
-      }
-    }
+  fun pick(promise: Promise, appContext: expo.modules.kotlin.AppContext, context: Context) {
     // Update the session before JS observes the picked token, so prepare
     // cannot reference a staging name the session never saw.
     val wrapped = object : Promise {
@@ -185,8 +140,7 @@ internal object AttachmentController {
         val map = value as? Map<*, *>
         if (map?.get("status") == "picked") {
           val token = map["token"] as? String
-          val byteCount = (map["byteCount"] as? Number)?.toLong() ?: 0L
-          if (token != null) onPicked(token, byteCount, context)
+          if (token != null) onPicked(token, context)
         }
         promise.resolve(value)
       }
@@ -195,16 +149,16 @@ internal object AttachmentController {
         promise.reject(code, message, cause)
       }
     }
-    picker(appContext, context).pick(parsed, wrapped)
+    picker(appContext, context).pick(wrapped)
   }
 
   /**
-   * Explicit Upload: `meeterm_attachment_begin` against the recorded intent.
+   * Start the upload with `meeterm_attachment_begin` against the recorded intent.
    * The core re-resolves the intent's stable identity into a fresh fence; a
    * switched server/session/runtime or vanished pane fails closed there.
    * A second upload is refused while the previous operation is live.
    */
-  fun upload(terminalId: String, remoteDirectory: String, context: Context): Map<String, Any?> {
+  fun upload(terminalId: String, context: Context): Map<String, Any?> {
     val active = synchronized(lock) { session }
       ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_NO_ATTACHMENT)
     val prepared = active.prepared
@@ -237,9 +191,6 @@ internal object AttachmentController {
       active.intentId,
       file.absolutePath,
       prepared.fileName,
-      // The JNI `remote_dir` is nullable: null selects the app-private
-      // default, while an empty string is a validation rejection.
-      remoteDirectory.trim().ifEmpty { null },
       prepared.byteCount,
     ) ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_CORE_PENDING)
     if (attachmentId == 0L) {
@@ -250,7 +201,6 @@ internal object AttachmentController {
     }
     val recorded = synchronized(lock) {
       val ok = active.machine.recordBegin(attachmentId, prepared.byteCount, prepared.fileName)
-      if (ok) active.clearError()
       ok
     }
     if (recorded && previousOpId != null && previousOpId != attachmentId) {
@@ -290,7 +240,7 @@ internal object AttachmentController {
    * terminal must be the intent's recorded pane — the core refuses any
    * other terminal with `destination_changed`.
    */
-  fun retryUpload(terminalId: String, context: Context): Map<String, Any?> {
+  fun retryUpload(terminalId: String): Map<String, Any?> {
     val active = synchronized(lock) { session }
     if (active == null || active.target.terminalId != terminalId) {
       return AttachmentResults.error(
@@ -313,49 +263,7 @@ internal object AttachmentController {
     return result
   }
 
-  /** Explicit cancel of a pending/uploading operation. */
-  fun cancel(): Map<String, Any?> {
-    val active = synchronized(lock) { session }
-      ?: return AttachmentResults.unavailable(AttachmentLimits.REASON_NO_ATTACHMENT)
-    val op = active.machine.operation
-    if (op == null || !op.canCancel) {
-      return AttachmentResults.error(
-        AttachmentLimits.ERROR_STATE,
-        "There is no upload to cancel.",
-      )
-    }
-    val result = AttachmentCoreBridge.cancel(op.attachmentId)
-    if (result["status"] == "accepted") {
-      synchronized(lock) { active.machine.markCancelled() }
-    }
-    return result
-  }
-
-  /** Explicit server-side delete of the completed remote file. */
-  fun deleteRemote(terminalId: String, context: Context): Map<String, Any?> {
-    val active = synchronized(lock) { session }
-    if (active == null || active.target.terminalId != terminalId) {
-      return AttachmentResults.error(
-        AttachmentLimits.ERROR_DESTINATION_CHANGED,
-        "The attachment belongs to a different terminal.",
-      )
-    }
-    val op = active.machine.operation
-    if (op == null || !op.canDeleteRemote) {
-      return AttachmentResults.error(
-        AttachmentLimits.ERROR_STATE,
-        "There is no uploaded file to delete.",
-      )
-    }
-    val result = AttachmentCoreBridge.deleteRemote(
-      ensureNativeHandle(terminalId),
-      op.attachmentId,
-    )
-    if (result["status"] == "accepted") refreshSnapshot(active)
-    return result
-  }
-
-  fun insert(terminalId: String, context: Context): Map<String, Any?> {
+  fun insert(terminalId: String): Map<String, Any?> {
     val active = synchronized(lock) { session }
     val op = active?.machine?.operation
     val verdict = AttachmentInsertionPolicy.insert(
@@ -420,13 +328,13 @@ internal object AttachmentController {
       return AttachmentResults.error(
         AttachmentLimits.ERROR_DESTINATION_CHANGED,
         "The attachment destination changed since the image was picked. " +
-          "It is never retargeted — return to the original terminal or discard and attach again.",
+          "It is never retargeted — reopen the original terminal and try again.",
       )
     }
     return AttachmentResults.error(
       AttachmentLimits.ERROR_DESTINATION_MISSING,
-      "The attachment destination is no longer available. " +
-        "It is never retargeted — return to the original terminal or discard and attach again.",
+        "The attachment destination is no longer available. " +
+          "It is never retargeted — reopen the original terminal and try again.",
     )
   }
 
@@ -436,18 +344,4 @@ internal object AttachmentController {
     return TerminalRegistry.ensure(terminalId, 80, 24)
   }
 
-  private fun emptySessionSnapshot(): Map<String, Any?> = mapOf(
-    "status" to "idle",
-    "fileId" to "",
-    "previewUri" to "",
-    "format" to "",
-    "width" to 0,
-    "height" to 0,
-    "byteCount" to 0L,
-    "sourceByteCount" to 0L,
-    "target" to null,
-    "operation" to null,
-    "errorCode" to "",
-    "message" to "",
-  )
 }

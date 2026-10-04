@@ -171,49 +171,10 @@ final class AttachmentTests: XCTestCase {
     XCTAssertFalse(AttachmentFileNames.isStagingName("att_0011223344556677.png"))
   }
 
-  func testSessionSnapshotCarriesOnlyDisplayMetadata() {
-    let session = AttachmentSession(
-      target: AttachmentTargetIdentity(
-        terminalId: "poc-main",
-        paneId: "%1",
-        workspaceId: "@1"
-      )
-    )
-    XCTAssertEqual(session.snapshot(previewUri: "")["status"] as? String, "idle")
-    session.stagingFileName = "att_0011223344556677.bin"
-    XCTAssertEqual(session.snapshot(previewUri: "")["status"] as? String, "staged")
-    session.prepared = AttachmentPreparedImage(
-      fileName: "att_8899aabbccddeeff.png",
-      format: .png,
-      width: 1080,
-      height: 1920,
-      byteCount: 123_456,
-      sourceByteCount: 4_000_000
-    )
-    let snapshot = session.snapshot(
-      previewUri: "file:///cache/attachments/att_8899aabbccddeeff.png"
-    )
-    XCTAssertEqual(snapshot["status"] as? String, "prepared")
-    XCTAssertEqual(snapshot["fileId"] as? String, "att_8899aabbccddeeff.png")
-    XCTAssertEqual(
-      snapshot["previewUri"] as? String,
-      "file:///cache/attachments/att_8899aabbccddeeff.png"
-    )
-    XCTAssertEqual(snapshot["width"] as? Int, 1080)
-    XCTAssertEqual(
-      (snapshot["target"] as? [String: Any])?["terminalId"] as? String,
-      "poc-main"
-    )
-    // The core operation rides the session snapshot only while an op exists.
-    XCTAssertTrue(snapshot["operation"] is NSNull)
-    XCTAssertTrue(session.machine.recordBegin(
-      attachmentId: 7,
-      sizeBytes: 123_456,
-      displayName: "att_8899aabbccddeeff.png"
-    ))
-    let withOp = session.snapshot(previewUri: "")["operation"] as? [String: Any]
-    XCTAssertEqual(withOp?["phase"] as? String, "uploading")
-    XCTAssertEqual(withOp?["attachmentId"] as? String, "7")
+  func testPreparedResultExposesOnlyStatus() {
+    let result = AttachmentResults.prepared()
+    XCTAssertEqual(result["status"] as? String, "prepared")
+    XCTAssertEqual(Set(result.keys), Set(["status"]))
   }
 
   // Phase B: the adapter-side machine mirrors the contract's phase rules
@@ -327,18 +288,6 @@ final class AttachmentTests: XCTestCase {
     XCTAssertEqual(machine.operation?.phase, .uploaded)
   }
 
-  func testCancelledOperationIgnoresLateUploadSnapshots() {
-    let machine = AttachmentOpMachine()
-    machine.recordBegin(attachmentId: 7, sizeBytes: 100, displayName: "a.png")
-    machine.markCancelled()
-    // Late progress after a local cancel never resurrects the upload.
-    XCTAssertTrue(machine.applySnapshot(operation(7, .uploading)))
-    XCTAssertEqual(machine.operation?.phase, .cancelled)
-    // A genuinely finished upload still surfaces its terminal state.
-    XCTAssertTrue(machine.applySnapshot(operation(7, .uploaded)))
-    XCTAssertEqual(machine.operation?.phase, .uploaded)
-  }
-
   func testCapabilityGatesFollowTheContractPhases() {
     XCTAssertTrue(operation(1, .pending).canRetryUpload)
     XCTAssertTrue(operation(1, .failed).canRetryUpload)
@@ -349,11 +298,6 @@ final class AttachmentTests: XCTestCase {
     XCTAssertTrue(operation(1, .pending).canCancel)
     XCTAssertTrue(operation(1, .uploading).canCancel)
     XCTAssertFalse(operation(1, .uploaded).canCancel)
-    for phase in [AttachmentOpPhase.uploaded, .inserted, .failed, .cancelled] {
-      XCTAssertTrue(operation(1, phase).canDeleteRemote, "delete allowed in \(phase)")
-    }
-    XCTAssertFalse(operation(1, .uploading).canDeleteRemote)
-    XCTAssertFalse(operation(1, .pending).canDeleteRemote)
   }
 
   func testRemoteRemovalKeepsPhaseAndChangesCapabilities() {
@@ -363,19 +307,16 @@ final class AttachmentTests: XCTestCase {
     XCTAssertTrue(removedUploaded.remoteRemoved)
     XCTAssertEqual(removedUploaded.phase.wireName, "uploaded")
     XCTAssertFalse(removedUploaded.canInsert)
-    XCTAssertFalse(removedUploaded.canDeleteRemote)
     // The core re-uploads the same operation for uploaded+removed.
     XCTAssertTrue(removedUploaded.canRetryUpload)
 
     let removedInserted = operation(1, .inserted, flags: 0x2)
     XCTAssertTrue(removedInserted.remoteRemoved)
     XCTAssertFalse(removedInserted.canInsert)
-    XCTAssertFalse(removedInserted.canDeleteRemote)
     XCTAssertFalse(removedInserted.canRetryUpload)
 
     let removedFailed = operation(1, .failed, flags: 0x2)
     XCTAssertTrue(removedFailed.canRetryUpload)
-    XCTAssertFalse(removedFailed.canDeleteRemote)
   }
 
   func testInFlightJobBlocksEveryAction() {
@@ -384,19 +325,17 @@ final class AttachmentTests: XCTestCase {
     let busyUploaded = operation(1, .uploaded, flags: 0x4)
     XCTAssertTrue(busyUploaded.jobInFlight)
     XCTAssertFalse(busyUploaded.canInsert)
-    XCTAssertFalse(busyUploaded.canDeleteRemote)
     XCTAssertFalse(busyUploaded.canRetryUpload)
 
     let busyFailed = operation(1, .failed, flags: 0x4)
     XCTAssertFalse(busyFailed.canRetryUpload)
-    XCTAssertFalse(busyFailed.canDeleteRemote)
 
     // A stale reason from an earlier attempt never re-enables the gates.
     let busyWithError = operation(1, .pending, flags: 0x4)
     XCTAssertFalse(busyWithError.canRetryUpload)
   }
 
-  func testClearDropsOperationForDiscardAndNewPick() {
+  func testClearDropsOperationWhenStartingANewAttachment() {
     let machine = AttachmentOpMachine()
     machine.recordBegin(attachmentId: 7, sizeBytes: 100, displayName: "a.png")
     machine.clear()
