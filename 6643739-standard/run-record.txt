@@ -1,0 +1,58 @@
+Issue #52 / PR #53 — iOS standard validation run record
+========================================================
+
+source_sha=66437396470186c83c1f5fec298da55fe35c8a03
+branch=issue-52-quick-image-attach
+suite=standard
+validation_host=macOS Apple Silicon (this session), iOS Simulator only
+
+Build (fresh — no reuse of earlier build products)
+--------------------------------------------------
+checkout=fetch + git reset --hard 66437396470186c83c1f5fec298da55fe35c8a03
+pipeline=npm ci -> npx expo prebuild --platform ios --clean --non-interactive (EXPO_PUBLIC_MEETERM_SMOKE=1) -> ios-inject-ui-test.sh -> pod install -> ios-strip-storage-rust-link.py -> xcodebuild build-for-testing (Release, iphonesimulator, arm64, CODE_SIGNING_ALLOWED=NO, ENABLE_TESTABILITY=YES)
+preflight=scripts/ci/ios-typecheck.sh -> Ran 2 tests OK (1 attempt, no retry)
+build_result=** TEST BUILD SUCCEEDED ** (1 attempt)
+entitlements=scripts/ci/test_ios_simulator_entitlements.py -> Ran 3 tests OK
+products_pack=ios-test-products.py pack -> "iOS test products pack passed (exact source/toolchain)" (packed BEFORE runtime, manifest+checksum+sha+xcode-version verified)
+
+Simulator
+---------
+device=iPhone 18 Pro Max, udid=7EE2EBC1-0640-4950-AAFF-B4CDF455F377, iOS 27.0
+pre-run contention check=no booted devices at start; VM had rebooted ~10min prior; load 9.69/12.10/7.55 settling from boot+build; leftover iPhone Air not present
+
+Suite: MEETERM_IOS_SUITE=standard scripts/ci/ios-smoke.sh
+---------------------------------------------------------
+result=passed
+stage=standard_complete -> teardown_complete (see suite/ios-ui-stages.txt)
+ui_case=standard result=passed
+native_storage=6/6 XCTest passed, 0 failed
+input/xctest=15 passed, 0 failed (TerminalInputViewTests et al.)
+appearance/foundation/ui validation txt=result=passed everywhere
+xctest_timing=437537ms elapsed / 887011ms deadline
+ui_timing=test_started=502ms, standard_complete=366632ms, teardown_complete=366655ms
+foundation=install/launch/native readiness/first frame/no-crash all passed
+first_frame=renderer_backend=metal (METAL, not CoreGraphics/SOFTWARE)
+
+Issue #52 acceptance focus
+--------------------------
+whole_app_compiles=yes (all changed Swift incl. modules/meeterm-terminal/ios/Attachment*.swift, TerminalInputView.swift compiled into TEST BUILD SUCCEEDED)
+launches_first_frame_no_crash=yes (foundation_validation passed, metal backend)
+keyboard_accessory_attach_key=VISUAL CONFIRM: suite/theme-os-keyboard.png (and theme-dialog/keyboard captures) show the accessory row's leftmost key = photo/image glyph, immediately left of Esc
+accessibility_label=source ships attachButton.accessibilityLabel="Attach image" + accessibilityIdentifier="attach-image" (TerminalInputView.swift:589-590); not separately asserted by the smoke XCTest (no a11y query for it in this suite)
+no_assertion_or_deadline_changes=yes; no source edits; single attempt, no reruns
+
+Artifacts
+---------
+suite/ = full artifacts/ios-simulator-observability copy (staged to durable dir immediately after suite complete)
+build/ = xcodebuild.log (full 39468-line fresh-build transcript), xcode-version.txt, toolchain-versions.txt
+xctest-transcript.log = meeterm-ios-standard-xcodebuild.log
+xctest-storage-transcript.log = meeterm-ios-standard-xcodebuild-storage.log
+standard-transcript.log = suite stdout tail transcript
+run-record.txt = this file
+file_inventory updated by git ls-tree -r --name-only after push (see latest commit)
+
+Limits
+------
+iOS Simulator only (iPhone 18 Pro Max, iOS 27.0); no physical-device, Android, or GPU/IME/font parity claims.
+Seeded/smoke screens are presentation evidence, not live-connection evidence.
+The attach key's accessibility label is verified from compiled source; the PNG shows the glyph. XCUI did not query the element in this suite.

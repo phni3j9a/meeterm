@@ -1,0 +1,65 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -xctestrun /Users/devin/runner-temp-issue52/meeterm-derived-data/Build/Products/.meeterm-i9giczhi.xctestrun -destination "platform=iOS Simulator,id=7EE2EBC1-0640-4950-AAFF-B4CDF455F377" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO "-only-testing:meetermStorageTests" -resultBundlePath /Users/devin/runner-temp-issue52/meeterm-ios-standard-storage.xcresult
+
+Build settings from command line:
+    CODE_SIGNING_ALLOWED = NO
+    CODE_SIGNING_REQUIRED = NO
+
+2026-10-04 06:00:25.730 xcodebuild[7681:50202] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+Writing result bundle at path:
+	/Users/devin/runner-temp-issue52/meeterm-ios-standard-storage.xcresult
+
+2026-10-04 06:00:25.733 xcodebuild[7681:50202] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-10-04 06:00:26.225 xcodebuild[7681:50202] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-10-04 13:00:35.259243+0000 meeterm[7701:50840] [UIKit App Config] `UIScene` life cycle is now required when building with the latest SDKs. Apps that don't adopt will fail to launch.
+2026-10-04 13:00:35.265713+0000 meeterm[7701:50840] You've implemented -[<UIApplicationDelegate> application:performFetchWithCompletionHandler:], but you still need to add "fetch" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-10-04 13:00:35.265818+0000 meeterm[7701:50840] You've implemented -[<UIApplicationDelegate> application:didReceiveRemoteNotification:fetchCompletionHandler:], but you still need to add "remote-notification" to the list of your supported UIBackgroundModes in your Info.plist.
+2026-10-04 13:00:35.267924+0000 meeterm[7701:50840] _setUpFeatureFlags called with release level 2
+2026-10-04 13:00:35.427941+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoModulesCoreJSLogger'
+2026-10-04 13:00:35.466400+0000 meeterm[7701:50840] [expo] 🟢 Posting 'appBecomesActive' event to registered modules
+2026-10-04 13:00:35.618818+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoDomWebViewModule'
+2026-10-04 13:00:35.682137+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoFetchModule'
+2026-10-04 13:00:35.688820+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoAsset'
+2026-10-04 13:00:35.703466+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExponentConstants'
+2026-10-04 13:00:35.858909+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'FileSystem'
+2026-10-04 13:00:35.915672+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExponentFileSystem'
+2026-10-04 13:00:35.919270+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoFontLoader'
+2026-10-04 13:00:35.926960+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoFontUtils'
+2026-10-04 13:00:35.933648+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'ExpoKeepAwake'
+2026-10-04 13:00:36.003172+0000 meeterm[7701:51192] [expo] 🟢 Registering module 'MeetermTerminal'
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W1004 13:00:36.005177 1877749760 ReactInstance.cpp:267] ReactInstance: evaluateJavaScript() with JS bundle
+2026-10-04 13:00:36.610719+0000 meeterm[7701:51192] [expo] 🟢 Creating JS object for module 'ExponentConstants'
+2026-10-04 13:00:36.632099+0000 meeterm[7701:51192] [expo] 🟢 Creating JS object for module 'ExpoAsset'
+Test Suite 'All tests' started at 2026-10-04 13:00:36.634.
+Test Suite 'meetermStorageTests.xctest' started at 2026-10-04 13:00:36.634.
+Test Suite 'ClientStoreTests' started at 2026-10-04 13:00:36.635.
+Test Case '-[meetermStorageTests.ClientStoreTests testCredentialRemainsNativeAndCannotFollowAnEndpointChange]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testCredentialRemainsNativeAndCannotFollowAnEndpointChange]' passed (0.035 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testInterruptedCredentialWriteIsCleanedWithoutDeletingLiveCredentials]' passed (0.012 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testLegacyStoredPreferencesNormalizeTerminalThemeToDark]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testLegacyStoredPreferencesNormalizeTerminalThemeToDark]' passed (0.010 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testPreferencesRoundTripAndValidation]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testPreferencesRoundTripAndValidation]' passed (0.003 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testRemovingSavedCredentialAndProfile]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testRemovingSavedCredentialAndProfile]' passed (0.009 seconds).
+Test Case '-[meetermStorageTests.ClientStoreTests testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules]' started.
+Test Case '-[meetermStorageTests.ClientStoreTests testRuntimeHintValidationSeparatesTmuxDisplayNamesFromHerdrRules]' passed (0.006 seconds).
+Test Suite 'ClientStoreTests' passed at 2026-10-04 13:00:36.716.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.076 (0.081) seconds
+Test Suite 'meetermStorageTests.xctest' passed at 2026-10-04 13:00:36.716.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.076 (0.082) seconds
+Test Suite 'All tests' passed at 2026-10-04 13:00:36.717.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.076 (0.083) seconds
+2026-10-04 13:00:36.719427+0000 meeterm[7701:51192] [expo] 🟢 Creating JS object for module 'MeetermTerminal'
+2026-10-04 06:00:36.998 xcodebuild[7681:50202] [MT] IDETestOperationsObserverDebug: 10.769 elapsed -- Testing started completed.
+2026-10-04 06:00:36.998 xcodebuild[7681:50202] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-10-04 06:00:36.998 xcodebuild[7681:50202] [MT] IDETestOperationsObserverDebug: 10.769 sec, +10.769 sec -- end
+
+Test session results, code coverage, and logs:
+	/Users/devin/runner-temp-issue52/meeterm-ios-standard-storage.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started
