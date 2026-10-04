@@ -75,15 +75,6 @@ internal class AttachmentPicker(
     launcher = registered
     try {
       registered.launch(null)
-    } catch (e: PhotoPickerUnavailableException) {
-      launcher = null
-      registered.unregister()
-      promise.resolve(
-        AttachmentResults.error(
-          AttachmentLimits.ERROR_IO,
-          "This device can't open a photo picker.",
-        ),
-      )
     } catch (e: ActivityNotFoundException) {
       launcher = null
       registered.unregister()
@@ -122,14 +113,10 @@ internal class AttachmentPicker(
         MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
         "image/*",
       )
-      val route = attachmentPickerRoute(
-        photoPickerIntentAvailable = photoPickerIntent != null,
-        galleryIntentAvailable = resolves(context, galleryIntent),
-      )
+      val route = attachmentPickerRoute(photoPickerIntentAvailable = photoPickerIntent != null)
       return when (route) {
         AttachmentPickerRoute.PHOTO_PICKER -> photoPickerIntent!!
         AttachmentPickerRoute.GALLERY -> galleryIntent
-        AttachmentPickerRoute.UNAVAILABLE -> throw PhotoPickerUnavailableException()
       }
     }
 
@@ -147,6 +134,4 @@ internal class AttachmentPicker(
     private fun resolves(context: android.content.Context, intent: Intent): Boolean =
       context.packageManager.resolveActivity(intent, 0) != null
   }
-
-  private class PhotoPickerUnavailableException : RuntimeException()
 }

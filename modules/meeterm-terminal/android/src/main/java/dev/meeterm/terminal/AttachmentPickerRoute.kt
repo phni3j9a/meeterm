@@ -4,15 +4,13 @@ package dev.meeterm.terminal
 internal enum class AttachmentPickerRoute {
   PHOTO_PICKER,
   GALLERY,
-  UNAVAILABLE,
 }
 
-/** Prefer the dedicated Photos picker, then the image gallery, never Files. */
+/** Choose the dedicated Photos picker when available; otherwise launch Gallery. */
 internal fun attachmentPickerRoute(
   photoPickerIntentAvailable: Boolean,
-  galleryIntentAvailable: Boolean,
-): AttachmentPickerRoute = when {
-  photoPickerIntentAvailable -> AttachmentPickerRoute.PHOTO_PICKER
-  galleryIntentAvailable -> AttachmentPickerRoute.GALLERY
-  else -> AttachmentPickerRoute.UNAVAILABLE
+): AttachmentPickerRoute = if (photoPickerIntentAvailable) {
+  AttachmentPickerRoute.PHOTO_PICKER
+} else {
+  AttachmentPickerRoute.GALLERY
 }

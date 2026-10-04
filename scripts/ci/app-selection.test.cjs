@@ -4972,3 +4972,42 @@ test('an insert failure can be retried from the key row without reuploading', as
   assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'insert').length, 2);
   assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
 });
+
+test('IME hold preserves an insert retry until composition ends', async t => {
+  const fixture = await openQuickAttachmentTerminal(t, { failFirstInsert: true });
+  await emitAttachImageRequest(fixture);
+  fixture.environment.compositionHeld = true;
+
+  await emitAttachImageRequest(fixture);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'insert').length, 1);
+
+  fixture.environment.compositionHeld = false;
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 1);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'insert').length, 2);
+  assert.equal(fixture.environment.attachmentOperation.phase, 'inserted');
+});
+
+test('a synchronous insert-resume rejection retires the cached snapshot', async t => {
+  const snapshot = { ...makeSnapshot(), backend: 'tmux', runtime: 'same-name', groupsSupported: false };
+  const fixture = await mountForTest(t, snapshot, (environment, native) => {
+    configureQuickAttachment(environment, native, { failFirstInsert: true });
+  });
+  await openWorkspace(fixture.root, 'W1');
+  await emitAttachImageRequest(fixture);
+  assert.equal(fixture.environment.attachmentOperation.phase, 'uploaded');
+
+  await updateSnapshot(fixture.environment, { ...snapshot });
+  fixture.native.insertAttachment = async terminalId => {
+    fixture.environment.attachmentCalls.push({ method: 'insert', args: [terminalId] });
+    return { status: 'error', errorCode: 'destination_changed', message: 'The recorded tmux server/session identity was replaced.' };
+  };
+  await emitAttachImageRequest(fixture);
+  await emitAttachImageRequest(fixture);
+
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'pick').length, 2);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'begin').length, 2);
+  assert.equal(fixture.environment.attachmentCalls.filter(call => call.method === 'insert').length, 3);
+});

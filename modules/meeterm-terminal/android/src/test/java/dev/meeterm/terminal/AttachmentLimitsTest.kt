@@ -17,15 +17,11 @@ class AttachmentLimitsTest {
   fun photoPickerRouteUsesOnlyPhotoLibraryIntents() {
     assertEquals(
       AttachmentPickerRoute.PHOTO_PICKER,
-      attachmentPickerRoute(photoPickerIntentAvailable = true, galleryIntentAvailable = true),
+      attachmentPickerRoute(photoPickerIntentAvailable = true),
     )
     assertEquals(
       AttachmentPickerRoute.GALLERY,
-      attachmentPickerRoute(photoPickerIntentAvailable = false, galleryIntentAvailable = true),
-    )
-    assertEquals(
-      AttachmentPickerRoute.UNAVAILABLE,
-      attachmentPickerRoute(photoPickerIntentAvailable = false, galleryIntentAvailable = false),
+      attachmentPickerRoute(photoPickerIntentAvailable = false),
     )
   }
 

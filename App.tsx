@@ -2499,6 +2499,8 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
     setAttachmentBusy(true);
     setControlMessage('');
     let operation: AttachmentOperationSnapshot | null = null;
+    let hasFreshOperationSnapshot = false;
+    let insertResumeRejectedWithoutSnapshot = false;
 
     const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
     const waitForJob = async (attachmentId: string): Promise<AttachmentOperationSnapshot> => {
@@ -2506,10 +2508,11 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         if (generation !== attachmentFlowGeneration.current) throw new Error('The image request was superseded.');
         const snapshot = await MeetermTerminal.attachmentSnapshot();
         if (snapshot.status === 'snapshot') {
-          operation = snapshot.operation;
           if (snapshot.operation.attachmentId !== attachmentId) {
             throw new Error('The attachment operation changed before it finished.');
           }
+          operation = snapshot.operation;
+          hasFreshOperationSnapshot = true;
           if (!snapshot.operation.jobInFlight) return snapshot.operation;
         } else if (snapshot.status === 'error') {
           throw Object.assign(new Error(snapshot.message), { errorCode: snapshot.errorCode });
@@ -2539,18 +2542,41 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
       setRetryFor(completed);
     };
     const verifyAndInsert = async (attachmentId: string) => {
-      const result = await MeetermTerminal.insertAttachment(terminalId);
+      let result: Awaited<ReturnType<typeof MeetermTerminal.insertAttachment>>;
+      try {
+        result = await MeetermTerminal.insertAttachment(terminalId);
+      } catch (error) {
+        if (retry?.action === 'insert' && !hasFreshOperationSnapshot) {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
+        throw error;
+      }
       if (result.status === 'held') {
-        setRetryFor(operation);
+        if (result.reason === 'composing') {
+          if (hasFreshOperationSnapshot) setRetryFor(operation);
+        } else if (hasFreshOperationSnapshot) {
+          setRetryFor(operation);
+        } else if (retry?.action === 'insert') {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
         throw new Error(result.reason === 'composing'
           ? 'Finish IME composition before attaching.'
           : 'The uploaded image is no longer available.');
       }
       if (result.status === 'error') {
-        setRetryFor(operation);
+        if (hasFreshOperationSnapshot) {
+          setRetryFor(operation);
+        } else if (retry?.action === 'insert') {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
         throw Object.assign(new Error(result.message), { errorCode: result.errorCode });
       }
-      if (result.status === 'unavailable') throw new Error('The attachment service is not available right now.');
+      if (result.status === 'unavailable') {
+        if (retry?.action === 'insert' && !hasFreshOperationSnapshot) {
+          insertResumeRejectedWithoutSnapshot = true;
+        }
+        throw new Error('The attachment service is not available right now.');
+      }
       if (result.status === 'inserted') {
         attachmentRetry.current = null;
         return;
@@ -2623,8 +2649,14 @@ function AppContent({ smokeRoute }: { smokeRoute: SmokeRoute }) {
         // A rejected resume has no fresh snapshot to replace the cached
         // operation with. Retire that reference so a later tap can begin a
         // new intent instead of repeatedly calling retry on the same one.
-        if (retry && attachmentRetry.current === retry && !operation) attachmentRetry.current = null;
-        if (!attachmentRetry.current && operation) setRetryFor(operation);
+        const rejectedWithoutSnapshot = Boolean(retry
+          && attachmentRetry.current === retry
+          && !hasFreshOperationSnapshot
+          && (retry.action === 'upload'
+            ? !operation
+            : insertResumeRejectedWithoutSnapshot));
+        if (rejectedWithoutSnapshot) attachmentRetry.current = null;
+        if (!rejectedWithoutSnapshot && hasFreshOperationSnapshot && operation) setRetryFor(operation);
         const notice = attachmentFailureNotice(failure.errorCode ?? '', failure.message);
         setControlMessage(attachmentRetry.current?.terminalId === terminalId
           && attachmentRetry.current.destinationKey === destinationKey
