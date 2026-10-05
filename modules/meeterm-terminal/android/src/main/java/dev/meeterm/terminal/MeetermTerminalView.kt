@@ -428,6 +428,7 @@ class MeetermTerminalView(
       (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
         ?.restartInput(this)
     }
+    reconcileResize(surface.width, surface.height)
     requestLayout()
     surface.requestRender()
   }
@@ -1087,6 +1088,7 @@ class MeetermTerminalView(
       surface.contentDescription = "Terminal"
     }
     updateInteractionAccessibility()
+    reconcileResize(surface.width, surface.height)
     requestLayout()
     surface.requestRender()
   }
