@@ -912,6 +912,7 @@ class MeetermTerminalView(
     val attachControl = FrameLayout(context)
     val attachButton = ImageView(context).apply {
       setImageResource(R.drawable.meeterm_attach_image)
+      scaleType = ImageView.ScaleType.CENTER_INSIDE
       setColorFilter(keyTextColor())
       background = keyBackground()
       contentDescription = "Attach image"
@@ -1175,6 +1176,7 @@ class MeetermTerminalView(
         button.background = keyBackground()
       }
       attachmentButton?.setColorFilter(keyText)
+      attachmentButton?.background = keyBackground()
       attachmentProgress?.indeterminateTintList = ColorStateList.valueOf(keyText)
       syncModifierButtons()
     }

@@ -105,7 +105,9 @@ white-background removal is required. See [asset provenance](../app/assets/READM
   retained; fresh/cold connection discovery uses the picker.
 - Disconnecting releases the mobile connection while remote work keeps
   running. Computer handoff explains the ordinary tmux/Herdr command.
-- The native terminal key row begins with a 44 pt/dp photo icon before Esc.
+- The native terminal key row begins with a photo button before Esc, with a
+  44 pt/dp tap target. Android centers the 24 dp glyph without enlarging it;
+  its tint and background follow the other keys in both terminal themes.
   It opens Photos only; there is no Files picker, preview, editable remote
   directory, attachment sheet, or separate Upload/Insert/Delete/Discard
   control. One tap starts the full flow: capture the displayed terminal's
