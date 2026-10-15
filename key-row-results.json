@@ -1,0 +1,36 @@
+[
+  {
+    "capture": "light-keyboard",
+    "hit_target_px": [
+      115,
+      115
+    ],
+    "ink_px": [
+      53,
+      53
+    ],
+    "background_rgb": [
+      250,
+      248,
+      244
+    ],
+    "passed": true
+  },
+  {
+    "capture": "dark-keyboard",
+    "hit_target_px": [
+      115,
+      115
+    ],
+    "ink_px": [
+      53,
+      53
+    ],
+    "background_rgb": [
+      48,
+      44,
+      38
+    ],
+    "passed": true
+  }
+]
