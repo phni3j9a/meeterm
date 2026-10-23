@@ -16,7 +16,7 @@ React Native/Expo の source of truth は root の TypeScript と app config、n
 
 | Component | Version | 確認方法 |
 | --- | --- | --- |
-| Node.js | 22.22.2 | `node --version` |
+| Node.js | 22.23.4 | `node --version` |
 | npm | 10.9.7 | `npm --version` |
 | Rust toolchain / cargo | 1.96.0 | `rustc --version`, `cargo --version` |
 | cargo-ndk | 4.1.2 | `cargo ndk --version` |
@@ -67,8 +67,8 @@ adb version
 Node/npm と Rust toolchain は次のように揃えます。既に同じ version がある場合も、確認コマンドを省略しないでください。
 
 ```sh
-nvm install 22.22.2
-nvm use 22.22.2
+nvm install 22.23.4
+nvm use 22.23.4
 npm install --global npm@10.9.7
 
 rustup toolchain install 1.96.0 --profile minimal \
